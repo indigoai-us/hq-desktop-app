@@ -73,7 +73,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function patchLifecycleCardState(
   messages: ConversationMessageWire[],
   cardId: string,
-  patch: { state: LifecycleCardState; reason?: string | null },
+  patch: { state: LifecycleCardState; reason?: string | null; values?: Record<string, string> },
 ): ConversationMessageWire[] {
   let changed = false;
   const next = messages.map((msg) => {
@@ -87,6 +87,12 @@ export function patchLifecycleCardState(
         ...msg.systemEvent,
         state: patch.state,
         ...(patch.reason !== undefined ? { reason: patch.reason } : {}),
+        ...(patch.values && Array.isArray(msg.systemEvent.fields) ? {
+          fields: msg.systemEvent.fields.map((field: unknown) => isRecord(field) && typeof field.id === "string" && patch.values![field.id] !== undefined
+            ? { ...field, value: patch.values![field.id] }
+            : field),
+        } : {}),
+        ...(patch.state === "open" && patch.reason ? { statusLabel: "Please retry" } : {}),
         ...(patch.state === "blocked" ? { statusLabel: "Blocked" } : {}),
       },
     };

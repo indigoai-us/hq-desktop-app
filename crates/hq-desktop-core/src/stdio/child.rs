@@ -173,6 +173,8 @@ pub struct StdioChild {
     handle: String,
     /// The child process (kept alive to prevent a zombie).
     child: Child,
+    /// The registrar that accepted this child; ownership must not switch mid-spawn.
+    process_registrar: Option<std::sync::Arc<dyn crate::stdio::StdioProcessRegistrar>>,
     /// Write end of the child's stdin pipe. `None` once [`StdioChild::close_stdin`]
     /// has signalled end-of-input — a `stream-json` CLI treats EOF on stdin as
     /// "no more turns are coming" and exits cleanly, flushing its transcript,
@@ -211,6 +213,7 @@ impl StdioChild {
         use std::process::Stdio;
 
         let handle = uuid::Uuid::new_v4().to_string();
+        let process_registrar = registrar();
 
         let mut cmd = tokio::process::Command::new(&launch.program);
         cmd.args(&launch.args)
@@ -291,7 +294,7 @@ impl StdioChild {
             });
         }
 
-        if let (Some(reg), Some(pid)) = (registrar(), pid) {
+        if let (Some(reg), Some(pid)) = (process_registrar.as_ref(), pid) {
             reg.register(&handle, pid);
         }
 
@@ -304,7 +307,7 @@ impl StdioChild {
         #[cfg(target_os = "windows")]
         let (job_handle, owns_job_handle) = match child.raw_handle() {
             Some(raw) => match job_object::create_and_assign(raw) {
-                Ok(job) => match registrar() {
+                Ok(job) => match process_registrar.as_ref() {
                     Some(reg) => {
                         reg.register_job(&handle, job);
                         (Some(job), false)
@@ -334,6 +337,7 @@ impl StdioChild {
         Ok(Self {
             handle,
             child,
+            process_registrar,
             stdin: Some(stdin),
             reader: FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_SIZE)),
             next_id: 0,
@@ -455,7 +459,7 @@ impl StdioChild {
     /// Leave the host process registry and release any platform teardown
     /// handle we still own. Called only once the child is known to be gone.
     fn release_to_host(&mut self) {
-        if let Some(reg) = registrar() {
+        if let Some(reg) = self.process_registrar.take() {
             reg.deregister(&self.handle);
         }
         #[cfg(target_os = "windows")]
@@ -1670,6 +1674,25 @@ sleep 5
             "shutdown must deregister the handle"
         );
 
+        drop(child);
+        crate::stdio::registrar::clear_process_registrar();
+    }
+
+    // A late registrar installation must not steal a live child's teardown.
+    #[allow(clippy::await_holding_lock)]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn registrar_replacement_does_not_transfer_a_live_child() {
+        let _guard = registrar_lock();
+        let original = std::sync::Arc::new(FakeRegistrar::default());
+        let replacement = std::sync::Arc::new(FakeRegistrar::default());
+        crate::stdio::set_process_registrar(original.clone());
+        let mut child = spawn_script("sleep 5").await;
+        let handle = child.handle().to_string();
+        crate::stdio::set_process_registrar(replacement.clone());
+        child.shutdown().await;
+        assert_eq!(original.events_for(&handle), vec!["register", "deregister"]);
+        assert!(replacement.events_for(&handle).is_empty());
         drop(child);
         crate::stdio::registrar::clear_process_registrar();
     }

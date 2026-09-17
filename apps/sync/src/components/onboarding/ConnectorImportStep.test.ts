@@ -47,6 +47,29 @@ afterEach(async () => {
 });
 
 describe('ConnectorImportStep', () => {
+  it('records the precise zero-server detection result and its only inspected source', async () => {
+    tauri.invoke.mockResolvedValue({
+      present: true,
+      count: 0,
+      outcome: 'config_invalid',
+      inspectedSources: 'claude_desktop_config',
+    });
+    const onTelemetry = vi.fn();
+    component = mount(ConnectorImportStep, {
+      target: host,
+      props: { oncomplete: vi.fn(), onTelemetry },
+    });
+
+    await flush();
+
+    expect(onTelemetry).toHaveBeenLastCalledWith({
+      action: 'skipped',
+      detectedToolCount: 0,
+      detectedSourceSet: 'claude_desktop_config',
+      outcome: 'config_invalid',
+    });
+  });
+
   it('auto-skips when Claude Desktop has no connectors', async () => {
     tauri.invoke.mockResolvedValue({ present: false, count: 0, path: '/config' });
     const oncomplete = mountStep();
@@ -106,5 +129,41 @@ describe('ConnectorImportStep', () => {
     );
     host.querySelector<HTMLButtonElement>('[data-testid="connector-import-continue"]')?.click();
     expect(oncomplete).toHaveBeenCalledOnce();
+  });
+
+  it('reports an import failure with its bounded category and never the importer message', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'detect_claude_desktop_connectors') {
+        return {
+          present: true,
+          count: 1,
+          outcome: 'servers_detected',
+          inspectedSources: 'claude_desktop_config',
+        };
+      }
+      return {
+        ok: false,
+        message: 'C:\\Users\\alice\\HQ\\hq integrations import failed',
+        errorCategory: 'exit-nonzero',
+      };
+    });
+    const onTelemetry = vi.fn();
+    component = mount(ConnectorImportStep, {
+      target: host,
+      props: { oncomplete: vi.fn(), onTelemetry },
+    });
+    await flush();
+
+    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
+    await flush();
+
+    expect(onTelemetry).toHaveBeenLastCalledWith({
+      action: 'failed',
+      detectedToolCount: 1,
+      detectedSourceSet: 'claude_desktop_config',
+      outcome: 'import_failed',
+      errorCategory: 'exit-nonzero',
+    });
+    expect(JSON.stringify(onTelemetry.mock.calls)).not.toContain('alice');
   });
 });

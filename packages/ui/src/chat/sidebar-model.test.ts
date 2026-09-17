@@ -55,6 +55,7 @@ import {
   takeRailConversations,
   pickAutoOpenConversation,
   pickSettledBootConversation,
+  pickWelcomeFirstConversation,
   railRowScopeLabel,
   duplicateHumanDmTitles,
   resolveRailCompanyName,
@@ -2317,5 +2318,33 @@ describe("display-order stepping", () => {
     expect(stepConversation(rows, "missing", 1)?.id).toBe("p1");
     expect(stepConversation(rows, null, -1)?.id).toBe("p1");
     expect(stepConversation([], "p1", 1)).toBeNull();
+  });
+});
+
+describe("pickWelcomeFirstConversation", () => {
+  function row(
+    partial: Partial<ConversationRow> & { id: string; lastActivityAt: number },
+  ): ConversationRow {
+    return {
+      kind: "channel",
+      title: partial.id,
+      companyUid: null,
+      unreadDot: false,
+      pinned: false,
+      ...partial,
+    };
+  }
+
+  it("picks #welcome over a live company channel until setup has run", () => {
+    const setup = row({ id: "ch:setup", channelId: "setup", lastActivityAt: 0, pinned: true });
+    const live = row({ id: "ch:chn_ops", channelId: "chn_ops", lastActivityAt: 99 });
+    expect(pickWelcomeFirstConversation([live, setup], null)?.id).toBe("ch:setup");
+  });
+
+  it("returns null when there is no #welcome row or a selection already exists", () => {
+    const setup = row({ id: "ch:setup", channelId: "setup", lastActivityAt: 0 });
+    const live = row({ id: "ch:chn_ops", channelId: "chn_ops", lastActivityAt: 1 });
+    expect(pickWelcomeFirstConversation([live], null)).toBeNull();
+    expect(pickWelcomeFirstConversation([setup, live], "ch:chn_ops")).toBeNull();
   });
 });

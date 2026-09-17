@@ -107,7 +107,7 @@ describe("switcherRowsFromConversations", () => {
     expect(rows.map((item) => item.secondary)).toEqual([
       undefined,
       "ada@getindigo.ai",
-      "Agent",
+      "Bot",
       "Jacob Posel, Caitlin Hutchinson",
       undefined,
     ]);

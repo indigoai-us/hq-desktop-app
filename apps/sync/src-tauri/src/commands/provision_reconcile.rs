@@ -617,6 +617,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_activated_provisioner_no_output_still_writes_local_and_acks() {
+        // A no-output provisioner failure (HQ-DESKTOP-68) is handled like any
+        // other error in the bucket-present branch: local files are already
+        // written, the failure is logged ("provisioner '<slug>' failed after
+        // local write"), and the pass still acks — the new variant changes
+        // nothing about this contract.
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        let uid = "cmp_acme";
+        write_manifest(tmp.path(), slug);
+
+        let server = MockServer::start().await;
+        mount_owner_company(&server, uid, slug, Some("hq-vault-cmp-acme"), true, 200).await;
+
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let calls_clone = calls.clone();
+        let result = reconcile_server_activated_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            move |s, _n, _r| {
+                calls_clone.lock().unwrap().push(s.clone());
+                async move {
+                    let outcome: Result<CliProvisionResult, CliProvisionError> =
+                        Err(CliProvisionError::NoOutput {
+                            exit_code: 1,
+                            slug: s,
+                        });
+                    outcome
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(
+            result[0].wrote_local,
+            "local files are written even when the provisioner reports no output"
+        );
+        assert!(result[0].acked, "the pass still acks after the local write");
+
+        let cfg_path = tmp
+            .path()
+            .join("companies")
+            .join(slug)
+            .join(".hq")
+            .join("config.json");
+        assert!(cfg_path.is_file(), "config.json must be written");
+        assert_eq!(calls.lock().unwrap().as_slice(), &[slug.to_string()]);
+
+        let reqs = server.received_requests().await.unwrap();
+        assert!(reqs
+            .iter()
+            .any(|r| r.url.path() == "/v1/companies/cmp_acme/activate-cloud/ack"));
+    }
+
+    #[tokio::test]
     async fn already_provisioned_locally_does_not_rewrite() {
         let tmp = TempDir::new().unwrap();
         let slug = "acme";

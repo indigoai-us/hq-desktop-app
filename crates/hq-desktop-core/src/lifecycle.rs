@@ -16,8 +16,8 @@ pub enum LifecycleState {
     InstallResume,
     /// Config could be prepared but there is no usable auth token yet.
     NeedsAuthForInstall,
-    /// Install completed, sync firstRunCompleted is false, and there was no
-    /// prior machineId at classification -> finish onboarding then first sync.
+    /// Installed, but the compulsory consent question has no answer on this
+    /// machine -> the wizard asks that one question, then first run is done.
     InstalledFirstRun,
     /// Valid existing sync install (machineId present) without the new
     /// onboarding flags -> normal popover + existing auto-sync notice logic.
@@ -62,6 +62,34 @@ pub struct LifecycleVerdict {
     /// should write installCompleted:true + a migration marker. Never force these
     /// users through the installer wizard.
     pub needs_install_backfill: bool,
+    /// True when the machine is installed and consent is answered but
+    /// `firstRunCompleted` is missing (an older build never wrote it, or the
+    /// settings file lost it). Setup is judged done from what is on disk; the
+    /// caller writes the marker back so later launches — and the Dock click,
+    /// which reads the same verdict — never fall into the installer again.
+    pub needs_first_run_backfill: bool,
+}
+
+/// HQ is installed on this computer only when its tools are here too. A synced
+/// workspace or a completion marker is not proof that this computer has the
+/// executables setup needs: missing tools return to installation, without
+/// backfilling completion markers. The installer then puts back what is missing.
+pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -> LifecycleVerdict {
+    if tools_present {
+        verdict
+    } else {
+        LifecycleVerdict {
+            state: LifecycleState::NeedsInstall,
+            needs_install_backfill: false,
+            needs_first_run_backfill: false,
+        }
+    }
+}
+
+/// Desktop activation may not bypass the install wizard. This is distinct
+/// from the retired notification popover: completed installs open desktop.
+pub fn installation_required(state: LifecycleState) -> bool {
+    matches!(state, LifecycleState::NeedsInstall | LifecycleState::InstallResume | LifecycleState::NeedsAuthForInstall)
 }
 
 /// Pure helper: extract LifecycleInputs' menubar-derived flags from a parsed
@@ -83,6 +111,28 @@ pub fn menubar_flags(obj: &Map<String, Value>) -> (bool, bool, bool) {
         .unwrap_or(false);
 
     (install_completed, first_run_completed, had_machine_id)
+}
+
+/// Is the welcome channel's guided setup still owed on this machine?
+///
+/// The welcome channel (Run Setup in `#welcome`) is for people whose first
+/// run completed on a build that has it: the installer writes
+/// `welcomeSetupPending` when a brand-new install finishes. A machine that was
+/// set up before that flag existed — an existing user updating, whose
+/// `firstRunCompleted` was written by an older build or backfilled from disk
+/// — has already done its setup another way and must not be greeted with
+/// Run Setup again. Machines still mid-install are owed it.
+///
+/// `welcomeSetupPending: false` (written when the guided run finishes) wins
+/// over everything: setup is done.
+pub fn welcome_setup_owed(menubar: &Map<String, Value>, hq_root_valid: bool) -> bool {
+    match menubar.get("welcomeSetupPending").and_then(Value::as_bool) {
+        Some(pending) => pending,
+        None => {
+            let (_, first_run_completed, _) = menubar_flags(menubar);
+            !hq_root_valid || !first_run_completed
+        }
+    }
 }
 
 /// True when `root` exists and contains the installed hq-core template shape
@@ -112,6 +162,13 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     let is_installed = inputs.hq_root_valid && (has_prior_setup || inputs.has_auth);
     let needs_install_backfill = is_installed && !inputs.install_completed;
 
+    // Installed and consent answered: setup is done whatever the markers say.
+    // The `firstRunCompleted` marker is a cache of that fact, not the fact
+    // itself — a settings file that lost it must not send a set-up person back
+    // through sign-in, folder choice and install.
+    let needs_first_run_backfill =
+        is_installed && inputs.consent_answered && !inputs.first_run_completed;
+
     let state = if inputs.install_in_progress {
         LifecycleState::InstallResume
     } else if is_installed {
@@ -120,9 +177,9 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
         // answering (setup done + machineId written, but firstRunCompleted still
         // false) must NOT be waved through as a legacy update — that is exactly
         // how quitting at the consent step bypassed consent. Route any installed
-        // machine whose consent is unanswered to the onboarding first-run state,
-        // where the blocking consent step runs. Once consent is answered (or
-        // first-run completed), the normal classification resumes.
+        // machine whose consent is unanswered to the first-run state, where the
+        // wizard asks the consent question alone. Once consent is answered (or
+        // first-run completed), the machine is set up.
         if inputs.first_run_completed {
             LifecycleState::SteadyState
         } else if !inputs.consent_answered {
@@ -130,7 +187,7 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
         } else if inputs.had_machine_id {
             LifecycleState::InstalledLegacyUpdate
         } else {
-            LifecycleState::InstalledFirstRun
+            LifecycleState::SteadyState
         }
     } else if !inputs.has_auth {
         LifecycleState::NeedsAuthForInstall
@@ -141,6 +198,7 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     LifecycleVerdict {
         state,
         needs_install_backfill,
+        needs_first_run_backfill,
     }
 }
 
@@ -241,6 +299,66 @@ mod tests {
 
         assert_eq!(verdict.state, LifecycleState::InstalledLegacyUpdate);
         assert!(verdict.needs_install_backfill);
+        assert!(verdict.needs_first_run_backfill);
+    }
+
+    #[test]
+    fn installed_with_consent_answered_is_set_up_even_without_first_run_or_machine_id() {
+        // Regression: a set-up, signed-in machine whose settings file lost its
+        // `firstRunCompleted` marker (an update relaunch found it missing) must
+        // be judged by what is on disk — not sent through the whole installer.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: false,
+            had_machine_id: false,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
+        });
+
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
+        assert!(verdict.needs_first_run_backfill, "the missing marker is written back");
+    }
+
+    #[test]
+    fn first_run_backfill_only_when_installed_consent_answered_and_marker_missing() {
+        let steady = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            hq_root_valid: true,
+            has_auth: true,
+            consent_answered: true,
+            ..input()
+        });
+        let unanswered = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            hq_root_valid: true,
+            has_auth: true,
+            consent_answered: false,
+            ..input()
+        });
+        let not_installed = classify_lifecycle(LifecycleInputs {
+            has_auth: true,
+            consent_answered: true,
+            ..input()
+        });
+        let resuming = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            hq_root_valid: true,
+            has_auth: true,
+            consent_answered: true,
+            install_in_progress: true,
+            ..input()
+        });
+
+        assert!(!steady.needs_first_run_backfill);
+        assert!(!unanswered.needs_first_run_backfill);
+        assert_eq!(unanswered.state, LifecycleState::InstalledFirstRun);
+        assert!(!not_installed.needs_first_run_backfill);
+        assert_eq!(resuming.state, LifecycleState::InstallResume);
+        assert!(resuming.needs_first_run_backfill, "resume finishes into a set-up machine");
     }
 
     #[test]
@@ -427,6 +545,27 @@ mod tests {
     }
 
     #[test]
+    fn welcome_setup_is_owed_to_a_new_install_and_a_machine_still_installing() {
+        let pending = map(json!({ "firstRunCompleted": true, "welcomeSetupPending": true }));
+        assert!(welcome_setup_owed(&pending, true));
+        let installing = map(json!({}));
+        assert!(welcome_setup_owed(&installing, false));
+        let no_first_run = map(json!({ "machineId": "abc" }));
+        assert!(welcome_setup_owed(&no_first_run, true));
+    }
+
+    #[test]
+    fn welcome_setup_is_not_owed_to_an_existing_set_up_user() {
+        // An older build (or the disk backfill) wrote firstRunCompleted and never
+        // knew about the welcome channel: this person already ran setup.
+        let legacy = map(json!({ "machineId": "abc", "installCompleted": true, "firstRunCompleted": true }));
+        assert!(!welcome_setup_owed(&legacy, true));
+        // Finished the guided run: done for good, whatever else is on disk.
+        let finished = map(json!({ "welcomeSetupPending": false }));
+        assert!(!welcome_setup_owed(&finished, false));
+    }
+
+    #[test]
     fn menubar_flags_defaults_absent_values_to_false() {
         assert_eq!(menubar_flags(&Map::new()), (false, false, false));
     }
@@ -496,5 +635,47 @@ mod tests {
         let missing = dir.path().join("missing");
 
         assert!(!hq_root_valid(&missing));
+    }
+}
+
+#[cfg(test)]
+mod toolchain_readiness_tests {
+    use super::*;
+    #[test]
+    fn synced_workspace_without_local_tools_must_install_without_backfill() {
+        for state in [LifecycleState::NeedsInstall, LifecycleState::InstallResume,
+            LifecycleState::NeedsAuthForInstall, LifecycleState::InstalledFirstRun,
+            LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
+            let original = LifecycleVerdict { state, needs_install_backfill: true, needs_first_run_backfill: true };
+            assert_eq!(require_local_toolchain(original, true), original);
+            let missing = require_local_toolchain(original, false);
+            assert_eq!(missing.state, LifecycleState::NeedsInstall);
+            assert!(!missing.needs_install_backfill && !missing.needs_first_run_backfill);
+            assert!(installation_required(missing.state));
+        }
+    }
+    #[test]
+    fn finished_setup_without_local_tools_still_returns_to_the_installer() {
+        // Completion markers and a synced HQ folder (the 2026-09-14 fresh-VM
+        // case) do not make HQ installed when hq or node is missing here.
+        let inputs = LifecycleInputs {
+            install_completed: true, first_run_completed: true, had_machine_id: true,
+            config_valid: true, hq_root_valid: true, has_auth: true,
+            install_in_progress: false, consent_answered: true,
+        };
+        assert_eq!(classify_lifecycle(inputs).state, LifecycleState::SteadyState);
+        let verdict = require_local_toolchain(classify_lifecycle(inputs), false);
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
+        assert!(installation_required(verdict.state));
+        assert_eq!(require_local_toolchain(classify_lifecycle(inputs), true).state, LifecycleState::SteadyState);
+    }
+    #[test]
+    fn completed_install_opens_desktop_and_incomplete_install_resumes_wizard() {
+        for state in [LifecycleState::NeedsInstall, LifecycleState::InstallResume, LifecycleState::NeedsAuthForInstall] {
+            assert!(installation_required(state));
+        }
+        for state in [LifecycleState::InstalledFirstRun, LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
+            assert!(!installation_required(state));
+        }
     }
 }

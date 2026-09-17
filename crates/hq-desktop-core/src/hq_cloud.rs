@@ -540,7 +540,114 @@
 /// is precisely the population that took the 6.16.24 and 6.16.25 pins. A
 /// desktop holding a cached 6.16.25 satisfies `~6.16.25` and never re-resolves,
 /// so the spec string is again the only thing that delivers the repair.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.26";
+///
+/// `~6.16.26` -> `~6.16.33`: floors the runner at the release that replaces the
+/// journal write baseline's full `structuredClone` with a per-row fingerprint
+/// map (hq-cloud#513). A writer still compares each later row against exactly
+/// the aggregate it read, but it retains a 53-bit fingerprint per row instead
+/// of a second parsed journal: on the 677k-row desktop journal that removes a
+/// roughly 950 MB duplicate from the runner heap. This is runner-internal
+/// memory layout, not a desktop-visible behavior contract, so it deliberately
+/// does not add another `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.26 satisfies `~6.16.26` forever and would
+/// retain that duplicate baseline; changing this requested spec is what moves
+/// npm's cache key and delivers the heap reduction.
+///
+/// `~6.16.33` -> `~6.16.34`: floors the runner at the release that recognizes
+/// the server's `403` `cross-tenant-push-rejected` response as terminal for
+/// that company scope (hq-cloud#514). It records the scope as forbidden and
+/// stops publishing realtime events for it, instead of retrying the same
+/// refused file forever. This is runner-internal retry control, not a desktop
+/// behavior contract, so it deliberately does not add another
+/// `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.33 satisfies `~6.16.33` forever and would
+/// keep retrying the denied scope; changing this requested spec is what moves
+/// npm's cache key and delivers the terminal classification.
+///
+/// `~6.16.34` -> `~6.16.35`: floors the runner at the release that stores
+/// packed columnar journal rows behind `JournalStore` and returns frozen rows
+/// at its public boundary (hq-cloud#516/#517). This substantially reduces the
+/// sync runner's resident memory, but is runner-internal representation rather
+/// than a desktop behavior contract, so it deliberately does not add another
+/// `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.34 satisfies `~6.16.34` forever and would
+/// retain the larger resident representation; changing this requested spec is
+/// what moves npm's cache key and delivers the reduction.
+///
+/// `~6.16.35` -> `~6.16.36`: floors the runner at the release that streams v3
+/// snapshot-journal decoding instead of materializing the full payload
+/// (hq-cloud#529), reducing peak sync-runner memory, and adds the HQSNAP4
+/// snapshot reader (hq-cloud#531). This release is reader-only for HQSNAP4;
+/// a later writer requires this pin first so a desktop does not fail closed on
+/// a v4 snapshot or retain the old large-v3-payload peak. These are
+/// runner-internal snapshot
+/// compatibility and memory behavior, so they deliberately add no
+/// `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.35 satisfies `~6.16.35` forever and would
+/// retain the pre-streaming runner without the HQSNAP4 reader; changing this
+/// requested spec is what moves npm's cache key and delivers both guarantees.
+///
+/// `~6.16.36` -> `~6.16.38`: floors the runner at the releases that remove
+/// the full area-journal clone on pull (hq-cloud#538), reduce resident memory
+/// while building manifests (hq-cloud#539), remove the Vitest reporter RPC
+/// timeout, stream large HQSNAP4 table assertions (hq-cloud#540/#541), and
+/// add the session-host surface (hq-cloud#537). These are runner-internal
+/// memory, test, and command-surface changes rather than a new desktop-visible
+/// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
+/// constant.
+///
+/// A desktop holding a cached 6.16.36 satisfies `~6.16.36` forever and would
+/// retain the older runner; changing this requested spec is what moves npm's
+/// cache key and delivers these releases.
+///
+/// `~6.16.38` -> `~6.16.45`: floors the runner at the release that fixes the
+/// rescue rsync-preflight diagnostic (hq-cloud#557). On Windows the diagnostic
+/// reported `resolved PATH: (unset)` on every machine because the rescue
+/// environment is built with `{ ...process.env }`, which loses Node's
+/// case-insensitive Windows lookup and reads a `Path`-spelled variable as
+/// undefined. The message now distinguishes rsync being absent, exiting
+/// non-zero, and producing unrecognised version output, and reports the PATH
+/// entry count and whether an rsync executable was found. It also picks up
+/// 6.16.44, which names unrecognised snapshot magics as an unsupported format
+/// rather than corruption, and 6.16.43, which prevents personal-vault
+/// decommission from erroring on denied session-log deletes. These are runner
+/// diagnostic and error-reporting changes rather than a new desktop-visible
+/// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
+/// constant.
+///
+/// A desktop holding a cached 6.16.38 satisfies `~6.16.38` forever and would
+/// retain the older runner; changing this requested spec is what moves npm's
+/// cache key and delivers the new runner.
+///
+/// `~6.16.45` -> `~6.16.50`: floors the runner at the releases that fix the
+/// Windows rescue failures and recover a wedged Mac rescue. 6.16.46
+/// (hq-cloud#561) tolerates Node's Windows realpath failure at a drive root:
+/// after the native and JavaScript walkers fail, it accepts a normalized
+/// absolute path when `stat` confirms it is a directory instead of failing
+/// `--hq-root` with `EISDIR`. 6.16.47 (hq-cloud#563) finds the `rsync.cmd` shim
+/// HQ installs (including `PATHEXT` candidates) and launches it through
+/// `cmd.exe` for both the preflight and overlay, so a valid portable rsync no
+/// longer fails before a safety snapshot is allocated.
+///
+/// 6.16.48 adds host-key machine credentials for external agents. 6.16.49
+/// checks that every rescue rename or delete is writable before allocating a
+/// safety snapshot, so an unwritable release tree cannot trip the snapshot
+/// circuit breaker; if it is already tripped, rescue records a recovery hint.
+/// 6.16.50 adds verified snapshot recovery: it removes a snapshot only after a
+/// later successful rescue proves it obsolete, otherwise restores and verifies
+/// the saved tree before allowing one retry. These are runner bug fixes and
+/// runner-internal credential behavior rather than a new desktop-visible
+/// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
+/// constant.
+///
+/// A desktop holding a cached 6.16.47 satisfies `~6.16.47` forever and would
+/// retain the older runner; changing this requested spec is what moves npm's
+/// cache key and delivers these fixes.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.50";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -633,26 +740,21 @@ pub const HQ_CLOUD_PACKAGE: &str = "@indigoai-us/hq-cloud";
 /// not match the package name.
 pub const RUNNER_BIN: &str = "hq-sync-runner";
 
-/// One-shot V2 mutation executable. Unlike [`RUNNER_BIN`], this command takes
-/// one local file change on stdin and obtains all authority itself.
-pub const MUTATION_BIN: &str = "hq-cloud";
-
 /// Desktop-visible capabilities of the bundled runner invocation.
 ///
 /// These describe only local command-line compatibility. They are never
 /// enrollment authority: V2 admission remains exclusively an authenticated
-/// server inventory and lease decision. In particular, this compatibility
-/// step deliberately does not claim the V2 mutation boundary that U59 adds.
+/// server inventory and lease decision. The desktop's realtime path is the
+/// runner's `--event-push` watcher plus its receiver; the app no longer ships
+/// a per-file `hq-cloud sync mutation` trigger of its own, so no mutation
+/// capability is advertised here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HqCloudRunnerCapabilities {
     pub event_push: bool,
-    pub v2_mutation: bool,
 }
 
-pub const HQ_CLOUD_RUNNER_CAPABILITIES: HqCloudRunnerCapabilities = HqCloudRunnerCapabilities {
-    event_push: true,
-    v2_mutation: true,
-};
+pub const HQ_CLOUD_RUNNER_CAPABILITIES: HqCloudRunnerCapabilities =
+    HqCloudRunnerCapabilities { event_push: true };
 
 #[cfg(test)]
 mod tests {
@@ -673,7 +775,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.26");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.50");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
@@ -921,13 +1023,15 @@ mod tests {
     }
 
     #[test]
-    fn runner_capabilities_describe_local_compatibility_and_v2_mutation_support() {
-        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.event_push);
-        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
-    }
-
-    #[test]
-    fn mutation_bin_is_hq_cloud() {
-        assert_eq!(MUTATION_BIN, "hq-cloud");
+    fn runner_capabilities_claim_only_event_push() {
+        // The desktop no longer ships a V2 mutation trigger of its own:
+        // realtime delivery is the runner's `--event-push` watcher plus the
+        // receiver, so this record must not advertise a mutation seam that
+        // nothing in the app spawns. Exhaustive equality means a re-added
+        // capability field fails to compile here instead of going unnoticed.
+        assert_eq!(
+            HQ_CLOUD_RUNNER_CAPABILITIES,
+            HqCloudRunnerCapabilities { event_push: true }
+        );
     }
 }

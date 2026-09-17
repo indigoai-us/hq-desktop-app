@@ -35,6 +35,7 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let ciWorkflow = "";
 let windowsCheckWorkflow = "";
 let releaseWorkflow = "";
+let cacheWarmWorkflow = "";
 let fixtureProfile = "";
 let appManifest = "";
 
@@ -43,12 +44,14 @@ beforeAll(async () => {
     ciWorkflow,
     windowsCheckWorkflow,
     releaseWorkflow,
+    cacheWarmWorkflow,
     fixtureProfile,
     appManifest,
   ] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/ci.yml"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
+    readFile(resolve(rootDir, ".github/workflows/cache-warm.yml"), "utf8"),
     readFile(
       resolve(rootDir, "apps/sync/src-tauri/ci/fixture-profile.toml"),
       "utf8",
@@ -90,6 +93,32 @@ function jobConfig(workflow: string, name: string): string {
     .split("\n")
     .filter((line) => !line.trimStart().startsWith("#"))
     .join("\n");
+}
+
+/**
+ * One named or action step out of a job body, ending at the next step.
+ *
+ * `job.slice(job.indexOf(name))` is not this: it returns the whole remainder of
+ * the job, so an assertion about a step's configuration stays green when that
+ * step loses it and any later step happens to carry it instead.
+ */
+function stepConfig(
+  workflow: string,
+  job: string,
+  step: string,
+  field: "name" | "uses" = "name",
+): string {
+  const body = jobConfig(workflow, job);
+  const start = body.indexOf(`- ${field}: ${step}`);
+
+  if (start < 0) {
+    throw new Error(`job ${job} is missing the ${field} step "${step}"`);
+  }
+
+  const rest = body.slice(start + 1);
+  const next = rest.indexOf("\n      - ");
+
+  return next < 0 ? body.slice(start) : body.slice(start, start + 1 + next);
 }
 
 /** Every top-level job key, discovered rather than listed. */
@@ -342,6 +371,40 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
     expect(bridge).not.toContain("save-if:");
     expect(target).toContain("save-if: false");
   });
+});
+
+describe("release tag builds never write a Rust cache", () => {
+  const releaseCaches = [
+    { job: "macos", warmer: "release-macos" },
+    { job: "windows", warmer: "release-windows" },
+  ] as const;
+
+  const sharedKey = (step: string) =>
+    /^ {10}shared-key:\s*(.+)$/m.exec(step)?.[1];
+
+  for (const { job, warmer } of releaseCaches) {
+    it(`${job} restores the main-branch warmer's key without saving a tag-scoped copy`, () => {
+      // A release run is tag-only. A cache saved under one tag is not readable
+      // from another tag, so release.yml only restores; cache-warm.yml on main
+      // owns the matching writes that every release can read.
+      const releaseCache = stepConfig(
+        releaseWorkflow,
+        job,
+        "Swatinem/rust-cache@v2",
+        "uses",
+      );
+      const warmerCache = stepConfig(
+        cacheWarmWorkflow,
+        warmer,
+        "Swatinem/rust-cache@v2",
+        "uses",
+      );
+
+      expect(releaseCache).toContain("save-if: false");
+      expect(sharedKey(releaseCache)).toBeDefined();
+      expect(sharedKey(warmerCache)).toBe(sharedKey(releaseCache));
+    });
+  }
 });
 
 describe("the windows check splits its suite across three jobs", () => {
@@ -601,9 +664,37 @@ describe("only macOS-specific work runs on a macOS runner", () => {
 
     expect(macos).toContain("working-directory: apps/sync/src-tauri");
     expect(macos).toContain("cargo test --locked");
-    expect(macos).toContain(
+
+    // The full-suite run above is what covers the real-child regressions. A
+    // second step filtered to cross_generation_escalation_tests used to sit
+    // beside it; on run 35060749760 it cost 86s (1m22s of cargo rebuild) and
+    // ran ONE test the 1239-test pool had already run 90 seconds earlier --
+    // "1 passed; 1238 filtered out". `jobConfig` strips comments, so the
+    // explanation of why it is gone does not fail its own assertion.
+    expect(jobConfig(ciWorkflow, "rust-macos")).not.toContain(
       "cargo test --locked commands::process::cross_generation_escalation_tests",
     );
+
+    // The cli-install lock E2E step is NOT the same case and must stay: its
+    // module is entirely #[ignore]d, so `--include-ignored` is the only run
+    // those two cases get anywhere ("running 2 tests; 1237 filtered out").
+    expect(macos).toContain(
+      "cargo test --locked commands::install_deps::cli_install_lock_e2e_tests",
+    );
+    expect(macos).toContain("--include-ignored");
+  });
+
+  it("keeps non-blocking clippy off the pull-request critical path", () => {
+    // `continue-on-error` means it could never fail the required check, so at
+    // PR time it gated nothing while compiling the app crate a third time, in
+    // a third profile, on a 10x runner (38s / 47s measured). Push-only keeps
+    // the signal on main. If the `continue-on-error:` ever goes away, this
+    // `if:` has to go with it or the promoted gate would not run on PRs.
+    const macos = jobConfig(ciWorkflow, "rust-macos");
+    const clippy = macos.slice(macos.indexOf("name: cargo clippy"));
+
+    expect(clippy).toContain("if: ${{ github.event_name == 'push' }}");
+    expect(clippy).toContain("continue-on-error: true");
   });
 
   it("runs rustfmt on Linux rather than on the macOS runner", () => {
@@ -656,5 +747,240 @@ describe("the shell boot matrix is a cheap required PR gate", () => {
     expect(job).toContain(
       "pnpm exec vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/shell-boot-persona-matrix.spec.ts",
     );
+  });
+});
+
+describe("the frontend gate splits across four parallel jobs", () => {
+  // It was one job running twenty-odd independent steps back to back: 10m03s,
+  // 7m58s and 5m47s on runs 35050123787 / 35057647412 / 35060749760. Nothing
+  // in it consumed anything else in it, so the serialisation was incidental.
+  const workers = [
+    "frontend-contracts",
+    "frontend-sync",
+    "frontend-browser",
+    "frontend-work",
+  ];
+
+  it("runs the four jobs in parallel", () => {
+    for (const job of workers) {
+      const body = jobConfig(ciWorkflow, job);
+
+      // No `needs:` at all -- any dependency between them rebuilds the serial
+      // critical path this split exists to remove.
+      expect(body).not.toContain("needs:");
+      expect(body).toContain("runs-on: ubuntu-latest");
+      expect(body).toContain(
+        "if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}",
+      );
+    }
+  });
+
+  it("keeps the required status check reporting under its old name", () => {
+    // "Frontend (typecheck + lint + coverage)" is in the required_status_checks
+    // of the active `main` ruleset. It used to name the job that did the work;
+    // it now names the job that reports the verdict. Either way the context has
+    // to keep reporting or every PR sits unmergeable on a check that no longer
+    // exists -- the same trap documented on the rust-macos job name.
+    expect(ciWorkflow).toContain("name: Frontend (typecheck + lint + coverage)");
+    expect(jobConfig(ciWorkflow, "frontend")).toContain(
+      "needs: [frontend-contracts, frontend-sync, frontend-browser, frontend-work]",
+    );
+  });
+
+  it("fails that check when any of the four did not succeed", () => {
+    // GitHub reports a SKIPPED required check as satisfied, and a job skipped
+    // because its `needs` failed looks identical to one skipped by the draft
+    // guard. `always()` starts the aggregator anyway so its guard step can turn
+    // that into a real red. Same reasoning as windows-installer-e2e.
+    const gate = jobConfig(ciWorkflow, "frontend");
+
+    expect(gate).toContain("if: ${{ always() &&");
+    expect(gate).toContain("github.event.pull_request.draft == false");
+
+    for (const job of workers) {
+      // `!= 'success'`, not `== 'failure'`: cancelled and timed out are red too.
+      expect(gate).toContain(`needs.${job}.result != 'success'`);
+    }
+
+    // The guard has to be the first step, before anything that could pass for
+    // its own reasons.
+    const steps = gate.slice(gate.indexOf("\n    steps:"));
+    expect(steps.indexOf("Fail when a frontend job did not succeed")).toBeLessThan(
+      steps.indexOf("run: |"),
+    );
+  });
+
+  it("keeps every check the single job used to run", () => {
+    // The split must move work, never drop it. A step that silently stops
+    // running is the failure mode this whole file exists to catch -- see the
+    // workspace-packages job comment in ci.yml for the last time it happened.
+    const split = workers.map((job) => jobConfig(ciWorkflow, job)).join("\n");
+
+    for (const step of [
+      "run: pnpm test:scripts",
+      "node --test .github/scripts/release-changelog-bullets.test.mjs",
+      "run: pnpm version:check",
+      "pnpm --filter @hq/ui typecheck",
+      "pnpm --filter @hq/ui test",
+      "pnpm exec playwright install --with-deps chromium webkit",
+      "run: pnpm test:e2e:browser",
+      "run: pnpm coverage",
+      "run: rm -rf apps/work/.svelte-kit/output apps/work/build",
+    ]) {
+      expect(split).toContain(step);
+    }
+
+    // apps/sync and apps/work each need typecheck + lint + build, and they live
+    // in different jobs now, so count the working-directory pairings instead.
+    for (const app of ["apps/sync", "apps/work"]) {
+      const owner = workers
+        .map((job) => jobConfig(ciWorkflow, job))
+        .find((body) => body.includes(`working-directory: ${app}`));
+
+      expect(owner).toBeDefined();
+    }
+  });
+});
+
+describe("the installer fixture build does only what the E2E consumes", () => {
+  it("bundles NSIS and not MSI", () => {
+    // windows-installer-e2e downloads `windows-installer-bridge` (the NSIS
+    // setup.exe) and windows-installer-e2e.ps1 installs and upgrades through
+    // NSIS alone -- no step in that job ever opens an MSI. Bundling one cost
+    // 70s of WiX candle+light on the critical path of a required check, to
+    // produce a file that was counted and discarded. release.yml still bundles
+    // `msi nsis updater`, so MSI packaging is exercised on the shipped build.
+    const bridge = jobConfig(windowsCheckWorkflow, "build-bridge-installers");
+    const target = jobConfig(windowsCheckWorkflow, "build-target-updater");
+
+    for (const body of [bridge, target]) {
+      expect(body).toContain("--bundles nsis");
+      expect(body).not.toContain("--bundles msi");
+      expect(body).not.toContain("TAURI_MSI_VERSION_CONFIG");
+    }
+
+    expect(releaseWorkflow).toContain("--bundles msi nsis updater");
+  });
+
+  it("leaves the exe/PDB debug-id contract to the build that ships", () => {
+    // The fixture binary is installed, asserted on and uninstalled inside one
+    // job; nothing symbolicates it and nothing keeps it. Checking its debug id
+    // proved nothing about the released artifact -- release.yml checks that one
+    // directly, which is the copy Sentry actually resolves against.
+    expect(jobConfig(windowsCheckWorkflow, "build-bridge-installers")).not.toContain(
+      "sentry-cli difutil check",
+    );
+    expect(releaseWorkflow).toContain("sentry-cli difutil check");
+    expect(releaseWorkflow).toContain("Required release PDB is missing");
+  });
+
+  it("pins the fixture override at the only opt-level that moves it", () => {
+    // Three measurements of the same codegen/link block in the bridge build:
+    //
+    //   opt-level 3 (default)  ~375s   cargo 8m37s   run 33651446024
+    //   opt-level 1            418s    cargo 7m54s   run 35067622738   job 729s
+    //   opt-level 0             92s    cargo 2m09s   runs 35073514411 / 35075102250
+    //                                                job 268s / 385s
+    //
+    // The job baseline is 762/764/769/773/788/802s over six runs, so 1 never
+    // left it and 0 lands far outside it. For this crate opt-level 1 costs what
+    // 3 costs; only 0 skips enough of LLVM to matter. Raising this number back
+    // to 1 silently restores ~7 minutes to a required check, which is why it is
+    // pinned rather than left to judgement.
+    //
+    // Read the KEYS, not the file text: the write-up above and in the TOML both
+    // name other opt-levels in prose, and a raw toContain would match those.
+    const settings = fixtureProfile
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && !line.startsWith("["));
+
+    expect(settings).toEqual(["opt-level = 0"]);
+
+    // `debug = false` was tried on the theory that the block was the MSVC link
+    // writing the PDB. It moved 28s / 6% and was reverted. Keep it out.
+    expect(settings).not.toContain("debug = false");
+
+    // Still exactly one override section, and still the workspace member
+    // rust-cache never stores -- the invariant that makes writing this file
+    // after rust-cache has keyed sound in the first place.
+    const overridden = [
+      ...fixtureProfile.matchAll(/^\[profile\.[^\]]*\]/gm),
+    ].map((m) => m[0]);
+
+    expect(overridden).toEqual(["[profile.release.package.hq-sync-menubar]"]);
+  });
+});
+
+describe("the live job keeps its diagnostics upload unconditional", () => {
+  // `Upload WebDriver diagnostics` in windows-check-live takes
+  // 62/67/69/78/81/91/95/109s across eight runs, for a 15 KB artifact. The
+  // byte-identical step in windows-installer-e2e -- same action, same path
+  // expression, same `if:` -- takes 1-2s for a comparable 13 KB artifact, and
+  // the bridge job pushes 99 MB in 7s. In the step log ~59-82s elapse before
+  // upload-artifact's node process emits its first line, so it is neither
+  // transfer nor action overhead.
+  //
+  // That makes it a standing temptation to flip to `if: failure()`, which is
+  // what this assertion exists to stop. The captured msedgewebview2.exe command
+  // line is the evidence that the WebView2 automation switches landed, and a
+  // green run is exactly when that evidence is worth keeping.
+  //
+  // The obvious cause has been tested and ruled out. `reapSharedDriver()` in
+  // live-driver.ts kills the tauri-driver process, and on Windows that does not
+  // reap the tree beneath it -- so orphans contending the runner was the
+  // hypothesis. An observe-only step measured the population: exactly ONE
+  // leaked msedgewebview2, started 8s earlier, with no app binary, no
+  // msedgedriver and no tauri-driver. Killing it gave 78s -> 67s, both
+  // mid-range. The cause is unknown and it is not stray processes.
+
+  it("uploads on success as well as failure", () => {
+    // Scoped to the step, not to the rest of the job: `slice(indexOf(name))`
+    // would keep this green if the upload lost its condition and any later
+    // step carried an `if: always()` of its own.
+    const upload = stepConfig(
+      windowsCheckWorkflow,
+      "windows-check-live",
+      "Upload WebDriver diagnostics",
+    );
+
+    expect(upload).toContain("if: always()");
+    expect(upload).not.toContain("if: failure()");
+  });
+
+  it("uploads the directory the live spec was told to write to", () => {
+    // Not just "the env var is mentioned somewhere". The spec writes wherever
+    // HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR points; the upload collects whatever
+    // `path:` names. Point them at different directories and the contract is
+    // broken SILENTLY -- `if-no-files-found: warn` means the job stays green
+    // while collecting nothing. So compare the two values.
+    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
+    const upload = stepConfig(
+      windowsCheckWorkflow,
+      "windows-check-live",
+      "Upload WebDriver diagnostics",
+    );
+
+    // Capture to end of line, not `\S+`: both values contain `${{ runner.temp }}`,
+    // which has spaces in it.
+    const configured = /HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR:[ \t]*(.+)/.exec(job);
+    const collected = /path:[ \t]*(.+)/.exec(upload);
+
+    expect(configured, "the live spec is never told where to write").not.toBeNull();
+    expect(collected, "the upload step declares no path").not.toBeNull();
+
+    // The env var uses Windows separators and the upload a glob; compare the
+    // directory both resolve to.
+    const normalise = (value: string) =>
+      value
+        .trim()
+        .replace(/\\/g, "/")
+        .replace(/\/\*+$/, "")
+        .replace(/\/$/, "");
+
+    expect(normalise(collected![1])).toBe(normalise(configured![1]));
+
+    // And it is still a recursive collect, not just the directory entry.
+    expect(collected![1].trim()).toMatch(/\*\*$/);
   });
 });

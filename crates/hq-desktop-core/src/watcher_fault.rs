@@ -810,6 +810,127 @@ impl WatcherJobImageDescriptor {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Watcher Job Object survivors — the shim-vs-runner discriminator (HQ-DESKTOP-66)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The Windows watcher child that dies with an INDETERMINATE status (0xFFFFFFFF)
+/// is the `cmd.exe` batch shim, not the Node runner it dispatches — so the exit
+/// status is the shim's, and whether the runner died with it, died first, or
+/// outlived it is unobserved. This descriptor records the ONE fact that separates
+/// those hypotheses: the images of the Job Object's processes STILL LIVE at the
+/// exit boundary. A surviving `node_exe` means the shim died while the runner kept
+/// running (an orphaned-runner bug the supervisor would double-spawn against); no
+/// survivors means the tree died together.
+///
+/// Rendered to a closed vocabulary — {none, node_exe, cmd_exe, other, mixed,
+/// unavailable}, reusing the shared [`WatcherFaultBinary`] tokens rather than a
+/// second hand-written list — plus a bare survivor count. Strictly diagnostic:
+/// never an attribution, and never fed to capture policy, the fingerprint, or any
+/// lifecycle decision. `unavailable` means the live-PID query could not run
+/// (non-Windows, or the query failed); `none` means it ran and observed zero live
+/// processes at the exit boundary — deliberately NOT the same as "the tree was
+/// already reaped", which the query cannot distinguish and so never claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatcherJobSurvivors {
+    available: bool,
+    count: u32,
+    node_exe: bool,
+    cmd_exe: bool,
+    other: bool,
+}
+
+/// Token for a live-process query that ran and observed zero survivors.
+pub const WATCHER_JOB_SURVIVORS_NONE: &str = "none";
+/// Token for a survivor set spanning two or more distinct image classes.
+pub const WATCHER_JOB_SURVIVORS_MIXED: &str = "mixed";
+
+impl Default for WatcherJobSurvivors {
+    /// The honest default is `unavailable`: no live-PID query has run (non-Windows,
+    /// or the read has not happened / failed), so the tree's survivors are unknown —
+    /// never `none`, which would falsely assert the tree was observed empty.
+    fn default() -> Self {
+        Self::unavailable()
+    }
+}
+
+impl WatcherJobSurvivors {
+    /// The live-PID query could not run (non-Windows, or the retained job handle was
+    /// gone / the query failed). Survivors are unknown and the count is withheld.
+    pub fn unavailable() -> Self {
+        Self {
+            available: false,
+            count: 0,
+            node_exe: false,
+            cmd_exe: false,
+            other: false,
+        }
+    }
+
+    /// Fold the resolved images of the job's LIVE processes at the exit boundary.
+    /// Each entry is one live PID's image mapped through
+    /// [`classify_watcher_fault_binary`] while it was still alive, or `None` when
+    /// the image could not be read (the PID is still counted but contributes no
+    /// class — absence never masquerades as an observation). The count is the number
+    /// of live PIDs. Pure, so it is unit-tested off Windows.
+    pub fn from_live_images(images: &[Option<WatcherFaultBinary>]) -> Self {
+        let mut survivors = Self {
+            available: true,
+            count: images.len().min(u32::MAX as usize) as u32,
+            node_exe: false,
+            cmd_exe: false,
+            other: false,
+        };
+        for image in images {
+            match image {
+                Some(WatcherFaultBinary::NodeExe) => survivors.node_exe = true,
+                Some(WatcherFaultBinary::CmdExe) => survivors.cmd_exe = true,
+                // Every other named image (the npx/menubar/loader family) and any
+                // unrecognised binary collapse to `other`; an unresolved image
+                // (`None`) adds to the count only, so a failed lookup never
+                // masquerades as a named survivor.
+                Some(_) => survivors.other = true,
+                None => {}
+            }
+        }
+        survivors
+    }
+
+    /// The closed-vocabulary survivor token. `unavailable` (no query) and `none`
+    /// (query ran, zero live) stay distinct; a single class renders that class; two
+    /// or more distinct classes render `mixed`; a live-but-unresolvable set renders
+    /// `other` (survivors exist, none nameable).
+    pub fn token(&self) -> &'static str {
+        if !self.available {
+            return WATCHER_FAULT_UNAVAILABLE;
+        }
+        if self.count == 0 {
+            return WATCHER_JOB_SURVIVORS_NONE;
+        }
+        let classes = [
+            (WatcherFaultBinary::NodeExe.as_str(), self.node_exe),
+            (WatcherFaultBinary::CmdExe.as_str(), self.cmd_exe),
+            (WatcherFaultBinary::Other.as_str(), self.other),
+        ];
+        let present: Vec<&'static str> = classes
+            .into_iter()
+            .filter_map(|(token, present)| present.then_some(token))
+            .collect();
+        match present.as_slice() {
+            // Survivors exist but none resolved to a class — still a live tree.
+            [] => WatcherFaultBinary::Other.as_str(),
+            [single] => single,
+            _ => WATCHER_JOB_SURVIVORS_MIXED,
+        }
+    }
+
+    /// The bare live-process count when the query ran; `None` when unavailable, so a
+    /// withheld query never renders a misleading `0`.
+    pub fn count(&self) -> Option<u32> {
+        self.available.then_some(self.count)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Unmatched-stderr structural rollup
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1880,6 +2001,57 @@ mod tests {
             descriptor.culprit_candidate(),
             Some(WatcherFaultBinary::NodeExe)
         );
+    }
+
+    #[test]
+    fn watcher_job_survivors_renders_the_shim_vs_runner_discriminator() {
+        // `unavailable` (no query) is the honest default and stays distinct from
+        // `none` (query ran, zero live): the count is withheld only for the former.
+        let unavailable = WatcherJobSurvivors::default();
+        assert_eq!(unavailable.token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(unavailable.count(), None);
+        assert_eq!(WatcherJobSurvivors::unavailable().token(), "unavailable");
+
+        let none = WatcherJobSurvivors::from_live_images(&[]);
+        assert_eq!(none.token(), "none");
+        assert_eq!(none.count(), Some(0));
+
+        // A surviving Node runner while the shim died — the orphaned-runner signal.
+        let node = WatcherJobSurvivors::from_live_images(&[Some(WatcherFaultBinary::NodeExe)]);
+        assert_eq!(node.token(), "node_exe");
+        assert_eq!(node.count(), Some(1));
+
+        // Only the shim survived — the tree is unwinding shim-first.
+        let cmd = WatcherJobSurvivors::from_live_images(&[Some(WatcherFaultBinary::CmdExe)]);
+        assert_eq!(cmd.token(), "cmd_exe");
+
+        // Every other named image (npx/menubar/loader) collapses to `other`.
+        let other = WatcherJobSurvivors::from_live_images(&[
+            Some(WatcherFaultBinary::NpxCmd),
+            Some(WatcherFaultBinary::HqSyncMenubarExe),
+        ]);
+        assert_eq!(other.token(), "other");
+        assert_eq!(other.count(), Some(2));
+
+        // Two or more distinct classes render `mixed`.
+        let mixed = WatcherJobSurvivors::from_live_images(&[
+            Some(WatcherFaultBinary::NodeExe),
+            Some(WatcherFaultBinary::CmdExe),
+        ]);
+        assert_eq!(mixed.token(), "mixed");
+        assert_eq!(mixed.count(), Some(2));
+
+        // Survivors exist but none resolved: still a live tree, rendered `other`,
+        // and the count reflects every live PID.
+        let unresolved = WatcherJobSurvivors::from_live_images(&[None, None]);
+        assert_eq!(unresolved.token(), "other");
+        assert_eq!(unresolved.count(), Some(2));
+
+        // A resolvable node survivor is never masked by an unresolvable sibling.
+        let node_plus_unresolved =
+            WatcherJobSurvivors::from_live_images(&[Some(WatcherFaultBinary::NodeExe), None]);
+        assert_eq!(node_plus_unresolved.token(), "node_exe");
+        assert_eq!(node_plus_unresolved.count(), Some(2));
     }
 
     #[test]

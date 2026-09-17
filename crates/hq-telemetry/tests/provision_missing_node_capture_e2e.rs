@@ -314,6 +314,79 @@ fn the_downgrade_does_not_widen_past_a_bare_name_npx_enoent() {
     }
 }
 
+/// Find `needle` occurring as a standalone identifier — not as a fragment of a
+/// longer word — and return it with surrounding context for the failure message.
+///
+/// The scrubbing test below needs to know whether a USERNAME leaked. A bare
+/// `serialized.contains("ada")` cannot answer that: "ada" is three characters
+/// and sits inside ordinary words that legitimately appear in a serialized
+/// envelope — `metadata` is the one that actually fired, and `adapter` and
+/// `nomad` would too. That assertion failed on Windows on 1 of 15 sampled CI
+/// runs while passing on Linux every time, for no reason connected to
+/// scrubbing.
+///
+/// A username leak looks like `/Users/ada`, `C:\\Users\\ada`, `"ada"` or
+/// `ada@host` — always bounded by a non-alphanumeric character (or the ends of
+/// the string). Requiring those boundaries keeps every real leak failing and
+/// drops the false class entirely.
+fn identifier_occurrence(haystack: &str, needle: &str) -> Option<String> {
+    let bytes = haystack.as_bytes();
+    let boundary = |index: usize| -> bool {
+        match bytes.get(index) {
+            None => true,
+            Some(byte) => !(byte.is_ascii_alphanumeric() || *byte == b'_'),
+        }
+    };
+
+    for (start, _) in haystack.match_indices(needle) {
+        let before_is_boundary = start == 0 || boundary(start - 1);
+        let after_is_boundary = boundary(start + needle.len());
+        if before_is_boundary && after_is_boundary {
+            let from = start.saturating_sub(60);
+            let to = (start + needle.len() + 60).min(haystack.len());
+            // Snap to char boundaries so a multi-byte envelope cannot panic the
+            // slice while we are building a diagnostic for a different failure.
+            let from = (from..=start).find(|i| haystack.is_char_boundary(*i)).unwrap_or(start);
+            let to = (to..haystack.len())
+                .find(|i| haystack.is_char_boundary(*i))
+                .unwrap_or(haystack.len());
+            return Some(haystack[from..to].to_string());
+        }
+    }
+    None
+}
+
+#[test]
+fn identifier_occurrence_matches_leaks_and_not_longer_words() {
+    // Real leaks, in the shapes a scrubber miss actually produces.
+    for leaked in [
+        "/Users/ada/Library/hq",
+        r"C:\Users\ada\AppData",
+        "{\"user\":\"ada\"}",
+        "ada@build-host",
+        "ada",
+    ] {
+        assert!(
+            identifier_occurrence(leaked, "ada").is_some(),
+            "must still catch a leak in {leaked:?}",
+        );
+    }
+
+    // The false class. `metadata` is not hypothetical: it is what turned this
+    // test red on Windows while the scrubber was working correctly.
+    for benign in [
+        "{\"metadata\":{\"level\":\"error\"}}",
+        "adapter",
+        "nomad",
+        "canada",
+    ] {
+        assert!(
+            identifier_occurrence(benign, "ada").is_none(),
+            "must not flag {benign:?} as a username leak",
+        );
+    }
+}
+
 /// No resolved absolute path may survive into an envelope this path emits —
 /// the scrubber is the last line of defence and it has to hold for the newly
 /// added diagnostic tags too.
@@ -329,7 +402,19 @@ fn no_local_path_survives_scrubbing_into_a_captured_envelope() {
 
     assert_eq!(events.len(), 1);
     let serialized = serde_json::to_string(&events[0]).expect("serialize scrubbed event");
-    assert!(!serialized.contains(private_path));
-    assert!(!serialized.contains("/Users/ada"));
-    assert!(!serialized.contains("ada"));
+    assert!(
+        !serialized.contains(private_path),
+        "the full private path survived scrubbing: {serialized}",
+    );
+    assert!(
+        !serialized.contains("/Users/ada"),
+        "the private path prefix survived scrubbing: {serialized}",
+    );
+    // `ada` is kept deliberately as the fixture username even though it is
+    // collision-prone: it is what proves the matcher below is boundary-aware.
+    // Swapping in a distinctive username would hide the flake without fixing
+    // the assertion that caused it.
+    if let Some(context) = identifier_occurrence(&serialized, "ada") {
+        panic!("the username survived scrubbing, near: ...{context}...");
+    }
 }

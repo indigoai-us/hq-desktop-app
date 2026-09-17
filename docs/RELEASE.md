@@ -56,6 +56,13 @@ plist keys), reloads launchd (`bootout` / `bootstrap`), retires a leftover
 `HQ Sync.app` in `/Applications`, and terminates processes still running from
 that old path.
 
+After an updater install on macOS, HQ must not `app.restart()` through
+LaunchServices. That relaunch is invisible to launchd, so a KeepAlive agent
+starts a second copy every ~10s and the single-instance handler steals focus.
+The updater waits for this process to exit, then `bootout` / `bootstrap` /
+`kickstart` so launchd owns the replacement. LaunchAgent argv includes
+`--from-launch-agent` so a KeepAlive bounce does not activate the window.
+
 ## Install Window (macOS DMG)
 
 The disk image is styled: `apps/sync/scripts/create-dmg.sh` builds it from the

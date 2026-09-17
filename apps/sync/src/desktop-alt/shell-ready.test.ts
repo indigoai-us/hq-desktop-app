@@ -123,6 +123,8 @@ afterEach(async () => {
 });
 
 describe('HqWorkWorkShell shell_ready', () => {
+
+
   it('invokes shell_ready after WorkShell reports its first successful paint', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);

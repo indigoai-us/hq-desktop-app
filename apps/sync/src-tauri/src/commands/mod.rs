@@ -1,13 +1,16 @@
 pub mod activity;
 pub mod agency;
-pub mod agent_session;
-pub mod agent_session_launch;
 pub mod agent_stdio;
 pub mod ai_tools;
 pub mod app;
 pub mod auth;
 pub mod autostart;
 pub mod banner;
+pub mod bots;
+pub mod calls;
+/// US-016 story acceptance tests (test builds only).
+#[cfg(test)]
+mod calls_story_tests;
 pub mod checksums;
 pub mod client_diagnostics;
 pub mod client_health;
@@ -19,12 +22,14 @@ pub mod conflicts;
 pub mod content;
 pub mod daemon;
 pub mod desktop_alt;
+pub mod desktop_auth;
 pub mod dm_mqtt;
 pub mod dm_notify;
 pub mod dock;
 pub mod drift_detail;
 pub mod feedback;
 pub mod first_push;
+pub mod setup_secret;
 pub mod first_run;
 pub mod folder_picker;
 pub mod git_mirror;
@@ -62,18 +67,13 @@ pub mod process;
 pub mod projects_local;
 pub mod provision;
 pub mod provision_reconcile;
-pub mod realtime_mutation;
 pub mod recall_sdk;
 pub mod run_cli_provision;
-pub mod session_artifacts;
+pub mod agent_providers;
 pub mod session_end_attribution;
+pub mod session_end_intercept;
 pub mod session_end_latch;
 pub mod session_end_observer;
-pub mod session_mentions;
-pub mod session_project_links;
-pub mod project_session_sharing;
-pub mod session_share_channel;
-pub mod sessions;
 pub mod settings;
 pub mod share_notify;
 pub mod status;
@@ -87,4 +87,11 @@ pub mod vault_s3;
 pub mod version_gate;
 pub mod widget;
 pub mod windows_teardown_probe;
+pub mod window_material;
 pub mod workspaces;
+
+pub mod meet_transcription;
+
+pub mod meet_transcript_outbox;
+
+pub mod meet_transcript_projection;

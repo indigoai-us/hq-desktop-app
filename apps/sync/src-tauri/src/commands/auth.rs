@@ -101,19 +101,31 @@ pub(crate) fn publish_auth_session(
             AUTH_SESSION_CHANGED_EVENT,
             &current.0,
         );
+        // The call window (US-017) binds its identity, its device signing key
+        // and its media to one account generation. A sign-out or account
+        // switch must reach it directly — it does not observe the Work shell,
+        // and a live call must never outlive the account that authorized it.
+        // The envelope carries no bearer material, only an account id and a
+        // generation, so widening delivery to this second labelled window
+        // adds no credential exposure.
+        let _ = app.emit_to(
+            crate::commands::calls::CALL_WINDOW_LABEL,
+            AUTH_SESSION_CHANGED_EVENT,
+            &current.0,
+        );
     }
     current.0
 }
 
-/// Update Sentry's scoped user context to the Cognito identity carried in
-/// `tokens`. Best-effort: a malformed/missing id_token just clears the user
+/// Update Sentry's process-wide user context to the Cognito identity carried
+/// in `tokens`. Best-effort: a malformed/missing id_token just clears the user
 /// rather than failing — Sentry stays useful even when claims parsing breaks.
-fn set_sentry_user_from_tokens(tokens: &CognitoTokens) {
+pub(crate) fn set_sentry_user_from_tokens(tokens: &CognitoTokens) {
     let claims = tokens
         .id_token
         .as_deref()
         .and_then(|tok| cognito::decode_id_token_claims(tok).ok());
-    sentry::configure_scope(|scope| match claims {
+    sentry::Hub::main().configure_scope(|scope| match claims {
         Some(c) => scope.set_user(Some(sentry::User {
             id: c.sub.clone(),
             email: c.email.clone(),
@@ -124,8 +136,8 @@ fn set_sentry_user_from_tokens(tokens: &CognitoTokens) {
     });
 }
 
-fn clear_sentry_user() {
-    sentry::configure_scope(|scope| scope.set_user(None));
+pub(crate) fn clear_sentry_user() {
+    sentry::Hub::main().configure_scope(|scope| scope.set_user(None));
 }
 
 pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> String {
@@ -187,6 +199,50 @@ pub(crate) fn authenticated_state_from_tokens(tokens: &CognitoTokens) -> AuthSta
         email,
         display_name,
     }
+}
+
+/// Finish a sign-in.
+///
+/// Persist the credentials, publish the tenant envelope, and announce the new
+/// session. Extracted verbatim from the tail of `oauth_exchange_code` so that
+/// browser continuation converges on the *same* completion rather than a second
+/// implementation of it — two versions of "you are now signed in" is how one of
+/// them quietly stops clearing the previous account's notification session.
+///
+/// The order is the contract and it is not arbitrary:
+///
+/// 1. `replace_notification_credentials` invalidates the outgoing notification
+///    generation, then writes the token file. Nothing may observe a new token
+///    while the previous account's poller is still current.
+/// 2. The envelope is published, which is what tells the embedded Work surface
+///    to withdraw the old tenant.
+/// 3. `auth:session-ready` goes last, because its whole meaning is "the
+///    credentials on disk are now durable" — emitting it earlier would invite
+///    a re-hydration against a token that had not landed yet.
+///
+/// Returns the non-secret auth state. No caller ever needs the tokens back.
+pub(crate) async fn complete_auth_session(
+    app: &AppHandle,
+    tokens: &CognitoTokens,
+) -> Result<AuthState, String> {
+    crate::commands::dm_notify::replace_notification_credentials(app, tokens).await?;
+
+    let state = authenticated_state_from_tokens(tokens);
+    publish_auth_session(
+        app,
+        AuthSessionEnvelope {
+            account_id: state.account_id.clone(),
+            generation: 0,
+            status: AuthSessionStatus::Active,
+            reason: None,
+        },
+    );
+    // Native credentials are durable before this event goes out. Embedded HQ
+    // Work uses this completion edge to re-hydrate account and memberships;
+    // the payload contains only the existing non-secret auth state.
+    app.emit("auth:session-ready", &state)
+        .map_err(|err| err.to_string())?;
+    Ok(state)
 }
 
 fn oldest_person_entity(
@@ -344,6 +400,14 @@ pub async fn has_stored_token() -> Result<bool, String> {
 /// token file on disk and the app re-authenticates silently on next launch.
 #[tauri::command]
 pub async fn sign_out(app: AppHandle) -> Result<(), String> {
+    // Before anything else: a browser-continuation attempt that is mid-flight
+    // is now about an account this device is deliberately leaving. Its held
+    // tokens go unwritten, and a confirmation that arrives afterwards finds
+    // nothing to activate. Doing this first means the window in which a
+    // confirmation could race the sign-out does not exist.
+    crate::commands::desktop_auth::note_auth_transition(
+        hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
+    );
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
     clear_sentry_user();
     publish_auth_session(

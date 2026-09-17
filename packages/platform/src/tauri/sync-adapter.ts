@@ -32,6 +32,8 @@ import {
   createHqProFlagFetch,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
+import { localBotSettingsArgs } from './local-bot-settings.js';
+import { createCallsApi } from '../calls/api.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -264,9 +266,21 @@ export function createSyncPlatformAdapter(
     return ok(slug);
   }
 
+  /**
+   * Native calling (US-014) over the same authenticated `hq_pro_fetch` seam
+   * every other cloud call uses — the bearer stays in Rust and this webview
+   * never grows a second fetch stack. Refuses everything until the US-011
+   * service evidence preflight passes on this instance.
+   */
+  const calls = createCallsApi(
+    <T,>(method: 'GET' | 'POST', path: string, body?: unknown) =>
+      hqProJson<T>(method, path, body),
+  );
+
   const adapter: PlatformAdapter = {
     kind: 'desktop',
     capabilities: TAURI_CAPABILITIES,
+    calls,
     isAvailable: (cap: Capability): boolean => TAURI_CAPABILITIES[cap],
 
     identity: {
@@ -356,6 +370,19 @@ export function createSyncPlatformAdapter(
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;
+        // `list_syncable_workspaces` never rejects on a cloud failure: it
+        // resolves `{ workspaces: [], cloudReachable: false, error }` so the
+        // menubar can say "Cloud unreachable". For the company roster that is
+        // a failed fetch, not an empty one — reporting it as `ok([])` left a
+        // brand-new owner on "Create a company" until they relaunched.
+        const envelope = asRecord(result.value);
+        if (envelope && envelope.cloudReachable === false) {
+          const message =
+            typeof envelope.error === 'string' && envelope.error.trim()
+              ? envelope.error.trim()
+              : 'Couldn’t reach HQ cloud to load your companies.';
+          return failure('cloud-unreachable', message);
+        }
         return ok(unwrapNamedArray(result.value, ['workspaces', 'memberships']));
       },
       // Same REST route the web adapter uses (`WEB_PATHS.profile`); Sync has no
@@ -429,6 +456,10 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['requests']));
       },
+      // Tauri command args are camelCase: `respond_dm_request(pair_key, action)`
+      // is invoked as `{ pairKey, action }`.
+      respondDmRequest: ({ pairKey, action }) =>
+        call('respond_dm_request', { pairKey, action }),
       markChannelRead: (id) => call('mark_channel_read', { channelId: id }),
       markDmThreadRead: (personUid) =>
         call('mark_dm_thread_read', { withPersonUid: personUid }),
@@ -650,6 +681,17 @@ export function createSyncPlatformAdapter(
       },
       ackSharedWithMe: (eventIds) =>
         hqProJson('POST', WEB_PATHS.sharedWithMeAck, { eventIds }),
+      fetchFileHistory: (opts) => {
+        const rec = asRecord(opts) ?? {};
+        return hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.fileHistory, {
+            limit: typeof rec.limit === 'number' ? rec.limit : undefined,
+            cursor: typeof rec.cursor === 'string' ? rec.cursor : undefined,
+            since: typeof rec.since === 'string' ? rec.since : undefined,
+          }),
+        );
+      },
     },
 
     meetings: {
@@ -1048,7 +1090,46 @@ export function createSyncPlatformAdapter(
     },
 
     sessions: {
-      listAgentSessions: () => call('list_agent_sessions'),
+      preflight: () => call('agent_session_preflight'),
+      slashCommands: (tool) => call('agent_session_slash_commands', { tool }),
+      installProvider: (tool) => call<string>('install_session_provider', { tool }),
+      loginStart: (tool, opts) =>
+        call('agent_provider_login_start', { tool, ...(opts?.force ? { force: true } : {}) }),
+      loginStatus: (tool) => call('agent_provider_login_status', { tool }),
+      loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
+    },
+
+    // local-bots US-009: desktop-only — every call shells to `hq bot … --json`
+    // behind the host's launch boundary (src-tauri/src/commands/bots.rs).
+    bots: {
+      list: () => call('local_bots_list'),
+      // Every field of LocalBotCreateInput has to reach the Rust command:
+      // dropping one here silently loses it (live 2026-09-12, `intro` never
+      // arrived, so the new bot greeted the owner with the generic hello).
+      create: (input) =>
+        call('local_bots_create', {
+          name: input.name,
+          runtime: input.runtime,
+          model: input.model ?? null,
+          autoApprove: input.autoApprove ?? null,
+          worker: input.worker ?? null,
+          intro: input.intro ?? null,
+          kickoff: input.kickoff ?? null,
+          memory: input.memory ?? null,
+          kind: input.kind ?? null,
+          companies: input.companies ?? null,
+        }),
+      workers: () => call('local_bots_workers'),
+      start: (name) => call('local_bots_start', { name }),
+      stop: (name) => call('local_bots_stop', { name }),
+      remove: (name) => call('local_bots_remove', { name }),
+      configure: (name, settings) => call('local_bots_configure', localBotSettingsArgs(name, settings)),
+    promote: (name, companyUid) => call("local_bots_promote", { name, companyUid }),
+      // Bots come back after a reinstall: the cloud knows every local bot this
+      // account owns, and `here` says which of them this computer can run.
+      listRemote: () => call('local_bots_list_remote'),
+      adopt: (name) => call('local_bots_adopt', { name }),
+      restore: (options) => call('local_bots_restore', { all: options?.all === true }),
     },
 
     settings: {
@@ -1074,6 +1155,10 @@ export function createSyncPlatformAdapter(
       createProjectStory: (projectId, companyUid, story) => hqProJson(
         'POST', `${WEB_PATHS.workMeshProject(projectId.trim())}/stories`,
         { ...story, companyUid: companyUid.trim() },
+      ),
+      putProjectView: (projectId, companyUid, view) => hqProJson(
+        'PUT', WEB_PATHS.workMeshProject(projectId.trim()),
+        { ...(view as object), companyUid: companyUid.trim() },
       ),
       readLocalSnapshot: async () => NOT_MAPPED,
       getProjectView: (projectId, companyUid) =>

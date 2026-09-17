@@ -48,13 +48,17 @@ export type LibraryOverlayTab =
  * deliberately cannot: its cloud shelf returns skills only.
  */
 export function libraryOverlayCapabilities(
-  capabilities: Pick<Capabilities, "canSpawnSessions" | "canInstallLocally">,
+  capabilities: Pick<Capabilities, "canInstallLocally">,
 ): {
   workers: boolean;
   marketplace: boolean;
 } {
+  // Both gate on the same thing: a host with local install can read the local
+  // worker tree. This used to read `canSpawnSessions` as a stand-in for "is
+  // desktop"; that flag went false with the in-app Sessions runtime, and
+  // browsing workers never depended on running one.
   return {
-    workers: capabilities.canSpawnSessions,
+    workers: capabilities.canInstallLocally,
     marketplace: capabilities.canInstallLocally,
   };
 }

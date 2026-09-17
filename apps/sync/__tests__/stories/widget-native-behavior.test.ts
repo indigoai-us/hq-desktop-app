@@ -170,8 +170,30 @@ function mountWidget(): HTMLElement {
   return host;
 }
 
+/**
+ * `vi.waitFor` gives an assertion a 1000 ms budget by default. That is generous
+ * on a developer machine and tight on a loaded CI runner: this suite drives a
+ * real component tree, and several of these waits sit behind an awaited Tauri
+ * round trip plus a Svelte flush.
+ *
+ * When the budget expires the failure reads as the assertion's own message —
+ * "expected null to be truthy" — which looks like a behavioural regression
+ * rather than an expired stopwatch. That cost real time: it failed a `main` run
+ * and blocked two unrelated pull requests before it was diagnosed, and the
+ * tests pass locally under the exact CI command every time.
+ *
+ * The assertions are unchanged; only the patience is. Every wait in this file
+ * goes through here so the next slow runner cannot single out whichever one
+ * happens to be nearest the limit.
+ */
+const WAIT_BUDGET_MS = 10_000;
+
+function waitForStable(assertion: () => void | Promise<void>): Promise<void> {
+  return vi.waitFor(assertion, { timeout: WAIT_BUDGET_MS, interval: 25 });
+}
+
 async function waitForNativeReady(): Promise<void> {
-  await vi.waitFor(() => {
+  await waitForStable(() => {
     expect([...listeners.keys()].sort()).toEqual(
       [
         'channel:new-message',
@@ -227,7 +249,7 @@ async function openVisibleNotification(payload: BannerPayload): Promise<void> {
   );
   expect(open, `open action for ${payload.kind}`).toBeTruthy();
   open!.click();
-  await vi.waitFor(() => {
+  await waitForStable(() => {
     flushSync();
     expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
   });
@@ -336,7 +358,7 @@ describe('Widget restored native standalone behavior', () => {
       }),
     );
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       expect(tauri.invoke).toHaveBeenCalledWith('resize_widget', {
         width: 106,
         height: 69,
@@ -515,7 +537,7 @@ describe('Widget restored native standalone behavior', () => {
     host
       .querySelector<HTMLButtonElement>('[data-testid="widget-menu-inbox"]')!
       .click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       expect(
         tauri.invoke.mock.calls.some(
           ([command]) => command === 'open_communications_window',
@@ -531,7 +553,7 @@ describe('Widget restored native standalone behavior', () => {
     host
       .querySelector<HTMLButtonElement>('[data-testid="widget-menu-desktop"]')!
       .click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       expect(
         tauri.invoke.mock.calls.some(
           ([command]) => command === 'open_desktop_alt_window',
@@ -556,7 +578,7 @@ describe('Widget restored native standalone behavior', () => {
       .querySelector<HTMLButtonElement>('[data-testid="widget-menu-desktop"]')!
       .click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       expect(
         tauri.invoke.mock.calls.some(([command]) => command === 'show_main_window'),
       ).toBe(true);
@@ -676,7 +698,7 @@ describe('Widget restored native standalone behavior', () => {
     );
     expect(updateAction?.textContent?.trim()).toBe('Update now');
     updateAction!.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
     });
@@ -825,7 +847,7 @@ describe('Widget restored native standalone behavior', () => {
     trigger.click();
     flushSync();
 
-    const option = await vi.waitFor(() => {
+    const option = await waitForStable(() => {
       const node = list!.querySelector<HTMLButtonElement>(
         '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
       );
@@ -833,7 +855,7 @@ describe('Widget restored native standalone behavior', () => {
       return node!;
     });
     option.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(tauri.invoke).toHaveBeenCalledWith(
         'meetings_set_company',
@@ -870,7 +892,7 @@ describe('Widget restored native standalone behavior', () => {
     trigger.click();
     flushSync();
 
-    const option = await vi.waitFor(() => {
+    const option = await waitForStable(() => {
       const node = host.querySelector<HTMLButtonElement>(
         '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
       );
@@ -878,7 +900,7 @@ describe('Widget restored native standalone behavior', () => {
       return node!;
     });
     option.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(tauri.invoke).toHaveBeenCalledWith(
         'meetings_set_company',
@@ -917,7 +939,7 @@ describe('Widget restored native standalone behavior', () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="notification-resolve-trigger"]')!.click();
     flushSync();
-    const option = await vi.waitFor(() => {
+    const option = await waitForStable(() => {
       const node = host.querySelector<HTMLButtonElement>(
         '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
       );
@@ -926,7 +948,7 @@ describe('Widget restored native standalone behavior', () => {
     });
     option.click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(host.querySelector('[data-testid="widget-filing-error"]')?.textContent).toContain(
         'Company is unavailable',
@@ -965,7 +987,7 @@ describe('Widget restored native standalone behavior', () => {
     expect(oneShotAction).toBeTruthy();
     oneShotAction!.click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(
         tauri.invoke.mock.calls.filter(([command]) => command === 'banner_action'),
@@ -984,7 +1006,7 @@ describe('Widget restored native standalone behavior', () => {
     expect(open).toBeTruthy();
     open!.click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       expect(tauri.invoke).toHaveBeenCalledWith('open_desktop_alt_window', {
         route: 'settings:updates',
       });
@@ -1014,7 +1036,7 @@ describe('Widget restored native standalone behavior', () => {
     )!;
     row.querySelector<HTMLButtonElement>('.nr-primary-action')!.click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(row.querySelector('.nr-action-error')?.textContent).toContain(
         'Couldn’t open this item.',
@@ -1027,7 +1049,7 @@ describe('Widget restored native standalone behavior', () => {
 
     failedCommands.delete('open_communications_window');
     row.querySelector<HTMLButtonElement>('.nr-action-error .nr-retry')!.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
     });
@@ -1061,7 +1083,7 @@ describe('Widget restored native standalone behavior', () => {
     )!;
     row.querySelector<HTMLButtonElement>('.nr-open')!.click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(row.querySelector('.nr-action-error')?.textContent).toContain(
         'Couldn’t complete that action.',
@@ -1078,7 +1100,7 @@ describe('Widget restored native standalone behavior', () => {
 
     failedCommands.delete('banner_action');
     row.querySelector<HTMLButtonElement>('.nr-action-error .nr-retry')!.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
     });
@@ -1141,14 +1163,14 @@ describe('Widget restored native standalone behavior', () => {
     );
 
     row.querySelector<HTMLButtonElement>('.nr-primary-action')!.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       expect(tauri.invoke).toHaveBeenCalledWith('open_desktop_alt_window', {
         route: 'settings:updates',
       });
     });
 
     row.querySelector<HTMLButtonElement>('.nr-open')!.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       expect(tauri.invoke).toHaveBeenCalledWith(
         'banner_action',
         expect.objectContaining({
@@ -1264,7 +1286,7 @@ describe('Widget restored native standalone behavior', () => {
     const input = row.querySelector<HTMLInputElement>('.nr-reply')!;
     expect(input).toBeTruthy();
     input.focus();
-    await vi.waitFor(() =>
+    await waitForStable(() =>
       expect(tauri.invoke).toHaveBeenCalledWith('set_widget_focusable', {
         focusable: true,
       }),
@@ -1279,13 +1301,13 @@ describe('Widget restored native standalone behavior', () => {
         cancelable: true,
       }),
     );
-    await vi.waitFor(() =>
+    await waitForStable(() =>
       expect(tauri.invoke).toHaveBeenCalledWith('send_dm', {
         toPersonUid: 'person-1',
         body: 'Ship it',
       }),
     );
-    await vi.waitFor(() =>
+    await waitForStable(() =>
       expect(tauri.invoke).toHaveBeenCalledWith('set_widget_focusable', {
         focusable: false,
       }),
@@ -1294,7 +1316,7 @@ describe('Widget restored native standalone behavior', () => {
     row
       .querySelector<HTMLButtonElement>('[aria-label="React with 👍"]')!
       .click();
-    await vi.waitFor(() =>
+    await waitForStable(() =>
       expect(tauri.invoke).toHaveBeenCalledWith('send_dm', {
         toPersonUid: 'person-1',
         body: '👍',
@@ -1335,7 +1357,7 @@ describe('Widget restored native standalone behavior', () => {
       }),
     );
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(row.querySelector('[data-testid="notification-reply-error"]')).toBeTruthy();
     });
@@ -1352,7 +1374,7 @@ describe('Widget restored native standalone behavior', () => {
     row
       .querySelector<HTMLButtonElement>('[data-testid="notification-reply-retry"]')!
       .click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(input.value).toBe('');
       expect(row.querySelector('[data-testid="notification-reply-error"]')).toBeNull();
@@ -1406,7 +1428,7 @@ describe('Widget restored native standalone behavior', () => {
 
     vi.useFakeTimers();
     row.querySelector<HTMLButtonElement>('.nr-primary-action')!.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(row.querySelector('.nr-action-error')?.textContent).toContain(
         'Couldn’t open this item.',
@@ -1446,7 +1468,7 @@ describe('Widget restored native standalone behavior', () => {
     };
     mountWidget();
     await waitForNativeReady();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(
         host.querySelector('[data-testid="widget-unread-badge"]')?.textContent,
@@ -1496,7 +1518,7 @@ describe('Widget restored native standalone behavior', () => {
 
     host.querySelector<HTMLButtonElement>('.wm')!.click();
     flushSync();
-    await vi.waitFor(() =>
+    await waitForStable(() =>
       expect(
         host.querySelector('[data-testid="widget-hover-list"]')?.textContent,
       ).toContain('launch.md'),
@@ -1571,7 +1593,7 @@ describe('Widget restored native standalone behavior', () => {
     rows[0]
       ?.querySelector<HTMLButtonElement>('.nr-primary-action')
       ?.click();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       expect(tauri.invoke).toHaveBeenCalledWith('open_dm_detail', {
         event: expect.objectContaining({
           eventId: 'dogfood-dm-0',
@@ -1600,7 +1622,7 @@ describe('Widget restored native standalone behavior', () => {
     expect(list?.textContent).not.toContain('You’re caught up');
 
     historyRequest.resolve({ dms: [], shares: [], files: [] });
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(
         host.querySelector('[data-testid="widget-history-loading"]'),
@@ -1636,7 +1658,7 @@ describe('Widget restored native standalone behavior', () => {
     await waitForNativeReady();
     host.querySelector<HTMLElement>('.wm')!.click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(
         host.querySelector('[data-testid="widget-history-error"]')?.textContent,
@@ -1656,7 +1678,7 @@ describe('Widget restored native standalone behavior', () => {
       .querySelector<HTMLButtonElement>('[data-testid="widget-history-retry"]')!
       .click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       const retry = host.querySelector<HTMLButtonElement>(
         '[data-testid="widget-history-retry"]',
@@ -1671,7 +1693,7 @@ describe('Widget restored native standalone behavior', () => {
     });
 
     retryRequest.resolve({ dms: [], shares: [], files: [] });
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(host.querySelector('[data-testid="widget-history-error"]')).toBeNull();
       expect(host.querySelector('[data-testid="widget-history-retry"]')).toBeNull();
@@ -1698,7 +1720,7 @@ describe('Widget restored native standalone behavior', () => {
       .querySelector<HTMLButtonElement>('[data-testid="widget-menu-desktop"]')!
       .click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(
         host.querySelector('[data-testid="widget-desktop-error"]')?.textContent,
@@ -1720,7 +1742,7 @@ describe('Widget restored native standalone behavior', () => {
       .querySelector<HTMLButtonElement>('[data-testid="widget-menu-desktop"]')!
       .click();
 
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       const retry = host.querySelector<HTMLButtonElement>(
         '[data-testid="widget-menu-desktop"]',
@@ -1733,7 +1755,7 @@ describe('Widget restored native standalone behavior', () => {
     expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeTruthy();
 
     desktopRequest.resolve();
-    await vi.waitFor(() => {
+    await waitForStable(() => {
       flushSync();
       expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeNull();
     });
@@ -1756,7 +1778,7 @@ describe('Widget restored native standalone behavior', () => {
     const desktop = host.querySelector<HTMLButtonElement>(
       '[data-testid="widget-menu-desktop"]',
     )!;
-    await vi.waitFor(() => expect(document.activeElement).toBe(inbox));
+    await waitForStable(() => expect(document.activeElement).toBe(inbox));
 
     inbox.dispatchEvent(
       new KeyboardEvent('keydown', {
@@ -1785,7 +1807,7 @@ describe('Widget restored native standalone behavior', () => {
     );
     flushSync();
     expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeNull();
-    await vi.waitFor(() => expect(document.activeElement).toBe(wordmark));
+    await waitForStable(() => expect(document.activeElement).toBe(wordmark));
 
     wordmark.dispatchEvent(
       new KeyboardEvent('keydown', {
@@ -1798,7 +1820,7 @@ describe('Widget restored native standalone behavior', () => {
     const panel = host.querySelector<HTMLElement>(
       '[data-testid="widget-hover-list"]',
     )!;
-    await vi.waitFor(() => expect(document.activeElement).toBe(panel));
+    await waitForStable(() => expect(document.activeElement).toBe(panel));
     panel.dispatchEvent(
       new KeyboardEvent('keydown', {
         key: 'Escape',
@@ -1808,7 +1830,7 @@ describe('Widget restored native standalone behavior', () => {
     );
     flushSync();
     expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
-    await vi.waitFor(() => expect(document.activeElement).toBe(wordmark));
+    await waitForStable(() => expect(document.activeElement).toBe(wordmark));
   });
 
   it('neutralizes widget press transforms when reduced motion is requested', () => {

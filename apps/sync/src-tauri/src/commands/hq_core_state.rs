@@ -38,7 +38,7 @@
 //! staging-drift) each had their own 6h loop — net traffic / API spend goes
 //! down.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -69,12 +69,25 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
 const CORE_STATE_REUSE_WINDOW: Duration = Duration::from_secs(15);
 
 static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
-static AUTO_ATTEMPTED_TARGETS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+const MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES: u8 = 3;
+const CONSECUTIVE_FAILURE_CAP_SKIP_REASON: &str = "consecutive_failure_cap_reached";
+const RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON: &str = "retry_interval_not_elapsed";
+/// Per-channel target marker in `~/.hq/menubar.json`. This intentionally uses
+/// the established untyped, atomic menubar merge path: typed preferences would
+/// discard this update-bookkeeping key on an unrelated settings save.
+const BASELINE_RETRY_TARGETS_KEY: &str = "coreBaselineRetryTargets";
+
+/// Automatic retry eligibility is intentionally separate from the update run
+/// guard. The guard prevents overlapping Core writes; this state remembers a
+/// target that completed without moving the observed version and bounds hard
+/// failures until the checker discovers a newer target.
+static AUTO_TARGET_STATES: OnceLock<Mutex<HashMap<Channel, AutomaticTargetState>>> =
+    OnceLock::new();
 
 /// Channel the user is tracking. Drives target selection + the action-pill
 /// label. Carries the resolving repo + ref so the frontend can render
 /// "Update to v14.2.0" vs "Update to Staging" without re-parsing.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum Channel {
     Release,
@@ -163,7 +176,6 @@ pub(crate) enum CoreUpdateErrorKind {
     InvalidCoreRoot,
     Network,
     RescueSpawn,
-    BaselinePersistence,
     ChannelConfiguration,
     Internal,
 }
@@ -175,7 +187,6 @@ impl CoreUpdateErrorKind {
             Self::InvalidCoreRoot => "invalid_core_root",
             Self::Network => "network",
             Self::RescueSpawn => "rescue_spawn",
-            Self::BaselinePersistence => "baseline_persistence",
             Self::ChannelConfiguration => "channel_configuration",
             Self::Internal => "internal",
         }
@@ -186,6 +197,8 @@ impl CoreUpdateErrorKind {
 pub(crate) struct CoreUpdateError {
     kind: CoreUpdateErrorKind,
     message: String,
+    npx_resolution: Option<CoreUpdateNpxResolution>,
+    managed_git_retry: ManagedGitRetryOutcome,
 }
 
 impl CoreUpdateError {
@@ -193,11 +206,352 @@ impl CoreUpdateError {
         Self {
             kind,
             message: message.into(),
+            npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
         }
+    }
+
+    pub(crate) fn with_npx_resolution(mut self, npx_resolution: CoreUpdateNpxResolution) -> Self {
+        self.npx_resolution = Some(npx_resolution);
+        self
+    }
+
+    pub(crate) fn with_managed_git_retry(
+        mut self,
+        managed_git_retry: ManagedGitRetryOutcome,
+    ) -> Self {
+        self.managed_git_retry = managed_git_retry;
+        self
     }
 
     pub(crate) const fn kind(&self) -> CoreUpdateErrorKind {
         self.kind
+    }
+
+    pub(crate) const fn npx_resolution(&self) -> Option<CoreUpdateNpxResolution> {
+        self.npx_resolution
+    }
+
+    pub(crate) const fn managed_git_retry(&self) -> ManagedGitRetryOutcome {
+        self.managed_git_retry
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// Path-free, closed diagnostic for the `npx` executable used to launch the
+/// Core rescue. The source is one of the resolver's stable telemetry tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CoreUpdateNpxResolution {
+    /// Whether the chosen program can be spawned. This is false for both a
+    /// missing `npx` and a Windows shim that exists but the loader rejects.
+    pub(crate) resolved: bool,
+    pub(crate) source: &'static str,
+}
+
+/// Closed outcome of the one-time Core-update retry that can put HQ's managed
+/// Git ahead of a user-selected Git after the latter fails a recognized clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedGitRetryOutcome {
+    NotNeeded,
+    ManagedGitUnavailable,
+    Succeeded,
+    Failed,
+}
+
+impl ManagedGitRetryOutcome {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::NotNeeded => "not_needed",
+            Self::ManagedGitUnavailable => "managed_git_unavailable",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
+    const fn attempted(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed)
+    }
+}
+
+/// Closed telemetry dimension for why a Core rescue failed.
+///
+/// This remains a dimension rather than raw diagnostic text: hq-pro admits
+/// `errorCategory` as a short safe label, while its telemetry privacy boundary
+/// deliberately rejects free-form process output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum RescueFailureCategory {
+    MissingDependency,
+    Auth,
+    Network,
+    Dns,
+    Tls,
+    DiskFull,
+    Permission,
+    NotFound,
+    NpxResolveFailed,
+    Timeout,
+    LockContention,
+    Unknown,
+}
+
+impl RescueFailureCategory {
+    const ALL: &[Self] = &[
+        Self::MissingDependency,
+        Self::Auth,
+        Self::Network,
+        Self::Dns,
+        Self::Tls,
+        Self::DiskFull,
+        Self::Permission,
+        Self::NotFound,
+        Self::NpxResolveFailed,
+        Self::Timeout,
+        Self::LockContention,
+        Self::Unknown,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::MissingDependency => "missing-dependency",
+            Self::Auth => "auth",
+            Self::Network => "network",
+            Self::Dns => "dns",
+            Self::Tls => "tls",
+            Self::DiskFull => "disk-full",
+            Self::Permission => "permission",
+            Self::NotFound => "not-found",
+            Self::NpxResolveFailed => "npx-resolve-failed",
+            Self::Timeout => "timeout",
+            Self::LockContention => "lock-contention",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+struct RescueStderrPattern {
+    category: RescueFailureCategory,
+    needle: &'static str,
+}
+
+// Rescue emits local preflight diagnostics before allocating a safety snapshot;
+// Git supplies the transport signals for a rescue process that then exits
+// unsuccessfully. Keep every recognized stderr phrase in this one ordered
+// table: specific causes must precede their broader counterparts.
+const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "rsync preflight failed",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Auth,
+        needle: "authentication failed",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Auth,
+        needle: "could not read username",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Auth,
+        needle: "permission denied (publickey)",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Dns,
+        needle: "could not resolve host",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Dns,
+        needle: "name or service not known",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Tls,
+        needle: "ssl certificate problem",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Tls,
+        needle: "certificate verify failed",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::DiskFull,
+        needle: "no space left on device",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "have not agreed to the xcode license",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "operation not permitted",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "permission denied",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::NotFound,
+        needle: "repository not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::NotFound,
+        needle: "remote: not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Timeout,
+        needle: "operation timed out",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Timeout,
+        needle: "connection timed out",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "failed to connect",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "connection refused",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "connection reset",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "is not a git command",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "remote helper 'https' aborted session",
+    },
+];
+
+// These are OS-error renderings emitted before the rescue process can start or
+// while its update baseline is being persisted. They intentionally do not
+// participate in rescue-exit classification. Keep specific causes before their
+// broader counterparts so an actionable diagnosis is not shadowed.
+const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "no such file or directory",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "program not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "cannot find the file",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "enoent",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::LockContention,
+        needle: "another process has locked a portion of the file",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "access is denied",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "eacces",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "this account cannot write to it",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "installation is not executable",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "node.js was not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "check your network and npm setup",
+    },
+];
+
+fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
+    let stderr = stderr.to_ascii_lowercase();
+    RESCUE_STDERR_PATTERNS
+        .iter()
+        .find(|pattern| stderr.contains(pattern.needle))
+        .map(|pattern| pattern.category)
+        .unwrap_or(RescueFailureCategory::Unknown)
+}
+
+fn classify_spawn_error(detail: &str) -> Option<RescueFailureCategory> {
+    let detail = detail.to_ascii_lowercase();
+    SPAWN_ERROR_PATTERNS
+        .iter()
+        .find(|pattern| detail.contains(pattern.needle))
+        .map(|pattern| pattern.category)
+}
+
+pub(crate) fn classify_rescue_exit_failure(
+    stderr: &str,
+    npx_resolution: CoreUpdateNpxResolution,
+) -> RescueFailureCategory {
+    if !npx_resolution.resolved {
+        return RescueFailureCategory::NpxResolveFailed;
+    }
+    classify_rescue_stderr_failure(stderr)
+}
+
+pub(crate) fn classify_core_update_error(
+    error_kind: CoreUpdateErrorKind,
+    detail: &str,
+    npx_resolution: Option<CoreUpdateNpxResolution>,
+) -> RescueFailureCategory {
+    if npx_resolution.is_some_and(|resolution| !resolution.resolved) {
+        return RescueFailureCategory::NpxResolveFailed;
+    }
+
+    match error_kind {
+        CoreUpdateErrorKind::Network => RescueFailureCategory::Network,
+        CoreUpdateErrorKind::RescueSpawn => {
+            classify_spawn_error(detail).unwrap_or_else(|| classify_rescue_stderr_failure(detail))
+        }
+        CoreUpdateErrorKind::AlreadyInProgress
+        | CoreUpdateErrorKind::InvalidCoreRoot
+        | CoreUpdateErrorKind::ChannelConfiguration
+        | CoreUpdateErrorKind::Internal => RescueFailureCategory::Unknown,
+    }
+}
+
+/// Additional diagnostics emitted only with `core_update_failed`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CoreUpdateFailureDetails<'a> {
+    /// A redacted 16 KiB rescue-log tail retained for the Sentry diagnostic.
+    pub(crate) rescue_stderr_tail: Option<&'a str>,
+    pub(crate) rescue_failure_category: RescueFailureCategory,
+    pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
+    pub(crate) managed_git_retry: ManagedGitRetryOutcome,
+}
+
+pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdateFailureDetails<'_> {
+    let detail = error.message();
+    let rescue_stderr_tail = match error.kind() {
+        CoreUpdateErrorKind::RescueSpawn => Some(detail),
+        _ => None,
+    };
+
+    CoreUpdateFailureDetails {
+        rescue_stderr_tail,
+        rescue_failure_category: classify_core_update_error(
+            error.kind(),
+            detail,
+            error.npx_resolution(),
+        ),
+        npx_resolution: error.npx_resolution(),
+        managed_git_retry: error.managed_git_retry(),
     }
 }
 
@@ -284,18 +638,288 @@ fn channel_label(channel: Channel) -> &'static str {
     }
 }
 
-fn mark_automatic_target_attempted(channel: Channel, target: &str) -> bool {
-    let key = format!("{}:{target}", channel_label(channel));
-    AUTO_ATTEMPTED_TARGETS
-        .get_or_init(|| Mutex::new(HashSet::new()))
+/// Read the durable baseline-repair target for one channel from the untyped
+/// menubar map. The target is diagnostic context; a pending repair is scoped
+/// to the channel so that a newer remote target can still repair a baseline
+/// left behind by the previously installed target.
+fn baseline_retry_target_from_menubar(
+    menubar: &Map<String, Value>,
+    channel: Channel,
+) -> Option<String> {
+    menubar
+        .get(BASELINE_RETRY_TARGETS_KEY)
+        .and_then(Value::as_object)
+        .and_then(|targets| targets.get(channel_label(channel)))
+        .and_then(Value::as_str)
+        .filter(|target| !target.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn baseline_retry_menubar_path() -> Result<Option<std::path::PathBuf>, String> {
+    // Tests that do not exercise persistence deliberately leave this unset so
+    // they cannot write the developer's real menubar.json. Persistence tests
+    // set HQ_TEST_HOME and exercise the same atomic path against a temp home.
+    #[cfg(test)]
+    {
+        let Some(home) = std::env::var_os("HQ_TEST_HOME") else {
+            return Ok(None);
+        };
+        if home.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(
+            std::path::PathBuf::from(home).join(".hq/menubar.json"),
+        ));
+    }
+
+    #[cfg(not(test))]
+    {
+        paths::menubar_json_path().map(Some)
+    }
+}
+
+fn persisted_baseline_retry_target(channel: Channel) -> Option<String> {
+    let path = baseline_retry_menubar_path().ok().flatten()?;
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    baseline_retry_target_from_menubar(&menubar, channel)
+}
+
+fn persist_baseline_retry_target(channel: Channel, target: &str) -> Result<(), String> {
+    let Some(path) = baseline_retry_menubar_path()? else {
+        return Ok(());
+    };
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    let mut targets = menubar
+        .get(BASELINE_RETRY_TARGETS_KEY)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    targets.insert(
+        channel_label(channel).to_string(),
+        Value::String(target.to_string()),
+    );
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(BASELINE_RETRY_TARGETS_KEY, Value::Object(targets))],
+    )
+}
+
+fn clear_persisted_baseline_retry_target(channel: Channel) -> Result<(), String> {
+    let Some(path) = baseline_retry_menubar_path()? else {
+        return Ok(());
+    };
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    let mut targets = menubar
+        .get(BASELINE_RETRY_TARGETS_KEY)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    targets.remove(channel_label(channel));
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(BASELINE_RETRY_TARGETS_KEY, Value::Object(targets))],
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutomaticTargetState {
+    target: String,
+    consecutive_failures: u8,
+    completed_without_version_move: bool,
+    baseline_retry_pending: bool,
+    last_failure_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutomaticTargetEligibility {
+    Eligible,
+    CompletedWithoutVersionMove,
+    ConsecutiveFailureCapReached,
+    RetryIntervalNotElapsed,
+}
+
+fn automatic_target_eligibility(channel: Channel, target: &str) -> AutomaticTargetEligibility {
+    automatic_target_eligibility_at(channel, target, Instant::now())
+}
+
+fn automatic_target_eligibility_at(
+    channel: Channel,
+    target: &str,
+    attempted_at: Instant,
+) -> AutomaticTargetEligibility {
+    let persisted_baseline_retry_pending = persisted_baseline_retry_target(channel).is_some();
+    let states = AUTO_TARGET_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(state) = states.get(&channel) else {
+        return AutomaticTargetEligibility::Eligible;
+    };
+    if state.target != target {
+        // State belongs to a single target per channel, so observing a newer
+        // target starts a fresh retry budget and drops old non-convergence. A
+        // baseline repair is different: it is an outstanding channel-level
+        // obligation, and the newer target's rescue can establish that floor.
+        return AutomaticTargetEligibility::Eligible;
+    }
+    if state.baseline_retry_pending || persisted_baseline_retry_pending {
+        // A baseline-repair run must keep trying until it actually persists a
+        // baseline. It is not an update failure, so neither the update retry
+        // interval nor its failure cap may strand it.
+        AutomaticTargetEligibility::Eligible
+    } else if state.completed_without_version_move {
+        AutomaticTargetEligibility::CompletedWithoutVersionMove
+    } else if state.consecutive_failures >= MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+        AutomaticTargetEligibility::ConsecutiveFailureCapReached
+    } else if state.last_failure_at.is_some_and(|last_failure_at| {
+        attempted_at.saturating_duration_since(last_failure_at) < CHECK_INTERVAL
+    }) {
+        AutomaticTargetEligibility::RetryIntervalNotElapsed
+    } else {
+        AutomaticTargetEligibility::Eligible
+    }
+}
+
+fn automatic_target_baseline_retry_pending(channel: Channel) -> bool {
+    AUTO_TARGET_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(key)
+        .get(&channel)
+        .is_some_and(|state| state.baseline_retry_pending)
+        || persisted_baseline_retry_target(channel).is_some()
+}
+
+fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_at: Instant) {
+    // A failed repair is not proof that the prior successful rescue wrote its
+    // baseline. Preserve the marker until a run explicitly reports that it
+    // persisted one, including when this invocation is for a newer target.
+    let baseline_retry_pending = automatic_target_baseline_retry_pending(channel);
+    let mut states = AUTO_TARGET_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = states
+        .entry(channel)
+        .or_insert_with(|| AutomaticTargetState {
+            target: target.to_string(),
+            consecutive_failures: 0,
+            completed_without_version_move: false,
+            baseline_retry_pending,
+            last_failure_at: None,
+        });
+    if state.target != target {
+        *state = AutomaticTargetState {
+            target: target.to_string(),
+            consecutive_failures: 0,
+            completed_without_version_move: false,
+            baseline_retry_pending,
+            last_failure_at: None,
+        };
+    }
+    state.baseline_retry_pending = baseline_retry_pending;
+    state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+    state.last_failure_at = Some(attempted_at);
+}
+
+fn record_automatic_target_baseline_persistence_failure_at(
+    channel: Channel,
+    target: &str,
+    _attempted_at: Instant,
+) {
+    let mut states = AUTO_TARGET_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = states
+        .entry(channel)
+        .or_insert_with(|| AutomaticTargetState {
+            target: target.to_string(),
+            consecutive_failures: 0,
+            completed_without_version_move: false,
+            baseline_retry_pending: false,
+            last_failure_at: None,
+        });
+    if state.target != target {
+        *state = AutomaticTargetState {
+            target: target.to_string(),
+            consecutive_failures: 0,
+            completed_without_version_move: false,
+            baseline_retry_pending: false,
+            last_failure_at: None,
+        };
+    }
+    state.baseline_retry_pending = true;
+    // The rescue already moved the version. This is degraded bookkeeping, not
+    // another failed update attempt, so start its repair with a fresh budget.
+    state.consecutive_failures = 0;
+    state.completed_without_version_move = false;
+    state.last_failure_at = None;
+    if let Err(error) = persist_baseline_retry_target(channel, target) {
+        log(
+            "hq-core-state",
+            &format!(
+                "could not persist pending Core baseline repair for {} target {}: {error}",
+                channel_label(channel),
+                target
+            ),
+        );
+    }
+}
+
+fn record_automatic_target_completed(channel: Channel, target: &str) {
+    AUTO_TARGET_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(
+            channel,
+            AutomaticTargetState {
+                target: target.to_string(),
+                consecutive_failures: 0,
+                completed_without_version_move: true,
+                baseline_retry_pending: false,
+                last_failure_at: None,
+            },
+        );
+    if let Err(error) = clear_persisted_baseline_retry_target(channel) {
+        log(
+            "hq-core-state",
+            &format!(
+                "could not clear completed Core baseline repair for {} target {}: {error}",
+                channel_label(channel),
+                target
+            ),
+        );
+    }
+}
+
+/// Both manual wrappers and the automatic executor call this after a zero-exit
+/// rescue result. Keeping the decision here makes a baseline failure retryable
+/// regardless of who initiated the successful update.
+pub(crate) fn arm_baseline_retry_after_successful_core_update(
+    channel: Channel,
+    target: &str,
+    exit_code: i32,
+    baseline_persisted: bool,
+) {
+    if exit_code == 0 && !baseline_persisted {
+        record_automatic_target_baseline_persistence_failure_at(channel, target, Instant::now());
+    }
+}
+
+#[cfg(test)]
+fn reset_automatic_target_states_for_test() {
+    if let Some(states) = AUTO_TARGET_STATES.get() {
+        states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_core_update_event(
-    event_name: &'static str,
+fn core_update_event_properties(
     source: &'static str,
     result: &'static str,
     channel: Option<Channel>,
@@ -308,7 +932,7 @@ pub(crate) fn emit_core_update_event(
     exit_code: Option<i32>,
     error_kind: Option<&'static str>,
     skip_reason: Option<&'static str>,
-) {
+) -> Map<String, Value> {
     let mut properties = Map::new();
     properties.insert("source".to_string(), Value::String(source.to_string()));
     properties.insert("result".to_string(), Value::String(result.to_string()));
@@ -363,10 +987,449 @@ pub(crate) fn emit_core_update_event(
             Value::String(skip_reason.to_string()),
         );
     }
+    properties
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_core_update_event(
+    event_name: &'static str,
+    source: &'static str,
+    result: &'static str,
+    channel: Option<Channel>,
+    local_version: Option<&str>,
+    target_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+    exit_code: Option<i32>,
+    error_kind: Option<&'static str>,
+    skip_reason: Option<&'static str>,
+) {
+    let properties = core_update_event_properties(
+        source,
+        result,
+        channel,
+        local_version,
+        target_version,
+        auto_update_enabled,
+        eligible,
+        version_behind,
+        duration,
+        exit_code,
+        error_kind,
+        skip_reason,
+    );
     crate::commands::telemetry::emit_desktop_telemetry_best_effort(
         event_name,
         Value::Object(properties),
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn core_update_failed_properties(
+    source: &'static str,
+    channel: Channel,
+    local_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) -> Map<String, Value> {
+    let mut properties = core_update_event_properties(
+        source,
+        "failed",
+        Some(channel),
+        local_version,
+        None,
+        auto_update_enabled,
+        eligible,
+        version_behind,
+        duration,
+        exit_code,
+        Some(error_kind),
+        None,
+    );
+    properties.insert(
+        "platform".to_string(),
+        Value::String(crate::commands::version_gate::platform_tag()),
+    );
+    properties.insert(
+        "errorCategory".to_string(),
+        Value::String(details.rescue_failure_category.label().to_string()),
+    );
+    if let Some(npx_resolution) = details.npx_resolution {
+        properties.insert(
+            "npxResolved".to_string(),
+            Value::Bool(npx_resolution.resolved),
+        );
+        properties.insert(
+            "npxResolution".to_string(),
+            Value::String(npx_resolution.source.to_string()),
+        );
+    }
+    properties
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_core_update_failed_event(
+    source: &'static str,
+    channel: Channel,
+    local_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) {
+    crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+        "core_update_failed",
+        Value::Object(core_update_failed_properties(
+            source,
+            channel,
+            local_version,
+            auto_update_enabled,
+            eligible,
+            version_behind,
+            duration,
+            exit_code,
+            error_kind,
+            details,
+        )),
+    );
+    queue_core_update_failure_report(source, channel, exit_code, error_kind, details);
+}
+
+/// The Sentry grouping pair for a Core update failure. Every field is a closed
+/// vocabulary token; target version and rescue output deliberately stay out of
+/// the signature so a single underlying defect does not fragment into issues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CoreUpdateSentryFailureSignature {
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+}
+
+static CORE_UPDATE_SENTRY_SIGNATURES: OnceLock<Mutex<HashSet<CoreUpdateSentryFailureSignature>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct CoreUpdateSentryFailureReport {
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+    rescue_stderr_tail: Option<String>,
+    npx_resolution: Option<CoreUpdateNpxResolution>,
+    managed_git_retry: ManagedGitRetryOutcome,
+}
+
+fn core_update_sentry_error_kind(error_kind: &'static str) -> &'static str {
+    match error_kind {
+        "already_in_progress"
+        | "invalid_core_root"
+        | "network"
+        | "rescue_spawn"
+        | "channel_configuration"
+        | "internal"
+        | "rescue_exit" => error_kind,
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_source(source: &'static str) -> &'static str {
+    match source {
+        "automatic" | "manual" => source,
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_platform() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "macos-aarch64",
+        ("macos", "x86_64") => "macos-x86_64",
+        ("windows", "x86_64") => "windows-x86_64",
+        ("windows", "aarch64") => "windows-aarch64",
+        ("linux", "x86_64") => "linux-x86_64",
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_exit_code(exit_code: Option<i32>) -> &'static str {
+    match exit_code {
+        Some(1) => "1",
+        Some(2) => "2",
+        Some(3) => "3",
+        Some(4) => "4",
+        Some(5) => "5",
+        Some(126) => "126",
+        Some(127) => "127",
+        Some(-1) => "signal_or_unknown",
+        Some(_) => "other",
+        None => "not_available",
+    }
+}
+
+fn claim_core_update_sentry_signature(signature: CoreUpdateSentryFailureSignature) -> bool {
+    CORE_UPDATE_SENTRY_SIGNATURES
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(signature)
+}
+
+fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let fingerprint = core_update_sentry_fingerprint(report.error_kind, report.error_category);
+        sentry::with_scope(
+            |sentry_scope| {
+                sentry_scope.set_fingerprint(Some(&fingerprint));
+                sentry_scope.set_tag("errorKind", report.error_kind);
+                sentry_scope.set_tag("errorCategory", report.error_category.label());
+                sentry_scope.set_tag("channel", channel_label(report.channel));
+                sentry_scope.set_tag("platform", core_update_sentry_platform());
+                sentry_scope.set_tag("source", core_update_sentry_source(report.source));
+                sentry_scope.set_tag("exitCode", core_update_sentry_exit_code(report.exit_code));
+                sentry_scope.set_tag("managedGitRetryOutcome", report.managed_git_retry.label());
+                sentry_scope.set_extra(
+                    "coreUpdateExitCode",
+                    report
+                        .exit_code
+                        .map(|code| sentry::protocol::Value::Number(code.into()))
+                        .unwrap_or(sentry::protocol::Value::Null),
+                );
+                sentry_scope.set_extra(
+                    "coreUpdateAppVersion",
+                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                );
+                sentry_scope.set_extra(
+                    "managedGitRetryAttempted",
+                    sentry::protocol::Value::Bool(report.managed_git_retry.attempted()),
+                );
+                if let Some(rescue_stderr_tail) = report.rescue_stderr_tail {
+                    sentry_scope.set_extra(
+                        "rescueStderrTail",
+                        sentry::protocol::Value::String(rescue_stderr_tail),
+                    );
+                }
+                if let Some(npx_resolution) = report.npx_resolution {
+                    sentry_scope.set_extra(
+                        "npxResolved",
+                        sentry::protocol::Value::Bool(npx_resolution.resolved),
+                    );
+                    sentry_scope.set_extra(
+                        "npxResolution",
+                        sentry::protocol::Value::String(npx_resolution.source.to_string()),
+                    );
+                }
+            },
+            || sentry::capture_message("Desktop Core update failed", sentry::Level::Error),
+        );
+    }));
+}
+
+fn core_update_sentry_fingerprint(
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+) -> [&'static str; 2] {
+    [error_kind, error_category.label()]
+}
+
+fn core_update_sentry_failure_report(
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) -> CoreUpdateSentryFailureReport {
+    CoreUpdateSentryFailureReport {
+        source,
+        channel,
+        exit_code,
+        error_kind: core_update_sentry_error_kind(error_kind),
+        error_category: details.rescue_failure_category,
+        rescue_stderr_tail: details
+            .rescue_stderr_tail
+            .map(hq_telemetry::redact_core_update_diagnostic_tail),
+        npx_resolution: details.npx_resolution,
+        managed_git_retry: details.managed_git_retry,
+    }
+}
+
+fn report_core_update_failure_once(report: CoreUpdateSentryFailureReport) {
+    let signature = CoreUpdateSentryFailureSignature {
+        error_kind: report.error_kind,
+        error_category: report.error_category,
+    };
+    if claim_core_update_sentry_signature(signature) {
+        send_core_update_failure_report(report);
+    }
+}
+
+fn queue_core_update_failure_report(
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source_hub = sentry::Hub::main();
+        if source_hub.client().is_none() {
+            return;
+        }
+        let report =
+            core_update_sentry_failure_report(source, channel, exit_code, error_kind, details);
+        let hub = std::sync::Arc::new(sentry::Hub::new_from_top(source_hub));
+        hq_telemetry::dispatch_sentry_report(move || {
+            sentry::Hub::run(hub, || report_core_update_failure_once(report));
+        });
+    }));
+}
+
+/// A post-apply baseline write matters for later drift detection, but it does
+/// not change whether the rescue update itself succeeded. Keep its Sentry
+/// issue separate from `core_update_failed` so an operational follow-up does
+/// not look like an update failure to either people or alerting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CoreUpdateBaselinePersistenceWarningSignature {
+    channel: Channel,
+    error_category: RescueFailureCategory,
+}
+
+static CORE_UPDATE_BASELINE_WARNING_SIGNATURES: OnceLock<
+    Mutex<HashSet<CoreUpdateBaselinePersistenceWarningSignature>>,
+> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct CoreUpdateBaselinePersistenceWarningReport {
+    source: &'static str,
+    channel: Channel,
+    error_category: RescueFailureCategory,
+    detail: String,
+}
+
+fn core_update_baseline_persistence_warning_report(
+    source: &'static str,
+    channel: Channel,
+    detail: &str,
+) -> CoreUpdateBaselinePersistenceWarningReport {
+    CoreUpdateBaselinePersistenceWarningReport {
+        source: core_update_sentry_source(source),
+        channel,
+        error_category: classify_spawn_error(detail)
+            .unwrap_or_else(|| classify_rescue_stderr_failure(detail)),
+        detail: hq_telemetry::redact_core_update_diagnostic_tail(detail),
+    }
+}
+
+fn claim_core_update_baseline_warning_signature(
+    signature: CoreUpdateBaselinePersistenceWarningSignature,
+) -> bool {
+    CORE_UPDATE_BASELINE_WARNING_SIGNATURES
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(signature)
+}
+
+fn send_core_update_baseline_persistence_warning(
+    report: CoreUpdateBaselinePersistenceWarningReport,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let category = report.error_category.label();
+        let fingerprint = ["core_update_baseline_persistence_warning", category];
+        sentry::with_scope(
+            |sentry_scope| {
+                sentry_scope.set_fingerprint(Some(&fingerprint));
+                sentry_scope.set_tag("operation", "baseline_persistence");
+                sentry_scope.set_tag("errorCategory", category);
+                sentry_scope.set_tag("channel", channel_label(report.channel));
+                sentry_scope.set_tag("platform", core_update_sentry_platform());
+                sentry_scope.set_tag("source", report.source);
+                sentry_scope.set_extra(
+                    "baselinePersistenceDetail",
+                    sentry::protocol::Value::String(report.detail),
+                );
+            },
+            || {
+                sentry::capture_message(
+                    "Desktop Core update applied but baseline persistence failed",
+                    sentry::Level::Warning,
+                )
+            },
+        );
+    }));
+}
+
+fn report_core_update_baseline_persistence_warning_once(
+    report: CoreUpdateBaselinePersistenceWarningReport,
+) {
+    let signature = CoreUpdateBaselinePersistenceWarningSignature {
+        channel: report.channel,
+        error_category: report.error_category,
+    };
+    if claim_core_update_baseline_warning_signature(signature) {
+        send_core_update_baseline_persistence_warning(report);
+    }
+}
+
+fn queue_core_update_baseline_persistence_warning(
+    source: &'static str,
+    channel: Channel,
+    detail: &str,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source_hub = sentry::Hub::main();
+        if source_hub.client().is_none() {
+            return;
+        }
+        let report = core_update_baseline_persistence_warning_report(source, channel, detail);
+        let hub = std::sync::Arc::new(sentry::Hub::new_from_top(source_hub));
+        hq_telemetry::dispatch_sentry_report(move || {
+            sentry::Hub::run(hub, || {
+                report_core_update_baseline_persistence_warning_once(report)
+            });
+        });
+    }));
+}
+
+/// Records a degraded post-apply baseline write without converting the update
+/// into a failure. The caller deliberately continues with its successful
+/// rescue result so the UI reports the completed update.
+pub(crate) fn record_core_update_baseline_persistence_failure(
+    source: &'static str,
+    channel: Channel,
+    log_tag: &str,
+    detail: &str,
+) {
+    log(log_tag, detail);
+    queue_core_update_baseline_persistence_warning(source, channel, detail);
+}
+
+#[cfg(test)]
+fn reset_core_update_sentry_signatures_for_test() {
+    if let Some(signatures) = CORE_UPDATE_SENTRY_SIGNATURES.get() {
+        signatures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+}
+
+#[cfg(test)]
+fn reset_core_update_baseline_warning_signatures_for_test() {
+    if let Some(signatures) = CORE_UPDATE_BASELINE_WARNING_SIGNATURES.get() {
+        signatures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
 }
 
 async fn check_once_observed(
@@ -1280,9 +2343,30 @@ enum NativeCoreAutoUpdateOutcome {
     DeferredForSync,
     SkippedAlreadyInProgress,
     SkippedAlreadyAttempted,
+    SkippedConsecutiveFailureCap,
+    SkippedRetryInterval,
     Succeeded,
+    SucceededWithBaselinePersistenceFailure,
     FailedExit(i32),
     Failed(CoreUpdateErrorKind),
+}
+
+/// The rescue exit code is the user-facing update result. The baseline bit is
+/// deliberately separate so automatic bookkeeping can retry degraded drift
+/// setup without relabeling an applied update as a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CoreUpdateAutoInstall {
+    exit_code: i32,
+    baseline_persisted: bool,
+}
+
+impl CoreUpdateAutoInstall {
+    const fn new(exit_code: i32, baseline_persisted: bool) -> Self {
+        Self {
+            exit_code,
+            baseline_persisted,
+        }
+    }
 }
 
 async fn execute_native_core_auto_update<F, Fut>(
@@ -1293,9 +2377,36 @@ async fn execute_native_core_auto_update<F, Fut>(
 ) -> NativeCoreAutoUpdateOutcome
 where
     F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
-    Fut: Future<Output = Result<i32, CoreUpdateError>>,
+    Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
 {
-    match core_auto_update_decision(auto_updates, candidate.version_behind, sync_in_progress) {
+    execute_native_core_auto_update_with_clock(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        Instant::now,
+        install,
+    )
+    .await
+}
+
+async fn execute_native_core_auto_update_with_clock<F, Fut, Now>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    now: Now,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
+    Now: Fn() -> Instant,
+{
+    let baseline_retry_pending = automatic_target_baseline_retry_pending(candidate.channel);
+    match core_auto_update_decision(
+        auto_updates,
+        candidate.version_behind || baseline_retry_pending,
+        sync_in_progress,
+    ) {
         CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
         CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled => {
             log(
@@ -1370,27 +2481,78 @@ where
                     return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
                 }
             };
-            if !mark_automatic_target_attempted(candidate.channel, candidate.target_version) {
-                log(
-                    "hq-core-update",
-                    "native auto-update skipped: target already attempted this session",
-                );
-                emit_core_update_event(
-                    "core_update_skipped",
-                    "automatic",
-                    "skipped",
-                    Some(candidate.channel),
-                    candidate.local_version,
-                    Some(candidate.target_version),
-                    true,
-                    Some(candidate.is_eligible),
-                    Some(candidate.version_behind),
-                    Duration::ZERO,
-                    None,
-                    None,
-                    Some("already_attempted_this_session"),
-                );
-                return NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted;
+            match automatic_target_eligibility_at(
+                candidate.channel,
+                candidate.target_version,
+                now(),
+            ) {
+                AutomaticTargetEligibility::Eligible => {}
+                AutomaticTargetEligibility::CompletedWithoutVersionMove => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: target already completed without a version move",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some("already_attempted_this_session"),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted;
+                }
+                AutomaticTargetEligibility::ConsecutiveFailureCapReached => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: consecutive failure cap reached",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some(CONSECUTIVE_FAILURE_CAP_SKIP_REASON),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedConsecutiveFailureCap;
+                }
+                AutomaticTargetEligibility::RetryIntervalNotElapsed => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: retry interval has not elapsed",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some(RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedRetryInterval;
+                }
             }
             log(
                 "hq-core-update",
@@ -1404,18 +2566,45 @@ where
             let observation = CoreUpdateTelemetryContext::automatic(candidate.version_behind);
             let result = install(candidate.channel, run_guard, observation).await;
             match result {
-                Ok(0) => {
+                Ok(result) if result.exit_code == 0 && result.baseline_persisted => {
+                    record_automatic_target_completed(candidate.channel, candidate.target_version);
                     log("hq-core-update", "native auto-update succeeded");
                     NativeCoreAutoUpdateOutcome::Succeeded
                 }
-                Ok(exit_code) => {
+                Ok(result) if result.exit_code == 0 => {
+                    arm_baseline_retry_after_successful_core_update(
+                        candidate.channel,
+                        candidate.target_version,
+                        result.exit_code,
+                        result.baseline_persisted,
+                    );
                     log(
                         "hq-core-update",
-                        &format!("native auto-update failed: rescue_exit={exit_code}"),
+                        "native auto-update applied; drift baseline persistence will retry on the next scheduled Core check",
                     );
-                    NativeCoreAutoUpdateOutcome::FailedExit(exit_code)
+                    NativeCoreAutoUpdateOutcome::SucceededWithBaselinePersistenceFailure
+                }
+                Ok(result) => {
+                    record_automatic_target_failure_at(
+                        candidate.channel,
+                        candidate.target_version,
+                        now(),
+                    );
+                    log(
+                        "hq-core-update",
+                        &format!(
+                            "native auto-update failed: rescue_exit={}",
+                            result.exit_code
+                        ),
+                    );
+                    NativeCoreAutoUpdateOutcome::FailedExit(result.exit_code)
                 }
                 Err(error) => {
+                    record_automatic_target_failure_at(
+                        candidate.channel,
+                        candidate.target_version,
+                        now(),
+                    );
                     log(
                         "hq-core-update",
                         &format!(
@@ -1428,6 +2617,28 @@ where
             }
         }
     }
+}
+
+#[cfg(test)]
+async fn execute_native_core_auto_update_at<F, Fut>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    attempted_at: Instant,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
+{
+    execute_native_core_auto_update_with_clock(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        || attempted_at,
+        install,
+    )
+    .await
 }
 
 async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
@@ -1443,7 +2654,7 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
                         observation,
                     )
                     .await
-                    .map(|run| run.exit_code)
+                    .map(|run| CoreUpdateAutoInstall::new(run.exit_code, run.baseline_persisted))
                 }
                 Channel::Staging => {
                     crate::commands::hq_core_staging::run_replace_from_staging_automatic(
@@ -1451,14 +2662,18 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
                         observation,
                     )
                     .await
-                    .map(|run| run.exit_code)
+                    .map(|run| CoreUpdateAutoInstall::new(run.exit_code, run.baseline_persisted))
                 }
             }
         },
     )
     .await;
 
-    if outcome == NativeCoreAutoUpdateOutcome::Succeeded {
+    if matches!(
+        outcome,
+        NativeCoreAutoUpdateOutcome::Succeeded
+            | NativeCoreAutoUpdateOutcome::SucceededWithBaselinePersistenceFailure
+    ) {
         // Refresh the public state immediately so every window clears the stale
         // update badge without waiting six hours.
         if let Err(error) = check_once_observed(app, "post_install").await {
@@ -1508,9 +2723,40 @@ pub fn setup_core_state_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+    use tempfile::TempDir;
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // Snapshot of the hq-pro entries that can admit `core_update_failed`
+    // properties. Mirrors
+    // src/vault-service/handlers/raw-telemetry-envelope.ts. CI for this repo
+    // cannot import hq-pro, so the test below makes server-list drift explicit.
+    const HQ_PRO_LABEL_PROPERTY_KEYS: &[&str] = &[
+        "channel",
+        "desktopVersion",
+        "errorCategory",
+        "errorKind",
+        "localCoreVersion",
+        "platform",
+        "result",
+        "source",
+    ];
+    const HQ_PRO_BOOLEAN_PROPERTY_KEYS: &[&str] =
+        &["autoUpdateEnabled", "eligible", "versionBehind"];
+    const HQ_PRO_NUMBER_PROPERTY_KEYS: &[&str] = &["durationMs", "exitCode"];
+    const EXPECTED_HQ_PRO_CORE_UPDATE_PROPERTY_GAPS: &[&str] = &["npxResolution", "npxResolved"];
+
+    fn hq_pro_admits_core_update_property(key: &str) -> bool {
+        HQ_PRO_LABEL_PROPERTY_KEYS.contains(&key)
+            || HQ_PRO_BOOLEAN_PROPERTY_KEYS.contains(&key)
+            || HQ_PRO_NUMBER_PROPERTY_KEYS.contains(&key)
+    }
 
     #[tokio::test]
     async fn core_update_run_guard_serializes_and_releases_the_update_slot() {
@@ -1523,13 +2769,501 @@ mod tests {
         drop(retry);
     }
 
-    #[test]
-    fn automatic_target_deduplication_is_scoped_to_the_channel() {
+    #[tokio::test]
+    async fn automatic_target_state_is_scoped_to_the_channel() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
         let target = "15.0.117-deduplication-contract";
 
-        assert!(mark_automatic_target_attempted(Channel::Release, target));
-        assert!(!mark_automatic_target_attempted(Channel::Release, target));
-        assert!(mark_automatic_target_attempted(Channel::Staging, target));
+        record_automatic_target_completed(Channel::Release, target);
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::CompletedWithoutVersionMove
+        );
+        assert_eq!(
+            automatic_target_eligibility(Channel::Staging, target),
+            AutomaticTargetEligibility::Eligible
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_automatic_target_waits_for_the_next_check_interval_before_retrying() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-retry-after-failure-contract";
+        let candidate = || CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind: true,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_attempt_at = Instant::now();
+
+        let first_calls = Arc::clone(&calls);
+        let first = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                first_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(5, true))
+            },
+        )
+        .await;
+
+        let before_interval_calls = Arc::clone(&calls);
+        let before_interval = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at + CHECK_INTERVAL - Duration::from_secs(1),
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                before_interval_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(5, true))
+            },
+        )
+        .await;
+
+        let after_interval_calls = Arc::clone(&calls);
+        let after_interval = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at + CHECK_INTERVAL,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                after_interval_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(first, NativeCoreAutoUpdateOutcome::FailedExit(5));
+        assert_eq!(
+            before_interval,
+            NativeCoreAutoUpdateOutcome::SkippedRetryInterval
+        );
+        assert_eq!(after_interval, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            2,
+            "only the first and next-cycle automatic attempts may invoke the installer"
+        );
+        assert_eq!(
+            RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON,
+            "retry_interval_not_elapsed"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_apply_baseline_failure_keeps_update_successful_and_retries_the_next_attempt() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-baseline-retry-contract";
+        let candidate = |version_behind| CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_attempt_at = Instant::now();
+
+        let first_calls = Arc::clone(&calls);
+        let first = execute_native_core_auto_update_at(
+            candidate(true),
+            true,
+            false,
+            first_attempt_at,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                first_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, false))
+            },
+        )
+        .await;
+
+        let retry_calls = Arc::clone(&calls);
+        let retry = execute_native_core_auto_update_at(
+            // The rescue already applied, so the next check no longer sees a
+            // version update. The pending baseline state must still schedule
+            // this repair attempt.
+            candidate(false),
+            true,
+            false,
+            first_attempt_at + CHECK_INTERVAL,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                retry_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(
+            first,
+            NativeCoreAutoUpdateOutcome::SucceededWithBaselinePersistenceFailure,
+            "the completed rescue remains successful when only its baseline write fails"
+        );
+        assert_eq!(retry, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            2,
+            "a failed baseline must not mark the target completed and suppress its retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_baseline_repair_survives_restart_and_arms_the_next_check() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let _env_lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join(".hq")).unwrap();
+        std::fs::write(
+            home.path().join(".hq/menubar.json"),
+            r#"{"futureKey":"must-survive"}"#,
+        )
+        .unwrap();
+        let _home = scoped_home(home.path());
+        let target = "15.0.117-baseline-repair-restart-contract";
+
+        reset_automatic_target_states_for_test();
+        arm_baseline_retry_after_successful_core_update(Channel::Release, target, 0, false);
+        assert_eq!(
+            persisted_baseline_retry_target(Channel::Release).as_deref(),
+            Some(target),
+            "the marker is written before this process can exit"
+        );
+
+        // Clearing the process-local map models a fresh desktop process. The
+        // local version is already current, so only the durable marker can
+        // cause this scheduled check to repair the baseline.
+        reset_automatic_target_states_for_test();
+        assert!(automatic_target_baseline_retry_pending(Channel::Release));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let retry_calls = Arc::clone(&calls);
+        let retry = execute_native_core_auto_update_at(
+            CoreAutoUpdateCandidate {
+                channel: Channel::Release,
+                local_version: Some(target),
+                target_version: target,
+                is_eligible: true,
+                version_behind: false,
+            },
+            true,
+            false,
+            Instant::now(),
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                retry_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(retry, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert!(
+            !automatic_target_baseline_retry_pending(Channel::Release),
+            "only a run that persisted the baseline clears the durable marker"
+        );
+        let menubar =
+            hq_desktop_core::first_run::read_menubar_obj(&home.path().join(".hq/menubar.json"));
+        assert_eq!(
+            menubar.get("futureKey"),
+            Some(&Value::String("must-survive".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_success_with_missing_baseline_arms_the_same_durable_repair() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let _env_lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = TempDir::new().unwrap();
+        let _home = scoped_home(home.path());
+
+        // Both manual wrappers call this shared post-result hook. The IPC
+        // result remains a successful zero-exit update, while the next native
+        // check is now armed to repair the missing baseline.
+        for (channel, target) in [
+            (Channel::Release, "15.0.117-manual-baseline-repair-contract"),
+            (Channel::Staging, "main"),
+        ] {
+            reset_automatic_target_states_for_test();
+            arm_baseline_retry_after_successful_core_update(channel, target, 0, false);
+
+            assert!(automatic_target_baseline_retry_pending(channel));
+            assert_eq!(
+                persisted_baseline_retry_target(channel).as_deref(),
+                Some(target)
+            );
+            assert_eq!(
+                core_auto_update_decision(true, true, false),
+                CoreAutoUpdateDecision::Install
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_baseline_retry_keeps_the_pending_repair_marker() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-baseline-retry-failure-contract";
+
+        arm_baseline_retry_after_successful_core_update(Channel::Release, target, 0, false);
+        record_automatic_target_failure_at(Channel::Release, target, Instant::now());
+
+        assert!(
+            automatic_target_baseline_retry_pending(Channel::Release),
+            "a failed retry has not established a baseline and must not clear the repair"
+        );
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::Eligible,
+            "a pending baseline repair is not blocked by ordinary update retry gates"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_apply_baseline_failure_resets_the_update_failure_budget() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-baseline-budget-reset-contract";
+        let first_failure_at = Instant::now();
+
+        for failure_number in 0..(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1) {
+            record_automatic_target_failure_at(
+                Channel::Release,
+                target,
+                first_failure_at + CHECK_INTERVAL * u32::from(failure_number),
+            );
+        }
+        assert_eq!(
+            automatic_target_eligibility_at(
+                Channel::Release,
+                target,
+                first_failure_at
+                    + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1),
+            ),
+            AutomaticTargetEligibility::Eligible
+        );
+
+        // This represents the next rescue applying the update but failing its
+        // post-apply baseline write. It must not turn the prior two update
+        // failures into a capped, permanently stranded repair.
+        record_automatic_target_baseline_persistence_failure_at(
+            Channel::Release,
+            target,
+            first_failure_at
+                + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1),
+        );
+
+        let state = AUTO_TARGET_STATES
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&Channel::Release)
+            .cloned()
+            .unwrap();
+        assert_eq!(state.consecutive_failures, 0);
+        assert!(state.baseline_retry_pending);
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::Eligible,
+            "the repaired update gets another baseline attempt instead of the old failure cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_apply_failure_still_reports_an_update_failure() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "15.0.117-pre-apply-failure-contract",
+            is_eligible: true,
+            version_behind: true,
+        };
+
+        let outcome =
+            execute_native_core_auto_update(candidate, true, false, |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                Err(CoreUpdateError::new(
+                    CoreUpdateErrorKind::Network,
+                    "fetch latest hq-core release: connection refused",
+                ))
+            })
+            .await;
+
+        assert_eq!(
+            outcome,
+            NativeCoreAutoUpdateOutcome::Failed(CoreUpdateErrorKind::Network)
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_but_unchanged_target_stays_suppressed_until_a_newer_target() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let old_target = "15.0.117-success-without-version-move-contract";
+        let candidate = |target| CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            // The installer below reports zero without changing this observed
+            // local version, which is the non-convergence case we must retain.
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind: true,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let first_calls = Arc::clone(&calls);
+        let first = execute_native_core_auto_update(
+            candidate(old_target),
+            true,
+            false,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                first_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        let blocked = execute_native_core_auto_update(
+            candidate(old_target),
+            true,
+            false,
+            |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                panic!("a successful-but-unchanged target must remain suppressed");
+            },
+        )
+        .await;
+
+        let new_target_calls = Arc::clone(&calls);
+        let newer = execute_native_core_auto_update(
+            candidate("15.0.118-new-target-contract"),
+            true,
+            false,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                new_target_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(first, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(
+            blocked,
+            NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted
+        );
+        assert_eq!(newer, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn automatic_retry_stops_after_three_consecutive_failures() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-consecutive-failure-cap-contract";
+        let candidate = || CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind: true,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let first_attempt_at = Instant::now();
+        for failure_number in 0..MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+            let failure_calls = Arc::clone(&calls);
+            let outcome = execute_native_core_auto_update_at(
+                candidate(),
+                true,
+                false,
+                first_attempt_at + CHECK_INTERVAL * u32::from(failure_number),
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    failure_calls.fetch_add(1, Ordering::AcqRel);
+                    Ok(CoreUpdateAutoInstall::new(5, true))
+                },
+            )
+            .await;
+            assert_eq!(outcome, NativeCoreAutoUpdateOutcome::FailedExit(5));
+        }
+
+        let capped = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at
+                + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES),
+            |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                panic!("the capped target must not start another automatic install");
+            },
+        )
+        .await;
+
+        assert_eq!(
+            capped,
+            NativeCoreAutoUpdateOutcome::SkippedConsecutiveFailureCap
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 3);
+        assert_eq!(
+            CONSECUTIVE_FAILURE_CAP_SKIP_REASON,
+            "consecutive_failure_cap_reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_retry_is_not_gated_by_an_automatic_failure_cap() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-manual-retry-contract";
+        let first_failure_at = Instant::now();
+        record_automatic_target_failure_at(Channel::Release, target, first_failure_at);
+        assert_eq!(
+            automatic_target_eligibility_at(
+                Channel::Release,
+                target,
+                first_failure_at + Duration::from_secs(1),
+            ),
+            AutomaticTargetEligibility::RetryIntervalNotElapsed
+        );
+
+        // Manual commands acquire only the run guard; automatic retry state is
+        // deliberately not consulted, so the UI retry remains responsive even
+        // while the automatic retry interval is active.
+        let manual_run_guard = try_begin_core_update().expect("manual retry is not gated");
+        drop(manual_run_guard);
+
+        for failure_number in 1..MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+            record_automatic_target_failure_at(
+                Channel::Release,
+                target,
+                first_failure_at + CHECK_INTERVAL * u32::from(failure_number),
+            );
+        }
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::ConsecutiveFailureCapReached
+        );
     }
 
     #[tokio::test]
@@ -1555,7 +3289,7 @@ mod tests {
                 assert_eq!(observation.source(), "automatic");
                 assert_eq!(observation.version_behind(), Some(true));
                 called_by_installer.store(true, Ordering::Release);
-                Ok(0)
+                Ok(CoreUpdateAutoInstall::new(0, true))
             },
         )
         .await;
@@ -1578,6 +3312,947 @@ mod tests {
             "completely revised network wording",
         );
         assert_eq!(error.kind().label(), "network");
+    }
+
+    #[test]
+    fn rescue_exit_failure_classifies_dns_without_sending_the_raw_diagnostic() {
+        let npx_resolution = CoreUpdateNpxResolution {
+            resolved: true,
+            source: "managed_toolchain",
+        };
+        let stderr =
+            "fatal: unable to access 'https://github.com/indigoai-us/hq-core/': Could not resolve host: github.com";
+        let properties = core_update_failed_properties(
+            "automatic",
+            Channel::Release,
+            Some("15.0.4"),
+            true,
+            None,
+            Some(true),
+            Duration::from_millis(42),
+            Some(5),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(stderr),
+                rescue_failure_category: classify_rescue_exit_failure(stderr, npx_resolution),
+                npx_resolution: Some(npx_resolution),
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+
+        assert_eq!(properties["exitCode"], 5);
+        assert_eq!(
+            properties["errorCategory"], "dns",
+            "a git DNS failure must become a bounded telemetry dimension"
+        );
+        assert!(properties.get("rescueStderrTail").is_none());
+        assert_eq!(properties["npxResolved"], true);
+        assert_eq!(properties["npxResolution"], "managed_toolchain");
+        let platform = properties["platform"].as_str().unwrap();
+        assert!(
+            crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
+            "platform must remain in the closed desktop vocabulary"
+        );
+    }
+
+    #[test]
+    fn rescue_rsync_preflight_failure_is_a_missing_dependency() {
+        let stderr = "error: rsync preflight failed before any safety snapshot was allocated.\n\
+       resolved PATH: (unset)\n\
+       Install or repair rsync, then retry the HQ update.";
+        let category = classify_rescue_stderr_failure(stderr);
+
+        assert_eq!(category, RescueFailureCategory::MissingDependency);
+        assert_eq!(category.label(), "missing-dependency");
+    }
+
+    #[test]
+    fn rescue_xcode_license_refusal_is_a_missing_dependency() {
+        let stderr = "==> Cloning [Filtered] @main (full history, blob:none filter) ...\n\
+You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license.\n\
+error: clone failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn rescue_specific_preflight_failures_precede_broader_permission_needles() {
+        let cases = [
+            (
+                "error: rsync preflight failed before any safety snapshot was allocated.\n\
+       version output: permission denied",
+                "rsync preflight",
+            ),
+            (
+                "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license.\n\
+permission denied",
+                "Xcode license refusal",
+            ),
+        ];
+
+        for (stderr, diagnosis) in cases {
+            assert_eq!(
+                classify_rescue_stderr_failure(stderr),
+                RescueFailureCategory::MissingDependency,
+                "the {diagnosis} diagnostic must not be shadowed by a broader permission needle"
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_broken_git_https_transport_is_a_missing_dependency() {
+        let stderr = "warning: templates not found in ...\n\
+git: 'remote-https' is not a git command. See 'git --help'.\n\
+fatal: remote helper 'https' aborted session\n\
+error: clone failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn rescue_broken_git_https_transport_keeps_auth_precedence() {
+        assert_eq!(
+            classify_rescue_stderr_failure("is not a git command; authentication failed"),
+            RescueFailureCategory::Auth
+        );
+    }
+
+    #[test]
+    fn rescue_generic_clone_failure_remains_unknown() {
+        assert_eq!(
+            classify_rescue_stderr_failure("error: clone failed"),
+            RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn every_rescue_stderr_pattern_classifies_to_its_table_category() {
+        for pattern in RESCUE_STDERR_PATTERNS {
+            assert_eq!(
+                classify_rescue_stderr_failure(pattern.needle),
+                pattern.category,
+                "pattern {:?} must classify as {:?}",
+                pattern.needle,
+                pattern.category
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_exit_failure_retains_origin_main_categories_and_precedence() {
+        let npx_resolution = CoreUpdateNpxResolution {
+            resolved: true,
+            source: "managed_toolchain",
+        };
+        let origin_main_cases = [
+            (
+                "rsync preflight failed",
+                RescueFailureCategory::MissingDependency,
+            ),
+            ("authentication failed", RescueFailureCategory::Auth),
+            ("could not resolve host", RescueFailureCategory::Dns),
+            ("ssl certificate problem", RescueFailureCategory::Tls),
+            ("no space left on device", RescueFailureCategory::DiskFull),
+            ("operation not permitted", RescueFailureCategory::Permission),
+            ("repository not found", RescueFailureCategory::NotFound),
+            ("operation timed out", RescueFailureCategory::Timeout),
+            ("connection refused", RescueFailureCategory::Network),
+        ];
+
+        for (stderr, expected) in origin_main_cases {
+            assert_eq!(
+                classify_rescue_exit_failure(stderr, npx_resolution),
+                expected,
+                "rescue exit must retain origin/main classification for {stderr:?}"
+            );
+        }
+
+        for (stderr, expected) in [
+            (
+                "authentication failed: no such file or directory",
+                RescueFailureCategory::Auth,
+            ),
+            (
+                "connection refused: no such file or directory",
+                RescueFailureCategory::Network,
+            ),
+        ] {
+            assert_eq!(
+                classify_rescue_exit_failure(stderr, npx_resolution),
+                expected,
+                "spawn-shaped detail must not change rescue-exit precedence"
+            );
+        }
+    }
+
+    #[test]
+    fn core_update_error_classification_uses_typed_conditions_before_detail() {
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::Network,
+                "failed to connect while resolving the update",
+                None,
+            ),
+            RescueFailureCategory::Network
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: ENOENT: No such file or directory",
+                Some(CoreUpdateNpxResolution {
+                    resolved: false,
+                    source: "not_resolved",
+                })
+            ),
+            RescueFailureCategory::NpxResolveFailed
+        );
+
+        for error_kind in [
+            CoreUpdateErrorKind::AlreadyInProgress,
+            CoreUpdateErrorKind::InvalidCoreRoot,
+            CoreUpdateErrorKind::ChannelConfiguration,
+            CoreUpdateErrorKind::Internal,
+        ] {
+            assert_eq!(
+                classify_core_update_error(error_kind, "connection refused", None),
+                RescueFailureCategory::Unknown,
+                "{error_kind:?} must keep its existing typed classification"
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_spawn_errors_classify_their_details() {
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: ENOENT: No such file or directory (os error 2)",
+                None,
+            ),
+            RescueFailureCategory::MissingDependency
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: Access is denied (os error 5)",
+                None,
+            ),
+            RescueFailureCategory::Permission
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "authentication failed: no such file or directory",
+                None,
+            ),
+            RescueFailureCategory::MissingDependency,
+            "spawn-shaped details must take precedence only on the spawn path"
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: unexpected operating-system failure",
+                None,
+            ),
+            RescueFailureCategory::Unknown,
+            "an unrecognized spawn failure must not become a catch-all category"
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "update process quiescence is already in progress",
+                None,
+            ),
+            RescueFailureCategory::Unknown,
+            "the existing category vocabulary has no lock-conflict label"
+        );
+    }
+
+    #[test]
+    fn rescue_spawn_classifies_windows_npm_cache_lock_contention() {
+        let detail = "HQ Sync could not coordinate npm cache preparation: The process cannot access the file because another process has locked a portion of the file. (os error 33)";
+
+        assert_eq!(
+            classify_core_update_error(CoreUpdateErrorKind::RescueSpawn, detail, None),
+            RescueFailureCategory::LockContention
+        );
+    }
+
+    #[test]
+    fn rescue_spawn_classifies_normalized_npx_materialization_failures() {
+        let cases = [
+            (
+                "HQ Sync cannot update its npm cache because this account cannot write to it. Fix the npm cache permissions, then try Sync again.",
+                RescueFailureCategory::Permission,
+            ),
+            (
+                "HQ Sync cannot run the sync engine because the Node/npm installation is not executable. Reinstall Node 20 or newer, then reopen HQ Sync.",
+                RescueFailureCategory::MissingDependency,
+            ),
+            (
+                "HQ Sync cannot start the sync engine because Node.js was not found. Install Node 20 or newer, then reopen HQ Sync.",
+                RescueFailureCategory::MissingDependency,
+            ),
+            (
+                "HQ Sync could not prepare its npm cache (npx exited with code 1). Check your network and npm setup, then try Sync again.",
+                RescueFailureCategory::Network,
+            ),
+        ];
+
+        for (message, expected) in cases {
+            assert_eq!(
+                classify_core_update_error(CoreUpdateErrorKind::RescueSpawn, message, None),
+                expected,
+                "normalized npx materialization message must classify as {expected:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_npx_materialization_remains_unknown() {
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "HQ Sync could not prepare its npm cache because npx was interrupted. Try Sync again.",
+                None,
+            ),
+            RescueFailureCategory::Unknown,
+            "an interrupted npx process has no sufficiently specific failure category"
+        );
+    }
+
+    #[test]
+    fn rescue_exit_keeps_auth_precedence_over_spawn_needles() {
+        assert_eq!(
+            classify_rescue_exit_failure(
+                "authentication failed: no such file or directory",
+                CoreUpdateNpxResolution {
+                    resolved: true,
+                    source: "managed_toolchain",
+                },
+            ),
+            RescueFailureCategory::Auth,
+            "rescue-exit classification must not use spawn-pattern precedence"
+        );
+    }
+
+    #[test]
+    fn unresolved_npx_precedes_detail_classification_for_spawn_errors() {
+        let unresolved_npx = Some(CoreUpdateNpxResolution {
+            resolved: false,
+            source: "not_resolved",
+        });
+
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: No such file or directory",
+                unresolved_npx,
+            ),
+            RescueFailureCategory::NpxResolveFailed
+        );
+    }
+
+    #[test]
+    fn rescue_stderr_needles_remain_case_insensitive() {
+        assert_eq!(
+            classify_rescue_stderr_failure("fatal: COULD NOT RESOLVE HOST: github.com"),
+            RescueFailureCategory::Dns
+        );
+    }
+
+    #[test]
+    fn sentry_exit_code_names_dependency_spawn_failures() {
+        assert_eq!(core_update_sentry_exit_code(Some(127)), "127");
+        assert_eq!(core_update_sentry_exit_code(Some(126)), "126");
+        assert_eq!(core_update_sentry_exit_code(Some(3)), "3");
+        assert_eq!(core_update_sentry_exit_code(Some(-1)), "signal_or_unknown");
+        assert_eq!(core_update_sentry_exit_code(None), "not_available");
+        assert_eq!(core_update_sentry_exit_code(Some(42)), "other");
+    }
+
+    #[test]
+    fn rescue_failure_category_values_are_hq_pro_safe_labels() {
+        for category in RescueFailureCategory::ALL {
+            let label = category.label();
+            assert!(label.len() <= 64, "{label:?} exceeds hq-pro's label cap");
+            assert!(
+                label.bytes().all(|byte| byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'_' | b'.' | b':' | b'-')),
+                "{label:?} violates hq-pro SAFE_MARKETING_LABEL_RE"
+            );
+        }
+    }
+
+    fn report_for_core_update_error(error: &CoreUpdateError) -> CoreUpdateSentryFailureReport {
+        core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            error.kind().label(),
+            core_update_failure_details(error),
+        )
+    }
+
+    #[test]
+    fn rescue_spawn_report_keeps_a_bounded_redacted_detail() {
+        let error = CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied for /Users/alice/.npm; token npm_abcdefghijklmnop",
+        );
+
+        let report = report_for_core_update_error(&error);
+        let tail = report
+            .rescue_stderr_tail
+            .expect("RescueSpawn reports retain a redacted diagnostic tail");
+
+        assert!(tail.contains("Access is denied"));
+        assert!(!tail.contains("/Users/alice"));
+        assert!(!tail.contains("npm_abcdefghijklmnop"));
+        assert!(tail.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn core_update_error_report_keeps_origin_main_dimensions() {
+        let cases = [
+            (
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: Access is denied (os error 5)",
+                RescueFailureCategory::Permission,
+                "rescue_spawn",
+                "not_available",
+            ),
+            (
+                CoreUpdateErrorKind::Network,
+                "unrelated network wording",
+                RescueFailureCategory::Network,
+                "network",
+                "not_available",
+            ),
+            (
+                CoreUpdateErrorKind::Internal,
+                "connection refused",
+                RescueFailureCategory::Unknown,
+                "internal",
+                "not_available",
+            ),
+        ];
+
+        for (kind, detail, category, error_kind, exit_code) in cases {
+            let error = CoreUpdateError::new(kind, detail);
+            let report = report_for_core_update_error(&error);
+
+            assert_eq!(report.error_category, category);
+            assert_eq!(report.error_kind, error_kind);
+            assert_eq!(core_update_sentry_exit_code(report.exit_code), exit_code);
+        }
+    }
+
+    #[test]
+    fn rescue_exit_report_keeps_its_existing_redacted_tail() {
+        let stderr =
+            "fatal: unable to access https://github.com/indigoai-us/hq-core at /Users/alice/.npm";
+        let details = CoreUpdateFailureDetails {
+            rescue_stderr_tail: Some(stderr),
+            rescue_failure_category: RescueFailureCategory::Unknown,
+            npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+        };
+
+        let report = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            Some(5),
+            "rescue_exit",
+            details,
+        );
+
+        assert_eq!(
+            report.rescue_stderr_tail,
+            Some(hq_telemetry::redact_core_update_diagnostic_tail(stderr))
+        );
+    }
+
+    #[test]
+    fn spawn_failure_fingerprint_excludes_the_detail() {
+        let first = report_for_core_update_error(&CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied while opening its cache",
+        ));
+        let second = report_for_core_update_error(&CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied while launching its shim",
+        ));
+
+        assert_eq!(first.error_category, second.error_category);
+        assert_eq!(
+            core_update_sentry_fingerprint(first.error_kind, first.error_category),
+            core_update_sentry_fingerprint(second.error_kind, second.error_category)
+        );
+    }
+
+    #[test]
+    fn lock_contention_uses_its_own_sentry_fingerprint_without_changing_existing_groups() {
+        let report = report_for_core_update_error(&CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "HQ Sync could not coordinate npm cache preparation: The process cannot access the file because another process has locked a portion of the file. (os error 33)",
+        ));
+
+        assert_eq!(report.error_category, RescueFailureCategory::LockContention);
+        assert_eq!(
+            core_update_sentry_fingerprint(report.error_kind, report.error_category),
+            ["rescue_spawn", "lock-contention"]
+        );
+        assert_eq!(
+            core_update_sentry_fingerprint(
+                "rescue_spawn",
+                RescueFailureCategory::MissingDependency,
+            ),
+            ["rescue_spawn", "missing-dependency"]
+        );
+    }
+
+    #[test]
+    fn sentry_reports_one_event_per_failure_signature_per_process() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let report = |error_kind, error_category, exit_code| CoreUpdateSentryFailureReport {
+            source: "automatic",
+            channel: Channel::Release,
+            exit_code,
+            error_kind,
+            error_category,
+            rescue_stderr_tail: Some(hq_telemetry::redact_core_update_diagnostic_tail(
+                "fatal: could not clone Core source",
+            )),
+            npx_resolution: Some(CoreUpdateNpxResolution {
+                resolved: true,
+                source: "managed_toolchain",
+            }),
+            // This fixture models a directly reported failure, before any
+            // managed-Git retry can have been attempted.
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+        };
+        let events = sentry::test::with_captured_events_options(
+            || {
+                report_core_update_failure_once(report(
+                    "rescue_exit",
+                    RescueFailureCategory::Unknown,
+                    Some(5),
+                ));
+                report_core_update_failure_once(report(
+                    "rescue_exit",
+                    RescueFailureCategory::Unknown,
+                    Some(5),
+                ));
+                report_core_update_failure_once(report(
+                    "network",
+                    RescueFailureCategory::Network,
+                    None,
+                ));
+                report_core_update_failure_once(report(
+                    "rescue_spawn",
+                    RescueFailureCategory::LockContention,
+                    None,
+                ));
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(events.len(), 3, "identical failures must dedupe in-process");
+        assert_eq!(events[0].fingerprint, vec!["rescue_exit", "unknown"]);
+        assert_eq!(events[1].fingerprint, vec!["network", "network"]);
+        assert_eq!(
+            events[2].fingerprint,
+            vec!["rescue_spawn", "lock-contention"]
+        );
+        assert_eq!(events[0].tags["errorKind"], "rescue_exit");
+        assert_eq!(events[0].tags["errorCategory"], "unknown");
+        assert_eq!(events[0].tags["channel"], "release");
+        assert_eq!(events[0].tags["platform"], core_update_sentry_platform());
+        assert_eq!(events[0].tags["source"], "automatic");
+        assert_eq!(events[0].tags["exitCode"], "5");
+        assert_eq!(events[1].tags["exitCode"], "not_available");
+        assert_eq!(events[2].tags["errorCategory"], "lock-contention");
+        assert_eq!(events[2].tags["exitCode"], "not_available");
+        assert_eq!(
+            events[0].extra["rescueStderrTail"],
+            sentry::protocol::Value::String("fatal: could not clone Core source".to_string())
+        );
+    }
+
+    #[test]
+    fn baseline_persistence_failure_is_a_redacted_warning_with_its_own_fingerprint() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_baseline_warning_signatures_for_test();
+        let detail = "core update applied but baseline persistence failed: commits/main HTTP 403 Forbidden at /home/alice/.hq; token ghp_abcdefghijklmnop";
+        let report =
+            core_update_baseline_persistence_warning_report("automatic", Channel::Release, detail);
+        let events = sentry::test::with_captured_events_options(
+            || {
+                report_core_update_baseline_persistence_warning_once(report.clone());
+                report_core_update_baseline_persistence_warning_once(report);
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            events.len(),
+            1,
+            "identical degraded writes dedupe in-process"
+        );
+        let event = hq_telemetry::before_send(events.into_iter().next().unwrap()).unwrap();
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Desktop Core update applied but baseline persistence failed")
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec!["core_update_baseline_persistence_warning", "unknown"],
+            "baseline warnings must not merge with Core-update-failed issues"
+        );
+        assert_eq!(event.tags["operation"], "baseline_persistence");
+        assert_eq!(event.tags["channel"], "release");
+        assert_eq!(event.tags["source"], "automatic");
+        let redacted = event.extra["baselinePersistenceDetail"]
+            .as_str()
+            .expect("warning retains a redacted diagnostic");
+        assert!(redacted.contains("HTTP 403 Forbidden"));
+        assert!(!redacted.contains("/home/alice"));
+        assert!(!redacted.contains("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn baseline_persistence_failure_is_recorded_in_the_local_diagnostic_log() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_baseline_warning_signatures_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("hq-sync.log");
+        let _log_guard = hq_desktop_core::logfile::LogOverrideGuard::new(path.clone());
+        let detail =
+            "core update applied but baseline persistence failed: commits/main HTTP 403 Forbidden";
+
+        let events = captured_dispatched_core_update_events(
+            &["Desktop Core update applied but baseline persistence failed"],
+            || {
+                record_core_update_baseline_persistence_failure(
+                    "manual",
+                    Channel::Release,
+                    "hq-core-update",
+                    detail,
+                );
+            },
+        );
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(contents.contains("[hq-core-update]"));
+        assert!(contents.contains(detail));
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].message.as_deref(),
+            Some("Desktop Core update applied but baseline persistence failed")
+        );
+    }
+
+    fn sentry_user_tokens(id_token: Option<String>) -> crate::commands::cognito::CognitoTokens {
+        crate::commands::cognito::CognitoTokens {
+            access_token: "access-token".to_string(),
+            id_token,
+            refresh_token: "refresh-token".to_string(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    fn sentry_user_id_token() -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "sub": "cognito-sub-ada",
+                "email": "ada@getindigo.ai",
+                "name": "Ada Lovelace",
+            }))
+            .expect("Sentry test claims serialize"),
+        );
+        format!("header.{payload}.signature")
+    }
+
+    fn core_update_sentry_test_details() -> CoreUpdateFailureDetails<'static> {
+        CoreUpdateFailureDetails {
+            rescue_stderr_tail: None,
+            rescue_failure_category: RescueFailureCategory::Permission,
+            npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+        }
+    }
+
+    fn queue_core_update_sentry_test_report() {
+        queue_core_update_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            "rescue_spawn",
+            core_update_sentry_test_details(),
+        );
+    }
+
+    fn is_core_update_sentry_event(event: &sentry::protocol::Event<'static>) -> bool {
+        matches!(
+            event.message.as_deref(),
+            Some(
+                "Desktop Core update failed"
+                    | "Desktop Core update applied but baseline persistence failed"
+            )
+        )
+    }
+
+    fn queue_core_update_sentry_retry_test_report() {
+        queue_core_update_failure_report(
+            "automatic",
+            Channel::Release,
+            Some(5),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some("error: clone failed"),
+                rescue_failure_category: RescueFailureCategory::MissingDependency,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::Failed,
+            },
+        );
+    }
+
+    fn captured_dispatched_core_update_events(
+        expected_messages: &[&'static str],
+        report: impl FnOnce(),
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        let expected_messages = expected_messages.to_vec();
+        let expected_count = expected_messages.len();
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let dispatched_in_before_send = Arc::clone(&dispatched);
+        let events = sentry::test::with_captured_events_options(
+            || {
+                let main_hub = sentry::Hub::main();
+                // The test transport is installed on this test's temporary hub.
+                // Production initialization binds the client to the process hub,
+                // so mirror that setup before exercising cross-thread reporting.
+                // Wait only for the report this test asked for: another Core
+                // report can be in flight from a neighbouring test.
+                main_hub.bind_client(sentry::Hub::current().client());
+                report();
+
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while dispatched.load(Ordering::Acquire) < expected_count
+                    && Instant::now() < deadline
+                {
+                    std::thread::yield_now();
+                }
+                assert_eq!(
+                    dispatched.load(Ordering::Acquire),
+                    expected_count,
+                    "each requested Core update report must reach the Sentry transport"
+                );
+
+                main_hub.configure_scope(|scope| scope.set_user(None));
+                main_hub.bind_client(None);
+            },
+            sentry::ClientOptions {
+                before_send: Some(Arc::new(move |event| {
+                    if expected_messages
+                        .iter()
+                        .any(|expected| *expected == event.message.as_deref().unwrap_or_default())
+                    {
+                        dispatched_in_before_send.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Some(event)
+                })),
+                ..Default::default()
+            },
+        );
+
+        events
+            .into_iter()
+            .filter(is_core_update_sentry_event)
+            .collect()
+    }
+
+    #[test]
+    fn dispatched_core_update_report_carries_user_bound_on_an_auth_thread() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+        let events =
+            captured_dispatched_core_update_events(&["Desktop Core update failed"], || {
+                std::thread::spawn(move || {
+                    crate::commands::auth::set_sentry_user_from_tokens(&tokens);
+                })
+                .join()
+                .expect("auth thread does not panic");
+                queue_core_update_sentry_test_report();
+            });
+
+        assert_eq!(events.len(), 1);
+        let user = events[0]
+            .user
+            .as_ref()
+            .expect("Core update event carries the signed-in user");
+        assert_eq!(user.id.as_deref(), Some("cognito-sub-ada"));
+        assert_eq!(user.email.as_deref(), Some("ada@getindigo.ai"));
+        assert_eq!(user.username.as_deref(), Some("Ada Lovelace"));
+    }
+
+    #[test]
+    fn sign_out_clears_the_user_for_dispatched_core_update_reports() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        reset_core_update_baseline_warning_signatures_for_test();
+        let tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+        let events = captured_dispatched_core_update_events(
+            &[
+                "Desktop Core update failed",
+                "Desktop Core update applied but baseline persistence failed",
+            ],
+            || {
+                std::thread::spawn(move || {
+                    crate::commands::auth::set_sentry_user_from_tokens(&tokens);
+                })
+                .join()
+                .expect("auth thread does not panic");
+                std::thread::spawn(crate::commands::auth::clear_sentry_user)
+                    .join()
+                    .expect("sign-out thread does not panic");
+                queue_core_update_sentry_test_report();
+                queue_core_update_baseline_persistence_warning(
+                    "automatic",
+                    Channel::Release,
+                    "core update applied but baseline persistence failed: commits/main HTTP 403 Forbidden",
+                );
+            },
+        );
+
+        assert_eq!(events.len(), 2);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.message.as_deref() == Some("Desktop Core update failed")),
+            "the ordinary Core update failure report is dispatched after sign-out"
+        );
+        assert!(
+            events.iter().any(|event| {
+                event.message.as_deref()
+                    == Some("Desktop Core update applied but baseline persistence failed")
+            }),
+            "the baseline-persistence warning is dispatched after sign-out"
+        );
+        assert!(
+            events.iter().all(|event| event.user.is_none()),
+            "Core update reports after sign-out must not identify the previous user"
+        );
+    }
+
+    #[test]
+    fn dispatched_core_update_report_names_a_failed_managed_git_retry() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let events = captured_dispatched_core_update_events(
+            &["Desktop Core update failed"],
+            queue_core_update_sentry_retry_test_report,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["managedGitRetryOutcome"], "failed");
+        assert_eq!(
+            events[0].extra["managedGitRetryAttempted"],
+            sentry::protocol::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn malformed_or_missing_id_token_still_clears_the_sentry_user() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+
+        for id_token in [None, Some("not-a-jwt".to_string())] {
+            reset_core_update_sentry_signatures_for_test();
+            let signed_in_tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+            let malformed_tokens = sentry_user_tokens(id_token);
+            let events =
+                captured_dispatched_core_update_events(&["Desktop Core update failed"], || {
+                    std::thread::spawn(move || {
+                        crate::commands::auth::set_sentry_user_from_tokens(&signed_in_tokens);
+                    })
+                    .join()
+                    .expect("auth thread does not panic");
+                    std::thread::spawn(move || {
+                        crate::commands::auth::set_sentry_user_from_tokens(&malformed_tokens);
+                    })
+                    .join()
+                    .expect("malformed-token auth thread does not panic");
+                    queue_core_update_sentry_test_report();
+                });
+
+            assert_eq!(events.len(), 1);
+            assert!(
+                events[0].user.is_none(),
+                "missing or malformed id tokens must clear the Sentry user"
+            );
+        }
+    }
+
+    #[test]
+    fn hq_pro_core_update_allowlist_snapshot_is_not_empty() {
+        assert!(!HQ_PRO_LABEL_PROPERTY_KEYS.is_empty());
+        assert!(!HQ_PRO_BOOLEAN_PROPERTY_KEYS.is_empty());
+        assert!(!HQ_PRO_NUMBER_PROPERTY_KEYS.is_empty());
+    }
+
+    #[test]
+    fn core_update_failed_properties_have_no_untracked_hq_pro_allowlist_gaps() {
+        let npx_resolution = CoreUpdateNpxResolution {
+            resolved: true,
+            source: "managed_toolchain",
+        };
+        let properties = core_update_failed_properties(
+            "automatic",
+            Channel::Release,
+            Some("15.0.4"),
+            true,
+            Some(true),
+            Some(true),
+            Duration::from_millis(42),
+            Some(5),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some("fatal: could not clone hq-core"),
+                rescue_failure_category: RescueFailureCategory::Unknown,
+                npx_resolution: Some(npx_resolution),
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+        let mut missing: Vec<&str> = properties
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !hq_pro_admits_core_update_property(key))
+            .collect();
+        missing.sort_unstable();
+
+        let mut expected = EXPECTED_HQ_PRO_CORE_UPDATE_PROPERTY_GAPS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            missing, expected,
+            "every core_update_failed property must be admitted by hq-pro or appear in the explicit companion-PR gap list"
+        );
     }
 
     #[test]

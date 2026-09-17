@@ -12,6 +12,9 @@ const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
   open: vi.fn(),
 }));
+const app = vi.hoisted(() => ({
+  getVersion: vi.fn(),
+}));
 
 const httpFetch = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -24,6 +27,7 @@ const httpFetch = vi.hoisted(() =>
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
+vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 
@@ -31,11 +35,13 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 
 import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
 import OnboardingWizard from './OnboardingWizard.svelte';
-import { BUILD_STEP_INDEX, CONNECTOR_IMPORT_STEP_INDEX } from '../../lib/onboarding-wizard';
+import {
+  BUILD_STEP_INDEX,
+  CONNECTOR_IMPORT_STEP_INDEX,
+  __resetWizardRouterCompletionForTests,
+} from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
-
-const wizardSource = readFileSync('src/components/onboarding/OnboardingWizard.svelte', 'utf8');
 
 const NO_AI_TOOLS = {
   claude_cli: false,
@@ -59,6 +65,13 @@ function primaryButton(): HTMLButtonElement {
   if (!button) {
     throw new Error('Expected the onboarding summary primary button to render.');
   }
+  return button;
+}
+
+/** A button on the ready screen by test id (the tool launchers live under Advanced). */
+function readyButton(testId: string): HTMLButtonElement {
+  const button = host.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+  if (!button) throw new Error(`Expected ${testId} to render.`);
   return button;
 }
 
@@ -99,6 +112,109 @@ function mountWizard(
   return onfinish;
 }
 
+const CONTINUATION_CONTEXT = {
+  installAttemptId: '11111111-1111-4111-8111-111111111111',
+  appVersion: '0.10.229',
+  apiBase: 'https://api.placeholder.test',
+};
+
+const CONTINUATION_CONFIG = {
+  protocolVersion: 1,
+  minimumDesktopVersion: '0.10.229',
+  variant: 'continuation',
+  rolloutPercent: 100,
+} as const;
+
+type ContinuationTestOptions = {
+  config?: unknown | (() => unknown);
+  identity?: unknown | (() => unknown);
+  mayStart?: string | null;
+  cancel?: undefined | (() => Promise<void>);
+  deliver?: (args: { path: string; body: Record<string, string | number> }) => number;
+};
+
+/**
+ * Native continuation commands are intentionally the only seam the renderer
+ * gets. These tests use the exact command names so a first-run integration
+ * cannot quietly become a browser-side duplicate of the native flow.
+ */
+function stubContinuationInvoke({
+  config = CONTINUATION_CONFIG,
+  identity = { email: 'placeholder account' },
+  mayStart = null,
+  cancel,
+  deliver = () => 200,
+}: ContinuationTestOptions = {}) {
+  let authenticated = false;
+  tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    switch (command) {
+      case 'resolve_hq_path':
+        return '/Users/placeholder/HQ';
+      case 'detect_ai_tools':
+        return NO_AI_TOOLS;
+      case 'is_first_run':
+        return true;
+      case 'get_auth_state':
+        return { authenticated };
+      case 'emit_desktop_operational_telemetry':
+        return undefined;
+      case 'desktop_continuation_context':
+        return CONTINUATION_CONTEXT;
+      case 'desktop_continuation_config':
+        return typeof config === 'function' ? config() : config;
+      case 'desktop_continuation_may_start':
+        return mayStart;
+      case 'desktop_continuation_start':
+        return { attemptId: 'continuation-attempt' };
+      case 'desktop_continuation_await_identity':
+        return typeof identity === 'function' ? identity() : identity;
+      case 'desktop_continuation_confirm':
+        authenticated = true;
+        return undefined;
+      case 'desktop_continuation_cancel':
+        if (cancel) return cancel();
+        return undefined;
+      case 'desktop_continuation_deliver':
+        return deliver(args as { path: string; body: Record<string, string | number> });
+      case 'start_oauth_login':
+        return { authorizeUrl: 'https://placeholder.test/authorize', state: 'oauth-state' };
+      case 'oauth_listen_for_code':
+        return { code: 'placeholder-code' };
+      case 'oauth_exchange_code':
+        authenticated = true;
+        return { authenticated: true };
+      case 'bring_main_window_to_front':
+      case 'whoami':
+        return undefined;
+      default:
+        return undefined;
+    }
+  });
+}
+
+function providerButtons(): HTMLButtonElement[] {
+  return Array.from(
+    host.querySelectorAll<HTMLButtonElement>('[data-testid="onboarding-signin"] .btns .btn'),
+  );
+}
+
+function expectPreBranchProviderScreen(): void {
+  expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
+    'Log in with Google',
+    'Log in with Microsoft',
+  ]);
+  expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  expect(host.querySelector('.inline-note.error')).toBeNull();
+  expect(host.textContent).not.toContain('Continue as');
+  expect(host.textContent).not.toContain('Use another account');
+  expect(host.textContent).not.toContain('Finishing your sign-in in the browser');
+}
+
+async function advancePastSignIn(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(400);
+  await flush();
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-07-28T12:00:00.000Z'));
@@ -114,6 +230,8 @@ beforeEach(() => {
   );
   tauri.invoke.mockReset();
   tauri.open.mockReset();
+  app.getVersion.mockReset();
+  app.getVersion.mockResolvedValue('0.10.271');
   tauri.open.mockResolvedValue(undefined);
   httpFetch.mockReset();
   httpFetch.mockResolvedValue({
@@ -149,6 +267,421 @@ function expectedSetupDeepLink(folder: string): string {
   return `claude://code/new?${params.toString()}`;
 }
 
+describe('first-run browser session continuation', () => {
+  it('records one launch receipt and retries the same receipt after a resumed wizard', async () => {
+    const deliveredLaunches: Array<Record<string, string | number>> = [];
+    stubContinuationInvoke({
+      config: { ...CONTINUATION_CONFIG, variant: 'control' },
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') {
+          deliveredLaunches.push(body);
+          return deliveredLaunches.length === 1 ? 503 : 200;
+        }
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => deliveredLaunches.length === 1);
+    await flush();
+    await flush();
+    expect(deliveredLaunches).toHaveLength(1);
+
+    await unmount(component);
+    component = null;
+    host.replaceChildren();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0, onboardingFlow: 'resume' },
+    });
+
+    await flushUntil(() => deliveredLaunches.length === 2);
+    expect(deliveredLaunches[1]).toEqual(deliveredLaunches[0]);
+    expect(localStorage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
+  });
+
+  it('starts provider OAuth and renders loading while rollout preparation is unresolved', async () => {
+    let resolveConfig!: (value: unknown) => void;
+    const config = new Promise<unknown>((resolve) => {
+      resolveConfig = resolve;
+    });
+    stubContinuationInvoke({ config: () => config });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    await flushUntil(() => providerButtons().length === 2);
+    providerButtons()[0]?.click();
+    flushSync();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
+    expect(providerButtons()[0]?.disabled).toBe(true);
+    expect(host.textContent).toContain('A browser window opened for Google sign-in.');
+
+    resolveConfig({ ...CONTINUATION_CONFIG, variant: 'control' });
+  });
+
+  it('automatically signs in an eligible browser session without rendering a prompt or click', async () => {
+    stubContinuationInvoke();
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_confirm'),
+    );
+    await advancePastSignIn();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_confirm', {
+      attemptId: 'continuation-attempt',
+    });
+    expect(tauri.invoke).not.toHaveBeenCalledWith('start_oauth_login', expect.anything());
+    expect(host.textContent).not.toContain('Continue as');
+    expect(host.textContent).not.toContain('Use another account');
+    expect(host.textContent).not.toContain('Finishing your sign-in in the browser');
+    expect(providerButtons()).toHaveLength(0);
+    expect(
+      host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('fails open to the pre-branch provider screen when config is the control arm', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => providerButtons().length === 2);
+
+    expectPreBranchProviderScreen();
+    expect(tauri.invoke).not.toHaveBeenCalledWith('desktop_continuation_start');
+  });
+
+  it('fails open to the pre-branch provider screen when config is unavailable', async () => {
+    stubContinuationInvoke({
+      config: () => {
+        throw new Error('network unavailable');
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => providerButtons().length === 2);
+
+    expectPreBranchProviderScreen();
+    expect(host.textContent).not.toContain('network unavailable');
+  });
+
+  it('fails open to the pre-branch provider screen when config is malformed', async () => {
+    stubContinuationInvoke({ config: { status: 'not a rollout document' } });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => providerButtons().length === 2);
+
+    expectPreBranchProviderScreen();
+  });
+
+  it('fails open to the pre-branch provider screen when the minimum build is newer', async () => {
+    stubContinuationInvoke({
+      config: { ...CONTINUATION_CONFIG, minimumDesktopVersion: '999.999.999' },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => providerButtons().length === 2);
+
+    expectPreBranchProviderScreen();
+  });
+
+  it('fails open to the pre-branch provider screen when native eligibility refuses continuation', async () => {
+    stubContinuationInvoke({ mayStart: 'CONTINUATION_REFUSED_NOT_FIRST_LAUNCH' });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => providerButtons().length === 2);
+
+    expectPreBranchProviderScreen();
+    expect(tauri.invoke).not.toHaveBeenCalledWith('desktop_continuation_start');
+  });
+
+  it('reveals providers after 1.5 seconds but completes a continuation that returns later', async () => {
+    let resolveIdentity!: (value: unknown) => void;
+    const identity = new Promise<unknown>((resolve) => {
+      resolveIdentity = resolve;
+    });
+    stubContinuationInvoke({ identity: () => identity });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_await_identity'),
+    );
+    expect(providerButtons()).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    await flushUntil(() => providerButtons().length === 2);
+
+    expectPreBranchProviderScreen();
+    expect(tauri.invoke).not.toHaveBeenCalledWith('desktop_continuation_cancel', expect.anything());
+
+    resolveIdentity({ email: 'placeholder account' });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_confirm'),
+    );
+    await advancePastSignIn();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('cancels the live continuation when a provider is chosen after reveal', async () => {
+    let resolveIdentity!: (value: unknown) => void;
+    const identity = new Promise<unknown>((resolve) => {
+      resolveIdentity = resolve;
+    });
+    stubContinuationInvoke({ identity: () => identity });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_await_identity'),
+    );
+    await vi.advanceTimersByTimeAsync(1_500);
+    await flushUntil(() => providerButtons().length === 2);
+
+    providerButtons()[0]?.click();
+    flushSync();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
+    expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_cancel', {
+      attemptId: 'continuation-attempt',
+    });
+    expect(providerButtons()[0]?.disabled).toBe(true);
+    expect(host.textContent).toContain('A browser window opened for Google sign-in.');
+
+    resolveIdentity({ email: 'placeholder account' });
+  });
+
+  it('cancels a live continuation when the wizard unmounts', async () => {
+    let resolveIdentity!: (value: unknown) => void;
+    const identity = new Promise<unknown>((resolve) => {
+      resolveIdentity = resolve;
+    });
+    stubContinuationInvoke({ identity: () => identity });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_await_identity'),
+    );
+    await unmount(component);
+    component = null;
+
+    expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_cancel', {
+      attemptId: 'continuation-attempt',
+    });
+    resolveIdentity({ email: 'placeholder account' });
+  });
+
+  it('records completion without abandonment when finishing unmounts the wizard', async () => {
+    const onfinish = vi.fn(async () => {
+      if (component === null) throw new Error('Expected the wizard to be mounted before finish.');
+      await unmount(component);
+      component = null;
+    });
+    mountWizard(onfinish, 4);
+    await flush();
+
+    primaryButton().click();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string } }).properties?.action === 'completed',
+      ),
+    );
+
+    const completed = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string; outcome?: string } }).properties?.action ===
+          'completed' &&
+        (args as { properties?: { outcome?: string } }).properties?.outcome === 'finished',
+    );
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(completed).toHaveLength(1);
+    expect(abandoned).toHaveLength(0);
+  });
+
+  it('records abandonment once when the wizard is destroyed before finishing', async () => {
+    mountWizard(vi.fn(), 0);
+    await flush();
+    if (component === null) throw new Error('Expected the wizard to be mounted before destruction.');
+    await unmount(component);
+    component = null;
+    await flush();
+
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+    expect(abandoned).toHaveLength(1);
+  });
+
+  it('records abandonment when finishing fails before the wizard is destroyed', async () => {
+    const onfinish = vi.fn().mockRejectedValue(new Error('tray handoff unavailable'));
+    mountWizard(onfinish, 4);
+    await flush();
+
+    primaryButton().click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="launcher-finish-error"]')));
+    if (component === null) throw new Error('Expected the wizard to remain mounted after a failed finish.');
+    await unmount(component);
+    component = null;
+    await flush();
+
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(abandoned).toHaveLength(1);
+  });
+
+  it('records onboarding abandonment once when the window goes away', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => providerButtons().length === 2);
+
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    await flush();
+
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+    expect(abandoned).toHaveLength(1);
+    expect((abandoned[0]?.[1] as { properties: { step: string } }).properties.step).toBe(
+      'welcome-signin',
+    );
+  });
+
+  it('adds app version and normalized setup failure fields when native detail is absent', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/placeholder/HQ';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'take_onboarding_failure_detail':
+          return undefined;
+        case 'emit_desktop_operational_telemetry':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string } }).properties
+            ?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage === 'deps',
+      ),
+    );
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { failureStage?: string } }).properties?.failureStage === 'deps',
+    )?.[1] as { properties: Record<string, unknown> };
+    expect(failure.properties).toMatchObject({
+      appVersion: '0.10.271',
+      errorCategory: 'unknown',
+      failureStage: 'deps',
+      failedDependency: 'unknown',
+    });
+  });
+
+  it('records an OAuth failure with the continuation error kind', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => providerButtons().length === 2);
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'start_oauth_login') throw new Error('CONTINUATION_OFFLINE');
+      if (command === 'emit_desktop_operational_telemetry') return undefined;
+      if (command === 'resolve_hq_path') return '/Users/placeholder/HQ';
+      if (command === 'detect_ai_tools') return NO_AI_TOOLS;
+      return undefined;
+    });
+
+    providerButtons()[0]?.click();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { outcome?: string } }).properties?.outcome === 'oauth_failed',
+      ),
+    );
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { outcome?: string } }).properties?.outcome === 'oauth_failed',
+    )?.[1] as { properties: Record<string, unknown> };
+    expect(failure.properties.errorKind).toBe('offline');
+  });
+
+  it('keeps the welcome-signin step event in control and continuation arms', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string; action?: string } }).properties?.step ===
+            'welcome-signin',
+      ),
+    );
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string; action?: string } }).properties?.step ===
+            'welcome-signin' &&
+          (args as { properties?: { action?: string } }).properties?.action === 'entered',
+      ),
+    ).toBe(true);
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+    tauri.invoke.mockClear();
+    stubContinuationInvoke();
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string; action?: string } }).properties?.step ===
+            'welcome-signin',
+      ),
+    );
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string; action?: string } }).properties?.step ===
+            'welcome-signin' &&
+          (args as { properties?: { action?: string } }).properties?.action === 'entered',
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('onboarding launch handoff', () => {
   it('turns a failed Claude launch into a folder escape path, never a red dump', async () => {
     mountWizard(vi.fn(), 4, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
@@ -171,7 +704,7 @@ describe('onboarding launch handoff', () => {
       }
     });
 
-    primaryButton().click();
+    readyButton('onboarding-launch-claude').click();
     await flush();
 
     const summary = host.querySelector('[data-testid="onboarding-summary"]');
@@ -181,16 +714,6 @@ describe('onboarding launch handoff', () => {
     expect(summary?.textContent).not.toContain('core/core.yaml');
     expect(summary?.textContent).not.toContain('Could not open Claude Code');
     expect(summary?.querySelector('.inline-note.error')).toBeNull();
-  });
-
-  it('finishes onboarding after each supported launcher opens', () => {
-    // Every exit routes through one guarded recovery boundary. Launcher errors
-    // and native handoff errors must never be conflated.
-    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(1);
-    expect(wizardSource).toContain('async function finishWithRecovery()');
-    expect(wizardSource).not.toContain('advanceTo(4)');
-    expect(wizardSource).not.toContain('Could not open Claude Code:');
-    expect(wizardSource).not.toMatch(/#d04444|#d14343/);
   });
 
   it('retries a failed native handoff without relaunching the AI tool', async () => {
@@ -207,7 +730,7 @@ describe('onboarding launch handoff', () => {
       Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
     );
 
-    primaryButton().click();
+    readyButton('onboarding-launch-claude').click();
     await flush();
     await vi.advanceTimersByTimeAsync(1);
     await flush();
@@ -232,7 +755,7 @@ describe('onboarding launch handoff', () => {
     ).toHaveLength(1);
   });
 
-  it('renders a ready-panel button for every detected tool and keeps Finish off that row', async () => {
+  it('leads with Open HQ Desktop and keeps Claude Code and Codex under Advanced', async () => {
     mountWizard(vi.fn(), 4, {
       ...NO_AI_TOOLS,
       claude_desktop: true,
@@ -241,22 +764,29 @@ describe('onboarding launch handoff', () => {
       any: true,
     });
     await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="onboarding-launch-grok"]')),
+      Boolean(host.querySelector('[data-testid="onboarding-launch-codex"]')),
     );
 
-    const row = host.querySelector('[data-testid="onboarding-launchers"]');
+    // The one primary action: open HQ Desktop, where the setup bot takes over.
+    expect(primaryButton().textContent?.trim()).toBe('Open HQ Desktop');
+    expect(primaryButton().dataset.testid).toBe('onboarding-open-desktop');
+    expect(host.querySelector('[data-testid="onboarding-summary"]')?.textContent).not.toContain(
+      'Complete setup in your AI tool',
+    );
+
+    // Advanced holds exactly the two own-tool launchers, none of them primary.
+    const advanced = host.querySelector<HTMLDetailsElement>('[data-testid="onboarding-advanced"]');
+    expect(advanced).not.toBeNull();
+    expect(advanced!.open).toBe(false);
+    expect(advanced!.querySelector('summary')?.textContent?.trim()).toBe('Advanced');
+    const row = advanced!.querySelector('[data-testid="onboarding-launchers"]');
     expect(row).not.toBeNull();
     const labels = Array.from(row!.querySelectorAll('button')).map((button) =>
       button.textContent?.trim(),
     );
-    expect(labels).toEqual(['Open in Claude Code', 'Open in Codex', 'Open in Grok']);
+    expect(labels).toEqual(['Open in Claude Code', 'Open in Codex']);
+    expect(row!.querySelector('.btn-primary')).toBeNull();
     expect(row!.textContent).not.toMatch(/\bFinish\b/);
-    expect(host.querySelector('[data-testid="onboarding-launch-claude"]')?.className).toContain(
-      'btn-primary',
-    );
-    expect(host.querySelector('[data-testid="onboarding-launch-codex"]')?.className).toContain(
-      'btn-secondary',
-    );
   });
 
   it('offers both Claude Code and Codex when no AI tool is installed', async () => {
@@ -270,9 +800,236 @@ describe('onboarding launch handoff', () => {
     expect(host.querySelector('[data-testid="onboarding-install-claude"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="onboarding-install-codex"]')).not.toBeNull();
 
-    // Claude keeps the primary slot: it is the path that starts the readiness
-    // watch, and the row still needs one obvious next step.
-    expect(primaryButton().textContent).toBe('Install Claude Code');
+    // Opening HQ Desktop stays the primary step; the installs sit under Advanced.
+    expect(primaryButton().textContent?.trim()).toBe('Open HQ Desktop');
+    expect(readyButton('onboarding-install-claude').textContent?.trim()).toBe('Install Claude Code');
+  });
+
+  it('restores friendly checklist labels instead of internal setup stage names', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2 },
+    });
+
+    const friendlyLabels = [
+      'Laying the groundwork',
+      'Building your workspace',
+      'Bringing in your AI workers and workflows',
+      'Making it yours',
+      'Syncing across your devices',
+    ];
+    const rawStageLabels = [
+      'Downloading HQ template',
+      'Installing dependencies',
+      'Syncing initial cloud data',
+      'Initialising workspace',
+      'Preparing personal workspace',
+      'Registering for search',
+    ];
+
+    await flushUntil(() => {
+      const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+      return friendlyLabels.every((label) => checklist?.textContent?.includes(label));
+    });
+
+    const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+    expect(checklist).not.toBeNull();
+    for (const label of friendlyLabels) {
+      expect(checklist?.textContent).toContain(label);
+    }
+    for (const label of rawStageLabels) {
+      expect(checklist?.textContent).not.toContain(label);
+    }
+  });
+
+  it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
+    const claudeDesktopOnly = {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      any: true,
+    };
+    mountWizard(vi.fn(), 4, claudeDesktopOnly);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+    const cleanCompletion = host.querySelector<HTMLElement>(
+      '[data-testid="onboarding-summary"]',
+    )?.innerHTML;
+    expect(cleanCompletion).toBeTruthy();
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+
+    const onfinish = vi.fn();
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+
+    const summary = host.querySelector('[data-testid="onboarding-summary"]');
+    const launchClaude = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-launch-claude"]',
+    );
+    expect((summary as HTMLElement | null)?.innerHTML).toBe(cleanCompletion);
+    expect(summary?.textContent).not.toContain('dependency installation failed');
+    expect(summary?.textContent).not.toContain('HQ setup needs attention');
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-retry-failed-stages"]')).toBeNull();
+    expect(launchClaude?.disabled).toBe(false);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-install-codex"]')?.disabled,
+    ).toBe(false);
+    expect(tauri.invoke).toHaveBeenCalledWith('record_install_complete');
+
+    launchClaude?.click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', expect.any(Object));
+    expect(onfinish).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the download handoff enabled after a required setup failure while tool detection is pending', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return new Promise<never>(() => {});
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish: vi.fn() },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
+
+    const download = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-launch-download"]',
+    );
+    expect(download).not.toBeNull();
+    expect(download?.disabled).toBe(false);
+
+    download?.click();
+    await flush();
+    expect(tauri.open).toHaveBeenCalledWith('https://claude.ai/download');
+  });
+
+  it('keeps the success completion indicator after a required setup failure', async () => {
+    mountWizard();
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+
+    const claudeDesktopOnly = {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      any: true,
+    };
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish: vi.fn() },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
+
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
   });
 
   it('shows Codex as installed when only the ChatGPT-bundled desktop app is present', async () => {
@@ -345,31 +1102,45 @@ describe('onboarding launch handoff', () => {
     expect(done?.getAttribute('aria-busy')).toBe('false');
   });
 
-  it('copies a user-facing path, stripping Windows verbatim prefixes', () => {
-    expect(wizardSource).toContain('toUserFacingPath');
-    expect(wizardSource).toContain('userFacingInstallPath');
-    expect(wizardSource).toMatch(
-      /runCopyAction\(\s*'path',\s*userFacingInstallPath \?\? '~\/hq'/,
-    );
-    expect(wizardSource).toContain('readyCommandFor(userFacingInstallPath, aiTools)');
-  });
+  it('consent-only mode asks just the consent question and finishes on the answer: no sign-in, folder, setup, or Not now', async () => {
+    const onfinish = vi.fn(async () => {});
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 3, mode: 'consent', onfinish },
+    });
 
-  it('uses the injected timer cadence for download watching and deep-linking', async () => {
-    vi.useFakeTimers();
-    const poll = vi.fn().mockResolvedValue({ installed: true, logged_in: true });
-    const interval = setInterval(() => void poll(), 3000);
-    await vi.advanceTimersByTimeAsync(3000);
-    clearInterval(interval);
-    expect(poll).toHaveBeenCalledOnce();
-    expect(wizardSource).toContain("invoke<ClaudeReady>('detect_claude_ready')");
-    expect(wizardSource).toContain("invoke('open_claude_code_link', { url })");
-    // The deep link must NOT pre-type the `/setup` slash command: Claude
-    // Desktop scans skills before a link-opened folder is trusted, so HQ's
-    // project skill is not registered in the session the link creates.
-    expect(wizardSource).toMatch(
-      /buildClaudeCodeUrl\(\{\s+folder: installPath \?\? '',\s+prompt: SETUP_DEEP_LINK_PROMPT,\s+\}\)/,
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
     );
-    vi.useRealTimers();
+    // Consent is compulsory here: dismissing is only for the stale re-prompt.
+    expect(host.querySelector('[data-testid="consent-dismiss"]')).toBeNull();
+    // No setup run was started behind the consent step.
+    expect(tauri.invoke.mock.calls.map(([command]) => command)).not.toContain('read_install_manifest');
+
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => onfinish.mock.calls.length > 0);
+
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    // The wizard closed on the answer: the consent panel is still the one
+    // showing, and the ready screen never became the active panel.
+    expect(host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on')).toBe(true);
+    expect(host.querySelector('[data-testid="onboarding-summary"]')?.classList.contains('on')).toBe(false);
+    expect(tauri.invoke.mock.calls.map(([command]) => command)).not.toContain('read_install_manifest');
   });
 
   it('keeps Waiting for Claude visible through not-ready polls, then deep-links once', async () => {
@@ -394,17 +1165,17 @@ describe('onboarding launch handoff', () => {
     });
 
     await flush();
-    primaryButton().click();
+    readyButton('onboarding-install-claude').click();
     await flush();
-    expect(primaryButton().textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
     flushSync();
-    expect(primaryButton().textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
     flushSync();
-    expect(primaryButton().textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
     await flush();
@@ -434,7 +1205,7 @@ describe('onboarding launch handoff', () => {
     });
 
     await flush();
-    primaryButton().click();
+    readyButton('onboarding-install-claude').click();
     await flush();
 
     await vi.advanceTimersByTimeAsync(27_000);
@@ -466,7 +1237,7 @@ describe('onboarding launch handoff', () => {
     });
 
     await flush();
-    primaryButton().click();
+    readyButton('onboarding-install-claude').click();
     await flush();
 
     await vi.advanceTimersByTimeAsync(9000);
@@ -488,6 +1259,53 @@ describe('onboarding launch handoff', () => {
 });
 
 describe('onboarding connector telemetry', () => {
+  it('forwards connector source and failure category through the wizard adapter', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'detect_claude_desktop_connectors':
+          return {
+            present: true,
+            count: 1,
+            outcome: 'servers_detected',
+            inspectedSources: 'claude_desktop_config',
+          };
+        case 'import_claude_desktop_connectors':
+          return { ok: false, message: 'import failed', errorCategory: 'exit-nonzero' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
+    });
+
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
+    await flush();
+
+    const connectorEvents = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
+      )
+      .map(([, args]) => (args as { properties: Record<string, unknown> }).properties);
+    expect(connectorEvents).toContainEqual(
+      expect.objectContaining({
+        action: 'failed',
+        detectedToolCount: 1,
+        detectedSourceSet: 'claude_desktop_config',
+        outcome: 'import_failed',
+        errorCategory: 'exit-nonzero',
+      }),
+    );
+  });
+
   it('delivers each auto-skip terminal outcome once and drains its delivery queue', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -642,11 +1460,269 @@ describe('anonymous installer step pings', () => {
     expect(host.querySelector('[data-testid="onboarding-signin"]')).toBeTruthy();
     expect(host.textContent).not.toContain('no fingerprint');
   });
+});
 
-  it('threads whoami personUid into later pings after sign-in succeeds', async () => {
-    expect(wizardSource).toContain('resolveInstallerPersonUid');
-    expect(wizardSource).toContain("invokeCommand<{ personUid?: string | null }>('whoami')");
-    expect(wizardSource).toContain('onboardingTelemetry.setPersonUid(uid)');
-    expect(wizardSource).toContain('void resolveInstallerPersonUid()');
+describe('ready screen: Open HQ Desktop', () => {
+  it('finishes onboarding without launching any AI tool', async () => {
+    const onfinish = mountWizard(vi.fn(), 4, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-open-desktop"]')));
+
+    readyButton('onboarding-open-desktop').click();
+    await flush();
+
+    expect(onfinish).toHaveBeenCalledOnce();
+    const launchCommands = tauri.invoke.mock.calls
+      .map(([command]) => command)
+      .filter((command) => /^(open_claude_code_link|launch_claude_code|launch_codex_workspace|launch_codex_desktop|launch_cli_in_terminal)$/.test(String(command)));
+    expect(launchCommands).toEqual([]);
+  });
+});
+
+describe('setup restart', () => {
+  // The router's "setup is done" gate is module-level and outlives a test, and
+  // it refuses to navigate back past the setup step. Clear it so these cases
+  // do not depend on which tests ran before them.
+  beforeEach(() => {
+    __resetWizardRouterCompletionForTests();
+  });
+
+  /** Counts every attempt at the first stage's command. */
+  function contentAttempts(): number {
+    return tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'fetch_and_extract_template',
+    ).length;
+  }
+
+  function clickIn(panel: string, selector: string): void {
+    const button = host.querySelector<HTMLButtonElement>(
+      `[data-testid="${panel}"] ${selector}`,
+    );
+    if (!button) throw new Error(`Expected ${selector} inside ${panel}.`);
+    if (button.disabled) throw new Error(`${selector} inside ${panel} is disabled.`);
+    button.click();
+  }
+
+  /** Leave the setup step, then come back through Install. */
+  async function leaveAndReturn(): Promise<void> {
+    clickIn('onboarding-setup', '.btn-secondary');
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    clickIn('onboarding-directory', '.btn-primary');
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+  }
+
+  it('starts over when the person leaves mid-stage and comes back', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          // Never settles: the stage is still in flight when the person
+          // leaves, exactly as a slow download would be.
+          return new Promise<never>(() => {});
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    expect(contentAttempts()).toBe(1);
+
+    await leaveAndReturn();
+
+    // The cancelled run still owns its hung stage; the restart must not be
+    // swallowed by it, or setup sits at 0% with nothing running.
+    expect(contentAttempts()).toBe(2);
+  });
+
+  it('starts over after a stage failed and the person came back', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          throw new Error('template archive is corrupt');
+        case 'install_deps':
+          return new Promise<never>(() => {});
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    const afterFailure = contentAttempts();
+    expect(afterFailure).toBeGreaterThanOrEqual(1);
+
+    await leaveAndReturn();
+
+    expect(contentAttempts()).toBeGreaterThan(afterFailure);
+  });
+
+  it('leaves no stage waiting on a retry that will never come', async () => {
+    let attempts = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          attempts += 1;
+          // Transient: the stage goes to 'retrying' and waits for its next go.
+          if (attempts === 1) throw new Error('network timeout while fetching the template');
+          return new Promise<never>(() => {});
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flush();
+    // Inside the 1s auto-retry wait: the stage is 'retrying', not running.
+    await vi.advanceTimersByTimeAsync(200);
+    await flush();
+    const subStatus = () =>
+      host.querySelector('[data-testid="onboarding-setup-substatus"]')?.textContent ?? '';
+    expect(subStatus()).toContain('Retrying');
+
+    // Leaving while the stage waits must not strand it: coming back runs it.
+    await leaveAndReturn();
+
+    expect(subStatus()).not.toContain('Retrying');
+    // The cancelled run's own retry never fires (it is no longer current), so
+    // the second attempt is the restart's.
+    expect(attempts).toBe(2);
+  });
+});
+
+describe('setup progress direction', () => {
+  interface ProgressSample {
+    percent: number;
+    bands: string[];
+    subStatus: string;
+    elapsedSeconds: number | null;
+  }
+
+  const BAND_RANK: Record<string, number> = { pending: 0, active: 1, done: 2 };
+
+  function sampleProgress(): ProgressSample {
+    const panel = host.querySelector('[data-testid="onboarding-setup"]');
+    const elapsed = host.querySelector(
+      '[data-testid="onboarding-setup-elapsed"]',
+    )?.textContent;
+    const seconds = elapsed?.match(/(\d+)s/)?.[1];
+    return {
+      percent: Number.parseInt(host.querySelector('.ppct')?.textContent ?? '', 10),
+      bands: [...(panel?.querySelectorAll('[data-band-status]') ?? [])].map(
+        (band) => band.getAttribute('data-band-status') ?? '',
+      ),
+      subStatus:
+        host.querySelector('[data-testid="onboarding-setup-substatus"]')
+          ?.textContent ?? '',
+      elapsedSeconds: seconds ? Number.parseInt(seconds, 10) : null,
+    };
+  }
+
+  it('never walks the ring or the bands backward while a stage auto-retries', async () => {
+    let depsAttempts = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          depsAttempts += 1;
+          // The first attempt runs long enough to earn an elapsed clock, then
+          // fails transiently so the wizard auto-retries it.
+          if (depsAttempts === 1) {
+            return new Promise<never>((_resolve, reject) => {
+              setTimeout(
+                () =>
+                  reject(new Error('network timeout while installing dependencies')),
+                25_000,
+              );
+            });
+          }
+          // The second attempt also takes a while, so the clock it inherited
+          // is observable rather than gone in one tick.
+          return new Promise<void>((resolve) => {
+            setTimeout(resolve, 10_000);
+          });
+        case 'record_install_complete':
+          // Holds the wizard on the setup step so the whole run stays visible.
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2 },
+    });
+
+    const samples: ProgressSample[] = [];
+    await flush();
+    for (let step = 0; step < 200; step += 1) {
+      await vi.advanceTimersByTimeAsync(300);
+      await flush();
+      const sample = sampleProgress();
+      if (Number.isFinite(sample.percent)) samples.push(sample);
+    }
+
+    expect(depsAttempts).toBe(2);
+    expect(samples.length).toBeGreaterThan(100);
+    expect(samples.at(-1)?.percent).toBe(100);
+
+    for (let i = 1; i < samples.length; i += 1) {
+      const previous = samples[i - 1]!;
+      const current = samples[i]!;
+      expect(current.percent).toBeGreaterThanOrEqual(previous.percent);
+      for (const [band, status] of current.bands.entries()) {
+        expect(BAND_RANK[status]).toBeGreaterThanOrEqual(
+          BAND_RANK[previous.bands[band]!]!,
+        );
+      }
+    }
+
+    // The retried stage says so, keeps an active band, and keeps the clock it
+    // had already earned instead of restarting from zero.
+    const retryIndexes = samples
+      .map((sample, index) => (sample.subStatus.includes('Retrying') ? index : -1))
+      .filter((index) => index >= 0);
+    expect(retryIndexes.length).toBeGreaterThan(0);
+    for (const index of retryIndexes) {
+      const sample = samples[index]!;
+      expect(sample.subStatus).toContain('Retrying — attempt 2 of 2…');
+      expect(sample.bands).toContain('active');
+      expect(sample.bands).not.toContain('');
+      expect(sample.elapsedSeconds ?? 0).toBeGreaterThanOrEqual(25);
+    }
+
+    // The attempt that follows inherits that clock: it does not start over.
+    const afterRetry = samples[retryIndexes.at(-1)! + 1];
+    expect(afterRetry?.subStatus).not.toContain('Retrying');
+    expect(afterRetry?.subStatus).not.toBe('');
+    expect(afterRetry?.elapsedSeconds ?? 0).toBeGreaterThanOrEqual(25);
   });
 });

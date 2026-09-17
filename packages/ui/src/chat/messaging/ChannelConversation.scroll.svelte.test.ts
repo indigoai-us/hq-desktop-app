@@ -111,6 +111,55 @@ describe("ChannelConversation scroll ownership", () => {
     ).toContain("20 earlier");
   });
 
+  it("does not silently re-request history while the user sits at the top after a failure", async () => {
+    // Loading older history is edge-triggered on ENTERING the top zone, not
+    // level-triggered while parked in it. Level-triggering defeats the Retry
+    // button: the failure clears itself and the request fires again with no
+    // user decision, and a server that is down gets asked on every scroll read.
+    let calls = 0;
+    let fail!: (error: Error) => void;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        messages: messages(10),
+        hasEarlier: true,
+        onloadearlier: () => {
+          calls++;
+          return new Promise<void>((_resolve, reject) => {
+            fail = reject;
+          });
+        },
+      },
+    });
+    await tick();
+    const el = stubLayout(10);
+
+    scrollTo(el, 0); // enter the top zone — one request
+    await tick();
+    expect(calls).toBe(1);
+
+    fail(new Error("offline"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+
+    // Still parked at the top. Further scroll reads must not re-request.
+    scrollTo(el, 0);
+    scrollTo(el, 10);
+    await tick();
+    expect(calls).toBe(1);
+
+    // The Retry affordance is the only way back in, and it still works.
+    const retry = host.querySelector(
+      '[data-testid="conversation-load-earlier"]',
+    ) as HTMLButtonElement;
+    expect(retry.textContent).toContain("Retry");
+    retry.click();
+    await tick();
+    expect(calls).toBe(2);
+  });
+
   it("requests remote history once, shows loading, and allows retry after failure", async () => {
     let calls = 0;
     let finish!: () => void;
@@ -269,5 +318,48 @@ describe("ChannelConversation scroll ownership", () => {
     props.messages = messages(12);
     await tick();
     expect(el.scrollTop).toBe(el.scrollHeight);
+  });
+
+  it("restores a message anchor and does not follow new messages", async () => {
+    const original = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "offsetTop",
+    );
+    Object.defineProperty(HTMLElement.prototype, "offsetTop", {
+      configurable: true,
+      get() {
+        return this.getAttribute?.("data-event-id") === "evt_3" ? 200 : 0;
+      },
+    });
+    try {
+      const props = $state({
+        messages: messages(10),
+        restoreScroll: {
+          kind: "message" as const,
+          id: "evt_3",
+          offset: 200,
+        },
+      });
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      component = mount(ChannelConversation, { target: host, props });
+      await tick();
+      const el = stubLayout(10);
+      expect(el.querySelector("[data-event-id='evt_3']")).not.toBeNull();
+      await tick();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(el.scrollTop).toBe(200);
+
+      rowCountRef.value = 11;
+      props.messages = messages(11);
+      await tick();
+      expect(el.scrollTop).toBe(200);
+      expect(
+        host.querySelector('[data-testid="conversation-jump-latest"]'),
+      ).not.toBeNull();
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, "offsetTop", original);
+      else delete (HTMLElement.prototype as { offsetTop?: unknown }).offsetTop;
+    }
   });
 });

@@ -323,6 +323,11 @@ export function createHybridSidebarApi(
       ? { listCompanyMembers: live.listCompanyMembers.bind(live) }
       : {}),
     listDmRequests: () => live.listDmRequests(),
+    // Answering a connection request is a live-only capability; forward it so
+    // the Requests panel keeps its Accept / Decline / Block controls.
+    ...(live.respondDmRequest
+      ? { respondDmRequest: live.respondDmRequest.bind(live) }
+      : {}),
     listChannels: (args) => live.listChannels(args),
     markDmThreadRead: async (personUid) => {
       await persist?.markDmThreadRead?.(personUid);
@@ -733,7 +738,7 @@ export function liveAgentsFromWorkThreads(
     out.push({
       id: thread.threadId,
       label: running
-        ? `Agent running${storyId ? ` · ${storyId}` : ""}`
+        ? `Bot running${storyId ? ` · ${storyId}` : ""}`
         : thread.status === "blocked"
           ? `Blocked${storyId ? ` · ${storyId}` : ""}`
           : displayName,

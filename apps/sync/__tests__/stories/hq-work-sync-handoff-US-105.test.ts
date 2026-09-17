@@ -44,7 +44,6 @@ import {
 import { createHqWorkSidebarApi } from '../../src/desktop-alt/hq-work-host';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import { getVaultObject } from '../../src/desktop-alt/vault-s3-put';
-import { hqWorkHandoffEnabled } from '../../src/lib/hq-work';
 
 const repoRoot = resolve(process.cwd());
 
@@ -211,6 +210,12 @@ function expectOk<T>(result: { ok: boolean; value?: T; reason?: string }): T {
 function mockInvoke(): SyncInvokeFn {
   return async (cmd, args) => {
     switch (cmd) {
+      case 'local_bots_list':
+        return { bots: [] };
+      case 'local_bots_workers':
+        return { workers: [] };
+      case 'agent_session_preflight':
+        return { claudeAvailable: false, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false, grokAvailable: false, grokLoggedIn: false };
       case 'get_auth_state':
         return {
           authenticated: true,
@@ -297,13 +302,6 @@ afterEach(async () => {
 });
 
 describe('US-105 embedded feature-parity QA', () => {
-  it('hq_work_handoff still defaults false', () => {
-    expect(hqWorkHandoffEnabled(undefined)).toBe(true);
-    expect(hqWorkHandoffEnabled(null)).toBe(true);
-    expect(hqWorkHandoffEnabled(false)).toBe(true);
-    expect(hqWorkHandoffEnabled(true)).toBe(true);
-  });
-
   describe('checklist', () => {
     const docPath = resolve(repoRoot, 'docs/hq-work-embedded-qa.md');
 

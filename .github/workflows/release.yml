@@ -197,6 +197,7 @@ jobs:
           sparse-checkout: |
             scripts/release-asset-contract.mjs
             scripts/release-stable-order.mjs
+            .github/scripts/check-changelog.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -387,6 +388,41 @@ jobs:
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
 
+      # Release notes are the only record users get of a release, and they are
+      # permanent once published. The GitHub Release body leads with the tag's
+      # CHANGELOG.md notes (see the publish job), so refuse a stable tag whose
+      # notes are empty before anything is built. PRs are asked for notes up
+      # front by changelog.yml; this is the backstop. beta/alpha testing builds
+      # are reported, not blocked. A workflow_dispatch retry is checked too; only
+      # a retry of a tag cut before CHANGELOG.md existed is exempt, because it
+      # has no written notes and publishes GitHub's generated list as before.
+      # A stable tag is also refused when the previous stable release's notes
+      # are still under ## [Unreleased] (its sync to main failed), because they
+      # would be published again under this version.
+      - name: Refuse to release empty release notes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TAG: ${{ steps.classify.outputs.tag }}
+          CHANNEL: ${{ steps.classify.outputs.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ ! -f CHANGELOG.md ]; then
+            echo "::warning::$TAG predates CHANGELOG.md, so its release body is GitHub's generated notes alone."
+            exit 0
+          fi
+          if [ "$CHANNEL" != "stable" ]; then
+            node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG" ||
+              echo "::warning::Prerelease $TAG has empty release notes; allowed for beta/alpha only."
+            exit 0
+          fi
+          previous=()
+          if PREVIOUS_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' "${TAG}^" 2>/dev/null) &&
+            git show "${PREVIOUS_TAG}:CHANGELOG.md" > "$RUNNER_TEMP/previous-CHANGELOG.md" 2>/dev/null; then
+            previous=(--previous "$RUNNER_TEMP/previous-CHANGELOG.md" --previous-version "$PREVIOUS_TAG")
+          fi
+          node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG" "${previous[@]}"
+
   macos:
     name: Build macOS universal
     needs: validate
@@ -485,6 +521,11 @@ jobs:
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-macos-universal
+          # Reader. This workflow runs only on tags, and a cache saved by one
+          # tag cannot be restored by another. Saving it only consumes budget
+          # and evicts main-scoped entries other lanes restore; cache-warm.yml
+          # on main is the designated writer for this key.
+          save-if: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -922,6 +963,11 @@ jobs:
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-${{ matrix.target }}
+          # Reader. This workflow runs only on tags, and a cache saved by one
+          # tag cannot be restored by another. Saving it only consumes budget
+          # and evicts main-scoped entries other lanes restore; cache-warm.yml
+          # on main is the designated writer for this key.
+          save-if: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -956,11 +1002,11 @@ jobs:
         shell: pwsh
         run: |
           $version = node -p "process.version"
-          $archiveName = "node-$version-win-arm64.zip"
+          $archiveName = "node-${version}-win-arm64.zip"
           $baseUrl = "https://nodejs.org/dist/$version"
           $archive = Join-Path $env:RUNNER_TEMP $archiveName
           $checksums = Join-Path $env:RUNNER_TEMP "SHASUMS256.txt"
-          $extract = Join-Path $env:RUNNER_TEMP "node-$version-win-arm64"
+          $extract = Join-Path $env:RUNNER_TEMP "node-${version}-win-arm64"
 
           Invoke-WebRequest "$baseUrl/$archiveName" -OutFile $archive
           Invoke-WebRequest "$baseUrl/SHASUMS256.txt" -OutFile $checksums
@@ -1092,14 +1138,22 @@ jobs:
             Accept = "application/json"
           }
           $endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
-          foreach ($expectedDebugId in $debugIds) {
-            $encodedDebugId = [uri]::EscapeDataString($expectedDebugId)
-            $records = @(Invoke-RestMethod -Uri "$endpoint?debug_id=$encodedDebugId" -Headers $headers -Method Get -TimeoutSec 30)
-            $matchingRecords = @($records | Where-Object { $_.debugId -ieq $expectedDebugId })
-            if ($matchingRecords.Count -eq 0) {
-              throw "Sentry debug-file listing is missing uploaded debug id $expectedDebugId"
+          try {
+            foreach ($expectedDebugId in $debugIds) {
+              $encodedDebugId = [uri]::EscapeDataString($expectedDebugId)
+              $records = @(Invoke-RestMethod -Uri "${endpoint}?debug_id=$encodedDebugId" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop)
+              $matchingRecords = @($records | Where-Object { $_.debugId -ieq $expectedDebugId })
+              if ($matchingRecords.Count -eq 0) {
+                throw "Sentry debug-file listing is missing uploaded debug id $expectedDebugId"
+              }
+              Write-Host "Verified Sentry debug-file record for $expectedDebugId"
             }
-            Write-Host "Verified Sentry debug-file record for $expectedDebugId"
+          }
+          catch {
+            $message = "Sentry debug-file upload verification failed after sentry-cli reported success for debug id(s) ${debugId}: $($_.Exception.Message)"
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
           }
 
       - name: Azure login (OIDC)
@@ -1182,7 +1236,7 @@ jobs:
             if (-not (Test-Path $sig)) {
               throw "Required updater signature is missing: $sig"
             }
-            $destName = if ($source.Extension -eq ".msi") { "$msiName.sig" } else { "$nsisName.sig" }
+            $destName = if ($source.Extension -eq ".msi") { "${msiName}.sig" } else { "${nsisName}.sig" }
             Copy-Item $sig (Join-Path $stage $destName)
           }
 
@@ -1229,6 +1283,7 @@ jobs:
             scripts/release-asset-contract.mjs
             scripts/release-stable-order.mjs
             scripts/macos-artifact-smoke.mjs
+            .github/scripts/check-changelog.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -1450,10 +1505,22 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$RELEASE_ACTION" = "create-draft" ]; then
+            # The tag's CHANGELOG.md notes lead the release body, and GitHub
+            # appends its generated PR list beneath them. validate already
+            # refused a stable tag without notes; a beta/alpha, or a dispatch
+            # retry of a tag that predates CHANGELOG.md, gets the list alone.
+            notes=""
+            if [ -f CHANGELOG.md ] &&
+              notes_out="$(node .release-control/.github/scripts/check-changelog.mjs notes --file CHANGELOG.md --version "$TAG" 2>&1)"; then
+              notes="$notes_out"
+            else
+              echo "::warning::No CHANGELOG.md notes for ${TAG}; the release body will be GitHub's generated PR list only. ${notes_out:-CHANGELOG.md is missing at this tag.}"
+            fi
             release_json="$(
               jq -n \
                 --arg tag "$TAG" \
                 --arg name "HQ ${TAG}" \
+                --arg body "$notes" \
                 --argjson prerelease "$PRERELEASE" \
                 '{
                   tag_name: $tag,
@@ -1461,7 +1528,7 @@ jobs:
                   draft: true,
                   prerelease: $prerelease,
                   generate_release_notes: true
-                }' |
+                } + (if $body == "" then {} else {body: $body} end)' |
                 gh api --method POST "repos/${REPOSITORY}/releases" --input -
             )"
             release_id="$(jq -r '.id' <<<"$release_json")"
@@ -1806,7 +1873,21 @@ jobs:
             pnpm run version:app --set-version "$RELEASE_VERSION"
             pnpm run version:check
 
+            # Move the notes this release shipped from Unreleased into their own
+            # section on main. Only the lines the tag carried move, so an entry
+            # merged while the release was building stays under Unreleased.
+            git fetch --no-tags origin "+refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+            if [ -f CHANGELOG.md ] && git show "${RELEASE_TAG}:CHANGELOG.md" > "$RUNNER_TEMP/released-CHANGELOG.md" 2>/dev/null; then
+              node .github/scripts/check-changelog.mjs promote \
+                --released "$RUNNER_TEMP/released-CHANGELOG.md" \
+                --target CHANGELOG.md \
+                --version "$RELEASE_VERSION"
+            else
+              echo "No CHANGELOG.md at ${RELEASE_TAG} or on main; nothing to promote."
+            fi
+
             git add -- \
+              CHANGELOG.md \
               versions.toml \
               apps/sync/package.json \
               apps/sync/src-tauri/tauri.conf.json \

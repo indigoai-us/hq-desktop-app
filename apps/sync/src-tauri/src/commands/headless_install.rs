@@ -66,7 +66,7 @@ pub fn maybe_run(app: &AppHandle) -> bool {
     tauri::async_runtime::spawn(async move {
         let started = std::time::Instant::now();
         let started_at = now_iso();
-        let outcome = install_deps::install_deps(handle.clone()).await;
+        let outcome = install_deps::install_deps(handle.clone(), None).await;
 
         let probes: Vec<ProbeResult> = install_deps::dependency_registry()
             .into_iter()

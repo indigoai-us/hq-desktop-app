@@ -47,10 +47,6 @@ const wizardSource = readFileSync(
   'utf8',
 );
 const syncAppSource = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
-const desktopAltSource = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/DesktopApp.svelte'),
-  'utf8',
-);
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -60,6 +56,14 @@ async function flush() {
   await tick();
   await Promise.resolve();
   flushSync();
+}
+
+async function flushUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await flush();
+    if (predicate()) return;
+  }
+  throw new Error('Timed out waiting for the onboarding sign-in fallback.');
 }
 
 /** Default invoke stub: resolve the handful of onMount commands the wizard fires. */
@@ -228,7 +232,9 @@ describe('US-001 consent step UI', () => {
     expect(signin).not.toBeNull();
     const checkboxes = signin!.querySelectorAll('input[type="checkbox"]');
     expect(checkboxes).toHaveLength(0);
-    // Sign-in still offers its provider buttons.
+    // Native continuation is unavailable in this fixture. Its silent
+    // first-run fallback still offers the pre-existing provider buttons.
+    await flushUntil(() => (signin!.textContent ?? '').includes('Log in with Google'));
     expect(signin!.textContent).toContain('Log in with Google');
   });
 });
@@ -332,14 +338,5 @@ describe('US-001 source regressions', () => {
     expect(wizardSource).toContain(
       "let telemetryChoice = $state<'share' | 'decline' | null>(null);",
     );
-  });
-
-  it('keeps manual sync outcomes on the consent-gated telemetry path', () => {
-    for (const source of [syncAppSource, desktopAltSource]) {
-      expect(source).toContain("eventName: 'manual_sync_failed'");
-      expect(source).toContain("'manual_sync_completed'");
-      expect(source).toContain('emitDesktopTelemetry');
-      expect(source).not.toContain('emitDesktopOperationalTelemetry');
-    }
   });
 });

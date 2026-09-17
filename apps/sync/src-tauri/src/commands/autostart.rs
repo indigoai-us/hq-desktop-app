@@ -83,9 +83,33 @@ pub fn reconcile_launch_agent_on_launch() {
 }
 
 /// Same heal as launch, run after the updater has replaced the bundle and
-/// before `app.restart()`.
+/// before the launchd handoff (or GUI `app.restart()` fallback).
 pub fn reconcile_launch_agent_after_update() {
     reconcile_launch_agent_on_launch();
+}
+
+/// Prefer handing restart to launchd so HQ is not relaunched as a GUI app.
+/// A LaunchServices relaunch is invisible to the KeepAlive agent, which then
+/// starts a second copy every ~10s and the single-instance handler steals
+/// focus. Falls back to `app.restart()` when no LaunchAgent is installed.
+/// Never returns: same contract as `AppHandle::restart`.
+pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> ! {
+    #[cfg(target_os = "macos")]
+    {
+        if hq_platform::launchagent::schedule_handoff_after_exit() {
+            log(
+                "updater",
+                "restart handed to launchd; exiting without GUI relaunch",
+            );
+            app.exit(0);
+            std::process::exit(0);
+        }
+        log(
+            "updater",
+            "launchd handoff unavailable; falling back to GUI relaunch",
+        );
+    }
+    app.restart()
 }
 
 /// Return the one-time LaunchAgent heal note and clear the pending flag.

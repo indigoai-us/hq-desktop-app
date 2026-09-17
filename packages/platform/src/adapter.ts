@@ -23,6 +23,10 @@
  */
 
 import type { Capabilities, Capability } from "./capabilities.js";
+import type {
+  EvidenceOptions,
+  ServiceEvidence,
+} from "./calls/evidence.js";
 
 export type AdapterResult<T> = { ok: true; value: T } | AdapterFailure;
 
@@ -344,6 +348,9 @@ export interface MessageSearchOptions {
  * global compose picker, WRONG for a channel-scoped mention roster, which must
  * only ever offer members of the channel's own company.
  */
+/** Recipient-side answer to a pending DM connection request. */
+export type DmRequestAction = "accept" | "decline" | "block";
+
 export interface ListContactsOptions {
   /** Restrict the roster to one company (`GET /v1/notify/contacts?companyUid=`). */
   companyUid?: string | null;
@@ -569,6 +576,15 @@ export interface MessagingApi {
   deleteChannel(channelId: string): AdapterPromise<Json>;
   listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
   listDmRequests(): AdapterPromise<Json[]>;
+  /**
+   * POST /v1/notify/connections/{accept|decline|block} body `{ pairKey }` —
+   * desktop `respond_dm_request`. Optional: hosts without the route omit it
+   * and the Requests panel shows the request as read-only.
+   */
+  respondDmRequest?(args: {
+    pairKey: string;
+    action: DmRequestAction;
+  }): AdapterPromise<Json>;
   markChannelRead(id: string): AdapterPromise<void>;
   markDmThreadRead(personUid: string): AdapterPromise<void>;
   searchMessages(
@@ -707,6 +723,15 @@ export interface NotificationsApi {
   /** v1 share inbox (GET /v1/files/shared-with-me). */
   fetchSharedWithMe(opts?: Json): AdapterPromise<Json>;
   ackSharedWithMe(eventIds: string[]): AdapterPromise<void>;
+  /**
+   * Cross-session new-file activity (GET /v1/notify/file-history) — files a
+   * teammate added to a company folder, as reported by the sync runner.
+   *
+   * Optional: these rows have no NOTIF-store counterpart and no ack endpoint,
+   * so a host that cannot serve them simply omits the method and the feed
+   * composes without them. Callers must treat it as possibly-absent.
+   */
+  fetchFileHistory?(opts?: Json): AdapterPromise<Json>;
 }
 
 /** `POST /v1/google/connect` — Google OAuth consent URL for a new account. */
@@ -1006,9 +1031,247 @@ export interface PackagesApi {
   updatePacks(names: string[]): AdapterPromise<Json>;
 }
 
-/** Desktop-only group (capability: canSpawnSessions). */
+/** Desktop-only group: install + sign in to the local agent CLIs. */
+export type SessionProviderId = "claude" | "codex" | "grok";
+
 export interface SessionsApi {
-  listAgentSessions(): AdapterPromise<Json[]>;
+  /** CLI installed + signed-in flags, for Settings → AI tools and Bots. */
+  preflight?(): AdapterPromise<Json>;
+  slashCommands?(tool: SessionProviderId): AdapterPromise<Json>;
+  installProvider?(tool: SessionProviderId): AdapterPromise<string>;
+  /**
+   * Open the vendor CLI's browser sign-in. `force` signs out first and signs
+   * in again even when the CLI still reports a saved login (a dead login
+   * `auth status` cannot see).
+   */
+  loginStart?(tool: SessionProviderId, opts?: SessionLoginStartOptions): AdapterPromise<Json>;
+  loginStatus?(tool: SessionProviderId): AdapterPromise<Json>;
+  loginCancel?(tool: SessionProviderId): AdapterPromise<Json>;
+}
+
+export interface SessionLoginStartOptions {
+  force?: boolean;
+}
+
+/**
+ * Set by `hq bot list` when the bot's last model turn failed because its
+ * runtime CLI's sign-in is missing or expired. The bot pauses and retries on
+ * its own; a restart makes it retry at once. Absent or null once a turn works.
+ */
+export interface LocalBotRuntimeSignIn {
+  state: "expired";
+  runtime: "claude" | "codex" | "grok";
+  /** ISO time the sign-in was first seen expired. */
+  since: string;
+}
+
+/** A personal local bot (local-bots US-009) as reported by `hq bot list --json`. */
+export interface LocalBotRow {
+  /** Absent on older CLI versions; cloud only after verified activation. */
+  hosting?: "local" | "cloud";
+  name: string;
+  agentUid: string;
+  ownerUid: string;
+  runtime: "claude" | "codex" | "grok";
+  /** Model override; absent = the runtime CLI's own default for the owner's account. */
+  model?: string;
+  /** Thinking level the bot runs with (`hq bot list` reports the effective value). */
+  effort?: string;
+  /** True when no thinking level was picked, so `effort` is the default. */
+  effortIsDefault?: boolean;
+  /** Local process state: running | stopped | failed. */
+  state: string;
+  pid: number | null;
+  processAlive: boolean;
+  /** Durable local handoff hold; null destination means it could not be verified. */
+  promotionHold?: { companyUid: string | null } | null;
+  /** Server-side liveness (heartbeat < 90 s); null when hq-pro was unreachable. */
+  online: boolean | null;
+  lastHeartbeatAt: string | null;
+  daemonInstalled: boolean;
+  daemonLoaded: boolean;
+  dir: string;
+  /** Configured memory folder, reported by the supervisor; may be absolute for Mac-only memory. */
+  memoryDir?: string;
+  /** Set when the bot was created from a company/core worker (`--worker`). */
+  workerId?: string;
+  companySlug?: string;
+  /**
+   * Bot kind (bot-kinds): `personal` acts as its owner and stays on this Mac;
+   * `company` acts as itself inside its companies and can be promoted.
+   * Absent on older CLI versions.
+   */
+  kind?: LocalBotKind;
+  /** Company slugs a company bot belongs to (absent for personal bots / older CLI). */
+  companies?: string[];
+  /** Present while the runtime CLI needs the person to sign in again. */
+  runtimeSignIn?: LocalBotRuntimeSignIn | null;
+}
+
+/**
+ * A local bot this ACCOUNT owns, as `hq bot list --remote --json` reports it.
+ *
+ * `hq bot list` only knows this computer. A reinstall, a wiped `~/.hq`, or a
+ * second Mac leaves the cloud half of a bot intact and the local half gone, so
+ * the local listing is empty while the person still owns the bot — which is
+ * how a bot's DM came to sit under a spinner for 41 s while its own setup said
+ * it could not run here. `here` is the flag that tells the two apart.
+ */
+export interface RemoteBotRow {
+  /** Local folder name (what `adopt`/`start` take). */
+  name: string;
+  agentUid: string;
+  /** `personal` | `company`, as the cloud record has it. */
+  kind: string;
+  online: boolean;
+  lastHeartbeatAt: string | null;
+  /** True when this bot is set up on THIS computer. */
+  here: boolean;
+  /**
+   * True when THIS computer could run the bot at all.
+   *
+   * A company bot's identity lives in HQ Cloud and its runtime refuses to
+   * start as a personal local bot, so bringing it "back" to a Mac creates
+   * credentials, a state directory and a startup agent for something that can
+   * never run (round 4, Defect 7). Absent on a CLI that does not send it yet
+   * — `remoteBotRunnableHere` falls back to `kind` then.
+   */
+  runnable?: boolean;
+  /**
+   * Why `runnable` is false, as the CLI names it (`company-bot`, and
+   * `not-runnable-here` from a refused adopt/restore). Never rendered: it
+   * selects one of the app's own written sentences.
+   */
+  reason?: string;
+  /** One-line description of the settings it would come back with. */
+  settings: string;
+}
+
+/** One bot's outcome in `hq bot restore --json`. */
+export interface BotRestoreRow {
+  name: string;
+  agentUid: string;
+  /** `restored` = brought back here; `repaired` = new credentials for one already here. */
+  action:
+    | "restored"
+    | "repaired"
+    | "skipped"
+    | "failed"
+    | "would-restore"
+    | "would-repair"
+    | "would-skip";
+  /** The CLI's own words — logged and counted, never rendered verbatim. */
+  detail: string;
+  /**
+   * Machine-readable reason for a row the CLI refused (`not-runnable-here`
+   * for a company bot). Absent on a CLI that does not send it yet; it selects
+   * one of the app's own written sentences, and is never rendered.
+   */
+  reason?: string;
+}
+
+/** `hq bot restore [--all] --json`. */
+export interface BotRestoreResult {
+  ok: boolean;
+  dryRun: boolean;
+  restored: number;
+  repaired: number;
+  skipped: number;
+  failed: number;
+  bots: BotRestoreRow[];
+}
+
+/** `hq bot create --kind`: personal bots act as the owner; company bots act as themselves. */
+export type LocalBotKind = "personal" | "company";
+
+/** A worker a bot can be created from (`hq bot workers --json`). */
+export interface LocalBotWorkerOption {
+  id: string;
+  /** hqRoot-relative worker folder. */
+  path: string;
+  company?: string;
+  description?: string;
+  type?: string;
+  /** Human name from worker.yaml; falls back to a title-cased id. */
+  name?: string;
+  /** Curated one-liner from worker.yaml `summary:`; else the first sentence of `description`. */
+  summary?: string;
+  /** Number of skills the worker ships. */
+  skillCount?: number;
+  /** Whether the worker is an HQ core template or a company one. */
+  source?: "core" | "company";
+}
+
+/** Input to `LocalBotsApi.create` — mirrors `hq bot create` flags. */
+export interface LocalBotCreateInput {
+  name: string;
+  runtime: "claude" | "codex" | "grok";
+  /** Optional model override passed to the runtime CLI. */
+  model?: string;
+  /** Pre-approve every tool/command (default true; headless bots cannot prompt). */
+  autoApprove?: boolean;
+  /** Create the bot from this worker id instead of a fresh persona. */
+  worker?: string;
+  /** Optional first message the bot sends when it comes online (≤ 500 chars). */
+  intro?: string;
+  /**
+   * Optional first task (≤ 2000 chars): right after the intro, on first start
+   * only, the bot runs one model turn on this prompt as if the owner sent it
+   * and DMs the answer (`hq bot create --kickoff`).
+   */
+  kickoff?: string;
+  /** Where the bot's memory lives: HQ-synced (default) or this Mac only. */
+  memory?: "synced" | "local";
+  /** Personal (acts as the owner) or company (acts as itself); `hq bot create --kind`. */
+  kind?: LocalBotKind;
+  /** Company slugs for a company bot — one `--company <slug>` each; required when kind is company. */
+  companies?: string[];
+}
+
+/**
+ * Desktop-only group (local-bots US-009): personal bots that run on THIS
+ * computer under the user's own model login. Every call shells to the hq CLI
+ * through the host's launch boundary; nothing here talks to hq-pro directly.
+ */
+export interface LocalBotsApi {
+  list(): AdapterPromise<{ bots: LocalBotRow[] }>;
+  create(input: LocalBotCreateInput): AdapterPromise<Json>;
+  /** Workers a bot can be created from; optional for older hosts. */
+  workers?(): AdapterPromise<{ workers: LocalBotWorkerOption[] }>;
+  start(name: string): AdapterPromise<Json>;
+  stop(name: string): AdapterPromise<Json>;
+  remove(name: string): AdapterPromise<Json>;
+  /**
+   * Change what a bot thinks with (`hq bot set`), from its next message.
+   * A field left out is unchanged; `null` resets it to the default.
+   * Optional for older hosts.
+   */
+  configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
+  promote?(name: string, companyUid: string): AdapterPromise<Json>;
+  /**
+   * The local bots this ACCOUNT owns, each flagged `here` or not
+   * (`hq bot list --remote`). The one source of truth for "the person owns
+   * this bot and this computer cannot run it". Optional: older hosts and the
+   * web build have no such command, and callers fall back to the local list.
+   */
+  listRemote?(): AdapterPromise<{ bots: RemoteBotRow[] }>;
+  /**
+   * Bring ONE owned bot back to this computer and start it
+   * (`hq bot adopt <name>`): new machine credentials, its saved settings, its
+   * worker folder and startup agent. Optional for older hosts.
+   */
+  adopt?(name: string): AdapterPromise<Json>;
+  /**
+   * Bring back EVERY owned bot that is not set up here (`hq bot restore`);
+   * `all` additionally repairs the ones that are. Optional for older hosts.
+   */
+  restore?(options?: { all?: boolean }): AdapterPromise<BotRestoreResult>;
+}
+
+/** Input to `LocalBotsApi.configure`. */
+export interface LocalBotSettingsInput {
+  model?: string | null;
+  effort?: string | null;
 }
 
 /** Local per-platform settings. */
@@ -1018,6 +1281,11 @@ export interface SettingsApi {
   /** Persist a minimal patch over the latest host settings. */
   updateSettings(patch: Json): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
+  /**
+   * The welcome channel's guided setup finished on this machine. Optional:
+   * hosts without a native settings store have nothing to record.
+   */
+  markWelcomeSetupComplete?(): AdapterPromise<void>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }
 
@@ -1055,6 +1323,7 @@ export interface WorkMeshApi {
   createProjectStory?(projectId: string, companyUid: string, story: {
     id: string; title: string; description: string; status: string; passes: boolean;
   }): AdapterPromise<Json>;
+  putProjectView?(projectId: string, companyUid: string, view: Json): AdapterPromise<Json>;
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;
@@ -1089,6 +1358,149 @@ export interface WorkMeshApi {
 }
 
 // ---------------------------------------------------------------------------
+// Calls (native Meet, contract "hq-meet/1") — US-014
+// ---------------------------------------------------------------------------
+
+/** Room lifecycle POSTs under /v1/meet-native/rooms/{roomId}/{action}. */
+export type RoomLifecycleAction = "renew" | "leave" | "end" | "start";
+
+/** Knock responses under /v1/meet-native/knocks/{knockId}/{action}. */
+export type KnockAction = "accept" | "decline" | "defer" | "cancel";
+
+/** Signed control operations under /v1/meet-native/signaling/{operation}. */
+export type SignalingOperation = "admit" | "renew" | "reconcile" | "revoke";
+
+/** Signed completion operations under /v1/meet-native/completion/{operation}. */
+export type CompletionOperation =
+  | "create"
+  | "claim"
+  | "status"
+  | "upload"
+  | "finalize";
+
+/** Paging controls for `discoverOffice`. Both are optional. */
+export interface OfficeDiscoverOptions {
+  /** 1..OFFICE page size (25). Omit for the service default. */
+  limit?: number;
+  /** Opaque continuation token from a previous page's `cursor`. */
+  cursor?: string;
+}
+
+export interface OfficePreferenceInput {
+  companyUid: string;
+  willingness: string;
+  ttlMs?: number;
+}
+
+export interface OfficeConnectivityInput {
+  companyUid: string;
+  connectivity: string;
+  ttlMs?: number;
+}
+
+export interface CreateRoomInput {
+  companyUid: string;
+  visibility: "company" | "private";
+  /** Defaults to [] — the service rejects more than 7. */
+  cohosts?: string[];
+}
+
+export interface KnockCreateInput {
+  companyUid: string;
+  roomId: string;
+  callId: string;
+  epoch: number;
+  target: string;
+  note: string;
+  idempotencyKey: string;
+}
+
+/** POST /v1/meet-native/signaling/send — a signed signal envelope. */
+export interface SendSignalRequest {
+  signal: Json;
+  signature: string;
+}
+
+/**
+ * Native calling (hq-pro "hq-meet/1").
+ *
+ * Two invariants the type cannot express but every implementation honours:
+ *
+ *  1. `preflight()` must record a passing US-011 service evidence receipt on
+ *     this adapter instance before any other method does anything. Until then
+ *     they all resolve `unavailable` with code "CALLS_PREFLIGHT_REQUIRED".
+ *  2. Hosts without native calling (browsers) implement the whole group as
+ *     `unavailable` with code "CALLS_UNSUPPORTED_HOST" — never a stub `ok()`.
+ *
+ * Request bodies carry `version: "hq-meet/1"`; failures preserve the backend
+ * error `code` (COMPANY_ACCESS_DENIED, STALE_EPOCH, CALL_SEALED, ...).
+ */
+export interface CallsApi {
+  /** The contract version this adapter speaks. */
+  readonly contractVersion: "hq-meet/1";
+  /**
+   * Validate a US-011 service evidence receipt and, on success, unlock this
+   * adapter instance. A failing receipt clears any previous pass.
+   */
+  preflight(
+    evidence: unknown,
+    options?: EvidenceOptions,
+  ): AdapterPromise<ServiceEvidence>;
+  /** The recorded evidence, or the standard refusal when preflight has not passed. */
+  preflightStatus(): AdapterResult<ServiceEvidence>;
+
+  /**
+   * One page of the company office directory. `options.cursor` continues a
+   * previous page; `options.limit` is bounded by the service page size.
+   */
+  discoverOffice(
+    companyUid: string,
+    options?: OfficeDiscoverOptions,
+  ): AdapterPromise<Json>;
+  setOfficePreference(input: OfficePreferenceInput): AdapterPromise<Json>;
+  setOfficeConnectivity(input: OfficeConnectivityInput): AdapterPromise<Json>;
+
+  createRoom(input: CreateRoomInput): AdapterPromise<Json>;
+  getRoom(roomId: string, companyUid: string): AdapterPromise<Json>;
+  /** Body is an `admission` envelope. */
+  joinRoom(roomId: string, admission: Json): AdapterPromise<Json>;
+  roomLifecycle(
+    roomId: string,
+    action: RoomLifecycleAction,
+    body: Json,
+  ): AdapterPromise<Json>;
+
+  createKnock(input: KnockCreateInput): AdapterPromise<Json>;
+  listKnocks(companyUid: string, limit?: number): AdapterPromise<Json>;
+  getKnock(knockId: string, companyUid: string): AdapterPromise<Json>;
+  respondToKnock(
+    knockId: string,
+    action: KnockAction,
+    companyUid: string,
+  ): AdapterPromise<Json>;
+
+  /** Body is a signed `control` envelope. */
+  signalingControl(
+    operation: SignalingOperation,
+    control: Json,
+  ): AdapterPromise<Json>;
+  sendSignal(request: SendSignalRequest): AdapterPromise<Json>;
+  /** Body is a signed `iceConfig` envelope. Credentials never enter logs. */
+  iceConfig(request: Json): AdapterPromise<Json>;
+
+  /** Durable native live transcript ingress; bearer stays in the native host. */
+  liveTranscript(operation: "begin" | "append" | "read" | "list" | "session", request: Json): AdapterPromise<Json>;
+
+  /** Body is a signed `consentControl` envelope. */
+  completionConsent(control: Json): AdapterPromise<Json>;
+  /** Body is a signed `completionControl` envelope. */
+  completion(
+    operation: CompletionOperation,
+    control: Json,
+  ): AdapterPromise<Json>;
+}
+
+// ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
 
@@ -1118,6 +1530,10 @@ export interface PlatformAdapter {
   readonly updates: UpdatesApi;
   readonly packages: PackagesApi;
   readonly sessions: SessionsApi;
+  /** Optional: only the desktop host can run bots on this machine. */
+  readonly bots?: LocalBotsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
+  /** Native calling (US-014). Unsupported hosts implement it as refusals. */
+  readonly calls: CallsApi;
 }

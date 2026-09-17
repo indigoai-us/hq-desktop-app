@@ -4,7 +4,7 @@ type InvokeCommand = (command: string, args?: Record<string, unknown>) => Promis
 
 export type DesktopTelemetryProperties = Record<
   string,
-  string | number | boolean | null | undefined
+  string | number | boolean | string[] | null | undefined
 >;
 
 const EMIT_SKILL_TELEMETRY_COMMAND = 'emit_desktop_telemetry_if_opted_in';

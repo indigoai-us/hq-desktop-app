@@ -1,14 +1,27 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   type MentionCandidate,
   type ThinkingEntry,
+  type ThinkingByRow,
   isAgentUid,
   detectAgentMentions,
   startThinking,
   tick,
   clearForAgents,
   clearFromMessages,
-  labelFor,
+  newestMessageAtFrom,
+  thinkingLine,
+  formatThinkingElapsed,
+  THINKING_PHRASES,
+  startThinkingIn,
+  tickAll,
+  clearRowFromMessages,
+  dropRow,
+  kickoffThinkingState,
+  agentDisplayName,
+  applyAgentStatus,
+  parseAgentStatusWake,
+  clearFromMessages as clearRows,
 } from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
@@ -100,6 +113,7 @@ describe('startThinking', () => {
         agentName: 'Izzy (Fleet)',
         startedAt: 1000,
         phase: 'thinking',
+        since: 1000,
       },
     ]);
     expect(next).not.toBe(original);
@@ -120,9 +134,21 @@ describe('startThinking', () => {
         agentName: 'Izzy (Fleet)',
         startedAt: 9_000,
         phase: 'thinking',
+        // The restart re-pins the clear rule but not the elapsed counter: the
+        // agent has been working since the row first went up.
+        since: 1,
       },
       other,
     ]);
+  });
+
+  it('keeps the original since across repeated restarts', () => {
+    let rows = startThinking([], agent, 1_000);
+    rows = startThinking(rows, agent, 5_000, { detail: 'is reading the repo' });
+    rows = startThinking(rows, agent, 12_000, { detail: 'is writing tests' });
+
+    expect(rows[0]!.since).toBe(1_000);
+    expect(rows[0]!.startedAt).toBe(12_000);
   });
 });
 
@@ -190,14 +216,25 @@ describe('clearForAgents', () => {
   });
 });
 
-describe('labelFor', () => {
-  it('renders both phases', () => {
-    expect(
-      labelFor(entry({ agentUid: 'agt_izzy', agentName: 'Izzy', phase: 'thinking' })),
-    ).toBe('Izzy is thinking…');
-    expect(
-      labelFor(entry({ agentUid: 'agt_izzy', agentName: 'Izzy', phase: 'slow' })),
-    ).toBe('Izzy is taking longer than usual…');
+describe('thinkingLine and the slow phase', () => {
+  it('says so once tick has promoted the row to slow', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: 0, since: 0 });
+    expect(thinkingLine(row, 1_000).label).toBe('Izzy is thinking');
+    const slow = tick([row], 150_000)[0]!;
+    expect(slow.phase).toBe('slow');
+    expect(thinkingLine(slow, 150_000).label).toBe('Izzy is taking longer than usual');
+  });
+
+  it("still prefers the agent's own words over the slow copy", () => {
+    const slow = entry({
+      agentUid: 'agt_izzy',
+      agentName: 'Izzy',
+      startedAt: 0,
+      since: 0,
+      phase: 'slow',
+      detail: 'is running the tests',
+    });
+    expect(thinkingLine(slow, 150_000).label).toBe('Izzy is running the tests');
   });
 });
 
@@ -249,5 +286,277 @@ describe('clearFromMessages', () => {
     ]);
     expect(out).toHaveLength(1);
     expect(out).not.toBe(rows);
+  });
+});
+
+describe('fast responders (local bots): afterMs replaces the skew fallback', () => {
+  const BOT = 'agt_bot';
+  it('a reply from 30 s ago does not clear a fresh row, but a newer one does', () => {
+    const prevReply = '2026-09-11T15:05:53.000Z';
+    const sentAt = Date.parse('2026-09-11T15:06:06.000Z');
+    const timeline = [
+      { fromPersonUid: 'prs_me', createdAt: '2026-09-11T15:05:50.000Z' },
+      { fromPersonUid: BOT, createdAt: prevReply },
+    ];
+    const rows = startThinking([], { agentUid: BOT, agentName: 'claude-bot' }, sentAt, {
+      afterMs: newestMessageAtFrom(timeline, BOT),
+    });
+    expect(rows[0]?.afterMs).toBe(Date.parse(prevReply));
+    // Catch-up page that still only carries the OLD reply (inside the 120 s skew window).
+    expect(clearFromMessages(rows, timeline)).toHaveLength(1);
+    // The actual answer arrives (server clock even slightly behind the client).
+    expect(
+      clearFromMessages(rows, [{ fromPersonUid: BOT, createdAt: '2026-09-11T15:06:05.000Z' }]),
+    ).toHaveLength(0);
+  });
+  it('falls back to the skew rule when the agent has no prior message', () => {
+    const now = 1_000_000_000_000;
+    const rows = startThinking([], { agentUid: BOT, agentName: 'b' }, now, {
+      afterMs: newestMessageAtFrom([{ fromPersonUid: 'prs_me', createdAt: new Date(now).toISOString() }], BOT),
+    });
+    expect(rows[0]?.afterMs).toBeUndefined();
+    expect(
+      clearFromMessages(rows, [{ fromPersonUid: BOT, createdAt: new Date(now - 60_000).toISOString() }]),
+    ).toHaveLength(0);
+  });
+});
+
+describe('per-row map (thinking survives navigation)', () => {
+  const izzy = { agentUid: 'agt_izzy', agentName: 'Izzy' };
+  const lin = { agentUid: 'agt_lin', agentName: 'Lin' };
+  const A = 'ch:chn_a';
+  const B = 'dm:agt_izzy';
+
+  it('startThinkingIn scopes the row to its conversation and never mutates', () => {
+    const empty: ThinkingByRow = {};
+    const one = startThinkingIn(empty, A, izzy, 1000, { afterMs: 500 });
+    expect(empty).toEqual({});
+    expect(one).toEqual({
+      [A]: [{ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: 1000, phase: 'thinking', afterMs: 500, since: 1000 }],
+    });
+    const two = startThinkingIn(one, B, izzy, 2000);
+    expect(one[B]).toBeUndefined();
+    expect(two[A]).toBe(one[A]);
+    expect(two[B]?.[0]?.startedAt).toBe(2000);
+    // Restart in the same row replaces in place (idempotent per agent).
+    const again = startThinkingIn(two, A, izzy, 3000);
+    expect(again[A]).toHaveLength(1);
+    expect(again[A]?.[0]?.startedAt).toBe(3000);
+    expect(again[A]?.[0]?.afterMs).toBeUndefined();
+  });
+
+  it('tickAll advances every row and drops rows emptied by expiry', () => {
+    let map = startThinkingIn({}, A, izzy, 0);
+    map = startThinkingIn(map, B, lin, 500_000);
+    const ticked = tickAll(map, 600_000);
+    expect(ticked[A], 'expired row removed').toBeUndefined();
+    expect(ticked[B]).toEqual([{ ...map[B]![0]!, phase: 'thinking' }]);
+    const slow = tickAll(map, 160_000);
+    expect(slow[A]?.[0]?.phase).toBe('slow');
+    expect(slow[B]?.[0]?.phase).toBe('thinking');
+    expect(map[A]?.[0]?.phase, 'input untouched').toBe('thinking');
+  });
+
+  it('clearRowFromMessages only touches the named row and honours afterMs', () => {
+    const started = 1_000_000_000_000;
+    let map = startThinkingIn({}, A, izzy, started, { afterMs: started - 30_000 });
+    map = startThinkingIn(map, B, izzy, started);
+    const reply = [{ fromPersonUid: 'agt_izzy', createdAt: new Date(started + 5_000).toISOString() }];
+    const cleared = clearRowFromMessages(map, A, reply);
+    expect(cleared[A], 'row A cleared and dropped').toBeUndefined();
+    expect(cleared[B], 'row B untouched by A traffic').toEqual(map[B]);
+    expect(map[A], 'input untouched').toHaveLength(1);
+    // An OLD reply (<= afterMs) in the same row keeps the status.
+    const stale = clearRowFromMessages(map, A, [
+      { fromPersonUid: 'agt_izzy', createdAt: new Date(started - 30_000).toISOString() },
+    ]);
+    expect(stale[A]).toEqual(map[A]);
+    expect(stale).not.toBe(map);
+    // Unknown row is a no-op copy.
+    expect(clearRowFromMessages(map, 'ch:nope', reply)).toEqual(map);
+  });
+
+  it('dropRow removes exactly one row', () => {
+    let map = startThinkingIn({}, A, izzy, 0);
+    map = startThinkingIn(map, B, lin, 0);
+    const dropped = dropRow(map, A);
+    expect(dropped).toEqual({ [B]: map[B] });
+    expect(map[A]).toHaveLength(1);
+    expect(dropRow(dropped, 'ch:nope')).toEqual(dropped);
+  });
+});
+
+describe('kickoffThinkingState', () => {
+  const bot = 'agt_setup';
+  const intro = { fromPersonUid: bot, createdAt: '2026-09-12T21:40:41.000Z' };
+  const reply = { fromPersonUid: bot, createdAt: '2026-09-12T21:42:10.000Z' };
+  const mine = { fromPersonUid: 'prs_me', createdAt: '2026-09-12T21:41:00.000Z' };
+
+  it('waits until the intro lands', () => {
+    expect(kickoffThinkingState([], bot)).toEqual({ state: 'waiting' });
+    expect(kickoffThinkingState([mine], bot)).toEqual({ state: 'waiting' });
+  });
+  it('starts once only the intro is there, pinned so the intro never clears the row but the answer does', () => {
+    const decision = kickoffThinkingState([intro, mine], bot);
+    expect(decision).toEqual({ state: 'start', afterMs: Date.parse(intro.createdAt) });
+    const rows = startThinking([], { agentUid: bot, agentName: 'setup' }, Date.parse(intro.createdAt) + 500, {
+      afterMs: (decision as { afterMs: number }).afterMs,
+    });
+    expect(clearFromMessages(rows, [intro])).toHaveLength(1);
+    expect(clearFromMessages(rows, [intro, reply])).toHaveLength(0);
+  });
+  it('is done when the answer already landed', () => {
+    expect(kickoffThinkingState([intro, reply], bot)).toEqual({ state: 'done' });
+  });
+});
+
+describe("agentDisplayName", () => {
+  const root = { fromPersonUid: "prs_jacob", fromDisplayName: "Jacob Posel" };
+  const agentReply = { fromPersonUid: "agt_mkt", fromDisplayName: "Marketing Agent" };
+
+  it("never names the row after the person who started the thread", () => {
+    expect(agentDisplayName("agt_mkt", [root], { fallback: "Marketing Agent" })).toBe("Marketing Agent");
+    expect(agentDisplayName("agt_mkt", [root, agentReply])).toBe("Marketing Agent");
+  });
+
+  it("prefers the live roster name, then the agent's own messages, then the fallback", () => {
+    expect(agentDisplayName("agt_mkt", [agentReply], { liveNames: { agt_mkt: "Maya" } })).toBe("Maya");
+    expect(agentDisplayName("agt_mkt", [root])).toBe("Bot");
+  });
+});
+
+describe("agent status keeps the row up while the agent works", () => {
+  const t = (s: number) => new Date(Date.UTC(2026, 8, 15, 10, 0, s)).toISOString();
+  const wake = (s: number, status = "is thinking\u2026") =>
+    parseAgentStatusWake({ type: "agent_status", channelId: "chn_1", agentUid: "agt_connor", status, ts: t(s) })!;
+  const msg = (s: number) => ({ fromPersonUid: "agt_connor", createdAt: t(s) });
+
+  it("survives a progress post in the middle of a turn and ends on the final answer", () => {
+    let rows = applyAgentStatus([], wake(0), "connor", [], 1);
+    expect(rows).toHaveLength(1);
+    // "I'll check the Vercel team…" lands, then the bot reports it is still working.
+    rows = clearRows(rows, [msg(5)]);
+    expect(rows).toHaveLength(0);
+    rows = applyAgentStatus(rows, wake(6), "connor", [msg(5)], 2);
+    expect(rows).toHaveLength(1);
+    // A re-fetch that still carries the progress post does not clear it again.
+    expect(clearRows(rows, [msg(5)])).toHaveLength(1);
+    // The final answer, after the last status, ends it.
+    expect(clearRows(rows, [msg(5), msg(40)])).toHaveLength(0);
+  });
+
+  it("ignores a status older than a message already shown from that agent", () => {
+    expect(applyAgentStatus([], wake(10), "connor", [msg(12)], 1)).toHaveLength(0);
+  });
+
+  it("shows the agent's own status text, and the usual copy for a plain thinking status", () => {
+    const plain = applyAgentStatus([], wake(0), "connor", [], 1)[0]!;
+    expect(thinkingLine(plain, plain.startedAt).label).toBe("connor is thinking");
+    const reported = applyAgentStatus([], wake(0, "still working (1m20s)"), "connor", [], 1)[0]!;
+    expect(thinkingLine(reported, reported.startedAt).label).toBe("connor: still working (1m20s)");
+  });
+
+  it("parses only well-formed agent_status payloads", () => {
+    expect(parseAgentStatusWake('{"type":"channel","channelId":"chn_1"}')).toBeNull();
+    expect(parseAgentStatusWake({ type: "agent_status", agentUid: "agt_c", ts: t(0) })).toBeNull();
+    expect(parseAgentStatusWake({ type: "agent_status", channelId: "chn_1", agentUid: "agt_c", ts: "nope" })).toBeNull();
+    expect(
+      parseAgentStatusWake(JSON.stringify({ type: "agent_status", channelId: "chn_1", agentUid: "agt_c", status: "x", threadRoot: "evt_r", ts: t(0) })),
+    ).toMatchObject({ threadRoot: "evt_r" });
+  });
+});
+
+
+describe('thinkingLine — the row visibly changes while the agent works', () => {
+  const START = 1_000_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Sample the line once a second, the way the row's own clock does. */
+  function samples(row: ThinkingEntry, seconds: number) {
+    const seen: ReturnType<typeof thinkingLine>[] = [];
+    const timer = setInterval(() => seen.push(thinkingLine(row, Date.now())), 1_000);
+    vi.advanceTimersByTime(seconds * 1_000);
+    clearInterval(timer);
+    return seen;
+  }
+
+  it('walks the phrases instead of sitting on "is thinking"', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: START });
+    const labels = samples(row, 40).map((line) => line.label);
+
+    expect(labels[0]).toBe('Izzy is thinking');
+    expect(new Set(labels).size).toBe(THINKING_PHRASES.length);
+    expect(labels.at(-1)).toBe('Izzy is still working');
+  });
+
+  it('holds on the last phrase rather than looping back to the first', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: START });
+    const labels = samples(row, 300).map((line) => line.label);
+
+    expect(labels.at(-1)).toBe('Izzy is still working');
+    expect(labels.slice(60)).not.toContain('Izzy is thinking');
+  });
+
+  it('counts the elapsed time up, only after 15s', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: START });
+    const lines = samples(row, 130);
+
+    expect(lines[13]?.elapsed).toBeNull();
+    expect(lines[14]?.elapsed).toBe('working for 15s');
+    expect(lines[41]?.elapsed).toBe('working for 42s');
+    expect(lines.at(-1)?.elapsed).toBe('working for 2m 10s');
+  });
+
+  it('shows the agent’s own status the moment one arrives, and the next one after that', () => {
+    let rows = startThinking([], { agentUid: 'agt_izzy', agentName: 'Izzy' }, START);
+    expect(thinkingLine(rows[0]!, START + 1_000).label).toBe('Izzy is thinking');
+
+    rows = startThinking(rows, { agentUid: 'agt_izzy', agentName: 'Izzy' }, START + 4_000, {
+      detail: 'is reading the repo',
+    });
+    expect(thinkingLine(rows[0]!, START + 4_000).label).toBe('Izzy is reading the repo');
+
+    rows = startThinking(rows, { agentUid: 'agt_izzy', agentName: 'Izzy' }, START + 30_000, {
+      detail: 'running the tests',
+    });
+    const line = thinkingLine(rows[0]!, START + 30_000);
+    expect(line.label).toBe('Izzy: running the tests');
+    // A new status re-pins the clear rule but must not restart the counter.
+    expect(line.elapsed).toBe('working for 30s');
+  });
+
+  it('treats the generic "is thinking" status as no status at all', () => {
+    const row = entry({
+      agentUid: 'agt_izzy',
+      agentName: 'Izzy',
+      startedAt: START,
+      detail: 'is thinking',
+    });
+    expect(thinkingLine(row, START + 17_000).label).toBe('Izzy is working on it');
+  });
+
+  it('never leaves a trailing ellipsis for the row to double up on', () => {
+    const row = entry({
+      agentUid: 'agt_izzy',
+      agentName: 'Izzy',
+      startedAt: START,
+      detail: 'is packaging the build…',
+    });
+    expect(thinkingLine(row, START).label).toBe('Izzy is packaging the build');
+  });
+
+  it('formats the counter in seconds, then minutes', () => {
+    expect(formatThinkingElapsed(0)).toBe('0s');
+    expect(formatThinkingElapsed(42_400)).toBe('42s');
+    expect(formatThinkingElapsed(65_000)).toBe('1m 05s');
+    expect(formatThinkingElapsed(-10)).toBe('0s');
   });
 });

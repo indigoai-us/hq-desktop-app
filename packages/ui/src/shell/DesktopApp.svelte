@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { parseMeshProjectView, projectViewToBoard } from "@hq/core";
+  import {
+    parseMeshProjectView,
+    projectViewToBoard,
+  } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
    * its dev-harness ?view=v2 preview).
@@ -23,16 +26,19 @@
   import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
+  import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import ChatSidebar, {
     type ChatSidebarActions,
   } from "../chat/ChatSidebar.svelte";
   import type { RowExtrasResolver } from "../chat/row-extras.js";
+  import DmRequestsPanel from "../chat/DmRequestsPanel.svelte";
   import ShortcutCheatSheet from "../common/ShortcutCheatSheet.svelte";
   import {
     formatShortcut,
     registerShortcuts,
     type ShortcutBinding,
   } from "../common/keyboard-shortcuts.js";
+  import { createGoChord } from "../common/go-chord.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -42,6 +48,8 @@
   import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import BotKindChip from "../chat/BotKindChip.svelte";
+  import { botKindFor } from "../chat/bot-kind.js";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
@@ -52,10 +60,45 @@
     isAgentUid as isAgentTaskUid,
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
-  import { isSetupChannel, SETUP_CHANNEL_ID } from "../chat/setup-channel.js";
+  import SetupRunCard from "../chat/SetupRunCard.svelte";
+  import SetupConnectStep from "../chat/SetupConnectStep.svelte";
+  import SetupFinale from "../chat/SetupFinale.svelte";
+  import { SETUP_FAILURE_COPY } from "../chat/setup-run";
+  import type { SetupRunApi } from "../chat/setup-run.js";
+  import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
+  import { createLaunchActions } from "../settings/launch-actions";
+  import {
+    hasRunWelcomeSetup,
+    isSetupChannel,
+    markWelcomeSetupRun,
+    SETUP_CHANNEL_ID,
+    setupCompanies,
+    setupCompanyActionLabel,
+    setupRosterLoading,
+    withoutCompaniesSummaryCards,
+    withoutSeededCreateCompanyCards,
+  } from "../chat/setup-channel.js";
+  import {
+    findSetupBot,
+    findSetupBotContact,
+    firstSignedInRuntime,
+    SETUP_BOT_ALREADY_ELSEWHERE,
+    SETUP_BOT_GENERIC_FAILURE,
+    SETUP_BOT_INTRO,
+    SETUP_BOT_KICKOFF,
+    SETUP_BOT_MODE,
+    SETUP_BOT_NAME,
+    SETUP_BOT_NO_RUNTIME,
+    SETUP_BOT_UNAVAILABLE,
+    SETUP_BOT_WORKER,
+    singleFlightStart,
+    type SetupBotLauncher,
+    type SetupBotRef,
+    type SetupBotStart,
+  } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
-    runAddAgentEntry,
+    runCreateCloudBotEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
     type EntryPointTarget,
@@ -83,21 +126,22 @@
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
+  import { coalesceWorkSessionWires } from "../chat/messaging/work-session-wires.js";
+  import type { Snippet } from "svelte";
   import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import CompanyTabs from "../chat/CompanyTabs.svelte";
-  import TeamTab from "../chat/tabs/TeamTab.svelte";
-  import SettingsTab from "../chat/tabs/SettingsTab.svelte";
-  import AtlasTab from "../chat/tabs/AtlasTab.svelte";
   import CompanyHero from "../chat/CompanyHero.svelte";
   import {
+    companyChannelTabsFor,
     parseCompanyTab,
     type CompanyChannelTabId,
-    type CompanyTabActionEvent,
     type CompanyTabModel,
   } from "../chat/tabs/tab-model.js";
+  import OfficePanel from "../meet/OfficePanel.svelte";
+  import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import CommandPalette, {
@@ -107,6 +151,8 @@
     type ShellSettingsProfile,
   } from "../settings/ShellSettings.svelte";
   import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
+  import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
+  import type { SyncEventHost } from "./sync-events.js";
   import {
     dismissRecommendBanner,
     installRecommendedUpdate,
@@ -117,16 +163,11 @@
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
-  import MigrateSessionDialog from "../common/MigrateSessionDialog.svelte";
-  import { canMigrateCompanySession } from "../avatars/can-edit.js";
-  import {
-    digestMigratePayload,
-    migrateDestinationCompanies,
-    newMigrateOperationId,
-    normalizeMigrateDestination,
-  } from "../chat/session-migrate.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
+  import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
+  import BotSignInBanner from "../chat/BotSignInBanner.svelte";
+  import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
   import { loadAvatarGallery } from "../avatars/gallery.js";
@@ -145,7 +186,7 @@
     setMeetingsViewActive,
     startMeetingsStore,
   } from "../meetings/meetings-store.svelte";
-  import { AtlasPage, createGoChord } from "../atlas/index.js";
+
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
   import type { PackagesEvents } from "../library/packages-events.js";
   import type { LibraryTab } from "../library/library-overlay-model.js";
@@ -154,12 +195,43 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onDestroy, onMount, tick as svelteTick, untrack, type Component } from "svelte";
+  import {
+    createNavigationEntry,
+    createNavigationHistory,
+    destinationCompanyKey,
+    destinationFromEmbeddedTarget,
+    destinationLabel,
+    extraParamCompanyKey,
+    historyNeighbor,
+    type NavigationDestination,
+    type NavigationEntry,
+    type NavigationScrollState,
+  } from "./navigation-history.js";
+  import {
+    captureNavigationScroll,
+    scheduleNavigationScrollRestore,
+  } from "./navigation-scroll.js";
+  import {
+    createNavigationController,
+    type AppliedNavigation,
+    type NavigationMode,
+    type NavigationResolveOutcome,
+  } from "./navigation-controller.js";
+  import { consumeNavigationShortcut } from "./navigation-shortcuts.js";
+  import {
+    onDestroy,
+    onMount,
+    tick as svelteTick,
+    untrack,
+    type Component,
+  } from "svelte";
   import {
     applyColorTheme,
+    applyReducedTransparency,
     applyUiSize,
     applyWindowOpacity,
     hasAppearanceHost,
+    readReducedTransparency,
     readStoredTheme,
   } from "../settings/shell-settings-model.js";
   import { readSettingsPrefs } from "../settings/settings-prefs.js";
@@ -200,12 +272,118 @@
     type MentionTarget,
   } from "../chat/mentions.js";
   import {
-    clearFromMessages,
+    clearAgentEverywhere,
+    clearRowFromMessages,
+    agentDisplayName,
+    applyAgentStatus,
+    dropRow,
     isAgentUid,
-    startThinking,
-    tick,
+    newestMessageAtFrom,
+    startThinkingIn,
+    kickoffThinkingState,
+    tickAll,
+    type ThinkingByRow,
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
+  import {
+    BOT_MESSAGE_NOT_ANSWERED,
+    BOT_MESSAGE_START_HERE,
+    BOT_NOT_RUNNABLE_HERE,
+    BOT_NOT_RUNNABLE_RECHECK,
+    BOT_START_NO_MORE_RETRIES,
+    botIsConfiguredHere,
+    botRunsHere,
+    botStartFallbackNotice,
+    canStartBot,
+    classifyBotStartFailure,
+    clearBotStartGate,
+    localBotsDisappeared,
+    readLocalBotTrace,
+    reconcileLocalBotTrace,
+    recordBotStartFailure,
+    rememberLocalBots,
+    type BotStartGate,
+    type LocalBotTrace,
+  } from "../chat/bot-runnability.js";
+  import {
+    isAlreadyExistsFailure,
+    LOCAL_BOTS_POLL_MS,
+    localBotForRow,
+    localBotOfflineNotice,
+    localBotPresence,
+    type LocalBotEntryResult,
+    locallyHostedBots,
+    plainBotFailure,
+    promotedBotCompany,
+  } from "../chat/local-bots.js";
+  import {
+    adoptFallbackNotice,
+    BOT_RESTORE_ALL,
+    BOT_RESTORE_ALL_BUSY,
+    BOT_RESTORE_DISMISS,
+    BOT_RESTORE_FAILED,
+    BOT_RESTORE_TITLE,
+    BOT_START_HERE,
+    BOT_START_HERE_BUSY,
+    BOT_START_HERE_EXPLAINER,
+    BOT_START_HERE_RETRY,
+    botRestorePromptBody,
+    botRestorePromptDismissed,
+    botRestoreRowFailed,
+    botRestoreRowLine,
+    botRestoreSummary,
+    botFailureReason,
+    BOT_LIVE_ELSEWHERE_NOTICE,
+    botsLiveElsewhereNotice,
+    botsNotHere,
+    botStaysInCloudLine,
+    classifyRemoteBotFailure,
+    isNotRunnableHereReason,
+    NO_REMOTE_BOT_LISTING,
+    ownedBotNotHere,
+    ownedBotsNotHere,
+    remoteBotListingFailed,
+    remoteBotListingNotice,
+    remoteBotListingOk,
+    REMOTE_BOTS_CALL_TIMEOUT_MS,
+    REMOTE_BOTS_POLL_MS,
+    REMOTE_BOTS_TIMEOUT_LOG,
+    rememberBotRestoreDismissed,
+    withPollTimeout,
+    type RemoteBotListing,
+  } from "../chat/bot-restore.js";
+  import {
+    AUTO_RESTORE_RUNNING,
+    AUTO_RESTORE_STARTING_THIS_BOT,
+    autoRestoreAllowed,
+    autoRestoreCandidates,
+    autoRestoreCoversAll,
+    autoRestoreDoneLine,
+    autoRestoreDue,
+    autoRestoreExhausted,
+    autoRestoreFailedLine,
+    autoRestoreHeldBack,
+    countAutoRestoreAttempt,
+    noteAutoRestoreAttempt,
+    type AutoRestoreAttempts,
+    type AutoRestoreLastAttempts,
+  } from "../chat/bot-auto-restore.js";
+  import {
+    botNeedsSignIn,
+    restartBotsNeedingSignIn,
+    runtimesNeedingSignIn,
+  } from "../chat/runtime-sign-in-again.js";
+  import type {
+    BotRestoreResult,
+    LocalBotCreateInput,
+    LocalBotRow,
+    LocalBotWorkerOption,
+    RemoteBotRow,
+    SessionProviderId,
+  } from "@hq/platform";
+  import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
+  import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
     ChatSidebarApi,
     ChatWakeBus,
@@ -299,18 +477,20 @@
   } from "../chat/live-catchup.js";
   import {
     OPEN_CHANNEL_EVENT,
+    OPEN_DM_REQUESTS_EVENT,
     OPEN_SETTINGS_EVENT,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
     requestChannelOpen,
     shouldOpenReplyDeepLink,
     takePendingChannelOpen,
+    takePendingDmRequests,
     type ConversationDeepLink,
     type PendingChannelOpen,
   } from "../chat/open-target.js";
+  import type { DmRequest, RequestAction } from "../chat/dm-requests.js";
   import {
     MESSAGE_PERSON_EVENT,
-    requestConversation,
     takePendingConversation,
     type ConversationTarget,
   } from "../chat/pending-conversation.js";
@@ -319,7 +499,7 @@
     mergePaletteRows,
     paletteConversationItems,
   } from "./palette-rows.js";
-  import type { Workspace } from "../chat/workspaces.js";
+  import { joinableMemberships, type Workspace } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
     buildCompanyIconMap,
@@ -335,6 +515,7 @@
     type SelfIdentity,
   } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
+  import type { RosterStatus } from "../identity/roster-refresh.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
@@ -370,6 +551,21 @@
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
+    /**
+     * App-level event subscription (Tauri `listen`, or a web bridge), used to
+     * observe sync outcomes the command result cannot report — see
+     * `syncMembership`. Omitted on platforms without an event bus; the
+     * membership banner degrades to reporting dispatch errors only.
+     */
+    syncEvents?: SyncEventHost | null;
+    /**
+     * Where the host is in loading `companies` for this session. #setup
+     * hides the seeded "Create a company" card and the create hero copy
+     * until the roster has loaded once (`ready` | `failed`). Omitted = ready.
+     */
+    rosterStatus?: RosterStatus | null;
+    /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
+    onretryroster?: () => void;
     /**
      * Verified signed-in principal (host-supplied: web = Cognito session,
      * desktop = its auth source). Drives "you" tagging + admin gating in the
@@ -484,6 +680,12 @@
     bootTimeoutMs?: number;
     /** First successful conversation/empty paint — host reports `shell_ready`. */
     onShellReady?: () => void;
+    /**
+     * US-018 native calling seams. Supplied by a desktop host; absent on the
+     * web. The Office tab is gated on `adapter.capabilities.nativeCalls`, and
+     * the panel refuses in its own voice when this is missing.
+     */
+    callsHost?: OfficeCallsHost | null;
     /** Host-registered full-column destinations keyed by page id. */
     extraPages?: Record<
       string,
@@ -492,18 +694,41 @@
         detail?: string;
         /** Optional host-owned create action in the window header. */
         createAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host-owned "Run Setup" destination for #welcome: a fresh
+         * session whose param carries the setup prompt so the page can send
+         * it as soon as the provider is ready. Falls back to `createAction`.
+         */
+        setupAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host guided-run API. When present, #welcome's Run Setup
+         * runs `/setup` natively inside the hero (stepper + question cards)
+         * and only falls back to `setupAction` when the host's preflight says
+         * the Sessions page must go first. "Show details" opens the session
+         * on this page with its id as the param.
+         */
+        setupRun?: SetupRunApi;
+        /** After setup: a fresh session with `/startwork <company>` as its first turn. */
+        startworkAction?: { label: string; param: (company: string | null) => string | null };
         component: Component<{
           param?: string | null;
-          onnavigate?: (param: string | null) => void;
+          restoreScroll?: NavigationScrollState | null;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
         }>;
       }
     >;
     /** Host decoration for sidebar rows: badge, hover card, and actions. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
   }
 
   let {
     adapter,
+    callsHost = null,
     version = "0.0.0",
     sidebarApi,
     notificationsApi,
@@ -517,6 +742,9 @@
     oncardaction,
     wakes = null,
     companies = null,
+    syncEvents = null,
+    rosterStatus = null,
+    onretryroster,
     self = null,
     tenantAccountId = null,
     tenantGeneration = 0,
@@ -550,6 +778,8 @@
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
     extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
     rowExtras = null,
   }: Props = $props();
 
@@ -568,6 +798,150 @@
   );
   const recommendBanner = $derived(updateStore.recommendBanner);
   let recommendInstalling = $state(false);
+
+  /**
+   * Desktop-window counterpart of the menubar popover's "You've been added
+   * to {company} — Sync to pull it" notice (see MembershipSyncBanner.svelte).
+   * Dismissal is session-only (in-memory), matching the popover.
+   */
+  let dismissedMemberships = $state(new Set<string>());
+  let membershipSyncPending = $state(false);
+  let membershipSyncError = $state<string | null>(null);
+  /** Company slug of the in-flight pull, so outcome events can be matched. */
+  let membershipSyncTarget = $state<string | null>(null);
+  const membershipsToPull = $derived(
+    joinableMemberships(companies ?? []).filter(
+      (w) => !dismissedMemberships.has(w.slug),
+    ),
+  );
+
+  function dismissMembershipPrompt(slugs: string[]): void {
+    const next = new Set(dismissedMemberships);
+    for (const slug of slugs) next.add(slug);
+    dismissedMemberships = next;
+  }
+
+  /**
+   * `start_sync` returns as soon as the runner is REGISTERED, not when the
+   * pull finishes, and it deliberately returns Ok on the needs-reauth path
+   * (commands/sync.rs — "avoids red error UI", emitting `sync:auth-error`
+   * instead). So the command result alone can neither confirm the membership
+   * arrived nor report the most likely failure. Completion and auth failure
+   * both arrive as events; `syncEvents` is how this platform-agnostic shell
+   * hears them.
+   */
+  async function syncMembership(): Promise<void> {
+    if (membershipSyncPending || !adapter.isAvailable("canSync")) return;
+    const target = membershipsToPull[0];
+    if (!target) return;
+    membershipSyncPending = true;
+    membershipSyncError = null;
+    membershipSyncTarget = target.slug;
+    try {
+      // Scoped to the company the banner names — an unscoped call is
+      // SyncRunScope::All, which syncs every workspace on the machine and is
+      // not what "pull it onto this machine" promises. Matches CompanyPage.
+      const result = await adapter.sync.startSync(target.slug);
+      if (!result.ok) {
+        console.error("membership sync failed:", result.reason, result.message);
+        membershipSyncError =
+          result.message?.trim() || "Sync could not be started.";
+        membershipSyncPending = false;
+      } else if (!syncEvents) {
+        // No event bridge on this platform: the run was dispatched, but this
+        // shell cannot observe its outcome. Release the control rather than
+        // leave a spinner that can never resolve.
+        membershipSyncPending = false;
+      }
+    } catch (err) {
+      console.error("membership sync failed:", err);
+      membershipSyncError =
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Sync could not be started.";
+      membershipSyncPending = false;
+    }
+  }
+
+  /**
+   * Sync outcome events. Without these the banner cannot distinguish "pulled"
+   * from "silently did nothing because the session needs a refresh", which is
+   * exactly the state a newly-added user is most likely to be in.
+   */
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    let disposed = false;
+    const handles: Array<() => void> = [];
+
+    const track = (pending: Promise<() => void>): void => {
+      void pending.then(
+        (un) => {
+          if (disposed) un();
+          else handles.push(un);
+        },
+        (err) => {
+          console.error("membership sync: event subscribe failed:", err);
+        },
+      );
+    };
+
+    track(
+      host.listen("sync:auth-error", (event) => {
+        const message = (
+          event as { payload?: { message?: string } } | undefined
+        )?.payload?.message;
+        membershipSyncPending = false;
+        membershipSyncError =
+          message?.trim() ||
+          "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
+      }),
+    );
+    // `sync:complete` is emitted PER COMPANY (SyncCompleteEvent carries
+    // `company`), and the daemon syncs in the background, so an unfiltered
+    // handler would clear this banner on some other workspace's run. Match the
+    // company this banner actually started.
+    track(
+      host.listen("sync:complete", (event) => {
+        const company = (
+          event as { payload?: { company?: string } } | undefined
+        )?.payload?.company;
+        if (!company || company === membershipSyncTarget) {
+          membershipSyncPending = false;
+          membershipSyncError = null;
+        }
+      }),
+    );
+    // Terminal backstop: a run that attempts the company but never emits a
+    // per-company complete (aborted, company-level error) still ends here.
+    track(
+      host.listen("sync:all-complete", (event) => {
+        const errors =
+          (event as { payload?: { errors?: Array<{ company?: string; message?: string }> } }
+            | undefined)?.payload?.errors ?? [];
+        const mine = errors.find(
+          (e) => !membershipSyncTarget || e.company === membershipSyncTarget,
+        );
+        membershipSyncPending = false;
+        if (mine) membershipSyncError = mine.message?.trim() || "Sync failed.";
+      }),
+    );
+    // NOTE: deliberately NOT listening to `sync:error`. That event is PER FILE
+    // (`SyncErrorEvent { company, path, message }`) and a run continues past
+    // it, so treating one as terminal would flash a failure — and release the
+    // button — while the pull is still going.
+
+    return () => {
+      disposed = true;
+      for (const un of handles) {
+        try {
+          un();
+        } catch (err) {
+          console.error("membership sync: unlisten failed:", err);
+        }
+      }
+    };
+  });
 
   function updateOrchAdapter(): UpdateStoreAdapter {
     const updates = adapter.updates;
@@ -638,14 +1012,17 @@
     | "notifications"
     | "settings"
     | "meetings"
-    | "atlas"
     | "library"
     | "shared-files"
     | "extra"
+    | "dm-requests"
   >("conversation");
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
+  /** Which pending request the Requests panel should bring into view first. */
+  let dmRequestsFocusPairKey = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
+  let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
     meetingId: string;
@@ -653,8 +1030,31 @@
   } | null>(null);
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
+  let navigationPending = $state(false);
+  let navigationUnavailable = $state<{
+    destination: NavigationDestination;
+    reason: string;
+  } | null>(null);
+  let navigationCanGoBack = $state(false);
+  let navigationCanGoForward = $state(false);
+  let navigationBackLabel = $state("");
+  let navigationForwardLabel = $state("");
+  let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
+  let cancelScrollRestore: (() => void) | null = null;
+  const DESTINATION_UNAVAILABLE = "This destination is no longer available.";
   let tab = $state<ChannelTab>("chat");
+  let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
+  /**
+   * US-018: the company tabs this host may actually offer. Office appears only
+   * when the platform adapter reports native calling, so the web build never
+   * advertises a destination it cannot open.
+   */
+  const companyTabsForHost = $derived(
+    companyChannelTabsFor({
+      nativeCalls: adapter?.capabilities?.nativeCalls === true,
+    }),
+  );
   let companyTabData = $state<CompanyTabModel | null>(null);
   let companyTabLoading = $state(false);
   let companyWallpaper = $state("aurora");
@@ -671,6 +1071,55 @@
   let replyPreviewByRoot = $state<Record<string, ReplyPreview>>({});
   let replyCountOverride = $state<Record<string, number>>({});
   let narrowViewport = $state(false);
+  let threadWidth = $state<number | null>(null);
+  let threadDrag: { x: number; width: number } | null = null;
+
+  function resizeThread(handle: HTMLElement, width: number) {
+    const stageWidth =
+      handle.parentElement?.parentElement?.getBoundingClientRect().width ?? 0;
+    if (!stageWidth) return;
+    const minimum = Math.min(280, stageWidth / 2);
+    const maximum = stageWidth - Math.min(360, stageWidth / 2);
+    threadWidth = Math.round(Math.max(minimum, Math.min(maximum, width)));
+  }
+
+  function startThreadDrag(event: PointerEvent) {
+    if (event.button !== 0) return;
+    const handle = event.currentTarget as HTMLElement;
+    threadDrag = {
+      x: event.clientX,
+      width: handle.parentElement!.getBoundingClientRect().width,
+    };
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function moveThreadDrag(event: PointerEvent) {
+    if (!threadDrag) return;
+    resizeThread(
+      event.currentTarget as HTMLElement,
+      threadDrag.width + threadDrag.x - event.clientX,
+    );
+  }
+
+  function stopThreadDrag(event: PointerEvent) {
+    threadDrag = null;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function resizeThreadKey(event: KeyboardEvent) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const handle = event.currentTarget as HTMLElement;
+    resizeThread(
+      handle,
+      handle.parentElement!.getBoundingClientRect().width +
+        (event.key === "ArrowLeft" ? 20 : -20),
+    );
+    event.preventDefault();
+  }
   /**
    * On a phone the channel list is an overlay, so it must start closed —
    * otherwise the first thing the app shows is a list covering the
@@ -682,6 +1131,10 @@
     sidebarLayout(window.innerWidth) === "overlay";
   let phoneViewport = $state(startsAsOverlay);
   let sidebarCollapsed = $state(startsAsOverlay);
+  let sidebarWidth = $state((() => {
+    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 260; }
+    catch { return 260; }
+  })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
   /** Rail rows in display order (pinned → days → expanded last week). */
@@ -689,6 +1142,1139 @@
   /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
   let sidebarActions = $state<ChatSidebarActions | null>(null);
   let cheatSheetOpen = $state(false);
+
+  // ── Personal local bots (local-bots US-009) ────────────────────────────────
+  // The host's bots API shells to `hq bot list --json`; rows carry the server's
+  // online verdict. Polled while the shell is mounted so the DM rail dot and the
+  // thread notice track the bot without any CLI on the user's side.
+  let localBotRecords = $state<LocalBotRow[]>([]);
+  const localBots = $derived(locallyHostedBots(localBotRecords));
+  let localBotBusy = $state<string | null>(null);
+  let localBotActionError = $state<string | null>(null);
+  /**
+   * A BOT THAT CANNOT RUN HERE SAYS SO (desktop UX feedback, round 5).
+   *
+   * The account owns the bot, but this Mac has no local runtime for it — a
+   * reinstall, or a second computer, where `hq bot list` is empty while the
+   * cloud still has the agent. The owner's VM adopted exactly that bot, opened
+   * its DM, and the app then presented it as a normal thinking bot forever
+   * while every start answered "no such bot". Keyed by agent uid → the honest
+   * sentence its DM shows.
+   */
+  let unrunnableBotUids = $state<Record<string, string>>({});
+  /**
+   * Start budget per bot name. A definitive failure ("no such bot", not signed
+   * in, held) closes it after ONE attempt; a transient one (CLI timeout,
+   * unreachable) is bounded at `BOT_START_MAX_ATTEMPTS`. Nothing in the app
+   * re-issues a start once the gate is closed.
+   */
+  let botStartGate = $state<BotStartGate>({});
+  /**
+   * The failure event. Policy `transient-indicators-clear-on-newer-event-not-time-window`:
+   * a thinking row is never cleared by a timer — it is cleared by a NEWER
+   * event. A definitive start failure is that event, so it goes through here
+   * instead of a bot message, ending the row everywhere that bot was shown as
+   * working and leaving the honest state in its place.
+   */
+  function noteBotCannotRunHere(agentUid: string, reason: string = BOT_NOT_RUNNABLE_HERE): void {
+    const uid = (agentUid ?? "").trim();
+    if (!uid) return;
+    unrunnableBotUids = { ...unrunnableBotUids, [uid]: reason };
+    thinkingByRow = clearAgentEverywhere(thinkingByRow, uid);
+  }
+  /**
+   * Per-machine memory for the bot surfaces: the restore prompt's dismissal
+   * and the trace of bots this computer has run. Read once, never thrown from.
+   */
+  const botMachineMemory = (() => {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      return null;
+    }
+  })();
+  /**
+   * BOTS THIS COMPUTER HAS RUN (uid → name).
+   *
+   * `hq bot list` reads each bot's own config, so a wiped bot silently drops
+   * off it — which is how one of the owner's own bots came to be drawn as
+   * `Cloud` and to sit under a spinner for 2 m 39 s while the account listing
+   * was unavailable. A uid this app has seen on this Mac's listing, and no
+   * longer sees, is local evidence that needs no server: your bot, here, with
+   * nothing left to run it.
+   */
+  let localBotTrace = $state<LocalBotTrace>(readLocalBotTrace(botMachineMemory));
+  async function refreshLocalBots(): Promise<void> {
+    const api = adapter.bots;
+    if (!api) return;
+    const result = await api.list();
+    if (!result.ok) return;
+    const bots = result.value.bots ?? [];
+    // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
+    // The account's own listing is what turns that into the honest notice,
+    // and on the VM it was on a 120 s timer that had stopped — so the DM
+    // showed a live composer for 6 m 40 s. Asking again right here bounds
+    // that by one local poll (30 s) whatever the remote cadence is doing.
+    const vanished = localBotsDisappeared(localBotRecords, bots);
+    localBotRecords = bots;
+    localBotTrace = rememberLocalBots(botMachineMemory, localBotTrace, localBotRecords);
+    if (vanished.length > 0) void refreshRemoteBots(true);
+  }
+  /**
+   * BOTS COME BACK AFTER A REINSTALL.
+   *
+   * `hq bot list` above only knows THIS computer, which is why the app could
+   * not tell "no such bot" from "your bot, safe in HQ, with nothing here to
+   * run it" — the state that had test-bot's DM spinning for 41 s while its own
+   * setup said it could not run here. `hq bot list --remote` is the account's
+   * own view: every local bot the person owns, each flagged `here` or not.
+   * Null until the first listing lands (and on hosts without the command), so
+   * "not here" is never inferred from an answer that has not arrived.
+   */
+  let remoteBotListing = $state<RemoteBotListing>(NO_REMOTE_BOT_LISTING);
+  /** One plain sentence when the listing failed; null while it is fine. */
+  const remoteListingNotice = $derived(remoteBotListingNotice(remoteBotListing.failure));
+  /**
+   * This HQ Cloud has no listing route yet, so nothing can be brought back
+   * from it. The actions that depend on it are not offered — the sentence
+   * above says why, instead of a button that cannot work.
+   */
+  const botRestoreUnavailable = $derived(remoteBotListing.failure !== null);
+  /**
+   * One remote listing call in flight at a time — released in `finally`, and
+   * bounded, so it can never be pinned.
+   *
+   * The VM's Defect 8: three calls, then none for 16 m 38 s, while the 30 s
+   * local poller kept firing from the same `onMount`. The cadence below is a
+   * plain `setInterval` and always was, so nothing here re-arms a chain that
+   * could be lost; what this guard buys is that a slow or hung call can
+   * neither pile CLI invocations up behind it nor outlive one tick. A person
+   * asking (Check again, a finished adopt or restore) always gets a fresh
+   * call — `force` skips the guard, never the bound.
+   */
+  let remoteBotPollBusy = false;
+  async function refreshRemoteBots(force = false): Promise<void> {
+    const listRemote = adapter.bots?.listRemote;
+    if (!listRemote) return;
+    if (remoteBotPollBusy && !force) return;
+    remoteBotPollBusy = true;
+    try {
+      const outcome = await withPollTimeout(() => listRemote(), REMOTE_BOTS_CALL_TIMEOUT_MS);
+      // A call that never answered is not evidence either: the last good rows
+      // stay exactly as they were, one line goes to the log, and the next
+      // tick asks again.
+      if (outcome.timedOut) {
+        console.warn(REMOTE_BOTS_TIMEOUT_LOG);
+        return;
+      }
+      const result = outcome.value;
+      // A LISTING THAT FAILED IS NOT EVIDENCE ABOUT ANY BOT. An empty listing
+      // and "no answer" must never read the same, so a failure keeps the last
+      // good rows (marked stale) and only changes what the app can offer.
+      if (result.ok && Array.isArray(result.value?.bots)) {
+        remoteBotListing = remoteBotListingOk(result.value.bots);
+        localBotTrace = reconcileLocalBotTrace(botMachineMemory, localBotTrace, result.value.bots);
+        return;
+      }
+      if (!result.ok && result.message) {
+        console.warn("[hq-desktop] remote bot list failed:", result.message);
+      }
+      remoteBotListing = remoteBotListingFailed(
+        remoteBotListing,
+        result.ok ? "malformed" : classifyRemoteBotFailure(result.reason, result.message),
+      );
+    } catch (err) {
+      // A host that throws instead of answering must not end the cadence.
+      console.warn("[hq-desktop] remote bot list failed:", err);
+      remoteBotListing = remoteBotListingFailed(remoteBotListing, "network");
+    } finally {
+      remoteBotPollBusy = false;
+    }
+  }
+  /**
+   * A start that actually ran: the budget resets and the honest "cannot run
+   * here" notice goes with it. Every successful start in the shell — the
+   * progress card's Retry, the offline notice's Start, the bot's own profile
+   * panel, the sign-in-again restart — comes through here, so a bot that is
+   * now running never keeps a notice that says it is not.
+   */
+  function noteBotStarted(name: string, agentUid: string): void {
+    botStartGate = clearBotStartGate(botStartGate, name);
+    const uid = (agentUid ?? "").trim();
+    if (!uid || !unrunnableBotUids[uid]) return;
+    const { [uid]: _running, ...rest } = unrunnableBotUids;
+    unrunnableBotUids = rest;
+  }
+  /**
+   * The one place a bot start happens. The gate decides whether it may run at
+   * all, a success reopens the gate, and a failure is classified exactly once.
+   */
+  async function startBotByName(name: string, agentUid: string): Promise<{ ok: boolean; reason: string | null }> {
+    const api = adapter.bots;
+    if (!api) return { ok: false, reason: botStartFallbackNotice(name) };
+    if (!canStartBot(botStartGate, name)) {
+      return { ok: false, reason: `${botStartFallbackNotice(name)} ${BOT_START_NO_MORE_RETRIES}` };
+    }
+    const result = await api.start(name);
+    if (result.ok) {
+      noteBotStarted(name, agentUid);
+      return { ok: true, reason: null };
+    }
+    // The bots API shells out to the CLI, so `message` can be its own words.
+    // They belong in the log; the caller gets a written sentence.
+    const raw = result.message ?? "";
+    if (raw) console.warn("[hq-desktop] bot start failed:", raw);
+    return { ok: false, reason: applyBotStartFailure(name, agentUid, raw) };
+  }
+  /**
+   * A bot that turned up in this Mac's list can run here after all (the person
+   * created it, or its config arrived): drop the notice.
+   *
+   * A CLOSED GATE OUTRANKS THE LIST. `hq bot list` said the owner's bots were
+   * there while every start answered "no such bot"; a start that actually ran
+   * is better evidence than a listing, so a bot whose gate a definitive
+   * failure closed keeps its honest state until "Check again" reopens it.
+   */
+  $effect(() => {
+    const records = localBotRecords;
+    untrack(() => {
+      const cleared = Object.keys(unrunnableBotUids)
+        .map((uid) => records.find((row) => row.agentUid.trim() === uid))
+        .filter((bot): bot is LocalBotRow => Boolean(bot))
+        // A closed gate outranks a bare listing — but not a listing that
+        // shows the bot's process alive HERE. A live local pid is the one
+        // claim only this Mac can make, and it is exactly what was missing
+        // when every start answered "no such bot", so its arrival is the
+        // newer event the notice was waiting for and the gate reopens with
+        // it. A launch agent reported installed is not that evidence: the
+        // failure this guards against had one (see botIsConfiguredHere).
+        .filter((bot) => canStartBot(botStartGate, bot.name) || botIsConfiguredHere(bot));
+      if (cleared.length === 0) return;
+      const next = { ...unrunnableBotUids };
+      let gate = botStartGate;
+      for (const bot of cleared) {
+        delete next[bot.agentUid.trim()];
+        gate = clearBotStartGate(gate, bot.name);
+      }
+      unrunnableBotUids = next;
+      botStartGate = gate;
+    });
+  });
+  /**
+   * RUNNABILITY IS LOCAL EVIDENCE FIRST, enhanced by the account's listing.
+   *
+   * A DM with an owned local bot that is not set up here shows the honest
+   * notice from the first frame — no start is issued, and nothing spins. That
+   * has to hold when the account listing is missing, unreachable or refused,
+   * which is exactly the state the owner's VM was in: the listing answered 404
+   * and a wiped bot's DM went back to a normal composer and a 2 m 39 s
+   * spinner. So the listing only ADDS bots to this set; this computer's own
+   * trace carries it when the listing cannot. Cloud and fleet bots are in
+   * neither, so their behaviour is untouched.
+   */
+  const ownedBotsMissingHere = $derived(
+    ownedBotsNotHere(remoteBotListing, localBotTrace, localBotRecords),
+  );
+  /**
+   * The owned bots that are RUNNING on another computer right now.
+   *
+   * They are still offered — every manual surface can bring one here — but
+   * nothing takes them automatically, and every notice about one says what
+   * starting it here costs, because the machine credentials rotate and the
+   * other Mac's copy stops at its next token refresh.
+   */
+  const botsLiveElsewhere = $derived(autoRestoreHeldBack(remoteBotListing, localBotRecords));
+  const liveElsewhereUids = $derived(
+    new Set(botsLiveElsewhere.map((bot) => bot.agentUid.trim()).filter(Boolean)),
+  );
+  $effect(() => {
+    const owned = ownedBotsMissingHere;
+    const live = liveElsewhereUids;
+    untrack(() => {
+      for (const bot of owned) {
+        // A bot that is live elsewhere gets the sentence that names the
+        // consequence instead of the "open it on that computer" one, and it
+        // is re-read when the listing changes: a bot that goes offline over
+        // there must stop being described as running.
+        const reason = live.has(bot.agentUid) ? BOT_LIVE_ELSEWHERE_NOTICE : BOT_NOT_RUNNABLE_HERE;
+        const current = unrunnableBotUids[bot.agentUid];
+        if (current === reason) continue;
+        // Only the two listing-derived sentences are re-written here: a reason
+        // a failed START put there is newer evidence than the listing is.
+        if (current && current !== BOT_LIVE_ELSEWHERE_NOTICE && current !== BOT_NOT_RUNNABLE_HERE) {
+          continue;
+        }
+        noteBotCannotRunHere(bot.agentUid, reason);
+      }
+    });
+  });
+  /**
+   * The person's own local bots, including the ones nothing here can run, so
+   * no bot of theirs is ever drawn as `Cloud` because a listing failed.
+   */
+  const ownedLocalBotUids = $derived(ownedBotsMissingHere.map((bot) => bot.agentUid));
+  /** The open DM's bot, when the account owns it and this computer cannot run it. */
+  const selectedBotNotHere = $derived(
+    selectedRow?.kind === "dm" ? ownedBotNotHere(ownedBotsMissingHere, selectedRow.personUid) : null,
+  );
+  /** The open DM's bot cannot run here — the honest state, or null. */
+  const selectedBotCannotRun = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid
+      ? (unrunnableBotUids[selectedRow.personUid.trim()] ?? null)
+      : null,
+  );
+  /**
+   * "Check again": re-read this Mac's bots once, on demand — the only thing
+   * the desktop can honestly offer for a bot that lives on another computer.
+   * A person asking counts as consent to try the bot once more, so this is
+   * also the one thing that reopens a closed start gate. Never a loop: one
+   * click, one listing.
+   */
+  let botRecheckBusy = $state(false);
+  async function recheckSelectedBot(): Promise<void> {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || botRecheckBusy) return;
+    botRecheckBusy = true;
+    try {
+      // Both halves: this computer's bots, and the account's own listing that
+      // decides whether the bot is here at all.
+      await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+      const bot = localBotRecords.find((row) => row.agentUid.trim() === uid);
+      if (!bot) return;
+      botStartGate = clearBotStartGate(botStartGate, bot.name);
+      const { [uid]: _runnableAgain, ...rest } = unrunnableBotUids;
+      unrunnableBotUids = rest;
+    } finally {
+      botRecheckBusy = false;
+    }
+  }
+  onMount(() => {
+    if (!adapter.bots) return;
+    void refreshLocalBots();
+    void refreshRemoteBots();
+    const handle = window.setInterval(() => void refreshLocalBots(), LOCAL_BOTS_POLL_MS);
+    const remoteHandle = window.setInterval(() => void refreshRemoteBots(), REMOTE_BOTS_POLL_MS);
+    return () => {
+      clearInterval(handle);
+      clearInterval(remoteHandle);
+    };
+  });
+  /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
+  let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
+  /** Company/core workers a bot can be created from; loaded once on demand. */
+  let localBotWorkers = $state<LocalBotWorkerOption[] | null>(null);
+  async function loadLocalBotRuntimeReady(): Promise<void> {
+    const preflight = adapter.sessions?.preflight;
+    if (!preflight || localBotRuntimeReady) return;
+    const result = await preflight();
+    if (!result.ok) return;
+    const rec = result.value as Record<string, unknown>;
+    const next: Record<string, boolean> = {};
+    for (const id of ["claude", "codex", "grok"]) {
+      next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
+    }
+    localBotRuntimeReady = next;
+  }
+  async function loadLocalBotWorkers(): Promise<void> {
+    const workers = adapter.bots?.workers;
+    if (!workers || localBotWorkers) return;
+    const result = await workers();
+    if (result.ok) localBotWorkers = result.value.workers ?? [];
+  }
+  onMount(() => {
+    if (!adapter.bots) return;
+    void loadLocalBotRuntimeReady();
+    void loadLocalBotWorkers();
+  });
+  /**
+   * Sidebar "+" → New bot. The CLI provisions the identity, scaffolds the
+   * worker (or binds a company worker), installs the launch agent and starts
+   * the bot; we then open its DM. The intro DM may not have landed yet, so a
+   * synthetic row makes the thread openable immediately and a progress card
+   * (Creating → Installing → Online) covers "starting up" until presence
+   * reports online or the bot's first message lands.
+   */
+  interface BotProgressEntry {
+    name: string;
+    state: BotProgressState;
+    reason: string | null;
+    /** The draft that made it, so Retry can re-run the same create. */
+    input?: LocalBotCreateInput;
+    extras: CreateBotExtras;
+    /**
+     * Set when this card is a bot being brought back (`hq bot adopt`), not one
+     * being created. Retry then re-runs the adopt: the account already owns
+     * this bot, and creating a second one is exactly what adopt exists to
+     * prevent.
+     */
+    adoptName?: string;
+    startedAt: number;
+    retrying: boolean;
+  }
+  /** Seconds a fresh bot may take to come online before the card calls it failed. */
+  const BOT_PROGRESS_TIMEOUT_MS = 180_000;
+  let botProgressByUid = $state<Record<string, BotProgressEntry>>({});
+  function setBotProgress(uid: string, patch: Partial<BotProgressEntry>): void {
+    const current = botProgressByUid[uid];
+    if (!current) return;
+    botProgressByUid = { ...botProgressByUid, [uid]: { ...current, ...patch } };
+  }
+  function clearBotProgress(uid: string): void {
+    if (!botProgressByUid[uid]) return;
+    const next = { ...botProgressByUid };
+    delete next[uid];
+    botProgressByUid = next;
+  }
+  async function createBotEntry(input: LocalBotCreateInput, extras: CreateBotExtras = {}): Promise<LocalBotEntryResult> {
+    const api = adapter.bots;
+    if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
+    const result = await api.create(input);
+    if (!result.ok) {
+      // The bots API shells out to `hq bot create`, so `message` can be the
+      // CLI's relay of hq-pro's own words ("HQ API /v1/agents → 409: Entity
+      // with type=… already exists"). That belongs in the log, never on
+      // screen: the caller gets a written sentence plus the raw text to match
+      // known conditions against.
+      const raw = result.message ?? "";
+      if (raw) console.warn("[hq-desktop] bot create failed:", raw);
+      return { ok: false, reason: plainBotFailure(raw, `Could not create ${input.name}.`), raw };
+    }
+    const value = (result.value ?? {}) as Record<string, unknown>;
+    const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
+    await refreshLocalBots();
+    if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    // A kickoff turn starts with no message from the person, so nothing else
+    // would show "is thinking…" while the bot works on it.
+    if (input.kickoff?.trim()) kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: input.name };
+    // Identity exists (the CLI returned a uid); the launch agent is installing.
+    botProgressByUid = {
+      ...botProgressByUid,
+      [agentUid]: { name: input.name, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
+    };
+    const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
+    const row: ConversationRow = existing ?? {
+      id: `dm:${agentUid}`,
+      kind: "dm",
+      title: input.name,
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: Date.now(),
+      pinned: false,
+      personUid: agentUid,
+    };
+    handleSelect(row);
+    void saveNewBotProfile(agentUid, extras);
+    return { ok: true, agentUid, name: input.name };
+  }
+  /**
+   * The parts of the create flow `hq bot create` has no flag for — the job
+   * title and the avatar pick — written onto the agent profile now that the
+   * bot has a uid. Sequential: both land on the same profile document.
+   */
+  async function saveNewBotProfile(agentUid: string, extras: CreateBotExtras): Promise<void> {
+    const title = extras.title?.trim() ?? "";
+    if (title) {
+      try {
+        await adapter.identity.updateAgentProfile(agentUid, { title });
+      } catch (err) {
+        // The bot exists and works; only its subtitle is missing.
+        console.warn("[hq-desktop] bot title save failed:", err);
+      }
+    }
+    if (extras.avatar) await saveNewBotAvatar(agentUid, extras.avatar);
+  }
+  /** Best effort: the avatar picked in the flow, saved once the bot has a uid. */
+  async function saveNewBotAvatar(agentUid: string, selection: AvatarSelection): Promise<void> {
+    try {
+      const packs = loadedAvatarPacks ?? (await loadAvatarGallery(adapter.identity)).packs;
+      loadedAvatarPacks = packs;
+      const saved = await saveAgentAvatar(agentUid, selection, {
+        packs,
+        fetchBytes: (url) => fetchBytesWith(fetch, url),
+        prepareAvatar: async (bytes) => avatarBase64FromFile(new Blob([bytes as BlobPart])),
+        updateAgentProfile: (uid, input) => adapter.identity.updateAgentProfile(uid, input),
+        selectAgentAvatar: (uid, input) => adapter.identity.selectAgentAvatar(uid, input),
+      });
+      avatarOverridesByUid = { ...avatarOverridesByUid, [agentUid]: saved.previewDataUrl };
+    } catch {
+      /* the bot exists; the avatar can be set from its profile later */
+    }
+  }
+  /**
+   * SETUP AS A LOCAL BOT (bots v2, step 3). Run Setup no longer starts a
+   * scripted `/setup` session: it creates a Local bot named `setup` from the
+   * core template and opens its DM, so onboarding is a normal conversation
+   * with a bot that stays afterwards. Copy, names and the launcher contract
+   * live in `chat/setup-bot.ts`; everything here reuses `createBotEntry` (and
+   * therefore the progress card, the synthetic DM row and presence polling).
+   */
+  /** Set once the setup bot was started this session, automatically or by Run Setup. */
+  let setupBotAutoStarted = false;
+  /** True while startSetupBot is creating the bot, so #welcome can say so. */
+  let setupBotStarting = $state(false);
+  let setupBotStartError = $state<string | null>(null);
+  // Every hosting kind counts as "already here": a setup bot promoted to the
+  // cloud is filtered out of `localBots`, but it is still the person's bot and
+  // must be opened, never re-created.
+  const existingSetupBot = $derived(findSetupBot(localBotRecords));
+  const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
+  const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
+    adapter.bots && SETUP_BOT_MODE
+      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, error: setupBotStartError, start: startSetupBot }
+      : null,
+  );
+  /**
+   * Open a setup bot's DM; setup counts as run from that moment.
+   *
+   * ADOPT-TIME RUNNABILITY CHECK. Adopting a bot the account owns in the cloud
+   * opens its conversation — it does NOT give this Mac a way to run it. When
+   * no local config exists here, the DM says so from the first frame instead
+   * of presenting a normal bot that will never answer.
+   */
+  function openSetupBotDm(bot: SetupBotRef): void {
+    if (!botRunsHere(localBotRecords, bot.agentUid)) {
+      noteBotCannotRunHere(bot.agentUid);
+      // A cloud-only setup bot is one the account owns, so the notice can
+      // offer to bring it back here rather than only "Check again" — but only
+      // once the account's own listing says so. Ask for it now.
+      void refreshRemoteBots(true);
+    }
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${bot.agentUid}`,
+        kind: "dm",
+        title: bot.name,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: bot.agentUid,
+      },
+    );
+    recordWelcomeSetupRun();
+  }
+  /**
+   * Create the setup bot, or open the one that already exists — on this Mac
+   * OR in the cloud account. Never creates a second one: `singleFlightStart`
+   * hands a caller that arrives mid-start the running start's own result,
+   * because each surface only disables its own button (the owner's log caught
+   * two `hq bot create setup` calls 1.3 s apart).
+   */
+  const setupBotStartGate = singleFlightStart(async (): Promise<SetupBotStart> => {
+    setupBotStarting = true;
+    setupBotStartError = null;
+    try {
+      const result = await runSetupBotStart();
+      if (!result.ok) setupBotStartError = result.reason;
+      return result;
+    } catch (err) {
+      // A sentence, never a stack: the surfaces render this verbatim.
+      console.warn("[hq-desktop] setup bot start threw:", err);
+      setupBotStartError = SETUP_BOT_GENERIC_FAILURE;
+      return { ok: false, reason: SETUP_BOT_GENERIC_FAILURE };
+    } finally {
+      setupBotStarting = false;
+    }
+  });
+  function startSetupBot(): Promise<SetupBotStart> {
+    return setupBotStartGate();
+  }
+  /**
+   * The setup bot this account already owns, wherever it lives. `hq bot list`
+   * only knows this Mac, so after a reinstall — or on a second Mac — the local
+   * list is empty while the cloud account still owns the agent entity, and a
+   * create 409s. The DM roster is the desktop's one cloud-side view of the
+   * person's own bots, so it is asked before anything is created.
+   */
+  async function findExistingSetupBot(): Promise<SetupBotRef | null> {
+    const local = findSetupBot(localBotRecords);
+    if (local) return local;
+    try {
+      const contacts = await adapter.messaging?.listContacts?.();
+      if (contacts?.ok) return findSetupBotContact(contacts.value);
+    } catch (err) {
+      // A roster we cannot read only costs us the early adoption: a create
+      // that then 409s is adopted below.
+      console.warn("[hq-desktop] could not check the cloud roster for a setup bot:", err);
+    }
+    return null;
+  }
+  async function runSetupBotStart(): Promise<SetupBotStart> {
+    // Any start (the automatic one or a click) settles the automatic start.
+    setupBotAutoStarted = true;
+    if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
+    await refreshLocalBots();
+    const existing = await findExistingSetupBot();
+    if (existing) {
+      openSetupBotDm(existing);
+      return { ok: true, existing: true };
+    }
+    // Re-read sign-in state: the Connect step signs in through the setup run's
+    // own API, so a readiness answer cached at boot can be a click out of date.
+    localBotRuntimeReady = null;
+    await loadLocalBotRuntimeReady();
+    const runtime = firstSignedInRuntime(localBotRuntimeReady);
+    if (!runtime) return { ok: false, reason: SETUP_BOT_NO_RUNTIME };
+    // `intro` is sent by the runtime on start, so the first message is
+    // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
+    // one turn by itself so the bot starts step one without waiting for the
+    // person to type.
+    const created = await createBotEntry({
+      name: SETUP_BOT_NAME,
+      worker: SETUP_BOT_WORKER,
+      runtime,
+      intro: SETUP_BOT_INTRO,
+      kickoff: SETUP_BOT_KICKOFF,
+      // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
+    });
+    if (created.ok) {
+      recordWelcomeSetupRun();
+      return { ok: true, existing: false };
+    }
+    // "It already exists" is the opposite of a failure: the bot the person
+    // needs is there. Another window, another Mac, or this account's earlier
+    // install got in first — re-read both views and open it.
+    if (isAlreadyExistsFailure(created.raw ?? created.reason)) {
+      await refreshLocalBots();
+      const adopted = await findExistingSetupBot();
+      if (adopted) {
+        openSetupBotDm(adopted);
+        return { ok: true, existing: true };
+      }
+      return { ok: false, reason: SETUP_BOT_ALREADY_ELSEWHERE };
+    }
+    return { ok: false, reason: created.reason };
+  }
+  /**
+   * First open on this Mac: the setup bot starts by itself, so the person is
+   * greeted and walked through setup without pressing anything. Only when
+   * setup has never been run here, a coding tool is signed in (otherwise Run
+   * Setup shows the Connect step first), and once per app session. Run Setup
+   * then opens the bot's conversation. A failure leaves Run Setup to retry
+   * and explain.
+   */
+  $effect(() => {
+    if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
+    // Wait for the shell's first conversation to be chosen, so opening the
+    // bot's DM is not undone by the boot selection landing afterwards.
+    if (!selectedRow) return;
+    if (!firstSignedInRuntime(localBotRuntimeReady)) return;
+    setupBotAutoStarted = true;
+    void startSetupBot()
+      .then((result) => {
+        if (!result.ok) console.warn("[hq-desktop] setup bot did not start by itself:", result.reason);
+      })
+      .catch((err) => console.warn("[hq-desktop] setup bot did not start by itself:", err));
+  });
+  /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
+  async function retryBotProgress(uid: string): Promise<void> {
+    const entry = botProgressByUid[uid];
+    const api = adapter.bots;
+    if (!entry || !api || entry.retrying) return;
+    const bot = localBots.find((b) => b.agentUid === uid);
+    // Nothing is re-issued once the gate is closed; the card renders its
+    // Retry disabled in that state (`canRetry` below) so the click cannot
+    // happen at all rather than happening and doing nothing.
+    if (bot && !canStartBot(botStartGate, bot.name)) return;
+    setBotProgress(uid, { retrying: true, reason: null });
+    if (bot) {
+      const started = await startBotByName(bot.name, bot.agentUid);
+      if (!started.ok) {
+        setBotProgress(uid, { retrying: false, state: "failed", reason: started.reason });
+        return;
+      }
+      // Re-read presence FIRST: flipping to "installing" while the list still
+      // says "failed" lets the presence effect below stamp it failed again.
+      await refreshLocalBots();
+      setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
+      return;
+    }
+    if (entry.adoptName) {
+      const brought = await startBotHere(entry.adoptName, uid);
+      if (!brought.ok) setBotProgress(uid, { retrying: false, state: "failed", reason: brought.reason });
+      return;
+    }
+    if (!entry.input) {
+      setBotProgress(uid, { retrying: false });
+      return;
+    }
+    clearBotProgress(uid);
+    const created = await createBotEntry(entry.input, entry.extras);
+    if (!created.ok) {
+      botProgressByUid = { ...botProgressByUid, [uid]: { ...entry, retrying: false, state: "failed", reason: created.reason } };
+    }
+  }
+  // Presence drives the card: online → tick then remove; a failed process →
+  // reason + Retry; too long without a heartbeat → failed as well.
+  $effect(() => {
+    const entries = Object.entries(botProgressByUid);
+    if (entries.length === 0) return;
+    const now = Date.now();
+    for (const [uid, entry] of entries) {
+      if (entry.state === "online") continue;
+      const bot = localBots.find((b) => b.agentUid === uid);
+      // A heartbeat is the last word: a bot that checked in is online even if
+      // the card had already given up on it.
+      if (bot?.online === true) {
+        setBotProgress(uid, { state: "online" });
+        window.setTimeout(() => clearBotProgress(uid), 1500);
+        continue;
+      }
+      if (entry.state === "failed") continue;
+      if (bot?.state === "failed") {
+        setBotProgress(uid, { state: "failed", reason: localBotOfflineNotice(bot) });
+      } else if (now - entry.startedAt > BOT_PROGRESS_TIMEOUT_MS) {
+        setBotProgress(uid, { state: "failed", reason: `${entry.name} did not come online. Check that its tool is signed in, then retry.` });
+      }
+    }
+  });
+  // The bot's first message replaces the card.
+  $effect(() => {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || !botProgressByUid[uid]) return;
+    if (timeline.some((m) => m.fromPersonUid === uid)) clearBotProgress(uid);
+  });
+  const selectedBotProgress = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid ? (botProgressByUid[selectedRow.personUid] ?? null) : null,
+  );
+  /**
+   * The open DM's card is a bot being brought back, not one being created. The
+   * bot is still "not here" while the adopt runs, so the progress card has to
+   * outrank the honest notice for exactly that window — otherwise pressing
+   * "Start on this computer" looks like it did nothing.
+   */
+  const selectedBotAdopting = $derived(Boolean(selectedBotProgress?.adoptName));
+  const existingBotNames = $derived(localBots.map((b) => b.name));
+  /** Inline runtime sign-in for the flow's Home step (browser login + status poll). */
+  const botSignIn = $derived.by<RuntimeSignInApi | null>(() => {
+    const sessions = adapter.sessions;
+    if (!sessions?.loginStart || !sessions.loginStatus) return null;
+    const toState = (result: { ok: true; value: unknown } | { ok: false; message?: string }): RuntimeSignInState => {
+      if (!result.ok) return { state: "error", message: result.message || "Could not reach the sign-in." };
+      const rec = (result.value ?? {}) as { state?: string; message?: string };
+      const state = rec.state === "waiting" || rec.state === "connected" || rec.state === "error" ? rec.state : "disconnected";
+      return { state, message: rec.message };
+    };
+    return {
+      loginStart: async (runtime) => toState(await sessions.loginStart!(runtime as SessionProviderId)),
+      loginStatus: async (runtime) => toState(await sessions.loginStatus!(runtime as SessionProviderId)),
+      loginCancel: sessions.loginCancel
+        ? async (runtime) => toState(await sessions.loginCancel!(runtime as SessionProviderId))
+        : undefined,
+    };
+  });
+  async function onBotRuntimeSignedIn(): Promise<void> {
+    localBotRuntimeReady = null;
+    await loadLocalBotRuntimeReady();
+  }
+  const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
+  const selectedLocalBotOffline = $derived(
+    Boolean(selectedLocalBot && selectedLocalBot.online !== true),
+  );
+  /**
+   * The open bot's coding tool needs a new sign-in (`hq bot list` reports it):
+   * the bot has paused, so the conversation says so above the composer and
+   * offers the sign-in instead of looking silently stuck.
+   */
+  /**
+   * THE NOTICE BELONGS AT THE BOTTOM, NOT THE TOP.
+   *
+   * The owner's screenshot: the "Start on this computer" card rendered above
+   * the oldest message, under a YESTERDAY divider — "this shouldn't be on the
+   * top because its easy to miss". He never saw it, typed into the composer,
+   * and read that his message was unanswered. So it renders as the LAST thing
+   * in the conversation, directly above the composer, where the person already
+   * is. Precedence is what the header expression had: the honest "cannot run
+   * here" notice outranks the progress card, and the plain offline notice only
+   * shows when neither is in play.
+   */
+  const botNoticeBelow = $derived(
+    Boolean(selectedBotCannotRun && !selectedBotAdopting) ||
+      Boolean(!selectedBotProgress && selectedLocalBot && selectedLocalBotOffline),
+  );
+  const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
+  /** Coding tools some local bot is paused on — evidence a "Connected" tool is dead. */
+  const staleRuntimes = $derived(runtimesNeedingSignIn(localBots));
+  /**
+   * Which coding tools the Connect step must treat as signed out despite the
+   * CLI saying otherwise: a run that stopped with "Failed to authenticate",
+   * and any tool a local bot is paused on.
+   */
+  function setupStaleTools(failure: { kind: string } | null): ("claude" | "codex")[] {
+    const out = new Set<"claude" | "codex">();
+    for (const runtime of staleRuntimes) if (runtime === "claude" || runtime === "codex") out.add(runtime);
+    if (failure?.kind === "auth") {
+      const ran = setupAgent.lastRunTool;
+      if (ran) out.add(ran);
+      else if (setupAgent.providers) {
+        if (setupAgent.providers.claudeLoggedIn) out.add("claude");
+        if (setupAgent.providers.codexLoggedIn) out.add("codex");
+      }
+    }
+    return [...out];
+  }
+  /** Restart the bots paused on a tool after it was signed in again elsewhere. */
+  async function afterRuntimeSignedIn(runtime: string): Promise<void> {
+    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null, {
+      // Same gate as every other start: a bot whose start already failed
+      // definitively is not re-issued here either, and one that does start
+      // drops its "cannot run here" notice.
+      canStart: (bot) => canStartBot(botStartGate, bot.name),
+      onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+    });
+    await refreshLocalBots();
+  }
+  async function startSelectedLocalBot(): Promise<void> {
+    const bot = selectedLocalBot;
+    if (!bot || !adapter.bots || localBotBusy) return;
+    // A definitive failure is never re-issued, and transient ones are bounded:
+    // the owner's VM retried the same doomed start ~48 times.
+    if (!canStartBot(botStartGate, bot.name)) return;
+    localBotBusy = bot.name;
+    localBotActionError = null;
+    const started = await startBotByName(bot.name, bot.agentUid);
+    if (!started.ok) localBotActionError = started.reason;
+    await refreshLocalBots();
+    localBotBusy = null;
+  }
+  /** The bot's own profile panel starts it through the same gate. */
+  async function startBotFromProfile(bot: LocalBotRow): Promise<{ ok: boolean; reason: string | null }> {
+    return startBotByName(bot.name, bot.agentUid);
+  }
+  // ── Bringing bots back to this computer ────────────────────────────────────
+  /** The bot currently being brought back, so its button can say so. */
+  let botAdoptBusy = $state<string | null>(null);
+  /** The last adopt failure, as a sentence a person can act on. */
+  let botAdoptError = $state<string | null>(null);
+  /**
+   * "Start on this computer" — `hq bot adopt <name>`.
+   *
+   * The bot the account owns gets its machine credentials re-issued here, its
+   * saved settings, worker folder and startup agent rebuilt, and a start. It
+   * keeps its identity, its memory and this conversation; only the half a
+   * reinstall took away is put back. Progress rides the same card a new bot
+   * uses, and a success clears the gate so the DM becomes a normal bot.
+   */
+  async function startBotHere(name: string, agentUid: string): Promise<{ ok: boolean; reason: string | null }> {
+    const adopt = adapter.bots?.adopt;
+    const uid = (agentUid ?? "").trim();
+    if (!adopt) return { ok: false, reason: adoptFallbackNotice(name) };
+    if (botAdoptBusy) return { ok: false, reason: null };
+    botAdoptBusy = name;
+    botAdoptError = null;
+    if (uid) {
+      botProgressByUid = {
+        ...botProgressByUid,
+        [uid]: { name, state: "installing", reason: null, extras: {}, adoptName: name, startedAt: Date.now(), retrying: false },
+      };
+    }
+    const result = await adopt(name);
+    botAdoptBusy = null;
+    if (!result.ok) {
+      // The bots API shells out to the CLI, so `message` can be its own words
+      // (or hq-pro's). They belong in the log; the notice gets a sentence.
+      const raw = result.message ?? "";
+      if (raw) console.warn("[hq-desktop] bot adopt failed:", raw);
+      // A refusal the CLI named is not "please try again": a company bot's
+      // identity cannot run on a personal Mac, now or later, and the failure
+      // document that says so is exactly the machine text `plainBotFailure`
+      // is right to refuse to render.
+      const reason = isNotRunnableHereReason(botFailureReason(raw))
+        ? botStaysInCloudLine(name)
+        : plainBotFailure(raw, adoptFallbackNotice(name));
+      if (uid) clearBotProgress(uid);
+      botAdoptError = reason;
+      return { ok: false, reason };
+    }
+    // It runs here now: the gate reopens and the honest notice goes with it.
+    noteBotStarted(name, uid);
+    await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+    if (uid) setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
+    return { ok: true, reason: null };
+  }
+  /** Start the open DM's bot here, from the "cannot run here" notice. */
+  async function startSelectedBotHere(): Promise<void> {
+    const bot = selectedBotNotHere;
+    if (!bot) return;
+    await startBotHere(bot.name, bot.agentUid);
+  }
+  /**
+   * RESTORE MY BOTS — the one prompt after a fresh install or a new Mac.
+   *
+   * Non-blocking, shown once, and remembered per machine so it never nags at
+   * launch. Settings › Bots is where a person asks for it again.
+   */
+  let botRestoreDismissed = $state(botRestorePromptDismissed(botMachineMemory));
+  let botRestoreBusy = $state(false);
+  let botRestoreResult = $state<BotRestoreResult | null>(null);
+  let botRestoreError = $state<string | null>(null);
+  /**
+   * What `hq bot restore --all` would actually bring back: bots the account's
+   * own listing named, minus any that this Mac's listing shows are here after
+   * all. Trace-only bots are deliberately not counted — restoring goes
+   * through HQ Cloud, so a listing the app could not read cannot be the basis
+   * for offering it.
+   */
+  const botsMissingHere = $derived(
+    botsNotHere(remoteBotListing.rows).filter((bot) => !botRunsHere(localBotRecords, bot.agentUid)),
+  );
+  // ── Bots come back BY THEMSELVES ──────────────────────────────────────────
+  //
+  // The owner, on a fresh install: "I don't understand, the whole point of our
+  // project was to automatically start up local bots when you installed the
+  // app." He opened the setup bot's DM, typed "hi", and read "Not answered yet
+  // — this bot isn't running on this computer", with the "Start on this
+  // computer" notice above the fold where he never saw it. The mechanism was
+  // fine: on the VM `hq bot restore --all --json` brought both bots online in
+  // about five seconds. The product was wrong to ask for the click at all.
+  //
+  // So the app asks for itself. Three trigger points, one effect: the first
+  // successful listing after sign-in on a fresh install, the moment a runtime
+  // becomes ready (Connect Claude in the wizard re-reads readiness through
+  // `onBotRuntimeSignedIn`), and any later listing that shows a runnable bot
+  // which is not here — so a bot wiped by an update or a crash comes back the
+  // same way a reinstall's does.
+  /** Automatic attempts this session, per bot. Never persisted. */
+  let autoRestoreAttempts = $state<AutoRestoreAttempts>({});
+  /**
+   * When each bot was last tried automatically — the back-off, per bot.
+   *
+   * Per bot rather than per listing, so what is charged and what is waited for
+   * can never drift apart: a send that brings ONE bot back charges that bot
+   * and waits for that bot, and the others are neither spent nor held.
+   */
+  let autoRestoreLastAt = $state<AutoRestoreLastAttempts>({});
+  /** Single-flight: one automatic restore at a time, ever. */
+  let autoRestoreBusy = $state(false);
+  /** The bots this automatic restore is bringing back, by uid. */
+  let autoRestoringUids = $state<string[]>([]);
+  /**
+   * The ONE line a person reads about this, cleared by the next newer event
+   * and never by a timer (policy
+   * `transient-indicators-clear-on-newer-event-not-time-window`).
+   */
+  let autoRestoreStatus = $state<string | null>(null);
+  /** Bots the app could bring back by itself right now. */
+  const autoRestorableBots = $derived(autoRestoreCandidates(remoteBotListing, localBotRecords));
+  /**
+   * A runtime is signed in here — the same readiness check Run Setup uses.
+   * Restoring a bot with no runtime to run it only produces a bot that cannot
+   * start, so the app waits for the sign-in rather than spending its budget.
+   */
+  const autoRestoreReady = $derived(
+    Boolean(adapter.bots?.restore) &&
+      !botRestoreUnavailable &&
+      Boolean(firstSignedInRuntime(localBotRuntimeReady)),
+  );
+  /** True while automatic restore owns these bots: the banner stands down. */
+  const autoRestoreHandling = $derived(
+    autoRestoreBusy ||
+      (autoRestoreReady &&
+        autoRestorableBots.length > 0 &&
+        !autoRestoreExhausted(autoRestoreAttempts, autoRestorableBots)),
+  );
+  /** The open DM's bot is one being brought back right now. */
+  const selectedBotAutoRestoring = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid
+      ? autoRestoringUids.includes(selectedRow.personUid.trim())
+      : false,
+  );
+  $effect(() => {
+    const candidates = autoRestorableBots;
+    const ready = autoRestoreReady;
+    untrack(() => void autoRestoreIfNeeded(candidates, ready));
+  });
+  /**
+   * Decide, then act. Everything that would make this churn is a guard here:
+   * a listing that failed yields no candidates at all, a person-driven restore
+   * or adopt owns the CLI while it runs, one listing state is acted on once,
+   * and each bot has a budget of `AUTO_RESTORE_MAX_ATTEMPTS`.
+   */
+  async function autoRestoreIfNeeded(
+    candidates: readonly RemoteBotRow[],
+    ready: boolean,
+  ): Promise<void> {
+    if (!ready || candidates.length === 0) return;
+    // Never overlapping with a person-driven restore or adopt: two `hq bot`
+    // writes at once is exactly what `singleFlightStart` exists to prevent.
+    if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return;
+    // A bot never tried goes at once — one wiped by an update or a crash comes
+    // back the same way a reinstall's does. One tried already waits: a fresh
+    // install lands two listings inside a second (the poll, then the setup
+    // bot's DM asking for one), and spending the whole budget on the same
+    // evidence twice would leave a transient failure with nothing left.
+    const allowed = autoRestoreDue(
+      autoRestoreLastAt,
+      autoRestoreAllowed(autoRestoreAttempts, candidates),
+      Date.now(),
+    );
+    if (allowed.length === 0) return;
+    await runAutoRestore(allowed);
+  }
+  /**
+   * Bring these bots back, with no click — and ONLY these bots.
+   *
+   * `hq bot restore` takes no names: it brings back every bot the account owns
+   * that is not set up here. That is the right call whenever the app is asking
+   * for exactly that set — one process, one token, one pass — and the wrong
+   * one the moment it is not. A bot held back because it is running on another
+   * Mac, or one whose automatic budget is spent, would be taken by the bulk
+   * call anyway and charged to nobody, so those go one at a time through
+   * `hq bot adopt <name>` instead. What is restored and what is charged are
+   * the same set, always.
+   *
+   * A failure BACKS OFF rather than stopping: the per-bot budget is what ends
+   * it. When the budget is gone the manual notice is the honest surface again
+   * — which is why nothing here dismisses it permanently.
+   */
+  async function runAutoRestore(bots: readonly RemoteBotRow[]): Promise<void> {
+    const restore = adapter.bots?.restore;
+    const adoptOne = adapter.bots?.adopt;
+    if (autoRestoreBusy || bots.length === 0) return;
+    const bulk = Boolean(restore) && autoRestoreCoversAll(bots, botsMissingHere);
+    if (!bulk && !adoptOne) return;
+    autoRestoreBusy = true;
+    const startedAt = Date.now();
+    autoRestoreLastAt = noteAutoRestoreAttempt(autoRestoreLastAt, bots, startedAt);
+    autoRestoreAttempts = countAutoRestoreAttempt(autoRestoreAttempts, bots);
+    autoRestoringUids = bots.map((bot) => bot.agentUid.trim()).filter(Boolean);
+    const names = bots.map((bot) => bot.name);
+    autoRestoreStatus = AUTO_RESTORE_RUNNING;
+    try {
+      const back: string[] = [];
+      const stuck: string[] = [];
+      if (bulk) {
+        // No `--all`: that flag additionally re-issues credentials for the
+        // bots already set up here, which this run neither named nor charged.
+        const result = await restore!({ all: false });
+        if (!result.ok || !result.value) {
+          // The bots API shells out to the CLI, so `message` can be its own
+          // words. They belong in the log; the line gets a written sentence.
+          const raw = (result.ok ? "" : result.message) ?? "";
+          if (raw) console.warn("[hq-desktop] automatic bot restore failed:", raw);
+          autoRestoreStatus = autoRestoreFailedLine(names, remoteListingNotice);
+          return;
+        }
+        for (const row of result.value.bots ?? []) {
+          if (row.action === "restored" || row.action === "repaired") {
+            noteBotStarted(row.name, row.agentUid);
+            back.push(row.name);
+          } else if (botRestoreRowFailed(row)) {
+            stuck.push(row.name);
+          }
+        }
+      } else {
+        for (const bot of bots) {
+          const result = await adoptOne!(bot.name);
+          if (result.ok) {
+            noteBotStarted(bot.name, bot.agentUid);
+            back.push(bot.name);
+            continue;
+          }
+          const raw = result.message ?? "";
+          if (raw) console.warn("[hq-desktop] automatic bot adopt failed:", raw);
+          stuck.push(bot.name);
+        }
+      }
+      autoRestoreStatus =
+        back.length > 0
+          ? stuck.length > 0
+            ? `${autoRestoreDoneLine(back)} ${autoRestoreFailedLine(stuck, remoteListingNotice)}`
+            : autoRestoreDoneLine(back)
+          : stuck.length > 0
+            ? autoRestoreFailedLine(stuck, remoteListingNotice)
+            : null;
+      await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+    } catch (err) {
+      // A host that throws must not leave the app claiming it is still working.
+      console.warn("[hq-desktop] automatic bot restore threw:", err);
+      autoRestoreStatus = autoRestoreFailedLine(names, remoteListingNotice);
+    } finally {
+      autoRestoreBusy = false;
+      autoRestoringUids = [];
+    }
+  }
+  /**
+   * A person wrote to a bot that is not running here: bring it back NOW rather
+   * than at the next poll.
+   *
+   * The message is not lost while that happens. `hq dm` puts a message for an
+   * `agt_*` recipient in the agent's OWN durable box inbox server-side
+   * (`GET /v1/notify/inbox`, acked explicitly once read), so it waits there,
+   * unread, until the bot starts and reads it — which is why the send goes
+   * through immediately instead of being held.
+   */
+  function autoRestoreForSend(agentUid: string): boolean {
+    const uid = (agentUid ?? "").trim();
+    if (!uid || !autoRestoreReady) return false;
+    // `autoRestorableBots` is the automatic set, so a bot that is RUNNING on
+    // another computer is not in it — writing to a bot must not take it off
+    // the Mac it is answering on. The conversation says so in one sentence and
+    // keeps the button, which is the person's to press.
+    const bot = autoRestorableBots.find((row) => row.agentUid.trim() === uid);
+    if (!bot) return false;
+    if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return autoRestoringUids.includes(uid);
+    if (autoRestoreAllowed(autoRestoreAttempts, [bot]).length === 0) return false;
+    // A person writing is a NEWER EVENT than the listing that was already
+    // acted on, so this one goes straight to the restore — no waiting for the
+    // next 120 s listing, which is the whole dead-DM moment.
+    void runAutoRestore([bot]);
+    return true;
+  }
+  const showBotRestorePrompt = $derived(
+    Boolean(adapter.bots?.restore) &&
+      !botRestoreUnavailable &&
+      !botRestoreDismissed &&
+      !botRestoreResult &&
+      // The banner is the FALLBACK now. While the app is bringing the same
+      // bots back by itself, a prompt asking for the click it no longer needs
+      // is the confusion this whole change removes.
+      !autoRestoreHandling &&
+      botsMissingHere.length > 0,
+  );
+  function dismissBotRestorePrompt(): void {
+    botRestoreDismissed = true;
+    rememberBotRestoreDismissed(botMachineMemory);
+  }
+  async function restoreMyBots(): Promise<void> {
+    const restore = adapter.bots?.restore;
+    if (!restore || botRestoreBusy) return;
+    botRestoreBusy = true;
+    botRestoreError = null;
+    const result = await restore({ all: true });
+    botRestoreBusy = false;
+    if (!result.ok || !result.value) {
+      const raw = (result.ok ? "" : result.message) ?? "";
+      if (raw) console.warn("[hq-desktop] bot restore failed:", raw);
+      botRestoreError = plainBotFailure(raw, BOT_RESTORE_FAILED);
+      return;
+    }
+    botRestoreResult = result.value;
+    // Asking counts as answering the prompt: it is not offered again by itself.
+    rememberBotRestoreDismissed(botMachineMemory);
+    for (const row of result.value.bots ?? []) {
+      if (row.action === "restored" || row.action === "repaired") noteBotStarted(row.name, row.agentUid);
+    }
+    await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+  }
+  /**
+   * One place where a failed start becomes state: it counts against the bot's
+   * budget, a "no such bot" turns into the honest "cannot run here" (which
+   * also ends the thinking row), and the caller gets a written sentence —
+   * never the CLI's or the API's own words.
+   */
+  function applyBotStartFailure(name: string, agentUid: string, raw: string): string {
+    const kind = classifyBotStartFailure(raw);
+    botStartGate = recordBotStartFailure(botStartGate, name, kind);
+    if (kind === "missing") {
+      noteBotCannotRunHere(agentUid);
+      return BOT_NOT_RUNNABLE_HERE;
+    }
+    const sentence = plainBotFailure(raw, botStartFallbackNotice(name));
+    return canStartBot(botStartGate, name) ? sentence : `${sentence} ${BOT_START_NO_MORE_RETRIES}`;
+  }
+  let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
   $effect(() => {
     if (selectedRow) {
@@ -811,7 +2397,7 @@
         detail: "Open the notifications feed",
         shortcut: shortcutLabel("view.notifications"),
         action: () => {
-          view = "notifications";
+          void navigate({ kind: "notifications" });
         },
       },
       {
@@ -820,17 +2406,7 @@
         detail: "Open the meetings agenda",
         shortcut: shortcutLabel("view.meetings"),
         action: () => {
-          view = "meetings";
-        },
-      },
-      {
-        id: "command-go-atlas",
-        label: "Atlas",
-        detail: "People and agents on projects, live",
-        shortcut: "g a",
-        action: () => {
-          view = "atlas";
-          meetingFocusRequest = null;
+          void navigate({ kind: "meetings" });
         },
       },
     ];
@@ -944,22 +2520,14 @@
     selectedRow?.kind === "channel" &&
       (selectedRow.channelScope ?? "").trim() === "company",
   );
-
-  /** Company for Atlas — selected conversation company, else first cloud workspace. */
-  const atlasCompanyUid = $derived.by(() => {
-    const fromRow = (selectedRow?.companyUid ?? "").trim();
-    if (fromRow) return fromRow;
-    for (const company of companies ?? []) {
-      const uid = (company.cloudUid ?? "").trim();
-      if (uid) return uid;
-    }
-    return "";
+  const selectedCompanySlug = $derived.by(() => {
+    const uid = (selectedRow?.companyUid ?? "").trim();
+    if (!uid) return "";
+    return (
+      (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid)?.slug ??
+      ""
+    );
   });
-  const atlasCompanyLabel = $derived(
-    companyDisplayName(atlasCompanyUid, companyNames) ||
-      companies?.find((c) => c.cloudUid === atlasCompanyUid)?.displayName ||
-      null,
-  );
 
   /** "Indigo · project channel" style subtitle under the channel name. */
   const channelSubtitle = $derived.by(() => {
@@ -1022,13 +2590,121 @@
   );
 
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
+  /**
+   * The Setup Agent: the guided `/setup` run as a conversation in #welcome.
+   * Its turns stream into the channel timeline as messages, the composer
+   * replies to it while it is listening, and the prompt under the messages
+   * carries choices / cards / the finish buttons. The hero shows its stepper.
+   */
+  // Starting is not finishing: a relaunch mid-run must still land on
+  // #welcome, so only the finish graduates welcome-first boot.
+  const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
+    onfinished: () => {
+      recordWelcomeSetupRun();
+      // On disk too: the window's memory does not survive a reinstall.
+      void adapter.settings.markWelcomeSetupComplete?.();
+    },
+  });
+  $effect(() => () => setupAgent.dispose());
+  /** In setup-bot mode #welcome is just its banner (resources + the setup
+   *  button); the scripted fallback run still needs its transcript. */
+  const welcomeIsBannerOnly = $derived(
+    Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupBotLauncher && !setupAgent.active),
+  );
+  /**
+   * Where the "bringing your bots back" line lives: at the bottom of the
+   * conversation when there is one, and in the shell's banner slot only when
+   * there is not (the welcome hero, mid-wizard). Never in both.
+   */
+  const autoRestoreStatusInline = $derived(Boolean(selectedRow) && !welcomeIsBannerOnly);
+  const inSetupChannelWithAgent = $derived(
+    Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
+  );
+  /** First-seen wall clock per session: synthetic turns need stable, ordered timestamps. */
+  const setupAgentClock = new Map<string, number>();
+  const setupAgentWires = $derived.by((): ConversationMessageWire[] => {
+    const sessionId = setupAgent.sessionId;
+    if (!setupAgent.active || !sessionId) return [];
+    let base = setupAgentClock.get(sessionId);
+    if (base === undefined) {
+      base = Date.now();
+      setupAgentClock.set(sessionId, base);
+    }
+    const start = base;
+    return setupAgent.transcript.map((turn) => ({
+      eventId: turn.id,
+      fromPersonUid: turn.role === "agent" ? SETUP_AGENT_UID : (self?.uid ?? null),
+      fromDisplayName: turn.role === "agent" ? SETUP_AGENT_NAME : (self?.displayName ?? "You"),
+      body: turn.text,
+      createdAt: new Date(start + turn.seq * 1000).toISOString(),
+      direction: turn.role === "agent" ? "in" : "out",
+      replyCount: 0,
+    }));
+  });
+  /** Between the person's turns the agent shows as "thinking", like any other agent. */
+  let setupThinkingSince = 0;
+  const setupThinking = $derived.by((): ThinkingEntry | null => {
+    if (!inSetupChannelWithAgent) return null;
+    // Starting a run (or quietly retrying a passing clash) is thinking too:
+    // the person clicked and must see the agent at work, not a blank beat.
+    if (setupAgent.mode === "starting" || setupAgent.retrying) {
+      if (!setupThinkingSince) setupThinkingSince = Date.now();
+      return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+    }
+    if (setupAgent.mode !== "live") {
+      setupThinkingSince = 0;
+      return null;
+    }
+    const state = setupAgent.state;
+    const phase = setupAgent.snapshot?.phase;
+    // Thinking is only while the engine is actually working on a turn — not
+    // while it waits for the person, and not once it has finished or stopped.
+    // The reported phase can lag or be missed; the event stream is the tiebreak.
+    const working = phase === "working" || phase === "starting" || (phase !== "needsYou" && phase !== "ended" && state?.inFlight);
+    if (!state || state.done || state.ended || state.question || !working) {
+      setupThinkingSince = 0;
+      return null;
+    }
+    if (!setupThinkingSince) setupThinkingSince = Date.now();
+    return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+  });
+  let setupLaunchError = $state<string | null>(null);
+  /** The company `/startwork` orients on after setup: the first company in the roster. */
+  const startworkCompany = $derived(setupCompanies(companies).find((c) => c.kind === "company")?.slug ?? null);
+  const startworkPrompt = $derived(startworkCompany ? `/startwork ${startworkCompany}` : "/startwork");
+  /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
+  async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
+    setupLaunchError = null;
+    const res = await adapter.settings.getSetupStatus();
+    const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+    if (!folder) {
+      setupLaunchError = "HQ folder is not ready yet.";
+      return;
+    }
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt: startworkPrompt });
+    const error = key === "claude" ? await actions.launchClaude() : await actions.launchCodex();
+    if (error) setupLaunchError = error;
+  }
+  /** The run has finished (marker or the person's own "I'm all set"): the finale replaces the prompt. */
+  const setupAgentDone = $derived(
+    inSetupChannelWithAgent && (setupAgent.mode === "done" || Boolean(setupAgent.state?.done)),
+  );
+  /** Once setup is done the composer rests; the finale carries every next step. */
+  const composerDisabled = $derived(setupAgentDone);
+  const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
   const composerPlaceholder = $derived(
-    isAgentChannel && provisioning.state === "pending"
-      ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
-      : composerPlaceholderFor(selectedRow, headerTitle),
+    setupAgentDone
+      ? SETUP_DONE_PLACEHOLDER
+      : inSetupChannelWithAgent && setupAgent.listening
+      ? setupAgent.state?.question?.kind === "choice"
+        ? "Type your answer…"
+        : "Reply to Setup bot…"
+      : isAgentChannel && provisioning.state === "pending"
+        ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
+        : composerPlaceholderFor(selectedRow, headerTitle),
   );
   const composerLocked = $derived(
-    isAgentChannel && provisioning.state === "pending",
+    composerDisabled || (isAgentChannel && provisioning.state === "pending"),
   );
   const agentChannelUid = $derived(
     selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
@@ -1039,8 +2715,6 @@
 
   $effect(() => {
     selectedRow?.id;
-    agentSurface = "chat";
-    companyTab = "chat";
     companyTabData = null;
     companyWallpaper = "aurora";
     companyAppearanceName = null;
@@ -1061,11 +2735,35 @@
    */
   let dmThreadsUnsupported = false;
 
-  // Client-side "agent is thinking" rows for the open channel. Local only —
-  // the backend has no typing/ack events. Per-conversation: a row switch
-  // must not keep another channel's optimistic status on screen.
+  // Client-side "agent is thinking" rows, keyed by conversation row id.
+  // Local only — the backend has no typing/ack events. Per-conversation so
+  // a row switch neither shows another conversation's status nor forgets
+  // this one's: the indicator survives navigating away and back and clears
+  // on the signal that ends it (a NEWER message from that agent in that
+  // row, a failed send there, or the hard expiry) — never a row switch.
   const AGENT_THINKING_TICK_MS = 5_000;
-  let agentThinking = $state<ThinkingEntry[]>([]);
+  let thinkingByRow = $state<ThinkingByRow>({});
+  /** Bots created with a kickoff whose first turn has not been shown yet
+   *  (uid → name). Once the intro is in the open DM, the row starts there. */
+  let kickoffPendingByUid = $state<Record<string, string>>({});
+  $effect(() => {
+    const row = selectedRow;
+    const uid = row?.kind === "dm" ? (row.personUid?.trim() ?? "") : "";
+    if (!row || !uid || !kickoffPendingByUid[uid] || liveTimelineId !== row.id) return;
+    const decision = kickoffThinkingState(liveTimeline, uid);
+    if (decision.state === "waiting") return;
+    const name = kickoffPendingByUid[uid]!;
+    const { [uid]: _started, ...rest } = kickoffPendingByUid;
+    kickoffPendingByUid = rest;
+    if (decision.state === "start") {
+      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now(), {
+        afterMs: decision.afterMs,
+      });
+    }
+  });
+  const agentThinking = $derived<ThinkingEntry[]>(
+    selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
+  );
 
   // Background-task chips for the agents in the selected conversation — the
   // room-scoped route for a channel (every agent on its roster), the
@@ -1112,28 +2810,31 @@
       : [],
   );
 
-  $effect(() => {
-    void selectedRow?.id;
-    agentThinking = [];
-  });
-
   onMount(() => {
     const handle = window.setInterval(() => {
-      agentThinking = tick(agentThinking, Date.now());
+      thinkingByRow = tickAll(thinkingByRow, Date.now());
     }, AGENT_THINKING_TICK_MS);
-    return () => clearInterval(handle);
+    return () => {
+      clearInterval(handle);
+    };
   });
 
-  /** Clear thinking rows when those agents appear in a freshly fetched page
-   *  (recent messages only — not the full merged timeline, or historical
-   *  agent posts would immediately kill a new mention's indicator). */
+  /** Clear a conversation's thinking rows when those agents appear in a
+   *  freshly fetched page for THAT conversation (recent messages only — not
+   *  the full merged timeline, or historical agent posts would immediately
+   *  kill a new mention's indicator). Background wakes for a conversation
+   *  that is not open pass a one-message page built from the wake. */
   function clearThinkingFromIncoming(
-    messages: ConversationMessageWire[],
+    messages: ReadonlyArray<{
+      fromPersonUid?: string | null;
+      createdAt?: string | null;
+    }>,
+    rowId: string,
   ): void {
-    if (agentThinking.length === 0) return;
+    if (!thinkingByRow[rowId]?.length) return;
     // Timestamp-aware so a full-history hydrate or overlapping catch-up page
     // containing an OLD agent message cannot clear a newer row.
-    agentThinking = clearFromMessages(agentThinking, messages);
+    thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
   }
 
   /** Same messages (by reference) in the same order — nothing to repaint. */
@@ -1260,6 +2961,7 @@
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
+    pendingCardId?: string,
   ): Promise<void> {
     // Apply whenever this row is still selected. Do not require matching
     // timelineSeq — MQTT catch-up / a re-run of the hydrate effect used to
@@ -1269,9 +2971,20 @@
     timelineHydrating = false;
     if (raw == null) return;
     historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
-    const incoming = messagesForDisplay(raw);
+    let incoming = messagesForDisplay(raw);
+    // An immediate readback can lag the accepted mutation. Preserve its
+    // pending receipt over a stale open card, but accept any newer state.
+    if (pendingCardId && incoming.some((message) => {
+      const envelope = message.systemEvent;
+      return !!envelope && typeof envelope === "object" &&
+        "type" in envelope && envelope.type === "lifecycle_card" &&
+        "cardId" in envelope && envelope.cardId === pendingCardId &&
+        "state" in envelope && envelope.state === "open";
+    })) {
+      incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
+    }
     commitTimeline(row, incoming);
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   async function catchUpTimeline(row: ConversationRow): Promise<void> {
@@ -1290,7 +3003,7 @@
       ? liveTimeline
       : (timelineCache.get(row.id) ?? []);
     commitTimeline(row, mergeFetchedTimeline(current, raw));
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   $effect(() => {
@@ -1352,6 +3065,22 @@
         ? { ...msg, replyCount: replyCountOverride[msg.eventId] }
         : msg,
     );
+  });
+  /**
+   * The person sent something to a bot that cannot run on this Mac and
+   * nothing has come back. The conversation says that plainly — the message
+   * must not sit under a spinner that will never end.
+   */
+  const botMessageUnanswered = $derived.by(() => {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || !selectedBotCannotRun) return false;
+    const selfUid = self?.uid?.trim() ?? "";
+    for (let i = timeline.length - 1; i >= 0; i -= 1) {
+      const from = (timeline[i]?.fromPersonUid ?? "").trim();
+      if (from && from === uid) return false;
+      if (from && from === selfUid) return true;
+    }
+    return false;
   });
   // ── Project-channel work-mesh activity ───────────────────────────────────
   //
@@ -1466,12 +3195,52 @@
     void loadProjectActivity(row);
   });
 
+  // Diagnostic: what the setup channel is showing and why. Logged only when
+  // the picture changes, so the log is not spammed on every timeline poll.
+  let lastSetupStateLog = "";
+  $effect(() => {
+    const hqLog = (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog;
+    if (!hqLog || !selectedRow || !isSetupChannel(selectedRow.channelId)) return;
+    const snapshot = JSON.stringify({
+        selected: selectedRow?.channelId ?? null,
+        isSetup: selectedRow ? isSetupChannel(selectedRow.channelId) : null,
+        companies: (companies ?? []).map((c) => `${c.kind}:${c.slug}:${c.state}`),
+        rosterCompanies: rosterCompanies.map((c) => c.slug),
+        rosterStatus: rosterStatus ?? null,
+        hasRosterCompany,
+        createCompanyRequested,
+        timeline: timeline.length,
+        shown: timelineWithActivity.length,
+        kinds: timeline.map((m) => {
+          const ev = (m as { systemEvent?: { type?: string; kind?: string } }).systemEvent;
+          return ev ? `${ev.type}/${ev.kind}` : "msg";
+        }),
+      });
+    if (snapshot === lastSetupStateLog) return;
+    lastSetupStateLog = snapshot;
+    hqLog("setup-state", snapshot);
+  });
+
   /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
-  const timelineWithActivity = $derived.by(() =>
-    projectActivityRows.length > 0
-      ? mergeActivityIntoTimeline(timeline, projectActivityRows)
-      : timeline,
-  );
+  const timelineWithActivity = $derived.by(() => {
+    const merged =
+      projectActivityRows.length > 0
+        ? mergeActivityIntoTimeline(timeline, projectActivityRows)
+        : timeline;
+    let rows = merged;
+    if (selectedRow && isSetupChannel(selectedRow.channelId)) {
+      const welcome = withoutCompaniesSummaryCards(
+        withoutSeededCreateCompanyCards(merged, {
+          hasCompany: hasRosterCompany,
+          createRequested: createCompanyRequested,
+          rosterLoading: setupRosterLoading(companies, rosterStatus),
+        }),
+      );
+      rows =
+        setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
+    }
+    return coalesceWorkSessionWires(rows);
+  });
 
   /**
    * A project channel with no chat AND no work-mesh events is empty of
@@ -1528,31 +3297,6 @@
     })) };
   });
 
-  async function createBoardTask(task: {id: string; title: string; description: string; status: string}): Promise<void> {
-    const row = selectedRow;
-    const companyUid = row?.companyUid?.trim();
-    const projectId = row ? projectIdForRow(row) : null;
-    const create = adapter.workMesh.createProjectStory;
-    if (!row || !companyUid || !projectId || !create) throw new Error("Project unavailable");
-    const key = activityKeyForRow(row);
-    const account = self?.uid;
-    // A retry after a lost response must not append the same task twice.
-    const before = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
-    if (!before || before.companyUid !== companyUid || before.projectId !== projectId) throw new Error("Project unavailable");
-    const existing = before.stories.find(story => story.id === task.id);
-    if (existing && existing.title !== task.title) throw new Error("Task ID already exists");
-    if (!existing) unwrapAdapter(await create(projectId, companyUid, {...task, passes: task.status === "done"}));
-    const saved = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
-    const story = saved?.stories.find(story => story.id === task.id);
-    if (!saved || saved.companyUid !== companyUid || saved.projectId !== projectId || !story) throw new Error("Task not confirmed");
-    if (self?.uid !== account) return;
-    const prior = createdTasks[key];
-    const added = projectViewToBoard({...saved, stories: [story]});
-    createdTasks = {...createdTasks, [key]: prior ? {
-      ...added, stories: {...prior.stories, ...added.stories},
-      columns: added.columns.map(column => ({...column, cards: [...(prior.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => card.storyId !== story.id), ...column.cards]})),
-    } : added};
-  }
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),
   );
@@ -1580,6 +3324,16 @@
   // ── Member profile / agent detail (Slack-style right panel) ───────────────
   let openProfileMember = $state<StatusPersonRow | null>(null);
   let openAgentMember = $state<StatusPersonRow | null>(null);
+  /** Local bot behind an open profile / Details surface; routes to LocalBotDetailPanel. */
+  const openLocalBot = $derived.by(() => {
+    const uid = openAgentMember?.personUid;
+    return uid ? (localBots.find((b) => b.agentUid === uid) ?? null) : null;
+  });
+  const agentChannelLocalBot = $derived(
+    agentChannelUid
+      ? (localBots.find((b) => b.agentUid === agentChannelUid) ?? null)
+      : null,
+  );
   let removingMemberUid = $state<string | null>(null);
   /**
    * Owner-only "Delete channel" (members popover → trash). The shell owns the
@@ -1592,12 +3346,6 @@
    * Company owner/admin "Move to another company" (US-017B). Shell owns the
    * destination picker + confirm — same outside-mousedown reason as delete.
    */
-  let migrateSessionTarget = $state<{
-    sessionId: string;
-    sourceCompanyUid: string;
-  } | null>(null);
-  let migratingSessionId = $state<string | null>(null);
-  let migrateSessionError = $state<string | null>(null);
   /** Last channel-level action failure — rendered under the header, never console-only. */
   let channelActionError = $state<string | null>(null);
 
@@ -1680,28 +3428,6 @@
         companies,
         isAdmin,
       }),
-  );
-
-  const canMigrateSelectedChannelSessions = $derived(
-    canMigrateCompanySession({
-      companyUid: selectedRow?.companyUid,
-      companies,
-    }),
-  );
-  const migrateDestinationsForSelected = $derived(
-    migrateDestinationCompanies(
-      companies,
-      selectedRow?.companyUid?.trim() ?? "",
-    ),
-  );
-  const canMigrateAtlasSessions = $derived(
-    canMigrateCompanySession({
-      companyUid: atlasCompanyUid,
-      companies,
-    }),
-  );
-  const migrateDestinationsForAtlas = $derived(
-    migrateDestinationCompanies(companies, atlasCompanyUid),
   );
 
   /** personUid → live display name from the channel roster (the profile
@@ -1895,81 +3621,6 @@
       }
     } finally {
       removingMemberUid = null;
-    }
-  }
-
-  function openMigrateSession(sessionId: string, sourceCompanyUid: string): void {
-    const sid = sessionId.trim();
-    const source = sourceCompanyUid.trim();
-    if (!sid || !source) return;
-    const destinations = migrateDestinationCompanies(companies, source);
-    if (destinations.length === 0) {
-      channelActionError =
-        "No other company is available to move this session into.";
-      return;
-    }
-    if (
-      !canMigrateCompanySession({
-        companyUid: source,
-        companies,
-      })
-    ) {
-      return;
-    }
-    membersOpen = false;
-    migrateSessionError = null;
-    migrateSessionTarget = { sessionId: sid, sourceCompanyUid: source };
-  }
-
-  async function confirmMigrateSession(
-    destinationCompanyUid: string,
-  ): Promise<void> {
-    const target = migrateSessionTarget;
-    const sessionId = target?.sessionId?.trim() ?? "";
-    const sourceCompanyUid = target?.sourceCompanyUid?.trim() ?? "";
-    const dest = destinationCompanyUid.trim();
-    if (!sessionId || !sourceCompanyUid || !dest || migratingSessionId) return;
-    if (sourceCompanyUid === dest) return;
-    if (
-      !canMigrateCompanySession({
-        companyUid: sourceCompanyUid,
-        companies,
-      })
-    ) {
-      return;
-    }
-    migratingSessionId = sessionId;
-    migrateSessionError = null;
-    channelActionError = null;
-    try {
-      const destination = normalizeMigrateDestination({});
-      const expectedVersion = 0;
-      const operationId = newMigrateOperationId();
-      const digest = await digestMigratePayload({
-        sessionId,
-        sourceCompanyUid,
-        destinationCompanyUid: dest,
-        destination,
-        expectedVersion,
-      });
-      const res = await adapter.workMesh.migrateSession(sessionId, {
-        operationId,
-        digest,
-        sourceCompanyUid,
-        destinationCompanyUid: dest,
-        destination,
-        expectedVersion,
-      });
-      if (!res.ok) {
-        migrateSessionError =
-          res.message?.trim() || "Couldn't move the session to that company.";
-        return;
-      }
-      migrateSessionTarget = null;
-    } catch (err) {
-      migrateSessionError = err instanceof Error ? err.message : String(err);
-    } finally {
-      migratingSessionId = null;
     }
   }
 
@@ -2364,6 +4015,8 @@
         agentChannelId:
           typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
         agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
+        companyChannelId: typeof raw?.companyChannelId === "string" ? raw.companyChannelId : undefined,
+        companyUid: typeof raw?.companyUid === "string" ? raw.companyUid : undefined,
         focusCardId:
           typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
         // Entry points: the summary card's create_company action answers with
@@ -2513,64 +4166,132 @@
   const canRunEntryPoints = $derived(
     typeof adapter.messaging.runCardAction === "function",
   );
+  /** A cloud bot needs the team action to open its sequence and a card read-back. */
+  const canCreateCloudBots = $derived(
+    canRunEntryPoints && typeof adapter.messaging.runCompanyTabAction === "function",
+  );
 
-  /** Sidebar / switcher "New company": summary card action, then #setup. */
+  /**
+   * Companies the roster already knows about, whatever their sync state. Any
+   * of them means the account is NOT a blank slate: #welcome leads with that
+   * company and hides the seeded create_company card.
+   */
+  const rosterCompanies = $derived(setupCompanies(companies));
+  /**
+   * Boot lands on #welcome until Run Setup has been used on this machine
+   * (persisted; see `hasRunWelcomeSetup`). Flips in-session the moment the
+   * person starts setup so a later re-open goes to the company channel.
+   */
+  let welcomeSetupRun = $state(hasRunWelcomeSetup());
+  /**
+   * Whether this machine is still owed the welcome channel's guided setup,
+   * from the host's setup status. A person who set HQ up before the welcome
+   * flow existed (Caio: "I previously ran setup, but it showed me this") is
+   * not: boot goes to their channels and #welcome shows the finished state.
+   * Unknown until the host answers; unknown means owed, as before.
+   */
+  let welcomeSetupOwed = $state<boolean | null>(null);
+  /** The boot pick never waits longer than this for the host's answer. */
+  const WELCOME_OWED_TIMEOUT_MS = 2000;
+  onMount(() => {
+    let settled = false;
+    const resolve = (owed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      welcomeSetupOwed = owed;
+      if (owed) return;
+      welcomeSetupRun = true;
+      setupAgent.markAlreadySetUp();
+    };
+    const timer = window.setTimeout(() => resolve(true), WELCOME_OWED_TIMEOUT_MS);
+    void (async () => {
+      try {
+        const res = await adapter.settings.getSetupStatus();
+        const owed = res.ok ? (res.value as { welcomeSetupOwed?: unknown } | null)?.welcomeSetupOwed : undefined;
+        // Only an explicit "not owed" skips the welcome; anything else keeps today's behaviour.
+        resolve(owed !== false);
+      } catch {
+        resolve(true);
+      }
+    })();
+    return () => clearTimeout(timer);
+  });
+  /**
+   * An explicit conversation deep link (`?channel=` / `?person=`) is a
+   * stronger intent than first landing: it must never be swallowed by the
+   * welcome-first boot pick.
+   */
+  const bootDeepLink = conversationDeepLinkFromLocation();
+  const hasBootDeepLink = Boolean(
+    bootDeepLink.channelId?.trim() || bootDeepLink.personUid?.trim(),
+  );
+  function recordWelcomeSetupRun(): void {
+    markWelcomeSetupRun();
+    welcomeSetupRun = true;
+  }
+  const hasRosterCompany = $derived(rosterCompanies.length > 0);
+  /** The finale's "Open <Company>" button: the roster's first company, or nothing. */
+  const finaleCompany = $derived.by(() => {
+    const company = rosterCompanies[0];
+    if (!company) return null;
+    return { label: setupCompanyActionLabel(company), onopen: () => openCompanyFromSetup(company) };
+  });
+  /** The user explicitly asked for another company this session. */
+  let createCompanyRequested = $state(false);
+
+  /** Sidebar / switcher / #welcome "New company": summary card action, then #setup. */
   async function createCompanyEntry(): Promise<EntryPointResult> {
-    const result = await runCreateCompanyEntry(conversationApi);
+    const result = await runCreateCompanyEntry(conversationApi, {
+      hasCompanies: hasRosterCompany,
+    });
+    createCompanyRequested = result.ok;
     if (result.ok) navigateToEntryTarget(result.target, null);
     return result;
   }
 
-  /** Sidebar / header "New agent": Team tab action, then the company channel. */
-  async function addAgentEntry(companyUid: string): Promise<EntryPointResult> {
-    const result = await runAddAgentEntry(conversationApi, companyUid);
+  /**
+   * #welcome "Open <Company>" / "Continue setup for <Company>": select the
+   * company's own channel when the rail already has it, otherwise switch the
+   * sidebar into that company's scope so its rows hydrate and auto-open.
+   */
+  function openCompanyFromSetup(company: Workspace): void {
+    const uid = company.cloudUid?.trim() ?? "";
+    const row = uid
+      ? railRows.find(
+          (candidate) =>
+            candidate.kind === "channel" &&
+            !candidate.browseOnly &&
+            candidate.channelScope === "company" &&
+            candidate.companyUid === uid,
+        )
+      : undefined;
+    if (row) {
+      handleSelect(row);
+      return;
+    }
+    if (uid) changeTenantCompany(uid);
+  }
+
+  /**
+   * New bot → Cloud. Creating a company-hosted bot exists on the server only
+   * as the Team tab's `add_agent` action plus the `create_agent` card's own
+   * turns, so this runs exactly those — headlessly, under the name and handle
+   * the New bot flow just collected. The card is never rendered (it is a
+   * retired timeline kind) and never focused: the person stays in the New bot
+   * flow and lands in the new bot's channel when it is made.
+   */
+  async function createCloudBotEntry(
+    companyUid: string,
+    draft: { name: string; handle: string },
+  ): Promise<EntryPointResult> {
+    const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
     if (result.ok) navigateToEntryTarget(result.target, companyUid);
     return result;
   }
 
-  /**
-   * Whether the viewer may act on the current company's Team tab. Read from
-   * the tab surface the server sends (its `viewer` is per company), fetched
-   * once per company so the header button is right on the Chat tab too.
-   */
-  let companyTeamCanAct = $state(false);
-  let companyTeamCanActUid: string | null = null;
-  let headerAddAgentBusy = $state(false);
-  let headerAddAgentError = $state<string | null>(null);
-
-  async function loadCompanyTeamCanAct(uid: string): Promise<void> {
-    if (companyTeamCanActUid === uid) return;
-    companyTeamCanActUid = uid;
-    companyTeamCanAct = false;
-    headerAddAgentError = null;
-    const getTab = conversationApi.getCompanyTab;
-    if (!getTab || !conversationApi.runCompanyTabAction) return;
-    try {
-      const parsed = parseCompanyTab(await getTab(uid, "team"));
-      if (companyTeamCanActUid === uid) {
-        companyTeamCanAct = parsed?.viewer.canAct === true;
-      }
-    } catch {
-      if (companyTeamCanActUid === uid) companyTeamCanAct = false;
-    }
-  }
-
-  async function addAgentFromHeader(): Promise<void> {
-    const uid = selectedRow?.companyUid?.trim() ?? "";
-    if (!uid || headerAddAgentBusy) return;
-    headerAddAgentBusy = true;
-    headerAddAgentError = null;
-    try {
-      const result = await addAgentEntry(uid);
-      if (!result.ok) headerAddAgentError = result.reason;
-    } finally {
-      headerAddAgentBusy = false;
-    }
-  }
-
   const cardActionKeys: CardActionIdempotencyStore = new Map();
 
-  function applyCardActionFailure(cardId: string, message: string): void {
+  function applyCardActionFailure(cardId: string, message: string, values?: Record<string, string>): void {
     const row = selectedRow;
     if (!row) return;
     const current =
@@ -2580,8 +4301,9 @@
     commitTimeline(
       row,
       patchLifecycleCardState(current, cardId, {
-        state: "blocked",
+        state: /timed? out|timeout|network|connection|unavailable|fetch failed|could not reach|\b50[234]\b/i.test(message) ? "open" : "blocked",
         reason: message,
+        values,
       }),
     );
   }
@@ -2591,6 +4313,12 @@
   ): Promise<void> {
     const uid = selectedRow?.companyUid?.trim() ?? "";
     if (!uid) {
+      companyTabData = null;
+      return;
+    }
+    // US-018: Office is a live native surface, not server-returned rows. It
+    // has no company-tab endpoint, so never ask for one.
+    if (tabId === "office") {
       companyTabData = null;
       return;
     }
@@ -2618,9 +4346,6 @@
         companyAppearanceName = parsed.appearance.name.trim();
       }
       companyTabData = tabId === "chat" ? companyTabData : parsed;
-      if (tabId === "team" && parsed && companyTeamCanActUid === uid) {
-        companyTeamCanAct = parsed.viewer.canAct === true;
-      }
     } catch {
       if (tabId !== "chat") {
         companyTabData = {
@@ -2641,58 +4366,34 @@
     void loadCompanyTabSurface(tabId);
   });
 
-  $effect(() => {
-    if (!isCompanyChannel) {
-      companyTeamCanActUid = null;
-      companyTeamCanAct = false;
-      headerAddAgentError = null;
-      return;
-    }
-    const uid = selectedRow?.companyUid?.trim() ?? "";
-    if (uid) void loadCompanyTeamCanAct(uid);
-  });
-
-  async function handleTeamAction(event: CompanyTabActionEvent): Promise<void> {
-    const run = conversationApi.runCompanyTabAction;
-    if (!run) return;
-    const result = await submitLifecycleCardAction({
-      event,
-      store: cardActionKeys,
-      run: (args) =>
-        run({
-          companyUid: event.companyUid,
-          tab: event.tab,
-          cardId: args.cardId,
-          actionId: args.actionId,
-          values: args.values,
-          idempotencyKey: args.idempotencyKey,
-        }),
-      onFailure: () => {},
-    });
-    if (result?.navigateTo === "chat") {
-      companyTab = "chat";
-      return;
-    }
-    await loadCompanyTabSurface(companyTab);
-  }
-
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
+    const actionRow = selectedRow;
     oncardaction?.(event);
     if (typeof adapter.messaging.runCardAction !== "function") return;
     const result = await submitLifecycleCardAction({
       event,
       store: cardActionKeys,
       run: conversationApi.runCardAction,
-      onFailure: applyCardActionFailure,
+      onFailure: (cardId, message) => applyCardActionFailure(cardId, message, event.values),
     });
-    const agentChannelId =
-      result && typeof result.agentChannelId === "string"
-        ? result.agentChannelId.trim()
-        : "";
-    if (agentChannelId.startsWith("chn_")) {
-      requestChannelOpen(agentChannelId, {
-        title: headerTitle,
-        companyUid: selectedRow?.companyUid ?? null,
+    // The HTTP response settles this interaction; MQTT is supplementary.
+    // Otherwise a missed lifecycle wake leaves localPending stuck forever.
+    if (result && actionRow && selectedRow?.id === actionRow.id) {
+      const state = result.state;
+      if (state === "open" || state === "pending" || state === "done" || state === "skipped" || state === "blocked") {
+        commitTimeline(actionRow, patchLifecycleCardState(liveTimeline, event.cardId, { state, reason: null }));
+      }
+      // Fetch newly created steps even when no live event arrives. Failure
+      // must not turn an already-saved choice into a failed mutation.
+      void fetchTimelineRaw(actionRow)
+        .then((raw) => applyFetchedTimeline(actionRow, raw, state === "pending" ? event.cardId : undefined))
+        .catch(() => {});
+    }
+    const destination = result?.companyChannelId?.trim() || result?.agentChannelId?.trim();
+    if (destination?.startsWith("chn_")) {
+      requestChannelOpen(destination, {
+        title: result?.companyChannelId ? "Company channel" : headerTitle,
+        companyUid: result?.companyUid ?? selectedRow?.companyUid ?? null,
       });
       return;
     }
@@ -2724,12 +4425,17 @@
 
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
-    if (id) {
-      openProfileMember = null;
-      openAgentMember = null;
-      openArtifactView = null;
-      openReplyRootId = id;
-    }
+    if (!id || !selectedRow) return;
+    openProfileMember = null;
+    openAgentMember = null;
+    openArtifactView = null;
+    openReplyRootId = id;
+    pushConversationSurface({
+      replyRootEventId: id,
+      tab: "chat",
+      agentSurface: "chat",
+      companyTab: "chat",
+    });
   }
 
   /** Artifact mode for the side pane. The thread underneath is left intact so
@@ -2744,10 +4450,10 @@
   }
 
   function closeReply(): void {
-    openReplyRootId = null;
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
+    void leaveCurrentDestination();
   }
 
   function queueReplyForRow(
@@ -2764,8 +4470,6 @@
     const row = selectedRow;
     const scope = replyScopeForRow(row);
     if (!id || !row || !scope) return;
-    view = "conversation";
-    tab = "chat";
     replyApplyInFlight = id;
     try {
       const raw = unwrapAdapter(
@@ -2806,6 +4510,26 @@
       replyPreviewByRoot = { ...replyPreviewByRoot, [rootEventId]: preview };
     }
   }
+
+  // An agent's own "still working" status in a channel keeps its row up in the
+  // main pane until it posts after the status. Thread-scoped statuses belong
+  // to that thread's panel (ReplyPanel), whose replies are what end them.
+  $effect(() => {
+    if (!wakes) return;
+    return wakes.on("agent:status", (wake) => {
+      if (wake.threadRoot) return;
+      const rowId = `ch:${wake.channelId}`;
+      const open = liveTimelineId === rowId ? liveTimeline : [];
+      const roster = channelRosterById[wake.channelId] ?? [];
+      const rosterName = roster.find((m) => m.personUid === wake.agentUid)?.displayName;
+      const name = agentDisplayName(wake.agentUid, open, {
+        liveNames: displayNameByUid,
+        fallback: rosterName,
+      });
+      const next = applyAgentStatus(thinkingByRow[rowId] ?? [], wake, name, open, Date.now());
+      if (next.length > 0) thinkingByRow = { ...thinkingByRow, [rowId]: next };
+    });
+  });
 
   // Closed-panel `reply:new`: bump visible “N replies”. Open panel on this
   // root re-fetches via ReplyPanel. Other roots do not rewrite the panel.
@@ -2890,7 +4614,7 @@
     return () => mq.removeEventListener("change", apply);
   });
 
-  function handleSelect(
+  function selectConversationRow(
     row: ConversationRow,
     options?: {
       replyRootEventId?: string | null;
@@ -2909,6 +4633,9 @@
       meetingFocusRequest = null;
     }
     tab = "chat";
+    companyTab = "chat";
+    agentSurface = "chat";
+    channelFileKey = null;
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
@@ -2922,6 +4649,593 @@
     // closing on every select shut the overlay again the instant it opened.
     if (phoneViewport && options?.automatic !== true) sidebarCollapsed = true;
     onselectrow?.(row);
+  }
+
+  function currentNavigationScope() {
+    const accountId =
+      (self?.uid ?? tenantAccountId ?? "local").trim() || "local";
+    return { accountId, companyUid: tenantCompanyId };
+  }
+
+  function destinationFromConversation(
+    row: ConversationRow,
+    nested?: {
+      replyRootEventId?: string | null;
+      tab?: ChannelTab;
+      companyTab?: CompanyChannelTabId;
+      agentSurface?: AgentChannelTab;
+      fileKey?: string | null;
+    },
+  ): NavigationDestination {
+    const replyRootEventId = nested?.replyRootEventId ?? null;
+    if (row.channelId) {
+      const nextTab = nested?.tab ?? "chat";
+      return {
+        kind: "channel",
+        channelId: row.channelId,
+        replyRootEventId,
+        tab: nextTab,
+        companyTab: nested?.companyTab ?? "chat",
+        agentSurface: nested?.agentSurface ?? "chat",
+        fileKey: nextTab === "files" ? nested?.fileKey ?? null : null,
+      };
+    }
+    if (row.personUid) {
+      return {
+        kind: "dm",
+        personUid: row.personUid,
+        replyRootEventId,
+        agentSurface: nested?.agentSurface ?? "chat",
+      };
+    }
+    return { kind: "messages" };
+  }
+
+  function currentConversationNested() {
+    return {
+      replyRootEventId: openReplyRootId,
+      tab,
+      companyTab,
+      agentSurface,
+      fileKey: channelFileKey,
+    };
+  }
+
+  function pushConversationSurface(
+    patch: Partial<{
+      replyRootEventId: string | null;
+      tab: ChannelTab;
+      companyTab: CompanyChannelTabId;
+      agentSurface: AgentChannelTab;
+      fileKey: string | null;
+    }>,
+  ): void {
+    const row = selectedRow;
+    if (!row) return;
+    const nested = { ...currentConversationNested(), ...patch };
+    if (patch.tab && patch.tab !== "chat") nested.replyRootEventId = null;
+    if (patch.tab && patch.tab !== "files") nested.fileKey = null;
+    if (patch.companyTab && patch.companyTab !== "chat") {
+      nested.tab = "chat";
+      nested.replyRootEventId = null;
+      nested.fileKey = null;
+    }
+    if (patch.agentSurface && patch.agentSurface !== "chat") {
+      nested.replyRootEventId = null;
+    }
+    void navigate(destinationFromConversation(row, nested));
+  }
+
+  function currentShellDestination(): NavigationDestination {
+    if (navigationUnavailable) return navigationUnavailable.destination;
+    switch (view) {
+      case "settings":
+        return { kind: "settings", section: settingsSection };
+      case "notifications":
+        return { kind: "notifications" };
+      case "meetings":
+        return {
+          kind: "meetings",
+          meetingId: meetingFocusRequest?.meetingId ?? null,
+        };
+      case "library":
+        return { kind: "library", tab: libraryTab, itemId: libraryItemId };
+      case "shared-files":
+        return { kind: "shared-files" };
+      case "extra":
+        if (extraPageId) return extraDestination(extraPageId, extraPageParam);
+        return { kind: "messages" };
+      default:
+        if (selectedRow) {
+          return destinationFromConversation(
+            selectedRow,
+            currentConversationNested(),
+          );
+        }
+        return { kind: "messages" };
+    }
+  }
+
+  function captureCurrentNavigation(): NavigationEntry | null {
+    try {
+      return createNavigationEntry(
+        currentShellDestination(),
+        currentNavigationScope(),
+        readNavigationScroll(),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  function readNavigationScroll(): NavigationScrollState | null {
+    if (typeof document === "undefined") return null;
+    return captureNavigationScroll(document);
+  }
+
+  function stopScrollRestore(): void {
+    cancelScrollRestore?.();
+    cancelScrollRestore = null;
+  }
+
+  /**
+   * The one live session that is legitimately company-less: #welcome's
+   * native setup run, which exists before the company it creates. "Open setup
+   * chat" lands on it by bare id while the run is in flight; it needs no
+   * company key because this app started it for this account. Everything
+   * else on the Sessions extra keeps needing its key.
+   */
+  function companyAccess(
+    companyKey: string | null | undefined,
+  ): "ok" | "unknown" | "denied" {
+    const key = companyKey?.trim() ?? "";
+    if (!key) return "ok";
+    if (companies == null) return "unknown";
+    return companies.some((company) => {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      return uid === key || slug === key;
+    })
+      ? "ok"
+      : "denied";
+  }
+
+  function companyIsAccessible(companyUid: string | null | undefined): boolean {
+    return companyAccess(companyUid) === "ok";
+  }
+
+  function accessOutcome(
+    destination: NavigationDestination,
+    companyKey: string | null | undefined,
+  ): NavigationResolveOutcome | null {
+    const access = companyAccess(companyKey);
+    if (access === "unknown") {
+      return { status: "transient-failure", error: "Directory still loading" };
+    }
+    if (access === "denied") {
+      return {
+        status: "unavailable",
+        destination,
+        reason: DESTINATION_UNAVAILABLE,
+      };
+    }
+    return null;
+  }
+
+  function rowForDestination(
+    destination: NavigationDestination,
+  ): ConversationRow | null {
+    const rows = [
+      ...searchRows,
+      ...railRows,
+      ...(selectedRow ? [selectedRow] : []),
+    ];
+    if (destination.kind === "channel") {
+      return (
+        rows.find((row) => row.channelId === destination.channelId) ?? null
+      );
+    }
+    if (destination.kind === "dm") {
+      return (
+        rows.find(
+          (row) => row.personUid === destination.personUid && !row.channelId,
+        ) ?? null
+      );
+    }
+    return null;
+  }
+
+  function resolveShellDestination(
+    destination: NavigationDestination,
+    context: {
+      isStale: () => boolean;
+      accountId: string;
+      companyUid: string | null;
+    },
+  ): NavigationResolveOutcome | Promise<NavigationResolveOutcome> {
+    if (context.isStale()) return { status: "cancelled" };
+    if (context.accountId !== currentNavigationScope().accountId) {
+      return {
+        status: "account-changed",
+        accountId: currentNavigationScope().accountId,
+      };
+    }
+    if (destination.kind === "extra") {
+      if (!extraPages?.[destination.page]) {
+        return {
+          status: "rejected",
+          reason: `Unknown destination: ${destination.page}`,
+        };
+      }
+      // A session with no company key is not gated: a personal chat, or a
+      // fresh one whose company the page has not learned yet. Only a key
+      // that is no longer in the membership makes a session unavailable.
+      const extraCompany =
+        destination.companyUid ?? extraParamCompanyKey(destination.param);
+      const extraDenied = accessOutcome(destination, extraCompany);
+      if (extraDenied) return extraDenied;
+      return { status: "ready", destination };
+    }
+    if (destination.kind === "channel" || destination.kind === "dm") {
+      const row = rowForDestination(destination);
+      if (row) {
+        // Rows already in the rail came from the membership directory.
+        // Only blank after companies has loaded and the uid is gone.
+        if (companyAccess(row.companyUid) === "denied") {
+          return {
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          };
+        }
+        return { status: "ready", destination };
+      }
+      return waitForDestinationRow(destination, context);
+    }
+    if (destination.kind === "setup-checkout") {
+      const checkoutDenied = accessOutcome(
+        destination,
+        destination.companyUid,
+      );
+      if (checkoutDenied) return checkoutDenied;
+    }
+    return { status: "ready", destination };
+  }
+
+  function waitForDestinationRow(
+    destination: Extract<NavigationDestination, { kind: "channel" | "dm" }>,
+    context: { isStale: () => boolean },
+  ): Promise<NavigationResolveOutcome> {
+    const attempts = 16;
+    const delayMs = 50;
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = (): void => {
+        if (context.isStale()) {
+          resolve({ status: "cancelled" });
+          return;
+        }
+        const row = rowForDestination(destination);
+        if (row) {
+          if (companyAccess(row.companyUid) === "denied") {
+            resolve({
+              status: "unavailable",
+              destination,
+              reason: DESTINATION_UNAVAILABLE,
+            });
+            return;
+          }
+          resolve({ status: "ready", destination });
+          return;
+        }
+        tries += 1;
+        const directoryReady = directorySettled && companies != null;
+        if (tries >= attempts || directoryReady) {
+          if (!directoryReady && companies == null) {
+            resolve({
+              status: "transient-failure",
+              error: "Directory still loading",
+            });
+            return;
+          }
+          resolve({
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          });
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      setTimeout(tick, delayMs);
+    });
+  }
+
+  const navigationHistory = createNavigationHistory();
+
+  function syncNavigationChrome(): void {
+    const snap = navigationHistory.snapshot();
+    navigationCanGoBack = navigationHistory.canGoBack();
+    navigationCanGoForward = navigationHistory.canGoForward();
+    const back = historyNeighbor(snap, "back");
+    const forward = historyNeighbor(snap, "forward");
+    navigationBackLabel = back ? destinationLabel(back.destination) : "";
+    navigationForwardLabel = forward
+      ? destinationLabel(forward.destination)
+      : "";
+  }
+
+  function applyCommittedNavigation(applied: AppliedNavigation): void {
+    syncNavigationChrome();
+    paletteOpen = false;
+    membersOpen = false;
+    projectAboutOpen = false;
+    pendingRestoreScroll = applied.entry.scroll ?? null;
+    stopScrollRestore();
+    if (applied.availability === "unavailable") {
+      navigationUnavailable = {
+        destination: applied.entry.destination,
+        reason: applied.reason ?? DESTINATION_UNAVAILABLE,
+      };
+      selectedRow = null;
+      liveTimeline = [];
+      return;
+    }
+    navigationUnavailable = null;
+    embeddedNavigationError = null;
+    const next = applied.entry.destination;
+    meetingFocusRequest = null;
+    switch (next.kind) {
+      case "messages":
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "notifications":
+        view = "notifications";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "settings":
+        view = "settings";
+        settingsSection = next.section ?? null;
+        extraPageId = null;
+        extraPageParam = null;
+        onOpenSettings?.();
+        break;
+      case "meetings":
+        view = "meetings";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        if (next.meetingId?.trim()) {
+          meetingFocusRequest = {
+            meetingId: next.meetingId.trim(),
+            sequence: ++meetingFocusSequence,
+          };
+        }
+        break;
+      case "atlas":
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "library":
+        libraryTab = next.tab;
+        libraryItemId = next.itemId ?? null;
+        view = "library";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "shared-files":
+        view = "shared-files";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "dm-requests":
+        dmRequestsFocusPairKey = next.pairKey ?? null;
+        view = "dm-requests";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "extra":
+        extraPageId = next.page;
+        extraPageParam = next.param ?? null;
+        view = "extra";
+        settingsSection = null;
+        break;
+      case "setup-checkout": {
+        const alreadySetup =
+          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        requestChannelOpen(SETUP_CHANNEL_ID, { companyUid: next.companyUid });
+        const row = selectedRow;
+        if (alreadySetup && row) void catchUpTimeline(row);
+        break;
+      }
+      case "channel":
+      case "dm": {
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        libraryItemId = null;
+        const row = rowForDestination(next);
+        const reply = next.replyRootEventId ?? null;
+        const sameRow = Boolean(row && selectedRow?.id === row.id);
+        if (row && !sameRow) {
+          selectConversationRow(row, { replyRootEventId: reply });
+        } else if (row && sameRow) {
+          if ((openReplyRootId ?? null) !== (reply ?? null)) {
+            if (reply) queueReplyForRow(row, reply);
+            else {
+              openReplyRootId = null;
+              pendingReplyRootId = null;
+              pendingReplyForRowId = null;
+            }
+          }
+        }
+        if (next.kind === "channel") {
+          tab = next.tab ?? "chat";
+          companyTab = next.companyTab === "office" ? "office" : "chat";
+          agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
+        } else {
+          agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = null;
+        }
+        break;
+      }
+    }
+  }
+
+  const navigation = createNavigationController({
+    history: navigationHistory,
+    getScope: () => currentNavigationScope(),
+    captureCurrent: () => captureCurrentNavigation(),
+    captureScroll: () => readNavigationScroll(),
+    resolve: (destination, context) =>
+      resolveShellDestination(destination, context),
+    apply: (applied) => applyCommittedNavigation(applied),
+    onPending: (pending) => {
+      navigationPending = pending != null;
+    },
+    onRejected: (reason) => {
+      embeddedNavigationError = reason;
+    },
+  });
+
+  $effect(() => {
+    const scroll = pendingRestoreScroll;
+    stopScrollRestore();
+    if (!scroll || navigationUnavailable) return;
+    const generation = navigation.generation();
+    cancelScrollRestore = scheduleNavigationScrollRestore(
+      () => (typeof document === "undefined" ? null : document),
+      scroll,
+      {
+        isCancelled: () => navigation.generation() !== generation,
+      },
+    );
+    return () => stopScrollRestore();
+  });
+
+  function navigate(
+    destination: NavigationDestination,
+    mode: NavigationMode = "push",
+  ) {
+    embeddedNavigationError = null;
+    return navigation.navigate(destination, mode);
+  }
+
+  function resolveDestination(
+    destination: NavigationDestination,
+    generation?: number,
+  ) {
+    return navigation.resolveDestination(destination, generation);
+  }
+
+  function commitDestination(
+    outcome: Extract<
+      NavigationResolveOutcome,
+      { status: "ready" | "unavailable" }
+    >,
+    mode: NavigationMode = "push",
+    generation: number = navigation.generation(),
+  ): boolean {
+    return navigation.commitDestination(outcome, mode, generation);
+  }
+
+  function goBack() {
+    return navigation.back();
+  }
+
+  function goForward() {
+    return navigation.forward();
+  }
+
+  function leaveCurrentDestination() {
+    if (navigationHistory.canGoBack()) return goBack();
+    return navigate({ kind: "messages" });
+  }
+
+  $effect(() => {
+    navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
+  });
+
+  $effect(() => {
+    if (companies == null) return;
+    const allowed = new Set<string>();
+    for (const company of companies) {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      if (uid) allowed.add(uid);
+      if (slug) allowed.add(slug);
+    }
+    navigation.filterAccessible(allowed);
+    const current = navigationHistory.current();
+    const shownExtra =
+      extraPageId != null
+        ? {
+            kind: "extra" as const,
+            page: extraPageId,
+            param: extraPageParam,
+          }
+        : null;
+    const currentIsShownExtra = Boolean(
+      shownExtra &&
+        current?.destination.kind === "extra" &&
+        current.destination.page === shownExtra.page &&
+        (current.destination.param ?? null) === shownExtra.param,
+    );
+    const shownKey = shownExtra
+      ? extraParamCompanyKey(shownExtra.param) ??
+        (currentIsShownExtra && current
+          ? (destinationCompanyKey(current.destination) ?? current.companyUid)
+          : null)
+      : (current?.companyUid ??
+        (current ? destinationCompanyKey(current.destination) : null));
+    const extraPruned = Boolean(shownExtra && !currentIsShownExtra);
+    const lostCompany = Boolean(shownKey && !allowed.has(shownKey));
+    if (!extraPruned && !lostCompany) return;
+    if (navigationUnavailable && !extraPruned && !lostCompany) return;
+    navigationUnavailable = {
+      destination: current?.destination ?? shownExtra ?? { kind: "messages" },
+      reason: DESTINATION_UNAVAILABLE,
+    };
+    extraPageId = null;
+    extraPageParam = null;
+    selectedRow = null;
+    liveTimeline = [];
+  });
+
+  function handleSelect(
+    row: ConversationRow,
+    options?: {
+      replyRootEventId?: string | null;
+      preserveView?: boolean;
+      automatic?: boolean;
+    },
+  ): void {
+    if (options?.automatic || options?.preserveView) {
+      selectConversationRow(row, options);
+      return;
+    }
+    if (selectedRow?.id !== row.id) selectedRow = row;
+    void navigate(
+      destinationFromConversation(row, {
+        replyRootEventId: options?.replyRootEventId ?? null,
+      }),
+    );
   }
 
   function applyConversationDeepLink(
@@ -2982,6 +5296,41 @@
       },
       { preserveView: target.automatic === true && view !== "conversation" },
     );
+  }
+
+  /** The sidebar's "Connection requests" row (and any host deep link). */
+  function openDmRequests(pairKey?: string | null): void {
+    void navigate({ kind: "dm-requests", pairKey: pairKey?.trim() || null });
+  }
+
+  /**
+   * A request was answered. The panel already pruned it and emitted
+   * `dm:request-update`; refresh the rail (accept promotes a new contact) and,
+   * on accept, open the conversation with the requester through the same
+   * pending-conversation path a deep link uses.
+   */
+  function handleDmRequestResolved(
+    request: DmRequest,
+    action: RequestAction,
+  ): void {
+    rosterWakeSeq += 1;
+    if (action !== "accept") return;
+    const personUid = request.fromPersonUid?.trim() ?? "";
+    if (!personUid) return;
+    const target: ConversationTarget = {
+      personUid,
+      email: request.fromEmail ?? "",
+      displayName: request.fromDisplayName ?? "",
+      replyRootEventId: null,
+    };
+    const known = conversationRowForDeepLink(
+      { channelId: null, personUid, replyRootEventId: null },
+      [...searchRows, ...railRows],
+    );
+    // The rail may not list the new contact yet; fall back to the messages
+    // home rather than leaving the (now empty) request in view.
+    if (known) applyPendingConversation(target);
+    else void navigate({ kind: "messages" });
   }
 
   /**
@@ -3055,8 +5404,10 @@
 
   function changeTenantCompany(companyUid: string | null): void {
     if (tenantCompanyId === companyUid) return;
-    // Company scope is a tenant boundary too. Remove every visible selection
-    // before the re-keyed sidebar begins reads in the replacement scope.
+    // Company switching is in-account navigation: the history stack stays.
+    // Existing tenant-generation guards still cancel in-flight company reads.
+    // Remove every visible selection before the re-keyed sidebar begins reads
+    // in the replacement scope.
     tenantCompanyId = companyUid;
     selectedRow = null;
     liveTimeline = [];
@@ -3065,6 +5416,7 @@
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
+    thinkingByRow = {};
     openReplyRootId = null;
     openProfileMember = null;
     openAgentMember = null;
@@ -3084,6 +5436,7 @@
     startMeetingsStore();
     if (view === "meetings") setMeetingsViewActive(true);
     void prefetchMeetings();
+    void navigate({ kind: "messages" });
   }
 
   /**
@@ -3132,6 +5485,7 @@
   });
 
   onDestroy(() => {
+    stopScrollRestore();
     // Account transitions unmount the shared shell; never leave its singleton
     // cache/snapshot visible until the next identity has finished hydrating.
     configureMeetingsApi(null);
@@ -3151,6 +5505,24 @@
             displayName,
           })),
         ),
+        // Everyone already IN the open channel. A teammate's personal bot is
+        // not on the company contacts roster (it has no membership), so
+        // without this a channel member could never @mention it — the picker
+        // said "No one matches" while the bot sat on the roster.
+        mentionTargetsFromContacts(
+          (selectedRow?.channelId
+            ? (channelRosterById[selectedRow.channelId.trim()] ?? [])
+            : []
+          ).map((member) => ({
+            personUid: member.personUid,
+            displayName: member.displayName,
+          })),
+        ),
+        // The user's own local bots: never on the contacts roster, but
+        // @mentionable anywhere the user can add them.
+        mentionTargetsFromContacts(
+          localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
+        ),
       ).map((target) => {
         if (!target.companyUid || target.companyName) return target;
         const name = companyDisplayName(target.companyUid, companyNames);
@@ -3163,7 +5535,18 @@
     channelId: string;
     eventId?: string;
     createdAt?: string;
+    fromPersonUid?: string;
   }): Promise<void> {
+    // An agent's reply in a channel that is NOT open ends its thinking row
+    // there too — otherwise the stale status greets the user on return. The
+    // open channel clears from the fetched page below (same timestamp rule).
+    const wakeFrom = (wake.fromPersonUid ?? "").trim();
+    if (wakeFrom && isAgentUid(wakeFrom)) {
+      clearThinkingFromIncoming(
+        [{ fromPersonUid: wakeFrom, createdAt: wake.createdAt ?? null }],
+        `ch:${wake.channelId}`,
+      );
+    }
     const row = selectedRow;
     if (!row?.channelId) return;
     if (row.channelId !== wake.channelId && row.id !== `ch:${wake.channelId}`) {
@@ -3193,7 +5576,81 @@
     if (selectedRow?.id !== row.id) return;
     const incoming = messagesForDisplay(res.value);
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
+  }
+
+  /**
+   * An inbound DM wake carries ids only. When that pair's conversation is the
+   * OPEN one, fetch its new page and commit it — otherwise the reply sat
+   * unseen until some other catch-up ran (a healthy mesh only arms the
+   * timeline safety ticker when `shouldArmDirectorySafety` says it is
+   * degraded), while the wake had already torn down the agent's thinking row.
+   * The owner saw a bot's answer announced by a notification and then vanish.
+   */
+  async function applyDmWake(wake: {
+    fromPersonUid: string;
+    eventId?: string;
+    createdAt?: string;
+    direction?: "in" | "out";
+  }): Promise<void> {
+    if (wake.direction === "out") return;
+    const from = (wake.fromPersonUid ?? "").trim();
+    if (!from) return;
+    const row = selectedRow;
+    const peer = (row?.personUid ?? "").trim();
+    const isOpen =
+      !!row && row.kind === "dm" && (peer === from || row.id === `dm:${from}`);
+    // An inbound agent DM ends that agent's thinking row even when its
+    // conversation is not open (the open one clears from its page below, so
+    // its indicator never disappears before the reply is on screen).
+    if (!isOpen) {
+      if (isAgentUid(from)) {
+        clearThinkingFromIncoming(
+          [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
+          `dm:${from}`,
+        );
+      }
+      return;
+    }
+    // In-place lifecycle-card updates reuse the same eventId, so an
+    // already-seen id re-reads without `since`; a genuinely new event that is
+    // no newer than what is already rendered is already on screen, and the
+    // wake alone may end the row.
+    const already = timelineHasEvent(liveTimeline, wake.eventId);
+    if (!already) {
+      const wakeAt = (wake.createdAt ?? "").trim();
+      if (
+        wakeAt &&
+        liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
+      ) {
+        if (isAgentUid(from)) {
+          clearThinkingFromIncoming(
+            [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
+            row.id,
+          );
+        }
+        return;
+      }
+    }
+    let res: Awaited<ReturnType<typeof adapter.messaging.fetchDmThread>>;
+    try {
+      res = await adapter.messaging.fetchDmThread({
+        withPersonUid: peer || from,
+        limit: 20,
+        ...(already
+          ? {}
+          : { since: sinceForChannelWake(liveTimeline, wake.createdAt) }),
+      });
+    } catch {
+      // Never clear on a failed fetch — a later catch-up ends the row once it
+      // can actually show the reply.
+      return;
+    }
+    if (!res.ok) return;
+    if (selectedRow?.id !== row.id) return;
+    const incoming = messagesForDisplay(res.value);
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   /**
@@ -3300,7 +5757,8 @@
       bus.on("channel:new-message", (wake) => {
         void applyChannelWake(wake);
       }),
-      bus.on("dm:new-message", () => {
+      bus.on("dm:new-message", (wake) => {
+        void applyDmWake(wake);
         void catchUpDmInbox();
       }),
       bus.on("mesh:catchup", () => {
@@ -3422,6 +5880,12 @@
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
     }
+    // While the Setup Agent is listening, the composer is its reply box.
+    if (isSetupChannel(row.channelId) && setupAgent.listening && files.length === 0) {
+      await setupAgent.reply(body.trim());
+      if (setupAgent.error) throw new Error(setupAgent.error);
+      return;
+    }
     try {
       let attachments:
         Awaited<ReturnType<typeof uploadChatAttachments>> | undefined;
@@ -3450,14 +5914,28 @@
         // channel, where only an explicit mention wakes an agent). Started
         // before the catch-up below so a page that already carries the reply
         // clears it immediately.
-        if (isAgentUid(row.personUid)) {
-          agentThinking = startThinking(
-            agentThinking,
+        // A bot that cannot run here will not think about this message, so
+        // no indicator is started for it; the conversation says it is
+        // unanswered instead — unless the app can bring the bot back, in
+        // which case writing to it is what starts that, right now, instead of
+        // at the next 120 s listing. THE DEAD-DM MOMENT MUST BE IMPOSSIBLE
+        // WHILE AUTO-RESTORE IS POSSIBLE.
+        if (isAgentUid(row.personUid) && unrunnableBotUids[row.personUid.trim()]) {
+          autoRestoreForSend(row.personUid);
+        }
+        if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
+          // Pin the row to "newer than the agent's last message" — a local
+          // bot's previous reply is usually < 2 min old and would otherwise
+          // clear the fresh row on the next catch-up (skew fallback).
+          thinkingByRow = startThinkingIn(
+            thinkingByRow,
+            row.id,
             {
               agentUid: row.personUid,
-              agentName: row.title?.trim() || "Agent",
+              agentName: row.title?.trim() || "Bot",
             },
             Date.now(),
+            { afterMs: newestMessageAtFrom(liveTimeline, row.personUid) },
           );
         }
         if (!wire) {
@@ -3489,13 +5967,17 @@
       // row in the DM branch above).
       for (const mention of mentions) {
         if (mention.participantType !== "agent") continue;
-        agentThinking = startThinking(
-          agentThinking,
+        thinkingByRow = startThinkingIn(
+          thinkingByRow,
+          row.id,
           {
             agentUid: mention.participantUid,
             agentName: mention.displayName,
           },
           Date.now(),
+          // Pin to "newer than the agent's last post here" — same fast-
+          // responder guard as the DM branch.
+          { afterMs: newestMessageAtFrom(liveTimeline, mention.participantUid) },
         );
       }
       // Mention sends write a same-timestamp member_added sibling the POST
@@ -3509,9 +5991,10 @@
         console.warn("[hq-desktop] post-send catch-up failed", err);
       }
     } catch (err) {
-      // Send never left — drop every optimistic thinking row so the status
-      // cannot outlive a failed mention.
-      agentThinking = [];
+      // Send never left — drop this conversation's optimistic thinking rows
+      // so the status cannot outlive a failed mention. Other conversations'
+      // rows are unrelated to this failure and stay.
+      thinkingByRow = dropRow(thinkingByRow, row.id);
       throw err;
     }
   }
@@ -3562,6 +6045,9 @@
   });
 
   async function signOutWithImageCleanup(): Promise<void> {
+    navigation.clear();
+    stopScrollRestore();
+    pendingRestoreScroll = null;
     const cache = imagePreviewCache;
     await onsignout?.();
     try { await cache?.clearAccount(); }
@@ -3740,60 +6226,71 @@
         (searchRows ?? []).find(
           (row) => row.personUid === dest.personUid && !row.channelId,
         );
-      handleSelect(existing ?? stub);
+      handleSelect(existing ?? stub, {
+        replyRootEventId: dest.replyRootEventId,
+      });
       return;
     }
     if (dest.kind === "files") {
       // Share rows do not include a company UID. Route to the bounded,
       // server-scoped share list rather than guessing a tenant or aliasing it.
-      view = "shared-files";
-      paletteOpen = false;
-      membersOpen = false;
-      projectAboutOpen = false;
+      void navigate({ kind: "shared-files" });
     }
     if (dest.kind === "channel") {
       const row = railRows.find((candidate) => candidate.channelId === dest.channelId);
-      if (row) handleSelect(row);
+      if (row) {
+        handleSelect(row, { replyRootEventId: dest.replyRootEventId });
+      } else {
+        requestChannelOpen(dest.channelId, {
+          replyRootEventId: dest.replyRootEventId ?? null,
+        });
+      }
     }
   }
 
   function openLibrary(next: LibraryTab = "skills"): void {
-    libraryTab = next;
-    view = "library";
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
+    void navigate({ kind: "library", tab: next });
   }
 
   function toggleNotifications(): void {
-    view = view === "notifications" ? "conversation" : "notifications";
-    meetingFocusRequest = null;
+    if (view === "notifications") void navigate({ kind: "messages" });
+    else void navigate({ kind: "notifications" });
   }
 
   function openSettings(section: EmbeddedSettingsSection | null = null): void {
-    view = "settings";
-    settingsSection = section;
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
-    onOpenSettings?.();
+    void navigate({ kind: "settings", section });
+  }
+
+  function extraDestination(
+    page: string,
+    param: string | null,
+  ): NavigationDestination {
+    const fromParam = extraParamCompanyKey(param);
+    let inherited: string | null = null;
+    if (
+      !fromParam &&
+      page === extraPageId &&
+      param &&
+      param !== "new" &&
+      !param.startsWith("new?")
+    ) {
+      const current = navigationHistory.current();
+      inherited =
+        extraParamCompanyKey(extraPageParam) ??
+        (current?.destination.kind === "extra"
+          ? (current.destination.companyUid ?? null)
+          : null) ??
+        current?.companyUid ??
+        null;
+    }
+    const companyUid = fromParam ?? inherited;
+    return companyUid
+      ? { kind: "extra", page, param, companyUid }
+      : { kind: "extra", page, param };
   }
 
   function openExtraPage(id: string, param: string | null = null): void {
-    if (!extraPages?.[id]) {
-      embeddedNavigationError = `Unknown destination: ${id}`;
-      return;
-    }
-    extraPageId = id;
-    extraPageParam = param;
-    view = "extra";
-    settingsSection = null;
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
+    void navigate(extraDestination(id, param));
   }
 
   function onShellLinkEvent(event: Event): void {
@@ -3805,88 +6302,29 @@
   }
 
   function closeSettings(): void {
-    view = "conversation";
-    settingsSection = null;
-    meetingFocusRequest = null;
+    void leaveCurrentDestination();
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
   function applyEmbeddedNavigation(target: EmbeddedNavigationTarget): void {
-    embeddedNavigationError = null;
-    switch (target.kind) {
-      case "home":
-      case "messages":
-        view = "conversation";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "setup-checkout": {
-        const alreadySetup =
-          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
-        view = "conversation";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        requestChannelOpen(SETUP_CHANNEL_ID, {
-          companyUid: target.companyUid,
-        });
-        const row = selectedRow;
-        if (alreadySetup && row) void catchUpTimeline(row);
-        return;
-      }
-      case "inbox":
-        view = "notifications";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "meetings":
-        view = "meetings";
-        settingsSection = null;
-        meetingFocusRequest = target.meetingId?.trim()
-          ? { meetingId: target.meetingId.trim(), sequence: ++meetingFocusSequence }
-          : null;
-        return;
-      case "atlas":
-        view = "atlas";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "library":
-        openLibrary(target.tab);
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "settings":
-        meetingFocusRequest = null;
-        openSettings(target.section ?? null);
-        return;
-      case "channel":
-        meetingFocusRequest = null;
-        requestChannelOpen(target.channelId, {
-          replyRootEventId: target.replyRootEventId,
-        });
-        return;
-      case "dm":
-        meetingFocusRequest = null;
-        requestConversation({
-          personUid: target.personUid,
-          email: "",
-          displayName: "",
-          replyRootEventId: target.replyRootEventId,
-        });
-        return;
-      case "extra":
-        openExtraPage(target.page, target.param ?? null);
-        return;
-      case "unsupported":
-        embeddedNavigationError = `${target.reason}: ${target.route}`;
-        return;
+    const destination = destinationFromEmbeddedTarget(target);
+    if (!destination) {
+      embeddedNavigationError =
+        target.kind === "unsupported"
+          ? `${target.reason}: ${target.route}`
+          : "Unsupported embedded destination";
+      return;
     }
+    void navigate(destination);
   }
 
-  const goChord = createGoChord((letter) => {
+  // `g a` used to flip a standalone Atlas view. Main moved Atlas into a chat
+  // tab, so the chord hands the destination to the navigation controller and
+  // the history/back-forward stack stays correct.
+  const goChord = createGoChord((letter: string) => {
     if (letter !== "a") return false;
-    view = "atlas";
     meetingFocusRequest = null;
+    void navigate({ kind: "atlas" });
     return true;
   });
 
@@ -3973,8 +6411,8 @@
       label: "Notifications",
       group: "Views",
       run: () => {
-        view = "notifications";
         meetingFocusRequest = null;
+        void navigate({ kind: "notifications" });
       },
     },
     {
@@ -3983,8 +6421,8 @@
       label: "Meetings",
       group: "Views",
       run: () => {
-        view = "meetings";
         meetingFocusRequest = null;
+        void navigate({ kind: "meetings" });
       },
     },
     ...(adapter.kind !== "web"
@@ -4071,6 +6509,10 @@
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
     applyColorTheme(readStoredTheme());
+    // Re-apply on boot, not just on toggle: the attribute lives on <html> and
+    // does not survive a reload, so without this the glass returns on every
+    // restart and the setting looks like it silently forgot itself.
+    applyReducedTransparency(readReducedTransparency());
     const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
     // With the desktop appearance host installed, its persisted preference is
@@ -4121,9 +6563,28 @@
     // listener; also the target of native View-menu `shortcut:invoke`).
     const unregisterShortcuts = registerShortcuts(shellShortcuts);
 
-    // US-016: `g a` opens Atlas (Slack-style go chord). Unmodified chords
-    // are not a registry concern, so they keep a bubble-phase listener.
     function onKey(event: KeyboardEvent) {
+      // Back/forward stay OUTSIDE the registry on purpose. The registry keys
+      // off a declared chord string; `consumeNavigationShortcut` owns a set of
+      // bindings that includes non-chord inputs, and re-declaring a subset of
+      // them here would silently drop the rest. It self-identifies its own
+      // events, so it runs first and returns when it has claimed one — before
+      // the modifier guard below, which would otherwise swallow them.
+      if (
+        consumeNavigationShortcut(event, {
+          onBack: () => {
+            if (navigationHistory.canGoBack()) void goBack();
+          },
+          onForward: () => {
+            if (navigationHistory.canGoForward()) void goForward();
+          },
+        })
+      ) {
+        return;
+      }
+
+      // US-016: `g a` opens Atlas (Slack-style go chord). Unmodified chords
+      // are not a registry concern, so they keep a bubble-phase listener.
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (paletteOpen || cheatSheetOpen) return;
       if (goChord.handleKeydown(event)) {
@@ -4171,8 +6632,14 @@
         return;
       applyPendingConversation({ ...detail, automatic: detail.automatic === true });
     }
-  function onOpenSettingsEvent(): void {
+    function onOpenSettingsEvent(): void {
       openSettings();
+    }
+    function onOpenDmRequests(event: Event): void {
+      const detail = (event as CustomEvent<{ pairKey?: string | null }>).detail;
+      // Consume the stash so a later mount does not replay this open.
+      takePendingDmRequests();
+      openDmRequests(detail?.pairKey ?? null);
     }
     function onEmbeddedNavigation(event: Event): void {
       const target = (event as CustomEvent<EmbeddedNavigationTarget>).detail;
@@ -4182,6 +6649,7 @@
     window.addEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
     window.addEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+    window.addEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
     window.addEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
 
     applyConversationDeepLink(conversationDeepLinkFromLocation());
@@ -4189,6 +6657,8 @@
     if (pendingChannel) applyPendingChannelOpen(pendingChannel);
     const pendingDm = takePendingConversation();
     if (pendingDm) applyPendingConversation(pendingDm);
+    const pendingRequests = takePendingDmRequests();
+    if (pendingRequests) openDmRequests(pendingRequests.pairKey);
     const detachEmbeddedNavigation = onembeddednavigationready?.();
 
     return () => {
@@ -4199,6 +6669,7 @@
       window.removeEventListener("keydown", onKey);
       unregisterShortcuts();
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+      window.removeEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
       window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
       window.removeEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
@@ -4245,16 +6716,18 @@
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
     onopenMeetings={() => {
-      view = "meetings";
-      meetingFocusRequest = null;
-      paletteOpen = false;
-      membersOpen = false;
-      projectAboutOpen = false;
+      void navigate({ kind: "meetings" });
     }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
+    canGoBack={navigationCanGoBack}
+    canGoForward={navigationCanGoForward}
+    backLabel={navigationBackLabel}
+    forwardLabel={navigationForwardLabel}
+    onback={() => void goBack()}
+    onforward={() => void goForward()}
   />
 
   {#if recommendBanner}
@@ -4264,6 +6737,44 @@
       installing={recommendInstalling}
       onupdate={() => void handleRecommendedUpdateNow()}
       ondismiss={dismissRecommendBanner}
+    />
+  {/if}
+
+  {#if autoRestoreStatus && !autoRestoreStatusInline}
+    <!-- Bots are coming back and there is no conversation pane to say so in
+         (the welcome hero, mid-wizard): one calm line in the shell's banner
+         slot instead, so the work is never silent. -->
+    <div class="bot-auto-restore-banner" data-testid="bot-auto-restore-status" role="status">
+      {autoRestoreStatus}
+    </div>
+  {/if}
+
+  {#if showBotRestorePrompt || botRestoreResult}
+    <!-- Bots come back after a reinstall: one non-blocking prompt, in the
+         shell's existing banner slot so it reaches the person wherever they
+         landed. Dismissal is remembered per machine; Settings › Bots offers
+         it again. -->
+    <BotRestoreBanner
+      count={botsMissingHere.length}
+      liveElsewhere={botsLiveElsewhere.length}
+      busy={botRestoreBusy}
+      result={botRestoreResult}
+      error={botRestoreError}
+      onrestore={() => void restoreMyBots()}
+      ondismiss={() => {
+        botRestoreResult = null;
+        dismissBotRestorePrompt();
+      }}
+    />
+  {/if}
+
+  {#if adapter.isAvailable("canSync") && membershipsToPull.length > 0}
+    <MembershipSyncBanner
+      memberships={membershipsToPull}
+      syncing={membershipSyncPending}
+      error={membershipSyncError}
+      onsync={() => void syncMembership()}
+      ondismiss={dismissMembershipPrompt}
     />
   {/if}
 
@@ -4277,6 +6788,17 @@
     </div>
   {/if}
 
+  {#if navigationPending}
+    <div
+      class="embedded-navigation-error"
+      data-testid="navigation-pending"
+      role="status"
+      aria-busy="true"
+    >
+      Opening destination…
+    </div>
+  {/if}
+
   <ConfirmDialog
     open={deleteChannelConfirmOpen && selectedRow != null}
     title={`Delete #${selectedRow?.title ?? "channel"}?`}
@@ -4287,30 +6809,26 @@
     onconfirm={() => void deleteSelectedChannel()}
   />
 
-  <MigrateSessionDialog
-    open={migrateSessionTarget != null}
-    sessionId={migrateSessionTarget?.sessionId ?? ""}
-    sourceLabel={companyDisplayName(
-      migrateSessionTarget?.sourceCompanyUid ?? null,
-      companyNames,
-    )}
-    destinations={migrateDestinationCompanies(
-      companies,
-      migrateSessionTarget?.sourceCompanyUid ?? "",
-    )}
-    submitting={migratingSessionId != null}
-    error={migrateSessionError}
-    oncancel={() => {
-      if (!migratingSessionId) {
-        migrateSessionTarget = null;
-        migrateSessionError = null;
-      }
-    }}
-    onconfirm={(destinationCompanyUid) =>
-      void confirmMigrateSession(destinationCompanyUid)}
-  />
 
-  {#if view === "settings"}
+  {#if navigationUnavailable}
+    <div class="desktop-body" data-testid="navigation-unavailable-host">
+      <div
+        class="navigation-unavailable"
+        data-testid="navigation-unavailable"
+        role="alert"
+      >
+        <p>{navigationUnavailable.reason}</p>
+        <button
+          type="button"
+          data-testid="navigation-unavailable-back"
+          onclick={() => void goBack()}
+          disabled={!navigationCanGoBack}
+        >
+          Back
+        </button>
+      </div>
+    </div>
+  {:else if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
          titlebar. The channel rail is hidden and the whole area becomes the
          two-column Settings surface. -->
@@ -4323,6 +6841,7 @@
         storage={tenantStorage}
         {version}
         initialSection={settingsSection}
+        onsectionchange={(section) => openSettings(section)}
         onback={closeSettings}
         onsignout={onsignout ? signOutWithImageCleanup : undefined}
         onopenconsole={onOpenConsole
@@ -4334,7 +6853,7 @@
       />
     </div>
   {:else}
-    <div class="desktop-body">
+    <div class="desktop-body" style:--sidebar-width={`${sidebarWidth}px`}>
       <!-- Kept mounted while closed at phone width: the list owns roster
            loading and the #setup fallback, so unmounting it leaves the phone
            with nothing selected. -->
@@ -4356,6 +6875,7 @@
           {seedDirectory}
           {avatarByUid}
           {rosterWakeSeq}
+          requestsWakeSeq={notificationWakeSeq}
           onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
@@ -4365,22 +6885,38 @@
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => {
-            view = "conversation";
-            meetingFocusRequest = null;
+            void navigate({ kind: "messages" });
           }}
           onopenSettings={() => openSettings()}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
-          oncreateagent={canRunEntryPoints ? addAgentEntry : null}
-          onrows={(rows) => (railRows = rows)}
+          oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
+          oncreatebot={adapter.bots ? createBotEntry : null}
+          botRuntimeReady={localBotRuntimeReady}
+          botWorkers={localBotWorkers}
+          {existingBotNames}
+          {botSignIn}
+          onbotsignedin={onBotRuntimeSignedIn}
+          loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
+          {localBots}
+          {ownedLocalBotUids}
+          onrows={(rows) => {
+            railRows = rows;
+            directorySettled = true;
+          }}
           ondisplayrows={(rows) => (displayRows = rows)}
           onactions={(actions) => (sidebarActions = actions)}
           {bootTimeoutMs}
+          welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          dmPresence={(row) => localBotPresence(localBots, row)}
+          {rowExtrasLoading}
+          {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}
+        {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
@@ -4393,8 +6929,7 @@
             wakeSeq={notificationWakeSeq}
             signedIn={Boolean(self)}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
@@ -4404,8 +6939,7 @@
           <SharedFilesOverlay
             {adapter}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
           />
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
@@ -4414,12 +6948,30 @@
             {#key `${extraPageId}:${extraPageParam ?? ""}`}
               <Page
                 param={extraPageParam}
-                onnavigate={(next: string | null) => {
-                  extraPageParam = next;
+                restoreScroll={pendingRestoreScroll}
+                onnavigate={(
+                  next: string | null,
+                  options?: { mode?: NavigationMode },
+                ) => {
+                  if (!extraPageId) return;
+                  void navigate(
+                    extraDestination(extraPageId, next),
+                    options?.mode ?? "push",
+                  );
                 }}
               />
             {/key}
           </div>
+        {:else if view === "dm-requests"}
+          <DmRequestsPanel
+            api={sidebarApi}
+            {wakes}
+            focusPairKey={dmRequestsFocusPairKey}
+            onback={() => {
+              void leaveCurrentDestination();
+            }}
+            onresolved={handleDmRequestResolved}
+          />
         {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
@@ -4427,28 +6979,10 @@
             storage={tenantStorage}
             sessionGeneration={tenantGeneration}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
-          />
-        {:else if view === "atlas"}
-          <AtlasPage
-            companyUid={atlasCompanyUid}
-            companyLabel={atlasCompanyLabel}
-            featureEnabled={true}
-            headerVariant="embedded"
-            canMigrate={canMigrateAtlasSessions &&
-              migrateDestinationsForAtlas.length > 0}
-            migrateDestinations={migrateDestinationsForAtlas}
-            onmigratesession={(sessionId) =>
-              openMigrateSession(sessionId, atlasCompanyUid)}
-            migratingSessionId={migratingSessionId}
-            onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
-            }}
           />
         {:else if view === "conversation" && selectedRow}
           <header
@@ -4469,7 +7003,7 @@
                       type="button"
                       class="channel-header-agent"
                       data-testid="channel-header-agent"
-                      aria-label={`View agent ${headerTitle}`}
+                      aria-label={`View bot ${headerTitle}`}
                       onclick={openAgentFromHeader}
                     >
                       <span
@@ -4492,6 +7026,11 @@
                         />
                       </span>
                       <h2 data-testid="channel-name">{headerTitle}</h2>
+                      <BotKindChip
+                        kind={botKindFor(selectedRow.personUid, localBots, ownedLocalBotUids) ?? "cloud"}
+                        runtime={selectedLocalBot?.runtime ?? null}
+                        size="md"
+                      />
                     </button>
                   {:else}
                     <span
@@ -4582,7 +7121,7 @@
               {#if isAgentChannel}
                 <nav
                   class="project-tabs"
-                  aria-label="Agent channel views"
+                  aria-label="Bot channel views"
                   data-testid="agent-channel-tabs"
                 >
                   {#each AGENT_CHANNEL_TABS as t (t.id)}
@@ -4592,38 +7131,19 @@
                       class:active={agentSurface === t.id}
                       aria-current={agentSurface === t.id ? "page" : undefined}
                       data-testid={`agent-tab-${t.id}`}
-                      onclick={() => (agentSurface = t.id)}
+                      onclick={() => pushConversationSurface({ agentSurface: t.id })}
                     >
                       <span>{t.label}</span>
                     </button>
                   {/each}
                 </nav>
               {:else if isCompanyChannel}
-                {#if companyTeamCanAct}
-                  {#if headerAddAgentError}
-                    <span
-                      class="header-inline-error"
-                      role="alert"
-                      data-testid="company-add-agent-error"
-                    >
-                      {headerAddAgentError}
-                    </span>
-                  {/if}
-                  <button
-                    type="button"
-                    class="header-ghost-btn"
-                    data-testid="company-add-agent"
-                    aria-label={`Add an agent to ${companyHeroTitle}`}
-                    aria-busy={headerAddAgentBusy ? "true" : undefined}
-                    disabled={headerAddAgentBusy}
-                    onclick={() => void addAgentFromHeader()}
-                  >
-                    Add agent
-                  </button>
-                {/if}
                 <CompanyTabs
+                  slug={selectedCompanySlug}
+                  {onopenurl}
                   active={companyTab}
-                  onselect={(id) => (companyTab = id)}
+                  tabs={companyTabsForHost}
+                  onselect={(id) => pushConversationSurface({ companyTab: id })}
                 />
               {:else if isProjectChannel}
                 <nav
@@ -4637,7 +7157,7 @@
                       class="project-tab"
                       class:active={tab === t.id}
                       aria-current={tab === t.id ? "page" : undefined}
-                      onclick={() => (tab = t.id)}
+                      onclick={() => pushConversationSurface({ tab: t.id })}
                     >
                       <span class="project-tab-icon" aria-hidden="true">
                         {#if t.id === "chat"}
@@ -4786,6 +7306,7 @@
                             : null,
                         )}
                       {self}
+                      {localBots}
                       onclose={() => (membersOpen = false)}
                       {onopenurl}
                       onopenprofile={(row) => {
@@ -4799,15 +7320,6 @@
                         deleteChannelConfirmOpen = true;
                       }}
                       deleting={deletingChannel}
-                      onmigratesession={canMigrateSelectedChannelSessions &&
-                      migrateDestinationsForSelected.length > 0
-                        ? (sessionId) =>
-                            openMigrateSession(
-                              sessionId,
-                              selectedRow?.companyUid?.trim() ?? "",
-                            )
-                        : undefined}
-                      migratingSessionId={migratingSessionId}
                     />
                   {/if}
                 </div>
@@ -4831,12 +7343,37 @@
             />
           {/if}
 
-          {#if isAgentChannel && agentSurface === "details" && agentChannelUid}
+          <!-- One selected-company listener survives view/tab changes. Office UI is only visible on its tab. -->
+          {#if selectedRow.companyUid}
+            <div class="company-office-stage" class:office-background={!(isCompanyChannel && companyTab === "office")} data-testid="company-tab-panel-office">
+              <OfficePanel {adapter} {callsHost}
+                companyUid={selectedRow.companyUid}
+                companyLabel={selectedRow.title ?? "This company"}
+                displayName={(uid) => displayNameByUid[uid] || identities?.[uid] || uid}
+                visible={isCompanyChannel && companyTab === "office"}
+              />
+            </div>
+          {/if}
+
+          {#if isAgentChannel && agentSurface === "details" && agentChannelLocalBot}
+            <LocalBotDetailPanel
+              companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug, slug: c.slug }))}
+              {onopenurl}
+              bot={agentChannelLocalBot}
+              avatarUrl={avatarByUid[agentChannelLocalBot.agentUid] ?? null}
+              {adapter}
+              onchanged={refreshLocalBots}
+              onstart={startBotFromProfile}
+              onclose={() => void leaveCurrentDestination()}
+            />
+          {:else if isAgentChannel && agentSurface === "details" && agentChannelUid}
             <AgentDetailPanel
               agentUid={agentChannelUid}
+              {localBots}
+              {ownedLocalBotUids}
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
-              companyUid={selectedRow?.companyUid}
+              companyUid={promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid}
               {companyNames}
               {self}
               {isAdmin}
@@ -4845,46 +7382,13 @@
               avatarSaving={agentAvatarSaving}
               avatarSaveError={agentAvatarSaveError}
               onsaveavatar={saveOpenAgentAvatar}
-              onclose={() => (agentSurface = "chat")}
+              onclose={() => void leaveCurrentDestination()}
             />
-          {:else if isCompanyChannel && companyTab !== "chat"}
-            {#if companyTab === "team"}
-              <TeamTab
-                data={companyTabData ?? {
-                  tab: "team",
-                  companyUid: selectedRow.companyUid ?? "",
-                  viewer: { canAct: false },
-                  sections: [],
-                }}
-                onaction={handleTeamAction}
-              />
-            {:else if companyTab === "atlas"}
-              <AtlasTab
-                graph={companyTabData?.graph ?? { nodes: [], edges: [] }}
-              />
-            {:else if companyTab === "settings"}
-              <SettingsTab
-                data={companyTabData ?? {
-                  tab: "settings",
-                  companyUid: selectedRow.companyUid ?? "",
-                  viewer: { canAct: false },
-                  sections: [],
-                }}
-                onaction={handleTeamAction}
-              />
-            {:else}
-              <div
-                class="company-tab-placeholder"
-                data-testid={`company-tab-panel-${companyTab}`}
-              >
-                {#if companyTabLoading}
-                  Loading…
-                {:else if (companyTabData?.sections[0]?.rows.length ?? 0) > 0}
-                  <TeamTab data={companyTabData!} onaction={handleTeamAction} />
-                {:else}
-                  {String(companyTab).charAt(0).toUpperCase() + String(companyTab).slice(1)}
-                {/if}
-              </div>
+          {:else if isCompanyChannel && companyTab === "office"}
+            {#if companyTab === "office"}
+              <!--
+                US-018: OfficePanel is mounted above and shown via visible=.
+              -->
             {/if}
           {:else if activeTab === "chat"}
             <div
@@ -4902,6 +7406,64 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if inSetupChannelWithAgent}
+                    {@const agentState = setupAgent.state}
+                    {@const stopFailure = setupAgent.failure}
+                    <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
+                      {#if setupAgentDone}
+                        <!-- Finished: one calm block with every next step. -->
+                        <SetupFinale
+                          onsessions={extraPages?.sessions
+                            ? () =>
+                                openExtraPage(
+                                  "sessions",
+                                  extraPages!.sessions.startworkAction?.param(startworkCompany) ??
+                                    extraPages!.sessions.createAction?.param() ??
+                                    setupAgent.sessionId,
+                                )
+                            : undefined}
+                          onclaude={() => void launchSetupIn("claude")}
+                          oncodex={() => void launchSetupIn("codex")}
+                          launchError={setupLaunchError}
+                          {onopenurl}
+                          company={finaleCompany}
+                          onrunagain={() => void setupAgent.runAgain()}
+                        />
+                      {:else if stopFailure && setupAgent.api && setupAgent.providers}
+                        <!-- The run stopped: say why, and offer the agents right
+                             here — sign in to one, or run again with one that is. -->
+                        <SetupConnectStep
+                          variant="surface"
+                          api={setupAgent.api}
+                          providers={setupAgent.providers}
+                          lead={SETUP_FAILURE_COPY[stopFailure.kind].title}
+                          detail={setupAgent.failureDetail ?? undefined}
+                          onrefresh={() => setupAgent.refreshProviders(true)}
+                          onrun={(tool) => void setupAgent.runAgain(tool)}
+                          runBusy={setupAgent.busy}
+                          staleTools={setupStaleTools(stopFailure)}
+                          onsignedin={(tool) => afterRuntimeSignedIn(tool)}
+                        />
+                      {:else}
+                      <SetupRunCard
+                        variant="prompt"
+                        mode={setupAgent.mode === "starting" || setupAgent.mode === "idle" ? "live" : setupAgent.mode}
+                        run={agentState}
+                        resumeStep={setupAgent.resumeStep}
+                        busy={setupAgent.busy || setupAgent.mode === "starting"}
+                        error={setupAgent.error}
+                        onanswer={(requestId, questionId, values) => void setupAgent.answerChoice(requestId, questionId, values)}
+                        onpermission={(requestId, decision) => void setupAgent.answerPermission(requestId, decision)}
+                        onsend={(text) => void setupAgent.send(text)}
+                        oncontinue={() => void setupAgent.continueRun()}
+                        onrunagain={() => void setupAgent.runAgain()}
+                        onfinish={() => setupAgent.finish()}
+                        idle={setupAgent.snapshot?.phase === "idle"}
+                        onstoresecret={setupAgent.canStoreSecrets ? (card, value) => setupAgent.storeSecret(card, value) : undefined}
+                      />
+                      {/if}
+                    </div>
+                  {/if}
                   {#if isAgentChannel && provisioning.state}
                     <div
                       class="agent-provision-status"
@@ -4929,20 +7491,205 @@
                       {/if}
                     </div>
                   {/if}
-                  <AgentThinkingRow entries={agentThinking} />
+                  {#if selectedLocalBot && selectedLocalBotNeedsSignIn && adapter.sessions?.loginStart}
+                    <BotSignInBanner
+                      bot={selectedLocalBot}
+                      sessions={adapter.sessions}
+                      bots={adapter.bots ?? null}
+                      gate={{
+                        canStart: (bot) => canStartBot(botStartGate, bot.name),
+                        onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+                      }}
+                      ondone={refreshLocalBots}
+                    />
+                  {/if}
+                  <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
+                  {#if botMessageUnanswered}
+                    {#if selectedBotAutoRestoring}
+                      <!-- Writing to a bot that is not running here is what
+                           STARTS it now. The message is not lost meanwhile:
+                           it waits, unread, in the bot's own durable inbox
+                           until the bot reads it. -->
+                      <div class="bot-unanswered" data-testid="bot-message-starting" role="status">
+                        {AUTO_RESTORE_STARTING_THIS_BOT}
+                      </div>
+                    {:else}
+                      <!-- The app has stopped trying by itself, so this is the
+                           honest state — and it is never a dead end: the one
+                           action that helps is in the same line. -->
+                      <div class="bot-unanswered" data-testid="bot-message-unanswered" role="status">
+                        <span>{BOT_MESSAGE_NOT_ANSWERED}</span>
+                        {#if selectedBotNotHere && adapter.bots?.adopt && !botRestoreUnavailable}
+                          <button
+                            type="button"
+                            class="bot-unanswered-action"
+                            data-testid="bot-message-start-here"
+                            disabled={botAdoptBusy !== null}
+                            onclick={() => void startSelectedBotHere()}
+                          >
+                            {botAdoptBusy === selectedBotNotHere.name
+                              ? BOT_START_HERE_BUSY
+                              : BOT_MESSAGE_START_HERE}
+                          </button>
+                        {:else}
+                          <!-- Nothing on this Mac can run it, so "start it
+                               here" would be a promise the app cannot keep.
+                               Looking again is the one thing that can still
+                               change, and it stays in the same line. -->
+                          <button
+                            type="button"
+                            class="bot-unanswered-action"
+                            data-testid="bot-message-recheck"
+                            disabled={botRecheckBusy}
+                            onclick={() => void recheckSelectedBot()}
+                          >
+                            {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                          </button>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/if}
                   <AgentTaskStrip tasks={mainPaneTasks} />
+                  {#if autoRestoreStatus && !selectedBotAutoRestoring}
+                    <!-- The one visible, calm line while bots come back. -->
+                    <div class="bot-auto-restore" data-testid="bot-auto-restore-status" role="status">
+                      {autoRestoreStatus}
+                    </div>
+                  {/if}
+                  {#if botNoticeBelow}{@render localBotNotice()}{/if}
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
                     settings={adapter.settings}
                     shell={adapter.shell}
                     {onopenurl}
+                    onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
+                      ? () =>
+                          openExtraPage(
+                            "sessions",
+                            (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
+                          )
+                      : undefined}
+                    companies={rosterCompanies}
+                    onopencompany={openCompanyFromSetup}
+                    oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+                    {rosterStatus}
+                    {onretryroster}
+                    onsetupstarted={recordWelcomeSetupRun}
+                    agent={setupAgent}
+                    setupBot={setupBotLauncher}
+                    onopensessiondetails={extraPages?.sessions
+                      ? (sessionId) => openExtraPage("sessions", sessionId)
+                      : undefined}
                   />
                 {/snippet}
                 {#snippet companyHeader()}
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
+                {#snippet botProgressHeader()}
+                  {#if selectedBotProgress && selectedRow?.personUid}
+                    {@const uid = selectedRow.personUid}
+                    <BotProgressCard
+                      name={selectedBotProgress.name}
+                      phase={selectedBotProgress.state}
+                      reason={selectedBotProgress.reason}
+                      retrying={selectedBotProgress.retrying}
+                      canRetry={canStartBot(botStartGate, selectedBotProgress.name)}
+                      onretry={() => void retryBotProgress(uid)}
+                    />
+                  {/if}
+                {/snippet}
+                {#snippet localBotNotice()}
+                  {#if selectedBotCannotRun}
+                    <!-- Adopted, but there is no runtime for it here. One
+                         honest sentence and the one action the desktop can
+                         actually perform: look again. -->
+                    <div class="local-bot-notice" data-testid="bot-not-runnable-notice" role="status">
+                      <span class="local-bot-notice-text">{selectedBotCannotRun}</span>
+                      {#if selectedBotNotHere && adapter.bots?.adopt && !botRestoreUnavailable}
+                        <!-- The account owns this bot, so there IS something
+                             the desktop can do: bring it back here. Its name,
+                             memory and this conversation come with it. -->
+                        <button
+                          type="button"
+                          class="local-bot-notice-start"
+                          data-testid="bot-start-here"
+                          disabled={botAdoptBusy !== null}
+                          onclick={() => void startSelectedBotHere()}
+                        >
+                          {botAdoptBusy === selectedBotNotHere.name
+                            ? BOT_START_HERE_BUSY
+                            : botAdoptError
+                              ? BOT_START_HERE_RETRY
+                              : BOT_START_HERE}
+                        </button>
+                        <span class="local-bot-notice-hint">{BOT_START_HERE_EXPLAINER}</span>
+                      {:else if remoteListingNotice}
+                        <!-- Bringing a bot back goes through HQ Cloud, and the
+                             app could not read it. Rather than a button that
+                             cannot work (or silence, which is what the owner's
+                             VM got), one plain sentence says why — and "Check
+                             again" below still re-reads this Mac's own bots,
+                             which is the half that can change without HQ. -->
+                        <span class="local-bot-notice-hint" data-testid="bot-restore-unavailable">
+                          {remoteListingNotice}
+                        </span>
+                      {/if}
+                      <button
+                        type="button"
+                        class="local-bot-notice-start"
+                        data-testid="bot-not-runnable-recheck"
+                        disabled={botRecheckBusy}
+                        onclick={() => void recheckSelectedBot()}
+                      >
+                        {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                      </button>
+                      {#if botAdoptError}
+                        <span class="local-bot-notice-error" role="alert" data-testid="bot-start-here-error">
+                          {botAdoptError}
+                        </span>
+                      {/if}
+                    </div>
+                  {:else if selectedLocalBot && selectedLocalBotOffline}
+                    <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
+                      <span class="local-bot-notice-text">{localBotOfflineNotice(selectedLocalBot)}</span>
+                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold}
+                        {#if canStartBot(botStartGate, selectedLocalBot.name)}
+                          <button
+                            type="button"
+                            class="local-bot-notice-start"
+                            data-testid="local-bot-start"
+                            disabled={localBotBusy === selectedLocalBot.name}
+                            onclick={() => void startSelectedLocalBot()}
+                          >
+                            {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
+                          </button>
+                        {:else}
+                          <!-- The gate is closed, so nothing is re-issued by
+                               itself. A person asking still counts as consent
+                               to look once more — the same one-listing recheck
+                               the "cannot run here" notice offers, so a blocked
+                               bot is never a dead end inside its own DM. -->
+                          <button
+                            type="button"
+                            class="local-bot-notice-start"
+                            data-testid="local-bot-recheck"
+                            disabled={botRecheckBusy}
+                            onclick={() => void recheckSelectedBot()}
+                          >
+                            {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                          </button>
+                        {/if}
+                      {/if}
+                      {#if localBotActionError}
+                        <span class="local-bot-notice-error" role="alert">{localBotActionError}</span>
+                      {/if}
+                    </div>
+                  {/if}
+                {/snippet}
                 <ChannelConversation
+                  restoreScroll={pendingRestoreScroll}
+                  {localBots}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;
@@ -4984,11 +7731,15 @@
                   activeRootEventId={openReplyRootId}
                   loading={(timelineHydrating || projectActivityLoading) &&
                     timelineWithActivity.length === 0}
+                  landAt={isSetupChannel(selectedRow.channelId) ? "top" : "bottom"}
+                  headerOnly={welcomeIsBannerOnly}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : isCompanyChannel
                       ? companyHeader
-                      : undefined}
+                      : selectedBotProgress && !(selectedBotCannotRun && !selectedBotAdopting)
+                        ? botProgressHeader
+                        : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -5008,6 +7759,26 @@
                     {onopenurl}
                   />
                 </div>
+              {:else if openAgentMember && openLocalBot}
+                <div
+                  class="reply-column profile-column"
+                  class:overlay={narrowViewport}
+                  data-testid="local-bot-detail-column"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  <LocalBotDetailPanel
+                    companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug, slug: c.slug }))}
+                    {onopenurl}
+                    bot={openLocalBot}
+                    avatarUrl={openAgentMember.avatarUrl ??
+                      avatarByUid[openLocalBot.agentUid] ??
+                      null}
+                    {adapter}
+                    onchanged={refreshLocalBots}
+                    onstart={startBotFromProfile}
+                    onclose={closeAgentDetail}
+                  />
+                </div>
               {:else if openAgentMember}
                 <div
                   class="reply-column profile-column"
@@ -5017,12 +7788,14 @@
                 >
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
+                    {localBots}
+                    {ownedLocalBotUids}
                     displayName={openAgentMember.displayName}
                     avatarUrl={openAgentMember.avatarUrl ??
                       avatarByUid[openAgentMember.personUid] ??
                       null}
                     description={openAgentMember.description}
-                    companyUid={selectedRow.companyUid}
+                    companyUid={promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid}
                     {companyNames}
                     {self}
                     {isAdmin}
@@ -5059,16 +7832,38 @@
                 <div
                   class="reply-column"
                   class:overlay={narrowViewport}
+                  class:resizable-thread={!narrowViewport}
+                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
                   data-testid="reply-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  {#if !narrowViewport}
+                    <div
+                      class="thread-resize-handle"
+                      role="separator"
+                      aria-label="Resize thread panel"
+                      aria-orientation="vertical"
+                      aria-valuenow={threadWidth ?? undefined}
+                      tabindex="0"
+                      onpointerdown={startThreadDrag}
+                      onpointermove={moveThreadDrag}
+                      onpointerup={stopThreadDrag}
+                      onpointercancel={stopThreadDrag}
+                      onlostpointercapture={() => {
+                        threadDrag = null;
+                      }}
+                      onkeydown={resizeThreadKey}
+                    ></div>
+                  {/if}
                   <ReplyPanel
                     api={conversationApi}
+                    {localBots}
                     rootEventId={openReplyRootId}
                     tasks={threadTasks}
                     scope={replyScope}
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}
+                    withPersonName={selectedRow.title}
                     {seedRoot}
                     {wakes}
                     reactions={rowReactions}
@@ -5097,19 +7892,23 @@
             </div>
           {:else if activeTab === "board"}
             <BoardTab
-              onCreateTask={adapter.workMesh?.createProjectStory && selectedRow?.companyUid ? createBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
-              onOpenInChannel={() => (tab = "chat")}
+              onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
             />
           {:else}
             <ChannelFilesTab
               {files}
               previewContext={channelFilePreviewContext}
+              previewKey={channelFileKey}
               onloadpreview={loadChannelFilePreview}
               onauthorizeaction={canPerformChannelFileAction}
               onreveal={revealChannelFile}
               onopen={openChannelFile}
+              onselectfile={(item) =>
+                pushConversationSurface({ tab: "files", fileKey: item.key })}
+              onclosepreview={() =>
+                pushConversationSurface({ tab: "files", fileKey: null })}
             />
           {/if}
         {:else if conversationBootTimedOut}
@@ -5128,16 +7927,18 @@
     </div>
   {/if}
 
-  {#if view === "library"}
+  {#if view === "library" && !navigationUnavailable}
     <LibraryOverlay
       {adapter}
       tab={libraryTab}
+      itemId={libraryItemId}
       {packagesEvents}
       onback={() => {
-        view = "conversation";
-        meetingFocusRequest = null;
+        void leaveCurrentDestination();
       }}
-      onnavigatetab={(next) => (libraryTab = next)}
+      onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
+      onnavigateitem={(id) =>
+        void navigate({ kind: "library", tab: libraryTab, itemId: id })}
     />
   {/if}
 
@@ -5244,6 +8045,25 @@
     overflow: hidden;
   }
 
+  .navigation-unavailable {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+    padding: 24px;
+    color: var(--t2, rgba(255, 255, 255, 0.62));
+    font: 400 13px/1.45 var(--font-ui);
+    text-align: center;
+  }
+
+  .navigation-unavailable button:disabled {
+    opacity: 0.5;
+  }
+
   .conversation-boot-error {
     display: flex;
     flex: 1 1 auto;
@@ -5275,6 +8095,7 @@
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
+    overflow: hidden;
   }
 
   /* Synthetic #setup channel stacks the getting-started intro above the
@@ -5290,7 +8111,7 @@
   }
 
   .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
-    min-width: 320px;
+    min-width: min(320px, 50%);
   }
 
   /* Open thread pane takes half the conversation area — a 50/50 split
@@ -5299,7 +8120,7 @@
   .chat-stage:has(.reply-column:not(.profile-column):not(.overlay))
     :global(.conversation) {
     flex: 1 1 0;
-    min-width: 360px;
+    min-width: min(360px, 50%);
   }
 
   .reply-column {
@@ -5310,7 +8131,7 @@
        hover chrome and message text. .overlay still overrides to
        position:absolute; z-index:5. */
     isolation: isolate;
-    width: clamp(340px, 34%, 420px);
+    width: clamp(min(340px, 50%), 34%, 420px);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -5328,7 +8149,29 @@
   .reply-column:not(.profile-column):not(.overlay) {
     width: auto;
     flex: 1 1 0;
-    min-width: 360px;
+    min-width: min(360px, 50%);
+  }
+
+  .reply-column.resizable-thread {
+    flex: 0 0 clamp(280px, var(--thread-width, 50%), calc(100% - 360px));
+    min-width: min(280px, 50%);
+  }
+
+  .thread-resize-handle {
+    position: absolute;
+    left: -4px;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    z-index: 10;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .thread-resize-handle:hover,
+  .thread-resize-handle:focus-visible {
+    background: var(--line);
+    outline: 1px solid var(--t2);
   }
 
   .reply-column.overlay {
@@ -5338,7 +8181,7 @@
     bottom: 0;
     width: min(100%, 420px);
     z-index: 5;
-    background: var(--v4-ground, #161618);
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
   }
 
   /* Channel header — ported from the real ChannelView: title left, tabs +
@@ -5494,48 +8337,6 @@
     margin-left: auto;
   }
 
-  /* 28px ghost button: same control scale as the tab-row actions. */
-  .header-ghost-btn {
-    appearance: none;
-    -webkit-appearance: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 28px;
-    min-height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--line2, var(--panel-border));
-    border-radius: 0;
-    background: transparent;
-    color: var(--t1);
-    font: 500 12px/1 inherit;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .header-ghost-btn:hover {
-    background: var(--hover);
-  }
-
-  .header-ghost-btn:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .header-ghost-btn:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--t1));
-    outline-offset: 2px;
-  }
-
-  .header-inline-error {
-    color: var(--danger, #e5484d);
-    font-size: 12px;
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .edit-profile-btn {
     appearance: none;
     -webkit-appearance: none;
@@ -5543,7 +8344,10 @@
     border: none;
     background: transparent;
     color: var(--t2);
-    font: 500 12px/1.45 inherit;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
     cursor: pointer;
     text-decoration: underline;
     text-underline-offset: 3px;
@@ -5558,13 +8362,11 @@
     outline-offset: 2px;
   }
 
-  .company-tab-placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 120px;
-    color: var(--t3);
-    font-size: 13px;
+  .company-office-stage.office-background { flex: none; height: 0; min-height: 0; overflow: visible; }
+  .company-office-stage {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
 
   .project-tabs {
@@ -5655,5 +8457,101 @@
     position: relative;
     z-index: 21;
     flex: 0 0 auto;
+  }
+  /* ---- Setup Agent prompt (under the #welcome messages) ---------------- */
+  /* No box: the block sits under the last message on the message-text
+     column — left = row padding 8px + avatar 36px + gap 8px; right = the
+     row's 8px padding — so its edges match the messages above. */
+  .setup-agent-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: none;
+    margin: 8px 8px 8px 52px;
+  }
+  .setup-agent-prompt:empty {
+    display: none;
+  }
+  .local-bot-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 16px 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line2);
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .local-bot-notice-text {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .local-bot-notice-start {
+    font: inherit;
+    font-weight: 600;
+    padding: 4px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-bg, transparent);
+    color: var(--t1);
+    cursor: pointer;
+  }
+  .local-bot-notice-start:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .local-bot-notice-hint {
+    flex-basis: 100%;
+    color: var(--t2);
+    opacity: 0.85;
+  }
+  .local-bot-notice-error {
+    flex-basis: 100%;
+    color: var(--danger, #d05f5f);
+  }
+  .bot-unanswered {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 16px 8px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  /* The way out lives IN the line, not in a card the person has to find. */
+  .bot-unanswered-action {
+    font: inherit;
+    font-weight: 600;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent, var(--t1));
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .bot-unanswered-action:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .bot-auto-restore {
+    margin: 4px 16px 8px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .bot-auto-restore-banner {
+    margin: 8px 16px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line2);
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
   }
 </style>

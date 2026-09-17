@@ -6,6 +6,7 @@
 //! an optional system package-manager provider.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::mem::size_of;
@@ -29,6 +30,8 @@ use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
+#[cfg(not(windows))]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 #[cfg(windows)]
@@ -47,6 +50,303 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ};
 #[cfg(windows)]
 use winreg::{RegKey, RegValue};
+
+use crate::commands::install_stages::{
+    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
+    OnboardingFailureScope,
+};
+
+tokio::task_local! {
+    static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
+}
+
+tokio::task_local! {
+    static ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR: SetupDiagnosticCollector;
+}
+
+/// The dependency currently executing inside the setup orchestrator. Streaming
+/// installers use this to report a cleanup failure immediately, rather than
+/// waiting for a child process that may never exit after a failed signal.
+tokio::task_local! {
+    static ACTIVE_SETUP_DEPENDENCY: &'static str;
+}
+
+/// Retains the terminal process failure for one dependency. An installer can
+/// retry internally; only a dependency that ultimately fails emits it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SetupCommandDiagnostic {
+    command: String,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    error: String,
+}
+
+#[derive(Clone)]
+struct SetupDiagnosticCollector {
+    command_failure: Arc<Mutex<Option<SetupCommandDiagnostic>>>,
+}
+
+impl SetupDiagnosticCollector {
+    fn new() -> Self {
+        Self { command_failure: Arc::new(Mutex::new(None)) }
+    }
+
+    fn record(&self, diagnostic: SetupCommandDiagnostic) {
+        *self.command_failure.lock().unwrap() = Some(diagnostic);
+    }
+
+    fn take(&self) -> Option<SetupCommandDiagnostic> {
+        self.command_failure.lock().unwrap().take()
+    }
+
+    fn current(&self) -> Option<SetupCommandDiagnostic> {
+        self.command_failure.lock().unwrap().clone()
+    }
+
+    fn clear(&self) {
+        let _ = self.command_failure.lock().unwrap().take();
+    }
+}
+
+/// The two typed outcomes a user-initiated cancellation can have. Rendering the
+/// user-facing error stays separate from this type so Sentry classification
+/// cannot accidentally depend on an error-message substring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InstallCancellation {
+    UserCancelled,
+    CleanupFailed(CancellationCleanupFailure),
+}
+
+impl InstallCancellation {
+    fn user_message(&self) -> String {
+        match self {
+            Self::UserCancelled => "Cancelled by user".to_string(),
+            Self::CleanupFailed(cleanup) => {
+                format!("Cancelled by user; {}", cleanup.description())
+            }
+        }
+    }
+}
+
+/// The cleanup operation that could not stop an installer. On Unix, the
+/// process group gets a signal; Windows uses the Job Object termination API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancellationCleanupSignal {
+    #[cfg(unix)]
+    Sigterm,
+    #[cfg(unix)]
+    Sigkill,
+    #[cfg(windows)]
+    TerminateJobObject,
+}
+
+impl CancellationCleanupSignal {
+    fn as_str(self) -> &'static str {
+        match self {
+            #[cfg(unix)]
+            Self::Sigterm => "SIGTERM",
+            #[cfg(unix)]
+            Self::Sigkill => "SIGKILL",
+            #[cfg(windows)]
+            Self::TerminateJobObject => "TerminateJobObject",
+        }
+    }
+}
+
+/// OS-level failure that prevented cancellation cleanup. This retains the
+/// structured error class separately from its UI rendering and never stores a
+/// machine-specific process ID in a Sentry fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancellationCleanupErrorKind {
+    #[cfg(unix)]
+    Unix(nix::errno::Errno),
+    #[cfg(windows)]
+    Windows {
+        kind: std::io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CancellationCleanupFailure {
+    signal: CancellationCleanupSignal,
+    os_error_kind: CancellationCleanupErrorKind,
+    description: String,
+}
+
+impl CancellationCleanupFailure {
+    #[cfg(unix)]
+    fn from_unix_signal(signal: Signal, error: nix::errno::Errno) -> Self {
+        let signal = match signal {
+            Signal::SIGTERM => CancellationCleanupSignal::Sigterm,
+            Signal::SIGKILL => CancellationCleanupSignal::Sigkill,
+            _ => unreachable!("install cancellation only sends SIGTERM or SIGKILL"),
+        };
+        Self {
+            signal,
+            os_error_kind: CancellationCleanupErrorKind::Unix(error),
+            description: error.to_string(),
+        }
+    }
+
+    #[cfg(windows)]
+    fn from_windows_error(error: std::io::Error) -> Self {
+        Self {
+            signal: CancellationCleanupSignal::TerminateJobObject,
+            os_error_kind: CancellationCleanupErrorKind::Windows {
+                kind: error.kind(),
+                raw_os_error: error.raw_os_error(),
+            },
+            description: error.to_string(),
+        }
+    }
+
+    fn os_error_kind_token(&self) -> String {
+        match self.os_error_kind {
+            #[cfg(unix)]
+            CancellationCleanupErrorKind::Unix(error) => format!("{error:?}"),
+            #[cfg(windows)]
+            CancellationCleanupErrorKind::Windows {
+                kind: _,
+                raw_os_error: Some(raw_os_error),
+            } => format!("os-error-{raw_os_error}"),
+            #[cfg(windows)]
+            CancellationCleanupErrorKind::Windows {
+                kind,
+                raw_os_error: None,
+            } => format!("{kind:?}"),
+        }
+    }
+
+    fn description(&self) -> String {
+        match self.signal {
+            #[cfg(unix)]
+            CancellationCleanupSignal::Sigterm | CancellationCleanupSignal::Sigkill => {
+                format!(
+                    "failed to send {} to install process group: {}",
+                    self.signal.as_str(),
+                    self.description
+                )
+            }
+            #[cfg(windows)]
+            CancellationCleanupSignal::TerminateJobObject => {
+                format!("TerminateJobObject failed: {}", self.description)
+            }
+        }
+    }
+}
+
+/// Carries a typed cancellation from a streamed command to its dependency's
+/// aggregation task without changing the public Tauri command's String error.
+#[derive(Clone)]
+struct InstallCancellationCollector {
+    cancellation: Arc<Mutex<Option<InstallCancellation>>>,
+    cleanup_failure_reported: Arc<Mutex<bool>>,
+}
+
+impl InstallCancellationCollector {
+    fn new() -> Self {
+        Self {
+            cancellation: Arc::new(Mutex::new(None)),
+            cleanup_failure_reported: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    fn record(&self, cancellation: InstallCancellation) -> bool {
+        let mut slot = self.cancellation.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(cancellation);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn take(&self) -> Option<InstallCancellation> {
+        self.cancellation.lock().unwrap().take()
+    }
+
+    fn mark_cleanup_failure_reported(&self) {
+        *self.cleanup_failure_reported.lock().unwrap() = true;
+    }
+
+    fn cleanup_failure_reported(&self) -> bool {
+        *self.cleanup_failure_reported.lock().unwrap()
+    }
+}
+
+tokio::task_local! {
+    static ACTIVE_INSTALL_CANCELLATION_COLLECTOR: InstallCancellationCollector;
+}
+
+fn record_install_cancellation(cancellation: InstallCancellation) {
+    let collector = ACTIVE_INSTALL_CANCELLATION_COLLECTOR
+        .try_with(|collector| collector.clone())
+        .ok();
+    let newly_recorded = collector
+        .as_ref()
+        .map(|collector| collector.record(cancellation.clone()))
+        .unwrap_or(true);
+    if !newly_recorded {
+        return;
+    }
+
+    let (level, message) = match &cancellation {
+        InstallCancellation::UserCancelled => (
+            sentry::Level::Info,
+            "setup dependency installation cancelled by user".to_string(),
+        ),
+        InstallCancellation::CleanupFailed(cleanup) => (
+            sentry::Level::Warning,
+            format!(
+                "setup dependency installation cancelled by user; cleanup failed to send {} ({})",
+                cleanup.signal.as_str(),
+                cleanup.os_error_kind_token()
+            ),
+        ),
+    };
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("setup.install-cancel".into()),
+        level,
+        message: Some(message),
+        ..Default::default()
+    });
+
+    if let InstallCancellation::CleanupFailed(cleanup) = cancellation {
+        if report_active_setup_cancellation_cleanup_failure(cleanup) {
+            if let Some(collector) = collector {
+                collector.mark_cleanup_failure_reported();
+            }
+        }
+    }
+}
+
+fn record_setup_command_failure(program: &str, args: &[&str], exit_code: Option<i32>, stdout: String, stderr: String, error: String) {
+    let command = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+    let diagnostic = SetupCommandDiagnostic {
+        command,
+        exit_code,
+        stdout: hq_telemetry::setup_diagnostic_tail(&stdout),
+        stderr: hq_telemetry::setup_diagnostic_tail(&stderr),
+        error,
+    };
+    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(|collector| collector.record(diagnostic));
+}
+
+/// The next installer path is a recovery attempt. Its terminal error, not the
+/// command failure it recovered from, must describe any eventual Sentry event.
+fn clear_recovered_setup_command_failure() {
+    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(SetupDiagnosticCollector::clear);
+}
+
+fn append_setup_diagnostic_tail(stream: &mut String, line: &str) {
+    if !stream.is_empty() {
+        stream.push('\n');
+    }
+    stream.push_str(line);
+    *stream = hq_telemetry::setup_diagnostic_tail(stream);
+}
 
 mod which {
     use std::env;
@@ -103,14 +403,28 @@ mod which {
     fn executable_candidate(candidate: &Path) -> Option<PathBuf> {
         #[cfg(windows)]
         {
-            if is_executable_file(candidate) {
-                return Some(candidate.to_path_buf());
-            }
-            if candidate.extension().is_some() {
-                return None;
-            }
+            // Only a PATHEXT extension makes a file spawnable by CreateProcess.
+            // npm, qmd, and hq all ship an extensionless POSIX script next to
+            // their `.cmd` shim; accepting the bare file spawns it directly and
+            // fails with ERROR_BAD_EXE_FORMAT (os error 193), so a bare name
+            // must resolve through PATHEXT instead.
             let pathext =
                 env::var_os("PATHEXT").unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD"));
+            let ext_matches = |path: &Path| {
+                path.extension().is_some_and(|ext| {
+                    let ext = ext.to_string_lossy();
+                    pathext
+                        .to_string_lossy()
+                        .split(';')
+                        .any(|pe| pe.trim_start_matches('.').eq_ignore_ascii_case(&ext))
+                })
+            };
+            if candidate.extension().is_some() {
+                if ext_matches(candidate) && is_executable_file(candidate) {
+                    return Some(candidate.to_path_buf());
+                }
+                return None;
+            }
             for ext in pathext.to_string_lossy().split(';') {
                 if ext.is_empty() {
                     continue;
@@ -163,7 +477,7 @@ static CANCEL_REGISTRY: std::sync::OnceLock<Arc<Mutex<HashMap<String, CancelStat
 #[derive(Default)]
 struct CancelState {
     cancelled: bool,
-    kill_error: Option<String>,
+    cleanup_failure: Option<CancellationCleanupFailure>,
     #[cfg(unix)]
     pgid: Option<i32>,
     #[cfg(windows)]
@@ -197,6 +511,81 @@ fn deregister_handle(handle: &str) {
     cancel_registry().lock().unwrap().remove(handle);
 }
 
+/// A non-process phase (such as waiting for the CLI update lock) still needs a
+/// frontend-visible installer handle. Keeping this registration alive through
+/// the following streamed install closes the hand-off gap between the wait and
+/// npm: cancellation can reach either phase through the one existing registry.
+struct InstallCancellationRegistration {
+    handle: String,
+}
+
+impl InstallCancellationRegistration {
+    fn new(app: &AppHandle) -> Self {
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+        emit_install_handle_started(app, &handle);
+        Self { handle }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        is_cancelled(&self.handle)
+    }
+
+    /// Convert a cancellation observed before a streaming child is started
+    /// into the same typed outcome that `run_streaming` records. This covers
+    /// the CLI-update lock wait and the small hand-off window after the lock.
+    fn reject_if_cancelled(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            let cancellation = InstallCancellation::UserCancelled;
+            record_install_cancellation(cancellation.clone());
+            return Err(cancellation.user_message());
+        }
+        Ok(())
+    }
+
+    fn finish(&self, app: &AppHandle, error: Option<&str>) {
+        deregister_handle(&self.handle);
+        let _ = app.emit(
+            "install:progress",
+            InstallProgress {
+                handle: self.handle.clone(),
+                line: String::new(),
+                finished: true,
+                error: error.map(str::to_string),
+            },
+        );
+    }
+}
+
+impl Drop for InstallCancellationRegistration {
+    fn drop(&mut self) {
+        deregister_handle(&self.handle);
+    }
+}
+
+async fn acquire_cli_install_lock_for_setup(
+    app: &AppHandle,
+    cancellation: &InstallCancellationRegistration,
+    on_wait: impl Fn(&AppHandle, &str) + Send + 'static,
+) -> Result<hq_desktop_core::cli_update_lock::CliUpdateLockGuard, String> {
+    let lock_app = app.clone();
+    let cancel_handle = cancellation.handle.clone();
+    let install_lock = tokio::task::spawn_blocking(move || {
+        crate::commands::hq_cli_update::acquire_cli_install_lock_waiting(
+            &lock_app,
+            "hq-desktop-app-install-deps",
+            hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET,
+            || is_cancelled(&cancel_handle),
+            |line| on_wait(&lock_app, line),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("cli-install lock wait task join failed: {e}")));
+
+    cancellation.reject_if_cancelled()?;
+    install_lock
+}
+
 #[cfg(unix)]
 fn register_process_group(handle: &str, pgid: i32) {
     if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
@@ -211,22 +600,38 @@ fn register_job_handle(handle: &str, job: Arc<JobHandle>) {
     }
 }
 
-fn record_kill_error(handle: &str, err: String) {
+fn record_cleanup_failure(handle: &str, failure: CancellationCleanupFailure) {
     if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
-        state.kill_error = Some(err);
+        // Preserve the first failed cleanup attempt. It is normally SIGTERM;
+        // retaining it prevents a later SIGKILL attempt from hiding the
+        // original failure that could leave the process tree running.
+        if state.cleanup_failure.is_none() {
+            state.cleanup_failure = Some(failure);
+        }
     }
 }
 
-fn take_kill_error(handle: &str) -> Option<String> {
+fn take_cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
     cancel_registry()
         .lock()
         .unwrap()
         .get_mut(handle)
-        .and_then(|state| state.kill_error.take())
+        .and_then(|state| state.cleanup_failure.take())
+}
+
+fn cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
+    cancel_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .and_then(|state| state.cleanup_failure.clone())
 }
 
 #[cfg(unix)]
-fn terminate_process_tree(handle: &str, signal_kind: Signal) -> Result<(), String> {
+fn terminate_process_tree(
+    handle: &str,
+    signal_kind: Signal,
+) -> Result<(), CancellationCleanupFailure> {
     let pgid = cancel_registry()
         .lock()
         .unwrap()
@@ -238,14 +643,12 @@ fn terminate_process_tree(handle: &str, signal_kind: Signal) -> Result<(), Strin
 
     match signal::kill(Pid::from_raw(-pgid), signal_kind) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(e) => Err(format!(
-            "failed to send {signal_kind:?} to install process group {pgid}: {e}"
-        )),
+        Err(error) => Err(CancellationCleanupFailure::from_unix_signal(signal_kind, error)),
     }
 }
 
 #[cfg(windows)]
-fn terminate_process_tree(handle: &str) -> Result<(), String> {
+fn terminate_process_tree(handle: &str) -> Result<(), CancellationCleanupFailure> {
     let job = cancel_registry()
         .lock()
         .unwrap()
@@ -257,9 +660,8 @@ fn terminate_process_tree(handle: &str) -> Result<(), String> {
 
     let result = unsafe { TerminateJobObject(job.0, 1) };
     if result == 0 {
-        return Err(format!(
-            "TerminateJobObject failed: {}",
-            std::io::Error::last_os_error()
+        return Err(CancellationCleanupFailure::from_windows_error(
+            std::io::Error::last_os_error(),
         ));
     }
     Ok(())
@@ -1270,56 +1672,20 @@ fn managed_git_bin_in(home: &std::path::Path) -> PathBuf {
     managed_git_dir_in(home).join("bin")
 }
 
-/// Environment a relocatable (dugite) git needs so it can find its sub-commands
-/// (libexec/git-core, e.g. git-remote-https), its templates, and a CA bundle.
-/// dugite's git has no compiled-in prefix and bundles no CA file, so without
-/// these `git clone https://…` fails first with "remote-https is not a git
-/// command" and then with a certificate-verify error. Returns empty when the
-/// managed git isn't installed (so a real system git keeps its own config).
+/// Compatibility wrapper for the shared managed-Git environment helper.
+///
+/// The core helper checks the Git selected by the child PATH, rather than only
+/// whether HQ's portable Git exists, before returning its configuration.
 /// Exposed for unit tests.
 #[cfg(not(windows))]
 pub fn managed_git_env_in(home: &std::path::Path) -> Vec<(String, String)> {
-    let git_dir = managed_git_dir_in(home);
-    if !git_dir.join("bin").join("git").exists() {
-        return Vec::new();
-    }
-    let mut env = vec![
-        (
-            "GIT_EXEC_PATH".to_string(),
-            git_dir
-                .join("libexec")
-                .join("git-core")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        (
-            "GIT_TEMPLATE_DIR".to_string(),
-            git_dir
-                .join("share")
-                .join("git-core")
-                .join("templates")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-    ];
-    // dugite's git uses OpenSSL and bundles no CA; macOS ships a trusted bundle
-    // at /etc/ssl/cert.pem. Only set it when present.
-    let system_ca = std::path::Path::new("/etc/ssl/cert.pem");
-    if system_ca.exists() {
-        env.push((
-            "GIT_SSL_CAINFO".to_string(),
-            system_ca.to_string_lossy().into_owned(),
-        ));
-    }
-    env
+    hq_desktop_core::paths::managed_git_env_in(home)
 }
 
-/// Production wrapper over `managed_git_env_in`, resolving the real home dir.
+/// Production wrapper over the core helper, retained for existing call sites.
 #[cfg(not(windows))]
 pub fn managed_git_env() -> Vec<(String, String)> {
-    dirs::home_dir()
-        .map(|h| managed_git_env_in(&h))
-        .unwrap_or_default()
+    hq_desktop_core::paths::managed_git_env()
 }
 
 /// User-local tool paths owned by HQ Installer. Exposed for unit tests.
@@ -1484,41 +1850,19 @@ pub fn shell_path_block() -> String {
     )
 }
 
-/// The portable (dugite) git has no compiled-in prefix and bundles no CA
-/// file: invoked bare from a user's shell it prints `templates not found` and
-/// `'remote-https' is not a git command`, so every https clone fails. The
-/// engine's own calls set `managed_git_env()`; users' shells need the same.
-/// Rather than exporting GIT_EXEC_PATH globally (which would break any other
-/// git the user later installs), install a tiny shim that sets the env and
-/// execs the real binary, and put the SHIM dir on PATH. Idempotent; returns
-/// the shim path when written. Exposed for testing.
+/// Ensure the portable Git wrapper for an explicit home directory.
+///
+/// The health gate lives in `hq-desktop-core::paths` with the rescue PATH
+/// selection it protects, so both the installer and core updates reject the
+/// same partial managed-Git install.
 #[cfg(not(windows))]
-pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Option<PathBuf> {
-    let git_dir = managed_git_dir_in(home);
-    if !git_dir.join("bin").join("git").exists() {
-        return None;
-    }
-    let shim_dir = managed_git_shim_dir_in(home);
-    let shim = shim_dir.join("git");
-    let script = format!(
-        "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n"
-    );
-    if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
-        return Some(shim);
-    }
-    std::fs::create_dir_all(&shim_dir).ok()?;
-    std::fs::write(&shim, script).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755));
-    }
-    Some(shim)
+pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Result<PathBuf, String> {
+    hq_desktop_core::paths::ensure_managed_git_shim_in(home)
 }
 
 #[cfg(not(windows))]
 pub fn managed_git_shim_dir_in(home: &std::path::Path) -> PathBuf {
-    managed_toolchain_dir_in(home).join("git-shim")
+    hq_desktop_core::paths::managed_git_shim_dir_in(home)
 }
 
 /// Profile files the PATH block must land in for this shell.
@@ -1551,8 +1895,11 @@ pub fn shell_profile_paths_in(home: &std::path::Path) -> Vec<PathBuf> {
 #[cfg(not(windows))]
 pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
     match ensure_managed_git_shim_in(home) {
-        Some(p) => emit_preflight_line(app, &format!("[path] portable git shim at {}", p.display())),
-        None => emit_preflight_line(app, "[path] portable git not present; no shim written"),
+        Ok(p) => emit_preflight_line(app, &format!("[path] portable git shim at {}", p.display())),
+        Err(reason) => emit_preflight_line(
+            app,
+            &format!("[path] portable git shim unavailable: {reason}"),
+        ),
     }
     let block = shell_path_block();
     for profile_path in shell_profile_paths_in(home) {
@@ -1935,11 +2282,11 @@ pub fn cancel_install(handle: String) -> bool {
 
     #[cfg(unix)]
     if let Err(e) = terminate_process_tree(&handle, Signal::SIGTERM) {
-        record_kill_error(&handle, e);
+        record_cleanup_failure(&handle, e);
     }
     #[cfg(windows)]
     if let Err(e) = terminate_process_tree(&handle) {
-        record_kill_error(&handle, e);
+        record_cleanup_failure(&handle, e);
     }
 
     true
@@ -1989,7 +2336,9 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(child) => child,
         Err(e) => {
             deregister_handle(&handle_id);
-            return Err(format!("Failed to spawn '{}': {}", program, e));
+            let error = format!("Failed to spawn '{}': {}", program, e);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     register_process_group(&handle_id, child.id() as i32);
@@ -1999,14 +2348,18 @@ async fn run_streaming<R: tauri::Runtime>(
         Some(stdout) => stdout,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stdout".to_string());
+            let error = "no stdout".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stderr".to_string());
+            let error = "no stderr".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -2020,15 +2373,19 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     // Drain stderr in a background thread — see the function doc above for why.
+    let stdout_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let (tx, rx) = mpsc::channel::<ReaderMsg>();
     let stdout_thread = {
         let tx = tx.clone();
+        let stdout_tail = Arc::clone(&stdout_tail);
         std::thread::spawn(move || {
             let mut err = None;
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
+                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -2049,6 +2406,7 @@ async fn run_streaming<R: tauri::Runtime>(
         let app = app.clone();
         let handle_id = handle_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
+        let stderr_tail = Arc::clone(&stderr_tail);
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut err = None;
@@ -2056,6 +2414,7 @@ async fn run_streaming<R: tauri::Runtime>(
                 match line_result {
                     Ok(line) => {
                         stderr_lines.lock().unwrap().push(line.clone());
+                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -2118,7 +2477,7 @@ async fn run_streaming<R: tauri::Runtime>(
         if is_cancelled(&handle_id) {
             if cancel_started.is_none() {
                 if let Err(e) = terminate_process_tree(&handle_id, Signal::SIGTERM) {
-                    record_kill_error(&handle_id, e);
+                    record_cleanup_failure(&handle_id, e);
                 }
                 cancel_started = Some(Instant::now());
             } else if !sigkill_sent
@@ -2127,9 +2486,15 @@ async fn run_streaming<R: tauri::Runtime>(
                     .unwrap_or(false)
             {
                 if let Err(e) = terminate_process_tree(&handle_id, Signal::SIGKILL) {
-                    record_kill_error(&handle_id, e);
+                    record_cleanup_failure(&handle_id, e);
                 }
                 sigkill_sent = true;
+            }
+
+            if let Some(cleanup) = cleanup_failure(&handle_id) {
+                // Do not wait for `try_wait` or the output readers. A failed
+                // signal can be exactly what leaves this child running.
+                record_install_cancellation(InstallCancellation::CleanupFailed(cleanup));
             }
         }
 
@@ -2158,7 +2523,7 @@ async fn run_streaming<R: tauri::Runtime>(
         .map_err(|_| "stderr reader thread panicked".to_string());
 
     let was_cancelled = is_cancelled(&handle_id);
-    let kill_error = take_kill_error(&handle_id);
+    let cleanup_failure = take_cleanup_failure(&handle_id);
     deregister_handle(&handle_id);
 
     if let Err(e) = stdout_join.and(stderr_join) {
@@ -2175,10 +2540,11 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     if was_cancelled {
-        let msg = match kill_error {
-            Some(e) => format!("Cancelled by user; {e}"),
-            None => "Cancelled by user".to_string(),
-        };
+        let cancellation = cleanup_failure
+            .map(InstallCancellation::CleanupFailed)
+            .unwrap_or(InstallCancellation::UserCancelled);
+        record_install_cancellation(cancellation.clone());
+        let msg = cancellation.user_message();
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -2217,8 +2583,11 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
+        let stdout = stdout_tail.lock().unwrap().clone();
         let captured = stderr_lines.lock().unwrap().clone();
+        let stderr = stderr_tail.lock().unwrap().clone();
         let msg = format_install_error(code, &captured);
+        record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -2500,6 +2869,7 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
     Ok(format!("node installed at {}", node_bin.display()))
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // install_git
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2683,6 +3053,7 @@ async fn install_yq_macos(app: AppHandle) -> Result<String, String> {
                         "[yq] brew install failed ({first_line}); falling back to direct binary download"
                     ),
                 );
+                clear_recovered_setup_command_failure();
             }
         }
     } else {
@@ -2799,7 +3170,6 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
 
     Ok(format!("yq installed at {}", target.display()))
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // install_jq (direct binary, macOS)
@@ -2995,6 +3365,7 @@ async fn npm_install_global_managed(
                 app,
                 &format!("[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"),
             );
+            clear_recovered_setup_command_failure();
             run_streaming(
                 app,
                 npm,
@@ -3007,6 +3378,8 @@ async fn npm_install_global_managed(
                     "--@indigoai-us:registry=https://registry.npmjs.org/",
                     "--@tobilu:registry=https://registry.npmjs.org/",
                     "--@anthropic-ai:registry=https://registry.npmjs.org/",
+                    "--@openai:registry=https://registry.npmjs.org/",
+                    "--@xai-official:registry=https://registry.npmjs.org/",
                     spec,
                 ],
             )
@@ -3053,43 +3426,126 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
 // install_hq_cli
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Install the HQ CLI via `npm install -g @indigoai-us/hq-cli`.
+#[cfg(not(windows))]
+const HQ_CLI_REGISTRY_SPEC: &str = "@indigoai-us/hq-cli";
+#[cfg(not(windows))]
+const BUNDLED_HQ_CLI_RESOURCE_PATH: &str = "hq-cli/hq-cli.tgz";
+
+/// Pick the fixed, app-bundled HQ CLI tarball when it exists.
+///
+/// Canonicalizing both paths rejects a symlink at the fixed resource slot that
+/// escapes the signed application resources directory. Missing resources and
+/// path-resolution failures deliberately preserve the ordinary release path.
+#[cfg(not(windows))]
+fn hq_cli_install_spec(resource_dir: Option<&Path>) -> String {
+    let Some(resource_dir) = resource_dir.and_then(|path| path.canonicalize().ok()) else {
+        return HQ_CLI_REGISTRY_SPEC.to_string();
+    };
+    let Some(package) = resource_dir
+        .join(BUNDLED_HQ_CLI_RESOURCE_PATH)
+        .canonicalize()
+        .ok()
+    else {
+        return HQ_CLI_REGISTRY_SPEC.to_string();
+    };
+
+    if package.is_file() && package.starts_with(&resource_dir) {
+        package
+            .into_os_string()
+            .into_string()
+            .unwrap_or_else(|_| HQ_CLI_REGISTRY_SPEC.to_string())
+    } else {
+        HQ_CLI_REGISTRY_SPEC.to_string()
+    }
+}
+
+/// A test/release bundle can require its own CLI version. Keep the marker
+/// alongside the package inside signed resources; never consult a neighboring kit.
+#[cfg(not(windows))]
+pub fn bundled_hq_cli_ready(app: &AppHandle) -> bool {
+    let resource_dir = app.path().resource_dir().ok();
+    let spec = hq_cli_install_spec(resource_dir.as_deref());
+    if spec == HQ_CLI_REGISTRY_SPEC { return true; }
+    let expected = Path::new(&spec).parent()
+        .and_then(|dir| std::fs::read_to_string(dir.join("version.txt")).ok());
+    let actual = check_dep_impl("hq", None).version;
+    bundled_cli_version_matches(expected.as_deref(), actual.as_deref())
+}
+
+#[cfg(not(windows))]
+fn bundled_cli_version_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
+    match (expected, actual) {
+        (Some(expected), Some(actual)) if !expected.trim().is_empty() =>
+            expected.trim() == actual.trim(),
+        _ => false,
+    }
+}
+
+/// Install the HQ CLI from the app-bundled package when present, otherwise via
+/// `npm install -g @indigoai-us/hq-cli`.
 ///
 /// Errors if npm is not available.
 #[cfg(not(windows))]
 async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
-    // Cross-process cli-update lock (contract with hq-cli's version gate —
-    // see hq_desktop_core::cli_update_lock). A concurrent updater or `hq`
-    // self-update writing the same global package can collide with npm's
-    // mid-rename staging and gut the install; a held lock means skip and let
-    // the user retry. Guard held through the streamed install below.
-    let _install_lock = match crate::commands::hq_cli_update::acquire_cli_install_lock(
-        &app,
-        "hq-desktop-app-install-deps",
-    ) {
-        Ok(guard) => guard,
-        Err(msg) => {
-            emit_preflight_line(&app, &msg);
-            return Err(msg);
-        }
-    };
-    let prefix = npm_global_prefix_arg(&app, "hq")?;
-    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
-        emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+    // Cross-process cli-update lock (contract with hq-cli's version gate — see
+    // hq_desktop_core::cli_update_lock). A concurrent updater or `hq` self-update
+    // writing the same global package can collide with npm's mid-rename staging
+    // and gut the install, so overlapping writers must not run.
+    //
+    // On the SETUP deps path a held lock is almost always a benign collision with
+    // the app's OWN background CLI updater, so instead of failing the deps stage
+    // (and paging Sentry — HQ-DESKTOP-6J) we WAIT the holder out for a bounded
+    // budget and converge. The blocking wait runs off the async worker via
+    // spawn_blocking so the rest of the dependency wave keeps installing
+    // concurrently; the guard is held through the streamed install below.
+    let cancellation = InstallCancellationRegistration::new(&app);
+    let result = async {
+        let _install_lock = acquire_cli_install_lock_for_setup(
+            &app,
+            &cancellation,
+            |app, line| emit_preflight_line(app, line),
+        )
+        .await?;
+        install_hq_cli_after_lock(
+            || hq_cli_dependency_is_satisfied(&app),
+            || async {
+                cancellation.reject_if_cancelled()?;
+                let prefix = npm_global_prefix_arg(&app, "hq")?;
+                if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
+                    emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+                }
+                let npm = match which::which_in(
+                    "npm",
+                    Some(extended_search_path()),
+                    std::env::current_dir().unwrap_or_default(),
+                ) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let msg = "npm is not installed. Install Node.js first.";
+                        emit_preflight_line(&app, msg);
+                        return Err(msg.to_string());
+                    }
+                };
+                let resource_dir = app.path().resource_dir().ok();
+                let install_spec = hq_cli_install_spec(resource_dir.as_deref());
+                if install_spec != HQ_CLI_REGISTRY_SPEC {
+                    emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
+                }
+                npm_install_global_managed(
+                    &app,
+                    npm.to_str().unwrap_or("npm"),
+                    &prefix,
+                    &install_spec,
+                    "hq",
+                )
+                .await
+            },
+        )
+        .await
     }
-    let npm = match which::which_in(
-        "npm",
-        Some(extended_search_path()),
-        std::env::current_dir().unwrap_or_default(),
-    ) {
-        Ok(p) => p,
-        Err(_) => {
-            let msg = "npm is not installed. Install Node.js first.";
-            emit_preflight_line(&app, msg);
-            return Err(msg.to_string());
-        }
-    };
-    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, "@indigoai-us/hq-cli", "hq").await
+    .await;
+    cancellation.finish(&app, result.as_ref().err().map(String::as_str));
+    result
 }
 
 // NOTE (2026-04-21): `install_hq_cloud` was removed along with the
@@ -3161,6 +3617,140 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
     #[cfg(windows)]
     {
         install_claude_code_windows(app).await
+    }
+}
+
+/// npm spec + bin name for a sessions provider. Unknown tools fail closed.
+pub fn session_provider_npm_spec(tool: &str) -> Result<(&'static str, &'static str), String> {
+    match tool {
+        "claude" => Ok(("@anthropic-ai/claude-code", "claude")),
+        "codex" => Ok(("@openai/codex", "codex")),
+        "grok" => Ok(("@xai-official/grok", "grok")),
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
+    }
+}
+
+fn emit_session_install_line(app: &AppHandle, msg: &str) {
+    #[cfg(not(windows))]
+    emit_preflight_line(app, msg);
+    #[cfg(windows)]
+    emit_progress(app, msg);
+}
+
+async fn npm_bin_or_install_node(app: &AppHandle, tag: &str) -> Result<std::path::PathBuf, String> {
+    let lookup = || {
+        which::which_in(
+            "npm",
+            Some(extended_search_path()),
+            std::env::current_dir().unwrap_or_default(),
+        )
+    };
+    if let Ok(path) = lookup() {
+        return Ok(path);
+    }
+    emit_session_install_line(
+        app,
+        &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
+    );
+    install_node(app.clone()).await?;
+    lookup().map_err(|_| {
+        format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
+    })
+}
+
+#[cfg(not(windows))]
+async fn install_npm_cli_macos(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    let prefix = npm_global_prefix_arg(&app, tag)?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), bin) {
+        emit_preflight_line(
+            &app,
+            &format!("[{tag}] removed an unusable leftover bin entry before reinstalling"),
+        );
+    }
+    let npm = npm_bin_or_install_node(&app, tag).await?;
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, spec, tag).await
+}
+
+#[cfg(windows)]
+async fn install_npm_cli_windows(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    emit_progress(&app, &format!("Installing {tag} via npm..."));
+    let _ = npm_bin_or_install_node(&app, tag).await?;
+    let result = run_streaming(
+        &app,
+        "npm",
+        &[
+            "install",
+            "-g",
+            "--prefix",
+            &managed_npm_prefix().to_string_lossy(),
+            spec,
+        ],
+    )
+    .await?;
+    append_user_path(&managed_npm_bin())?;
+    let _ = bin;
+    Ok(result)
+}
+
+/// Install the Codex CLI via `npm install -g @openai/codex`.
+#[tauri::command]
+pub async fn install_codex(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("codex")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "codex").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "codex").await
+    }
+}
+
+/// Install the Grok CLI via `npm install -g @xai-official/grok`.
+#[tauri::command]
+pub async fn install_grok(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("grok")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "grok").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "grok").await
+    }
+}
+
+/// In-app sessions setup: install the selected provider CLI without the user
+/// hunting binaries. Ensures npm/Node first, then the provider package.
+#[tauri::command]
+pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<String, String> {
+    match tool.as_str() {
+        "claude" => {
+            let _ = npm_bin_or_install_node(&app, "claude").await?;
+            install_claude_code(app).await
+        }
+        "codex" | "grok" => {
+            let (spec, bin) = session_provider_npm_spec(&tool)?;
+            #[cfg(not(windows))]
+            {
+                install_npm_cli_macos(app, spec, bin, &tool).await
+            }
+            #[cfg(windows)]
+            {
+                install_npm_cli_windows(app, spec, bin, &tool).await
+            }
+        }
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
     }
 }
 
@@ -3700,42 +4290,57 @@ fn write_user_path_value(env: &RegKey, value: &UserPathValue) -> Result<(), Stri
 
 #[cfg(windows)]
 pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
-    let dir_str = new_dir.to_string_lossy().to_string();
+    let result = (|| {
+        let dir_str = new_dir.to_string_lossy().to_string();
 
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env = hkcu
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
-        .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let env = hkcu
+            .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
+            .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
 
-    let mut current_value = read_user_path_value(&env)?;
-    let current = current_value.value.clone();
+        let mut current_value = read_user_path_value(&env)?;
+        let current = current_value.value.clone();
 
-    let already_present = current
-        .split(';')
-        .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
-    if already_present {
+        let already_present = current
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
+        if already_present {
+            debug_log(&format!(
+                "append_user_path: '{dir_str}' already on PATH, skipping"
+            ));
+            return Ok(());
+        }
+
+        let updated = if current.is_empty() {
+            dir_str.clone()
+        } else if current.ends_with(';') {
+            format!("{current}{dir_str}")
+        } else {
+            format!("{current};{dir_str}")
+        };
+
+        current_value.value = updated;
+        write_user_path_value(&env, &current_value)?;
+
+        broadcast_environment_change();
         debug_log(&format!(
-            "append_user_path: '{dir_str}' already on PATH, skipping"
+            "append_user_path: added '{dir_str}', broadcast sent"
         ));
-        return Ok(());
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
+            .try_with(|scope| scope.clone())
+            .ok();
+        record_onboarding_failure_detail(
+            "deps",
+            failure_scope.as_ref(),
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
     }
-
-    let updated = if current.is_empty() {
-        dir_str.clone()
-    } else if current.ends_with(';') {
-        format!("{current}{dir_str}")
-    } else {
-        format!("{current};{dir_str}")
-    };
-
-    current_value.value = updated;
-    write_user_path_value(&env, &current_value)?;
-
-    broadcast_environment_change();
-    debug_log(&format!(
-        "append_user_path: added '{dir_str}', broadcast sent"
-    ));
-    Ok(())
+    result
 }
 
 /// Remove `dir` from the user's persistent PATH. Idempotent.
@@ -3891,7 +4496,9 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(path) => path,
         Err(_) => {
             deregister_handle(&handle_id);
-            return Err(format!("'{}' not found on PATH", program));
+            let error = format!("'{}' not found on PATH", program);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -3899,6 +4506,7 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(job) => Arc::new(job),
         Err(e) => {
             deregister_handle(&handle_id);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), e.clone());
             return Err(e);
         }
     };
@@ -3915,11 +4523,14 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(child) => child,
         Err(e) => {
             deregister_handle(&handle_id);
-            return Err(format!("Failed to spawn '{}': {}", program, e));
+            let error = format!("Failed to spawn '{}': {}", program, e);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
     if let Err(e) = assign_process_to_job(job.0, child.as_raw_handle() as HANDLE) {
+        record_setup_command_failure(program, args, None, String::new(), String::new(), e.clone());
         let kill_result = child.kill().map_err(|kill_err| {
             format!("failed to kill untracked child after job assignment failure: {kill_err}")
         });
@@ -3939,7 +4550,7 @@ async fn run_streaming<R: tauri::Runtime>(
     emit_install_handle_started(app, &handle_id);
     if is_cancelled(&handle_id) {
         if let Err(e) = terminate_process_tree(&handle_id) {
-            record_kill_error(&handle_id, e);
+            record_cleanup_failure(&handle_id, e);
         }
     }
 
@@ -3947,14 +4558,18 @@ async fn run_streaming<R: tauri::Runtime>(
         Some(stdout) => stdout,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stdout".to_string());
+            let error = "no stdout".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stderr".to_string());
+            let error = "no stderr".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -3967,15 +4582,19 @@ async fn run_streaming<R: tauri::Runtime>(
         },
     }
 
+    let stdout_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let (tx, rx) = mpsc::channel::<ReaderMsg>();
     let stdout_thread = {
         let tx = tx.clone();
+        let stdout_tail = Arc::clone(&stdout_tail);
         std::thread::spawn(move || {
             let mut err = None;
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
+                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -3996,6 +4615,7 @@ async fn run_streaming<R: tauri::Runtime>(
         let app = app.clone();
         let handle_id = handle_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
+        let stderr_tail = Arc::clone(&stderr_tail);
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut err = None;
@@ -4003,6 +4623,7 @@ async fn run_streaming<R: tauri::Runtime>(
                 match line_result {
                     Ok(line) => {
                         stderr_lines.lock().unwrap().push(line.clone());
+                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -4063,9 +4684,17 @@ async fn run_streaming<R: tauri::Runtime>(
 
         if is_cancelled(&handle_id) && !cancel_signal_sent {
             if let Err(e) = terminate_process_tree(&handle_id) {
-                record_kill_error(&handle_id, e);
+                record_cleanup_failure(&handle_id, e);
             }
             cancel_signal_sent = true;
+        }
+
+        if is_cancelled(&handle_id) {
+            if let Some(cleanup) = cleanup_failure(&handle_id) {
+                // Report before waiting for an uncooperative process or either
+                // reader thread; the cancellation itself remains terminal.
+                record_install_cancellation(InstallCancellation::CleanupFailed(cleanup));
+            }
         }
 
         if status.is_none() {
@@ -4093,7 +4722,7 @@ async fn run_streaming<R: tauri::Runtime>(
         .map_err(|_| "stderr reader thread panicked".to_string());
 
     let was_cancelled = is_cancelled(&handle_id);
-    let kill_error = take_kill_error(&handle_id);
+    let cleanup_failure = take_cleanup_failure(&handle_id);
     deregister_handle(&handle_id);
 
     if let Err(e) = stdout_join.and(stderr_join) {
@@ -4110,10 +4739,11 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     if was_cancelled {
-        let msg = match kill_error {
-            Some(e) => format!("Cancelled by user; {e}"),
-            None => "Cancelled by user".to_string(),
-        };
+        let cancellation = cleanup_failure
+            .map(InstallCancellation::CleanupFailed)
+            .unwrap_or(InstallCancellation::UserCancelled);
+        record_install_cancellation(cancellation.clone());
+        let msg = cancellation.user_message();
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -4152,8 +4782,11 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
+        let stdout = stdout_tail.lock().unwrap().clone();
         let captured = stderr_lines.lock().unwrap().clone();
+        let stderr = stderr_tail.lock().unwrap().clone();
         let msg = format_install_error(code, &captured);
+        record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -4784,13 +5417,53 @@ fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
     };
 
     let cmd_path = prefix.join("qmd.cmd");
-    let body = format!(
-        "@ECHO off\r\n\
-        SETLOCAL\r\n\
-        bash \"%~dp0{bin_rel}\" %*\r\n"
-    );
+    // Resolve Git Bash to an absolute path at install time. A bare `bash` in
+    // the shim resolves through the USER's shell PATH at run time, where
+    // `C:\Windows\System32\bash.exe` (the WSL launcher) precedes Git's bash on
+    // any machine with WSL enabled — and WSL bash cannot run a Windows-path
+    // script argument (the INS-0580 failure class).
+    let body = match git_bash_path() {
+        Some(bash) => format!(
+            "@ECHO off\r\n\
+            SETLOCAL\r\n\
+            \"{}\" \"%~dp0{bin_rel}\" %*\r\n",
+            bash.display()
+        ),
+        None => format!(
+            "@ECHO off\r\n\
+            SETLOCAL\r\n\
+            bash \"%~dp0{bin_rel}\" %*\r\n"
+        ),
+    };
     std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
     Ok(())
+}
+
+/// Absolute path to Git for Windows' bash.exe, if one exists. Never returns
+/// the WSL launcher (`System32\bash.exe`). Prefers the bash sitting next to
+/// whichever `git.exe` the engine's search path resolves, then well-known
+/// install locations.
+#[cfg(windows)]
+fn git_bash_path() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Ok(git) = which::which_in("git", Some(extended_search_path()), &cwd) {
+        // <root>\cmd\git.exe or <root>\bin\git.exe -> <root>\bin\bash.exe
+        if let Some(root) = git.parent().and_then(|p| p.parent()) {
+            let bash = root.join("bin").join("bash.exe");
+            if bash.is_file() {
+                return Some(bash);
+            }
+        }
+    }
+    let candidates = [
+        program_files().join("Git").join("bin").join("bash.exe"),
+        local_app_data()
+            .join("Programs")
+            .join("Git")
+            .join("bin")
+            .join("bash.exe"),
+    ];
+    candidates.into_iter().find(|c| c.is_file())
 }
 
 #[cfg(windows)]
@@ -4802,19 +5475,326 @@ fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
 #[cfg(windows)]
 const RSYNC_BUNDLE_URL: &str = "https://github.com/small-tech/portable-rsync-with-ssh-for-windows/archive/0fc67b2e08ac0b1740982bcec16b3f2eb26151fa.zip";
 
+/// Result of the best-effort rsync preflight that precedes a Core rescue.
+///
+/// The rescue remains the authoritative gate: every variant lets its spawn
+/// proceed, while callers log the exact unavailable state for diagnosis.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RsyncRescueProvisioning {
+    AlreadyRescueReady,
+    ShimRefreshed,
+    Provisioned,
+    ProvisioningTimedOut,
+    ProvisioningFailed(String),
+    ProvisionedButNotRescueReady,
+}
+
+/// The result of applying the Core-update-specific provisioning deadline.
+///
+/// Kept separate from the final rescue readiness outcome so the pure decision
+/// helper can receive a deterministic deadline in tests.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RsyncRescueProvisioningAttempt {
+    Completed(Result<(), String>),
+    TimedOut,
+}
+
+/// Ensure an optional rescue dependency without making its provisioning a new
+/// failure gate. A usable existing dependency avoids all installer work only
+/// when HQ's path-translation shim is also present; a successful installer
+/// must leave both requirements ready before it is trusted.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) async fn ensure_rsync_for_core_update_rescue_with<P, S, F, Fut, B, BFut>(
+    mut is_resolvable: P,
+    mut has_shim: S,
+    provision: F,
+    provision_deadline: Duration,
+    provision_within_deadline: B,
+) -> RsyncRescueProvisioning
+where
+    P: FnMut() -> bool,
+    S: FnMut() -> bool,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+    B: FnOnce(Fut, Duration) -> BFut,
+    BFut: Future<Output = RsyncRescueProvisioningAttempt>,
+{
+    let initially_resolvable = is_resolvable();
+    let shim_was_missing = initially_resolvable && !has_shim();
+    if initially_resolvable && !shim_was_missing {
+        return RsyncRescueProvisioning::AlreadyRescueReady;
+    }
+
+    match provision_within_deadline(provision(), provision_deadline).await {
+        RsyncRescueProvisioningAttempt::Completed(Ok(())) if is_resolvable() && has_shim() => {
+            if shim_was_missing {
+                RsyncRescueProvisioning::ShimRefreshed
+            } else {
+                RsyncRescueProvisioning::Provisioned
+            }
+        }
+        RsyncRescueProvisioningAttempt::Completed(Ok(())) => {
+            RsyncRescueProvisioning::ProvisionedButNotRescueReady
+        }
+        RsyncRescueProvisioningAttempt::Completed(Err(reason)) => {
+            RsyncRescueProvisioning::ProvisioningFailed(reason)
+        }
+        RsyncRescueProvisioningAttempt::TimedOut => RsyncRescueProvisioning::ProvisioningTimedOut,
+    }
+}
+
+#[cfg(test)]
+mod rsync_core_update_rescue_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct NoopWaker;
+
+    impl Wake for NoopWaker {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    fn block_on_ready<T>(future: impl Future<Output = T>) -> T {
+        let waker = Waker::from(Arc::new(NoopWaker));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("rsync rescue test fixture must resolve immediately"),
+        }
+    }
+
+    #[test]
+    fn already_rescue_ready_skips_provisioning() {
+        let provision_calls = Cell::new(0);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || true,
+            || true,
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                async { Ok(()) }
+            },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::AlreadyRescueReady);
+        assert_eq!(
+            provision_calls.get(),
+            0,
+            "a usable rsync must not download a bundle"
+        );
+    }
+
+    #[test]
+    fn successful_provisioning_requires_a_second_successful_probe() {
+        let probe_calls = Cell::new(0);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || {
+                probe_calls.set(probe_calls.get() + 1);
+                probe_calls.get() == 2
+            },
+            || true,
+            || async { Ok(()) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::Provisioned);
+        assert_eq!(
+            probe_calls.get(),
+            2,
+            "provisioning must re-probe rsync before trusting it"
+        );
+    }
+
+    #[test]
+    fn successful_provisioning_that_does_not_resolve_rsync_is_reported() {
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            || true,
+            || async { Ok(()) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ProvisionedButNotRescueReady
+        );
+    }
+
+    #[test]
+    fn provisioning_failure_preserves_the_reason() {
+        let reason = "portable rsync archive returned HTTP 503".to_string();
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            || false,
+            move || async move { Err(reason) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ProvisioningFailed(
+                "portable rsync archive returned HTTP 503".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn resolvable_rsync_without_a_shim_refreshes_the_shim() {
+        let provision_calls = Cell::new(0);
+        let shim_present = Cell::new(false);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || true,
+            || shim_present.get(),
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                shim_present.set(true);
+                async { Ok(()) }
+            },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ShimRefreshed,
+            "a usable external rsync still needs HQ's path shim"
+        );
+        assert_eq!(
+            provision_calls.get(),
+            1,
+            "a missing shim must run the installer path that owns shim writes"
+        );
+    }
+
+    #[test]
+    fn provisioning_that_never_completes_before_the_deadline_times_out() {
+        let provision_calls = Cell::new(0);
+        let deadline_calls = Cell::new(0);
+        let deadline_seen = Cell::new(None);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            || false,
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                async { std::future::pending::<Result<(), String>>().await }
+            },
+            Duration::ZERO,
+            |_, deadline| {
+                deadline_calls.set(deadline_calls.get() + 1);
+                deadline_seen.set(Some(deadline));
+                async { RsyncRescueProvisioningAttempt::TimedOut }
+            },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::ProvisioningTimedOut);
+        assert_eq!(provision_calls.get(), 1);
+        assert_eq!(
+            deadline_calls.get(),
+            1,
+            "the injected deadline must finish the preflight without waiting for setup retries"
+        );
+        assert_eq!(deadline_seen.get(), Some(Duration::ZERO));
+    }
+}
+
+/// Best-effort Windows preflight for the Core-update rescue.
+///
+/// `check_dep_impl` is deliberately used both before and after provisioning:
+/// its successful `rsync --version` probe is the existing definition of a
+/// usable executable for HQ's extended child PATH. The paired shim translates
+/// Windows drive-letter arguments for cwRsync, so both are required for a
+/// rescue-ready executable.
+#[cfg(windows)]
+pub(crate) async fn ensure_rsync_for_core_update_rescue() -> RsyncRescueProvisioning {
+    ensure_rsync_for_core_update_rescue_with(
+        || check_dep_impl("rsync", None).installed,
+        rsync_shim_is_present,
+        || async {
+            install_rsync_with_progress(|message| {
+                crate::util::logfile::log(
+                    "hq-core-update",
+                    &format!("rsync provisioning: {message}"),
+                );
+            })
+            .await
+            .map(|_| ())
+        },
+        CORE_UPDATE_RSYNC_PROVISION_TIMEOUT,
+        provision_rsync_for_core_update_within_deadline,
+    )
+    .await
+}
+
+/// Bounds the optional Core-update preflight instead of inheriting setup's
+/// three 180-second download attempts. The pinned rsync archive is 4.68 MB,
+/// so 45 seconds allows roughly 0.83 Mbit/s plus checksum and extraction while
+/// keeping a stalled best-effort preflight from holding the update run guard.
+#[cfg(windows)]
+const CORE_UPDATE_RSYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(45);
+
+#[cfg(windows)]
+async fn provision_rsync_for_core_update_within_deadline<Fut>(
+    provision: Fut,
+    deadline: Duration,
+) -> RsyncRescueProvisioningAttempt
+where
+    Fut: Future<Output = Result<(), String>>,
+{
+    match tokio::time::timeout(deadline, provision).await {
+        Ok(result) => RsyncRescueProvisioningAttempt::Completed(result),
+        Err(_) => RsyncRescueProvisioningAttempt::TimedOut,
+    }
+}
+
+#[cfg(windows)]
+fn rsync_shim_is_present() -> bool {
+    let bin_dir = managed_npm_bin();
+    bin_dir.join("rsync.cmd").is_file() && bin_dir.join("rsync.ps1").is_file()
+}
+
 #[cfg(windows)]
 #[tauri::command]
 pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
+    install_rsync_with_progress(|message| emit_progress(&app, message)).await
+}
+
+#[cfg(windows)]
+async fn install_rsync_with_progress(mut progress: impl FnMut(&str)) -> Result<String, String> {
     let managed_rsync = managed_toolchain_dir().join("bin").join("rsync.exe");
     let probe = check_dep_impl("rsync", None);
     if probe.installed && !managed_rsync.exists() {
-        emit_progress(&app, "rsync already installed");
+        progress("rsync already installed");
         write_rsync_shim()?;
         return Ok("rsync already present; path shim refreshed".to_string());
     }
 
     let url = std::env::var("HQ_RSYNC_URL").unwrap_or_else(|_| RSYNC_BUNDLE_URL.to_string());
-    emit_progress(&app, &format!("Downloading portable rsync from {url}"));
+    progress(&format!("Downloading portable rsync from {url}"));
 
     let bin_dir = managed_toolchain_dir().join("bin");
     std::fs::create_dir_all(&bin_dir).map_err(|e| format!("Failed to mkdir {bin_dir:?}: {e}"))?;
@@ -4826,7 +5806,7 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
             .map_err(|e| format!("rsync download task join failed: {e}"))??;
     verify_sha256_bytes("rsync bundle", &bytes, RSYNC_BUNDLE_SHA256)?;
 
-    emit_progress(&app, "Extracting rsync bundle...");
+    progress("Extracting rsync bundle...");
     let staged_bin = managed_toolchain_dir().join(format!(".rsync-bin-{}", Uuid::new_v4()));
     if let Err(e) = extract_rsync_zip_to_bin(&bytes, &staged_bin) {
         let _ = std::fs::remove_dir_all(&staged_bin);
@@ -5042,38 +6022,49 @@ pub fn ensure_shims() -> Result<String, String> {
 
 #[cfg(windows)]
 async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
-    // Cross-process cli-update lock — same rationale and contract as the
-    // macOS leg above; held through the streamed install.
-    let _install_lock = match crate::commands::hq_cli_update::acquire_cli_install_lock(
-        &app,
-        "hq-desktop-app-install-deps",
-    ) {
-        Ok(guard) => guard,
-        Err(msg) => {
-            emit_progress(&app, &msg);
-            return Err(msg);
-        }
-    };
-    emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
-    let result_inner = run_streaming(
-        &app,
-        "npm",
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &managed_npm_prefix().to_string_lossy(),
-            "--@indigoai-us:registry=https://registry.npmjs.org/",
-            "--registry=https://registry.npmjs.org/",
-            "@indigoai-us/hq-cli",
-        ],
-    )
-    .await?;
-    append_user_path(&managed_npm_bin())?;
-
-    patch_hq_cli_pack_install_rsync()?;
-
-    Ok(result_inner)
+    // Cross-process cli-update lock — same rationale and contract as the macOS
+    // leg above. On the SETUP deps path we WAIT the holder out for a bounded
+    // budget (HQ-DESKTOP-6J) instead of failing the deps stage, off the async
+    // worker via spawn_blocking; the guard is held through the streamed install.
+    let cancellation = InstallCancellationRegistration::new(&app);
+    let result = async {
+        let _install_lock = acquire_cli_install_lock_for_setup(
+            &app,
+            &cancellation,
+            |app, line| emit_progress(app, line),
+        )
+        .await?;
+        install_hq_cli_after_lock(
+            || hq_cli_dependency_is_satisfied(&app),
+            || async {
+                if cancellation.is_cancelled() {
+                    return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
+                }
+                emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
+                let result_inner = run_streaming(
+                    &app,
+                    "npm",
+                    &[
+                        "install",
+                        "-g",
+                        "--prefix",
+                        &managed_npm_prefix().to_string_lossy(),
+                        "--@indigoai-us:registry=https://registry.npmjs.org/",
+                        "--registry=https://registry.npmjs.org/",
+                        "@indigoai-us/hq-cli",
+                    ],
+                )
+                .await?;
+                append_user_path(&managed_npm_bin())?;
+                patch_hq_cli_pack_install_rsync()?;
+                Ok(result_inner)
+            },
+        )
+        .await
+    }
+    .await;
+    cancellation.finish(&app, result.as_ref().err().map(String::as_str));
+    result
 }
 
 #[cfg(windows)]
@@ -5152,6 +6143,10 @@ struct DepDef {
 enum DepInstallStatus {
     Ok,
     Skipped,
+    /// A user stopped this dependency. It remains a terminal setup outcome for
+    /// UI/recovery purposes, but telemetry treats it as control flow rather
+    /// than a dependency-install error.
+    Cancelled,
     Failed,
 }
 
@@ -5309,7 +6304,11 @@ fn blocked_required_results(
         .collect()
 }
 
-fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepInstallResult {
+fn result_from_install(
+    dep: &DepDef,
+    install_result: Result<(), String>,
+    cancellation: Option<&InstallCancellation>,
+) -> DepInstallResult {
     match install_result {
         Ok(()) => DepInstallResult {
             id: dep.id,
@@ -5322,10 +6321,444 @@ fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepI
             id: dep.id,
             label: dep.label,
             optional: dep.optional,
-            status: DepInstallStatus::Failed,
+            status: if cancellation.is_some() {
+                DepInstallStatus::Cancelled
+            } else {
+                DepInstallStatus::Failed
+            },
             error: Some(err),
         },
     }
+}
+
+fn is_cancelled_dependency_result(result: &DepInstallResult) -> bool {
+    result.status == DepInstallStatus::Cancelled
+}
+
+fn is_terminal_dependency_failure(result: &DepInstallResult) -> bool {
+    result.status == DepInstallStatus::Failed || is_cancelled_dependency_result(result)
+}
+
+fn is_blocked_dependency_result(result: &DepInstallResult) -> bool {
+    result.error.as_deref().is_some_and(|error| error.starts_with("Prerequisite not installed:"))
+}
+
+/// True when a dependency "failed" only because the cross-process cli-update lock
+/// was held by a concurrent installer — in practice the app's own background CLI
+/// auto-updater — and this cycle was skipped BY DESIGN, not because the install
+/// failed (HQ-DESKTOP-6J). Matched off the single `CLI_INSTALL_LOCK_SKIP_PREFIX`
+/// that the lock's `Held` branch builds every skip message from, so producer and
+/// consumer share one committed literal and cannot silently drift — pinned by
+/// `cli_install_lock_skip_tests`. Only hq-cli contends on this lock, so this can
+/// never mask another dependency's genuine failure.
+fn is_concurrent_install_skip_result(result: &DepInstallResult) -> bool {
+    result.error.as_deref().is_some_and(|error| {
+        error.starts_with(crate::commands::hq_cli_update::CLI_INSTALL_LOCK_SKIP_PREFIX)
+    })
+}
+
+fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupCommandDiagnostic>) -> OnboardingErrorCategory {
+    // The status is set only from InstallCancellation, which is captured at the
+    // streaming cancellation source. Never infer this category from the
+    // rendered error string.
+    if is_cancelled_dependency_result(result) {
+        return OnboardingErrorCategory::Cancelled;
+    }
+    // A cli-update lock skip is a deliberate concurrent-install skip, never an
+    // install failure. It carries no exit code, so classify it BEFORE the
+    // exit_code branch; this is what keeps it off the error-level Sentry path.
+    if is_concurrent_install_skip_result(result) {
+        return OnboardingErrorCategory::ConcurrentInstall;
+    }
+    if diagnostic.and_then(|diagnostic| diagnostic.exit_code).is_some() {
+        return OnboardingErrorCategory::ExitNonzero;
+    }
+    let error = result.error.as_deref().unwrap_or_default().to_ascii_lowercase();
+    if error.contains("checksum") { OnboardingErrorCategory::Checksum }
+    else if error.contains("timed out") || error.contains("timeout") { OnboardingErrorCategory::Timeout }
+    else if error.contains("permission") || error.contains("eacces") { OnboardingErrorCategory::Permission }
+    else if error.contains("not found") || error.contains("enoent") { OnboardingErrorCategory::NotFound }
+    else if error.contains("failed to spawn") { OnboardingErrorCategory::SpawnFailed }
+    else if error.contains("network") || error.contains("connection") { OnboardingErrorCategory::Network }
+    else { OnboardingErrorCategory::Unknown }
+}
+
+fn setup_flow_token(flow: &str) -> &'static str {
+    match flow {
+        "first_install" => "first_install",
+        "first_launch" => "first_launch",
+        "resume" => "resume",
+        _ => "unknown",
+    }
+}
+
+fn setup_correlation_id(value: &str) -> String {
+    Uuid::parse_str(value).map(|uuid| uuid.to_string()).unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn fallback_setup_command_diagnostic(result: &DepInstallResult) -> SetupCommandDiagnostic {
+    SetupCommandDiagnostic {
+        command: "installer internal operation".to_string(),
+        exit_code: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        error: result.error.clone().unwrap_or_else(|| "installation failed".to_string()),
+    }
+}
+
+fn blocked_dependents_for(deps: &[DepDef], results: &HashMap<&'static str, DepInstallResult>, prerequisite: &'static str) -> Vec<&'static str> {
+    deps.iter()
+        .filter(|dep| dep.depends_on.contains(&prerequisite))
+        .filter_map(|dep| results.get(dep.id).filter(|result| is_blocked_dependency_result(result)).map(|_| dep.id))
+        .collect()
+}
+
+fn reportable_setup_failure_ids(deps: &[DepDef], results: &HashMap<&'static str, DepInstallResult>) -> Vec<&'static str> {
+    deps.iter()
+        .filter(|dep| !dep.optional)
+        .filter_map(|dep| results.get(dep.id)
+            .filter(|result| result.status == DepInstallStatus::Failed
+                && !is_blocked_dependency_result(result)
+                && !is_cancelled_dependency_result(result)
+                && !is_concurrent_install_skip_result(result))
+            .map(|_| dep.id))
+        .collect()
+}
+
+struct SetupDependencyFailureReport {
+    dependency: &'static str,
+    category: OnboardingErrorCategory,
+    diagnostic: SetupCommandDiagnostic,
+    blocked_dependents: Vec<String>,
+}
+
+/// Build error-level dependency reports without consuming the command
+/// diagnostics. The same diagnostic is needed immediately afterwards to
+/// classify the onboarding stage detail.
+fn setup_dependency_failure_reports(
+    deps: &[DepDef],
+    results: &HashMap<&'static str, DepInstallResult>,
+    diagnostics: &HashMap<&'static str, SetupCommandDiagnostic>,
+) -> Vec<SetupDependencyFailureReport> {
+    reportable_setup_failure_ids(deps, results)
+        .into_iter()
+        .map(|dependency| {
+            let result = results
+                .get(dependency)
+                .expect("reportable dependency has an install result");
+            let diagnostic = diagnostics
+                .get(dependency)
+                .cloned()
+                .unwrap_or_else(|| fallback_setup_command_diagnostic(result));
+            SetupDependencyFailureReport {
+                dependency,
+                category: setup_error_category(result, Some(&diagnostic)),
+                diagnostic,
+                blocked_dependents: blocked_dependents_for(deps, results, dependency)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+struct SetupCancellationCleanupFailureReport {
+    dependency: &'static str,
+    cleanup: CancellationCleanupFailure,
+    diagnostic: SetupCommandDiagnostic,
+}
+
+/// Cleanup failures are independent of the terminal dependency status. For
+/// example, a direct-binary fallback can recover installation after Homebrew
+/// failed to stop, but the failed cancellation is still actionable telemetry.
+fn setup_cancellation_cleanup_failure_reports(
+    results: &HashMap<&'static str, DepInstallResult>,
+    diagnostics: &HashMap<&'static str, SetupCommandDiagnostic>,
+    cancellations: &HashMap<&'static str, InstallCancellation>,
+    cleanup_reported_by_id: &HashSet<&'static str>,
+) -> Vec<SetupCancellationCleanupFailureReport> {
+    cancellations
+        .iter()
+        .filter_map(|(&dependency, cancellation)| {
+            let InstallCancellation::CleanupFailed(cleanup) = cancellation else {
+                return None;
+            };
+            if cleanup_reported_by_id.contains(dependency) {
+                return None;
+            }
+            let result = results
+                .get(dependency)
+                .expect("cancelled dependency has an install result");
+            let diagnostic = diagnostics
+                .get(dependency)
+                .cloned()
+                .unwrap_or_else(|| fallback_setup_command_diagnostic(result));
+            Some(SetupCancellationCleanupFailureReport {
+                dependency,
+                cleanup: cleanup.clone(),
+                diagnostic,
+            })
+        })
+        .collect()
+}
+
+/// Emit the diagnostic envelope on the current Sentry hub. Callers that are on
+/// the setup path must use `queue_setup_dependency_failure` instead.
+fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'static str, category: OnboardingErrorCategory, diagnostic: SetupCommandDiagnostic, blocked_dependents: &[String]) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let os = os_info::get();
+        let search_path = {
+            #[cfg(windows)] { Some(extended_search_path()) }
+            #[cfg(not(windows))] { None::<String> }
+        };
+        sentry::with_scope(|sentry_scope| {
+            // Only this pair groups events. Correlation and retry data remain context.
+            let fingerprint = hq_telemetry::setup_failure_fingerprint(dependency, category.as_str());
+            sentry_scope.set_fingerprint(Some(&fingerprint));
+            sentry_scope.set_tag("setup_stage", "deps");
+            sentry_scope.set_tag("setup_dependency", dependency);
+            sentry_scope.set_tag("setup_error_category", category.as_str());
+            sentry_scope.set_tag("setup_execution", "attempted");
+            sentry_scope.set_tag("setup_flow", setup_flow_token(&scope.flow));
+            sentry_scope.set_tag("setup_attempt", scope.attempt_count.to_string());
+            sentry_scope.set_tag("setup_os", os.os_type().to_string());
+            sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
+            sentry_scope.set_extra("setup_run_id", sentry::protocol::Value::String(setup_correlation_id(&scope.setup_run_id)));
+            sentry_scope.set_extra("setup_frontend_session_id", sentry::protocol::Value::String(setup_correlation_id(&scope.frontend_session_id)));
+            sentry_scope.set_extra("setup_app_version", sentry::protocol::Value::String(env!("APP_VERSION").to_string()));
+            sentry_scope.set_extra("setup_os_version", sentry::protocol::Value::String(os.version().to_string()));
+            sentry_scope.set_extra("setup_command", sentry::protocol::Value::String(diagnostic.command));
+            sentry_scope.set_extra("setup_exit_code", diagnostic.exit_code.map(|code| sentry::protocol::Value::Number(code.into())).unwrap_or(sentry::protocol::Value::Null));
+            sentry_scope.set_extra("setup_stdout_tail", sentry::protocol::Value::String(diagnostic.stdout));
+            sentry_scope.set_extra("setup_stderr_tail", sentry::protocol::Value::String(diagnostic.stderr));
+            sentry_scope.set_extra("setup_error", sentry::protocol::Value::String(diagnostic.error));
+            sentry_scope.set_extra("setup_blocked_dependents", sentry::protocol::Value::Array(blocked_dependents.iter().cloned().map(sentry::protocol::Value::String).collect()));
+            sentry_scope.set_extra("setup_blocked_dependents_status", sentry::protocol::Value::String(if blocked_dependents.is_empty() { "none" } else { "blocked_by_failed_prerequisite" }.to_string()));
+            if let Some(search_path) = search_path {
+                sentry_scope.set_extra("setup_resolved_search_path", sentry::protocol::Value::String(search_path));
+            }
+        }, || sentry::capture_message("Desktop setup dependency installation failed", sentry::Level::Error));
+    }));
+}
+
+/// Queue a terminal setup failure without waiting for the Sentry transport.
+///
+/// Setup completion is more important than a diagnostic envelope: a disabled
+/// client is a no-op, and a slow or panicking transport is isolated in this
+/// detached reporter thread rather than delaying the setup command.
+fn queue_setup_dependency_failure(scope: OnboardingFailureScope, dependency: &'static str, category: OnboardingErrorCategory, diagnostic: SetupCommandDiagnostic, blocked_dependents: Vec<String>) {
+    let source_hub = sentry::Hub::current();
+    if source_hub.client().is_none() {
+        return;
+    }
+    let hub = Arc::new(sentry::Hub::new_from_top(source_hub));
+    hq_telemetry::dispatch_sentry_report(move || {
+        sentry::Hub::run(hub, || {
+            send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked_dependents);
+        });
+    });
+}
+
+/// Capture a cancellation cleanup failure independently from the user's
+/// deliberate cancellation. The fingerprint deliberately carries only stable
+/// facts (dependency, cleanup category, signal, OS error kind): a process-group
+/// id is machine-specific and would fragment one defect into many issues.
+fn send_setup_cancellation_cleanup_failure(
+    scope: &OnboardingFailureScope,
+    dependency: &'static str,
+    cleanup: CancellationCleanupFailure,
+    diagnostic: SetupCommandDiagnostic,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let os = os_info::get();
+        let category = OnboardingErrorCategory::CancelCleanupFailed;
+        let os_error_kind = cleanup.os_error_kind_token();
+        let fingerprint = [
+            dependency,
+            category.as_str(),
+            cleanup.signal.as_str(),
+            os_error_kind.as_str(),
+        ];
+        let search_path = {
+            #[cfg(windows)]
+            {
+                Some(extended_search_path())
+            }
+            #[cfg(not(windows))]
+            {
+                None::<String>
+            }
+        };
+        sentry::with_scope(
+            |sentry_scope| {
+                sentry_scope.set_fingerprint(Some(&fingerprint));
+                sentry_scope.set_tag("setup_stage", "deps");
+                sentry_scope.set_tag("setup_dependency", dependency);
+                sentry_scope.set_tag("setup_error_category", category.as_str());
+                sentry_scope.set_tag("setup_execution", "cancel-cleanup");
+                sentry_scope.set_tag("setup_flow", setup_flow_token(&scope.flow));
+                sentry_scope.set_tag("setup_attempt", scope.attempt_count.to_string());
+                sentry_scope.set_tag("setup_os", os.os_type().to_string());
+                sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
+                sentry_scope.set_tag("setup_cancel_signal", cleanup.signal.as_str());
+                sentry_scope.set_tag(
+                    "setup_cancel_os_error_kind",
+                    os_error_kind.clone(),
+                );
+                sentry_scope.set_extra(
+                    "setup_run_id",
+                    sentry::protocol::Value::String(setup_correlation_id(&scope.setup_run_id)),
+                );
+                sentry_scope.set_extra(
+                    "setup_frontend_session_id",
+                    sentry::protocol::Value::String(setup_correlation_id(
+                        &scope.frontend_session_id,
+                    )),
+                );
+                sentry_scope.set_extra(
+                    "setup_app_version",
+                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                );
+                sentry_scope.set_extra(
+                    "setup_os_version",
+                    sentry::protocol::Value::String(os.version().to_string()),
+                );
+                sentry_scope.set_extra(
+                    "setup_command",
+                    sentry::protocol::Value::String(diagnostic.command),
+                );
+                sentry_scope.set_extra(
+                    "setup_exit_code",
+                    diagnostic
+                        .exit_code
+                        .map(|code| sentry::protocol::Value::Number(code.into()))
+                        .unwrap_or(sentry::protocol::Value::Null),
+                );
+                sentry_scope.set_extra(
+                    "setup_stdout_tail",
+                    sentry::protocol::Value::String(diagnostic.stdout),
+                );
+                sentry_scope.set_extra(
+                    "setup_stderr_tail",
+                    sentry::protocol::Value::String(diagnostic.stderr),
+                );
+                sentry_scope.set_extra(
+                    "setup_error",
+                    sentry::protocol::Value::String(diagnostic.error),
+                );
+                sentry_scope.set_extra(
+                    "setup_blocked_dependents",
+                    sentry::protocol::Value::Array(Vec::new()),
+                );
+                sentry_scope.set_extra(
+                    "setup_blocked_dependents_status",
+                    sentry::protocol::Value::String("none".to_string()),
+                );
+                sentry_scope.set_extra(
+                    "setup_cancel_signal",
+                    sentry::protocol::Value::String(cleanup.signal.as_str().to_string()),
+                );
+                sentry_scope.set_extra(
+                    "setup_cancel_os_error_kind",
+                    sentry::protocol::Value::String(os_error_kind.clone()),
+                );
+                if let Some(search_path) = search_path {
+                    sentry_scope.set_extra(
+                        "setup_resolved_search_path",
+                        sentry::protocol::Value::String(search_path),
+                    );
+                }
+            },
+            || {
+                sentry::capture_message(
+                    "Desktop setup cancellation cleanup could leave an install process running",
+                    sentry::Level::Error,
+                )
+            },
+        );
+    }));
+}
+
+/// Queue cancellation cleanup telemetry without delaying setup completion.
+/// The user's cancellation remains terminal control flow regardless of whether
+/// reporting can allocate a thread or reach Sentry.
+fn queue_setup_cancellation_cleanup_failure(
+    scope: OnboardingFailureScope,
+    dependency: &'static str,
+    cleanup: CancellationCleanupFailure,
+    diagnostic: SetupCommandDiagnostic,
+) {
+    let source_hub = sentry::Hub::current();
+    if source_hub.client().is_none() {
+        return;
+    }
+    let hub = Arc::new(sentry::Hub::new_from_top(source_hub));
+    hq_telemetry::dispatch_sentry_report(move || {
+        sentry::Hub::run(hub, || {
+            send_setup_cancellation_cleanup_failure(&scope, dependency, cleanup, diagnostic);
+        });
+    });
+}
+
+/// The telemetry payload available while a streaming installer is still alive.
+/// A failed SIGTERM/SIGKILL may leave that child hung forever, so this must be
+/// dispatched from the streaming loop instead of the post-exit aggregator.
+struct ActiveCleanupFailureReport {
+    scope: OnboardingFailureScope,
+    dependency: &'static str,
+    cleanup: CancellationCleanupFailure,
+    diagnostic: SetupCommandDiagnostic,
+}
+
+fn fallback_cleanup_failure_diagnostic(
+    cleanup: &CancellationCleanupFailure,
+) -> SetupCommandDiagnostic {
+    SetupCommandDiagnostic {
+        command: "installer cancellation cleanup".to_string(),
+        exit_code: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        error: cleanup.description(),
+    }
+}
+
+fn active_setup_cancellation_cleanup_failure_report(
+    cleanup: CancellationCleanupFailure,
+) -> Option<ActiveCleanupFailureReport> {
+    let scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
+        .try_with(|scope| scope.clone())
+        .ok()?;
+    let dependency = ACTIVE_SETUP_DEPENDENCY
+        .try_with(|dependency| *dependency)
+        .ok()?;
+    let diagnostic = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
+        .try_with(SetupDiagnosticCollector::current)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| fallback_cleanup_failure_diagnostic(&cleanup));
+    Some(ActiveCleanupFailureReport {
+        scope,
+        dependency,
+        cleanup,
+        diagnostic,
+    })
+}
+
+/// Queue an independent cleanup report as soon as termination fails. Returns
+/// whether the command is running inside a setup dependency with reporting
+/// context, which lets the final aggregator avoid sending a duplicate event.
+fn report_active_setup_cancellation_cleanup_failure(cleanup: CancellationCleanupFailure) -> bool {
+    let Some(report) = active_setup_cancellation_cleanup_failure_report(cleanup) else {
+        return false;
+    };
+    queue_setup_cancellation_cleanup_failure(
+        report.scope,
+        report.dependency,
+        report.cleanup,
+        report.diagnostic,
+    );
+    true
 }
 
 fn emit_install_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
@@ -5420,12 +6853,57 @@ pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
     path.starts_with(&root)
 }
 
-fn dep_is_satisfied(dep: &DepDef) -> bool {
+fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
+    #[cfg(not(windows))]
+    if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
     dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
 }
 
+const HQ_CLI_ALREADY_INSTALLED_BY_CONCURRENT_UPDATER: &str =
+    "HQ CLI already installed by concurrent updater";
+
+/// Reuse the orchestrator's single satisfaction probe after the shared lock is
+/// acquired. A successful competing updater must suppress the redundant npm
+/// install, but an absent or unusable managed CLI must still fall through to it.
+fn hq_cli_dependency_is_satisfied(app: &AppHandle) -> bool {
+    let hq_cli = dependency_defs()
+        .iter()
+        .find(|dep| dep.id == "hq-cli")
+        .expect("hq-cli is a registered dependency");
+    dep_is_satisfied(app, hq_cli)
+}
+
+async fn install_hq_cli_after_lock<F, Fut>(
+    is_satisfied: impl FnOnce() -> bool,
+    install: F,
+) -> Result<String, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    if is_satisfied() {
+        return Ok(HQ_CLI_ALREADY_INSTALLED_BY_CONCURRENT_UPDATER.to_string());
+    }
+    install().await
+}
+
+fn finish_orchestrated_dep_install(
+    label: &str,
+    install_result: Result<String, String>,
+    found_after_install: bool,
+) -> Result<(), String> {
+    match install_result {
+        Ok(_) if found_after_install => Ok(()),
+        Ok(_) => Err(format!("{label} was not found after install")),
+        // An installer can leave a managed binary on the current process PATH
+        // while failing to persist it for future shells. Do not turn that
+        // failure into success through the post-install probe.
+        Err(err) => Err(err),
+    }
+}
+
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
-    if dep_is_satisfied(dep) {
+    if dep_is_satisfied(app, dep) {
         return Ok(());
     }
 
@@ -5443,20 +6921,20 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
-    if dep_is_satisfied(dep) {
-        return Ok(());
-    }
-
-    match install_result {
-        Ok(_) => Err(format!("{} was not found after install", dep.label)),
-        Err(err) => Err(err),
-    }
+    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))
 }
 
 #[tauri::command]
-pub async fn install_deps(app: AppHandle) -> Result<(), String> {
+pub async fn install_deps(
+    app: AppHandle,
+    failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
+) -> Result<(), String> {
+    clear_onboarding_failure_detail("deps", failure_scope.as_ref());
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
+    let mut diagnostic_by_id: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
+    let mut cancellation_by_id: HashMap<&'static str, InstallCancellation> = HashMap::new();
+    let mut cleanup_reported_by_id: HashSet<&'static str> = HashSet::new();
     let mut ok_set: HashSet<&'static str> = HashSet::new();
 
     for dep in deps.iter().filter(|dep| dep.optional) {
@@ -5474,16 +6952,65 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 
         let settled = join_all(ready.into_iter().map(|dep| {
             let app = app.clone();
+            let failure_scope = failure_scope.clone();
             async move {
-                let install_result = install_orchestrated_dep(&app, dep).await;
-                result_from_install(dep, install_result)
+                let collector = SetupDiagnosticCollector::new();
+                let cancellation_collector = InstallCancellationCollector::new();
+                let install_result = ACTIVE_SETUP_DEPENDENCY
+                    .scope(dep.id, async {
+                        match failure_scope {
+                            Some(scope) => {
+                                ACTIVE_ONBOARDING_FAILURE_SCOPE
+                                    .scope(
+                                        scope,
+                                        ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(
+                                            collector.clone(),
+                                            ACTIVE_INSTALL_CANCELLATION_COLLECTOR.scope(
+                                                cancellation_collector.clone(),
+                                                install_orchestrated_dep(&app, dep),
+                                            ),
+                                        ),
+                                    )
+                                    .await
+                            }
+                            None => {
+                                ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
+                                    .scope(
+                                        collector.clone(),
+                                        ACTIVE_INSTALL_CANCELLATION_COLLECTOR.scope(
+                                            cancellation_collector.clone(),
+                                            install_orchestrated_dep(&app, dep),
+                                        ),
+                                    )
+                                    .await
+                            }
+                        }
+                    })
+                    .await;
+                let cancellation = cancellation_collector.take();
+                let cleanup_reported = cancellation_collector.cleanup_failure_reported();
+                (
+                    result_from_install(dep, install_result, cancellation.as_ref()),
+                    collector.take(),
+                    cancellation,
+                    cleanup_reported,
+                )
             }
         }))
         .await;
 
-        for result in settled {
+        for (result, diagnostic, cancellation, cleanup_reported) in settled {
             if result.status == DepInstallStatus::Ok {
                 ok_set.insert(result.id);
+            }
+            if let Some(diagnostic) = diagnostic {
+                diagnostic_by_id.insert(result.id, diagnostic);
+            }
+            if let Some(cancellation) = cancellation {
+                cancellation_by_id.insert(result.id, cancellation);
+            }
+            if cleanup_reported {
+                cleanup_reported_by_id.insert(result.id);
             }
             result_by_id.insert(result.id, result);
         }
@@ -5508,7 +7035,7 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
         .iter()
         .filter_map(|dep| {
             let result = result_by_id.get(dep.id)?;
-            if result.optional || result.status != DepInstallStatus::Failed {
+            if result.optional || !is_terminal_dependency_failure(result) {
                 return None;
             }
             let summary = result
@@ -5523,9 +7050,53 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
         })
         .collect();
 
+    if let Some(scope) = failure_scope.as_ref() {
+        for report in setup_cancellation_cleanup_failure_reports(
+            &result_by_id,
+            &diagnostic_by_id,
+            &cancellation_by_id,
+            &cleanup_reported_by_id,
+        ) {
+            queue_setup_cancellation_cleanup_failure(
+                scope.clone(),
+                report.dependency,
+                report.cleanup,
+                report.diagnostic,
+            );
+        }
+    }
+
     if failures.is_empty() {
         Ok(())
     } else {
+        if let Some(scope) = failure_scope.as_ref() {
+            for report in setup_dependency_failure_reports(deps, &result_by_id, &diagnostic_by_id) {
+                queue_setup_dependency_failure(
+                    scope.clone(),
+                    report.dependency,
+                    report.category,
+                    report.diagnostic,
+                    report.blocked_dependents,
+                );
+            }
+        }
+        if let Some(failed_dependency) = deps.iter().find_map(|dep| {
+            let result = result_by_id.get(dep.id)?;
+            (!dep.optional && is_terminal_dependency_failure(result)).then_some(dep.id)
+        }) {
+            let result = result_by_id
+                .get(failed_dependency)
+                .expect("failed dependency has an install result");
+            record_onboarding_failure_detail(
+                "deps",
+                failure_scope.as_ref(),
+                Some(failed_dependency),
+                setup_error_category(
+                    result,
+                    diagnostic_by_id.get(failed_dependency),
+                ),
+            );
+        }
         Err(format!(
             "Dependency install failed: {}",
             failures.join("; ")
@@ -5536,6 +7107,75 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn path_persistence_failure_remains_fatal_after_the_managed_binary_is_visible() {
+        let result = finish_orchestrated_dep_install(
+            "Node.js",
+            Err("PATH persistence failed".to_string()),
+            true,
+        );
+
+        assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_cli_satisfied_by_the_lock_holder_skips_the_second_npm_install() {
+        let install_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls_for_install = std::rc::Rc::clone(&install_calls);
+
+        let result = install_hq_cli_after_lock(
+            || true,
+            move || {
+                calls_for_install.set(calls_for_install.get() + 1);
+                async { Err("a second npm install must not run".to_string()) }
+            },
+        )
+        .await;
+
+        assert_eq!(result, Ok("HQ CLI already installed by concurrent updater".to_string()));
+        assert_eq!(install_calls.get(), 0, "the satisfied CLI must skip npm");
+    }
+
+    #[tokio::test]
+    async fn a_missing_cli_after_the_lock_wait_still_runs_and_reports_a_failed_install() {
+        let install_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls_for_install = std::rc::Rc::clone(&install_calls);
+
+        let install_result = install_hq_cli_after_lock(
+            || false,
+            move || {
+                calls_for_install.set(calls_for_install.get() + 1);
+                async { Err("npm ERR! EACCES: permission denied".to_string()) }
+            },
+        )
+        .await;
+        let result = finish_orchestrated_dep_install("HQ CLI", install_result, false);
+
+        assert_eq!(install_calls.get(), 1, "a missing CLI must still invoke npm");
+        assert_eq!(
+            result,
+            Err("npm ERR! EACCES: permission denied".to_string()),
+            "a real npm failure after the wait must remain fatal"
+        );
+    }
+
+    #[test]
+    fn session_provider_npm_spec_covers_the_three_session_clis() {
+        assert_eq!(
+            session_provider_npm_spec("claude").unwrap(),
+            ("@anthropic-ai/claude-code", "claude")
+        );
+        assert_eq!(
+            session_provider_npm_spec("codex").unwrap(),
+            ("@openai/codex", "codex")
+        );
+        assert_eq!(
+            session_provider_npm_spec("grok").unwrap(),
+            ("@xai-official/grok", "grok")
+        );
+        assert!(session_provider_npm_spec("cursor").is_err());
+    }
 
     #[test]
     fn managed_node_abi_matches_pinned_versions() {
@@ -5767,6 +7407,364 @@ mod install_deps_planner_tests {
             vec![wave1_required(), vec!["qmd", "hq-cli"]]
         );
     }
+
+    fn failure_scope(run: &str, attempt: u32, session: &str) -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: run.to_string(),
+            attempt_count: attempt,
+            flow: "first_install".to_string(),
+            frontend_session_id: session.to_string(),
+        }
+    }
+
+    fn setup_diagnostic() -> SetupCommandDiagnostic {
+        SetupCommandDiagnostic {
+            command: "npm install -g @tobilu/qmd".to_string(),
+            exit_code: Some(17),
+            stdout: "downloading package\ninstall complete? no".to_string(),
+            stderr: "npm ERR! EACCES: permission denied".to_string(),
+            error: "Process exited with code 17: npm ERR! EACCES".to_string(),
+        }
+    }
+
+    /// A recovered brew/npm command must not be reported if a later fallback
+    /// path is the terminal failure for that dependency.
+    #[test]
+    fn recovered_command_failure_is_discarded_before_terminal_fallback() {
+        let collector = SetupDiagnosticCollector::new();
+        collector.record(setup_diagnostic());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(
+            ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), async {
+                clear_recovered_setup_command_failure();
+            }),
+        );
+        assert!(collector.take().is_none());
+    }
+
+    fn string_extra<'a>(event: &'a sentry::protocol::Event<'static>, key: &str) -> &'a str {
+        let Some(sentry::protocol::Value::String(value)) = event.extra.get(key) else {
+            panic!("{key} must be a string extra");
+        };
+        value
+    }
+
+    /// The Sentry-only envelope holds the command result and all correlation
+    /// fields needed to line it up with the bounded product telemetry row.
+    #[test]
+    fn setup_failure_event_carries_command_output_correlation_and_system_context() {
+        let scope = failure_scope("11111111-1111-4111-8111-111111111111", 2, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let events = sentry::test::with_captured_events_options(
+            || {
+                send_setup_dependency_failure(&scope, "qmd", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), &["hq-cli".to_string()]);
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.fingerprint, vec!["qmd", "exit-nonzero"]);
+        assert_eq!(event.tags["setup_stage"], "deps");
+        assert_eq!(event.tags["setup_dependency"], "qmd");
+        assert_eq!(event.tags["setup_error_category"], "exit-nonzero");
+        assert_eq!(event.tags["setup_execution"], "attempted");
+        assert_eq!(event.tags["setup_attempt"], "2");
+        assert_eq!(event.tags["setup_flow"], "first_install");
+        assert_eq!(string_extra(event, "setup_run_id"), "11111111-1111-4111-8111-111111111111");
+        assert_eq!(string_extra(event, "setup_frontend_session_id"), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        assert_eq!(string_extra(event, "setup_command"), "npm install -g @tobilu/qmd");
+        assert_eq!(event.extra["setup_exit_code"], sentry::protocol::Value::Number(17.into()));
+        assert!(string_extra(event, "setup_stdout_tail").contains("downloading package"));
+        assert!(string_extra(event, "setup_stderr_tail").contains("EACCES"));
+        assert!(event.tags.contains_key("setup_os"));
+        assert!(event.tags.contains_key("setup_architecture"));
+        assert!(!string_extra(event, "setup_app_version").is_empty());
+        assert!(!string_extra(event, "setup_os_version").is_empty());
+        assert_eq!(event.extra["setup_blocked_dependents"], sentry::protocol::Value::Array(vec![sentry::protocol::Value::String("hq-cli".into())]));
+        assert_eq!(string_extra(event, "setup_blocked_dependents_status"), "blocked_by_failed_prerequisite");
+    }
+
+    /// A failed node prerequisite blocks qmd and hq-cli, but only node is a
+    /// root cause and only its event carries those dependent effects.
+    #[test]
+    fn setup_failure_roots_exclude_two_dependents_blocked_by_one_prerequisite() {
+        let deps = dependency_defs();
+        let node = deps.iter().find(|dep| dep.id == "node").unwrap();
+        let qmd = deps.iter().find(|dep| dep.id == "qmd").unwrap();
+        let hq_cli = deps.iter().find(|dep| dep.id == "hq-cli").unwrap();
+        let mut results = premark_optional_results(deps);
+        results.insert(node.id, failed_result(node));
+        for dependent in [qmd, hq_cli] {
+            results.insert(dependent.id, DepInstallResult {
+                id: dependent.id,
+                label: dependent.label,
+                optional: dependent.optional,
+                status: DepInstallStatus::Failed,
+                error: Some("Prerequisite not installed: node".to_string()),
+            });
+        }
+        assert_eq!(reportable_setup_failure_ids(deps, &results), vec!["node"]);
+        assert_eq!(blocked_dependents_for(deps, &results, "node"), vec!["qmd", "hq-cli"]);
+    }
+
+    /// Retried failures stay grouped but run/session context distinguishes a
+    /// retry by one person from a second affected person.
+    #[test]
+    fn repeated_setup_failures_share_one_issue_but_retain_person_and_retry_context() {
+        let first = failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let retry = failure_scope("11111111-1111-4111-8111-111111111111", 2, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let other = failure_scope("22222222-2222-4222-8222-222222222222", 1, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        let events = sentry::test::with_captured_events(|| {
+            for scope in [&first, &retry, &other] {
+                send_setup_dependency_failure(scope, "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), &[]);
+            }
+        });
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|event| event.fingerprint == vec!["node", "exit-nonzero"]));
+        assert_eq!(events[0].tags["setup_attempt"], "1");
+        assert_eq!(events[1].tags["setup_attempt"], "2");
+        assert_eq!(string_extra(&events[0], "setup_frontend_session_id"), string_extra(&events[1], "setup_frontend_session_id"));
+        assert_ne!(string_extra(&events[0], "setup_frontend_session_id"), string_extra(&events[2], "setup_frontend_session_id"));
+    }
+
+    /// Empty DSNs in development and PR CI must leave setup able to complete.
+    #[test]
+    fn setup_failure_capture_is_a_noop_without_a_sentry_client() {
+        let hub = std::sync::Arc::new(sentry::Hub::new(None, std::sync::Arc::new(Default::default())));
+        sentry::Hub::run(hub.clone(), || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        assert!(hub.last_event_id().is_none());
+    }
+
+    struct BlockingSetupTransport {
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl sentry::Transport for BlockingSetupTransport {
+        fn send_envelope(&self, _envelope: sentry::Envelope) {
+            let _ = self.started.send(());
+            let (released, wake) = &*self.release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = wake.wait(released).unwrap();
+            }
+        }
+    }
+
+    struct PanickingSetupTransport {
+        started: std::sync::mpsc::Sender<()>,
+    }
+
+    impl sentry::Transport for PanickingSetupTransport {
+        fn send_envelope(&self, _envelope: sentry::Envelope) {
+            let _ = self.started.send(());
+            panic!("simulated Sentry transport failure");
+        }
+    }
+
+    fn setup_hub<T: sentry::Transport>(transport: std::sync::Arc<T>) -> std::sync::Arc<sentry::Hub> {
+        let options = sentry::ClientOptions {
+            dsn: Some("https://public@sentry.invalid/1".parse().unwrap()),
+            transport: Some(std::sync::Arc::new(transport)),
+            before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+            ..Default::default()
+        };
+        std::sync::Arc::new(sentry::Hub::new(
+            Some(std::sync::Arc::new(sentry::Client::from(options))),
+            std::sync::Arc::new(Default::default()),
+        ))
+    }
+
+    struct ConcurrentSetupTransport {
+        arrived: std::sync::mpsc::Sender<&'static str>,
+        released: std::sync::Arc<(
+            std::sync::Mutex<std::collections::HashSet<&'static str>>,
+            std::sync::Condvar,
+        )>,
+        events: std::sync::Mutex<Vec<sentry::protocol::Event<'static>>>,
+    }
+
+    impl ConcurrentSetupTransport {
+        fn release(&self, dependency: &'static str) {
+            let (released, wake) = &*self.released;
+            released.lock().unwrap().insert(dependency);
+            wake.notify_all();
+        }
+
+        fn events(&self) -> Vec<sentry::protocol::Event<'static>> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl sentry::Transport for ConcurrentSetupTransport {
+        fn send_envelope(&self, envelope: sentry::Envelope) {
+            let Some(event) = envelope.event().cloned() else {
+                return;
+            };
+            let dependency = match event.tags.get("setup_dependency").map(|tag| tag.as_ref()) {
+                Some("node") => "node",
+                Some("qmd") => "qmd",
+                _ => {
+                    self.events.lock().unwrap().push(event);
+                    return;
+                }
+            };
+            self.events.lock().unwrap().push(event);
+            let _ = self.arrived.send(dependency);
+            let (released, wake) = &*self.released;
+            let mut released = released.lock().unwrap();
+            while !released.contains(dependency) {
+                released = wake.wait(released).unwrap();
+            }
+        }
+    }
+
+    /// Concurrent detached setup reporters must keep their Sentry scopes and
+    /// issue grouping independent. The transport forces the first reporter to
+    /// finish while the second scope is active, which was the production panic.
+    #[test]
+    fn concurrent_setup_failure_reporters_keep_scopes_and_envelopes_independent() {
+        let (arrived, arrived_rx) = std::sync::mpsc::channel();
+        let released = std::sync::Arc::new((
+            std::sync::Mutex::new(std::collections::HashSet::new()),
+            std::sync::Condvar::new(),
+        ));
+        let transport = std::sync::Arc::new(ConcurrentSetupTransport {
+            arrived,
+            released,
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let hub = setup_hub(transport.clone());
+
+        let scope_guard_panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let scope_guard_panic_observer = scope_guard_panicked.clone();
+        let previous_panic_hook =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(std::panic::take_hook())));
+        let previous_panic_hook_for_observer = previous_panic_hook.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            if info.to_string().contains("Popped scope guard out of order") {
+                scope_guard_panic_observer.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            previous_panic_hook_for_observer
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("previous panic hook is installed")(info);
+        }));
+
+        sentry::Hub::run(hub.clone(), || {
+            queue_setup_dependency_failure(
+                failure_scope(
+                    "11111111-1111-4111-8111-111111111111",
+                    1,
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                ),
+                "node",
+                OnboardingErrorCategory::ExitNonzero,
+                setup_diagnostic(),
+                vec![],
+            );
+        });
+        let node_arrival = arrived_rx.recv_timeout(std::time::Duration::from_secs(1));
+
+        sentry::Hub::run(hub, || {
+            queue_setup_dependency_failure(
+                failure_scope(
+                    "22222222-2222-4222-8222-222222222222",
+                    1,
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                ),
+                "qmd",
+                OnboardingErrorCategory::ExitNonzero,
+                setup_diagnostic(),
+                vec![],
+            );
+        });
+        let qmd_arrival = arrived_rx.recv_timeout(std::time::Duration::from_secs(1));
+
+        transport.release("node");
+        let scope_guard_panic_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !scope_guard_panicked.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < scope_guard_panic_deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        transport.release("qmd");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let observed_scope_guard_panic =
+            scope_guard_panicked.load(std::sync::atomic::Ordering::SeqCst);
+        let _ = std::panic::take_hook();
+        let previous_panic_hook = previous_panic_hook
+            .lock()
+            .unwrap()
+            .take()
+            .expect("previous panic hook is installed");
+        std::panic::set_hook(previous_panic_hook);
+
+        assert_eq!(
+            node_arrival.expect("node reporter should reach the transport"),
+            "node"
+        );
+        assert_eq!(
+            qmd_arrival.expect("qmd reporter should reach the transport"),
+            "qmd"
+        );
+        assert!(
+            !observed_scope_guard_panic,
+            "concurrent reporters must not panic while dropping their Sentry scopes"
+        );
+
+        let events = transport.events();
+        assert_eq!(events.len(), 2);
+        for (dependency, category) in [("node", "exit-nonzero"), ("qmd", "exit-nonzero")] {
+            let event = events
+                .iter()
+                .find(|event| {
+                    event.tags.get("setup_dependency").map(|tag| tag.as_ref()) == Some(dependency)
+                })
+                .expect("each concurrent reporter should capture its own envelope");
+            assert_eq!(event.tags["setup_dependency"], dependency);
+            assert_eq!(event.fingerprint, vec![dependency, category]);
+        }
+    }
+
+    /// A slow transport and a transport failure run only on the reporter
+    /// thread, so the setup command returns immediately in either case.
+    #[test]
+    fn setup_failure_reporter_never_blocks_on_slow_or_failing_sentry_transport() {
+        let (slow_started, slow_started_rx) = std::sync::mpsc::channel();
+        let release = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let slow_transport = std::sync::Arc::new(BlockingSetupTransport {
+            started: slow_started,
+            release: release.clone(),
+        });
+        let slow_hub = setup_hub(slow_transport);
+        let start = std::time::Instant::now();
+        sentry::Hub::run(slow_hub, || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        slow_started_rx.recv_timeout(std::time::Duration::from_secs(1)).expect("reporter should reach the slow transport");
+        let (released, wake) = &*release;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+
+        let (panic_started, panic_started_rx) = std::sync::mpsc::channel();
+        let failing_hub = setup_hub(std::sync::Arc::new(PanickingSetupTransport { started: panic_started }));
+        sentry::Hub::run(failing_hub, || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        panic_started_rx.recv_timeout(std::time::Duration::from_secs(1)).expect("reporter should isolate a failed transport");
+    }
 }
 
 #[cfg(all(test, not(windows)))]
@@ -5852,6 +7850,7 @@ mod managed_node_url_tests {
 #[cfg(all(test, unix))]
 mod install_deps_tests {
     use super::*;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -5895,16 +7894,21 @@ mod install_deps_tests {
     #[test]
     fn test_managed_git_env_empty_when_not_installed() {
         let home = tempfile::TempDir::new().unwrap();
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let _home = scoped_home(home.path());
         assert!(managed_git_env_in(home.path()).is_empty());
     }
 
     #[test]
     fn test_managed_git_env_set_when_installed() {
         let home = tempfile::TempDir::new().unwrap();
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
         let git_bin_dir = home
             .path()
             .join("Library/Application Support/Indigo HQ/toolchain/git/bin");
         make_fake_bin_at(&git_bin_dir, "git");
+        ensure_managed_git_shim_in(home.path()).expect("managed git shim");
+        let _home = scoped_home(home.path());
 
         let env: std::collections::HashMap<String, String> =
             managed_git_env_in(home.path()).into_iter().collect();
@@ -6247,6 +8251,40 @@ mod install_deps_tests {
 mod windows_tests {
     use super::*;
     use std::io::Write as _;
+
+    /// npm/qmd/hq all install an extensionless POSIX script next to their
+    /// `.cmd` shim. Resolving the bare script and spawning it fails with
+    /// ERROR_BAD_EXE_FORMAT (os error 193) — the first Windows headless
+    /// install run died on exactly this. PATHEXT must win.
+    #[test]
+    fn which_prefers_pathext_over_extensionless_script() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("npm"), b"#!/bin/sh\nexec node npm.js\n").unwrap();
+        std::fs::write(tmp.path().join("npm.cmd"), b"@echo off\r\n").unwrap();
+
+        let found = which::which_in(
+            "npm",
+            Some(tmp.path().to_string_lossy().as_ref()),
+            tmp.path(),
+        )
+        .expect("npm should resolve");
+        // PATHEXT entries are uppercase, so the resolved path may come back
+        // as `npm.CMD`; compare case-insensitively like the filesystem does.
+        assert_eq!(
+            found.to_string_lossy().to_lowercase(),
+            tmp.path().join("npm.cmd").to_string_lossy().to_lowercase()
+        );
+
+        // A lone extensionless file must not resolve at all — it cannot be
+        // spawned by CreateProcess.
+        std::fs::write(tmp.path().join("qmd"), b"#!/bin/sh\n").unwrap();
+        assert!(which::which_in(
+            "qmd",
+            Some(tmp.path().to_string_lossy().as_ref()),
+            tmp.path(),
+        )
+        .is_err());
+    }
 
     fn zip_fixture(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let cursor = std::io::Cursor::new(Vec::new());
@@ -6606,7 +8644,18 @@ mod windows_tests {
         std::fs::write(&qmd_bin, b"").unwrap();
         write_qmd_bash_shim_in(&qmd_prefix).expect("qmd shim should write");
         let qmd_cmd = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
-        assert!(qmd_cmd.contains("bash \"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*"));
+        // The bash invocation is either an absolute Git Bash path (when one is
+        // installed on the test machine) or a bare `bash` fallback — both end
+        // with the same script-relative argument.
+        assert!(
+            qmd_cmd.contains("\"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*"),
+            "{qmd_cmd}"
+        );
+        assert!(qmd_cmd.to_lowercase().contains("bash"), "{qmd_cmd}");
+        assert!(
+            !qmd_cmd.to_lowercase().contains("system32"),
+            "shim must never invoke the WSL launcher: {qmd_cmd}"
+        );
 
         let npm_bin = tmp.path().join("npm-bin");
         write_rsync_shim_in(&npm_bin).expect("rsync shims should write");
@@ -7408,17 +9457,26 @@ mod git_shim_tests {
     fn shim_written_only_when_portable_git_exists_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        assert!(ensure_managed_git_shim_in(home).is_none());
+        assert!(ensure_managed_git_shim_in(home).is_err());
         let bin = managed_git_dir_in(home).join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("git"), "").unwrap();
+        let git = bin.join("git");
+        std::fs::write(&git, "#!/bin/sh\nprintf 'git version fixture'\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
         let shim = ensure_managed_git_shim_in(home).expect("shim");
         let body = std::fs::read_to_string(&shim).unwrap();
         assert!(body.starts_with("#!/bin/sh"));
-        assert!(body.contains("GIT_EXEC_PATH") && body.contains("GIT_TEMPLATE_DIR") && body.contains("exec "));
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&shim).unwrap().permissions().mode() & 0o111, 0o111);
-        assert_eq!(ensure_managed_git_shim_in(home), Some(shim));
+        assert!(
+            body.contains("GIT_EXEC_PATH")
+                && body.contains("GIT_TEMPLATE_DIR")
+                && body.contains("exec ")
+        );
+        assert_eq!(
+            std::fs::metadata(&shim).unwrap().permissions().mode() & 0o111,
+            0o111
+        );
+        assert_eq!(ensure_managed_git_shim_in(home), Ok(shim));
     }
 
     #[test]
@@ -7500,6 +9558,69 @@ mod npm_bin_cleanup_tests {
     }
 }
 
+#[cfg(all(test, not(windows)))]
+mod bundled_hq_cli_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_cli_requires_its_version_not_merely_a_managed_install() {
+        assert!(bundled_cli_version_matches(Some("5.199.0-local.0\n"), Some("5.199.0-local.0")));
+        assert!(!bundled_cli_version_matches(Some("5.199.0-local.0"), Some("5.109.16")));
+        assert!(!bundled_cli_version_matches(Some("5.199.0-local.0"), None));
+        assert!(!bundled_cli_version_matches(None, Some("5.199.0-local.0")));
+    }
+
+    #[test]
+    fn exact_bundled_resource_is_selected() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_dir = temp.path().join("Resources");
+        let package = resource_dir.join(BUNDLED_HQ_CLI_RESOURCE_PATH);
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"package bytes").unwrap();
+
+        assert_eq!(
+            hq_cli_install_spec(Some(&resource_dir)),
+            package.canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn absent_bundle_preserves_the_registry_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_dir = temp.path().join("Resources");
+        std::fs::create_dir_all(&resource_dir).unwrap();
+
+        assert_eq!(
+            hq_cli_install_spec(Some(&resource_dir)),
+            HQ_CLI_REGISTRY_SPEC
+        );
+        assert_eq!(hq_cli_install_spec(None), HQ_CLI_REGISTRY_SPEC);
+    }
+
+    #[test]
+    fn neighboring_or_symlinked_user_file_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_dir = temp.path().join("HQ.app/Contents/Resources");
+        let package_dir = resource_dir.join("hq-cli");
+        std::fs::create_dir_all(&package_dir).unwrap();
+
+        let neighboring_package = temp.path().join("hq-cli.tgz");
+        std::fs::write(&neighboring_package, b"untrusted package bytes").unwrap();
+        assert_eq!(
+            hq_cli_install_spec(Some(&resource_dir)),
+            HQ_CLI_REGISTRY_SPEC,
+            "a package beside the app must not be discovered"
+        );
+
+        std::os::unix::fs::symlink(&neighboring_package, package_dir.join("hq-cli.tgz")).unwrap();
+        assert_eq!(
+            hq_cli_install_spec(Some(&resource_dir)),
+            HQ_CLI_REGISTRY_SPEC,
+            "the fixed resource slot must not escape via symlink"
+        );
+    }
+}
+
 #[cfg(test)]
 mod foreign_copy_rejection_tests {
     use super::*;
@@ -7539,5 +9660,644 @@ mod registry_failure_classifier_tests {
         assert!(looks_like_registry_failure("npm error network In most cases you are behind a proxy"));
         assert!(!looks_like_registry_failure("npm error code EACCES permission denied, mkdir '/usr/local/lib/node_modules'"));
         assert!(!looks_like_registry_failure("npm error code ENOSPC no space left on device"));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HQ-DESKTOP-6J: a cli-update lock skip must not be reported as a setup failure
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod cli_install_lock_skip_tests {
+    use super::*;
+    use crate::commands::hq_cli_update::{
+        cli_install_lock_skip_message, CLI_INSTALL_LOCK_SKIP_PREFIX,
+    };
+    use hq_desktop_core::cli_update_lock::CliUpdateLockInfo;
+
+    fn scope() -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 1,
+            flow: "resume".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+        }
+    }
+
+    fn hq_cli_result(error: &str) -> DepInstallResult {
+        let dep = dependency_defs().iter().find(|d| d.id == "hq-cli").unwrap();
+        DepInstallResult {
+            id: dep.id,
+            label: dep.label,
+            optional: dep.optional,
+            status: DepInstallStatus::Failed,
+            error: Some(error.to_string()),
+        }
+    }
+
+    /// The exact production skip message, reconstructed byte-for-byte from the
+    /// real holder-line formatter and the real message builder — this is the
+    /// `setup_error` extra that production event 2e10b3a7… carried.
+    fn production_skip_message() -> String {
+        let holder = CliUpdateLockInfo {
+            pid: 39446,
+            started_at: "2026-09-13T00:43:32.742Z".to_string(),
+            tool: "hq-desktop-app-cli-update".to_string(),
+            version: "0.10.251".to_string(),
+        }
+        .holder_line();
+        cli_install_lock_skip_message(&holder)
+    }
+
+    /// Drive `install_deps`'s exact reporting loop against a results map and
+    /// return the captured Sentry events.
+    fn capture_reporting_loop(
+        results: &HashMap<&'static str, DepInstallResult>,
+        diagnostics: &HashMap<&'static str, SetupCommandDiagnostic>,
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        let deps = dependency_defs();
+        let scope = scope();
+        sentry::test::with_captured_events(|| {
+            for dependency in reportable_setup_failure_ids(deps, results) {
+                let result = results.get(dependency).unwrap();
+                let diagnostic = diagnostics
+                    .get(dependency)
+                    .cloned()
+                    .unwrap_or_else(|| fallback_setup_command_diagnostic(result));
+                let category = setup_error_category(result, Some(&diagnostic));
+                let blocked = blocked_dependents_for(deps, results, dependency)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked);
+            }
+        })
+    }
+
+    #[test]
+    fn a_concurrent_cli_install_skip_is_not_a_reportable_setup_failure() {
+        // Reproduces HQ-DESKTOP-6J: on the base, hq-cli is a reportable root and
+        // the reporting loop fires one Level::Error event; with the fix it is
+        // neither a root nor an event.
+        let deps = dependency_defs();
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert("hq-cli", hq_cli_result(&production_skip_message()));
+
+        assert!(
+            reportable_setup_failure_ids(deps, &results).is_empty(),
+            "a lock-skip must not be a reportable setup-failure root"
+        );
+        assert_eq!(
+            capture_reporting_loop(&results, &HashMap::new()).len(),
+            0,
+            "a lock-skip must capture zero Sentry events"
+        );
+    }
+
+    #[test]
+    fn a_genuine_hq_cli_install_failure_is_still_reported() {
+        // Negative control (filter-gates-need-a-negative-control): an ordinary
+        // non-zero-exit npm failure for hq-cli stays a reportable root and still
+        // fires exactly one error event with its existing fingerprint.
+        let deps = dependency_defs();
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert(
+            "hq-cli",
+            hq_cli_result("Process exited with code 243: npm ERR! EACCES: permission denied"),
+        );
+        let mut diagnostics: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
+        diagnostics.insert(
+            "hq-cli",
+            SetupCommandDiagnostic {
+                command: "npm install -g @indigoai-us/hq-cli".to_string(),
+                exit_code: Some(243),
+                stdout: String::new(),
+                stderr: "npm ERR! EACCES: permission denied".to_string(),
+                error: "Process exited with code 243".to_string(),
+            },
+        );
+
+        assert_eq!(reportable_setup_failure_ids(deps, &results), vec!["hq-cli"]);
+        let events = capture_reporting_loop(&results, &diagnostics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].fingerprint, vec!["hq-cli", "exit-nonzero"]);
+        assert_eq!(events[0].tags["setup_error_category"], "exit-nonzero");
+    }
+
+    #[test]
+    fn the_skip_message_the_lock_path_produces_satisfies_the_suppression_predicate() {
+        // Initializer-vs-consumer parity: the exact message the lock path emits is
+        // accepted by the predicate, so producer and consumer cannot drift.
+        let message = production_skip_message();
+        assert!(message.starts_with(CLI_INSTALL_LOCK_SKIP_PREFIX));
+        assert!(
+            is_concurrent_install_skip_result(&hq_cli_result(&message)),
+            "producer message must satisfy the consumer predicate: {message}"
+        );
+    }
+
+    #[test]
+    fn a_lock_skip_is_categorised_concurrent_install() {
+        // No exit code, yet it must classify as concurrent-install (ahead of the
+        // exit_code branch), never Unknown.
+        let result = hq_cli_result(&production_skip_message());
+        assert_eq!(
+            setup_error_category(&result, None),
+            OnboardingErrorCategory::ConcurrentInstall
+        );
+        assert_eq!(
+            OnboardingErrorCategory::ConcurrentInstall.as_str(),
+            "concurrent-install"
+        );
+    }
+}
+
+// Real-process artifact E2E for the bounded cli-install lock wait. `#[ignore]`d
+// out of the parallel `cargo test` pool and run in a dedicated, timeout-bounded
+// rust-macos step with `--include-ignored --test-threads=1`. A genuine second OS
+// process holds the real cli-update lock under a temp `HQ_LOCK_DIR`; each case
+// loops >= 20 sequential iterations so one green run is repeated-run evidence.
+#[cfg(all(test, unix))]
+mod cli_install_lock_e2e_tests {
+    use super::*;
+    use crate::commands::hq_cli_update::cli_install_lock_skip_message;
+    use hq_desktop_core::cli_update_lock::{
+        acquire_cli_update_lock_waiting_in, CliUpdateLockAttempt, CliUpdateLockInfo,
+        CLI_UPDATE_LOCK_FILE,
+    };
+    use std::process::Command;
+
+    // Opt-in real backoff window (mirrors HQ_SWAP_TEST_BACKOFF_MS). The rust-macos
+    // step sets HQ_CLI_LOCK_TEST_BACKOFF_MS=200; the default keeps a local run brisk.
+    fn wait_backoff() -> Duration {
+        Duration::from_millis(
+            std::env::var("HQ_CLI_LOCK_TEST_BACKOFF_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200),
+        )
+    }
+
+    fn seed_fresh_lock(dir: &Path, pid: u32) {
+        let info = CliUpdateLockInfo {
+            pid,
+            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            tool: "hq-desktop-app-cli-update".to_string(),
+            version: "0.10.251".to_string(),
+        };
+        std::fs::write(
+            dir.join(CLI_UPDATE_LOCK_FILE),
+            serde_json::to_string(&info).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn scope() -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 1,
+            flow: "resume".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+        }
+    }
+
+    #[test]
+    #[ignore = "real-process artifact E2E; run in the rust-macos cli-install-lock step"]
+    fn a_holder_that_exits_mid_budget_lets_the_cli_install_proceed() {
+        let backoff = wait_backoff();
+        for iteration in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            // A REAL second OS process is the lock holder.
+            let mut holder = Command::new("sleep").arg("30").spawn().expect("spawn holder");
+            seed_fresh_lock(dir.path(), holder.id());
+
+            // The holder exits mid-budget; reaping it makes its pid genuinely dead,
+            // so the lock is reclaimable exactly as production's dead-holder takeover
+            // is — nothing waits forever on a crashed holder.
+            let releaser = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                let _ = holder.kill();
+                let _ = holder.wait();
+            });
+
+            let attempt = acquire_cli_update_lock_waiting_in(
+                dir.path(),
+                "hq-desktop-app-install-deps",
+                "0.10.255",
+                Duration::from_secs(20),
+                backoff,
+                |_| {},
+            )
+            .expect("acquire");
+            releaser.join().unwrap();
+
+            assert!(
+                matches!(attempt, CliUpdateLockAttempt::Acquired(_)),
+                "iteration {iteration}: a holder that exits mid-budget must let the install proceed"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "real-process artifact E2E; run in the rust-macos cli-install-lock step"]
+    fn a_holder_that_never_exits_skips_within_budget_with_zero_error_events() {
+        let backoff = wait_backoff();
+        let scope = scope();
+        for iteration in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let mut holder = Command::new("sleep").arg("30").spawn().expect("spawn holder");
+            seed_fresh_lock(dir.path(), holder.id());
+
+            // A real, live, foreign holder for the whole (short) budget => a bounded
+            // skip, never an unbounded wait.
+            let attempt = acquire_cli_update_lock_waiting_in(
+                dir.path(),
+                "hq-desktop-app-install-deps",
+                "0.10.255",
+                backoff * 3,
+                backoff,
+                |_| {},
+            )
+            .expect("acquire");
+            let holder_line = match attempt {
+                CliUpdateLockAttempt::Held { holder } => holder,
+                other => {
+                    let _ = holder.kill();
+                    let _ = holder.wait();
+                    panic!("iteration {iteration}: expected a bounded skip, got {other:?}");
+                }
+            };
+
+            // The bounded skip must produce ZERO error-level Sentry events through
+            // the real reporting path.
+            let deps = dependency_defs();
+            let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+            let hq_cli = deps.iter().find(|d| d.id == "hq-cli").unwrap();
+            results.insert(
+                "hq-cli",
+                DepInstallResult {
+                    id: hq_cli.id,
+                    label: hq_cli.label,
+                    optional: hq_cli.optional,
+                    status: DepInstallStatus::Failed,
+                    error: Some(cli_install_lock_skip_message(&holder_line)),
+                },
+            );
+            assert!(reportable_setup_failure_ids(deps, &results).is_empty());
+            let events = sentry::test::with_captured_events(|| {
+                for dependency in reportable_setup_failure_ids(deps, &results) {
+                    let result = results.get(dependency).unwrap();
+                    let diagnostic = fallback_setup_command_diagnostic(result);
+                    let category = setup_error_category(result, Some(&diagnostic));
+                    send_setup_dependency_failure(&scope, dependency, category, diagnostic, &[]);
+                }
+            });
+            assert_eq!(
+                events.len(),
+                0,
+                "iteration {iteration}: a lock skip must page nothing"
+            );
+
+            let _ = holder.kill();
+            let _ = holder.wait();
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HQ-DESKTOP-6H: user cancellation and failed cancellation cleanup are distinct
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod cancellation_reporting_tests {
+    use super::*;
+
+    fn scope() -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 1,
+            flow: "first_install".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+        }
+    }
+
+    fn failed_result(dependency: &'static str, error: &str) -> DepInstallResult {
+        let dep = dependency_defs()
+            .iter()
+            .find(|dep| dep.id == dependency)
+            .expect("fixture dependency is registered");
+        DepInstallResult {
+            id: dep.id,
+            label: dep.label,
+            optional: dep.optional,
+            status: DepInstallStatus::Failed,
+            error: Some(error.to_string()),
+        }
+    }
+
+    fn cancelled_result(dependency: &'static str, cancellation: &InstallCancellation) -> DepInstallResult {
+        let dep = dependency_defs()
+            .iter()
+            .find(|dep| dep.id == dependency)
+            .expect("fixture dependency is registered");
+        result_from_install(dep, Err(cancellation.user_message()), Some(cancellation))
+    }
+
+    #[cfg(unix)]
+    fn sigterm_eperm_cleanup_failure() -> CancellationCleanupFailure {
+        CancellationCleanupFailure::from_unix_signal(Signal::SIGTERM, nix::errno::Errno::EPERM)
+    }
+
+    fn diagnostic(error: &str) -> SetupCommandDiagnostic {
+        SetupCommandDiagnostic {
+            command: "npm install -g @indigoai-us/hq-cli".to_string(),
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: error.to_string(),
+            error: error.to_string(),
+        }
+    }
+
+    fn capture_reporting_loop(result: &DepInstallResult) -> Vec<sentry::protocol::Event<'static>> {
+        let deps = dependency_defs();
+        let mut results = premark_optional_results(deps);
+        results.insert(result.id, result.clone());
+        sentry::test::with_captured_events(|| {
+            for dependency in reportable_setup_failure_ids(deps, &results) {
+                let result = results.get(dependency).expect("reportable result is present");
+                let diagnostic = diagnostic(result.error.as_deref().unwrap_or_default());
+                let category = setup_error_category(result, Some(&diagnostic));
+                send_setup_dependency_failure(&scope(), dependency, category, diagnostic, &[]);
+            }
+        })
+    }
+
+    #[cfg(unix)]
+    fn capture_queued_events(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
+        let transport = sentry::test::TestTransport::new();
+        let options = sentry::ClientOptions {
+            dsn: Some(
+                "https://public@sentry.invalid/1"
+                    .parse()
+                    .expect("test DSN parses"),
+            ),
+            transport: Some(Arc::new(transport.clone())),
+            ..Default::default()
+        };
+        let hub = Arc::new(sentry::Hub::new(
+            Some(Arc::new(options.into())),
+            Arc::new(Default::default()),
+        ));
+
+        sentry::Hub::run(hub, || {
+            f();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                let events = transport.fetch_and_clear_events();
+                if !events.is_empty() || Instant::now() >= deadline {
+                    return events;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    }
+
+    #[test]
+    fn cancelling_while_waiting_for_the_cli_install_lock_records_a_typed_outcome() {
+        let registration = InstallCancellationRegistration {
+            handle: Uuid::new_v4().to_string(),
+        };
+        register_cancel_handle(registration.handle.clone());
+        assert!(cancel_install(registration.handle.clone()));
+
+        let collector = InstallCancellationCollector::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime builds");
+        let result = runtime.block_on(
+            ACTIVE_INSTALL_CANCELLATION_COLLECTOR.scope(collector.clone(), async {
+                registration.reject_if_cancelled()
+            }),
+        );
+
+        assert_eq!(
+            result,
+            Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string())
+        );
+        let cancellation = collector.take().expect("typed cancellation is collected");
+        assert_eq!(cancellation, InstallCancellation::UserCancelled);
+        let result = cancelled_result("hq-cli", &cancellation);
+        assert!(
+            capture_reporting_loop(&result).is_empty(),
+            "a lock-wait cancellation must not emit the generic dependency failure"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_failure_is_emitted_before_a_hung_child_exits() {
+        let cleanup = sigterm_eperm_cleanup_failure();
+        let collector = SetupDiagnosticCollector::new();
+        let cancellation_collector = InstallCancellationCollector::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime builds");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("hung child starts");
+
+        let events = capture_queued_events(|| {
+            runtime.block_on(ACTIVE_ONBOARDING_FAILURE_SCOPE.scope(
+                scope(),
+                ACTIVE_SETUP_DEPENDENCY.scope(
+                    "hq-cli",
+                    ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector, async {
+                        ACTIVE_INSTALL_CANCELLATION_COLLECTOR
+                            .scope(cancellation_collector.clone(), async {
+                                assert!(
+                                    child.try_wait().expect("poll hung child").is_none(),
+                                    "the cleanup report must be emitted while the child is still running"
+                                );
+                                record_install_cancellation(InstallCancellation::CleanupFailed(
+                                    cleanup.clone(),
+                                ));
+                            })
+                            .await;
+                    }),
+                ),
+            ));
+        });
+
+        assert!(
+            child.try_wait().expect("poll after report").is_none(),
+            "the report must not wait for the hung child to exit"
+        );
+        child.kill().expect("stop hung child");
+        child.wait().expect("reap hung child");
+
+        assert_eq!(
+            cancellation_collector.take(),
+            Some(InstallCancellation::CleanupFailed(cleanup))
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(
+            events[0].fingerprint,
+            vec!["hq-cli", "cancel-cleanup-failed", "SIGTERM", "EPERM"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cleanup_failure_reports_even_after_a_successful_yq_fallback() {
+        let cleanup = sigterm_eperm_cleanup_failure();
+        let yq = dependency_defs()
+            .iter()
+            .find(|dep| dep.id == "yq")
+            .expect("yq is registered");
+        let results = HashMap::from([(
+            "yq",
+            DepInstallResult {
+                id: yq.id,
+                label: yq.label,
+                optional: yq.optional,
+                status: DepInstallStatus::Ok,
+                error: None,
+            },
+        )]);
+        let cancellations =
+            HashMap::from([("yq", InstallCancellation::CleanupFailed(cleanup.clone()))]);
+
+        let reports = setup_cancellation_cleanup_failure_reports(
+            &results,
+            &HashMap::new(),
+            &cancellations,
+            &HashSet::new(),
+        );
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].dependency, "yq");
+        let events = sentry::test::with_captured_events(|| {
+            let report = reports.into_iter().next().expect("cleanup report exists");
+            send_setup_cancellation_cleanup_failure(
+                &scope(),
+                report.dependency,
+                report.cleanup,
+                report.diagnostic,
+            );
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(events[0].tags["setup_dependency"], "yq");
+    }
+
+    #[test]
+    fn nonzero_exit_keeps_its_diagnostic_for_the_stage_category() {
+        let result = failed_result("hq-cli", "Process exited with code 1");
+        let results = HashMap::from([("hq-cli", result.clone())]);
+        let diagnostics = HashMap::from([(
+            "hq-cli",
+            SetupCommandDiagnostic {
+                command: "npm install -g @indigoai-us/hq-cli".to_string(),
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: String::new(),
+                error: "Process exited with code 1".to_string(),
+            },
+        )]);
+
+        let reports = setup_dependency_failure_reports(dependency_defs(), &results, &diagnostics);
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].category, OnboardingErrorCategory::ExitNonzero);
+        assert_eq!(
+            setup_error_category(
+                results.get("hq-cli").expect("failed result exists"),
+                diagnostics.get("hq-cli"),
+            ),
+            OnboardingErrorCategory::ExitNonzero,
+            "the generic rendered error must not degrade to unknown"
+        );
+        assert!(
+            diagnostics.contains_key("hq-cli"),
+            "stage detail must retain the command diagnostic after dependency reporting"
+        );
+    }
+
+    #[test]
+    fn a_clean_user_cancellation_is_cancelled_and_not_reportable() {
+        let cancellation = InstallCancellation::UserCancelled;
+        let result = cancelled_result("hq-cli", &cancellation);
+
+        assert_eq!(
+            setup_error_category(&result, None),
+            OnboardingErrorCategory::Cancelled
+        );
+        assert!(
+            reportable_setup_failure_ids(
+                dependency_defs(),
+                &HashMap::from([("hq-cli", result.clone())]),
+            )
+            .is_empty(),
+            "a user cancellation must not be an error-level setup failure"
+        );
+        assert!(
+            capture_reporting_loop(&result).is_empty(),
+            "a user cancellation must capture no error-level Sentry event"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_sigterm_cleanup_is_reported_separately_from_a_user_cancellation() {
+        let cleanup = sigterm_eperm_cleanup_failure();
+        let cancellation = InstallCancellation::CleanupFailed(cleanup.clone());
+        let result = cancelled_result("hq-cli", &cancellation);
+
+        assert!(
+            capture_reporting_loop(&result).is_empty(),
+            "the cancellation must not also create the generic setup-failure event"
+        );
+        let events = sentry::test::with_captured_events(|| {
+            send_setup_cancellation_cleanup_failure(
+                &scope(),
+                "hq-cli",
+                cleanup,
+                diagnostic(result.error.as_deref().unwrap_or_default()),
+            );
+        });
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(
+            event.fingerprint,
+            vec!["hq-cli", "cancel-cleanup-failed", "SIGTERM", "EPERM"],
+            "cleanup grouping must exclude the machine-specific process-group id"
+        );
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Desktop setup cancellation cleanup could leave an install process running")
+        );
+        assert_eq!(event.tags["setup_error_category"], "cancel-cleanup-failed");
+        assert_eq!(event.tags["setup_cancel_signal"], "SIGTERM");
+        assert_eq!(event.tags["setup_cancel_os_error_kind"], "EPERM");
+    }
+
+    #[test]
+    fn a_genuine_dependency_install_failure_still_reports_at_error_level() {
+        let result = failed_result("hq-cli", "Process exited with code 1: npm ERR! EACCES");
+
+        let events = capture_reporting_loop(&result);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(event.fingerprint, vec!["hq-cli", "exit-nonzero"]);
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Desktop setup dependency installation failed")
+        );
     }
 }

@@ -1,0 +1,644 @@
+/**
+ * One peer transport: the RTCPeerConnection to a single admitted remote device.
+ *
+ * Adapted from the HQ Meet prototype `src/lib/p2p/stream.ts` @ eaaf1c5 (see
+ * PROVENANCE.md). What was ported: perfect negotiation with the
+ * `makingOffer`/`ignoreOffer` guards and polite rollback, the buffered trickle
+ * ICE queue, the capped exponential ICE-restart backoff with a disconnect grace
+ * period and an establishment watchdog, and the "fresh offer for a dead
+ * connection" recreate. What was deliberately dropped: the module-level
+ * global connection map (a transport belongs to exactly one session), GossipSub
+ * signaling, and any path where receiving traffic implies membership - the
+ * owning session decides who exists before a transport is ever created.
+ */
+
+import type {
+  Clock,
+  IceCandidateLike,
+  IceServerLike,
+  OutboundSignal,
+  PeerConnectionFactory,
+  PeerConnectionLike,
+  PeerConnectionState,
+  PeerIdentity,
+  RandomSource,
+  SenderLike,
+  SessionDescriptionLike,
+  SignalType,
+  TimerHandle,
+  Timers,
+  TrackLike,
+  DataChannelLike,
+} from "./ports.js";
+import { peerIdOf, peerLabelOf } from "./ports.js";
+import {
+  MODERATION_CHANNEL_LABEL,
+  encodeModeration,
+  type ModerationMessage,
+} from "./moderation.js";
+
+import { encodeTranscript, type TranscriptMessage } from "./transcript.js";
+
+/** App-level status the UI renders, derived from RTC state plus restarts. */
+export type PeerStatus = "connecting" | "connected" | "reconnecting" | "failed";
+
+/** Recovery tuning, ported verbatim from the prototype. */
+export const TRANSPORT_TUNING = Object.freeze({
+  /** Max automatic ICE restarts before the peer is declared failed. */
+  maxIceRestarts: 5,
+  /** First-restart delay; doubles each attempt. */
+  restartBackoffBaseMs: 1_000,
+  /** Backoff ceiling between restart attempts. */
+  restartBackoffMaxMs: 15_000,
+  /** Jitter added on top of the backoff. */
+  restartJitterMs: 500,
+  /** How long "disconnected" may self-heal before we force recovery. */
+  disconnectGraceMs: 5_000,
+  /** How long a (re)negotiation may take before it counts as a failed attempt. */
+  establishTimeoutMs: 20_000,
+  /** Trickle ICE candidate budget per connection (native harness value). */
+  candidateBudget: 256,
+});
+
+/** Content-free per-peer view. No SDP, no candidates, no keys. */
+export interface PeerSnapshot {
+  /** `personUid deviceId` - deliberately key-free. */
+  peerId: string;
+  personUid: string;
+  deviceId: string;
+  connectionState: PeerConnectionState;
+  status: PeerStatus;
+  polite: boolean;
+  restartAttempts: number;
+  /** Kinds of remote tracks received, e.g. ["audio", "video"]. */
+  remoteTrackKinds: string[];
+  /** Kinds of local tracks attached to this connection. */
+  localTrackKinds: string[];
+  /** True when the dedicated `hq-meet-control` channel is open. */
+  controlChannelOpen: boolean;
+}
+
+export interface PeerTransportDeps {
+  self: PeerIdentity;
+  remote: PeerIdentity;
+  connections: PeerConnectionFactory;
+  timers: Timers;
+  clock: Clock;
+  random?: RandomSource;
+  iceServers?: () => IceServerLike[];
+  localTracks: () => TrackLike[];
+  /** Kinds that must never be sent. Re-read on every attach. */
+  mutedKinds?: () => readonly string[];
+  send: (signal: OutboundSignal) => void;
+  /** A raw `hq-meet-control` message from this peer. Parsed by the session. */
+  onControl?: (peer: PeerIdentity, data: unknown) => void;
+  onChange: () => void;
+  onRemoteTrack: (peer: PeerIdentity, track: TrackLike) => void;
+  count: (counter: string) => void;
+}
+
+interface RecoveryTimers {
+  restart?: TimerHandle;
+  grace?: TimerHandle;
+  establish?: TimerHandle;
+}
+
+/**
+ * Polite/impolite is decided deterministically and symmetrically so exactly one
+ * side yields on an offer collision: both peers compute the same roles from the
+ * lexical order of `personUid deviceId peerKey`.
+ */
+export function isPolite(self: PeerIdentity, remote: PeerIdentity): boolean {
+  return peerIdOf(self) < peerIdOf(remote);
+}
+
+export class PeerTransport {
+  readonly remote: PeerIdentity;
+  readonly peerId: string;
+  readonly polite: boolean;
+
+  private readonly deps: PeerTransportDeps;
+  private pc: PeerConnectionLike | null = null;
+  private timers: RecoveryTimers = {};
+  private pendingCandidates: IceCandidateLike[] = [];
+  /**
+   * Remote tracks this connection received, kept as OBJECTS rather than as a
+   * set of kind strings: a kind is only in the snapshot while its track is
+   * actually live, and that is a property of the track, not of the fact that an
+   * `ontrack` once fired. See `liveRemoteKinds`.
+   */
+  private remoteTracks = new Set<TrackLike>();
+  private makingOffer = false;
+  private ignoreOffer = false;
+  private restartAttempts = 0;
+  private status: PeerStatus = "connecting";
+  private closed = false;
+  private candidatesSent = 0;
+  /** The dedicated moderation channel. Null on hosts without data channels. */
+  private control: DataChannelLike | null = null;
+
+  constructor(deps: PeerTransportDeps) {
+    this.deps = deps;
+    this.remote = deps.remote;
+    this.peerId = peerIdOf(deps.remote);
+    this.polite = isPolite(deps.self, deps.remote);
+  }
+
+  snapshot(): PeerSnapshot {
+    return {
+      peerId: peerLabelOf(this.remote),
+      personUid: this.remote.personUid,
+      deviceId: this.remote.deviceId,
+      connectionState: this.pc?.connectionState ?? "closed",
+      status: this.status,
+      polite: this.polite,
+      restartAttempts: this.restartAttempts,
+      remoteTrackKinds: this.liveRemoteKinds(),
+      localTrackKinds: (this.pc?.getSenders() ?? [])
+        .map((sender) => sender.track?.kind)
+        .filter((kind): kind is string => typeof kind === "string")
+        .sort(),
+      controlChannelOpen: this.control?.readyState === "open",
+    };
+  }
+
+  /** Ensure a live connection exists and carries the current local tracks. */
+  connect(): void {
+    if (this.closed) return;
+    const state = this.pc?.connectionState;
+    if (
+      !this.pc ||
+      this.status === "failed" ||
+      state === "failed" ||
+      state === "closed"
+    ) {
+      // A recreate is a fresh start: the previous connection's recovery budget
+      // does not carry over, or the peer would be declared failed immediately.
+      this.restartAttempts = 0;
+      this.create();
+    }
+    this.attachLocalTracks();
+  }
+
+  /**
+   * Push the current local tracks onto the connection. Same-kind senders are
+   * replaced (no renegotiation); a brand-new kind is added, which fires
+   * negotiationneeded so the media actually reaches the other side.
+   */
+  attachLocalTracks(): void {
+    const pc = this.pc;
+    if (!pc || this.closed) return;
+    const senders = pc.getSenders();
+    // The mute guard, applied at the ENGINE seam rather than by the caller:
+    // a muted kind is filtered out of the tracks we may attach AND cleared off
+    // any sender still carrying it. Because every path that republishes media
+    // (device change, `replaceTrack`, renegotiation, ICE restart, reconnect and
+    // the post-recreate `connect()`) funnels through here, the privacy choice
+    // cannot be lost by a later republish: there is no window in which a muted
+    // kind is attached and then removed.
+    const muted = new Set(this.deps.mutedKinds?.() ?? []);
+    const tracks = this.deps
+      .localTracks()
+      .filter((track) => !muted.has(track.kind));
+    const wanted = new Set(tracks.map((track) => track.kind));
+    const clearing = new Set<SenderLike>();
+    for (const sender of senders) {
+      const kind = sender.track?.kind;
+      if (typeof kind === "string" && !wanted.has(kind)) {
+        clearing.add(sender);
+        void this.swap(sender, null);
+      }
+    }
+    for (const track of tracks) {
+      const existing = senders.find(
+        (sender) => !clearing.has(sender) && sender.track?.kind === track.kind,
+      );
+      if (existing) {
+        if (existing.track === track) continue;
+        void this.swap(existing, track);
+        continue;
+      }
+      const empty = senders.find(
+        (sender) => !clearing.has(sender) && sender.track === null,
+      );
+      if (empty) {
+        clearing.add(empty);
+        void this.swap(empty, track);
+        continue;
+      }
+      pc.addTrack(track);
+    }
+    // Opened here rather than in `create()` so the data channel and the first
+    // local tracks ride ONE negotiation. `negotiationneeded` coalesces within
+    // a turn, so the extra round the old ordering paid for is gone; the
+    // symmetric polite-side rule is unchanged.
+    this.openControlChannel(pc);
+    this.deps.onChange();
+  }
+
+  /**
+   * The polite side opens `hq-meet-control`, exactly once per connection.
+   * Idempotent: a second call while a channel is bound is a no-op.
+   */
+  private openControlChannel(pc: PeerConnectionLike): void {
+    if (!this.polite || this.control) return;
+    if (typeof pc.createDataChannel !== "function") return;
+    try {
+      this.bindControl(
+        pc.createDataChannel(MODERATION_CHANNEL_LABEL, { ordered: true }),
+      );
+    } catch {
+      // A host without data channels simply carries no moderation. The UI
+      // says the request could not be delivered rather than pretending.
+      this.deps.count("controlChannelUnavailable");
+    }
+  }
+
+  /**
+   * Send one moderation or text transcript message to this peer over `hq-meet-control`.
+   * Returns false when there is no open channel — the caller surfaces that
+   * rather than pretending the request landed.
+   */
+  sendControl(message: ModerationMessage | TranscriptMessage): boolean {
+    if (this.closed || this.control?.readyState !== "open") return false;
+    try {
+      this.control.send(message.kind === "transcript" ? encodeTranscript(message) : encodeModeration(message));
+      return true;
+    } catch {
+      this.deps.count("controlSendFailed");
+      return false;
+    }
+  }
+
+  /** Open (or adopt) the dedicated control channel. Never carries media. */
+  private bindControl(channel: DataChannelLike): void {
+    if (channel.label !== MODERATION_CHANNEL_LABEL) {
+      // Nothing else is allowed to ride this seam.
+      channel.close();
+      return;
+    }
+    this.control?.close();
+    this.control = channel;
+    channel.onopen = () => this.deps.onChange();
+    channel.onclose = () => {
+      if (this.control === channel) this.control = null;
+      this.deps.onChange();
+    };
+    channel.onmessage = (event) => {
+      if (this.closed) return;
+      this.deps.onControl?.(this.remote, event.data);
+    };
+  }
+
+  private async swap(sender: SenderLike, track: TrackLike | null): Promise<void> {
+    try {
+      await sender.replaceTrack(track);
+    } catch {
+      this.deps.count("trackReplaceFailed");
+    }
+  }
+
+  /**
+   * Perfect negotiation. On a colliding offer the impolite peer ignores it and
+   * the polite peer rolls back via setRemoteDescription, so exactly one
+   * negotiation survives simultaneous offers.
+   */
+  async handleDescription(description: SessionDescriptionLike): Promise<void> {
+    if (this.closed) return;
+    const state = this.pc?.connectionState;
+    if (!this.pc) {
+      if (description.type !== "offer") {
+        this.deps.count("strayAnswer");
+        return;
+      }
+      this.create();
+      this.attachLocalTracks();
+    } else if (
+      description.type === "offer" &&
+      (this.status === "failed" || state === "failed" || state === "closed")
+    ) {
+      // The remote renegotiated from scratch. A dead connection cannot accept a
+      // fresh DTLS handshake, so recreate to match.
+      this.create();
+      this.attachLocalTracks();
+    }
+
+    const pc = this.pc;
+    if (!pc) return;
+
+    const collision =
+      description.type === "offer" &&
+      (this.makingOffer || pc.signalingState !== "stable");
+    this.ignoreOffer = !this.polite && collision;
+    if (this.ignoreOffer) {
+      this.deps.count("offerCollisionIgnored");
+      return;
+    }
+    if (collision) this.deps.count("offerCollisionRolledBack");
+
+    await pc.setRemoteDescription(description);
+    // The await above yields: a close, a recreate or a roster removal may have
+    // replaced this connection while it ran, exactly as in `negotiate()`.
+    if (this.closed || this.pc !== pc) return;
+    await this.flushCandidates();
+    if (this.closed || this.pc !== pc) return;
+
+    if (description.type === "offer") {
+      await pc.setLocalDescription();
+      const local = pc.localDescription;
+      if (!local || this.closed || this.pc !== pc) return;
+      this.deps.send({ to: this.remote, type: "answer", payload: local });
+    }
+  }
+
+  /** Buffer candidates that arrive before the remote description is set. */
+  async handleCandidate(candidate: IceCandidateLike): Promise<void> {
+    if (this.closed) return;
+    const pc = this.pc;
+    if (!pc || !pc.remoteDescription) {
+      if (this.pendingCandidates.length >= TRANSPORT_TUNING.candidateBudget) {
+        this.deps.count("candidateBudgetExceeded");
+        return;
+      }
+      this.pendingCandidates.push(candidate);
+      return;
+    }
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch {
+      if (!this.ignoreOffer) this.deps.count("candidateRejected");
+    }
+  }
+
+  private async flushCandidates(): Promise<void> {
+    const pc = this.pc;
+    if (!pc) return;
+    const pending = this.pendingCandidates;
+    this.pendingCandidates = [];
+    for (const candidate of pending) {
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch {
+        this.deps.count("candidateRejected");
+      }
+    }
+  }
+
+  /** Tear down everything this transport owns. Idempotent. */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.clearTimers();
+    this.detach(this.pc);
+    this.pc?.close();
+    this.pc = null;
+    this.pendingCandidates = [];
+    this.clearRemoteTracks();
+    this.control?.close();
+    this.control = null;
+    this.status = "failed";
+  }
+
+  // ---- internals ----
+
+  /**
+   * The kinds this peer is sending RIGHT NOW.
+   *
+   * A track that went `muted` (the remote user pressed mute) or `ended` is not
+   * a kind they are sending, so it drops out of the snapshot and
+   * `deriveCallView` renders the tile as muted. Hosts that do not model
+   * `muted`/`readyState` leave both undefined, and every received track counts.
+   */
+  private liveRemoteKinds(): string[] {
+    const kinds = new Set<string>();
+    for (const track of this.remoteTracks) {
+      if (track.muted === true) continue;
+      if (track.readyState === "ended") continue;
+      kinds.add(track.kind);
+    }
+    return [...kinds].sort();
+  }
+
+  /** Forget the remote tracks, releasing the listeners we installed on them. */
+  private clearRemoteTracks(): void {
+    for (const track of this.remoteTracks) {
+      track.onmute = null;
+      track.onunmute = null;
+      track.onended = null;
+    }
+    this.remoteTracks.clear();
+  }
+
+  private create(): void {
+    this.clearTimers();
+    this.detach(this.pc);
+    this.pc?.close();
+    // Candidates buffered for a previous connection are stale for this one.
+    this.pendingCandidates = [];
+    this.candidatesSent = 0;
+    this.makingOffer = false;
+    this.ignoreOffer = false;
+    this.clearRemoteTracks();
+    this.control?.close();
+    this.control = null;
+
+    const iceServers = this.deps.iceServers?.() ?? [];
+    const pc = this.deps.connections.create({ iceServers });
+    this.pc = pc;
+    if (this.status !== "reconnecting") this.status = "connecting";
+
+    pc.onnegotiationneeded = () => {
+      void this.negotiate(pc);
+    };
+
+    // Exactly ONE side opens `hq-meet-control`, chosen by the same symmetric
+    // polite/impolite rule negotiation uses, so the two peers never race two
+    // channels with the same label. The other side adopts it. The polite side
+    // opens it from `attachLocalTracks` (see `openControlChannel`), not here,
+    // so the channel joins the SAME negotiation as the first local tracks
+    // instead of costing an extra offer/answer round of its own.
+    pc.ondatachannel = (event) => {
+      if (this.closed || this.pc !== pc) return;
+      this.bindControl(event.channel);
+    };
+    pc.ontrack = (event) => {
+      if (this.closed || this.pc !== pc) return;
+      const track = event.track;
+      this.remoteTracks.add(track);
+      // A remote mute keeps the transceiver and flips the track to `muted`, so
+      // the ONLY way `remoteTrackKinds` can stay honest is to follow these.
+      // Without them "they have an audio track" is a claim about the past.
+      const changed = () => {
+        if (this.closed || this.pc !== pc) return;
+        this.deps.onChange();
+      };
+      track.onmute = changed;
+      track.onunmute = changed;
+      track.onended = () => {
+        this.remoteTracks.delete(track);
+        changed();
+      };
+      this.deps.onRemoteTrack(this.remote, track);
+      this.deps.onChange();
+    };
+
+    pc.onicecandidate = (event) => {
+      if (this.closed || this.pc !== pc || !event.candidate) return;
+      if (this.candidatesSent >= TRANSPORT_TUNING.candidateBudget) {
+        this.deps.count("candidateBudgetExceeded");
+        return;
+      }
+      this.candidatesSent += 1;
+      this.deps.send({ to: this.remote, type: "ice", payload: event.candidate });
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      if (this.closed || this.pc !== pc) return;
+      const state = pc.iceConnectionState;
+      if (state === "failed") {
+        this.scheduleIceRestart();
+      } else if (state === "connected" || state === "completed") {
+        this.markHealthy();
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (this.closed || this.pc !== pc) return;
+      switch (pc.connectionState) {
+        case "connected":
+          this.markHealthy();
+          break;
+        case "disconnected":
+          this.armGrace();
+          break;
+        case "failed":
+          this.scheduleIceRestart();
+          break;
+        case "closed":
+          this.clearTimers();
+          break;
+        default:
+          break;
+      }
+      this.deps.onChange();
+    };
+
+    this.armEstablishWatchdog();
+    this.deps.onChange();
+  }
+
+  private async negotiate(pc: PeerConnectionLike): Promise<void> {
+    if (this.closed || this.pc !== pc) return;
+    try {
+      this.makingOffer = true;
+      await pc.setLocalDescription();
+      const local = pc.localDescription;
+      if (!local || this.closed || this.pc !== pc) return;
+      this.deps.send({ to: this.remote, type: "offer", payload: local });
+    } catch {
+      this.deps.count("negotiationFailed");
+    } finally {
+      this.makingOffer = false;
+    }
+  }
+
+  private markHealthy(): void {
+    this.restartAttempts = 0;
+    this.clearTimers();
+    this.setStatus("connected");
+  }
+
+  private setStatus(status: PeerStatus): void {
+    if (this.status === status) return;
+    this.status = status;
+    this.deps.onChange();
+  }
+
+  private armGrace(): void {
+    if (this.timers.grace) return;
+    this.timers.grace = this.deps.timers.setTimeout(() => {
+      this.timers.grace = undefined;
+      if (this.closed) return;
+      if (this.pc?.connectionState === "disconnected") this.scheduleIceRestart();
+    }, TRANSPORT_TUNING.disconnectGraceMs);
+  }
+
+  /**
+   * Signaling loss can strand a connection in "new"/"connecting" forever with no
+   * RTC event ever firing; this turns that silence into a recovery attempt.
+   */
+  private armEstablishWatchdog(): void {
+    this.deps.timers.clearTimeout(this.timers.establish);
+    this.timers.establish = this.deps.timers.setTimeout(() => {
+      this.timers.establish = undefined;
+      if (this.closed) return;
+      const state = this.pc?.connectionState;
+      if (state === "connected" || state === "closed" || !state) return;
+      this.scheduleIceRestart();
+    }, TRANSPORT_TUNING.establishTimeoutMs);
+  }
+
+  private scheduleIceRestart(): void {
+    if (this.closed || this.timers.restart) return;
+    if (this.restartAttempts >= TRANSPORT_TUNING.maxIceRestarts) {
+      this.setStatus("failed");
+      return;
+    }
+    this.setStatus("reconnecting");
+
+    const random = this.deps.random ?? Math.random;
+    const delay =
+      Math.min(
+        TRANSPORT_TUNING.restartBackoffBaseMs * 2 ** this.restartAttempts,
+        TRANSPORT_TUNING.restartBackoffMaxMs,
+      ) +
+      random() * TRANSPORT_TUNING.restartJitterMs;
+
+    this.timers.restart = this.deps.timers.setTimeout(() => {
+      this.timers.restart = undefined;
+      if (this.closed) return;
+      const pc = this.pc;
+      if (!pc) return;
+      if (pc.connectionState === "closed") return;
+      if (pc.connectionState === "connected") return;
+
+      this.restartAttempts += 1;
+      this.deps.count("iceRestart");
+
+      if (pc.signalingState !== "stable") {
+        // restartIce() mid-negotiation only sets a flag that waits for signaling
+        // to return to stable, which never happens when the offer/answer was
+        // lost. Renegotiate from scratch, carrying the budget over.
+        const attempts = this.restartAttempts;
+        this.status = "reconnecting";
+        this.create();
+        this.restartAttempts = attempts;
+        this.attachLocalTracks();
+        return;
+      }
+
+      pc.restartIce();
+      this.armEstablishWatchdog();
+    }, delay);
+  }
+
+  private clearTimers(): void {
+    this.deps.timers.clearTimeout(this.timers.restart);
+    this.deps.timers.clearTimeout(this.timers.grace);
+    this.deps.timers.clearTimeout(this.timers.establish);
+    this.timers = {};
+  }
+
+  private detach(pc: PeerConnectionLike | null): void {
+    if (!pc) return;
+    pc.onnegotiationneeded = null;
+    pc.onicecandidate = null;
+    pc.ontrack = null;
+    pc.onconnectionstatechange = null;
+    pc.oniceconnectionstatechange = null;
+    if (pc.ondatachannel !== undefined) pc.ondatachannel = null;
+  }
+}
+
+/** Convenience for hosts that want the signal type union without the port import. */
+export type { SignalType };

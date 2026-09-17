@@ -39,6 +39,7 @@
 //! the CLI nag's 15s so they don't spike CPU + network in lockstep), then
 //! every 6h. Matches the rest of the family.
 
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -56,6 +57,31 @@ const RELEASES_URL: &str = "https://api.github.com/repos/indigoai-us/hq-core/rel
 /// HTTP request timeout — keep tight so a flaky network doesn't stall the
 /// `install_hq_core_update` handler.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+const RESCUE_CLONE_FAILED: &str = "error: clone failed";
+const APPLE_GIT_LICENSE_UNACCEPTED: &str = "you have not agreed to the xcode license agreements";
+const GIT_REMOTE_HTTPS_MISSING: &str = "git: 'remote-https' is not a git command";
+const GIT_REMOTE_HTTPS_ABORTED: &str = "fatal: remote helper 'https' aborted session";
+const GIT_CLONE_USAGE: &str = "usage: git clone";
+const GIT_CLONE_UNKNOWN_SHALLOW_EXCLUDE: &str = "error: unknown option 'shallow-exclude'";
+
+struct CoreUpdateRescueCommand {
+    command: tokio::process::Command,
+    npx_resolution: crate::commands::hq_core_state::CoreUpdateNpxResolution,
+    managed_git_healthy: bool,
+}
+
+struct CoreUpdateRescueRun {
+    result: crate::commands::hq_core_staging::RescueRunResult,
+    managed_git_retry: crate::commands::hq_core_state::ManagedGitRetryOutcome,
+}
+
+#[derive(Debug)]
+struct ManagedGitRetryResult {
+    outcome: crate::commands::hq_core_state::ManagedGitRetryOutcome,
+    exit_code: Option<i32>,
+    error: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
@@ -211,6 +237,7 @@ pub async fn install_hq_core_update(
         run_guard,
     )
     .await
+    .map(|run| run.result)
     .map_err(|error| error.to_string())
 }
 
@@ -221,16 +248,15 @@ pub(crate) async fn install_hq_core_update_automatic(
     crate::commands::hq_core_staging::RescueRunResult,
     crate::commands::hq_core_state::CoreUpdateError,
 > {
-    install_hq_core_update_observed(observation, run_guard).await
+    install_hq_core_update_observed(observation, run_guard)
+        .await
+        .map(|run| run.result)
 }
 
 async fn install_hq_core_update_observed(
     observation: crate::commands::hq_core_state::CoreUpdateTelemetryContext,
     _run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
-) -> Result<
-    crate::commands::hq_core_staging::RescueRunResult,
-    crate::commands::hq_core_state::CoreUpdateError,
-> {
+) -> Result<CoreUpdateRescueRun, crate::commands::hq_core_state::CoreUpdateError> {
     let started = Instant::now();
     let local_before = get_local_version();
     let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
@@ -250,9 +276,17 @@ async fn install_hq_core_update_observed(
         None,
     );
 
-    let outcome = install_hq_core_update_inner().await;
+    let outcome = install_hq_core_update_inner(observation.source()).await;
+    if let Ok(run) = &outcome {
+        crate::commands::hq_core_state::arm_baseline_retry_after_successful_core_update(
+            crate::commands::hq_core_state::Channel::Release,
+            &run.result.baseline_retry_target,
+            run.result.exit_code,
+            run.result.baseline_persisted,
+        );
+    }
     match &outcome {
-        Ok(run) if run.exit_code == 0 => {
+        Ok(run) if run.result.exit_code == 0 => {
             let installed = get_local_version();
             crate::commands::hq_core_state::emit_core_update_event(
                 "core_update_succeeded",
@@ -270,44 +304,46 @@ async fn install_hq_core_update_observed(
                 None,
             );
         }
-        Ok(run) => crate::commands::hq_core_state::emit_core_update_event(
-            "core_update_failed",
+        Ok(run) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
-            "failed",
-            Some(crate::commands::hq_core_state::Channel::Release),
+            crate::commands::hq_core_state::Channel::Release,
             local_before.as_deref(),
-            None,
             auto_updates,
             None,
             observation.version_behind(),
             started.elapsed(),
-            Some(run.exit_code),
-            Some("rescue_exit"),
-            None,
+            Some(run.result.exit_code),
+            "rescue_exit",
+            crate::commands::hq_core_state::CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(&run.result.rescue_stderr_tail),
+                rescue_failure_category:
+                    crate::commands::hq_core_state::classify_rescue_exit_failure(
+                        &run.result.rescue_stderr_tail,
+                        run.result.npx_resolution,
+                    ),
+                npx_resolution: Some(run.result.npx_resolution),
+                managed_git_retry: run.managed_git_retry,
+            },
         ),
-        Err(error) => crate::commands::hq_core_state::emit_core_update_event(
-            "core_update_failed",
+        Err(error) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
-            "failed",
-            Some(crate::commands::hq_core_state::Channel::Release),
+            crate::commands::hq_core_state::Channel::Release,
             local_before.as_deref(),
-            None,
             auto_updates,
             None,
             observation.version_behind(),
             started.elapsed(),
             None,
-            Some(error.kind().label()),
-            None,
+            error.kind().label(),
+            crate::commands::hq_core_state::core_update_failure_details(error),
         ),
     }
     outcome
 }
 
-async fn install_hq_core_update_inner() -> Result<
-    crate::commands::hq_core_staging::RescueRunResult,
-    crate::commands::hq_core_state::CoreUpdateError,
-> {
+async fn install_hq_core_update_inner(
+    update_source: &'static str,
+) -> Result<CoreUpdateRescueRun, crate::commands::hq_core_state::CoreUpdateError> {
     let hq_folder = crate::commands::hq_core_staging::resolve_hq_folder();
     if !crate::commands::hq_core_staging::looks_like_hq_root(&hq_folder) {
         return Err(crate::commands::hq_core_state::CoreUpdateError::new(
@@ -420,6 +456,14 @@ async fn install_hq_core_update_inner() -> Result<
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so this prod Update can't race prewarm/sync into a corrupt
     // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
+    #[cfg(windows)]
+    ensure_managed_rsync_for_core_update_rescue().await;
+
+    let CoreUpdateRescueCommand {
+        command,
+        npx_resolution,
+        managed_git_healthy,
+    } = core_update_rescue_command(false);
     crate::commands::hq_core_staging::materialize_rescue_cache()
         .await
         .map_err(|error| {
@@ -427,6 +471,7 @@ async fn install_hq_core_update_inner() -> Result<
                 crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
                 error,
             )
+            .with_npx_resolution(npx_resolution)
         })?;
 
     let _update_guard =
@@ -435,64 +480,172 @@ async fn install_hq_core_update_inner() -> Result<
                 crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
                 error,
             )
+            .with_npx_resolution(npx_resolution)
         })?;
 
-    let mut cmd = crate::commands::hq_core_staging::rescue_command();
-    cmd.args(crate::commands::hq_core_staging::build_rescue_args(
+    let rescue_args = crate::commands::hq_core_staging::build_rescue_args(
         &hq_folder,
         PROD_HQ_CORE_REPO,
         Some(&git_ref),
         floor_sha.as_deref(),
-    ))
-    .stdout(std::process::Stdio::from(log_file_for_stdout))
-    .stderr(std::process::Stdio::from(log_file_for_stderr));
+    );
 
     // GH token is optional for the public repo. Forward when present so
     // the history-index walk doesn't hit anonymous rate limits.
-    if let Some(token) = crate::commands::hq_core_staging::resolve_gh_token() {
-        cmd.env("GH_TOKEN", &token);
-    }
+    let gh_token = crate::commands::hq_core_staging::resolve_gh_token();
 
-    let status = cmd.status().await.map_err(|error| {
+    let initial_exit_code = spawn_rescue_attempt(
+        command,
+        rescue_args.clone(),
+        gh_token.clone(),
+        log_file_for_stdout,
+        log_file_for_stderr,
+    )
+    .await
+    .map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
             crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
-            format!("spawn rescue script: {error}"),
+            error,
         )
+        .with_npx_resolution(npx_resolution)
     })?;
 
-    let exit_code = status.code().unwrap_or(-1);
-    if exit_code == 0 {
-        let client = reqwest::Client::builder()
+    let initial_log_tail = crate::commands::hq_core_staging::tail_log(&log_path, 40)
+        .unwrap_or_else(|error| format!("(log tail unavailable: {error})"));
+    let initial_rescue_stderr_tail =
+        crate::commands::hq_core_staging::read_rescue_diagnostic_tail(&log_path)
+            .unwrap_or_default();
+
+    let retry_requested =
+        rescue_needs_managed_git_retry(initial_exit_code, &initial_rescue_stderr_tail);
+    let retry_command =
+        (retry_requested && managed_git_healthy).then(|| core_update_rescue_command(true));
+    let retry_managed_git_healthy = retry_command
+        .as_ref()
+        .is_some_and(|command| command.managed_git_healthy);
+    if retry_managed_git_healthy {
+        log(
+            "hq-core-update",
+            "rescue clone failed with an unusable user Git signature; retrying once with managed Git first on PATH",
+        );
+    }
+    let retry_log_path = log_path.clone();
+    let retry_args = rescue_args.clone();
+    let retry_gh_token = gh_token.clone();
+    let retry = retry_rescue_with_managed_git_if_needed(
+        initial_exit_code,
+        &initial_rescue_stderr_tail,
+        retry_managed_git_healthy,
+        move || async move {
+            let CoreUpdateRescueCommand { command, .. } =
+                retry_command.expect("a managed Git retry command is prepared only when retrying");
+            let retry_stdout = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&retry_log_path)
+                .map_err(|error| {
+                    format!(
+                        "open rescue log {} for managed Git retry: {error}",
+                        retry_log_path.display()
+                    )
+                })?;
+            let retry_stderr = retry_stdout.try_clone().map_err(|error| {
+                format!(
+                    "dup rescue log fd {} for managed Git retry: {error}",
+                    retry_log_path.display()
+                )
+            })?;
+            spawn_rescue_attempt(
+                command,
+                retry_args,
+                retry_gh_token,
+                retry_stdout,
+                retry_stderr,
+            )
+            .await
+        },
+    )
+    .await;
+
+    match retry.outcome {
+        crate::commands::hq_core_state::ManagedGitRetryOutcome::ManagedGitUnavailable => log(
+            "hq-core-update",
+            "rescue clone matched an unusable user Git signature, but managed Git is unavailable; reporting the original failure",
+        ),
+        crate::commands::hq_core_state::ManagedGitRetryOutcome::Succeeded => log(
+            "hq-core-update",
+            "managed Git retry completed successfully after the user Git could not clone",
+        ),
+        crate::commands::hq_core_state::ManagedGitRetryOutcome::Failed => log(
+            "hq-core-update",
+            &format!(
+                "managed Git retry failed (exit={} error={}); reporting the original rescue failure",
+                retry
+                    .exit_code
+                    .map(|exit_code| exit_code.to_string())
+                    .as_deref()
+                    .unwrap_or("unavailable"),
+                retry.error.as_deref().unwrap_or("none"),
+            ),
+        ),
+        crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded => {}
+    }
+
+    let (exit_code, log_tail, rescue_stderr_tail) = rescue_result_after_managed_git_retry(
+        initial_exit_code,
+        initial_log_tail,
+        initial_rescue_stderr_tail,
+        retry.outcome,
+        &log_path,
+    );
+
+    let baseline_persisted = if exit_code == 0 {
+        match reqwest::Client::builder()
             .default_headers(crate::util::client_info::client_headers())
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .map_err(|error| {
-                crate::commands::hq_core_state::CoreUpdateError::new(
-                    crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                    format!("build baseline client: {error}"),
-                )
-            })?;
-        let commit = crate::commands::hq_core_state::persist_remote_baseline(
-            &hq_folder,
-            &client,
-            PROD_HQ_CORE_REPO,
-            &git_ref,
-        )
-        .await
-        .map_err(|error| {
-            crate::commands::hq_core_state::CoreUpdateError::new(
-                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                format!("core update applied but baseline persistence failed: {error}"),
+        {
+            Ok(client) => match crate::commands::hq_core_state::persist_remote_baseline(
+                &hq_folder,
+                &client,
+                PROD_HQ_CORE_REPO,
+                &git_ref,
             )
-        })?;
-        log(
-            "hq-core-update",
-            &format!("persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"),
-        );
-    }
-    let log_tail = crate::commands::hq_core_staging::tail_log(&log_path, 40)
-        .unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
-
+            .await
+            {
+                Ok(commit) => {
+                    log(
+                        "hq-core-update",
+                        &format!(
+                            "persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"
+                        ),
+                    );
+                    true
+                }
+                Err(error) => {
+                    crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                        update_source,
+                        crate::commands::hq_core_state::Channel::Release,
+                        "hq-core-update",
+                        &format!("core update applied but baseline persistence failed: {error}"),
+                    );
+                    false
+                }
+            },
+            Err(error) => {
+                crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                    update_source,
+                    crate::commands::hq_core_state::Channel::Release,
+                    "hq-core-update",
+                    &format!(
+                        "core update applied but baseline persistence failed: build baseline client: {error}"
+                    ),
+                );
+                false
+            }
+        }
+    } else {
+        true
+    };
     log(
         "hq-core-update",
         &format!(
@@ -503,11 +656,225 @@ async fn install_hq_core_update_inner() -> Result<
         ),
     );
 
-    Ok(crate::commands::hq_core_staging::RescueRunResult {
-        exit_code,
-        log_tail,
-        log_path: log_path.display().to_string(),
+    Ok(CoreUpdateRescueRun {
+        result: crate::commands::hq_core_staging::RescueRunResult {
+            exit_code,
+            log_tail,
+            log_path: log_path.display().to_string(),
+            rescue_stderr_tail,
+            npx_resolution,
+            baseline_persisted,
+            baseline_retry_target: latest,
+        },
+        managed_git_retry: retry.outcome,
     })
+}
+
+/// Build the Core-update rescue command after preparing the managed Git shim.
+///
+/// The initial rescue keeps a foreign Git the user put first ahead of HQ's
+/// managed Git. A single retry may put managed Git first, but only after a
+/// recognized clone failure and a successful shim health check. A missing or
+/// unhealthy managed Git is removed from this rescue PATH so the user's next
+/// Git remains available.
+fn core_update_rescue_command(managed_git_first: bool) -> CoreUpdateRescueCommand {
+    let (mut command, npx_resolution) = crate::commands::hq_core_staging::rescue_command();
+    let mut managed_git_healthy = false;
+
+    #[cfg(not(windows))]
+    if let Some(home) = dirs::home_dir() {
+        let healthy = match crate::commands::install_deps::ensure_managed_git_shim_in(&home) {
+            Ok(shim) => {
+                log(
+                    "hq-core-update",
+                    &format!("managed Git shim ready for rescue at {}", shim.display()),
+                );
+                true
+            }
+            Err(reason) => {
+                log(
+                    "hq-core-update",
+                    &format!(
+                        "managed Git shim unavailable before rescue ({reason}); using the user's Git"
+                    ),
+                );
+                false
+            }
+        };
+        managed_git_healthy = healthy;
+        let rescue_path = hq_desktop_core::paths::managed_git_rescue_path_for_home(
+            &hq_desktop_core::paths::child_path(),
+            &home,
+            healthy,
+            managed_git_first,
+        );
+        command.env("PATH", rescue_path);
+    } else {
+        log(
+            "hq-core-update",
+            "managed Git shim skipped before rescue: home directory unavailable",
+        );
+    }
+
+    CoreUpdateRescueCommand {
+        command,
+        npx_resolution,
+        managed_git_healthy,
+    }
+}
+
+fn rescue_needs_managed_git_retry(exit_code: i32, rescue_stderr: &str) -> bool {
+    if exit_code == 0 {
+        return false;
+    }
+
+    let rescue_stderr = rescue_stderr.to_ascii_lowercase();
+    rescue_stderr.contains(RESCUE_CLONE_FAILED)
+        && (rescue_stderr.contains(APPLE_GIT_LICENSE_UNACCEPTED)
+            || (rescue_stderr.contains(GIT_REMOTE_HTTPS_MISSING)
+                && rescue_stderr.contains(GIT_REMOTE_HTTPS_ABORTED))
+            || (rescue_stderr.contains(GIT_CLONE_USAGE)
+                && rescue_stderr.contains(GIT_CLONE_UNKNOWN_SHALLOW_EXCLUDE)))
+}
+
+async fn retry_rescue_with_managed_git_if_needed<F, RetryFuture>(
+    initial_exit_code: i32,
+    initial_rescue_stderr: &str,
+    managed_git_healthy: bool,
+    retry: F,
+) -> ManagedGitRetryResult
+where
+    F: FnOnce() -> RetryFuture,
+    RetryFuture: Future<Output = Result<i32, String>>,
+{
+    use crate::commands::hq_core_state::ManagedGitRetryOutcome;
+
+    if !rescue_needs_managed_git_retry(initial_exit_code, initial_rescue_stderr) {
+        return ManagedGitRetryResult {
+            outcome: ManagedGitRetryOutcome::NotNeeded,
+            exit_code: None,
+            error: None,
+        };
+    }
+    if !managed_git_healthy {
+        return ManagedGitRetryResult {
+            outcome: ManagedGitRetryOutcome::ManagedGitUnavailable,
+            exit_code: None,
+            error: None,
+        };
+    }
+
+    match retry().await {
+        Ok(exit_code) if exit_code == 0 => ManagedGitRetryResult {
+            outcome: ManagedGitRetryOutcome::Succeeded,
+            exit_code: Some(exit_code),
+            error: None,
+        },
+        Ok(exit_code) => ManagedGitRetryResult {
+            outcome: ManagedGitRetryOutcome::Failed,
+            exit_code: Some(exit_code),
+            error: None,
+        },
+        Err(error) => ManagedGitRetryResult {
+            outcome: ManagedGitRetryOutcome::Failed,
+            exit_code: None,
+            error: Some(error),
+        },
+    }
+}
+
+async fn spawn_rescue_attempt(
+    mut command: tokio::process::Command,
+    rescue_args: Vec<std::ffi::OsString>,
+    gh_token: Option<String>,
+    stdout: std::fs::File,
+    stderr: std::fs::File,
+) -> Result<i32, String> {
+    command
+        .args(rescue_args)
+        .stdout(std::process::Stdio::from(stdout))
+        .stderr(std::process::Stdio::from(stderr));
+    if let Some(token) = gh_token {
+        command.env("GH_TOKEN", token);
+    }
+    let status = command
+        .status()
+        .await
+        .map_err(|error| format!("spawn rescue script: {error}"))?;
+    Ok(status.code().unwrap_or(-1))
+}
+
+fn rescue_result_after_managed_git_retry(
+    initial_exit_code: i32,
+    initial_log_tail: String,
+    initial_rescue_stderr_tail: String,
+    retry_outcome: crate::commands::hq_core_state::ManagedGitRetryOutcome,
+    log_path: &std::path::Path,
+) -> (i32, String, String) {
+    if retry_outcome == crate::commands::hq_core_state::ManagedGitRetryOutcome::Succeeded {
+        return (
+            0,
+            crate::commands::hq_core_staging::tail_log(log_path, 40)
+                .unwrap_or_else(|error| format!("(log tail unavailable: {error})")),
+            crate::commands::hq_core_staging::read_rescue_diagnostic_tail(log_path)
+                .unwrap_or_default(),
+        );
+    }
+
+    (
+        initial_exit_code,
+        initial_log_tail,
+        initial_rescue_stderr_tail,
+    )
+}
+
+/// Best-effort managed-rsync preflight for the Windows Core-update rescue.
+///
+/// The rescue's own rsync preflight remains authoritative. Provisioning is
+/// intentionally non-fatal so a transient network, checksum, or filesystem
+/// failure cannot turn an otherwise runnable rescue into an earlier failure.
+#[cfg(windows)]
+async fn ensure_managed_rsync_for_core_update_rescue() {
+    match crate::commands::install_deps::ensure_rsync_for_core_update_rescue().await {
+        crate::commands::install_deps::RsyncRescueProvisioning::AlreadyRescueReady => {
+            log(
+                "hq-core-update",
+                "rsync and its path shim already ready before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ShimRefreshed => {
+            log(
+                "hq-core-update",
+                "rsync was resolvable but its path shim was refreshed before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::Provisioned => {
+            log(
+                "hq-core-update",
+                "managed rsync provisioned and resolvable before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningTimedOut => {
+            log(
+                "hq-core-update",
+                "managed rsync preflight timed out before rescue; continuing with current rsync resolution",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningFailed(reason) => {
+            log(
+                "hq-core-update",
+                &format!(
+                    "managed rsync unavailable before rescue ({reason}); continuing with current rsync resolution"
+                ),
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisionedButNotRescueReady => {
+            log(
+                "hq-core-update",
+                "managed rsync installer completed but rsync or its path shim remained unavailable before rescue; continuing with current rsync resolution",
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -521,7 +888,8 @@ mod tests {
                 Some("15.0.0".into())
             },
             std::time::Duration::from_millis(20),
-        ).await;
+        )
+        .await;
         // Release the real worker before asserting, including on a regression.
         let _ = release.send(());
         assert_eq!(result, None);
@@ -531,18 +899,23 @@ mod tests {
     async fn local_version_read_does_not_run_on_the_ui_executor() {
         let caller = std::thread::current().id();
         let result = super::read_local_version_for_ui(
-            move || Some(if std::thread::current().id() == caller {
-                "blocked caller".into()
-            } else {
-                "worker".into()
-            }),
+            move || {
+                Some(if std::thread::current().id() == caller {
+                    "blocked caller".into()
+                } else {
+                    "worker".into()
+                })
+            },
             std::time::Duration::from_secs(1),
-        ).await;
+        )
+        .await;
         assert_eq!(result.as_deref(), Some("worker"));
     }
 
     use super::*;
     use crate::commands::hq_core_staging::build_rescue_args;
+    #[cfg(not(windows))]
+    use crate::util::test_support::{scoped_home, write_usable_managed_git, ENV_MUTEX};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -622,5 +995,246 @@ mod tests {
     fn prod_source_agrees_with_release_feed() {
         assert_eq!(PROD_HQ_CORE_REPO, "indigoai-us/hq-core");
         assert!(RELEASES_URL.contains(PROD_HQ_CORE_REPO));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn core_update_rescue_command_creates_shim_only_for_managed_git() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+
+        let managed_home = tempfile::tempdir().unwrap();
+        write_usable_managed_git(managed_home.path());
+        {
+            let _home = scoped_home(managed_home.path());
+            let _ = core_update_rescue_command(false);
+        }
+        assert!(
+            crate::commands::install_deps::managed_git_shim_dir_in(managed_home.path())
+                .join("git")
+                .is_file(),
+            "preparing the rescue command must install the managed Git shim before spawning"
+        );
+
+        let no_git_home = tempfile::tempdir().unwrap();
+        {
+            let _home = scoped_home(no_git_home.path());
+            let _ = core_update_rescue_command(false);
+        }
+        assert!(crate::commands::install_deps::managed_git_env_in(no_git_home.path()).is_empty());
+        assert!(
+            !crate::commands::install_deps::managed_git_shim_dir_in(no_git_home.path()).exists(),
+            "a machine without managed Git must not gain a shim directory"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn core_update_rescue_command_uses_users_git_when_managed_git_is_not_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let managed_git = write_usable_managed_git(home.path());
+        std::fs::set_permissions(&managed_git, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let users_git = home.path().join("user-bin/git");
+        std::fs::create_dir_all(users_git.parent().expect("user Git parent")).unwrap();
+        std::fs::write(&users_git, "#!/bin/sh\nprintf 'git version user-fixture'\n").unwrap();
+        std::fs::set_permissions(&users_git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = home.path().join("HQ/.claude/settings.local.json");
+        std::fs::create_dir_all(settings.parent().expect("settings parent")).unwrap();
+        std::fs::write(
+            settings,
+            format!(
+                r#"{{"env":{{"PATH":"{}"}}}}"#,
+                users_git.parent().expect("user Git directory").display()
+            ),
+        )
+        .unwrap();
+
+        let _home = scoped_home(home.path());
+        let CoreUpdateRescueCommand { command, .. } = core_update_rescue_command(false);
+        let path = command
+            .as_std()
+            .get_envs()
+            .find_map(|(name, value)| {
+                (name == "PATH").then(|| value.map(|value| value.to_os_string()))
+            })
+            .flatten()
+            .expect("rescue PATH");
+
+        let env_names: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !crate::commands::install_deps::managed_git_shim_dir_in(home.path())
+                .join("git")
+                .exists(),
+            "a non-executable managed Git must not gain a shim"
+        );
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_EXEC_PATH"),
+            "a user's Git must not inherit the managed exec path: {env_names:?}"
+        );
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_TEMPLATE_DIR"),
+            "a user's Git must not inherit the managed templates: {env_names:?}"
+        );
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "git --version"])
+            .env_clear()
+            .env("PATH", path)
+            .output()
+            .expect("run rescue-path Git");
+        assert!(output.status.success(), "user Git failed: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "git version user-fixture"
+        );
+    }
+
+    #[tokio::test]
+    async fn each_unusable_user_git_clone_signature_retries_exactly_once() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let signatures = [
+            "You have not agreed to the Xcode license agreements.\nerror: clone failed",
+            "git: 'remote-https' is not a git command. See 'git --help'.\nfatal: remote helper 'https' aborted session\nerror: clone failed",
+            "error: unknown option 'shallow-exclude'\nusage: git clone [<options>] [--] <repo> [<dir>]\n    --single-branch       clone only one branch, HEAD or --branch\nerror: clone failed",
+        ];
+
+        for stderr in signatures {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let attempted = Arc::clone(&attempts);
+            let retry = retry_rescue_with_managed_git_if_needed(5, stderr, true, move || {
+                attempted.fetch_add(1, Ordering::SeqCst);
+                async { Ok::<i32, String>(5) }
+            })
+            .await;
+
+            assert_eq!(
+                retry.outcome,
+                crate::commands::hq_core_state::ManagedGitRetryOutcome::Failed,
+                "expected a retry for {stderr:?}"
+            );
+            assert_eq!(
+                attempts.load(Ordering::SeqCst),
+                1,
+                "a recognized clone failure must make exactly one retry"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unrelated_clone_failure_does_not_retry_with_managed_git() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempted = Arc::clone(&attempts);
+        let retry = retry_rescue_with_managed_git_if_needed(
+            5,
+            "fatal: unable to access 'https://github.com/indigoai-us/hq-core': Could not resolve host: github.com\nerror: clone failed",
+            true,
+            move || {
+                attempted.fetch_add(1, Ordering::SeqCst);
+                async { Ok::<i32, String>(0) }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            retry.outcome,
+            crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_different_unknown_clone_option_does_not_request_a_managed_git_retry() {
+        assert!(!rescue_needs_managed_git_retry(
+            5,
+            "error: unknown option 'filter'\nusage: git clone [<options>] [--] <repo> [<dir>]\n    --single-branch       clone only one branch, HEAD or --branch\nerror: clone failed",
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn unusable_clone_failure_does_not_retry_without_a_healthy_managed_git() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let managed_git_health = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+
+            let absent_home = tempfile::tempdir().unwrap();
+            let absent = {
+                let _home = scoped_home(absent_home.path());
+                core_update_rescue_command(false).managed_git_healthy
+            };
+
+            let non_executable_home = tempfile::tempdir().unwrap();
+            let managed_git = write_usable_managed_git(non_executable_home.path());
+            std::fs::set_permissions(&managed_git, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let non_executable = {
+                let _home = scoped_home(non_executable_home.path());
+                core_update_rescue_command(false).managed_git_healthy
+            };
+
+            vec![absent, non_executable]
+        };
+
+        for healthy in managed_git_health {
+            assert!(!healthy, "fixture must not have a healthy managed Git");
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let attempted = Arc::clone(&attempts);
+            let retry = retry_rescue_with_managed_git_if_needed(
+                5,
+                "You have not agreed to the Xcode license agreements.\nerror: clone failed",
+                healthy,
+                move || {
+                    attempted.fetch_add(1, Ordering::SeqCst);
+                    async { Ok::<i32, String>(0) }
+                },
+            )
+            .await;
+
+            assert_eq!(
+                retry.outcome,
+                crate::commands::hq_core_state::ManagedGitRetryOutcome::ManagedGitUnavailable
+            );
+            assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn failed_managed_git_retry_reports_the_original_rescue_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = rescue_result_after_managed_git_retry(
+            5,
+            "original log tail".to_string(),
+            "original clone failure".to_string(),
+            crate::commands::hq_core_state::ManagedGitRetryOutcome::Failed,
+            temp.path(),
+        );
+
+        assert_eq!(
+            result,
+            (
+                5,
+                "original log tail".to_string(),
+                "original clone failure".to_string(),
+            )
+        );
     }
 }

@@ -654,6 +654,31 @@ jobs:
       # always(), not failure(): the captured msedgewebview2.exe command line is
       # the evidence that the WebView2 automation switches landed, and a green
       # run is exactly when that evidence is worth keeping.
+      #
+      # This step is also the slowest thing in the job that is not a compile,
+      # and it has already survived one attempt to make it cheaper. Recording
+      # that here so the next person does not repeat it:
+      #
+      #   It takes 62/67/69/78/81/91/95/109s across eight runs, for a 15 KB
+      #   artifact. The byte-identical step in windows-installer-e2e -- same
+      #   action, same path expression, same `if:` -- takes 1-2s for a
+      #   comparable 13 KB artifact, and the bridge job pushes 99 MB in 7s. In
+      #   the step log ~59-82s elapse before upload-artifact's node process
+      #   emits its first line, so it is neither transfer nor action overhead.
+      #
+      #   The hypothesis was orphaned processes contending the runner:
+      #   `reapSharedDriver()` in e2e/desktop-alt/live-driver.ts kills the
+      #   tauri-driver process, and on Windows that does not reap the tree
+      #   beneath it. An observe-only step measured the actual population --
+      #   exactly ONE leaked `msedgewebview2`, started 8s earlier. No app
+      #   binary, no msedgedriver, no tauri-driver. Killing it gave 78s -> 67s,
+      #   both mid-range. One idle WebView2 process does not stall a runner for
+      #   a minute, and the timing says it does not.
+      #
+      #   So the cause is still unknown, and it is NOT stray processes. Do not
+      #   re-run that experiment. In particular do not "fix" this by flipping
+      #   to `if: failure()` -- that trades the evidence above for a saving on
+      #   green runs, and ci-cost-contract.test.ts fails if you try.
       - name: Upload WebDriver diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -825,68 +850,27 @@ jobs:
       # byte-identical to the released one -- it differs by that one feature.
       # `cfg!(debug_assertions)` could not have been the gate instead: this is a
       # release build.
-      - name: Generate Windows MSI version overlay
-        shell: pwsh
-        run: |
-          $appVersion = node -p "require('./package.json').version"
-          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.msi-version.conf.json"
-          node ../../scripts/windows-msi-version.mjs --version $appVersion --output $configPath
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to generate Windows MSI version overlay"
-          }
-          "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Build bridge MSI and NSIS installers
+      #
+      # NSIS only. This job used to bundle `msi nsis` and then assert an MSI had
+      # appeared, but nothing downstream ever opened it: windows-installer-e2e
+      # downloads `windows-installer-bridge`, which is the NSIS setup.exe, and
+      # windows-installer-e2e.ps1 installs and upgrades through NSIS alone.
+      # Measured on run 35060444631, WiX candle+light cost 70s on the critical
+      # path of a required check to produce a file that was counted and thrown
+      # away. release.yml still builds `msi nsis updater` for the real release,
+      # so MSI packaging is exercised on the artifact that actually ships.
+      - name: Build bridge NSIS installer
         run: >-
           pnpm tauri build
           --target x86_64-pc-windows-msvc
-          --bundles msi nsis
+          --bundles nsis
           --config src-tauri/tauri.windows.conf.json
           --config src-tauri/tauri.windows.release.conf.json
           --config src-tauri/tauri.windows.ci.conf.json
-          --config $env:TAURI_MSI_VERSION_CONFIG
           --features e2e-automation
-
-      - name: Install Sentry CLI
-        shell: pwsh
-        run: npm install --global @sentry/cli@3.6.2
-
-      # Exercise the release-profile symbol contract on every PR that changes
-      # the release workflow. The e2e feature changes the binary's debug id,
-      # but the executable and its PDB must still carry the same id.
-      - name: Verify installer debug file contract
-        shell: pwsh
-        run: |
-          $releaseDir = "src-tauri\target\x86_64-pc-windows-msvc\release"
-          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
-          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
-          if (-not (Test-Path $exe)) {
-            throw "Required installer executable is missing: $exe"
-          }
-          if (-not (Test-Path $pdb)) {
-            throw "Required installer PDB is missing: $pdb"
-          }
-          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
-          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
-          $exeDebugId = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
-          $pdbDebugId = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
-          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
-            throw "Installer executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
-          }
-          Write-Host "Installer executable/PDB debug id: $exeDebugId"
-
-      - name: Verify prerelease MSI package
-        shell: pwsh
-        run: |
-          $msi = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" -File -ErrorAction SilentlyContinue
-          if (-not $msi) {
-            throw "Tauri did not produce the required prerelease MSI package"
-          }
-          $msi | ForEach-Object { Write-Host "Built MSI: $($_.Name)" }
 
       # if-no-files-found: error, so a missing installer fails the job that
       # built it instead of surfacing later as an unexplained E2E failure.
-      # The MSI is verified above and never installed, so only NSIS travels.
       - name: Upload bridge NSIS installer
         uses: actions/upload-artifact@v4
         with:

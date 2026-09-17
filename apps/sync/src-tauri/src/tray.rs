@@ -1,8 +1,9 @@
 //! System tray icon with state-driven icon swapping.
 //!
 //! Visual states: **idle**, **syncing**, **reauth**, **error**, **conflict**.
-//! Left-click opens the desktop workspace (first-run onboarding still uses
-//! the compact `main` card). Right-click shows a context menu with "Sync Now",
+//! Left-click opens the desktop workspace (setup still uses the installer card
+//! on `main` until HQ is installed).
+//! Right-click shows a context menu with "Sync Now",
 //! "Open desktop view", and "Quit". Opt+Shift+H still toggles the status popover.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -163,14 +164,28 @@ fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool {
         .try_state::<crate::commands::first_run::LaunchKindState>()
         .map(|state| crate::commands::first_run::should_autoshow_on_launch(state.0))
         .unwrap_or(false);
-    let setup_lifecycle = app
-        .try_state::<crate::commands::lifecycle::LifecycleStateHandle>()
-        .map(|state| crate::commands::lifecycle::lifecycle_keeps_main_window_visible(state.0))
-        .unwrap_or(false);
-    // Browser OAuth steals key focus; do not dismiss the sign-in surface under it.
-    let oauth_in_flight = crate::commands::oauth::oauth_flow_keeps_window_visible();
+    setup_owns_main_window(
+        first_run_launch,
+        crate::commands::lifecycle::current_lifecycle_state(app),
+        // Browser OAuth steals key focus; do not dismiss the sign-in surface under it.
+        crate::commands::oauth::oauth_flow_keeps_window_visible(),
+    )
+}
 
-    first_run_launch || setup_lifecycle || oauth_in_flight
+/// Whether setup still owns `main`. The first-run launch verdict is frozen for
+/// the whole process, so on its own it would keep routing Dock / tray clicks
+/// to `main` long after onboarding finished. `mark_first_run_complete`
+/// advances the in-process lifecycle out of the setup states, and that is what
+/// releases the first-run pin: after it, clicks open the desktop workspace.
+pub(crate) fn setup_owns_main_window(
+    first_run_launch: bool,
+    lifecycle: Option<hq_desktop_core::lifecycle::LifecycleState>,
+    oauth_in_flight: bool,
+) -> bool {
+    let setup_lifecycle = lifecycle
+        .map(crate::commands::lifecycle::lifecycle_keeps_main_window_visible);
+    let first_run_pending = first_run_launch && setup_lifecycle.unwrap_or(true);
+    first_run_pending || setup_lifecycle.unwrap_or(false) || oauth_in_flight
 }
 
 /// Last-known horizontal centre of the native "HQ" menu-bar icon, in Cocoa
@@ -460,9 +475,8 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     ..
                 } = event
                 {
-                    // Tray left-click opens the desktop workspace. First-run
-                    // onboarding still lives on `main`, so that path keeps the
-                    // installer card instead.
+                    // Tray left-click opens the desktop workspace; while setup
+                    // still owns `main` it brings back the installer card.
                     let _ = crate::commands::desktop_alt::activation_policy(
                         crate::commands::desktop_alt::ActivationSource::TrayLeftClick,
                     );
@@ -853,7 +867,7 @@ pub fn show_window_centered(app: &AppHandle) {
 //
 // WindowRouter activation policy:
 //   Tray left-click / taskbar second-process / Dock → desktop workspace
-//   First-run onboarding still owns `main` until the wizard finishes
+//   Setup still owns `main` (installer card) until HQ is installed
 //   Opt+Shift+H → toggle compact status popover
 // Press again with the target open and it hides (toggle sources only).
 
@@ -867,8 +881,7 @@ pub fn hide_desktop_alt(app: &AppHandle) {
 
 /// Toggle the desktop view (explicit Open HQ / Opt+Shift+O path).
 ///
-/// Not used for tray left-click anymore (US-004 routes that to the compact
-/// popover). Kept for the global desktop shortcut which still toggles.
+/// Not used for tray left-click, which shows the desktop without toggling.
 ///
 /// If `desktop-alt` is already visible, hide it. Otherwise open it
 /// asynchronously. Signed-out users are admitted so they can sign in inside
@@ -905,27 +918,23 @@ pub fn toggle_desktop_window(app: &AppHandle) {
 /// left-click, Dock icon, and second-process activation.
 ///
 /// `open_desktop_alt_window_inner` already show+focuses an existing window, so
-/// this is safe to call whether or not the window has been built yet. First-run
-/// onboarding still lives on `main`; callers that must not steal that card
-/// should use [`activate_primary_surface`].
+/// this is safe to call whether or not the window has been built yet, including
+/// during onboarding. Opening failures are logged without switching surfaces.
 pub fn show_desktop_window(app: &AppHandle) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(_e) =
-            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
-                .await
+        if let Err(e) =
+            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone, None).await
         {
-            // Real open failure (not a signed-out gate): keep the onboarding /
-            // sign-in card reachable on `main`.
-            let app_main = app_clone.clone();
-            let _ = app_clone.run_on_main_thread(move || {
-                show_popover_window(&app_main);
-            });
+            crate::util::logfile::log("tray", &format!("desktop activation failed: {e}"));
         }
     });
 }
 
-/// Open the desktop workspace, unless first-run onboarding still owns `main`.
+/// Open the desktop workspace, unless setup still owns `main`: while HQ is not
+/// installed on this computer (or first-run onboarding or sign-in is in
+/// flight), tray left-click, the Dock icon and a second launch bring back the
+/// installer card instead of a workspace with nothing installed underneath.
 pub fn activate_primary_surface(app: &AppHandle) {
     if onboarding_window_requires_blur_suppression(app) {
         show_popover_window(app);
@@ -1589,5 +1598,31 @@ mod tests {
             start,
             "dropping outer guard should decrement back to start"
         );
+    }
+
+    mod setup_owns_main_window_tests {
+        use super::super::setup_owns_main_window;
+        use hq_desktop_core::lifecycle::LifecycleState;
+
+        #[test]
+        fn first_run_launch_during_setup_keeps_main() {
+            assert!(setup_owns_main_window(true, Some(LifecycleState::NeedsInstall), false));
+            assert!(setup_owns_main_window(true, None, false));
+        }
+
+        /// Regression: a fresh install's first launch finished onboarding
+        /// (lifecycle advanced to SteadyState) but tray clicks kept showing
+        /// the popover instead of the desktop until HQ was relaunched.
+        #[test]
+        fn first_run_launch_releases_main_once_setup_finishes() {
+            assert!(!setup_owns_main_window(true, Some(LifecycleState::SteadyState), false));
+        }
+
+        #[test]
+        fn setup_lifecycle_or_oauth_keeps_main_on_normal_launch() {
+            assert!(setup_owns_main_window(false, Some(LifecycleState::InstalledFirstRun), false));
+            assert!(setup_owns_main_window(false, Some(LifecycleState::SteadyState), true));
+            assert!(!setup_owns_main_window(false, Some(LifecycleState::SteadyState), false));
+        }
     }
 }

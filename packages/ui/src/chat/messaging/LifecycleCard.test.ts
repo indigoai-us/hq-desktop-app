@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 
 import LifecycleCard from "./LifecycleCard.svelte";
+import { OPEN_CHANNEL_EVENT } from "../open-target";
 import {
   parseLifecycleCard,
   type LifecycleCardActionEvent,
@@ -66,6 +67,52 @@ function mountCard(
 }
 
 describe("LifecycleCard controls and states", () => {
+  it("opens a primary navigation action without posting a lifecycle mutation", async () => {
+    const onopenurl = vi.fn();
+    const oncardaction = vi.fn();
+    const onOpen = vi.fn();
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    const root = mountCard(card({ kind: "companies_summary", fields: [], actions: [{ id: "open", label: "Continue setup", style: "primary", href: "/v1/notify/channels/chn_acme" }] }), { onopenurl, oncardaction });
+    root.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-open"]')!.click();
+    await tick();
+    window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect((onOpen.mock.calls[0][0] as CustomEvent).detail.channelId).toBe("chn_acme");
+    expect(onopenurl).not.toHaveBeenCalled();
+    expect(oncardaction).not.toHaveBeenCalled();
+  });
+
+  it("generates an editable address from the company name", async () => {
+    const root = mountCard(card({ fields: [
+      { id: "name", label: "Company name", control: "text", required: true },
+      { id: "slug", label: "Company address", control: "text" },
+    ] }));
+    const name = root.querySelector<HTMLInputElement>('input[id$="-name"]')!;
+    name.value = "Acme Studio";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(root.querySelector<HTMLInputElement>('input[id$="-slug"]')!.value).toBe("acme-studio");
+  });
+
+  it("never renders the legacy company's internal progress identifier", () => {
+    const root = mountCard(card({ kind: "companies_summary", fields: [{ id: "cmp_acme", label: "Acme", control: "readonly", value: "plan:chn_acme" }], actions: [] }));
+    expect(root.textContent).not.toContain("chn_acme");
+    expect(root.textContent).toContain("Continue setup");
+  });
+
+  it("keeps a durable channel link on the completed company card", () => {
+    const root = mountCard(card({ state: "done", fields: [], actions: [{ id: "open", label: "Open company channel", style: "primary", href: "/v1/notify/channels/chn_acme" }] }));
+    expect(root.querySelector('[data-testid="lifecycle-action-open"]')).not.toBeNull();
+  });
+  it("does not expose an agent ID as a readonly onboarding detail", () => {
+    const root = mountCard(card({ kind: "status", companyUid: "cmp_acme", title: "Polar is setting up", fields: [
+      { id: "agent", label: "Agent", control: "readonly", value: "agt_01M1T1640RESHAM7B8AZ59S44E" },
+      { id: "runtime", label: "Runtime", control: "readonly", value: "Codex" },
+    ] }));
+    expect(root.textContent).not.toContain("agt_");
+    expect(root.textContent).toContain("Polar is setting up");
+    expect(root.textContent).toContain("Codex");
+  });
   it("renders a labelled text field, primary action, and live step label", () => {
     const root = mountCard(card());
     const input = root.querySelector("input.lc-input") as HTMLInputElement;
@@ -208,7 +255,7 @@ describe("LifecycleCard controls and states", () => {
     expect(getComputedStyle(row).height).toBe("36px");
     expect(
       root.querySelector('[data-testid="lifecycle-card-status"]')?.textContent,
-    ).toContain("Pending");
+    ).toContain("In progress");
     expect(root.querySelector(".lc-spin")).not.toBeNull();
   });
 

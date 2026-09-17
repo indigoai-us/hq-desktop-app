@@ -3,9 +3,9 @@ import { readRepoFile } from './harness';
 
 describe('desktop markdown surface contract', () => {
   const surfaces = [
-    'src/desktop-alt/components/FilePreviewPane.svelte',
-    'src/desktop-alt/components/LibraryDetailPanel.svelte',
-    'src/desktop-alt/pages/ProjectDetailView.svelte',
+    '../../packages/ui/src/files/FilePreviewPane.svelte',
+    '../../packages/ui/src/library/LibraryDetailPanel.svelte',
+    '../../packages/ui/src/projects/ProjectDetailView.svelte',
   ];
 
   it.each(surfaces)('%s styles semantic tables as open neutral content', (path) => {

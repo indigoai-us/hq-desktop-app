@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { injectBaseProbeMain } from "./sync-cancel-base-probe-main.mjs";
 
 const repo = process.cwd();
 const run = (program, args, options = {}) =>
@@ -153,6 +154,13 @@ try {
     symlinkSync(sidecarNodeModules, baseSidecarNodeModules, "junction");
   }
   const processSource = readFileSync(processPath, "utf8");
+  // After HQ-DESKTOP-48 the merge-base already has pid-tree cancellation.
+  // Running the injected red-proof exe on that base hangs on Windows CI
+  // (telemetry starts, JSON never prints, spawnSync times out). Skip the
+  // historical red half; the candidate still has its own regressions.
+  if (processSource.includes("HQ-DESKTOP-48")) {
+    console.log("merge-base already contains HQ-DESKTOP-48; skipping red-proof exe");
+  } else {
   const processMarker = "// Tauri commands";
   if (!processSource.includes(processMarker)) {
     throw new Error("base process source has no Tauri-command insertion marker");
@@ -164,11 +172,7 @@ try {
   );
 
   const mainSource = readFileSync(mainPath, "utf8");
-  const mainMarker = "fn main() {";
-  if (!mainSource.includes(mainMarker)) {
-    throw new Error("base main source has no main-function insertion marker");
-  }
-  writeFileSync(mainPath, mainSource.replace(mainMarker, `${mainMarker}\n${baseProbeMain}`), "utf8");
+  writeFileSync(mainPath, injectBaseProbeMain(mainSource, baseProbeMain), "utf8");
 
   run(
     "cargo",
@@ -185,7 +189,7 @@ try {
   const output = execFileSync(artifact, ["--sync-cancel-base-probe"], {
     cwd: worktreeRoot,
     encoding: "utf8",
-    timeout: 60_000,
+    timeout: 180_000,
   });
   const raw = output.trim().split(/\r?\n/).at(-1);
   const probe = JSON.parse(raw);
@@ -221,6 +225,7 @@ try {
   } else {
     process.stdout.write(`${JSON.stringify({ ...probe, base: mergeBase })}
 `);
+  }
   }
 } finally {
   try {

@@ -1,0 +1,66 @@
+# Every PR writes its own release notes.
+#
+# release.yml publishes the tag's CHANGELOG.md notes as the GitHub Release body
+# and refuses a stable tag whose notes are empty, so notes that are not written
+# in the change's own PR are never written: nobody reconstructs them from a
+# pile of merged PRs at release time. This check fails a PR that adds no notes,
+# while the author still has the context to write a good entry.
+#
+# Escape hatch: a change with genuinely no user impact (CI, tests, internal
+# refactors) gets the `no-changelog` label. The label is visible on the PR, its
+# application is recorded in the PR timeline, and the check reports the waiver
+# as a notice rather than a silent pass. Adding or removing the label re-runs
+# the check. The release itself is separately guarded, so a waived PR can never
+# be the reason a release ships blank.
+#
+# Like ci.yml, this runs on every pull request base and lists `edited`, so a
+# stacked PR retargeted onto main starts a run instead of leaving the required
+# context waiting forever (see docs/RELEASE.md, "PR checks and stacked PRs").
+#
+# The logic lives in .github/scripts/check-changelog.mjs, and its tests run as
+# the first step of this job.
+name: Changelog
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog-entry:
+    name: changelog entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge commit plus both parents: HEAD^1 is the base as this PR
+          # would merge into it, so the diff is exactly what the PR adds.
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Release-notes guard tests
+        run: node --test .github/scripts/check-changelog.test.mjs
+
+      - name: Release notes waived by the no-changelog label
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+        run: |
+          echo "::notice title=Release notes waived::This PR carries the no-changelog label, so it is not required to add an entry under ## [Unreleased]. Remove the label if the change affects users."
+          echo "Release notes waived for this PR by the \`no-changelog\` label." >> "$GITHUB_STEP_SUMMARY"
+
+      # Quoted: an unquoted ` #` would start a YAML comment and cut the name.
+      - name: "PR adds release notes under ## [Unreleased]"
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ne 3 ]; then
+            echo "::error::Expected the pull request merge commit at HEAD; got $(git rev-list --parents -n 1 HEAD)."
+            exit 1
+          fi
+          git show HEAD^1:CHANGELOG.md > "$RUNNER_TEMP/base-CHANGELOG.md" 2>/dev/null || : > "$RUNNER_TEMP/base-CHANGELOG.md"
+          node .github/scripts/check-changelog.mjs pr --base "$RUNNER_TEMP/base-CHANGELOG.md" --head CHANGELOG.md

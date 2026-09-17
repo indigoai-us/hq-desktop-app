@@ -1,8 +1,7 @@
 /**
  * Company-channel tab models (US-015).
  *
- * Chat is the feed. Atlas / Team / Settings swap the feed
- * for current-state rows returned by GET /v1/companies/{uid}/tabs/{tab}.
+ * Chat is the feed. Team / Settings live in the HQ console.
  */
 
 import {
@@ -14,16 +13,62 @@ import { parseAtlasGraph, type AtlasGraph } from "./atlas-model.js";
 
 export const COMPANY_CHANNEL_TABS = [
   { id: "chat", label: "Chat" },
-  { id: "atlas", label: "Atlas" },
-  { id: "team", label: "Team" },
-  // Integrations deliberately has no desktop tab: apps are connected in the
-  // HQ console (companies/{slug}/integrations), never inside the desktop app.
-  { id: "settings", label: "Settings" },
 ] as const;
 
-export type CompanyChannelTabId = (typeof COMPANY_CHANNEL_TABS)[number]["id"];
+/**
+ * US-018: the native-calling Office destination.
+ *
+ * It is NOT in `COMPANY_CHANNEL_TABS` because it is the one company tab that
+ * is capability-gated and the one that is not backed by
+ * `GET /v1/companies/{uid}/tabs/{tab}` — it renders a live native surface, not
+ * server-returned rows. Use `companyChannelTabsFor(capabilities)` to build the
+ * list a host should actually show.
+ */
+export const COMPANY_OFFICE_TAB = { id: "office", label: "Office" } as const;
 
-export type CompanyTabSurfaceId = Exclude<CompanyChannelTabId, "chat">;
+/** Chat is the default surface. Team/settings/atlas remap; Office is gated. */
+export type CompanyChannelTabId =
+  | (typeof COMPANY_CHANNEL_TABS)[number]["id"]
+  | typeof COMPANY_OFFICE_TAB.id
+  | "team"
+  | "settings"
+  | "atlas";
+
+/** Tabs whose content comes from the company-tab endpoint. */
+export type CompanyTabSurfaceId = Exclude<
+  CompanyChannelTabId,
+  "chat" | "office"
+>;
+
+/** Host capabilities that decide which gated company tabs are listed. */
+export interface CompanyTabCapabilities {
+  /** `PlatformAdapter.capabilities.nativeCalls`. Defaults to false. */
+  nativeCalls?: boolean;
+}
+
+/**
+ * The company tabs to render for a host. Office is appended ONLY when the
+ * platform adapter reports native calling, so a browser (or a build without
+ * it) never advertises a door it cannot open. The default is closed: a caller
+ * that forgets to pass capabilities gets Chat only. Team and Settings live
+ * in the HQ console.
+ */
+export function companyChannelTabsFor(
+  capabilities: CompanyTabCapabilities = {},
+): ReadonlyArray<{ id: CompanyChannelTabId; label: string }> {
+  const tabs: Array<{ id: CompanyChannelTabId; label: string }> = [
+    ...COMPANY_CHANNEL_TABS,
+  ];
+  if (capabilities.nativeCalls === true) tabs.push({ ...COMPANY_OFFICE_TAB });
+  return tabs;
+}
+
+/** True for the company tabs that are fetched from the company-tab endpoint. */
+export function isCompanyTabSurfaceId(
+  id: CompanyChannelTabId,
+): id is CompanyTabSurfaceId {
+  return id !== "chat" && id !== "office";
+}
 
 export interface CompanyTabSectionModel {
   id: string;
@@ -46,7 +91,10 @@ export interface CompanyTabActionEvent extends LifecycleCardActionEvent {
 }
 
 export function isCompanyChannelTabId(id: string): id is CompanyChannelTabId {
-  return COMPANY_CHANNEL_TABS.some((tab) => tab.id === id);
+  return (
+    id === COMPANY_OFFICE_TAB.id ||
+    COMPANY_CHANNEL_TABS.some((tab) => tab.id === id)
+  );
 }
 
 export function needsInlineConfirm(

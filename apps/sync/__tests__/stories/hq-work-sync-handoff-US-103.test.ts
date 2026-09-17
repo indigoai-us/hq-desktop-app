@@ -38,20 +38,16 @@ vi.mock('@tauri-apps/api/app', () => ({
 import { flushSync, mount, unmount } from 'svelte';
 import { failure, ok, type PlatformAdapter } from '@hq/platform';
 import { EMBEDDED_NAVIGATION_EVENT, OPEN_SETTINGS_EVENT } from '@hq/ui';
-import {
-  bootDesktopAltWindow,
-  resolveDesktopAltShell,
-} from '../../src/desktop-alt/boot';
+import { bootDesktopAltWindow } from '../../src/desktop-alt/boot';
 import {
   applyDesktopAltRoute,
   createHqWorkSidebarApi,
 } from '../../src/desktop-alt/hq-work-host';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
-import {
-  hqWorkHandoffEnabled,
-  type HqWorkInvoker,
-} from '../../src/lib/hq-work';
+import { type HqWorkInvoker } from '../../src/lib/hq-work';
 import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
+import { takePendingChannelOpen } from '../../../../packages/ui/src/chat/open-target';
+import { takePendingConversation } from '../../../../packages/ui/src/chat/pending-conversation';
 
 const WHOAMI = {
   personUid: 'prs_ada',
@@ -75,6 +71,12 @@ function hqProPath(url: unknown): string {
 function mockInvoke(): SyncInvokeFn {
   return async (cmd, args) => {
     switch (cmd) {
+      case 'local_bots_list':
+        return { bots: [] };
+      case 'local_bots_workers':
+        return { workers: [] };
+      case 'agent_session_preflight':
+        return { claudeAvailable: false, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false, grokAvailable: false, grokLoggedIn: false };
       case 'get_auth_state':
         return {
           authenticated: true,
@@ -252,6 +254,9 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
 
 /** The sidebar "+" opens the unified create modal directly (no dropdown). */
 async function openCreateModal(): Promise<void> {
+  await vi.waitFor(() => {
+    expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy();
+  });
   (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
   await flush();
 }
@@ -326,32 +331,22 @@ afterEach(async () => {
     component = null;
   }
   host?.remove();
+  document.querySelectorAll('[data-testid="chat-create-modal"]').forEach((node) => node.remove());
+  takePendingChannelOpen();
+  takePendingConversation();
   tauriEvents.listeners.clear();
   vi.clearAllMocks();
 });
 
 describe('US-103 embedded desktop window', () => {
-  describe('flag branch (tray desktop-view → window boot)', () => {
-    it('hq_work_handoff is always on, including a retired false key', () => {
-      expect(hqWorkHandoffEnabled(undefined)).toBe(true);
-      expect(hqWorkHandoffEnabled(null)).toBe(true);
-      expect(hqWorkHandoffEnabled(false)).toBe(true);
-      expect(hqWorkHandoffEnabled(true)).toBe(true);
-    });
-
-    it('Given a retired false flag, when the tray desktop-view action runs, then hq-work mounts', async () => {
+  describe('embedded workspace boot', () => {
+    it('mounts the hq-work workspace', async () => {
       const calls: string[] = [];
-      const shell = await bootDesktopAltWindow({
-        getHandoff: async () => false,
-        mountLegacy: () => {
-          calls.push('legacy');
-        },
+      await bootDesktopAltWindow({
         mountHqWork: () => {
           calls.push('hq-work');
         },
       });
-      expect(shell).toBe('hq-work');
-      expect(await resolveDesktopAltShell(async () => false)).toBe('hq-work');
       expect(calls).toEqual(['hq-work']);
     });
 
@@ -383,16 +378,12 @@ describe('US-103 embedded desktop window', () => {
       expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
     });
 
-    it('Given flag on, when the tray desktop-view action is clicked, then the embedded HQ Work shell renders', async () => {
+    it('renders the embedded HQ Work shell', async () => {
       host = document.createElement('div');
       document.body.appendChild(host);
       const invokeFn = mockInvoke();
       const calls: string[] = [];
-      const shell = await bootDesktopAltWindow({
-        getHandoff: async () => true,
-        mountLegacy: () => {
-          calls.push('legacy');
-        },
+      await bootDesktopAltWindow({
         mountHqWork: () => {
           calls.push('hq-work');
           component = mount(HqWorkWorkShell, {
@@ -401,7 +392,6 @@ describe('US-103 embedded desktop window', () => {
           });
         },
       });
-      expect(shell).toBe('hq-work');
       expect(calls).toEqual(['hq-work']);
       flushSync();
       await flush();
@@ -410,31 +400,13 @@ describe('US-103 embedded desktop window', () => {
       expect(host.querySelector('[data-testid="chat-sidebar"]')).toBeTruthy();
     });
 
-    it('flag-read failure still mounts the hq-work shell', async () => {
-      const shell = await bootDesktopAltWindow({
-        getHandoff: async () => {
-          throw new Error('menubar missing');
-        },
-        mountLegacy: () => {
-          throw new Error('must not mount legacy');
-        },
-        mountHqWork: () => undefined,
-      });
-      expect(shell).toBe('hq-work');
-    });
-
     it('finding-6: boot does not probe HQ Work install', async () => {
       const invokeFn = vi.fn(async (command: string) => {
         throw new Error(`boot must not invoke ${command}`);
       }) as HqWorkInvoker;
-      const shell = await bootDesktopAltWindow({
-        getHandoff: async () => false,
-        mountLegacy: () => {
-          throw new Error('must not mount legacy');
-        },
+      await bootDesktopAltWindow({
         mountHqWork: () => undefined,
       });
-      expect(shell).toBe('hq-work');
       expect(invokeFn).not.toHaveBeenCalled();
     });
   });
@@ -755,7 +727,10 @@ describe('US-103 embedded desktop window', () => {
       expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
-    it('opens a picked existing DM exactly once and closes the create modal', async () => {
+    it('picking a person stages them instead of opening the DM', async () => {
+      // Picking the first name used to open that DM and close the modal, so a
+      // second person could never be added. The people now collect in the
+      // dialog; "Message … directly" is the one-to-one path.
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
@@ -767,6 +742,34 @@ describe('US-103 embedded desktop window', () => {
       ).find((node) => node.textContent?.includes('Bob'));
       expect(bob?.textContent).toContain('bob@example.test');
       bob?.click();
+      await flush();
+
+      expect(calls.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([]);
+      expect(calls.filter((call) => call.cmd === 'send_dm')).toEqual([]);
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).not.toBeNull();
+      const chips = Array.from(
+        document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+      ).map((node) => node.textContent ?? '');
+      expect(chips.join(' ')).toContain('Bob');
+    });
+
+    it('opens a picked existing DM exactly once from the direct action', async () => {
+      const calls: MessagingCall[] = [];
+      mountMessagingSidebar(messagingInvoke(calls));
+      await flush();
+      await openCreateModal();
+      setInput('chat-create-query', 'Bob');
+      await settleQuery();
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>('[data-testid="chat-create-result"]'),
+      )
+        .find((node) => node.textContent?.includes('Bob'))
+        ?.click();
+      await flush();
+
+      document
+        .querySelector<HTMLButtonElement>('[data-testid="chat-channel-message-directly"]')
+        ?.click();
       await flush();
 
       expect(calls.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([
@@ -795,11 +798,16 @@ describe('US-103 embedded desktop window', () => {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       await flush();
 
+      // The point of this test is staleness, not navigation: Enter must act on
+      // the VISIBLE result. A person now stages rather than opening, so the
+      // proof is that Bob is who got staged and the stale channel was untouched.
       const after = calls.slice(before);
       expect(after.filter((call) => call.cmd === 'mark_channel_read')).toEqual([]);
-      expect(after.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([
-        { cmd: 'mark_dm_thread_read', args: { withPersonUid: 'prs_bob' } },
-      ]);
+      const chips = Array.from(
+        document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+      ).map((node) => node.textContent ?? '');
+      expect(chips.join(' ')).toContain('Bob');
+      expect(chips.join(' ')).not.toContain('existing');
     });
 
     it('refuses to dismiss while a create is in flight, then opens the channel once it lands', async () => {
@@ -1050,6 +1058,7 @@ describe('US-103 embedded desktop window', () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
+      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-show-history"]')).not.toBeNull());
       (host.querySelector('[data-testid="chat-show-history"]') as HTMLButtonElement).click();
       await flush();
       setInput('chat-history-search', 'known');

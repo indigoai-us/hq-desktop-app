@@ -162,3 +162,13 @@ mod tests {
         assert!(shell_execute_succeeded(33));
     }
 }
+
+
+/// Append one renderer-supplied line to the support log. Diagnostic only: the
+/// renderer decides what to say, the tag is prefixed so lines are greppable.
+#[tauri::command]
+pub fn frontend_log(tag: String, message: String) {
+    let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(40).collect();
+    let message: String = message.chars().take(2000).collect();
+    crate::util::logfile::log(&format!("ui:{tag}"), &message);
+}

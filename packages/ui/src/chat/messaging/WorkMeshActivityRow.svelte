@@ -20,6 +20,8 @@
     time?: string;
     /** Roster-resolved actor label for cards (overrides opaque uids). */
     actorLabel?: string | null;
+    /** Open the in-channel session pane for this card. */
+    onopensession?: (sessionId: string) => void;
   }
 
   let {
@@ -27,6 +29,7 @@
     card = null,
     time = "",
     actorLabel = null,
+    onopensession,
   }: Props = $props();
 
   let expanded = $state(false);
@@ -116,46 +119,90 @@
   const cardTitle = $derived(
     card ? (card.note ?? card.title ?? "").trim() : "",
   );
+
+  const cardFinished = $derived(
+    Boolean(
+      card &&
+        /^(finished|idle|completed|done)$/i.test((card.status ?? "").trim()),
+    ),
+  );
+
+  const cardVerb = $derived(cardFinished ? "finished a session" : "started a session");
+
+  /**
+   * A mesh spawn id (`ws_spawn_<company>|<project>|<US-001>`) names queued work,
+   * not a running session, so it is never openable. This guard used to live in
+   * the in-app Sessions module; it is kept here because the rule is about the
+   * mesh wire shape, not about running a session locally.
+   */
+  const openableSessionId = (id: string | null | undefined): boolean => {
+    const raw = (id ?? "").trim();
+    return Boolean(raw) && !raw.includes("|") && !raw.startsWith("ws_spawn_");
+  };
 </script>
 
 {#if card}
+  {@const canOpen = Boolean(
+    card.sessionId && onopensession && openableSessionId(card.sessionId),
+  )}
   <div
     class="work-mesh-block"
     data-testid="work-mesh-card"
     data-actor-type={card.actorType}
-    role="status"
+    data-session-id={card.sessionId ?? undefined}
+    role={canOpen ? undefined : "status"}
   >
-    <div class="sys-line work-mesh-row work-mesh-card">
+    <button
+      type="button"
+      class="sys-line work-mesh-row work-mesh-card"
+      class:finished={cardFinished}
+      data-testid="work-mesh-card-open"
+      data-status={card.status ?? ""}
+      disabled={!canOpen}
+      onclick={() => {
+        if (card.sessionId) onopensession?.(card.sessionId);
+      }}
+    >
       <span class="sys-icon" aria-hidden="true">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle
-            cx="8"
-            cy="8"
-            r="5.5"
-            stroke="currentColor"
-            stroke-width="1.3"
-          />
-          <path
-            d="M8 4.75v3.5l2.25 1.35"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linecap="round"
-          />
-        </svg>
+        {#if cardFinished}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M3 8.5 6.5 12 13 4.5"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        {:else}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle
+              cx="8"
+              cy="8"
+              r="5.5"
+              stroke="currentColor"
+              stroke-width="1.3"
+            />
+            <path
+              d="M8 4.75v3.5l2.25 1.35"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+            />
+          </svg>
+        {/if}
       </span>
-      <span class="sys-summary" title={[cardActor, ...cardMeta].filter(Boolean).join(" · ")}>
+      <span class="sys-summary" title={[cardActor, cardVerb, cardTitle].filter(Boolean).join(" · ")}>
         <span class="sys-who">{cardActor}</span>
         {#if cardIsAgent}
-          <span class="agent-mark" aria-label="agent" title="Agent">✦</span>
+          <span class="agent-mark" aria-label="bot" title="Bot">✦</span>
         {/if}
-        {#each cardMeta as part, i (part + String(i))}
-          <span class="sys-sep"> · </span><span class="sys-meta">{part}</span>
-        {/each}
-        {#if cardTitle && cardMeta.length === 0}
+        <span class="sys-sep"> </span><span class="sys-meta">{cardVerb}</span>
+        {#if cardTitle}
           <span class="sys-sep"> — </span><span class="sys-meta">{cardTitle}</span>
         {/if}
       </span>
-    </div>
+    </button>
   </div>
 {:else if activity}
   <div class="work-mesh-block">
@@ -265,6 +312,18 @@
 
   .work-mesh-card {
     cursor: default;
+  }
+
+  button.work-mesh-card:not(:disabled) {
+    cursor: pointer;
+  }
+
+  button.work-mesh-card:disabled {
+    cursor: default;
+  }
+
+  button.work-mesh-card:not(:disabled):hover .sys-who {
+    color: var(--t2, var(--muted-2, var(--pop-muted)));
   }
 
   /* The one accent on an otherwise fully muted row: attention states get the

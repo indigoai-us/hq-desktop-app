@@ -458,12 +458,22 @@ describe("release workflow channel contract", () => {
   });
 
   it("keeps the working tree on the v1 desktop shell", async () => {
-    const shellDir = resolve(rootDir, "apps/sync/src/desktop-alt");
+    // The V2 chat shell must stay absent from the desktop-alt tree.
+    await expect(
+      stat(resolve(rootDir, "apps/sync/src/desktop-alt/chat")),
+    ).rejects.toThrow();
 
-    await expect(stat(resolve(shellDir, "chat"))).rejects.toThrow();
-
-    for (const marker of ["v4/V4Sidebar.svelte", "v4/V4SecondarySidebar.svelte"]) {
-      await expect(stat(resolve(shellDir, marker))).resolves.toBeDefined();
+    // Positive markers moved with the shell. The desktop window mounts
+    // HqWorkWorkShell, which renders the @hq/ui shell; desktop-alt's own
+    // DesktopApp.svelte tree became unreachable and was removed with the
+    // in-app Sessions subsystem. Pointing at the surfaces a user actually
+    // sees is what makes this assertion mean anything.
+    for (const marker of [
+      "apps/sync/src/desktop-alt/HqWorkWorkShell.svelte",
+      "packages/ui/src/shell/DesktopApp.svelte",
+      "packages/ui/src/chat/ChatSidebar.svelte",
+    ]) {
+      await expect(stat(resolve(rootDir, marker))).resolves.toBeDefined();
     }
   });
 
@@ -488,16 +498,19 @@ describe("release workflow channel contract", () => {
     // "Finish setting up HQ" card with it; the guard's two sidebar markers
     // waved 36 releases through without it. Pinning these entries stops the
     // manifest being quietly emptied back to a shell-only check.
+    //
+    // Repointed to the @hq/ui shell: the desktop-alt copies these used to
+    // name were part of the unreachable DesktopApp.svelte tree removed with
+    // the in-app Sessions subsystem. Pinning a path that no longer reaches a
+    // user is worse than not pinning it — it reads as coverage and is not.
     const surfaces = parseRequiredSurfaces(requiredSurfaces);
 
     expect(surfaces).toContain(
-      "apps/sync/src/desktop-alt/components/SetupIncompleteCard.svelte",
+      "packages/ui/src/settings/SetupIncompleteCard.svelte",
     );
-    expect(surfaces).toContain("apps/sync/src/desktop-alt/lib/setup-launch.ts");
-    expect(surfaces).toContain("apps/sync/src/desktop-alt/v4/V4Sidebar.svelte");
-    expect(surfaces).toContain(
-      "apps/sync/src/desktop-alt/v4/V4SecondarySidebar.svelte",
-    );
+    expect(surfaces).toContain("packages/ui/src/settings/setup-launch.ts");
+    expect(surfaces).toContain("packages/ui/src/chat/ChatSidebar.svelte");
+    expect(surfaces).toContain("packages/ui/src/home/V4TitleBar.svelte");
   });
 
   it("allows an equal stable rerun but rejects a rollback below public latest", () => {
@@ -656,6 +669,58 @@ describe("release workflow channel contract", () => {
     expect(sync).toContain("git push origin HEAD:refs/heads/main");
     // Never `git add -A`: only the five version surfaces may be committed.
     expect(sync).not.toContain("git add -A");
+  });
+
+  // Release notes are the only record users get of a release and are permanent
+  // once published. They come from CHANGELOG.md, written in each change's own
+  // PR (changelog.yml), and every step that touches them is pinned here: an
+  // unwired guard never runs, and every check still looks green.
+  it("refuses a stable tag with empty release notes before anything is built", () => {
+    const validate = jobBody("validate");
+    const guard = stepBody(validate, "Refuse to release empty release notes");
+
+    // Manual retries are checked too; only a tag older than CHANGELOG.md is exempt.
+    expect(guard).not.toMatch(/^\s*if:/m);
+    expect(guard).toContain('if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ ! -f CHANGELOG.md ]; then');
+    expect(validate).toContain(".github/scripts/check-changelog.mjs");
+    // The final, unconditional line is the hard gate for stable tags; the
+    // earlier call only reports on beta/alpha. It is given the previous stable
+    // tag's CHANGELOG.md, so notes a failed sync left under Unreleased are not
+    // published a second time.
+    expect(guard.trim().split("\n").at(-1)?.trim()).toBe(
+      'node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG" "${previous[@]}"',
+    );
+    expect(guard).toContain('previous=(--previous "$RUNNER_TEMP/previous-CHANGELOG.md" --previous-version "$PREVIOUS_TAG")');
+    expect(guard).not.toContain("continue-on-error");
+    expect(jobBody("macos")).toContain("needs: validate");
+    expect(jobBody("windows")).toContain("needs: validate");
+  });
+
+  it("leads the GitHub release body with the tag's CHANGELOG notes", () => {
+    const publish = jobBody("publish");
+    const draft = stepBody(publish, "Create or reset hidden draft GitHub release");
+
+    expect(publish).toContain(".github/scripts/check-changelog.mjs");
+    expect(draft).toContain(
+      'node .release-control/.github/scripts/check-changelog.mjs notes --file CHANGELOG.md --version "$TAG"',
+    );
+    expect(draft).toContain('--arg body "$notes"');
+    expect(draft).toContain("body: $body");
+    // GitHub's generated PR list stays, beneath the written notes.
+    expect(draft).toContain("generate_release_notes: true");
+  });
+
+  it("moves the shipped notes into the version's section when syncing main", () => {
+    const sync = stepBody(jobBody("sync-version"), "Stamp the released version onto main");
+
+    expect(sync).toContain("node .github/scripts/check-changelog.mjs promote");
+    expect(sync).toContain('git show "${RELEASE_TAG}:CHANGELOG.md"');
+    expect(sync).toMatch(/git add -- \\[\s\S]*CHANGELOG\.md/);
+    // Promotion happens inside the retry loop, after main is re-derived, so a
+    // merge that landed mid-release keeps its Unreleased entry.
+    expect(sync.indexOf("check-changelog.mjs promote")).toBeGreaterThan(
+      sync.indexOf("git checkout -B main refs/remotes/origin/main"),
+    );
   });
 
   it("publishes prereleases without advancing the stable latest alias", () => {
@@ -862,17 +927,24 @@ describe("release workflow channel contract", () => {
     expect(JSON.parse(windowsConfig).bundle.windows.allowDowngrades).toBe(false);
   });
 
-  it("builds a prerelease MSI in the regular Windows installer gate", () => {
+  // This used to assert the PR gate ALSO bundled an MSI. It did, and nothing
+  // ever opened it: windows-installer-e2e downloads the NSIS setup.exe and
+  // windows-installer-e2e.ps1 installs and upgrades through NSIS alone. WiX
+  // candle+light cost 70s on the critical path of a required check to produce
+  // a file that was counted and discarded, so the gate is NSIS-only now and
+  // MSI packaging is asserted where it ships. The `installer E2E (x64 MSI +
+  // NSIS)` job NAME is left alone deliberately -- it is a required status
+  // check on `main`, and renaming it orphans the context.
+  it("builds the MSI on the release path, not in the PR gate", () => {
+    expect(workflow).toContain("Generate Windows MSI version overlay");
+    expect(workflow).toContain("node ../../scripts/windows-msi-version.mjs");
+    expect(workflow).toContain("--bundles msi nsis updater");
+    expect(workflow).toContain("--config $env:TAURI_MSI_VERSION_CONFIG");
+
     expect(windowsCheckWorkflow).toContain("installer E2E (x64 MSI + NSIS)");
-    expect(windowsCheckWorkflow).toContain("Generate Windows MSI version overlay");
-    expect(windowsCheckWorkflow).toContain(
-      "node ../../scripts/windows-msi-version.mjs",
-    );
-    expect(windowsCheckWorkflow).toContain("--bundles msi nsis");
-    expect(windowsCheckWorkflow).toContain("Verify prerelease MSI package");
-    expect(windowsCheckWorkflow).toContain(
-      "--config $env:TAURI_MSI_VERSION_CONFIG",
-    );
+    expect(windowsCheckWorkflow).not.toContain("--bundles msi");
+    expect(windowsCheckWorkflow).not.toContain("TAURI_MSI_VERSION_CONFIG");
+    expect(windowsCheckWorkflow).not.toContain("windows-msi-version.mjs");
   });
 
   // The relevance list used to be a `paths:` trigger filter on
@@ -963,6 +1035,21 @@ describe("release workflow channel contract", () => {
     expect(stepBody(windows, "Upload Windows debug files to Sentry")).toContain(
       "debug_id",
     );
+    const windowsSentryUpload = stepBody(windows, "Upload Windows debug files to Sentry");
+    expect(windowsSentryUpload).toContain(
+      'Invoke-RestMethod -Uri "${endpoint}?debug_id=$encodedDebugId"',
+    );
+    expect(windowsSentryUpload).not.toContain(
+      'Invoke-RestMethod -Uri "$endpoint?debug_id=$encodedDebugId"',
+    );
+    // An upload already acknowledged by sentry-cli must not hold up working
+    // installers if Sentry's listing endpoint is unavailable or incomplete.
+    // The warning and step summary keep either condition visible to release
+    // operators instead of turning it into a silent success.
+    expect(windowsSentryUpload).toMatch(
+      /catch \{[\s\S]*?Sentry debug-file upload verification failed[\s\S]*?Write-Host "::warning::\$message"[\s\S]*?Add-Content -Path \$env:GITHUB_STEP_SUMMARY -Value \$message[\s\S]*?exit 0/,
+    );
+    expect(windowsSentryUpload).toContain("-ErrorAction Stop");
     expect(windows).toContain("$exeMetadata.variants");
     expect(windows).toContain("$pdbMetadata.variants");
     expect(macos).toContain('data.get("variants", [])');
@@ -972,11 +1059,19 @@ describe("release workflow channel contract", () => {
     expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?strip = "symbols"/);
     expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?split-debuginfo = "packed"/);
 
-    expect(windowsCheckWorkflow).toContain("Verify installer debug file contract");
-    expect(windowsCheckWorkflow).toContain("hq-sync-menubar.exe");
-    expect(windowsCheckWorkflow).toContain("hq_sync_menubar.pdb");
-    expect(windowsCheckWorkflow).toContain("sentry-cli difutil check --json");
-    expect(windowsCheckWorkflow).toContain("Installer executable/PDB debug id");
+    // The exe/PDB debug-id contract is asserted on the binary that SHIPS. The
+    // PR gate used to check its own fixture copy too, which proved nothing
+    // about the released artifact -- nothing symbolicates a fixture that is
+    // installed, asserted on and uninstalled inside one job, and checking it
+    // also cost a global sentry-cli install on the critical path of a required
+    // check. This stands on its own: it is not contingent on how the fixture
+    // is compiled.
+    expect(windows).toContain("Verify Windows debug file contract");
+    expect(windows).toContain("hq-sync-menubar.exe");
+    expect(windows).toContain("hq_sync_menubar.pdb");
+    expect(windows).toContain("sentry-cli difutil check --json");
+    expect(windows).toContain("Windows executable/PDB debug id");
+    expect(windowsCheckWorkflow).not.toContain("sentry-cli difutil check");
 
     expect(workflow).not.toContain("hq-debug-");
     expect(workflow).not.toContain("debug-artifacts-${{ matrix.target }}");

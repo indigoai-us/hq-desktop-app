@@ -1,3 +1,9 @@
+<script module lang="ts">
+  /** See the note on its use below — deliberately outside the instance so a
+   *  remount does not re-ask the server for peers it already 404'd on. */
+  const dmNameLookupsTried = new Set<string>();
+</script>
+
 <script lang="ts">
   /**
    * Chat-first unified conversation sidebar (US-003).
@@ -34,11 +40,20 @@
   } from "./setup-channel";
   import { requestConversation } from "./pending-conversation";
   import { companiesForChannelCreate } from "./channel-create-scope.js";
+  import { localBotCompanies } from "./local-bots.js";
   import type { Workspace } from "./workspaces";
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
+  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
+  import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
+  import type { AvatarPack } from "../avatars/types.js";
+  import { botKindFor } from "./bot-kind.js";
+  import BotKindChip from "./BotKindChip.svelte";
   import {
     shouldArmDirectorySafety,
     shouldBumpDmUnread,
@@ -102,6 +117,7 @@
     flattenGrouped,
     pickAutoOpenConversation,
     pickSettledBootConversation,
+    pickWelcomeFirstConversation,
     railRowScopeLabel,
     togglePin,
     type CompanyScope,
@@ -178,6 +194,13 @@
     avatarByUid?: Record<string, string> | null;
     /** Bump to refetch contacts (after an agent profile save). */
     rosterWakeSeq?: number;
+    /**
+     * Bump to re-read pending connection requests only. Hosts tie this to
+     * their notification wake (native poll or `notifications:*` MQTT
+     * reconcile) so a request that arrives without a `dm:request-new` wake
+     * — the web path has none — still surfaces without a remount.
+     */
+    requestsWakeSeq?: number;
     /** Contact-roster avatar URLs, including agents once hq-pro sends them. */
     onavatarmap?: (map: Record<string, string>) => void;
     oncommand?: () => void;
@@ -196,7 +219,34 @@
      * card seams leave these unset and the rows are hidden.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
-    oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
+    oncreateagent?:
+      | ((companyUid: string, draft: { name: string; handle: string }) => Promise<EntryPointResult>)
+      | null;
+    /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
+    oncreatebot?:
+      | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
+      | null;
+    botRuntimeReady?: Record<string, boolean> | null;
+    botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
+    existingBotNames?: readonly string[] | null;
+    botSignIn?: RuntimeSignInApi | null;
+    onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    avatarPacks?: AvatarPack[] | null;
+    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
+    /**
+     * The user's own local bots. GET /v1/notify/contacts never lists them, so
+     * they are merged into the contacts the "+" modal searches and invites
+     * from — otherwise a bot could not be added to a channel or group chat.
+     */
+    localBots?: readonly LocalBotRow[] | null;
+    /**
+     * The user's own local bots that this computer cannot run right now — a
+     * wiped config, a reinstall, a second Mac. They are not on `localBots`,
+     * and drawing them as `Cloud` is what the owner's VM showed happening to
+     * four of their own bots the moment the account listing was unavailable.
+     */
+    ownedLocalBotUids?: readonly string[] | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -218,6 +268,16 @@
      */
     bootTimeoutMs?: number;
     /**
+     * Land on #welcome at boot even when live channels exist (setup has not
+     * been run on this machine yet). See `hasRunWelcomeSetup`.
+     */
+    /**
+     * `true`: #welcome wins the boot pick (setup not run here yet). `false`:
+     * real conversations win. `"pending"`: the host has not yet said whether
+     * setup is owed — hold the boot pick, briefly, rather than guess.
+     */
+    welcomeFirst?: boolean | "pending";
+    /**
      * Phone-width shells keep this mounted while it is closed — it is what
      * loads the roster and falls back to #setup — and move it off screen
      * instead of unmounting it.
@@ -233,7 +293,16 @@
      * in that project is online via the presence store — never from timestamps.
      */
     projectHasPresence?: (row: ConversationRow) => boolean;
-    /** Host decoration per row: badge, hover card, context-menu actions. */
+    /**
+     * Host-owned presence for DM rows with a personal local bot (local-bots
+     * US-009): "online" / "offline" from the server's heartbeat verdict, null
+     * for every other row. Never derived from timestamps here.
+     */
+    dmPresence?: (row: ConversationRow) => "online" | "offline" | null;
+    /** Host decoration per row: badge, hover card, context-menu actions.
+     *  Session metadata may still be loading — never hide the rail for it. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
   }
 
@@ -252,6 +321,7 @@
     seedDirectory = null,
     avatarByUid = null,
     rosterWakeSeq = 0,
+    requestsWakeSeq = 0,
     onavatarmap,
     oncommand,
     onnavigateMessages,
@@ -261,15 +331,31 @@
     onsignout,
     oncreatecompany = null,
     oncreateagent = null,
+    oncreatebot = null,
+    botRuntimeReady = null,
+    botWorkers = null,
+    existingBotNames = null,
+    botSignIn = null,
+    onbotsignedin = null,
+    avatarPacks = null,
+    loadAvatarPacks = null,
+    localBots = null,
+    ownedLocalBotUids = null,
     onrows,
     ondisplayrows,
     onactions,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    welcomeFirst = false,
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
+    dmPresence = () => null,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
     rowExtras = null,
   }: Props = $props();
+  // Host still reports load failures; the sidebar no longer paints them.
+  void rowExtrasError;
 
   interface PairUnreadEntry {
     withPersonUid: string;
@@ -397,6 +483,11 @@
    * new-channel modals.
    */
   let createOpen = $state(false);
+  const createButtonLabel = $derived(
+    oncreatebot || oncreatecompany || oncreateagent
+      ? "New message, channel, company, or bot"
+      : "New message or channel",
+  );
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
@@ -472,7 +563,11 @@
   let loadError = $state<string | null>(null);
   /** First directory/contacts attempt has settled or timed out. */
   let bootAttempted = $state(false);
-  let firstRefreshSettled = false;
+  let firstRefreshSettled = $state(
+    (loadConversationCache(storage)?.channels?.length ?? 0) > 0 ||
+      (loadConversationCache(storage)?.contacts?.length ?? 0) > 0 ||
+      (seedDirectory?.length ?? 0) > 0,
+  );
   let reportedShellReady = false;
   let scopeMenuEl: HTMLDivElement | null = $state(null);
   let filterWrapEl: HTMLDivElement | null = $state(null);
@@ -504,6 +599,9 @@
         iconUrl: w.iconUrl ?? null,
       })),
   );
+
+  /** The owner's cloud companies by slug — a Local company bot joins these (bot-kinds). */
+  const botCompanies = $derived(localBotCompanies(companies));
 
   /** companyUid → presigned icon, for rows that only carry a uid. */
   const companyIcons = $derived(
@@ -542,10 +640,10 @@
   );
 
   /**
-   * Companies an agent can be added to: the workspace list, plus any company
+   * Companies a Cloud bot can be added to: the workspace list, plus any company
    * the directory already shows a company channel for. A company created a
    * moment ago has its channel before the workspace list refreshes, and the
-   * "New agent" row must not lag behind it.
+   * "New bot" step must not lag behind it.
    */
   const agentCompanies = $derived.by<ScopeCompany[]>(() => {
     const out = new Map<string, ScopeCompany>();
@@ -633,8 +731,9 @@
 
   // Full people directory (contacts WITHOUT a conversation included) — used
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
+  // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
-    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots), {
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
@@ -687,12 +786,55 @@
   const hasNonSetupRows = $derived(
     allRows.some((row) => !isSetupChannel(row.channelId)),
   );
+  /**
+   * The roster already names a company (created on the website or another
+   * machine). Its channel rows usually hydrate a beat after the roster, so
+   * the settled-boot fallback must not race them into #setup: give the rows
+   * one more bounded wait, and open the company's channel the moment it
+   * lands. Only after that wait does #setup win — and by then the shell
+   * renders it around the existing company, never "Create a company".
+   */
+  const hasRosterCompany = $derived(
+    (companies ?? []).some((company) => company.kind === "company"),
+  );
+  let companyRowsGraceElapsed = $state(false);
+  $effect(() => {
+    if (
+      selectedId ||
+      !bootAttempted ||
+      loading ||
+      !hasRosterCompany ||
+      hasNonSetupRows ||
+      companyRowsGraceElapsed
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      companyRowsGraceElapsed = true;
+      sidebarLog("auto-open-company-grace-elapsed", { waitedMs: bootTimeoutMs });
+    }, bootTimeoutMs);
+    return () => clearTimeout(timer);
+  });
   $effect(() => {
     if (selectedId) {
       autoOpenRequestedId = null;
       return;
     }
     if (autoOpenRequestedId) return;
+    // The host has not said yet whether setup is owed here: opening either
+    // #welcome or a company channel now would be a guess the person sees.
+    if (welcomeFirst === "pending") return;
+    // Until setup has been run on this machine, #welcome wins the boot pick:
+    // the person needs Run Setup before a company channel is useful.
+    if (welcomeFirst) {
+      const welcome = pickWelcomeFirstConversation(filteredRows, selectedId);
+      if (welcome) {
+        autoOpenRequestedId = welcome.id;
+        sidebarLog("auto-open-welcome-first", { id: welcome.id });
+        void openRow(welcome, undefined, true);
+        return;
+      }
+    }
     // Real conversations auto-open immediately. #setup exists from first
     // paint, so it must not win the empty-selection race against deep links
     // and rows that hydrate a beat later — but once the first fetch has
@@ -708,6 +850,7 @@
       return;
     }
     if (!bootAttempted || loading) return;
+    if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
     const fallback = pickSettledBootConversation(filteredRows, selectedId);
     if (!fallback) return;
     autoOpenRequestedId = fallback.id;
@@ -845,6 +988,20 @@
   function openCreate(): void {
     closeAllOverlays();
     createOpen = true;
+  }
+  /** The "+" button: a plain channel; the host resets the kind on its own opens. */
+  function openCreateFromButton(): void {
+    createKind = "channel";
+    openCreate();
+  }
+
+  /** What the create modal makes inside a company when opened by the host. */
+  let createKind = $state<"channel" | "project">("channel");
+
+  /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
+  export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
+    createKind = options.kind ?? "channel";
+    openCreate();
   }
 
   /** Close the create modal; optionally open the channel it just created. */
@@ -1186,8 +1343,8 @@
     if (firstPaint) loading = true;
     loadError = null;
     // Channels reconcile through the directory feed; contacts + requests keep
-    // their existing reads. All three settle (or time out) before the loading
-    // gate clears so first paint cannot wait forever.
+    // their existing reads. Paint cache/seed immediately — do not wait for
+    // the directory (or session extras) before showing rows.
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
@@ -1210,6 +1367,11 @@
           bootTimeoutMs,
           "list_dm_requests",
         ).catch((err) => {
+          sidebarLog("boot-error", {
+            source: "list_dm_requests",
+            timeout: err instanceof BootTimeoutError,
+            message: err instanceof Error ? err.message : String(err),
+          });
           console.error("chat-sidebar: list_dm_requests failed", err);
           return { requests: pendingRequests };
         }),
@@ -1237,11 +1399,11 @@
       });
       console.error("chat-sidebar: refresh failed", err);
     } finally {
-      await directory;
       bootAttempted = true;
       loading = false;
       firstRefreshSettled = true;
       maybeReportShellReady();
+      void directory.finally(() => maybeReportShellReady());
     }
   }
 
@@ -1279,8 +1441,34 @@
     });
   });
 
-  /** Peers already asked about — one thread read per bare uid, ever. */
-  const dmNameLookupsTried = new Set<string>();
+  /** Re-read pending connection requests alone (no directory/contacts churn). */
+  async function refreshRequests(): Promise<void> {
+    try {
+      const resp = await raceTimeout(
+        api.listDmRequests(),
+        bootTimeoutMs,
+        "list_dm_requests",
+      );
+      pendingRequests = Array.isArray(resp?.requests) ? resp.requests : [];
+    } catch (err) {
+      sidebarLog("boot-error", {
+        source: "list_dm_requests",
+        timeout: err instanceof BootTimeoutError,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      console.error("chat-sidebar: list_dm_requests failed", err);
+    }
+  }
+
+  $effect(() => {
+    const seq = requestsWakeSeq;
+    if (seq <= 0) return;
+    untrack(() => {
+      void refreshRequests();
+    });
+  });
+
+  // `dmNameLookupsTried` lives in the module script above.
 
   /**
    * The DM peer index (dm-threads) carries bare uids. When such a peer is not
@@ -1364,7 +1552,7 @@
   }
 
   onMount(() => {
-    // Cache already painted; one cursor delta in the background. Safety
+    // Reconcile cached rows before revealing the complete list. Safety
     // polling stays off until we know MQTT is down.
     maybeReportShellReady();
     void refreshLists();
@@ -1872,15 +2060,11 @@
         class="chat-icon-btn"
         bind:this={plusBtnEl}
         data-testid="chat-new-message"
-        aria-label={oncreatecompany || oncreateagent
-          ? "New message, channel, company, or agent"
-          : "New message or channel"}
-        title={oncreatecompany || oncreateagent
-          ? "New message, channel, company, or agent"
-          : "New message or channel"}
+        aria-label={createButtonLabel}
+        title={createButtonLabel}
         aria-haspopup="dialog"
         aria-expanded={createOpen}
-        onclick={openCreate}
+        onclick={openCreateFromButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path
@@ -2098,7 +2282,15 @@
     </div>
   </header>
 
-  <div class="chat-scroll" data-testid="chat-conversation-list">
+  <div class="chat-scroll" data-testid="chat-conversation-list" aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}>
+    {#if allRows.length === 0 && (!firstRefreshSettled || loading)}
+      <div class="sidebar-skeleton" role="status" aria-label="Loading conversations" data-testid="sidebar-loading">
+        <span class="sr-only">Loading conversations…</span>
+        {#each Array(10) as _, index}
+          <div class="skeleton-row" aria-hidden="true"><span class="skeleton-icon"></span><span class="skeleton-line" style:width={`${45 + (index % 3) * 15}%`}></span></div>
+        {/each}
+      </div>
+    {:else}
     {#if pendingRequestCount > 0}
       <button
         type="button"
@@ -2210,6 +2402,7 @@
       <div class="chat-empty" role="status">Loading…</div>
     {:else if filteredRows.length === 0}
       <div class="chat-empty">No conversations</div>
+    {/if}
     {/if}
   </div>
 
@@ -2579,7 +2772,7 @@
     <CreateModal
       {api}
       rows={[...directoryRows, ...browseRows]}
-      {contacts}
+      contacts={localBotsAsContacts(contacts, localBots)}
       {scopeCompanies}
       createCompanies={createScopeCompanies}
       activeScope={scope}
@@ -2594,6 +2787,16 @@
       {oncreatecompany}
       {oncreateagent}
       {agentCompanies}
+      {oncreatebot}
+      {botRuntimeReady}
+      {botWorkers}
+      {existingBotNames}
+      {botCompanies}
+      {botSignIn}
+      {onbotsignedin}
+      {avatarPacks}
+      {loadAvatarPacks}
+      initialKind={createKind}
     />
   {/if}
 </aside>
@@ -2708,16 +2911,28 @@
           </span>
         {:else}
           {@const avatar = rowAvatar(row, avatarByUid)}
-          <span
-            class="chat-avatar"
-            aria-hidden="true"
-            data-testid="chat-dm-avatar"
-            data-avatar={avatar.kind}
-          >
-            {#if avatar.src}
-              <img src={avatar.src} alt="" />
-            {:else}
-              {avatar.initials}
+          {@const botPresence = dmPresence(row)}
+          <span class="chat-avatar-wrap" aria-hidden="true">
+            <span
+              class="chat-avatar"
+              data-testid="chat-dm-avatar"
+              data-avatar={avatar.kind}
+              data-bot-presence={botPresence ?? undefined}
+            >
+              {#if avatar.src}
+                <img src={avatar.src} alt="" />
+              {:else}
+                {avatar.initials}
+              {/if}
+            </span>
+            {#if botPresence}
+              <span
+                class="chat-presence-dot"
+                class:offline={botPresence === "offline"}
+                data-testid="chat-bot-presence-dot"
+                data-presence={botPresence}
+                aria-label={botPresence === "online" ? "Bot online" : "Bot offline"}
+              ></span>
             {/if}
           </span>
         {/if}
@@ -2726,6 +2941,15 @@
         {/if}
         <span class="chat-row-copy">
           <span class="chat-row-title">{row.title}</span>
+          {#if row.kind === "dm"}
+            {@const botKind = botKindFor(row.personUid, localBots, ownedLocalBotUids)}
+            {#if botKind}
+              <BotKindChip
+                kind={botKind}
+                runtime={localBotForRow(localBots ?? [], row)?.runtime ?? null}
+              />
+            {/if}
+          {/if}
           {#if extras?.badge}
             <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
               {extras.badge}
@@ -2839,18 +3063,20 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    flex: 0 0 260px;
+    flex: 0 0 var(--sidebar-width, 260px);
     align-self: stretch;
-    width: 260px;
+    width: var(--sidebar-width, 260px);
     min-height: 0;
     height: auto;
     overflow: hidden;
     border-right: 1px solid var(--line);
-    /* No backdrop-filter here: the rail sits directly on the native window
-       glass, and a second 28px blur on top of it cost a full-rail repaint on
-       every hover/scroll. --side-bg carries the extra alpha instead. */
+    /* One glass pass only. The window already blurs what is behind it; a
+       second backdrop-filter here re-blurred and re-saturated that result, so
+       `--side-bg` at 18% white painted as near-opaque white instead of the
+       translucent rail the design draws. The concept's `.sidebar` is a flat
+       `var(--side-bg)` over the window glass with no filter and no inner
+       highlight — match it. */
     background: var(--side-bg);
-    box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-ui);
     color: var(--t1);
     /* border-box is load-bearing: without it, height + padding overflow the
@@ -3072,6 +3298,10 @@
     position: relative;
   }
 
+  .sidebar-skeleton { padding: 12px 8px; }
+  .skeleton-row { display: flex; align-items: center; gap: 10px; height: 36px; }
+  .skeleton-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line); }
+  .skeleton-line { height: 10px; border-radius: 4px; background: var(--line); }
   .chat-scroll {
     display: flex;
     flex: 1 1 auto;
@@ -3134,7 +3364,9 @@
     color: var(--t3);
     font-family: var(--font-mono, inherit);
     font-size: 10px;
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
+    letter-spacing: normal;
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */
@@ -3302,7 +3534,16 @@
     gap: 0;
   }
 
+  /* Skip style/layout/paint for rows scrolled out of the rail. Safe to
+     contain: the row draws no focus outline of its own, `.chat-row-reveal` is
+     absolutely positioned INSIDE the row, and the row's menus are portaled to
+     the shell so containment cannot clip them. See chat/scroll-perf.css.
+
+     A one-line row is 14px of text plus 6px padding each side, about 32px. */
   .chat-row {
+    contain: content;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 32px;
     position: relative;
     display: flex;
     align-items: center;
@@ -3457,6 +3698,16 @@
     background: var(--v4-ok, #42d77d);
   }
 
+  .chat-avatar-wrap {
+    position: relative;
+    display: inline-grid;
+    flex: 0 0 16px;
+  }
+
+  .chat-presence-dot.offline {
+    background: var(--t3, #8a8a8a);
+  }
+
   .chat-avatar {
     display: grid;
     place-items: center;
@@ -3467,6 +3718,13 @@
     background: var(--line2);
     color: var(--t2);
     font: 600 9px var(--font-ui);
+    /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
+       line-height to `normal`, and `normal` is the font's own line box —
+       WebKit folds the line gap into it where Chromium does not, so a
+       centred all-caps monogram sat visibly high in the app and looked
+       fine in the browser harness. An explicit number removes the
+       variable. */
+    line-height: 1;
     letter-spacing: 0.02em;
   }
 

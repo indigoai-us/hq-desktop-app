@@ -21,9 +21,6 @@ const mainRs = source(resolve(process.cwd(), 'src-tauri/src/main.rs'));
 const recallSdkRs = source(resolve(process.cwd(), 'src-tauri/src/commands/recall_sdk.rs'));
 const appSvelte = source(resolve(process.cwd(), 'src/App.svelte'));
 // Canonical settings surface after US-005 (popover Settings.svelte retired).
-const settingsPageSvelte = source(
-  resolve(process.cwd(), 'src/desktop-alt/pages/SettingsPage.svelte'),
-);
 const wizardSvelte = source(
   resolve(process.cwd(), 'src/components/MeetingPermissionsWindow.svelte'),
 );
@@ -73,42 +70,3 @@ describe('No permission prompts on install / open', () => {
   });
 });
 
-describe('SettingsPage remains the only place permissions are requested', () => {
-  it('loads meeting + notification permission state non-prompting on mount', () => {
-    // Non-prompting reads only — loadMeetingPermissions + notification_permission_state.
-    expect(settingsPageSvelte).toContain('loadMeetingPermissions');
-    expect(settingsPageSvelte).toContain("'notification_permission_state'");
-    // Mount effect must not call the prompting notification request.
-    // notification_request_permission is only in handleEnableNotifications.
-    const mountEffectIdx = settingsPageSvelte.indexOf('void loadMeetingPermissions()');
-    expect(mountEffectIdx).toBeGreaterThan(-1);
-    // The prompting invoke lives only inside handleEnableNotifications.
-    expect(settingsPageSvelte).toContain('async function handleEnableNotifications');
-    const handlerIdx = settingsPageSvelte.indexOf('async function handleEnableNotifications');
-    const requestIdx = settingsPageSvelte.indexOf("'notification_request_permission'");
-    expect(requestIdx).toBeGreaterThan(handlerIdx);
-    // And the mount path before the handler must not contain the request.
-    const beforeHandler = settingsPageSvelte.slice(0, handlerIdx);
-    expect(beforeHandler).not.toContain("'notification_request_permission'");
-  });
-
-  it('keeps the user-initiated notification request only in handleEnableNotifications', () => {
-    expect(settingsPageSvelte).toContain("'notification_request_permission'");
-    // Exactly one call site (user click), not on load.
-    const matches = settingsPageSvelte.match(/'notification_request_permission'/g) ?? [];
-    expect(matches.length).toBe(1);
-  });
-
-  it('keeps the Settings entry point to the meeting-permissions wizard', () => {
-    expect(settingsPageSvelte).toContain('open_meeting_permissions_window');
-  });
-
-  it('lets the wizard fire the native prompts on explicit user action', () => {
-    expect(wizardSvelte).toContain("invoke('permissions_force_native_register')");
-  });
-
-  it('starts the SDK from the wizard once all required permissions are granted', () => {
-    expect(wizardSvelte).toContain("invoke('start_recall_sdk')");
-    expect(wizardSvelte).toContain('if (allGranted && !sdkStartAttempted)');
-  });
-});

@@ -1,0 +1,384 @@
+{
+  "schema": "hq-meet-staging-proof/v1",
+  "story": "US-011",
+  "stage": "hq-meet",
+  "apiBase": "https://bceoxnnnv0.execute-api.us-east-1.amazonaws.com",
+  "deployedRevision": {
+    "serviceCommit": "848a966101536036cab01efec69b3439735b5ec6",
+    "configHash": "9d19dbca229f2213fd651239ba6a724562f999abe93edfdc9c8ae2dbdb0c0f79"
+  },
+  "contractHash": "6480e4a0c45e1dc40903152357c5f58ee06c36b1b6c31a62afdd7b2745740e76",
+  "turnHost": "turn.getindigo.ai",
+  "runAt": "2026-09-11T05:45:20.265Z",
+  "actors": {
+    "ownerA": {
+      "role": "owner",
+      "state": "active",
+      "company": "A"
+    },
+    "memberA": {
+      "role": "member",
+      "state": "active",
+      "company": "A"
+    },
+    "uninvitedA": {
+      "role": "member",
+      "state": "active",
+      "company": "A"
+    },
+    "pendingA": {
+      "role": "member",
+      "state": "pending",
+      "company": "A"
+    },
+    "revokedA": {
+      "role": "member",
+      "state": "revoked",
+      "company": "A"
+    },
+    "ownerB": {
+      "role": "owner",
+      "state": "active",
+      "company": "B"
+    }
+  },
+  "steps": [
+    {
+      "step": "office.discover owner",
+      "actor": "ownerA",
+      "method": "GET",
+      "path": "/v1/meet-native/office?companyUid=<id>",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "office.discover member",
+      "actor": "memberA",
+      "method": "GET",
+      "path": "/v1/meet-native/office?companyUid=<id>",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "office.discover pending-member denied",
+      "actor": "pendingA",
+      "method": "GET",
+      "path": "/v1/meet-native/office?companyUid=<id>",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "office.discover revoked-member denied",
+      "actor": "revokedA",
+      "method": "GET",
+      "path": "/v1/meet-native/office?companyUid=<id>",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "office.discover other-company denied",
+      "actor": "ownerB",
+      "method": "GET",
+      "path": "/v1/meet-native/office?companyUid=<id>",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "office.discover feature-off company B",
+      "actor": "ownerB",
+      "method": "GET",
+      "path": "/v1/meet-native/office?companyUid=<id>",
+      "status": 404,
+      "code": "FEATURE_DISABLED",
+      "ok": true
+    },
+    {
+      "step": "room.create private",
+      "actor": "ownerA",
+      "method": "POST",
+      "path": "/v1/meet-native/rooms",
+      "status": 201,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "signaling.admit host",
+      "actor": "ownerA",
+      "method": "POST",
+      "path": "/v1/meet-native/signaling/admit",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "signaling.admit uninvited denied",
+      "actor": "uninvitedA",
+      "method": "POST",
+      "path": "/v1/meet-native/signaling/admit",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "room.read revoked denied",
+      "actor": "revokedA",
+      "method": "GET",
+      "path": "/v1/meet-native/rooms/<id>?companyUid=<id>",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "room.read other-company denied",
+      "actor": "ownerB",
+      "method": "GET",
+      "path": "/v1/meet-native/rooms/<id>?companyUid=<id>",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "knock.create member",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/knocks",
+      "status": 201,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "knock.accept by uninvited denied",
+      "actor": "uninvitedA",
+      "method": "POST",
+      "path": "/v1/meet-native/knocks/<id>/accept",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "knock.accept host",
+      "actor": "ownerA",
+      "method": "POST",
+      "path": "/v1/meet-native/knocks/<id>/accept",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "knock.read capability",
+      "actor": "memberA",
+      "method": "GET",
+      "path": "/v1/meet-native/knocks/<id>?companyUid=<id>",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "signaling.admit member via knock",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/signaling/admit",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "signaling.send offer",
+      "actor": "ownerA",
+      "method": "POST",
+      "path": "/v1/meet-native/signaling/send",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "signaling.reconcile receive",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/signaling/reconcile",
+      "status": 200,
+      "code": "OK",
+      "ok": true
+    },
+    {
+      "step": "signal delivered",
+      "ok": true
+    },
+    {
+      "step": "ice-config relay-only",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/ice-config",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "ice-config outsider denied",
+      "actor": "ownerB",
+      "method": "POST",
+      "path": "/v1/meet-native/ice-config",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "turn.allocate with vended credential",
+      "ok": true,
+      "stage": "allocate",
+      "success": true,
+      "type": "103",
+      "relayed": true,
+      "errorCode": null
+    },
+    {
+      "step": "ice-config diagnostics",
+      "ok": true,
+      "transportPolicy": "relay",
+      "urls": [
+        "turn:turn.getindigo.ai:3478?transport=udp",
+        "turn:turn.getindigo.ai:3478?transport=tcp",
+        "turns:turn.getindigo.ai:5349?transport=tcp"
+      ],
+      "expiresInS": 53
+    },
+    {
+      "step": "completion.consent host",
+      "actor": "ownerA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/consent",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "completion.consent member",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/consent",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "room.end seal",
+      "actor": "ownerA",
+      "method": "POST",
+      "path": "/v1/meet-native/rooms/<id>/end",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "signaling.admit after seal denied",
+      "actor": "uninvitedA",
+      "method": "POST",
+      "path": "/v1/meet-native/signaling/admit",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "completion.create outsider denied",
+      "actor": "ownerB",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/create",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "completion.create",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/create",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "completion.create duplicate idempotent",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/create",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "completion.upload chunk",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/upload",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "completion.finalize",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/finalize",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "completion.finalize duplicate",
+      "actor": "memberA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/finalize",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "completion.status",
+      "actor": "ownerA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/status",
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "step": "completion.status revoked denied",
+      "actor": "revokedA",
+      "method": "POST",
+      "path": "/v1/meet-native/completion/status",
+      "status": 403,
+      "code": "COMPANY_ACCESS_DENIED",
+      "ok": true
+    },
+    {
+      "step": "finalize receipts identical",
+      "ok": true,
+      "first": {
+        "manifestHash": "465c043ea80961840207de0c2df970921723289917e0d9183dd932a1ae698804",
+        "sourceRef": "native_a4e207855c87de5149cdac66ba63be969a88168f15aafe2e4ef8b3e54ccaa24d",
+        "finalizerEpoch": 1,
+        "savedAt": 1789105519501,
+        "revision": 1
+      },
+      "second": {
+        "manifestHash": "465c043ea80961840207de0c2df970921723289917e0d9183dd932a1ae698804",
+        "sourceRef": "native_a4e207855c87de5149cdac66ba63be969a88168f15aafe2e4ef8b3e54ccaa24d",
+        "finalizerEpoch": 1,
+        "savedAt": 1789105519501,
+        "revision": 1
+      },
+      "createStatus": "partial",
+      "uploadStatus": "uploaded",
+      "finalStatus": "finalized",
+      "processing": "not-dispatched",
+      "sourceSaved": true
+    }
+  ],
+  "failures": 0,
+  "passed": true
+}

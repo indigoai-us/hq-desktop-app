@@ -18,7 +18,6 @@ function readRepo(...parts: string[]): string {
 
 describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
   const settings = readRepo('src-tauri/src/commands/settings.rs');
-  const config = readRepo('src-tauri/src/commands/config.rs');
   const boot = readRepo('src/desktop-alt/boot.ts');
   const twoApp = readRepo('docs/hq-work-handoff.md');
   const desktopAltDoc = readRepo('docs/desktop-alt.md');
@@ -36,28 +35,12 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
       expect(noFile).toContain('hq_work_handoff: None');
     });
 
-    it('hq_work_handoff_enabled is always true', () => {
-      const idx = config.indexOf('pub fn hq_work_handoff_enabled');
-      expect(idx).toBeGreaterThan(-1);
-      const body = config.slice(idx, idx + 280);
-      expect(body).toContain('true');
-      expect(body).not.toContain('.unwrap_or(false)');
-    });
-
-    it('get_hq_work_handoff always returns true', () => {
-      const idx = config.indexOf('fn get_hq_work_handoff');
-      expect(idx).toBeGreaterThan(-1);
-      const body = config.slice(idx, config.indexOf('fn set_hq_work_handoff', idx));
-      expect(body).toContain('Ok(true)');
-      expect(body).not.toContain('is_hq_work_cohort_user');
-    });
   });
 
   describe('boot always mounts the hq-work shell', () => {
     it('does not keep a legacy mount path', () => {
-      expect(boot).toContain("export type DesktopAltShell = 'hq-work'");
       expect(boot).toContain('await deps.mountHqWork()');
-      expect(boot).not.toContain("? 'hq-work' : 'legacy'");
+      expect(boot).not.toContain('mountLegacy');
     });
   });
 
@@ -66,9 +49,8 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
       const doc = readRepo('docs/hq-work-embedded-rollout.md');
       expect(doc).toContain('hqWorkHandoff');
       expect(doc).toContain('~/.hq/menubar.json');
-      expect(doc).toContain('get_hq_work_handoff');
       expect(doc).toContain('HqWorkWorkShell');
-      expect(doc).toContain('always returns');
+      expect(doc).toContain('key is ignored and stripped');
       expect(doc).toContain('strips the key');
       expect(doc).toContain('is_indigo_user');
     });

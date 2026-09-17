@@ -13,6 +13,13 @@
    */
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
   import { observeConversationRead } from "./observe-conversation-read";
+  import {
+    isScrollNearBottom,
+    restoreNavigationScroll,
+    NAVIGATION_SCROLL_RETRY_LIMIT,
+    NAVIGATION_SCROLL_RETRY_MS,
+  } from "../../shell/navigation-scroll.js";
+  import type { NavigationScrollState } from "../../shell/navigation-history.js";
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
@@ -22,6 +29,7 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
+  import type { LocalBotRow } from "@hq/platform";
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
   import type { ImagePreviewCache } from "./image-preview-cache";
@@ -30,6 +38,7 @@
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import {
     parseMessageAttachments,
+    isHiddenTimelineMessage,
     systemModelForMessage,
     type FileAttachmentModel,
     type LifecycleCardActionEvent,
@@ -67,6 +76,7 @@
   } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
@@ -82,6 +92,7 @@
     type ReactionMap,
   } from "./reactions";
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
+  import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
   import {
     clearDraft,
@@ -142,6 +153,11 @@
     mentionCandidates?: MentionTarget[];
     /** Open ReplyPanel for this root eventId. */
     onreply?: (rootEventId: string) => void;
+    /** Start an in-channel session from this message. */
+    onstartsession?: (rootEventId: string) => void;
+    /** Open an existing in-channel session from a work-session card. */
+    onopensession?: (sessionId: string) => void;
+    /** Start a channel-level session (posts a card). */
     /** Host-owned attachment modal (must render outside this column). */
     onopenattachment?: (
       item: FileAttachmentModel,
@@ -206,6 +222,14 @@
      */
     header?: Snippet;
     /**
+     * Where the pane lands when it opens. Chat lands on the newest message
+     * (`"bottom"`, default). A pane whose point is its header — #welcome's
+     * hero with Run Setup — lands at the top so the header is what the
+     * person sees first; the timeline below is reachable by scrolling and
+     * new arrivals still raise the "New messages" pill.
+     */
+    landAt?: "top" | "bottom";
+    /**
      * Optional status row rendered INSIDE the `.dm-thread` scroller, after the
      * newest message (typing-indicator position). Must live in the scroll flow
      * — `.chat-stage` is a horizontal flexbox, so a sibling of this component
@@ -223,6 +247,18 @@
     draftStorage?: DraftStorage | null;
     /** US-011: lock the composer while an agent box is still provisioning. */
     composerLocked?: boolean;
+    /**
+     * Render only `header`: no messages, no empty label, no composer. For a
+     * pane that is just its header (#welcome in setup-bot mode).
+     */
+    headerOnly?: boolean;
+    /**
+     * History restore (US-006). When set, land on this identity/offset instead
+     * of pinning to the newest message, and do not follow live arrivals.
+     */
+    restoreScroll?: NavigationScrollState | null;
+    /** The user's local bots — tells the Cloud / Local chip which is which. */
+    localBots?: ReadonlyArray<LocalBotRow> | null;
   }
 
   let {
@@ -232,6 +268,7 @@
     placeholder = "Reply…",
     onopenurl,
     channelId = null,
+    landAt = "bottom",
     oncardaction,
     ontogglereaction,
     onsend,
@@ -239,6 +276,8 @@
     onpresign,
     mentionCandidates = [],
     onreply,
+    onstartsession,
+    onopensession,
     onopenattachment,
     onopenartifact,
     onreleaseurl,
@@ -261,6 +300,9 @@
     draftKey = null,
     draftStorage = null,
     composerLocked = false,
+    headerOnly = false,
+    restoreScroll = null,
+    localBots = null,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -441,6 +483,10 @@
     for (const msg of [...windowed.rows, ...localSends]) {
       const id = (msg.eventId ?? "").trim();
       if (!id || seen.has(id)) continue;
+      // Retired lifecycle cards (the "Create a bot" form) leave the timeline
+      // entirely — rendering nothing for them would still paint an empty
+      // bubble with an avatar and a timestamp.
+      if (isHiddenTimelineMessage(msg)) continue;
       seen.add(id);
       out.push(msg);
     }
@@ -489,7 +535,13 @@
    * NOTHING may move their offset — not the host's periodic message refresh,
    * not live arrivals, not a timeline merge.
    */
-  let stickToBottom = $state(true);
+  // Remounted per conversation; only the landing restore matters. A `landAt`
+  // of "top" (#welcome) never pins to the newest row.
+  const restoreAtMount = restoreScroll;
+  let stickToBottom = $state(
+    landAt !== "top" && (!restoreAtMount || isScrollNearBottom(restoreAtMount)),
+  );
+  let restoreScrollPending = $state(restoreAtMount != null);
   /** New rows landed while scrolled up — drives the "jump to latest" pill. */
   let hasUnseenBelow = $state(false);
   /** Within this many px of the bottom still counts as pinned. */
@@ -501,52 +553,47 @@
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
 
-  /** Recompute stickiness from the user's actual position. Reads layout
-   *  (scrollHeight/scrollTop/clientHeight) and writes `$state` only when a
-   *  flag actually flips, so a scroll burst does not invalidate the tree. */
-  function measureStickiness(): void {
+  /**
+   * Recompute stickiness from the user's actual position, once per frame.
+   *
+   * Reading `scrollHeight` forces a layout flush. macOS momentum scrolling
+   * delivers scroll events faster than frames, so doing this per event paid
+   * that flush several times over for a single painted frame. The question
+   * asked here is only "where is the scroller now", which one read per frame
+   * answers at exactly the freshness a frame can display.
+   *
+   * The `$state` writes are guarded on an actual change: assigning the same
+   * value still invalidates the subtree in Svelte 5, so an unguarded write per
+   * scroll event re-ran the timeline's deriveds for no visible difference.
+   */
+  /**
+   * Was the user already inside the top zone last time we looked? Loading
+   * older history is edge-triggered on entering that zone, never level-
+   * triggered while sitting in it.
+   *
+   * Level-triggering re-fires for as long as the user stays parked at the top,
+   * which quietly defeats the failure UI: a load that fails leaves a Retry
+   * button, and the next scroll read would clear the error and request again
+   * on its own. The user never gets to decide, and a server that is down gets
+   * asked repeatedly. `loadingEarlier` hides this only while a request is in
+   * flight — the moment one settles, the next read re-fires.
+   */
+  let wasAtTop = false;
+
+  function readScrollPosition(): void {
     if (!scroller) return;
     const distance =
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     const pinned = distance <= STICK_THRESHOLD_PX;
     if (pinned !== stickToBottom) stickToBottom = pinned;
     if (pinned && hasUnseenBelow) hasUnseenBelow = false;
-    // Reaching the top pulls the next history page (local window first, then
-    // the host's remote fetch). `showEarlier` self-guards with `loadingEarlier`,
-    // so a scroll burst still requests exactly one page. `earlierError` gates
-    // the AUTOMATIC pull only: because this measurement is rAF-throttled, a
-    // single burst can deliver a trailing measurement after a failed load
-    // resolved, which would silently re-request (and keep re-requesting) a
-    // page the host just failed to serve. After a failure the reader retries
-    // explicitly through the button, which clears the flag.
-    if (!earlierError && scroller.scrollTop <= STICK_THRESHOLD_PX) {
-      void showEarlier();
-    }
+    const atTop = scroller.scrollTop <= STICK_THRESHOLD_PX;
+    if (atTop && !wasAtTop) void showEarlier();
+    wasAtTop = atTop;
   }
 
-  /** Throttle to one measurement per animation frame: the first event in a
-   *  frame measures immediately (leading edge, keeps the pill responsive),
-   *  later events in the same frame coalesce into a single trailing
-   *  measurement when the frame fires. */
-  let scrollFrame = 0;
-  let scrollTrailing = false;
-  function onThreadScroll(): void {
-    if (scrollFrame !== 0) {
-      scrollTrailing = true;
-      return;
-    }
-    measureStickiness();
-    scrollFrame = requestAnimationFrame(() => {
-      scrollFrame = 0;
-      if (scrollTrailing) {
-        scrollTrailing = false;
-        measureStickiness();
-      }
-    });
-  }
-  onDestroy(() => {
-    if (scrollFrame !== 0) cancelAnimationFrame(scrollFrame);
-  });
+  const threadScroll = coalesceScroll(readScrollPosition);
+  const onThreadScroll = threadScroll.onScroll;
 
   function jumpToLatest(): void {
     stickToBottom = true;
@@ -690,6 +737,7 @@
   });
 
   onDestroy(() => {
+    threadScroll.cancel();
     flushDraft();
   });
 
@@ -1170,6 +1218,8 @@
    * untrack so flipping the flag never re-runs the effect on its own.
    */
   let prevTimelineLength = 0;
+  /** True once the timeline has painted at least one row. */
+  let historyPopulated = false;
   $effect(() => {
     const length = timeline.length;
     void timeline.at(-1)?.eventId;
@@ -1179,12 +1229,42 @@
       prevTimelineLength = length;
       if (!el) return;
       if (loadingEarlier) return;
+      if (restoreScrollPending) return;
       if (stickToBottom) {
         el.scrollTop = el.scrollHeight;
-      } else if (grew) {
+      } else if (grew && historyPopulated) {
+        // Only arrivals AFTER the first populated paint are "unseen"; the
+        // initial history landing under a top-anchored pane is not news.
         hasUnseenBelow = true;
       }
+      if (length > 0) historyPopulated = true;
     });
+  });
+
+  $effect(() => {
+    const target = restoreScroll;
+    const el = scroller;
+    if (!target || !el) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tryRestore = (): void => {
+      if (cancelled) return;
+      if (restoreNavigationScroll(el, target)) {
+        stickToBottom = isScrollNearBottom(target, el);
+        restoreScrollPending = false;
+        return;
+      }
+      attempts += 1;
+      if (attempts >= NAVIGATION_SCROLL_RETRY_LIMIT) {
+        restoreScrollPending = false;
+        return;
+      }
+      setTimeout(tryRestore, NAVIGATION_SCROLL_RETRY_MS);
+    };
+    void tick().then(tryRestore);
+    return () => {
+      cancelled = true;
+    };
   });
 </script>
 
@@ -1219,6 +1299,9 @@
         data-testid="conversation-thread"
       >
         {#if header}{@render header()}{/if}
+        {#if headerOnly}
+          <!-- header-only pane: nothing below the header -->
+        {:else}
         {#if timeline.length === 0 && !loading}
           <div
             class="dm-thread-empty"
@@ -1263,6 +1346,7 @@
                   messageAuthor(msg),
                 msg,
               )}
+              {onopensession}
             />
           {:else if systemModel?.kind === "line"}
             <SystemEventLine
@@ -1563,6 +1647,18 @@
                   >
                     Reply
                   </button>
+                  {#if onstartsession}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn"
+                      data-testid="message-start-session"
+                      aria-label="Start a session from this message"
+                      title="Start session"
+                      onclick={() => onstartsession(msg.eventId)}
+                    >
+                      Session
+                    </button>
+                  {/if}
                 </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
@@ -1578,8 +1674,9 @@
           {/if}
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
+        {/if}
       </div>
-      {#if !stickToBottom}
+      {#if !stickToBottom && (landAt !== "top" || hasUnseenBelow)}
         <button
           type="button"
           class="new-messages-jump"
@@ -1593,19 +1690,21 @@
     </div>
   </div>
 
+  {#if !headerOnly}
   <div class="dm-reply" class:is-locked={composerLocked}>
     <div class="dm-reply-composer">
       {#if showMentionPicker}
         <MentionPicker
           hits={mentionHits}
           highlight={mentionHighlight}
+          {localBots}
           onpick={applyMention}
         />
       {:else if showAgentMenu}
         <div
           class="agent-menu"
           role="listbox"
-          aria-label="Agent commands"
+          aria-label="Bot commands"
           data-testid="agent-slash-menu"
         >
           <button
@@ -1614,7 +1713,7 @@
             role="option"
             aria-selected="true"
           >
-            <span class="agent-menu-label">Run an agent</span>
+            <span class="agent-menu-label">Run a bot</span>
             <span class="agent-menu-hint">Claude Code handoff</span>
           </button>
         </div>
@@ -1743,8 +1842,8 @@
           <button
             type="button"
             class="dm-tool-btn"
-            aria-label="Run an agent"
-            title="Type / to run an agent"
+            aria-label="Run a bot"
+            title="Type / to run a bot"
             onclick={() => {
               if (!replyText.startsWith("/")) replyText = `/${replyText}`;
               replyInputEl?.focus();
@@ -1782,6 +1881,7 @@
       </button>
     </div>
   </div>
+  {/if}
   {#if trayOpen && !onopenattachment}
     <AttachmentTray
       {previewCache}
@@ -1821,6 +1921,13 @@
     min-width: 0;
     font: 400 13px/1.45 var(--font-ui);
     color: var(--t1);
+    /* WKWebView on a transparent macOS window hit-tests composited alpha.
+       isolation: isolate puts this pane on its own layer; a fully transparent
+       layer drops clicks through to the native glass, so #welcome (hero on the
+       window ground) looked dead. 1% of the ink color is invisible and enough
+       for WebKit to take the hit. */
+    background: color-mix(in srgb, var(--t1, #111) 1%, transparent);
+    pointer-events: auto;
   }
 
   .conversation-body {
@@ -1867,6 +1974,8 @@
   }
 
   .dm-thread-wrap {
+    min-width: 0;
+    overflow: hidden;
     position: relative;
     flex: 1;
     min-height: 0;
@@ -1885,11 +1994,13 @@
     /* 16px bottom so the last message's reaction bar doesn't kiss the
        composer frame. */
     padding: 8px 16px 16px;
+    /* Float the 4px thumb 8px off the window edge, the way every other
+       scroller in the design does — the sidebar already did this and the
+       timeline did not, so the two rails disagreed down the same window. */
+    margin-right: 8px;
     display: flex;
     flex-direction: column;
     gap: 0;
-    scrollbar-width: thin;
-    scrollbar-color: var(--line, var(--pop-muted)) transparent;
   }
 
   .dm-thread::-webkit-scrollbar {
@@ -1916,22 +2027,34 @@
     bottom: 12px;
     transform: translateX(-50%);
     z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     padding: 5px 12px;
-    border: 1px solid var(--line);
+    /* No outline: the shadow already lifts it off the timeline, and a hairline
+       on top of that read as two frames around one small pill. */
+    border: 0;
     border-radius: 999px;
-    background: var(--bg2, var(--bg1));
+    /* Opaque, floated. `--bg2` is translucent in this theme, so history
+       scrolled visibly through the pill and neither the pill nor the message
+       under it stayed readable. Same composite the hover bar uses: a solid
+       colour underneath, the themed panel fill painted over it, so the pill is
+       opaque in both themes without hard-coding either one. */
+    background-color: var(--v4-ground, #1c1c1f);
+    background-image: linear-gradient(var(--panel-bg), var(--panel-bg));
+    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
     color: var(--t2, var(--t1));
     font: 500 12px/1.3 var(--font-ui);
     white-space: nowrap;
     cursor: pointer;
-    box-shadow: 0 2px 8px color-mix(in srgb, var(--t1) 14%, transparent);
   }
   .new-messages-jump:hover {
-    background: var(--hover, color-mix(in srgb, var(--t1) 6%, transparent));
+    background-image:
+      linear-gradient(var(--hover), var(--hover)),
+      linear-gradient(var(--panel-bg), var(--panel-bg));
     color: var(--t1);
   }
   .new-messages-jump.has-unseen {
-    border-color: var(--accent, var(--line));
     color: var(--accent, var(--t1));
   }
 
@@ -1960,9 +2083,16 @@
   .dm-msg {
     position: relative;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
+    /* 32px avatar + 12px gutter, per the design. The wider avatar and tighter
+       gutter it replaced pushed the text column right while leaving less air
+       around the mark. */
+    grid-template-columns: 32px minmax(0, 1fr);
     align-items: start;
-    gap: 8px;
+    gap: 12px;
+    /* `@hq/ui` ships into hosts with and without a border-box reset, so say
+       it here: `width: 100%` plus 8px of padding otherwise overflowed the
+       thread and carried every card in the column out past the pane edge. */
+    box-sizing: border-box;
     width: 100%;
     max-width: none;
     margin-top: 0;
@@ -1988,8 +2118,8 @@
   .dm-msg-avatar-spacer {
     display: grid;
     place-items: start center;
-    flex: 0 0 36px;
-    width: 36px;
+    flex: 0 0 32px;
+    width: 32px;
     min-height: 1px;
     padding-top: var(--msg-avatar-pad-top, 2px);
   }
@@ -2016,7 +2146,6 @@
     flex-direction: column;
     align-items: flex-start;
     min-width: 0;
-    max-width: 720px;
   }
 
   .dm-msg-meta {
@@ -2024,6 +2153,9 @@
     align-items: baseline;
     gap: 0.4375rem;
     margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
+    /* Full width so the timestamp can ride the right edge rather than sitting
+       against the name. */
+    width: 100%;
     min-width: 0;
   }
 
@@ -2031,7 +2163,7 @@
     max-width: 42ch;
     overflow: hidden;
     color: var(--t1);
-    font-size: 14px;
+    font-size: 13px;
     /* 600 is the heaviest Geist face the shell ships; asking for 700 only
        rounds down (or synthesizes a smeared bold on fallback fonts). */
     font-weight: 600;
@@ -2061,11 +2193,25 @@
 
   .dm-msg-header-time {
     flex: 0 0 auto;
+    margin-left: auto;
     color: var(--t3);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
     line-height: 1.45;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .dm-msg:hover .dm-msg-header-time,
+  .dm-msg:focus-within .dm-msg-header-time {
     opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dm-msg-header-time {
+      transition: none;
+    }
   }
 
   /* Plain text row — no bubble background/border for either direction. Only
@@ -2088,8 +2234,8 @@
   .dm-bubble-details {
     margin: 0;
     padding: 8px 10px;
-    border-left: 2px solid var(--line2, rgba(255, 255, 255, 0.14));
-    border-radius: 6px;
+    border-left: 0;
+    border-radius: 8px;
     background: var(--raised, rgba(255, 255, 255, 0.04));
     color: var(--t2, rgba(255, 255, 255, 0.72));
     font-family: var(--font-mono, ui-monospace, Menlo, monospace);
@@ -2097,6 +2243,8 @@
     line-height: 18px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+
+    border: 1px solid var(--line);
   }
 
   .dm-bubble-body {
@@ -2117,11 +2265,9 @@
     max-width: 100%;
     margin: 0;
     font-family: var(--font-ui);
-    /* Reading size. The shell chrome stays 13px; the timeline is prose and
-       sits one step up (14px) with a slightly looser leading so the light
-       weight on a dark ground reads crisp rather than heavy. */
-    font-size: 14px;
-    line-height: 1.55;
+    /* Match the composer and shell body; authors and metadata carry hierarchy. */
+    font-size: 13px;
+    line-height: 1.5;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
@@ -2354,14 +2500,19 @@
   .date-separator {
     display: flex;
     align-items: center;
-    gap: 0;
+    /* 8px each side puts the rule on exactly the edges `.dm-msg`'s own padding
+       gives the messages, so the divider and the column agree. */
     margin: 12px 8px;
-    color: var(--t2);
-    font-family: var(--font-ui);
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0;
-    text-transform: none;
+    /* The concept's `.daysep`: two hairlines and a small mono caption between
+       them. The 13px/700 pill this replaces read as a heading and became the
+       loudest thing in the timeline. */
+    gap: 12px;
+    color: var(--t3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .date-separator::before,
@@ -2373,11 +2524,10 @@
   }
 
   .date-separator span {
-    margin: 0 12px;
-    padding: 2px 12px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: var(--v4-ground, var(--raised, #161618));
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
   }
 
   .dm-msg-reply-active {
@@ -2387,28 +2537,30 @@
   .dm-replies-count {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    margin: 4px 0 0;
-    padding: 4px 8px;
+    gap: 8px;
+    margin: 8px 0 0 -7px;
+    padding: 5px 9px 5px 6px;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: 999px;
     background: transparent;
-    /* Neutral text tokens, not link blue: primary weight for the count, the
-       trailing preview stays muted (--t3 below). */
-    color: var(--t1);
-    font: 600 13px/1.3 var(--font-ui);
+    color: var(--ice-ink);
+    font: 500 11px/1.3 var(--font-ui);
     cursor: pointer;
+    transition:
+      background 0.12s,
+      border-color 0.12s;
   }
 
   .dm-replies-count:hover,
   .dm-replies-count:focus-visible {
-    border-color: var(--line);
-    background: var(--hover, color-mix(in srgb, var(--t1) 5%, transparent));
+    border-color: var(--line2);
+    background: var(--btn-bg);
     outline: none;
   }
 
   .dm-replies-preview {
     color: var(--t3);
+    font-size: 11px;
     font-weight: 400;
   }
 
@@ -2416,17 +2568,20 @@
   .dm-replies-avatars {
     display: inline-flex;
     align-items: center;
+    gap: 3px;
   }
 
   .dm-replies-avatar {
     display: inline-flex;
-    margin-left: -6px;
+    flex-shrink: 0;
     border-radius: 999px;
-    box-shadow: 0 0 0 2px var(--v4-ground, var(--raised, #161618));
   }
 
-  .dm-replies-avatar:first-child {
-    margin-left: 0;
+  .dm-replies-avatar :global(.identity.small) {
+    width: 18px;
+    height: 18px;
+    flex-basis: 18px;
+    font-size: 7px;
   }
 
   /* Slack-style hover toolbar pinned to the message. */
@@ -2496,7 +2651,7 @@
     padding: 0 0.25rem;
     border: 0;
     border-radius: 6px;
-    background: var(--pop-hover);
+    background: transparent;
     font-size: 12px;
     line-height: 1;
     cursor: pointer;
@@ -2522,10 +2677,11 @@
     align-items: stretch;
     gap: 6px;
     margin: 0 16px 20px;
-    padding: 8px 8px 8px 12px;
+    /* Concept `.composer`: 10px radius, 12px of air above the caret. */
+    padding: 12px 8px 8px 14px;
     background: var(--raised, var(--pop-hover));
     border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 8px;
+    border-radius: 10px;
     transition: border-color 0.12s;
   }
 
@@ -2556,7 +2712,10 @@
     word-wrap: break-word;
     overflow: hidden;
     color: transparent;
-    font: 400 14px/1.5 var(--font-ui);
+    /* Must stay byte-identical to `.dm-reply-input` — this is an absolutely
+       positioned mirror of it, and any difference in metrics slides the
+       mention highlights off the words they belong to. */
+    font: 400 13px/1.46 var(--font-ui);
   }
 
   .composer-mention {
@@ -2575,7 +2734,10 @@
     border: none;
     background: none;
     color: var(--t1, var(--pop-text));
-    font: 400 14px/1.5 var(--font-ui);
+    /* The chat body's size. What you type and what you have typed are the
+       same copy, so the composer setting its own larger size made the
+       message shrink the moment it was sent. */
+    font: 400 13px/1.46 var(--font-ui);
     caret-color: var(--t1, #f4f4f5);
   }
 
@@ -2698,8 +2860,11 @@
     padding: 0;
     border: none;
     border-radius: 6px;
-    background: #c9d6e4;
-    color: #101014;
+    /* Concept `.cmp-send`: the ice INK fill with the badge foreground on it.
+       These were the dark theme's literals, so in light mode the button came
+       out a pale chip with a dark arrow instead of a solid one. */
+    background: var(--ice-ink);
+    color: var(--badge-fg);
     cursor: pointer;
     transition:
       opacity 0.15s,
@@ -2720,4 +2885,5 @@
     opacity: 0.4;
     cursor: default;
   }
+
 </style>

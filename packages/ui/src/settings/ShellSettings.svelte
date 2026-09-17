@@ -15,6 +15,8 @@
   import PageHeader from "../shell/PageHeader.svelte";
   import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+  import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
+  import BotsSettingsPane from "./BotsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
   import { avatarBase64FromFile } from "./avatar-image.js";
   import {
@@ -41,6 +43,8 @@
     | "profile"
     | "companies"
     | "general"
+    | "agents"
+    | "bots"
     | "appearance"
     | "notifications"
     | "sync"
@@ -53,6 +57,8 @@
       { id: "companies", label: "Companies" },
       { id: "sep", label: "" },
       { id: "general", label: "General" },
+      { id: "agents", label: "AI tools" },
+      { id: "bots", label: "Bots" },
       { id: "appearance", label: "Appearance" },
       { id: "notifications", label: "Notifications" },
       { id: "sync", label: "Sync" },
@@ -73,6 +79,8 @@
     /** Account/company-scoped renderer persistence supplied by the host. */
     storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     onback?: () => void;
+    /** Host-owned section navigation so settings subsections share history. */
+    onsectionchange?: (section: ShellSettingsSection) => void;
     onsignout?: () => Promise<void> | void;
     /** Open HQ Console (optional URL for a company or integrations). */
     onopenconsole?: (url?: string) => Promise<void> | void;
@@ -94,6 +102,7 @@
     sessionGeneration = 0,
     storage = typeof window !== "undefined" ? window.localStorage : null,
     onback,
+    onsectionchange,
     onsignout,
     onopenconsole,
     onchangephoto,
@@ -403,6 +412,11 @@
       if (section.id === "updates") {
         return adapter?.isAvailable("canSelfUpdate") ?? false;
       }
+      if (section.id === "agents")
+        return Boolean(adapter?.sessions?.preflight);
+      // Bots: the Cloud group reads adapter.agents (every host); the Local
+      // group needs the desktop-only `bots` group and hides itself otherwise.
+      if (section.id === "bots") return Boolean(adapter?.bots || adapter?.agents);
       return true;
     }),
   );
@@ -434,7 +448,9 @@
             aria-current={active === section.id ? "page" : undefined}
             data-testid={`settings-nav-${section.id}`}
             onclick={() => {
-              if (section.id !== "sep") active = section.id;
+              if (section.id === "sep") return;
+              if (onsectionchange) onsectionchange(section.id);
+              else active = section.id;
             }}
           >
             <span class="ss-nav-icon">
@@ -657,6 +673,10 @@
           {consoleBase}
           onopenconsole={openConsole}
         />
+      {:else if active === "agents"}
+        <AgentsSettingsPane {adapter} />
+      {:else if active === "bots"}
+        <BotsSettingsPane {adapter} {companies} />
       {:else}
         <PrototypeSettingsPanes
           section={active as
@@ -795,9 +815,10 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    background: var(--raised);
-    border: 1px solid var(--line);
-    border-radius: 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-top-color: var(--line);
+    border-radius: 0;
     padding: 14px 16px;
   }
 
@@ -809,8 +830,9 @@
 
   .sd {
     margin-top: 2px;
-    color: var(--t3);
-    font-size: 11px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.45;
   }
 
   .mono {

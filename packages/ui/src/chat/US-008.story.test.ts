@@ -128,23 +128,23 @@ describe("US-008: Lifecycle card renderer in the desktop chat UI", () => {
       {
         v: 1,
         type: "lifecycle_card",
-        cardId: "card_agent_1",
-        kind: "create_agent",
+        cardId: "card_upgrade_1",
+        kind: "upgrade_plan",
         companyUid: "cmp_acme",
         state: "blocked",
-        title: "Create an agent",
+        title: "Choose a plan",
         reason: "Agents come with Workforce. Upgrade in step 3 and this unlocks.",
         statusLabel: "Needs Workforce",
         fields: [
           {
-            id: "name",
-            label: "Agent name",
+            id: "plan",
+            label: "Plan",
             control: "text",
             required: true,
-            value: "Polar",
+            value: "Workforce",
           },
         ],
-        actions: [{ id: "submit", label: "Create Polar", style: "primary" }],
+        actions: [{ id: "submit", label: "Upgrade", style: "primary" }],
         viewer: { canAct: true },
       },
       { oncardaction },
@@ -163,5 +163,33 @@ describe("US-008: Lifecycle card renderer in the desktop chat UI", () => {
     submit?.click();
     await tick();
     expect(oncardaction).not.toHaveBeenCalled();
+  });
+
+  it("Given a create_agent card in a company channel, when rendered, then nothing is shown for it", async () => {
+    // Bots are made through the local bot flow now. The server's "Create a
+    // bot" form must not appear as a rival way in — and an old one already in
+    // history must not leave an empty bubble behind either.
+    const root = mountConversation({
+      v: 1,
+      type: "lifecycle_card",
+      cardId: "card_create_agent_1",
+      kind: "create_agent",
+      companyUid: "cmp_acme",
+      state: "open",
+      title: "Create a bot",
+      stepLabel: "Turn 1",
+      fields: [
+        { id: "name", label: "Name", control: "text", required: true, value: "" },
+        { id: "handle", label: "Handle", control: "text", required: true, value: "" },
+      ],
+      actions: [{ id: "submit", label: "Continue", style: "primary" }],
+      viewer: { canAct: true },
+    });
+    await tick();
+
+    expect(root.querySelector("[data-testid='lifecycle-card']")).toBeNull();
+    expect(root.querySelector("[data-testid='lifecycle-card-row']")).toBeNull();
+    expect(root.textContent).not.toContain("Create a bot");
+    expect(root.textContent).not.toContain("Handle");
   });
 });

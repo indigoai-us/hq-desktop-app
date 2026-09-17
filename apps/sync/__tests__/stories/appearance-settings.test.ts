@@ -1,42 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  resolvePendingDesktopRoute,
-  SETTINGS_SECTIONS,
-} from '../../src/desktop-alt/route';
 
 const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 const source = (...parts: string[]) => readFileSync(root(...parts), 'utf8');
 
 describe('Settings > Appearance', () => {
-  it('is a routed first-class Settings section', () => {
-    expect(SETTINGS_SECTIONS).toContainEqual({
-      id: 'appearance',
-      label: 'Appearance',
-    });
-    expect(resolvePendingDesktopRoute('settings:appearance')).toEqual({
-      kind: 'settings',
-      tab: 'appearance',
-    });
-  });
-
-  it('offers theme, full-range window opacity, and global interface size without a card shell', () => {
-    const page = source('src/desktop-alt/pages/SettingsPage.svelte');
-
-    expect(page).toContain('data-testid="settings-appearance"');
-    expect(page).toContain('<strong>Theme</strong>');
-    expect(page).toContain('<strong>Window opacity</strong>');
-    expect(page).toContain('100% is fully solid');
-    expect(page).toContain('aria-label="Window opacity"');
-    expect(page).toContain('windowTransparencyFromOpacity(');
-    expect(page).toContain('<strong>Interface size</strong>');
-    expect(page).toContain('requestAppearancePreferenceChange');
-    expect(page).toContain('requestDesktopZoom');
-    expect(page).toMatch(
-      /\.settings-card\s*\{[\s\S]*?border:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
-    );
-  });
 
   it('installs native theme propagation before both desktop hosts mount', () => {
     const main = source('src/main.ts');

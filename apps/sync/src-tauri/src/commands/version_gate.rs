@@ -95,7 +95,18 @@ fn vault_api_url() -> Result<String, String> {
 /// Platform tag passed to hq-pro. Format mirrors what hq-cli sends so the
 /// server can route a single `platform`-aware `downloadUrl` resolver across
 /// both clients.
-fn platform_tag() -> String {
+/// Desktop platform vocabulary shared by update and operational telemetry.
+/// These are the shipping desktop targets; keeping the list closed prevents a
+/// platform dimension from becoming a free-form client value.
+pub(crate) const DESKTOP_PLATFORM_VALUES: &[&str] = &[
+    "macos-aarch64",
+    "macos-x86_64",
+    "windows-x86_64",
+    "windows-aarch64",
+    "linux-x86_64",
+];
+
+pub(crate) fn platform_tag() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
@@ -253,6 +264,60 @@ mod tests {
     #[test]
     fn background_version_gate_is_disabled_in_dev_builds() {
         assert!(background_version_gate_disabled());
+    }
+
+    #[test]
+    fn current_platform_tag_is_in_the_closed_desktop_vocabulary() {
+        assert!(DESKTOP_PLATFORM_VALUES.contains(&platform_tag().as_str()));
+    }
+
+    fn release_target_matches_platform(target: &str, platform: &str) -> bool {
+        let Some((operating_system, architecture)) = platform.split_once('-') else {
+            return false;
+        };
+        if target.split('-').next() != Some(architecture) {
+            return false;
+        }
+
+        match operating_system {
+            "macos" => target.contains("apple-darwin"),
+            "windows" => target.contains("windows"),
+            "linux" => target.contains("linux"),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn desktop_platform_vocabulary_covers_every_release_matrix_target() {
+        let release_workflow: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../../../../../.github/workflows/release.yml"))
+                .expect("release workflow must remain valid YAML");
+        let jobs = release_workflow["jobs"]
+            .as_mapping()
+            .expect("release workflow must define jobs");
+        let matrix_targets: Vec<&str> = jobs
+            .values()
+            .filter_map(|job| job["strategy"]["matrix"]["target"].as_sequence())
+            .flat_map(|targets| targets.iter())
+            .map(|target| {
+                target
+                    .as_str()
+                    .expect("release matrix target must be a string")
+            })
+            .collect();
+
+        assert!(
+            !matrix_targets.is_empty(),
+            "release workflow must retain an explicit desktop target matrix"
+        );
+        for target in matrix_targets {
+            assert!(
+                DESKTOP_PLATFORM_VALUES
+                    .iter()
+                    .any(|platform| release_target_matches_platform(target, platform)),
+                "release target {target:?} has no platform in the closed desktop vocabulary"
+            );
+        }
     }
 
     #[tokio::test]

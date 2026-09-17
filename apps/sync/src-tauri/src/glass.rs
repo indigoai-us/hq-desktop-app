@@ -125,6 +125,13 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
                 GlassWindowRole::CompactCommunications => 0,
             };
             let _: () = msg_send![glass, setStyle: style];
+            // NOTE: do NOT send -setIgnoresMouseEvents: here. It is an NSWindow
+            // method; NSGlassEffectView is an NSView and does not respond to it,
+            // so the message raises NSInvalidArgumentException and aborts the
+            // process on every launch (macOS 26, v0.10.269). The view is added
+            // below the webview and is decorative; if it ever does steal
+            // hit-tests, the fix is an NSView-level hitTest: override, not a
+            // window selector.
             // Insert at the very back (NSWindowBelow) so the webview and all its
             // content paint over the glass.
             let below: isize = -1;

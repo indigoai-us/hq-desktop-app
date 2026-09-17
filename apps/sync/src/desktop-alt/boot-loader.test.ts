@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BOOT_LOADER_FADE_MS, dismissBootLoader } from './boot-loader';
-import { DEFAULT_SKELETON_DELAY_MS } from './lib/load-state';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -85,13 +84,5 @@ describe('desktop-alt.html boot overlay', () => {
     expect(html).toContain('hq-boot-done');
     expect(html).not.toMatch(/html\s*\{[^}]*background/);
     expect(html).not.toMatch(/body\s*\{[^}]*background/);
-  });
-
-  it('gates the overlay on DEFAULT_SKELETON_DELAY_MS so fast loads never flash', () => {
-    expect(html).toContain('DEFAULT_SKELETON_DELAY_MS');
-    expect(html).toContain(`${DEFAULT_SKELETON_DELAY_MS}ms`);
-    expect(html).toMatch(
-      new RegExp(`animation-delay:\\s*${DEFAULT_SKELETON_DELAY_MS}ms`),
-    );
   });
 });

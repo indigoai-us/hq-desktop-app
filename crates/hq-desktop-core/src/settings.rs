@@ -142,7 +142,8 @@ mod tests {
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
             // Retired. Always None so Settings cannot resurrect the classic shell.
             hq_work_handoff: None,
-            in_app_sessions: Some(prefs.in_app_sessions.unwrap_or(false)),
+            // Retired rollout flag: old false values must not hide sessions.
+            in_app_sessions: Some(true),
             system_notifications: Some(prefs.system_notifications.unwrap_or(true)),
             native_notify_direct_messages: Some(
                 prefs.native_notify_direct_messages.unwrap_or(true),
@@ -651,12 +652,13 @@ mod tests {
     }
 
     #[test]
-    fn test_in_app_sessions_defaults_false_and_preserves_true() {
-        assert_eq!(apply_defaults(empty_prefs()).in_app_sessions, Some(false));
-        let prefs = MenubarPrefs {
-            in_app_sessions: Some(true),
-            ..empty_prefs()
-        };
-        assert_eq!(apply_defaults(prefs).in_app_sessions, Some(true));
+    fn test_in_app_sessions_available_for_new_and_existing_installs() {
+        for legacy_value in [None, Some(false), Some(true)] {
+            let prefs = MenubarPrefs {
+                in_app_sessions: legacy_value,
+                ..empty_prefs()
+            };
+            assert_eq!(apply_defaults(prefs).in_app_sessions, Some(true));
+        }
     }
 }

@@ -2,10 +2,10 @@
 
 /**
  * Regression: the shell's `conversationApi.runCardAction` wrapper used to
- * drop `agentChannelId` / `agentUid` from the adapter result, so a
- * create_agent accept never selected the freshly minted agent channel
- * (US-006/011). `submitLifecycleCardAction` is covered in card-action.test;
- * this pins the wrapper → handleCardAction → requestChannelOpen path.
+ * drop `agentChannelId` / `agentUid` from the adapter result, so a card accept
+ * that minted an agent channel never selected it (US-006/011).
+ * `submitLifecycleCardAction` is covered in card-action.test; this pins the
+ * wrapper → handleCardAction → requestChannelOpen path.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -17,7 +17,7 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { OPEN_CHANNEL_EVENT, takePendingChannelOpen } from "../chat/open-target.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
-/** The company channel where the create_agent sequence is posted. */
+/** The company channel where the lifecycle sequence is posted. */
 const COMPANY_ROW: ConversationRow = {
   id: "ch:chn_acme",
   kind: "channel",
@@ -94,16 +94,62 @@ async function settle(times = 8): Promise<void> {
   }
 }
 
-describe("DesktopApp create_agent accept", () => {
-  it("selects the minted agent channel returned by run_card_action", async () => {
+describe("DesktopApp lifecycle card accept", () => {
+  it("settles a saved card without a realtime update or successful refresh", async () => {
+    const runCardAction = vi.fn(async () => ok({ cardId: "card_create_agent_3", actionId: "create", state: "skipped", replayed: false }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, { target: host, props: {
+      adapter: adapter({ runCardAction, fetchChannel: async () => runCardAction.mock.calls.length ? { ok: false as const, reason: "unavailable" as const } : ok({ messages: [{ eventId: "evt_create", createdAt: "2026-09-05T12:00:00Z", messageKind: "system", systemEvent: { ...CREATE_AGENT_CARD, kind: "upgrade_plan" } }], nextCursor: null }) }),
+      sidebarApi: createFixtureChatSidebarApi(), notificationsApi: createEmptyNotificationsApi(),
+      self: { uid: "prs_test", displayName: "Test", email: "test@example.com" }, coreFixtures: false, initialRow: COMPANY_ROW,
+    } });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="lifecycle-action-create"]')).toBeTruthy());
+    host.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-create"]')!.click();
+    await vi.waitFor(() => expect(runCardAction).toHaveBeenCalledOnce());
+    await settle();
+    expect(host.querySelector('[data-testid="lifecycle-card"]')?.getAttribute("data-state")).toBe("skipped");
+    expect(host.textContent).not.toContain("Saving your choice");
+  });
+  it("keeps a failed company action editable for retry", async () => {
+    const runCardAction = vi.fn(async () => ({ ok: false as const, reason: "unavailable" as const, message: "Connection timed out. Please retry." }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, { target: host, props: {
+      adapter: adapter({ runCardAction, fetchChannel: async () => ok({ messages: [{ eventId: "evt_create", createdAt: "2026-09-05T12:00:00Z", messageKind: "system", systemEvent: { ...CREATE_AGENT_CARD, kind: "create_company", fields: [{ id: "name", label: "Company name", control: "text", required: true, value: "" }] } }], nextCursor: null }) }),
+      sidebarApi: createFixtureChatSidebarApi(), notificationsApi: createEmptyNotificationsApi(),
+      self: { uid: "prs_test", displayName: "Test", email: "test@example.com" }, coreFixtures: false, initialRow: COMPANY_ROW,
+    } });
+    await vi.waitFor(() => expect(host.querySelector('input.lc-input')).toBeTruthy());
+    const input = host.querySelector<HTMLInputElement>('input.lc-input')!;
+    input.value = "Acme Retry";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-create"]')!.click();
+    await vi.waitFor(() => expect(runCardAction).toHaveBeenCalledOnce());
+    await settle();
+    expect(host.querySelector<HTMLInputElement>('input.lc-input')!.value).toBe("Acme Retry");
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-create"]')!.disabled).toBe(false);
+    expect(host.textContent).toContain("Connection timed out");
+    host.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-create"]')!.click();
+    await vi.waitFor(() => expect(runCardAction).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-create"]')!.disabled).toBe(false);
+  });
+  it.each([
+    // The response still carries the agent ids (the server mints an agent
+    // channel for other flows too); the card kind that carries them is no
+    // longer create_agent, which the timeline does not render at all.
+    { fields: { agentChannelId: "chn_agent_polar", agentUid: "agt_polar" }, destination: "chn_agent_polar", kind: "upgrade_plan" },
+    { fields: { companyChannelId: "chn_company_new", companyUid: "cmp_new" }, destination: "chn_company_new", kind: "create_company" },
+  ])("opens the $kind destination from the action response", async ({ fields, destination, kind }) => {
     const runCardAction = vi.fn(async () =>
       ok({
         cardId: "card_create_agent_3",
         actionId: "create",
         state: "done",
         replayed: false,
-        agentChannelId: "chn_agent_polar",
-        agentUid: "agt_polar",
+        ...fields,
       }),
     );
     const fetchChannel = vi.fn(async () =>
@@ -116,7 +162,7 @@ describe("DesktopApp create_agent accept", () => {
             createdAt: "2026-09-04T12:00:00.000Z",
             direction: "in",
             messageKind: "system",
-            systemEvent: CREATE_AGENT_CARD,
+            systemEvent: { ...CREATE_AGENT_CARD, kind },
           },
         ],
         nextCursor: null,
@@ -151,7 +197,7 @@ describe("DesktopApp create_agent accept", () => {
       () => {
         expect(
           host.querySelector('[data-testid="lifecycle-action-create"]'),
-          "create_agent card renders its primary action",
+          "the lifecycle card renders its primary action",
         ).toBeTruthy();
       },
       { timeout: 15_000, interval: 50 },
@@ -163,6 +209,6 @@ describe("DesktopApp create_agent accept", () => {
 
     window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
     expect(runCardAction).toHaveBeenCalledTimes(1);
-    expect(opened).toContain("chn_agent_polar");
+    expect(opened).toContain(destination);
   }, 30_000);
 });

@@ -123,8 +123,39 @@ describe("ChatSidebar create flow", () => {
     ).toBeNull();
   });
 
-  it("picking a suggestion opens that conversation", async () => {
+  it("picking a channel opens that conversation", async () => {
     const onselect = vi.fn<(row: ConversationRow) => void>();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: createFixtureChatSidebarApi(), seedDirectory, onselect },
+    });
+    await tick();
+    await tick();
+    openModal();
+    await tick();
+
+    type(queryInput(), "hq-desktop");
+    await settleQuery();
+
+    const suggestion = document.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-create-result"]',
+    );
+    expect(suggestion?.textContent).toContain("hq-desktop");
+    suggestion?.click();
+    await tick();
+
+    expect(onselect).toHaveBeenCalled();
+    // Null also catches a portal leak from the orphan-node sweep.
+    expect(
+      document.querySelector('[data-testid="chat-create-modal"]'),
+    ).toBeNull();
+  });
+
+  it("picking a person still opens the DM when the host cannot build a group", async () => {
+    // This fixture host has no createChannel/addChannelMember seams, so the
+    // create step would be a dead end: disabled Create, no member picker.
+    const onselect =
+      vi.fn<(row: ConversationRow, options?: { automatic?: boolean }) => void>();
     component = mount(ChatSidebar, {
       target: host,
       props: { api: createFixtureChatSidebarApi(), seedDirectory, onselect },
@@ -137,18 +168,22 @@ describe("ChatSidebar create flow", () => {
     type(queryInput(), "Bryan");
     await settleQuery();
 
-    const suggestion = document.querySelector<HTMLButtonElement>(
-      '[data-testid="chat-create-result"]',
-    );
-    expect(suggestion?.textContent).toContain("Bryan");
+    // Select by text, not position: the result order depends on the fixture
+    // roster and a positional pick silently tests the wrong row.
+    const suggestion = [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        '[data-testid="chat-create-result"]',
+      ),
+    ].find((el) => (el.textContent ?? "").includes("Bryan"));
+    expect(suggestion, "Bryan is among the results").toBeTruthy();
     suggestion?.click();
     await tick();
 
-    expect(onselect).toHaveBeenCalled();
-    // Null also catches a portal leak from the orphan-node sweep.
-    expect(
-      document.querySelector('[data-testid="chat-create-modal"]'),
-    ).toBeNull();
+    const navigatedToBryan = onselect.mock.calls.some(
+      ([row, options]) =>
+        row?.personUid === "person-bryan" && options?.automatic !== true,
+    );
+    expect(navigatedToBryan, "no group is possible, so open the DM").toBe(true);
   });
 
   it("an unknown name offers a lowercase slug and carries it into the create step", async () => {
@@ -215,11 +250,12 @@ describe("ChatSidebar create flow", () => {
 
     type(queryInput(), "Q4 board");
     await settleQuery();
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="chat-create-channel-row"]',
-      )
-      ?.click();
+    const createRow = await vi.waitFor(() => {
+      const row = document.querySelector<HTMLButtonElement>('[data-testid="chat-create-channel-row"]');
+      expect(row).toBeTruthy();
+      return row!;
+    });
+    createRow.click();
     await tick();
 
     // Add one member from the full directory roster.
@@ -386,7 +422,7 @@ describe("ChatSidebar create flow", () => {
     await tick();
     await tick();
     // The rail itself still pins #welcome — only the create flow hides it.
-    expect(host.textContent).toMatch(/welcome/i);
+    await vi.waitFor(() => expect(host.textContent).toMatch(/welcome/i));
 
     openModal();
     await tick();

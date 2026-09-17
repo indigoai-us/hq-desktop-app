@@ -23,6 +23,8 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
+import { localBotSettingsArgs } from "./local-bot-settings.js";
+import { createCallsApi } from "../calls/api.js";
 import {
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -191,6 +193,17 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     return ok(raw.value as T);
   }
 
+  /**
+   * Native calling (US-014). This adapter already proxies hq-pro through the
+   * Rust `hq_pro_fetch` command exactly like the Sync adapter does, so it gets
+   * the real implementation rather than a refusal — the evidence preflight,
+   * not the host, is what gates it.
+   */
+  readonly calls: PlatformAdapter["calls"] = createCallsApi(
+    <T,>(method: "GET" | "POST", path: string, body?: unknown) =>
+      this.hqProJson<T>(method, path, body),
+  );
+
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
@@ -268,6 +281,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         : this.call("list_contacts");
     },
     listDmRequests: () => this.call("list_dm_requests"),
+    respondDmRequest: ({ pairKey, action }) =>
+      this.call("respond_dm_request", { pairKey, action }),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
     markDmThreadRead: (personUid) =>
       this.call("mark_dm_thread_read", { personUid }),
@@ -383,6 +398,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     fetchSharedWithMe: (opts) => this.call("fetch_shared_with_me", { opts }),
     ackSharedWithMe: (eventIds) =>
       this.call("ack_shared_with_me", { eventIds }),
+    // There is no dedicated file-history command; `fetch_notification_history`
+    // already wraps GET /v1/notify/file-history and returns it as `.files`
+    // alongside the DM and share history. Reshape to the `{ files }` envelope
+    // the composer reads, so both Tauri adapters agree on one wire shape.
+    fetchFileHistory: async (opts) => {
+      const r = await this.call<{ files?: unknown }>(
+        "fetch_notification_history",
+        { limit: (opts as { limit?: number } | undefined)?.limit },
+      );
+      if (!r.ok) return r;
+      return { ...r, value: { files: r.value?.files ?? [] } } as typeof r;
+    },
   };
 
   // Dead-surface cleanup: no Rust meetings commands are registered. Desktop
@@ -649,7 +676,37 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly sessions: PlatformAdapter["sessions"] = {
-    listAgentSessions: () => this.call("list_agent_sessions"),
+    preflight: () => this.call("agent_session_preflight"),
+    slashCommands: (tool) => this.call("agent_session_slash_commands", { tool }),
+    installProvider: (tool) =>
+      this.call<string>("install_session_provider", { tool }),
+    loginStart: (tool, opts) =>
+      this.call("agent_provider_login_start", { tool, ...(opts?.force ? { force: true } : {}) }),
+    loginStatus: (tool) => this.call("agent_provider_login_status", { tool }),
+    loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
+  };
+
+  readonly bots: NonNullable<PlatformAdapter["bots"]> = {
+    list: () => this.call("local_bots_list"),
+    create: (input) =>
+      this.call("local_bots_create", {
+        name: input.name,
+        runtime: input.runtime,
+        model: input.model ?? null,
+        autoApprove: input.autoApprove ?? null,
+        worker: input.worker ?? null,
+        intro: input.intro ?? null,
+        kickoff: input.kickoff ?? null,
+        memory: input.memory ?? null,
+        kind: input.kind ?? null,
+        companies: input.companies ?? null,
+      }),
+    workers: () => this.call("local_bots_workers"),
+    start: (name) => this.call("local_bots_start", { name }),
+    stop: (name) => this.call("local_bots_stop", { name }),
+    remove: (name) => this.call("local_bots_remove", { name }),
+    configure: (name, settings) => this.call("local_bots_configure", localBotSettingsArgs(name, settings)),
+    promote: (name, companyUid) => this.call("local_bots_promote", { name, companyUid }),
   };
 
   readonly settings: PlatformAdapter["settings"] = {
@@ -657,6 +714,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getSettings: () => this.call("get_settings"),
     updateSettings: (patch) => this.queueSettingsPatch(patch),
     getSetupStatus: () => this.call("get_setup_status"),
+    markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };
 
@@ -664,6 +722,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     createProjectStory: (projectId, companyUid, story) => this.hqProJson("POST",
       `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
       { ...story, companyUid: companyUid.trim() },
+    ),
+    putProjectView: (projectId, companyUid, view) => this.hqProJson("PUT",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}`,
+      { ...(view as object), companyUid: companyUid.trim() },
     ),
     readLocalSnapshot: () => this.call("read_work_mesh_snapshot"),
     getProjectView: (projectId, companyUid) =>

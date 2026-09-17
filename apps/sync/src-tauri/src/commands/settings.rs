@@ -89,8 +89,8 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             dock_icon: Some(true),
             // Retired. The desktop workspace is the only UI.
             hq_work_handoff: None,
-            // In-app sessions remain opt-in on existing installs.
-            in_app_sessions: Some(false),
+            // Sessions are generally available, including on existing installs.
+            in_app_sessions: Some(true),
             // Native-notification controls. Master + per-event banners default
             // ON, and OS banners are suppressed while HQ is focused by default
             // (`only_when_unfocused` ON). Read untyped on each native delivery
@@ -128,7 +128,7 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
         // Instant sync (event-driven) defaults ON, mirroring `realtime_sync`
         // and `is_instant_sync_enabled` in daemon.rs. Only ever takes effect
-        // for `event_push_eligible()` users (Phase 1: @getindigo.ai).
+        // when the local runner supports event-driven sync.
         instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
         // Pass through as persisted; absent means the built-in default percent
         // (bandwidth::DEFAULT_BANDWIDTH_PERCENT) governs — see bandwidth.rs.
@@ -212,7 +212,7 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // Retired. Ignore any leftover hqWorkHandoff so Settings cannot
         // resurrect the classic shell.
         hq_work_handoff: None,
-        in_app_sessions: Some(prefs.in_app_sessions.unwrap_or(false)),
+        in_app_sessions: Some(true),
         // Native-notification controls default ON (banners) with focus
         // suppression ON. Re-read untyped on each native delivery in
         // `native_notify::should_native_notify`, so a toggle takes effect

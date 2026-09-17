@@ -756,6 +756,59 @@ describe("ChatSidebar resolves a name for a bare-uid DM peer", () => {
     await tick();
     expect(asked).toEqual(["prs_ghost"]);
   });
+
+  it("does not re-ask about an unreachable peer after a remount", async () => {
+    // The server answers 404 "Recipient not found or not reachable" for a
+    // deleted or out-of-tenant account, and the stored peer index keeps
+    // listing that uid — so the read can never succeed and the set of
+    // candidates never shrinks. With the guard scoped to the component, every
+    // remount re-asked about every such peer: observed as a burst of failing
+    // thread reads on each app launch, one per unreachable peer, forever.
+    const asked: string[] = [];
+    const api = stubApi({
+      listContacts: async () => ({ contacts: [] }),
+      fetchDmThread: async ({ withPersonUid }) => {
+        asked.push(withPersonUid);
+        throw new Error("Recipient not found or not reachable");
+      },
+    });
+
+    const mountOnce = async () => {
+      const wakes = createChatWakeBus();
+      const target = document.createElement("div");
+      document.body.appendChild(target);
+      const instance = mount(ChatSidebar, {
+        target,
+        props: {
+          api,
+          seedDirectory: [seedRow],
+          selectedId: "ch:chn_proj",
+          wakes,
+          self: { uid: "prs_stefan" },
+        },
+      });
+      await tick();
+      wakes.emit("dm:pair-unreads", {
+        activity: [{ personUid: "prs_unreachable", lastMessageAt: now() }],
+      });
+      await vi.waitFor(() => {
+        expect(
+          target.querySelector('[data-conversation-id="dm:prs_unreachable"]'),
+        ).toBeTruthy();
+      });
+      await unmount(instance);
+      target.remove();
+    };
+
+    await mountOnce();
+    expect(asked).toEqual(["prs_unreachable"]);
+
+    await mountOnce();
+    await mountOnce();
+
+    // Still exactly one read across three mounts.
+    expect(asked).toEqual(["prs_unreachable"]);
+  });
 });
 
 describe("ChatSidebar channel rail stamp on the owner's own send", () => {
@@ -911,4 +964,21 @@ describe("conversation search keyboard navigation", () => {
     expect(document.querySelector('[role="combobox"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
+});
+
+it('paints seeded rows immediately even while the directory fetch is still pending', async () => {
+  const directory = new Promise<any>(() => {});
+  component = mount(ChatSidebar, { target: host, props: { api: stubApi({ fetchChannelDirectory: () => directory }), seedDirectory: [seedRow] } });
+  await tick();
+  expect(host.querySelector('[data-testid="sidebar-loading"]')).toBeNull();
+  expect(host.textContent).toContain('launch');
+});
+
+it('keeps a populated rail clickable while project-session metadata is still loading', async () => {
+  component = mount(ChatSidebar, { target: host, props: { api: stubApi(), seedDirectory: [seedRow], rowExtrasLoading: true } });
+  await tick();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await tick();
+  expect(host.querySelector('[data-testid="sidebar-loading"]')).toBeNull();
+  expect(host.querySelector('.chat-row-title')).not.toBeNull();
 });

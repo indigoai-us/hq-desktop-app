@@ -12,10 +12,11 @@
  */
 
 import type { Channel } from "./channels";
-import type { DmRequest } from "./dm-requests";
+import type { DmRequest, RequestAction } from "./dm-requests";
 import type { ChannelDirectoryFeed } from "./channel-directory-reconciler";
 import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
+import type { AgentStatusWake } from "./agent-thinking";
 
 export interface ContactsResponse {
   contacts: DmContactInput[];
@@ -45,6 +46,15 @@ export interface ChatSidebarApi {
   listCompanyMembers?(companyUid: string): Promise<ContactsResponse>;
   /** the desktop `list_dm_requests` command. */
   listDmRequests(): Promise<RequestsResponse>;
+  /**
+   * the desktop `respond_dm_request` command
+   * (`POST /v1/notify/connections/{accept|decline|block}` body `{ pairKey }`).
+   * Optional: hosts without it render pending requests read-only.
+   */
+  respondDmRequest?(args: {
+    pairKey: string;
+    action: RequestAction;
+  }): Promise<void>;
   /** the desktop `list_channels` command (US-021). */
   listChannels(args: {
     companyUid: string;
@@ -66,8 +76,12 @@ export interface ChatSidebarApi {
    */
   createChannel?(args: {
     name: string;
-    scope: "personal" | "company";
+    scope: "personal" | "company" | "project";
     companyUid?: string;
+    /** Required for `scope: "project"`: the project the channel belongs to. */
+    projectId?: string;
+    /** Project channels are invite-only on the server. */
+    visibility?: "invite" | "company";
   }): Promise<{ channelId: string }>;
   /** POST /v1/notify/channels/{id}/members — add a participant. */
   addChannelMember?(channelId: string, toPersonUid: string): Promise<void>;
@@ -88,7 +102,11 @@ export interface ChatSidebarApi {
     toEmail?: string;
     toPersonUid?: string;
     body: string;
-  }): Promise<{ state: "delivered" | "connectionRequested" }>;
+  }): Promise<{
+    state: "delivered" | "connectionRequested";
+    /** The recipient's person uid when the server resolved one. */
+    personUid?: string | null;
+  }>;
   /**
    * GET /v1/notify/thread — newest-first page of one 1:1 DM. Optional: the
    * rail uses it only to resolve a display name for a peer the contacts
@@ -360,6 +378,8 @@ export interface CardActionResult {
   /** US-006/011: agent channel minted on create_agent accept. */
   agentChannelId?: string;
   agentUid?: string;
+  companyChannelId?: string;
+  companyUid?: string;
   navigateTo?: "chat";
   focusCardId?: string;
   /**
@@ -479,6 +499,8 @@ export interface ChatWakeEvents {
    * Not named `thread:` (that collides with work-mesh).
    */
   "reply:new": ReplyNewWake;
+  /** An agent reported it is still working in a channel (ephemeral status). */
+  "agent:status": AgentStatusWake;
 }
 
 /** Ids-only reply doorbell. Hosts re-fetch; they must not payload-apply. */
@@ -549,6 +571,17 @@ export interface ChatWakeBus {
 }
 
 const replyNewListeners = new Set<(payload: ReplyNewWake) => void>();
+const agentStatusListeners = new Set<(payload: AgentStatusWake) => void>();
+
+/** Subscribe to every bus's `agent:status` emit (ReplyPanel has no parent wire). */
+export function subscribeAgentStatus(
+  handler: (payload: AgentStatusWake) => void,
+): () => void {
+  agentStatusListeners.add(handler);
+  return () => {
+    agentStatusListeners.delete(handler);
+  };
+}
 
 /** Subscribe to every bus's `reply:new` emit (ReplyPanel lives without a parent wire). */
 export function subscribeReplyNew(
@@ -579,6 +612,11 @@ export function createChatWakeBus(): ChatWakeBus & {
       if (event === "reply:new") {
         for (const listener of replyNewListeners) {
           listener(payload as ReplyNewWake);
+        }
+      }
+      if (event === "agent:status") {
+        for (const listener of agentStatusListeners) {
+          listener(payload as AgentStatusWake);
         }
       }
       for (const h of handlers.get(event) ?? []) {

@@ -15,6 +15,22 @@ import {
 } from "@hq/core";
 
 import { createChatWakeBus, type ReplyNewWake } from "./chat-api.js";
+import { parseAgentStatusWake, type AgentStatusWake } from "./agent-thinking.js";
+
+/** An explicit `type:"agent_status"` payload on the shared DM topic, parsed. */
+function agentStatusFromPayload(payload: unknown): AgentStatusWake | null {
+  let parsed: unknown = payload;
+  if (typeof payload === "string" || !(payload && typeof payload === "object") || payload instanceof Uint8Array) {
+    const text = typeof payload === "string" ? payload : mqttPayloadToText(payload);
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || (parsed as { type?: unknown }).type !== "agent_status") return null;
+  return parseAgentStatusWake(parsed);
+}
 
 export type ChatMeshWakeBus = ReturnType<typeof createChatWakeBus>;
 
@@ -60,6 +76,11 @@ export function routeMeshWake(
 ): "reply" | "channel" | "dm" | null {
   const reply = routeReplyWake(payload, wakes);
   if (reply) return "reply";
+  const status = agentStatusFromPayload(payload);
+  if (status) {
+    wakes.emit("agent:status", status);
+    return null;
+  }
   const text =
     typeof payload === "string"
       ? payload

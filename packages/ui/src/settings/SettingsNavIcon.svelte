@@ -5,6 +5,8 @@
       | "profile"
       | "companies"
       | "general"
+      | "agents"
+      | "bots"
       | "appearance"
       | "notifications"
       | "sync"
@@ -46,6 +48,15 @@
       stroke-width="1.3"
       stroke-linecap="round"
     />
+  {:else if name === "agents"}
+    <circle cx="5.2" cy="6" r="1.8" stroke="currentColor" stroke-width="1.3" />
+    <circle cx="10.8" cy="6" r="1.8" stroke="currentColor" stroke-width="1.3" />
+    <path
+      d="M2.6 12.4c.4-1.8 1.6-2.7 2.6-2.7s2.2.9 2.6 2.7M8.2 12.4c.4-1.8 1.6-2.7 2.6-2.7s2.2.9 2.6 2.7"
+      stroke="currentColor"
+      stroke-width="1.3"
+      stroke-linecap="round"
+    />
   {:else if name === "appearance"}
     <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.3" />
     <path d="M8 4.8v6.4" stroke="currentColor" stroke-width="1.3" />
@@ -73,6 +84,22 @@
     />
     <path
       d="M6.2 4v7.2M9.6 12V4.8"
+      stroke="currentColor"
+      stroke-width="1.3"
+      stroke-linecap="round"
+    />
+  {:else if name === "bots"}
+    <rect
+      x="3"
+      y="5.4"
+      width="10"
+      height="7.6"
+      rx="2"
+      stroke="currentColor"
+      stroke-width="1.3"
+    />
+    <path
+      d="M8 2.6v2.8M6 9.2h.01M10 9.2h.01M6.4 11.4h3.2"
       stroke="currentColor"
       stroke-width="1.3"
       stroke-linecap="round"

@@ -6,6 +6,7 @@ export * from "./onboarding/index.js";
 
 // Chat shell (US-007, ported from desktop-alt)
 export { default as ChatSidebar } from "./chat/ChatSidebar.svelte";
+export { default as DmRequestsPanel } from "./chat/DmRequestsPanel.svelte";
 export { default as ChannelStatusPopover } from "./chat/ChannelStatusPopover.svelte";
 export { default as AgentDetailPanel } from "./chat/AgentDetailPanel.svelte";
 export { default as AvatarPickerSlot } from "./chat/AvatarPickerSlot.svelte";
@@ -25,20 +26,37 @@ export * from "./chat/live-catchup.js";
 export * from "./chat/reply-layout.js";
 export * from "./chat/channels.js";
 export * from "./chat/setup-channel.js";
+export * from "./chat/setup-run.js";
+export * from "./chat/setup-agent.svelte.js";
 // Agent "thinking" indicator state machine. Explicit list: `isAgentUid` is
 // intentionally NOT re-exported here — the barrel already ships the
 // mesh-overlay `isAgentUid`; import the agent-thinking one from the module
 // path directly if the wider `agent_` prefix matters.
 export {
   detectAgentMentions,
+  newestMessageAtFrom,
   startThinking,
   tick,
   clearForAgents,
   clearFromMessages,
-  labelFor,
+  thinkingLine,
+  formatThinkingElapsed,
+  THINKING_PHRASES,
+  THINKING_PHRASE_ROTATE_MS,
+  THINKING_ELAPSED_AFTER_MS,
+  startThinkingIn,
+  tickAll,
+  clearRowFromMessages,
+  dropRow,
+  agentDisplayName,
+  applyAgentStatus,
+  parseAgentStatusWake,
+  type AgentStatusWake,
   type MentionCandidate,
   type ThinkingPhase,
   type ThinkingEntry,
+  type ThinkingLine,
+  type ThinkingByRow,
   type TickOpts,
 } from "./chat/agent-thinking.js";
 export * from "./chat/dm-requests.js";
@@ -47,6 +65,7 @@ export * from "./chat/pending-conversation.js";
 export * from "./chat/open-target.js";
 export * from "./chat/conversation-title.js";
 export * from "./chat/channel-admin.js";
+export * from "./chat/portfolio-session.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
 export {
@@ -60,7 +79,6 @@ export * from "./chat/channel-create-scope.js";
 export * from "./chat/row-extras.js";
 export * from "./chat/channel-status-model.js";
 export * from "./chat/mentions.js";
-export * from "./chat/portfolio-session.js";
 export * from "./chat/agency.js";
 export {
   agencyStore,
@@ -91,10 +109,10 @@ export { default as ThreadList } from "./board/ThreadList.svelte";
 export { default as ThreadDetail } from "./board/ThreadDetail.svelte";
 export { default as DroppedCompaniesBanner } from "./board/DroppedCompaniesBanner.svelte";
 export * from "./board/board-model.js";
+export * from "./board/work-session-feed.js";
 export * from "./board/thread-model.js";
 export * from "./board/board-api.js";
 export * from "./board/board-reconcile.js";
-export * from "./board/work-session-feed.js";
 export * from "./board/company-scopes.js";
 
 // Identity seam (platform-pure): self-identity "you" tagging + admin gate +
@@ -111,6 +129,17 @@ export {
   type SettingsProfileChrome,
   type ResolveShellCompaniesInput,
 } from "./identity/self.js";
+export {
+  createRosterRefresher,
+  ROSTER_REFRESH_EVENTS,
+  ROSTER_RETRY_DELAYS_MS,
+  subscribeRosterRefreshEvents,
+  type RosterListenFn,
+  type RosterRefresher,
+  type RosterRefreshEvent,
+  type RosterSettledOutcome,
+  type RosterStatus,
+} from "./identity/roster-refresh.js";
 export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {
@@ -125,6 +154,11 @@ export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
 export * from "./shell/embedded-navigation.js";
+export * from "./shell/navigation-history.js";
+export * from "./shell/navigation-scroll.js";
+export * from "./shell/navigation-controller.js";
+export * from "./shell/navigation-shortcuts.js";
+export * from "./shell/navigation-handler-matrix.js";
 export {
   updateStore,
   checkDesktopUpdates,
@@ -174,28 +208,47 @@ export * from "./inbox/live-notifications.js";
 export * as common from "./common/index.js";
 export * as settingsArea from "./settings/index.js";
 export * as meetings from "./meetings/index.js";
+
+// Native calling — shared office-hours surface (US-018).
+export * as meet from "./meet/index.js";
+// US-018: the capability-gated company tab list a host renders.
+export {
+  COMPANY_CHANNEL_TABS,
+  COMPANY_OFFICE_TAB,
+  companyChannelTabsFor,
+  isCompanyChannelTabId,
+  isCompanyTabSurfaceId,
+  type CompanyChannelTabId,
+  type CompanyTabCapabilities,
+} from "./chat/tabs/tab-model.js";
+// US-018: the native seams a host must supply for the Office surface. Exported
+// flat so hosts can type their capability object without a deep import.
+export type { OfficeCallsHost, OfficeCallTarget } from "./meet/office-host.js";
+// The in-call surface (US-020). Re-exported at the root because the call
+// window mounts it directly and consumes its model types.
+export { default as CallView } from "./meet/CallView.svelte";
+export { default as MediaControls } from "./meet/MediaControls.svelte";
+export { default as MediaPermissionCard } from "./meet/MediaPermissionCard.svelte";
+export {
+  CALL_TILE_LIMIT,
+  canModerate,
+  deriveCallView,
+  tileColumns,
+  type CallPeerView,
+  type CallRole,
+  type CallSnapshotView,
+  type CallTile,
+  type CallViewLayout,
+  type MediaDeviceOption,
+  type MediaDevicesPort,
+  type SelfMediaView,
+  type TileConnection,
+} from "./meet/call-view-model.js";
 export * as company from "./company/index.js";
 
-// Atlas v0 (work-mesh-live US-016) — company roster × live projects.
-export {
-  AtlasPage,
-  ATLAS_EMPTY_LIVE,
-  ATLAS_MIXED_LIVE,
-  ATLAS_ONE_ACTOR_LIVE,
-  bindLiveRefresh,
-  buildAtlasView,
-  createGoChord,
-  GO_CHORD_MS,
-  requestLiveRefresh,
-  type AtlasActorType,
-  type AtlasOnlineActor,
-  type AtlasProjectCard,
-  type AtlasViewModel,
-  type BuildAtlasViewOptions,
-  type GoChordController,
-  type GoChordHandler,
-} from "./atlas/index.js";
-export * as atlas from "./atlas/index.js";
+// Work-mesh live refresh (was under the removed Atlas page; mesh still uses it).
+export { bindLiveRefresh, requestLiveRefresh } from "./mesh/live-refresh.js";
+
 export {
   buildCompanyDisplayMap,
   companyDisplayName,
@@ -216,7 +269,6 @@ export {
   packDisplayName,
   prettifyPackName,
 } from "./home/pack-display-name.js";
-export * as sessions from "./sessions/index.js";
 export { default as TaskChip } from "./chat/tasks/TaskChip.svelte";
 export { default as AgentTaskStrip } from "./chat/tasks/AgentTaskStrip.svelte";
 export * from "./chat/tasks/agent-tasks";

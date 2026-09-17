@@ -81,11 +81,24 @@ const KINDS_ALLOWING_NULL_COMPANY = new Set<string>([
   "companies_summary",
 ]);
 
+/**
+ * Lifecycle card kinds the channel timeline no longer renders.
+ *
+ * `create_agent` is the server's "Create a bot" name/handle form. Bots are made
+ * through the local bot flow now (bot kinds), so the card in a company channel
+ * is a second, contradictory way in. It still PARSES — an old card sitting in
+ * history must not break the timeline, and the server surfaces that reuse the
+ * lifecycle model keep working — it is simply not shown.
+ */
+export const HIDDEN_TIMELINE_CARD_KINDS = new Set<LifecycleCardKind>([
+  "create_agent",
+]);
+
 const DEFAULT_LIFECYCLE_TITLES: Record<LifecycleCardKind, string> = {
   create_company: "Name your company",
   activate_cloud: "Turning on cloud sync",
   upgrade_plan: "Choose a plan",
-  create_agent: "Create an agent",
+  create_agent: "Create a bot",
   status: "Status",
   companies_summary: "Your companies",
   tab_row: "Row",
@@ -218,6 +231,8 @@ export interface WorkSessionCardModel {
   /** Display name when the envelope carried one; otherwise null (resolve via roster). */
   principalDisplay: string | null;
   note: string | null;
+  /** Local / spike: open this session in the side pane. */
+  sessionId: string | null;
 }
 
 export type SystemEventModel =
@@ -345,6 +360,13 @@ export function parseLifecycleCard(raw: unknown): LifecycleCardModel | null {
   for (const field of raw.fields) {
     const parsed = parseLifecycleField(field);
     if (!parsed) return null;
+    // Older provisioning cards expose a routing UID as the whole readonly
+    // value. Keep identity in the envelope/actions, not in visible form rows.
+    if (parsed.control === "readonly" && /^(?:agt|cmp|prs|chn)_[A-Za-z0-9_-]+$/.test(parsed.value.trim())) continue;
+    // Old summaries put routing metadata in a visible progress field.
+    if (raw.kind === "companies_summary" && parsed.control === "readonly" && /^(company|cloud|plan|agent|complete):chn_/.test(parsed.value)) {
+      parsed.value = parsed.value.startsWith("complete:") ? "Ready" : "Continue setup";
+    }
     fields.push(parsed);
   }
   const actions: LifecycleCardAction[] = [];
@@ -578,9 +600,17 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
     const actorType = normalizeActorType(
       raw.actorType ?? principal?.kind ?? (actorUid?.startsWith("agt_") ? "agent" : "human"),
     );
+    const sessionId = asOptionalString(raw.sessionId);
+    const spawnTask = (() => {
+      const rawId = sessionId ?? "";
+      if (!rawId.startsWith("ws_spawn_") || !rawId.includes("|")) return null;
+      return rawId.split("|")[2]?.trim() || null;
+    })();
+    const taskId = asOptionalString(raw.taskId) ?? spawnTask;
     const cardTitle =
       note ??
       title ??
+      taskId ??
       (status ? `Work session · ${status}` : null) ??
       DEFAULT_TITLES.work_session;
     return {
@@ -591,13 +621,14 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
       actorUid,
       actorType,
       harness: asOptionalString(raw.harness),
-      taskId: asOptionalString(raw.taskId),
+      taskId,
       turnCount: asOptionalInt(raw.turnCount),
       lastTurnAt: asOptionalString(raw.lastTurnAt),
       status,
       principalDisplay:
         asOptionalString(raw.displayName) ?? principal?.display ?? null,
       note,
+      sessionId,
     };
   }
 
@@ -631,7 +662,15 @@ export function systemModelForMessage(message: {
   fromDisplayName?: string | null;
 }): SystemEventModel | null {
   const fromEnvelope = parseSystemEvent(message.systemEvent ?? null);
-  if (fromEnvelope) return fromEnvelope;
+  if (fromEnvelope) {
+    if (
+      fromEnvelope.kind === "lifecycle_card" &&
+      HIDDEN_TIMELINE_CARD_KINDS.has(fromEnvelope.cardKind)
+    ) {
+      return null;
+    }
+    return fromEnvelope;
+  }
   const kind = message.messageKind?.trim().toLowerCase();
   if (kind !== "member_added") return null;
   const title =
@@ -646,16 +685,18 @@ export function systemModelForMessage(message: {
 }
 
 /**
- * Whether a channel message row should be suppressed entirely.
- * System-kind messages with an unparseable/unknown systemEvent render nothing.
+ * Whether the timeline should drop this row outright rather than render it.
+ * A retired lifecycle card would otherwise fall through to the ordinary
+ * message branch and paint an empty bubble with an avatar and a timestamp.
  */
-export function shouldHideSystemMessage(message: {
-  messageKind?: string | null;
+export function isHiddenTimelineMessage(message: {
   systemEvent?: unknown;
 }): boolean {
-  const kind = message.messageKind?.trim().toLowerCase();
-  if (kind !== "system") return false;
-  return parseSystemEvent(message.systemEvent) == null;
+  const parsed = parseSystemEvent(message.systemEvent ?? null);
+  return (
+    parsed?.kind === "lifecycle_card" &&
+    HIDDEN_TIMELINE_CARD_KINDS.has(parsed.cardKind)
+  );
 }
 
 const ISO_TIMESTAMP_RE =

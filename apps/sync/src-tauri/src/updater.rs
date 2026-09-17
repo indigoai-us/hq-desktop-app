@@ -247,6 +247,15 @@ struct PendingUpdateTransition {
 }
 
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Whether an update is being applied right now.
+///
+/// Read by browser continuation: the process is about to be replaced, so
+/// opening a browser and asking someone to sign in would strand them halfway
+/// through a flow whose other half is about to exit.
+pub(crate) fn update_install_in_progress() -> bool {
+    UPDATE_INSTALL_IN_PROGRESS.load(Ordering::SeqCst)
+}
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static AUTO_INSTALL_WAITER_GENERATION: AtomicU64 = AtomicU64::new(0);
 static AUTO_INSTALL_WAITER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -1044,7 +1053,7 @@ async fn install_verified_update(
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&update.version).await;
-        app.restart();
+        crate::commands::autostart::restart_preferring_launch_agent(app);
     }
 }
 
@@ -1394,7 +1403,7 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&staged.info.version).await;
-        app.restart();
+        crate::commands::autostart::restart_preferring_launch_agent(app);
     }
 }
 
@@ -1692,6 +1701,28 @@ pub fn background_updates_disabled() -> bool {
     dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || tauri::is_dev()
 }
 
+/// Whether the bundled updater config names at least one feed endpoint.
+///
+/// A private test bundle is built with `plugins.updater.endpoints: []` so it
+/// can never pull a public release over itself. The channel-aware checker
+/// ignores the static endpoint list on purpose (it resolves its own feed), so
+/// it must honour the empty list here instead — otherwise a test build gets
+/// replaced by the public app ten seconds after launch, which is exactly what
+/// happened on 2026-09-09 (every private onboarding build in the VM was
+/// silently swapped for 0.10.227).
+pub fn updater_feed_configured(updater_plugin_config: Option<&serde_json::Value>) -> bool {
+    match updater_plugin_config.and_then(|cfg| cfg.get("endpoints")) {
+        // No updater section at all: tauri.conf.json's defaults apply.
+        None => true,
+        Some(serde_json::Value::Array(endpoints)) => !endpoints.is_empty(),
+        Some(_) => true,
+    }
+}
+
+fn bundled_updater_feed_configured(app: &AppHandle) -> bool {
+    updater_feed_configured(app.config().plugins.0.get("updater"))
+}
+
 fn dev_env_flag_set(name: &str) -> bool {
     std::env::var(name)
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
@@ -1703,6 +1734,13 @@ pub fn setup_update_checker(app: &AppHandle) {
         log(
             "updater",
             "background update checker disabled (dev build or HQ_DEV_NO_AUTO_UPDATE=1)",
+        );
+        return;
+    }
+    if !bundled_updater_feed_configured(app) {
+        log(
+            "updater",
+            "background update checker disabled (bundle has no updater endpoints — private build)",
         );
         return;
     }
@@ -2488,5 +2526,28 @@ mod tests {
         // the checker must be disabled even with the env flag unset. A release
         // build flips this to depend on the env flag alone.
         assert!(background_updates_disabled());
+    }
+}
+
+#[cfg(test)]
+mod private_build_updater_tests {
+    use super::updater_feed_configured;
+    use serde_json::json;
+
+    /// Regression: a private test bundle built with `endpoints: []` was still
+    /// auto-updated to the public release because the checker resolves its own
+    /// feed and never looked at the bundled list.
+    #[test]
+    fn empty_endpoint_list_disables_the_background_checker() {
+        assert!(!updater_feed_configured(Some(&json!({ "endpoints": [] }))));
+    }
+
+    #[test]
+    fn a_configured_feed_or_absent_section_keeps_updates_on() {
+        assert!(updater_feed_configured(Some(&json!({
+            "endpoints": ["https://example.test/latest.json"]
+        }))));
+        assert!(updater_feed_configured(None));
+        assert!(updater_feed_configured(Some(&json!({ "active": true }))));
     }
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { getVersion } from '@tauri-apps/api/app';
   import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onDestroy, onMount, tick } from 'svelte';
@@ -10,8 +11,6 @@
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
   import {
-    COMPLETE_SETUP,
-    SETUP_NEEDS_PASS,
     escapeForLaunch,
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
@@ -22,23 +21,48 @@
   } from '../../lib/onboarding-path';
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
+    continuationDeps,
+    loadContinuationContext,
+  } from '../../lib/desktop-continuation-tauri';
+  import {
+    beginContinuation,
+    classifyContinuationError,
+    confirmContinuation,
+    flushReceipts,
+    launchReceipt,
+    recordReceipt,
+    resolveRollout,
+    type ContinuationDeps,
+    type ContinuationState,
+  } from '../../lib/desktop-session-continuation';
+  import {
     NO_AI_TOOLS,
     availableLaunches,
     installUrlFor,
     launchEntries,
     markToolUnavailable,
     readyCommandFor,
-    selectPrimaryLaunch,
     type AiTools,
     type LaunchEntry,
     type LaunchKind,
-    type PrimaryLaunch,
   } from '../../lib/onboarding-summary';
   import {
+    activeStageId,
     allSettled,
     buildInitialStages,
     buildStagesFromManifest,
+    countSettledStages,
+    createSetupProgressTracker,
     friendlySetupBands,
+    contentProgressSubStatus,
+    resetSetupProgressTracker,
+    setupRetryAttempt,
+    setupSubStatus,
+    stageCreepAt,
+    trackSetupProgress,
+    createSetupRunId,
+    normalizeFailedStageIds,
+    reuseInFlightOperation,
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
@@ -46,11 +70,13 @@
     setupStageRecoveryAction,
     stageCommandInvocations,
     stageTimeoutMs,
+    setupFailureTelemetryDetails,
     StageTimeoutError,
     STAGE_ORDER,
     withTimeout,
-    type FailedStageDetail,
     type InstallManifest,
+    type SetupRetryAttempt,
+    type SetupStageRecoveryAction,
     type StageId,
     type StageState,
   } from '../../lib/onboarding-setup';
@@ -66,6 +92,7 @@
     BUILD_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
+    type WizardMode,
     createWizardRouter,
     DIRECTORY_STEP_INDEX,
     HANDOFF_STEP_INDEX,
@@ -93,7 +120,7 @@
      * setup and no ready screen. The `personUid` the guard is keyed to is passed
      * so the answer can mark the re-prompt "shown" for exactly this person.
      */
-    mode?: 'onboarding' | 'reprompt';
+    mode?: WizardMode;
     onboardingFlow?: OnboardingFlow;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
@@ -139,6 +166,10 @@
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
+  // Provider buttons remain available after this short head start. The native
+  // continuation attempt keeps running until it completes, expires, or a
+  // person explicitly takes over with a provider.
+  const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
 
   let {
@@ -150,6 +181,11 @@
   }: Props = $props();
 
   const isReprompt = $derived(mode === 'reprompt');
+  /**
+   * Only the consent step is shown and the wizard closes on the answer: the
+   * re-prompt, and an installed machine that just lacks its consent answer.
+   */
+  const consentOnly = $derived(mode !== 'onboarding');
   const onboardingTelemetry = createOnboardingStepTelemetry();
 
   let activeInitialStep = $state<number | null>(null);
@@ -194,6 +230,24 @@
   let currentSignInCall = 0;
   let mounted = true;
 
+  // Browser session continuation belongs on the first screen someone sees
+  // after downloading HQ, not only on the returning-user sign-in surfaces.
+  // The first-run wizard completes an eligible session itself; it never
+  // renders a continuation prompt or account choice.
+  let continuation = $state<ContinuationState>({ phase: 'idle' });
+  let continuationDepsRef: ContinuationDeps | null = null;
+  let continuationPrepared = false;
+  let manualSignInStarted = false;
+  let automaticContinuationRun = 0;
+  let automaticContinuationAttemptActive = false;
+  let automaticContinuationRevealTimer: number | null = null;
+  let signInActionsReady = $state(false);
+  let onboardingAppVersion =
+    typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : 'unknown';
+  let onboardingAppVersionResolution: Promise<void> | null = null;
+  let onboardingAbandoned = false;
+  let onboardingCompleted = false;
+
   let installPath = $state<string | null>(null);
   let resolvedPath = $state<string | null>(null);
   let homeDir = $state<string | null>(null);
@@ -205,12 +259,36 @@
   let setupCompleted = $state(false);
   let setupStarted = $state(false);
   let stageCreep = $state(0);
+  // How long the stage that is running right now has been running. Drives both
+  // the ring's creep and the sub-status line under the active band, so a long
+  // stage never reads as frozen.
+  let stageElapsedMs = $state(0);
+  /** Real backend progress text for the running stage, when one was reported. */
+  let stageDetail = $state<string | null>(null);
+  /** Set while the active stage waits for its automatic next attempt. */
+  let setupRetry = $state<{ stageId: StageId; attempt: SetupRetryAttempt } | null>(
+    null,
+  );
+  // One high-water mark per visit to the setup step. Shown progress is read
+  // through it so a retry or a rebuilt stage list can never walk it backward.
+  const setupProgressTracker = createSetupProgressTracker();
+  /**
+   * The run that currently owns the start guard, or 0 when none does.
+   *
+   * It holds the run id rather than a bare boolean so a restart can TAKE the
+   * guard from a run that is still unwinding. A cancelled run keeps awaiting
+   * its current stage for as long as that stage's timeout (minutes), and
+   * dropping the restart on the floor left the setup screen at 0% with
+   * nothing running and no way back.
+   */
+  let inFlightRunId = 0;
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
+  let currentSetupRunId = '';
   let setupCancelled = false;
+  const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
-  let setupFailures = $state<FailedStageDetail[]>([]);
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -227,6 +305,11 @@
   let claudeWatchExpired = $state(false);
   let launchEscape = $state<OnboardingEscape | null>(null);
   let showManualTools = $state(false);
+  /** The ready screen's Advanced disclosure (own-tool launchers); opens itself when a launch needs a next step. */
+  let advancedOpen = $state(false);
+  $effect(() => {
+    if (launchEscape || finishError || claudeWatchExpired || detectionFailed) advancedOpen = true;
+  });
   let revealingFolder = $state(false);
   let commandCopied = $state(false);
   let pathCopied = $state(false);
@@ -236,11 +319,14 @@
   let copyingAction = $state<CopyAction | null>(null);
   let copyFailure = $state<CopyAction | null>(null);
   let finishing = $state(false);
+  // Svelte clears rune-backed state during teardown, so keep the active
+  // handoff marker outside that state for onDestroy's abandonment check.
+  let finishInProgress = false;
   let finishError = $state(false);
 
   type StepTelemetryDetails = Omit<
     RecordOnboardingStep['properties'],
-    'step' | 'action' | 'flow'
+    'step' | 'action' | 'flow' | 'appVersion'
   >;
 
   function stepIdFor(step: number) {
@@ -253,15 +339,35 @@
     details: StepTelemetryDetails = {},
     flow?: OnboardingFlow,
   ): void {
-    if (isReprompt) return;
+    if (consentOnly) return;
     onboardingTelemetry.record({
       properties: {
         step: stepIdFor(step),
         action,
         ...details,
+        appVersion: onboardingAppVersion,
         flow: flow ?? onboardingFlow,
       },
     });
+  }
+
+  function resolveOnboardingAppVersion(): Promise<void> {
+    if (onboardingAppVersionResolution) return onboardingAppVersionResolution;
+    onboardingAppVersionResolution = getVersion()
+      .then((version) => {
+        const normalized = version.trim();
+        if (normalized) onboardingAppVersion = normalized;
+      })
+      .catch((error) => {
+        console.warn('[onboarding] could not resolve app version for telemetry:', error);
+      });
+    return onboardingAppVersionResolution;
+  }
+
+  function recordOnboardingAbandonment(): void {
+    if (consentOnly || finishing || finishInProgress || onboardingCompleted || onboardingAbandoned) return;
+    onboardingAbandoned = true;
+    recordStep(currentStep, 'abandoned');
   }
 
   /**
@@ -286,16 +392,15 @@
     installPath ? friendlyPath(installPath, homeDirFromDefaultHqPath(installPath)) : '~/hq',
   );
   const directoryButtonLabel = $derived(directoryBusy ? 'Checking…' : 'Choose…');
-  const topHeight = $derived(currentStep >= TRUST_STEP_INDEX ? '240px' : '200px');
-  const settledCount = $derived(
-    stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
-      .length,
+  // The consent step carries the most copy: a shorter picture keeps the whole
+  // choice on screen without scrolling (measured at the 780×620 window).
+  const topHeight = $derived(
+    currentStep >= TRUST_STEP_INDEX ? '240px' : currentStep === CONSENT_STEP_INDEX ? '130px' : '200px',
   );
-  const currentStageId = $derived(
-    stages.find((stage) => stage.status === 'running')?.id ?? null,
-  );
+  const settledCount = $derived(countSettledStages(stages));
+  const currentStageId = $derived(activeStageId(stages));
   const setupDone = $derived(allSettled(stages));
-  const overallPercent = $derived(
+  const rawOverallPercent = $derived(
     setupProgressPercent({
       settledCount,
       totalStages: STAGE_ORDER.length,
@@ -304,13 +409,24 @@
       allDone: setupDone,
     }),
   );
+  // Everything user-facing reads the tracked value, never the raw one.
+  const overallPercent = $derived(
+    trackSetupProgress(setupProgressTracker, rawOverallPercent),
+  );
   const ringOffset = $derived(
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
-  const needsAttention = $derived(setupFailures.length > 0);
-  const readyCaution = $derived(
-    launchEscape ?? (needsAttention ? SETUP_NEEDS_PASS : COMPLETE_SETUP),
+  const setupSubStatusModel = $derived(
+    setupSubStatus({
+      stageId: currentStageId,
+      elapsedMs: stageElapsedMs,
+      detail: stageDetail,
+      retry:
+        setupRetry && setupRetry.stageId === currentStageId
+          ? setupRetry.attempt
+          : null,
+    }),
   );
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
@@ -318,17 +434,8 @@
   const manualCommand = $derived(readyCommandFor(userFacingInstallPath, aiTools));
   const launchOptions = $derived(availableLaunches(aiTools));
   const launchSlots = $derived<LaunchEntry[]>(launchEntries(aiTools));
-  // With nothing installed every slot is an install link, so there is no
-  // launch button to carry `btn-primary`. Promote the Claude install — it is
-  // the path that starts the readiness watch, and leaving the row with no
-  // primary at all reads as "no next step" on the one screen that most needs
-  // one.
-  const noToolInstalled = $derived(
-    launchSlots.length > 0 && launchSlots.every((slot) => !slot.installed),
-  );
-  const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
-    showManualTools || Boolean(launchEscape || detectionFailed || needsAttention),
+    showManualTools || Boolean(launchEscape || detectionFailed),
   );
 
   $effect(() => {
@@ -348,9 +455,25 @@
   });
 
   $effect(() => {
+    // This is intentionally scoped to the first-run sign-in panel. Native
+    // eligibility independently refuses resumed and non-first-launch windows,
+    // but there is no reason to fetch rollout configuration after the wizard
+    // has already moved past authentication.
+    if (
+      isReprompt ||
+      currentStep !== WELCOME_SIGNIN_STEP_INDEX ||
+      continuationPrepared
+    ) {
+      return;
+    }
+    continuationPrepared = true;
+    void prepareContinuation();
+  });
+
+  $effect(() => {
     // In re-prompt mode there is no install/setup — only the consent step — so
     // the setup run must never start even if the step index momentarily reads 2.
-    if (isReprompt || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
+    if (consentOnly || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
     setupStarted = true;
     void startSetupRun();
   });
@@ -363,18 +486,26 @@
     return () => window.clearInterval(intervalId);
   });
 
+  // One ticker per active stage. It advances the ring's creep AND the elapsed
+  // clock the sub-status line reads, so the percent keeps moving and the copy
+  // under the active band keeps changing for as long as the stage runs. A
+  // stage stays active across its auto-retry, so the clock and the creep carry
+  // on rather than restarting from zero on every attempt.
   $effect(() => {
     const activeId = currentStageId;
     const done = setupDone;
-    let creep = 0;
-    stageCreep = creep;
+    stageCreep = 0;
+    stageElapsedMs = 0;
+    stageDetail = null;
 
     if (done || activeId === null) return;
 
+    const startedAt = Date.now();
     const interval = window.setInterval(() => {
-      creep += (0.92 - creep) * 0.14;
-      stageCreep = creep;
-    }, 1200);
+      const elapsed = Date.now() - startedAt;
+      stageElapsedMs = elapsed;
+      stageCreep = stageCreepAt(elapsed);
+    }, 1000);
 
     return () => {
       window.clearInterval(interval);
@@ -385,8 +516,10 @@
     mounted = true;
     detectorMounted = true;
     directoryCancelled = false;
+    void resolveOnboardingAppVersion();
+    window.addEventListener('pagehide', recordOnboardingAbandonment);
 
-    if (!isReprompt) {
+    if (!consentOnly) {
       // Every visible panel has an entry event. A resumed, non-initial panel
       // records both its ordinary entry and the resume signal used for drop-off
       // analysis.
@@ -398,11 +531,6 @@
       if (onboardingFlow === 'resume' && currentStep !== WELCOME_SIGNIN_STEP_INDEX) {
         recordStep(currentStep, 'resumed', {}, onboardingFlow);
       }
-      void invokeCommand<boolean>('is_first_run')
-        .then((firstLaunch) => {
-          if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
-        })
-        .catch(() => {});
       // A resumed onboarding session may already have a restored token. Its
       // operational queue is independent of consent and can resume delivery.
       void invokeCommand<{ authenticated: boolean }>('get_auth_state')
@@ -429,11 +557,14 @@
       mounted = false;
       detectorMounted = false;
       directoryCancelled = true;
+      window.removeEventListener('pagehide', recordOnboardingAbandonment);
       media.removeEventListener('change', updateMotion);
     };
   });
 
   onDestroy(() => {
+    recordOnboardingAbandonment();
+    stopAutomaticContinuationAttempt();
     mounted = false;
     currentSignInCall += 1;
     clearTransitionTimers();
@@ -508,6 +639,15 @@
 
   async function handleSignIn(provider: SignInProvider) {
     const call = ++currentSignInCall;
+    // Claim the provider path before any await. The continuation config can
+    // settle while this click is being handled; it must not then arm a second
+    // listener over the provider flow the person deliberately chose.
+    manualSignInStarted = true;
+    stopAutomaticContinuationAttempt();
+
+    // Preparation observes this claim and leaves continuation unarmed. Manual
+    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
+
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
@@ -540,20 +680,7 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
-        // The token is now available, so release operational records that were
-        // buffered solely while the OAuth flow was unauthenticated.
-        void onboardingTelemetry.flush().catch(() => {});
-        // Person entity may not exist yet; later pings retry after setup.
-        void resolveInstallerPersonUid();
-        await refocusWindow();
-        if (!isCurrentSignInCall(call)) return;
-        // The consent question is asked later as its own step after setup.
-        // Operational setup telemetry is emitted independently; skill usage
-        // remains governed by that choice.
-        advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
-          provider: telemetryProvider,
-          outcome: 'authenticated',
-        });
+        await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
         signInError = 'Authentication failed. Please try again.';
         recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
@@ -568,12 +695,150 @@
       recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
         provider: telemetryProvider,
         outcome: 'oauth_failed',
+        errorKind: classifyContinuationError(err),
       });
     } finally {
       if (isCurrentSignInCall(call)) {
         loadingProvider = null;
       }
     }
+  }
+
+  async function prepareContinuation(): Promise<void> {
+    const run = ++automaticContinuationRun;
+    automaticContinuationAttemptActive = true;
+    automaticContinuationRevealTimer = window.setTimeout(() => {
+      if (!isAutomaticContinuationCurrent(run)) return;
+      signInActionsReady = true;
+      automaticContinuationRevealTimer = null;
+    }, AUTOMATIC_CONTINUATION_TIMEOUT_MS);
+
+    const finishWithProviderButtons = () => {
+      if (run !== automaticContinuationRun || currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+      automaticContinuationAttemptActive = false;
+      if (automaticContinuationRevealTimer !== null) {
+        window.clearTimeout(automaticContinuationRevealTimer);
+        automaticContinuationRevealTimer = null;
+      }
+      signInActionsReady = true;
+    };
+
+    const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
+    const context = await loadContinuationContext();
+    if (!context) {
+      if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
+      finishWithProviderButtons();
+      return;
+    }
+    const deps = continuationDeps(context);
+    continuationDepsRef = deps;
+
+    // Receipt delivery is best effort and must never delay sign-in.
+    void flushReceipts(deps).catch(() => undefined);
+
+    // `firstLaunchRecorded` is the existing durable first-installation gate.
+    // It survives re-renders and a resumed wizard, while recordReceipt keeps
+    // an undelivered receipt's event id and timestamp stable for retry.
+    if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
+      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+    }
+
+    // Check before and after the config round trip. A provider click during
+    // that wait is a deliberate choice and must win without arming another
+    // OAuth listener.
+    if (!isAutomaticContinuationCurrent(run)) return;
+    const decision = await resolveRollout(deps);
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (!decision.enabled) {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const next = await beginContinuation(
+      deps,
+      decision,
+      (next) => {
+        if (isAutomaticContinuationCurrent(run)) continuation = next;
+      },
+      () => isAutomaticContinuationCurrent(run),
+    );
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (next.phase !== 'confirming') {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const activated = await confirmContinuation(deps, next, (state) => {
+      if (isAutomaticContinuationCurrent(run)) continuation = state;
+    });
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (activated.phase !== 'activated') {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const auth = await invokeCommand<{ authenticated: boolean }>('get_auth_state').catch(() => null);
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (!auth?.authenticated) {
+      finishWithProviderButtons();
+      return;
+    }
+
+    automaticContinuationAttemptActive = false;
+    if (automaticContinuationRevealTimer !== null) {
+      window.clearTimeout(automaticContinuationRevealTimer);
+      automaticContinuationRevealTimer = null;
+    }
+    await completeAuthenticatedSignIn(currentSignInCall);
+  }
+
+  function stopAutomaticContinuationAttempt(): void {
+    automaticContinuationAttemptActive = false;
+    if (automaticContinuationRevealTimer !== null) {
+      window.clearTimeout(automaticContinuationRevealTimer);
+      automaticContinuationRevealTimer = null;
+    }
+    const attemptId = 'attemptId' in continuation ? continuation.attemptId : undefined;
+    if (attemptId && continuationDepsRef) {
+      void continuationDepsRef.bridge.cancel({ attemptId }).catch((error) => {
+        console.warn('[onboarding] could not cancel browser continuation attempt:', error);
+      });
+    }
+  }
+
+  function isAutomaticContinuationCurrent(run: number): boolean {
+    return (
+      mounted &&
+      run === automaticContinuationRun &&
+      automaticContinuationAttemptActive &&
+      !manualSignInStarted &&
+      currentStep === WELCOME_SIGNIN_STEP_INDEX
+    );
+  }
+
+  /**
+   * Both OAuth routes land here after native code has activated the same auth
+   * session. Keeping this as the one wizard completion preserves the normal
+   * post-auth transition, telemetry flush, person lookup, and refocus path.
+   */
+  async function completeAuthenticatedSignIn(
+    call: number,
+    details: StepTelemetryDetails = {},
+  ): Promise<void> {
+    // The token is now available, so release operational records that were
+    // buffered solely while the OAuth flow was unauthenticated.
+    void onboardingTelemetry.flush().catch(() => {});
+    // Person entity may not exist yet; later pings retry after setup.
+    void resolveInstallerPersonUid();
+    await refocusWindow();
+    if (!isCurrentSignInCall(call)) return;
+    // The consent question is asked later as its own step after setup.
+    // Operational setup telemetry is emitted independently; skill usage
+    // remains governed by that choice.
+    advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
+      ...details,
+      outcome: 'authenticated',
+    });
   }
 
   function detectLooksLikeHq(result: DetectHqResult): boolean {
@@ -660,7 +925,12 @@
 
   function beginSetupRun(): number {
     currentRunId += 1;
+    currentSetupRunId = createSetupRunId();
     setupCancelled = false;
+    setupRetry = null;
+    // Supersession: the previous run may have left a stage mid-retry. This
+    // run owns the list now, so nothing may still be waiting on that retry.
+    stages = resetRetryingStages(stages);
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
@@ -720,6 +990,12 @@
 
     if (handle && payload.phase === 'complete') {
       activeContentHandles.delete(handle);
+    }
+
+    // The template download is the one stage that reports genuine progress;
+    // show it verbatim instead of the written sub-steps while it runs.
+    if (currentStageId === 'content') {
+      stageDetail = contentProgressSubStatus(payload);
     }
   }
 
@@ -785,7 +1061,18 @@
     }
   }
 
-  async function invokeStageCommand(id: StageId, runId: number): Promise<void> {
+  type OnboardingFailureScope = {
+    setupRunId: string;
+    attemptCount: number;
+    flow: OnboardingFlow;
+    frontendSessionId: string;
+  };
+
+  async function invokeStageCommand(
+    id: StageId,
+    runId: number,
+    failureScope: OnboardingFailureScope,
+  ): Promise<void> {
     const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
     if (invocations.length === 0) return;
     if (typeof invoke !== 'function') {
@@ -795,6 +1082,9 @@
     const ms = stageTimeoutMs(id);
     for (const invocation of invocations) {
       let args = invocation.args;
+      if (['content', 'deps', 'git-init', 'indexing'].includes(id)) {
+        args = { ...(args ?? {}), failureScope };
+      }
       let handle: string | null = null;
       if (invocation.command === 'fetch_and_extract_template') {
         handle = contentHandle(runId);
@@ -802,8 +1092,14 @@
         args = { ...args, handle };
       }
       try {
+        const operation =
+          invocation.command === 'start_initial_cloud_sync'
+            ? reuseInFlightOperation(initialCloudSyncOperation, () =>
+                Promise.resolve(invokeDesktopCommand(invocation.command, args)),
+              )
+            : Promise.resolve(invokeDesktopCommand(invocation.command, args));
         await withTimeout(
-          Promise.resolve(invokeDesktopCommand(invocation.command, args)),
+          operation,
           ms,
           () => new StageTimeoutError(id, ms),
           () => {
@@ -820,20 +1116,67 @@
     }
   }
 
-  type StageRunOutcome = 'ok' | 'failed' | 'cancelled';
+  type StageRunResult =
+    | { outcome: 'ok' }
+    | { outcome: 'cancelled' }
+    | { outcome: 'failed'; recovery: SetupStageRecoveryAction };
+
+  const CANCELLED_STAGE_RUN: StageRunResult = { outcome: 'cancelled' };
+
+  type NativeStageFailureDetail = {
+    failedDependency?: unknown;
+    errorCategory?: unknown;
+  };
+
+  async function stageFailureTelemetryDetails(
+    id: StageId,
+    error: unknown,
+    failureScope: OnboardingFailureScope,
+  ) {
+    const timeoutCategory = error instanceof StageTimeoutError ? 'timeout' : undefined;
+    let nativeDetail: NativeStageFailureDetail | undefined;
+    try {
+      nativeDetail = await invokeCommand<NativeStageFailureDetail | undefined>(
+        'take_onboarding_failure_detail',
+        { stage: id, ...failureScope },
+      );
+    } catch {
+      // Failure-detail telemetry must not affect setup recovery or its copy.
+      console.warn('[onboarding] setup failure detail was unavailable');
+    }
+    return setupFailureTelemetryDetails({
+      stageId: id,
+      errorCategory: timeoutCategory ?? nativeDetail?.errorCategory,
+      failedDependency: nativeDetail?.failedDependency,
+    });
+  }
 
   async function runStage(
     id: StageId,
     runId: number,
     attemptCount: number,
-  ): Promise<StageRunOutcome> {
-    if (!isCurrentRun(runId)) return 'cancelled';
+  ): Promise<StageRunResult> {
+    if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
+    const setupRunId = currentSetupRunId;
+    const failureScope = {
+      setupRunId,
+      attemptCount,
+      flow: onboardingFlow,
+      frontendSessionId: onboardingTelemetry.sessionId,
+    };
     const startedAt = Date.now();
-    recordStep(SETUP_STEP_INDEX, 'started', { component: id, attemptCount });
+    recordStep(SETUP_STEP_INDEX, 'started', {
+      component: id,
+      attemptCount,
+      setupRunId,
+    });
+    // The attempt is under way, so the retry notice gives way to the stage's
+    // own sub-steps.
+    if (setupRetry?.stageId === id) setupRetry = null;
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
-    const result = await invokeStageCommand(id, runId).then(
+    const result = await invokeStageCommand(id, runId, failureScope).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
     );
@@ -844,8 +1187,9 @@
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'cancelled',
+        setupRunId,
       });
-      return 'cancelled';
+      return CANCELLED_STAGE_RUN;
     }
 
     if (result.kind === 'done') {
@@ -855,29 +1199,41 @@
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
+        setupRunId,
       });
-      return 'ok';
+      return { outcome: 'ok' };
     }
     if (result.kind === 'failed') {
       const message = errorMessage(result.err);
-      stages = setStageStatus(stages, id, 'failed', message);
+      // Decide recovery before the status lands: a stage that will try again
+      // must never pass through 'failed', which would count it as settled and
+      // then un-count it, jolting the ring forward and straight back.
+      const recovery = setupStageRecoveryAction({
+        stageId: id,
+        message,
+        retryCount: attemptCount - 1,
+      });
+      stages = setStageStatus(
+        stages,
+        id,
+        recovery.kind === 'retry' ? 'retrying' : 'failed',
+        message,
+      );
       await journalStageFailure(id, message);
+      const failureDetails = await stageFailureTelemetryDetails(id, result.err, failureScope);
+      if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
       recordStep(SETUP_STEP_INDEX, 'failed', {
         component: id,
+        failureStage: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'stage_command_failed',
+        setupRunId,
+        ...failureDetails,
       });
-      return 'failed';
+      return { outcome: 'failed', recovery };
     }
-    return 'cancelled';
-  }
-
-  function stageFailureMessage(id: StageId): string {
-    return (
-      stages.find((stage) => stage.id === id)?.error?.trim() ||
-      'Stage failed with no detail recorded.'
-    );
+    return CANCELLED_STAGE_RUN;
   }
 
   function waitForAutoRetry(ms: number): Promise<void> {
@@ -894,19 +1250,19 @@
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
-        const outcome = await runStage(id, runId, attemptCount);
-        if (outcome === 'cancelled') return;
-        if (outcome === 'ok') break;
+        const result = await runStage(id, runId, attemptCount);
+        if (result.outcome === 'cancelled') return;
+        if (result.outcome === 'ok') break;
 
-        const action = setupStageRecoveryAction({
-          stageId: id,
-          message: stageFailureMessage(id),
-          retryCount: retryCounts.get(id) ?? 0,
-        });
+        const action = result.recovery;
         if (action.kind !== 'retry') break;
 
         retryCounts.set(id, action.nextRetryCount);
-        stages = setStageStatus(stages, id, 'pending');
+        // The stage keeps its place in the bands while it waits — it is still
+        // 'retrying', not 'pending' — and only the sub-status changes. A
+        // backend detail from the attempt that just failed is stale.
+        setupRetry = { stageId: id, attempt: setupRetryAttempt(id, action.nextRetryCount) };
+        stageDetail = null;
         await waitForAutoRetry(action.delayMs);
       }
     }
@@ -914,12 +1270,14 @@
     if (isCurrentRun(runId) && !setupCompleted && allSettled(stages)) {
       setupCompleted = true;
       const result = setupCompletionResult(stages);
-      setupFailures = result.failedStages;
+      const failedStages = normalizeFailedStageIds(result.failedStages.map((stage) => stage.id));
       markSetupStepCompleted();
       await journalInstallComplete();
       setupCompletionMetrics = {
         stageCount: stages.length,
-        failedStageCount: setupFailures.length,
+        failedStageCount: result.failedStages.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
         detectedToolCount: aiTools
           ? [
               aiTools.claude_cli,
@@ -938,8 +1296,10 @@
       void resolveInstallerPersonUid();
       // Consent precedes the optional connector-import step and final handoff.
       advanceTo(CONSENT_STEP_INDEX, 'completed', {
-        failedStageCount: setupFailures.length,
-        outcome: setupFailures.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
+        failedStageCount: result.failedStages.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
+        outcome: result.failedStages.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
       });
     }
   }
@@ -947,6 +1307,8 @@
   interface SetupCompletionMetrics {
     stageCount: number;
     failedStageCount: number;
+    failedStages: StageId[];
+    setupRunId: string;
     detectedToolCount: number;
   }
   let setupCompletionMetrics = $state<SetupCompletionMetrics | null>(null);
@@ -1030,7 +1392,7 @@
         return;
       }
 
-      if (isReprompt) {
+      if (consentOnly) {
         // The stale record is now replaced with a fully versioned one. Record
         // that the re-prompt was answered for this person+version (idempotent
         // with the dismissal guard) and close — there is no ready screen.
@@ -1072,7 +1434,7 @@
    */
   async function finishOffline(): Promise<void> {
     if (consentSubmitting || finishing) return;
-    if (isReprompt) {
+    if (consentOnly) {
       // Reprompt has no ready screen. The answer is cached with provenance and
       // reconciled by the consent repair on reconnect; mark the prompt shown so
       // it does not nag again this version, then close.
@@ -1086,21 +1448,40 @@
   }
 
   async function startSetupRun() {
-    const runId = beginSetupRun();
-    if (installPath) effectiveInstallPath = installPath;
-    await listenForProgress(runId);
-    let startStage: StageId = STAGE_ORDER[0];
-    try {
-      const manifest = await invoke<InstallManifest>('read_install_manifest');
-      effectiveInstallPath = manifest.installPath || effectiveInstallPath;
-      if (manifest.installPath) installPath = manifest.installPath;
-      startStage = resumeStartStageFromManifest(manifest);
-      stages = buildStagesFromManifest(manifest, startStage);
-    } catch {
-      // Missing/corrupt manifests fall back to a fresh run.
+    // A second entry must not rebuild the stage list underneath a LIVE run —
+    // the rebuilt list would drop finished stages and restart the bands. But
+    // a restart has to win: leaving the setup step cancels the run without
+    // waiting for its current stage, so coming back finds the guard still
+    // held by a run that is no longer current. That run is superseded here
+    // instead of being allowed to swallow the restart.
+    if (inFlightRunId !== 0) {
+      if (inFlightRunId === currentRunId && !setupCancelled) return;
+      cancelSetupRun();
     }
-    if (!isCurrentRun(runId)) return;
-    await runSetup(runId, startStage);
+    const runId = beginSetupRun();
+    inFlightRunId = runId;
+    try {
+      if (installPath) effectiveInstallPath = installPath;
+      await listenForProgress(runId);
+      let startStage: StageId = STAGE_ORDER[0];
+      try {
+        const manifest = await invoke<InstallManifest>('read_install_manifest');
+        if (!isCurrentRun(runId)) return;
+        effectiveInstallPath = manifest.installPath || effectiveInstallPath;
+        if (manifest.installPath) installPath = manifest.installPath;
+        startStage = resumeStartStageFromManifest(manifest);
+        stages = buildStagesFromManifest(manifest, startStage);
+      } catch {
+        // Missing/corrupt manifests fall back to a fresh run.
+      }
+      if (!isCurrentRun(runId)) return;
+      await runSetup(runId, startStage);
+    } finally {
+      // Only the run that still owns the guard may release it: a superseded
+      // run finishing late must not clear a newer run's claim. Every exit —
+      // cancel, error, completion, supersession — passes through here.
+      if (inFlightRunId === runId) inFlightRunId = 0;
+    }
   }
 
   function cancelSetupRun() {
@@ -1109,7 +1490,21 @@
     unlistenInstallProgress = null;
     unlistenContentProgress?.();
     unlistenContentProgress = null;
+    // A stage that failed and is waiting on its auto-retry never settles once
+    // its run stops being current, so `allSettled` would stay false forever
+    // and the completion gate would never fire. Put it back to 'pending': the
+    // next run owns it again.
+    stages = resetRetryingStages(stages);
+    setupRetry = null;
     void cancelForegroundWork(currentRunId);
+  }
+
+  /** Any stage left waiting on a retry goes back to 'pending'. */
+  function resetRetryingStages(list: StageState[]): StageState[] {
+    if (!list.some((stage) => stage.status === 'retrying')) return list;
+    return list.map((stage) =>
+      stage.status === 'retrying' ? { ...stage, status: 'pending' as const } : stage,
+    );
   }
 
   async function probeAiTools() {
@@ -1194,11 +1589,13 @@
   }
 
   async function finishWithRecovery(): Promise<boolean> {
-    if (finishing) return false;
+    if (finishing || finishInProgress) return false;
     finishing = true;
+    finishInProgress = true;
     finishError = false;
     try {
       await onfinish?.();
+      onboardingCompleted = true;
       recordStep(currentStep, 'completed', { outcome: 'finished' });
       return true;
     } catch (err) {
@@ -1206,6 +1603,7 @@
       finishError = true;
       return false;
     } finally {
+      finishInProgress = false;
       finishing = false;
     }
   }
@@ -1596,6 +1994,9 @@
     if (next === currentStep) return;
     const previous = currentStep;
     if (exitAction) recordStep(previous, exitAction, exitDetails);
+    if (previous === WELCOME_SIGNIN_STEP_INDEX && next !== WELCOME_SIGNIN_STEP_INDEX) {
+      stopAutomaticContinuationAttempt();
+    }
     // ConnectorImportStep owns its entry so it can record detection outcomes
     // without a duplicate generic entry event.
     if (next !== CONNECTOR_IMPORT_STEP_INDEX) recordStep(next, 'entered');
@@ -1609,6 +2010,9 @@
       cancelSetupRun();
       setupStarted = false;
       stages = buildInitialStages();
+      // The only genuine start-over: the next visit earns its percent again.
+      resetSetupProgressTracker(setupProgressTracker);
+      setupRetry = null;
     }
     if (previous === READY_STEP_INDEX && next !== READY_STEP_INDEX) {
       stopClaudeWatch();
@@ -1757,7 +2161,9 @@
           class:out-right={outgoingGraphicStep === READY_STEP_INDEX && outgoingGraphicDirection === 'right'}
           data-g={READY_STEP_INDEX}
         >
-          {@render BigCheck()}
+          <span data-testid="onboarding-completion-success-indicator" aria-hidden="true">
+            {@render BigCheck()}
+          </span>
         </div>
 
         <div
@@ -1842,26 +2248,28 @@
               A browser window opened for {loadingProvider} sign-in. Complete it there and you'll return here automatically.
             </p>
           {/if}
-          <div class="btns">
-            <button
-              class="btn btn-primary"
-              type="button"
-              disabled={loadingProvider !== null}
-              aria-busy={loadingProvider === 'Google'}
-              onclick={() => handleSignIn('Google')}
-            >
-              Log in with Google
-            </button>
-            <button
-              class="btn btn-secondary"
-              type="button"
-              disabled={loadingProvider !== null}
-              aria-busy={loadingProvider === 'Microsoft'}
-              onclick={() => handleSignIn('Microsoft')}
-            >
-              Log in with Microsoft
-            </button>
-          </div>
+          {#if signInActionsReady}
+            <div class="btns">
+              <button
+                class="btn btn-primary"
+                type="button"
+                disabled={loadingProvider !== null}
+                aria-busy={loadingProvider === 'Google'}
+                onclick={() => handleSignIn('Google')}
+              >
+                Log in with Google
+              </button>
+              <button
+                class="btn btn-secondary"
+                type="button"
+                disabled={loadingProvider !== null}
+                aria-busy={loadingProvider === 'Microsoft'}
+                onclick={() => handleSignIn('Microsoft')}
+              >
+                Log in with Microsoft
+              </button>
+            </div>
+          {/if}
         </section>
 
         <section
@@ -1911,7 +2319,11 @@
           <h2 class="h" id="onboarding-title-setup">Getting your HQ ready</h2>
           <div class="list" aria-label="Setup checklist">
             {#each setupBands as band}
-              <div class:muted={band.status === 'pending'} class="li">
+              <div
+                class:muted={band.status === 'pending'}
+                class="li"
+                data-band-status={band.status}
+              >
                 {#if band.status === 'active'}
                   <span class="st spin" aria-hidden="true"></span>
                 {:else if band.status === 'done'}
@@ -1921,13 +2333,33 @@
                 {/if}
                 <span class="lt">{band.label}</span>
               </div>
+              {#if band.status === 'active' && setupSubStatusModel.text}
+                <div
+                  class="li-sub"
+                  role="status"
+                  aria-live="polite"
+                  data-testid="onboarding-setup-substatus"
+                >
+                  <!-- Keyed so each new sub-step replays the fade-in and the
+                       line visibly changes rather than swapping in place. -->
+                  {#key setupSubStatusModel.text}
+                    <span class="sub-text">{setupSubStatusModel.text}</span>
+                  {/key}
+                  {#if setupSubStatusModel.elapsedLabel}
+                    <span
+                      class="sub-elapsed"
+                      data-testid="onboarding-setup-elapsed"
+                    >{setupSubStatusModel.elapsedLabel}</span>
+                  {/if}
+                </div>
+              {/if}
             {/each}
           </div>
           <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
-               the design). Recovery — retry on stall, skip on hard timeout, transient-
-               failure retries — runs AUTOMATICALLY in the setup engine; any stage that
-               still fails is surfaced on the "HQ is ready" screen's needs-attention note,
-               not here. No percentages, stage counts, staging toggle, or manual controls. -->
+               the design). Recovery runs automatically in the setup engine; a stage that
+               still fails is recorded silently for the setup skill, not surfaced on a
+               needs-attention note. No percentages, stage counts, staging toggle, or
+               manual controls. -->
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>
@@ -1942,9 +2374,8 @@
         >
           <h2 class="h" id="onboarding-title-consent">Help improve HQ?</h2>
           <p class="body">
-            You choose whether HQ collects anonymous usage data. Nothing is decided
-            for you — pick an option to continue. You can change this later in
-            Settings, and either choice sets up HQ the same way.
+            Pick whether HQ collects anonymous usage data. Either choice sets up HQ
+            the same way, and you can change it later in Settings.
           </p>
           <div class="consent-facts">
             <p class="consent-facts-line">
@@ -2106,7 +2537,13 @@
                   ...(event.detectedToolCount === undefined
                     ? {}
                     : { detectedToolCount: event.detectedToolCount }),
+                  ...(event.detectedSourceSet === undefined
+                    ? {}
+                    : { detectedSourceSet: event.detectedSourceSet }),
                   ...(event.outcome === undefined ? {} : { outcome: event.outcome }),
+                  ...(event.errorCategory === undefined
+                    ? {}
+                    : { errorCategory: event.errorCategory }),
                 })}
             />
           {/if}
@@ -2120,161 +2557,175 @@
           aria-labelledby="onboarding-title-ready"
         >
           <h2 class="h" id="onboarding-title-ready">HQ is ready</h2>
-          <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
-          <div
-            class="setup-caution"
-            role="note"
-            data-testid="onboarding-escape"
-            aria-label={readyCaution.title}
-          >
-            <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M10 2.4 18 17H2L10 2.4Z"></path>
-              <path d="M10 7v4.5"></path>
-              <circle cx="10" cy="14.2" r=".7"></circle>
-            </svg>
-            <div class="setup-caution-copy">
-              <strong>{readyCaution.title}</strong>
-              <span>{readyCaution.body}</span>
+          <p class="body">HQ now lives in your menubar and keeps everything in sync. Open HQ Desktop and your setup bot will walk you through the rest.</p>
+          {#if launchEscape}
+            <div
+              class="setup-caution"
+              role="note"
+              data-testid="onboarding-escape"
+              aria-label={launchEscape.title}
+            >
+              <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M10 2.4 18 17H2L10 2.4Z"></path>
+                <path d="M10 7v4.5"></path>
+                <circle cx="10" cy="14.2" r=".7"></circle>
+              </svg>
+              <div class="setup-caution-copy">
+                <strong>{launchEscape.title}</strong>
+                <span>{launchEscape.body}</span>
+              </div>
             </div>
+          {/if}
+          <div class="btns">
+            <button
+              class="btn btn-primary"
+              type="button"
+              data-testid="onboarding-open-desktop"
+              disabled={finishing || (launching !== null && launching !== 'watching')}
+              aria-busy={finishing}
+              onclick={() => void handleFinish()}
+            >
+              {finishing ? 'Opening…' : 'Open HQ Desktop'}
+            </button>
           </div>
-          {#if detectionFailed && !launchEscape}
-            <p class="inline-note" role="status">
-              Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.
-            </p>
-          {/if}
-          {#if claudeWatchExpired}
-            <p class="inline-note" role="status">
-              Claude is taking longer than expected. You can open this HQ folder from Claude manually.
-            </p>
-          {/if}
-          {#if finishError}
-            <div class="finish-action" role="status" data-testid="launcher-finish-error">
-              <span>The tool opened. Finish HQ setup here when you’re ready.</span>
-              <button
-                type="button"
-                onclick={handleFinish}
-                disabled={finishing}
-                aria-busy={finishing}
-              >
-                {finishing ? 'Retrying…' : 'Finish setup'}
-              </button>
-            </div>
-          {/if}
-          {#if manualToolsVisible}
-            <div class="manual-tools" aria-label="Manual setup options">
-              <button
-                type="button"
-                onclick={handleRevealFolder}
-                disabled={revealingFolder}
-                aria-busy={revealingFolder}
-              >
-                {revealingFolder ? 'Revealing…' : 'Reveal folder'}
-              </button>
-              <button
-                type="button"
-                onclick={handleCopyPath}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction === 'path'}
-              >
-                {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
-              </button>
-              <button
-                type="button"
-                onclick={handleCopyCommand}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction === 'command'}
-              >
-                {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
-              </button>
-              <button
-                type="button"
-                onclick={handleCopySetupPrompt}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction === 'setup'}
-              >
-                {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
-              </button>
-              <button
-                type="button"
-                onclick={handleCopyImportPrompt}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction === 'import'}
-              >
-                {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
-              </button>
-            </div>
-            {#if copyFailure}
-              <div class="copy-action" role="status" data-testid="onboarding-copy-error">
-                <span>Clipboard is blocked. Select the path above, or try again.</span>
+          <!-- Advanced: work in your own AI tool instead. Opens with the
+               folder's /setup, exactly as the wizard always did. -->
+          <details class="advanced" data-testid="onboarding-advanced" bind:open={advancedOpen}>
+            <summary>Advanced</summary>
+            <p class="inline-note">Prefer your own AI tool? Open the HQ folder in it and run /setup there.</p>
+            {#if detectionFailed && !launchEscape}
+              <p class="inline-note" role="status">
+                Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.
+              </p>
+            {/if}
+            {#if claudeWatchExpired}
+              <p class="inline-note" role="status">
+                Claude is taking longer than expected. You can open this HQ folder from Claude manually.
+              </p>
+            {/if}
+            {#if finishError}
+              <div class="finish-action" role="status" data-testid="launcher-finish-error">
+                <span>The tool opened. Finish HQ setup here when you’re ready.</span>
                 <button
                   type="button"
-                  onclick={() => void retryCopyAction()}
-                  disabled={copyingAction !== null}
-                  aria-busy={copyingAction !== null}
+                  onclick={handleFinish}
+                  disabled={finishing}
+                  aria-busy={finishing}
                 >
-                  {copyingAction ? 'Retrying…' : 'Try again'}
+                  {finishing ? 'Retrying…' : 'Finish setup'}
                 </button>
               </div>
             {/if}
-          {/if}
-          <div class="btns" data-testid="onboarding-launchers">
-            <!-- `launchSlots` is empty only while detection is still in flight;
-                 once it resolves it always carries Claude Code and Codex, so a
-                 machine with neither installed gets two install links rather
-                 than the old Claude-only dead end. -->
-            {#if launchSlots.length === 0}
-              <button
-                class="btn btn-primary"
-                type="button"
-                data-testid="onboarding-launch-download"
-                disabled={finishing || (launching !== null && launching !== 'watching')}
-                aria-busy={finishing || (launching !== null && launching !== 'watching')}
-                onclick={() => void handleLaunch('download')}
-              >
-                {finishing
-                  ? 'Finishing…'
-                  : launching === 'watching'
-                  ? 'Waiting for Claude…'
-                  : launching === 'download'
-                    ? 'Opening…'
-                    : 'Download Claude'}
-              </button>
-            {:else}
-              {#each launchSlots as slot (slot.kind)}
-                {#if slot.installed}
+            {#if manualToolsVisible}
+              <div class="manual-tools" aria-label="Manual setup options">
+                <button
+                  type="button"
+                  onclick={handleRevealFolder}
+                  disabled={revealingFolder}
+                  aria-busy={revealingFolder}
+                >
+                  {revealingFolder ? 'Revealing…' : 'Reveal folder'}
+                </button>
+                <button
+                  type="button"
+                  onclick={handleCopyPath}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction === 'path'}
+                >
+                  {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
+                </button>
+                <button
+                  type="button"
+                  onclick={handleCopyCommand}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction === 'command'}
+                >
+                  {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
+                </button>
+                <button
+                  type="button"
+                  onclick={handleCopySetupPrompt}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction === 'setup'}
+                >
+                  {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
+                </button>
+                <button
+                  type="button"
+                  onclick={handleCopyImportPrompt}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction === 'import'}
+                >
+                  {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
+                </button>
+              </div>
+              {#if copyFailure}
+                <div class="copy-action" role="status" data-testid="onboarding-copy-error">
+                  <span>Clipboard is blocked. Select the path above, or try again.</span>
                   <button
-                    class="btn {slot.kind === primaryLaunch.kind ? 'btn-primary' : 'btn-secondary'}"
                     type="button"
-                    data-testid="onboarding-launch-{slot.kind}"
-                    disabled={finishing || (launching !== null && launching !== 'watching')}
-                    aria-busy={finishing || launching === slot.kind}
-                    onclick={() => void handleLaunch(slot.kind)}
+                    onclick={() => void retryCopyAction()}
+                    disabled={copyingAction !== null}
+                    aria-busy={copyingAction !== null}
                   >
-                    {finishing && slot.kind === primaryLaunch.kind
-                      ? 'Finishing…'
-                      : launching === slot.kind
-                        ? 'Opening…'
-                        : slot.label}
+                    {copyingAction ? 'Retrying…' : 'Try again'}
                   </button>
-                {:else}
-                  <button
-                    class="btn {noToolInstalled && slot.kind === 'claude'
-                      ? 'btn-primary'
-                      : 'btn-ghost'}"
-                    type="button"
-                    data-testid="onboarding-install-{slot.kind}"
-                    disabled={finishing}
-                    aria-busy={launching === 'watching' && slot.kind === 'claude'}
-                    onclick={() => void handleInstallTool(slot.kind)}
-                  >
-                    {launching === 'watching' && slot.kind === 'claude'
-                      ? 'Waiting for Claude…'
-                      : slot.installLabel}
-                  </button>
-                {/if}
-              {/each}
+                </div>
+              {/if}
             {/if}
-          </div>
+            <div class="btns advanced-launchers" data-testid="onboarding-launchers">
+              <!-- `launchSlots` is empty only while detection is still in flight;
+                   once it resolves it always carries Claude Code and Codex, so a
+                   machine with neither installed gets two install links rather
+                   than the old Claude-only dead end. -->
+              {#if launchSlots.length === 0}
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  data-testid="onboarding-launch-download"
+                  disabled={finishing || (launching !== null && launching !== 'watching')}
+                  aria-busy={finishing || (launching !== null && launching !== 'watching')}
+                  onclick={() => void handleLaunch('download')}
+                >
+                  {launching === 'watching'
+                    ? 'Waiting for Claude…'
+                    : launching === 'download'
+                      ? 'Opening…'
+                      : 'Download Claude'}
+                </button>
+              {:else}
+                {#each launchSlots.filter((slot) => slot.kind !== 'grok') as slot (slot.kind)}
+                  {#if slot.installed}
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="onboarding-launch-{slot.kind}"
+                      disabled={finishing || (launching !== null && launching !== 'watching')}
+                      aria-busy={finishing || launching === slot.kind}
+                      onclick={() => void handleLaunch(slot.kind)}
+                    >
+                      {launching === slot.kind
+                          ? 'Opening…'
+                          : slot.label}
+                    </button>
+                  {:else}
+                    <button
+                      class="btn btn-ghost"
+                      type="button"
+                      data-testid="onboarding-install-{slot.kind}"
+                      disabled={finishing}
+                      aria-busy={launching === 'watching' && slot.kind === 'claude'}
+                      onclick={() => void handleInstallTool(slot.kind)}
+                    >
+                      {launching === 'watching' && slot.kind === 'claude'
+                        ? 'Waiting for Claude…'
+                        : slot.installLabel}
+                    </button>
+                  {/if}
+                {/each}
+              {/if}
+            </div>
+          </details>
         </section>
 
         <section
@@ -2534,7 +2985,8 @@
   .consent-error.offline { border-color:var(--c-field-border); background:var(--c-field-bg); }
   .consent-error-text { margin:0; font-size:12.5px; line-height:17px; color:var(--c-text); }
 
-  .consent-options { margin:14px 0 0; padding:0; border:0; display:flex; flex-direction:column; gap:8px; }
+  /* Side by side so the whole choice fits the card without scrolling. */
+  .consent-options { margin:14px 0 0; padding:0; border:0; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
   .consent-option { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; border:1px solid var(--c-field-border); border-radius:10px; cursor:pointer; transition:border-color .12s, background-color .12s; }
   .consent-option.selected { border-color:var(--check-bg); background:color-mix(in srgb, var(--check-bg) 8%, transparent); }
   .consent-option input { margin-top:2px; width:16px; height:16px; flex-shrink:0; accent-color:var(--check-bg); cursor:pointer; }
@@ -2614,6 +3066,14 @@
   .dotpend { width:14px; height:14px; border-radius:50%; border:1.4px solid var(--check-border); flex-shrink:0; }
   .spin { width:13px; height:13px; border:1.6px solid var(--check-border); border-top-color:var(--c-text); border-radius:50%; animation:sp .8s linear infinite; flex-shrink:0; }
   @keyframes sp { to{transform:rotate(360deg)} }
+  /* Live sub-status under the active band — indented to sit under its label. */
+  .li-sub { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin:-1px 0 2px 24px; color:var(--c-muted); font-size:12px; line-height:16px; }
+  .li-sub .sub-text { animation:subin .28s ease-out; }
+  .li-sub .sub-elapsed { font-variant-numeric:tabular-nums; opacity:.75; }
+  @keyframes subin { from{opacity:0; transform:translateY(2px)} to{opacity:1; transform:none} }
+  @media (prefers-reduced-motion: reduce) {
+    .li-sub .sub-text { animation:none; }
+  }
 
   .logo svg { width:120px; height:auto; display:block; color:#fff; }
   .finder-item { display:flex; flex-direction:column; align-items:center; gap:2px; }
@@ -2637,6 +3097,10 @@
   .bigcheck { width:84px; height:84px; display:block; }
 
   .manual-tools { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+  .advanced { margin-top:14px; font-size:13px; }
+  .advanced > summary { cursor:pointer; width:fit-content; color:var(--c-muted); font-size:12px; }
+  .advanced > summary:hover { color:inherit; }
+  .advanced .advanced-launchers { margin-top:10px; }
   .manual-tools button { appearance:none; border:0.5px solid var(--c-field-border); border-radius:6px; background:var(--c-btn2-bg); color:var(--c-muted); font:inherit; font-size:11.5px; line-height:15px; padding:4px 7px; cursor:pointer; }
   .manual-tools button:hover:not(:disabled) { color:var(--c-text); }
   .manual-tools button:disabled { opacity:.5; cursor:not-allowed; }

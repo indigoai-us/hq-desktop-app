@@ -26,7 +26,6 @@ function readRepo(...parts: string[]): string {
 const readDock = () => readRepo('src-tauri/src/commands/dock.rs');
 const readMain = () => readRepo('src-tauri/src/main.rs');
 const readSettingsRs = () => readRepo('src-tauri/src/commands/settings.rs');
-const readSettingsPage = () => readRepo('src/desktop-alt/pages/SettingsPage.svelte');
 
 describe('Dock icon: on by default, with a Settings opt-out', () => {
   describe('preference plumbing', () => {
@@ -113,12 +112,28 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
   });
 
   describe('Dock click', () => {
-    it('routes Reopen to the desktop window, not the compact popover', () => {
+    it('routes Reopen through the primary surface (desktop window even during setup)', () => {
       const src = readMain();
       expect(src).toMatch(/tauri::RunEvent::Reopen/);
       expect(src).toMatch(/ActivationSource::DockIconClick/);
-      expect(src).toMatch(/tray::show_desktop_window\(_app_handle\)/);
+      // Keep Dock, tray, and second-launch activation on the same dispatcher.
+      expect(src).toMatch(/RunEvent::Reopen[\s\S]{0,1200}?tray::activate_primary_surface\(_app_handle\)/);
+      expect(src).not.toMatch(/RunEvent::Reopen[\s\S]{0,1200}?tray::show_desktop_window\(_app_handle\)/);
       expect(src).not.toMatch(/RunEvent::Reopen[\s\S]{0,900}?show_window_at_tray/);
+    });
+
+    it('opens the setup card at launch whenever HQ is not installed yet, not only on a brand-new machine', () => {
+      const main = readMain();
+      expect(main).toMatch(/commands::lifecycle::launch_should_show_setup_card\(/);
+      const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
+      expect(lifecycle).toMatch(/pub fn launch_should_show_setup_card\(first_run: bool, state: Option<LifecycleState>\) -> bool/);
+      expect(lifecycle).toMatch(/first_run \|\| state\.is_some_and\(lifecycle_keeps_main_window_visible\)/);
+    });
+
+    it('advances the cached lifecycle verdict when setup finishes so the same launch routes to the desktop', () => {
+      const firstRun = readRepo('src-tauri/src/commands/first_run.rs');
+      expect(firstRun).toMatch(/pub fn mark_first_run_complete\(app: AppHandle\)/);
+      expect(firstRun).toMatch(/set_lifecycle_state\([\s\S]*?LifecycleState::SteadyState/);
     });
 
     it('declares DockIconClick as its own activation source mapping to ShowDesktop', () => {
@@ -138,10 +153,12 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       expect(body.slice(0, body.indexOf('\n}\n'))).not.toMatch(/\.hide\(\)/);
     });
 
-    it('falls back to the popover sign-in surface when the desktop gate rejects', () => {
+    it('logs desktop opening failure without replacing it with the popover', () => {
       const src = readRepo('src-tauri/src/tray.rs');
       const body = src.slice(src.indexOf('pub fn show_desktop_window'));
-      expect(body.slice(0, body.indexOf('\n}\n'))).toMatch(/show_popover_window/);
+      const show = body.slice(0, body.indexOf('\n}\n'));
+      expect(show).not.toMatch(/show_popover_window/);
+      expect(show).toContain('desktop activation failed: {e}');
     });
 
     it('ignores has_visible_windows — the always-on-top widget would mask it', () => {
@@ -181,36 +198,6 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       // No `?` and no Result return: the unread path must not fail on a badge.
       expect(src).not.toMatch(/pub fn set_badge<R: tauri::Runtime>\([^)]*\) -> Result/);
       expect(body).toMatch(/set_badge_label failed/);
-    });
-  });
-
-  describe('Settings toggle', () => {
-    it('renders a macOS-only Show in Dock row', () => {
-      const src = readSettingsPage();
-      expect(src).toMatch(/Show in Dock/);
-      expect(src).toMatch(/data-testid="dock-icon-toggle"/);
-      expect(src).toMatch(/\{#if isMacOS\}/);
-    });
-
-    it('hydrates the toggle default-on, matching the Rust resolver', () => {
-      const src = readSettingsPage();
-      expect(src).toMatch(/dockIcon = settings\.dockIcon \?\? true;/);
-      // The pre-hydration $state default must agree, or the row flashes OFF
-      // for a user whose Dock icon is actually showing.
-      expect(src).toMatch(/let dockIcon = \$state\(true\);/);
-    });
-
-    it('persists first, then re-applies live so the change is not deferred to relaunch', () => {
-      const src = readSettingsPage();
-      expect(src).toMatch(/async function applyDockIcon/);
-      expect(src).toMatch(/saveSettings\(\{ dockIcon \}\)/);
-      expect(src).toMatch(/invoke\('apply_dock_icon'\)/);
-    });
-
-    it('reverts the optimistic checkbox when the save fails', () => {
-      const src = readSettingsPage();
-      expect(src).toMatch(/const previous = !dockIcon;/);
-      expect(src).toMatch(/dockIcon = previous;/);
     });
   });
 });

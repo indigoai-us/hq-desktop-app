@@ -203,6 +203,52 @@ pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Where the Claude desktop app keeps the Claude Code CLI it manages.
+///
+/// Claude.app (`com.anthropic.claudefordesktop`) does NOT put a `claude`
+/// binary inside its bundle or on PATH. Its Code tab downloads a versioned,
+/// verified copy of Claude Code to
+/// `~/Library/Application Support/Claude/claude-code/<version>/claude.app/Contents/MacOS/claude`
+/// and writes a `.verified` marker beside it once the download checks out.
+/// Verified on a fresh macOS 15.7 machine with Claude.app 1.49585 (Claude Code
+/// 2.1.260): that binary answers `--version` and shares the desktop app's
+/// sign-in, so a machine with the desktop app has a full, authenticated CLI
+/// even when `command -v claude` finds nothing. Prefer the newest verified
+/// version so the CLI tracks desktop updates.
+#[cfg(target_os = "macos")]
+pub fn bundled_claude_bin() -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    bundled_claude_bin_in(&home.join("Library/Application Support/Claude/claude-code"))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn bundled_claude_bin() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Newest verified Claude Code binary under a desktop-managed `claude-code`
+/// directory. Versions sort numerically (`2.1.260` > `2.1.9`); unverified or
+/// half-downloaded versions are skipped so we never spawn a torn binary.
+pub(crate) fn bundled_claude_bin_in(managed_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(managed_dir).ok()?;
+    let mut candidates: Vec<(Vec<u64>, std::path::PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let dir = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let version: Vec<u64> = name
+                .split('.')
+                .map(|part| part.parse::<u64>().ok())
+                .collect::<Option<Vec<u64>>>()?;
+            let binary = dir.join("claude.app/Contents/MacOS/claude");
+            (dir.join(".verified").is_file() && binary.is_file()).then_some((version, binary))
+        })
+        .collect();
+    candidates.sort();
+    candidates.pop().map(|(_, binary)| binary)
+}
+
 /// The new-thread deep link that pre-fills the composer. The app parses the
 /// `prompt` parameter (verified against its persisted state); `cwd` on this
 /// URL is IGNORED by current builds — the workspace only opens via
@@ -644,5 +690,56 @@ mod codex_workspace_tests {
             codex_thread_url("hello-world_1.2~x"),
             "codex://threads/new?prompt=hello-world_1.2~x"
         );
+    }
+}
+
+#[cfg(test)]
+mod bundled_claude_tests {
+    use super::bundled_claude_bin_in;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn install(managed: &std::path::Path, version: &str, verified: bool) {
+        let bin_dir = managed.join(version).join("claude.app/Contents/MacOS");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("claude"), b"#!/bin/sh\n").unwrap();
+        if verified {
+            fs::write(managed.join(version).join(".verified"), b"sha").unwrap();
+        }
+    }
+
+    /// Regression: a fresh Mac with only Claude.app installed reported
+    /// "Claude Code is not installed" in Sessions, because the CLI the desktop
+    /// app manages lives under Application Support, not on PATH.
+    #[test]
+    fn finds_the_desktop_managed_claude_code_cli() {
+        let dir = tempdir().unwrap();
+        install(dir.path(), "2.1.260", true);
+        assert_eq!(
+            bundled_claude_bin_in(dir.path()),
+            Some(dir.path().join("2.1.260/claude.app/Contents/MacOS/claude"))
+        );
+    }
+
+    #[test]
+    fn prefers_the_newest_verified_version_numerically() {
+        let dir = tempdir().unwrap();
+        install(dir.path(), "2.1.9", true);
+        install(dir.path(), "2.1.260", true);
+        install(dir.path(), "2.2.0", false);
+        assert_eq!(
+            bundled_claude_bin_in(dir.path()),
+            Some(dir.path().join("2.1.260/claude.app/Contents/MacOS/claude"))
+        );
+    }
+
+    #[test]
+    fn ignores_unverified_or_partial_downloads_and_missing_dirs() {
+        let dir = tempdir().unwrap();
+        install(dir.path(), "2.1.260", false);
+        fs::create_dir_all(dir.path().join("2.1.261")).unwrap();
+        fs::write(dir.path().join("2.1.261/.verified"), b"sha").unwrap();
+        assert_eq!(bundled_claude_bin_in(dir.path()), None);
+        assert_eq!(bundled_claude_bin_in(&dir.path().join("absent")), None);
     }
 }

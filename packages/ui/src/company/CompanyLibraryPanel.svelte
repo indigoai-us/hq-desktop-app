@@ -58,7 +58,7 @@
   );
   const summary = $derived(
     forcedFilter === "workers"
-      ? "Company-scoped agents and specialist roles"
+      ? "Company-scoped workers and specialist roles"
       : forcedFilter === "skills"
         ? "Company-scoped workflows and operating knowledge"
         : "Company-scoped workers and skills",

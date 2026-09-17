@@ -49,6 +49,62 @@ function harnessScenario(): string | null {
   return null;
 }
 
+// `?scenario=outpost-sessions` — two sessions reported by the user's outpost:
+// one under Remote Control (opens on claude.ai/code) and one plain session on a
+// second Claude account.
+function harnessOutpostSessions(): unknown[] {
+  if (harnessScenario() !== 'outpost-sessions') return [];
+  const now = Date.now();
+  return [
+    {
+      id: '0c4f3a52-9d1e-4b7a-8f0e-2a6d5c1b9e77',
+      tool: 'claude',
+      origin: 'outpost',
+      title: 'open PRs',
+      remoteControlSessionId: 'cse_01Ws49UWqv58e8poUSC6E4tu',
+      cwd: '/home/ec2-user/hq',
+      project: 'hq',
+      company: 'indigo',
+      model: 'claude-opus-5',
+      status: 'running',
+      startedAt: new Date(now - 25 * 60_000).toISOString(),
+      lastActivityAt: new Date(now - 20_000).toISOString(),
+      source: '/home/ec2-user/.claude/projects/-home-ec2-user-hq/0c4f3a52-9d1e-4b7a-8f0e-2a6d5c1b9e77.jsonl',
+    },
+    {
+      id: '7b2e91d4-3c5a-4f18-a6e2-9d0c4b7f1a35',
+      tool: 'claude',
+      origin: 'outpost',
+      title: 'nightly backfill',
+      cwd: '/home/ec2-user/hq/repos/private/hq-cloud',
+      project: 'hq-cloud',
+      company: 'indigo',
+      model: 'claude-opus-5',
+      status: 'awaiting_input',
+      startedAt: new Date(now - 3 * 3_600_000).toISOString(),
+      lastActivityAt: new Date(now - 4 * 60_000).toISOString(),
+      source:
+        '/home/ec2-user/.claude-accounts/account-2/.claude/projects/-home-ec2-user-hq-repos-private-hq-cloud/7b2e91d4-3c5a-4f18-a6e2-9d0c4b7f1a35.jsonl',
+    },
+  ];
+}
+
+function onboardingContinuationVariant(): 'control' | 'continuation' {
+  if (typeof window === 'undefined') return 'control';
+  const params = new URLSearchParams(window.location.search);
+  return params.get('view') === 'onboarding' && params.get('continuation') === 'on'
+    ? 'continuation'
+    : 'control';
+}
+
+function isOnboardingCaptureScenario(): boolean {
+  const scenario = harnessScenario();
+  return (
+    scenario === 'onboarding-capture-completion-clean' ||
+    scenario === 'onboarding-capture-completion-failed-required-stage'
+  );
+}
+
 const HARNESS_UPDATE = {
   version: '0.10.36-beta.1',
   body: 'Desktop surface repairs and updater recovery.',
@@ -935,6 +991,7 @@ This final paragraph verifies spacing after a thematic break.
         lastActivityAt: new Date(Date.now() - 2 * 60_000).toISOString(),
         source: 'claude-jsonl',
       },
+      ...harnessOutpostSessions(),
     ],
     history: [],
     outpost: null,
@@ -1133,7 +1190,58 @@ This final paragraph verifies spacing after a thematic break.
   notification_permission_state: () =>
     harnessScenario() === 'permission-denied' ? 'denied' : 'prompt',
   notification_request_permission: () => 'granted',
-  resolve_hq_path: () => '/Users/corey/Documents/HQ',
+  // Screenshot capture fixtures exercise the real wizard setup flow with
+  // placeholder-only data. The failure fixture rejects one required command;
+  // it exists only in the browser design harness, never in the desktop app.
+  resolve_hq_path: () =>
+    isOnboardingCaptureScenario() ? '/Users/Placeholder/HQ' : '/Users/corey/Documents/HQ',
+  read_install_manifest: () =>
+    isOnboardingCaptureScenario()
+      ? {
+          schemaVersion: 1,
+          installerVersion: 'preview',
+          installPath: '/Users/Placeholder/HQ',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          completedAt: null,
+          steps: {},
+        }
+      : null,
+  install_deps: () => {
+    if (
+      harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
+    ) {
+      throw new Error('Preview required dependency stage failed');
+    }
+    return null;
+  },
+  // Hold the final journal write only for capture so a settled real checklist
+  // remains visible long enough for a browser screenshot.
+  record_install_complete: () =>
+    harnessScenario() === 'onboarding-capture-completion-clean' ||
+    harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
+      ? new Promise<never>(() => {})
+      : null,
+  // The first-run sign-in preview supports both real rollout arms. The
+  // continuation arm uses display-only fixture text rather than an address so
+  // screenshots can demonstrate the account affordance without exposing an
+  // email-shaped value.
+  desktop_continuation_context: () => ({
+    installAttemptId: 'preview-installation',
+    appVersion: '0.10.229',
+    apiBase: 'https://api.preview.invalid',
+  }),
+  desktop_continuation_config: () => ({
+    protocolVersion: 1,
+    minimumDesktopVersion: '0.10.229',
+    variant: onboardingContinuationVariant(),
+    rolloutPercent: 100,
+  }),
+  desktop_continuation_may_start: () => null,
+  desktop_continuation_start: () => ({ attemptId: 'preview-continuation-attempt' }),
+  desktop_continuation_await_identity: () => ({ email: 'your browser account' }),
+  desktop_continuation_confirm: () => null,
+  desktop_continuation_cancel: () => null,
+  desktop_continuation_deliver: () => 200,
   // Scenarios let the Ready screen be inspected in every machine state the
   // real detector can produce: `?scenario=tools-claude-only` (the fresh-VM
   // case that has only Claude Code), `?scenario=tools-codex-only`, and
@@ -1430,6 +1538,8 @@ This final paragraph verifies spacing after a thematic break.
     claudeLoggedIn: true,
     codexAvailable: true,
     codexLoggedIn: true,
+    grokAvailable: true,
+    grokLoggedIn: true,
     companies: [
       { slug: 'indigo', displayName: 'Indigo', cloudUid: 'cmp_indigo' },
       { slug: 'ridge', displayName: 'Ridge' },
@@ -1493,9 +1603,17 @@ This final paragraph verifies spacing after a thematic break.
       departments: [{ groupId: 'grp_product', name: 'Product', skills: [{ skillUid: 'skl_launch', name: 'Review launch', tags: ['launch', 'review'] }] }],
     } }),
   }),
+  agent_session_context: (args) => ({
+    sourceSessionId: args?.sessionId === SESSION_ID ? 'session-event-sync' : null,
+    sourceTitle: 'Original planning session',
+    startedBy: new URLSearchParams(window.location.search).has('loadingTest') ? (harnessPersona()?.whoami.email ?? 'ada@getindigo.ai') : 'alex@example.test',
+    history: { before: null, events: args?.sessionId === SESSION_ID ? [{ receivedAtMs: AGENT_SESSION_T0 - 60000, event: { kind: 'userMessage', text: 'Inherited planning context', imageCount: 0 } }] : [] },
+  }),
+  agent_session_history_page: () => ({ before: null, events: [{ receivedAtMs: AGENT_SESSION_T0 - 60000, event: { kind: 'userMessage', text: 'Original planning session history', imageCount: 0 } }] }),
   agent_session_list: () => [
     {
       sessionId: SESSION_ID,
+      requestedModel: null,
       tool: 'claude',
       phase: 'working',
       company: 'indigo',
@@ -1530,6 +1648,20 @@ This final paragraph verifies spacing after a thematic break.
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (typeof window !== 'undefined') {
+    const counts = ((window as Window & { __hqInvokeCounts?: Record<string, number> })
+      .__hqInvokeCounts ??= {});
+    counts[cmd] = (counts[cmd] ?? 0) + 1;
+  }
+  if (new URLSearchParams(window.location.search).has('loadingTest')) {
+    if (cmd === 'session_project_links') await new Promise(resolve => setTimeout(resolve, 1200));
+    if (cmd === 'hq_pro_fetch' && args?.url === '/v1/profile') {
+      const state = window as unknown as { profileReads?: number };
+      state.profileReads = (state.profileReads ?? 0) + 1;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return { status: 200, body: JSON.stringify({ profile: { displayName: 'Preview Person', avatarUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6uT8AAAAASUVORK5CYII=' } }) } as T;
+    }
+  }
   const handler = handlers[cmd];
   if (handler) return handler(args) as T;
   // Unknown command: log once and resolve null so mount paths don't throw.

@@ -12,6 +12,7 @@ export type CompanyTab =
   | "workers"
   | "knowledge"
   | "team"
+  | "office"
   | "deployments"
   | "secrets"
   | "settings";
@@ -31,6 +32,9 @@ const COMPANY_TABS: readonly CompanyTab[] = [
   "workers",
   "knowledge",
   "team",
+  // US-018: native-calling office hours. Hosts gate visibility on
+  // `capabilities.nativeCalls`; the vocabulary itself is host-independent.
+  "office",
   "deployments",
   "secrets",
   "settings",

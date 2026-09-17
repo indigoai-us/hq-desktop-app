@@ -26,6 +26,7 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { WEB_CAPABILITIES, type Capability } from "../capabilities.js";
+import { createUnsupportedCallsApi } from "../calls/api.js";
 import {
   parseShelfViewer,
   parseSkillPath,
@@ -55,6 +56,9 @@ export const WEB_PATHS = {
   channelDirectory: "/v1/notify/channels",
   contacts: "/v1/notify/contacts",
   dmRequests: "/v1/notify/connections/requests",
+  /** POST body `{ pairKey }` — accept / decline / block a pending request. */
+  dmRequestRespond: (action: "accept" | "decline" | "block") =>
+    `/v1/notify/connections/${action}`,
   markChannelRead: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/read`,
   /** GET two-way DM history. */
@@ -108,6 +112,8 @@ export const WEB_PATHS = {
   dmThreads: "/v1/notify/dm-threads",
   sharedWithMe: "/v1/files/shared-with-me",
   sharedWithMeAck: "/v1/files/shared-with-me/ack",
+  /** Cross-session new-file activity. No ack endpoint — read-only history. */
+  fileHistory: "/v1/notify/file-history",
   reactions: "/v1/notify/reactions",
 
   // Real hq-pro meetings/calendar surface (same as V1 desktop meetings.rs).
@@ -512,6 +518,14 @@ export class WebPlatformAdapter implements PlatformAdapter {
 
   // -- Cloud-available groups ----------------------------------------------
 
+  /**
+   * Native calling is a desktop-host capability (US-014). The browser build
+   * says so explicitly on every method — code "CALLS_UNSUPPORTED_HOST" — so
+   * the shared shell renders the unsupported state instead of exposing a
+   * control that appears to work.
+   */
+  readonly calls: PlatformAdapter["calls"] = createUnsupportedCallsApi();
+
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.get(WEB_PATHS.whoami),
     isAdmin: () => this.get(WEB_PATHS.isAdmin),
@@ -585,7 +599,23 @@ export class WebPlatformAdapter implements PlatformAdapter {
           : WEB_PATHS.contacts,
       );
     },
-    listDmRequests: () => this.get(WEB_PATHS.dmRequests),
+    // The route answers `{ requests: [...] }`. Unwrap here so the web and
+    // Tauri adapters return the same bare array — the chat bridge wraps it
+    // once more into `{ requests }`, and a double-wrapped envelope read as
+    // "no pending requests" forever.
+    listDmRequests: async () => {
+      const result = await this.get<unknown>(WEB_PATHS.dmRequests);
+      if (!result.ok) return result;
+      return ok(unwrapNamedArray(result.value, ["requests"]));
+    },
+    respondDmRequest: async ({ pairKey, action }) => {
+      const key = pairKey.trim();
+      if (!key) return failure("bad-argument", "pairKey required");
+      if (action !== "accept" && action !== "decline" && action !== "block") {
+        return failure("bad-argument", "unsupported request action");
+      }
+      return this.post(WEB_PATHS.dmRequestRespond(action), { pairKey: key });
+    },
     markChannelRead: (id) => this.post(WEB_PATHS.markChannelRead(id), {}),
     markDmThreadRead: async (uid) => {
       const withPersonUid = uid.trim();
@@ -658,6 +688,31 @@ export class WebPlatformAdapter implements PlatformAdapter {
           ? { attachments: extras.attachments }
           : {}),
       }),
+    // Mirrors the Rust `build_compose_payload` contract: exactly one
+    // recipient key travels (personUid wins when both are given), and the
+    // server's 202 `{ state: "connection_requested" }` is folded into the
+    // `connectionRequested` discriminant the UI already understands.
+    sendDmToEmail: async ({ toEmail, toPersonUid, body }) => {
+      const personUid = toPersonUid?.trim() ?? "";
+      const email = toEmail?.trim() ?? "";
+      const text = body.trim();
+      if (!text) return failure("invalid", "Message body must not be empty");
+      if (!personUid && !email) {
+        return failure("invalid", "A recipient (email or personUid) is required");
+      }
+      const result = await this.post<Json>(WEB_PATHS.dmSend, {
+        ...(personUid ? { toPersonUid: personUid } : { toEmail: email }),
+        body: text,
+      });
+      if (!result.ok) return result;
+      const rec = asRecord(result.value) ?? {};
+      const state =
+        rec.state === "connection_requested" ||
+        rec.state === "connectionRequested"
+          ? "connectionRequested"
+          : "delivered";
+      return ok({ ...rec, state } as Json);
+    },
     fetchReplyThread: async (args) => {
       const invalid = validateFetchReplyThread(args);
       if (invalid) return invalid;
@@ -720,6 +775,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
         opts && Object.keys(opts).length > 0
           ? `${WEB_PATHS.sharedWithMe}?${new URLSearchParams(opts as Record<string, string>).toString()}`
           : WEB_PATHS.sharedWithMe,
+      ),
+    fetchFileHistory: (opts) =>
+      this.get(
+        opts && Object.keys(opts).length > 0
+          ? `${WEB_PATHS.fileHistory}?${new URLSearchParams(opts as Record<string, string>).toString()}`
+          : WEB_PATHS.fileHistory,
       ),
     ackSharedWithMe: (eventIds) =>
       this.post(WEB_PATHS.sharedWithMeAck, { eventIds }),
@@ -1045,7 +1106,6 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly sessions: PlatformAdapter["sessions"] = {
-    listAgentSessions: async () => DESKTOP_ONLY,
   };
 
   readonly settings: PlatformAdapter["settings"] = {
@@ -1065,6 +1125,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
     createProjectStory: (projectId, companyUid, story) => this.post(
       `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
       { ...story, companyUid: companyUid.trim() },
+    ),
+    putProjectView: (projectId, companyUid, view) => this.request(
+      "PUT",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}`,
+      { ...(view as object), companyUid: companyUid.trim() },
     ),
     readLocalSnapshot: async () => DESKTOP_ONLY,
     getProjectView: (projectId, companyUid) => {

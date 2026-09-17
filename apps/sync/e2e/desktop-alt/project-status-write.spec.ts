@@ -11,16 +11,19 @@ import { readRepoFile } from './harness';
  */
 
 describe('desktop-alt project status write — store contract (US-010)', () => {
-  const store = readRepoFile('src/desktop-alt/lib/projects-store.svelte.ts');
-  const adapter = readRepoFile('src/desktop-alt/lib/local-projects.ts');
+  const store = readRepoFile('../../packages/ui/src/projects/projects-store.svelte.ts');
+  const adapter = readRepoFile('../../packages/platform/src/tauri/sync-adapter.ts');
 
   it('the store invokes the registered Rust write commands', () => {
     // The adapter is the single place that calls the Tauri write commands, with
     // the camelCased args Tauri v2 exposes.
     expect(adapter).toContain(
-      "invoke('set_local_project_status', { boardPath, projectId, prdPath, status })",
+      // The raw Tauri call moved behind the platform adapter's projects seam
+      // so the same store can drive the web build; the command name and its
+      // payload shape are what must not drift.
+      "call('set_local_project_status', {",
     );
-    expect(adapter).toContain("invoke('set_local_story_passes', { prdPath, storyId, passes })");
+    expect(adapter).toContain("call('set_local_story_passes', { prdPath: path, storyId, passes })");
     // The store routes status writes through that adapter.
     expect(store).toContain('saveLocalProjectStatus');
   });
@@ -55,18 +58,18 @@ describe('desktop-alt project status write — store contract (US-010)', () => {
 });
 
 describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', () => {
-  const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
+  const detail = readRepoFile('../../packages/ui/src/projects/ProjectDetailView.svelte');
   // The detail view's status writes are hosted by the per-company board panel
   // (US-011) now that the top-level BoardPage is gone.
-  const board = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
-  const goals = readRepoFile('src/desktop-alt/pages/CompanyGoalsPage.svelte');
+  const board = readRepoFile('../../packages/ui/src/company/CompanyBoardPanel.svelte');
+  const goals = readRepoFile('../../packages/ui/src/projects/CompanyGoalsPage.svelte');
 
   it('selecting a status calls the store write through an onclick handler', () => {
     // The dropdown options now call selectStatus (was a no-op menu-close in 009).
     expect(detail).toContain('onclick={() => selectStatus(status)}');
     expect(detail).toContain('async function selectStatus');
-    expect(detail).toContain(
-      "import { projectsStore, setProjectStatus } from '../lib/projects-store.svelte'",
+    expect(detail).toMatch(
+      /import \{ projectsStore, setProjectStatus \} from ['"]\.\/projects-store\.svelte\.js['"]/,
     );
     expect(detail).toContain('await setProjectStatus(');
   });
@@ -93,8 +96,9 @@ describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', 
   });
 
   it('uses the same composite identity on the Goals linked-project surface', () => {
-    expect(goals).toContain(
-      'function onProjectStatusChange(changedIdentity: string, status: string)',
+    expect(goals).toMatch(
+      // prettier wraps the signature across lines in @hq/ui
+      /function onProjectStatusChange\(\s*changedIdentity: string,\s*status: string,?\s*\)/,
     );
     expect(goals).toContain(
       'selected = withProjectStatus(selected, changedIdentity, status)',

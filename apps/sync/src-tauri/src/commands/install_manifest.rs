@@ -442,6 +442,29 @@ mod tests {
     }
 
     #[test]
+    fn completion_stamp_preserves_failed_stage_journal() {
+        with_home(|_home| {
+            record_step_start("deps".to_string()).unwrap();
+            let failed = record_step_failure(
+                "deps".to_string(),
+                "dependency installation failed".to_string(),
+            )
+            .unwrap();
+            let completed = record_install_complete().unwrap();
+
+            assert!(completed.completed_at.is_some());
+            assert_eq!(completed.steps["deps"].status, ItemStatus::Failed);
+            assert_eq!(
+                completed.steps["deps"].error.as_deref(),
+                Some("dependency installation failed")
+            );
+            assert_eq!(completed.steps["deps"].started_at, failed.steps["deps"].started_at);
+            assert_eq!(completed.steps["deps"].completed_at, failed.steps["deps"].completed_at);
+            assert_eq!(completed.failures, failed.failures);
+        });
+    }
+
+    #[test]
     fn resume_start_selects_first_incomplete_stage() {
         let mut manifest = empty_manifest("/tmp/HQ".to_string(), "test".to_string());
         manifest.steps.insert(

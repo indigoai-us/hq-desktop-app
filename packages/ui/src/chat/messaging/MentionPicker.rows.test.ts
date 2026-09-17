@@ -59,7 +59,7 @@ describe("MentionPicker rows", () => {
       },
     ]);
     expect(rows(el)).toEqual([
-      { name: "Izzy", pill: "Indigo", sub: "Agent", aria: "Izzy" },
+      { name: "Izzy", pill: "Indigo", sub: "Bot", aria: "Izzy" },
     ]);
     expect(el.textContent).not.toContain("906VYS");
   });
@@ -73,7 +73,7 @@ describe("MentionPicker rows", () => {
       },
     ]);
     expect(rows(el)).toEqual([
-      { name: "Izzy", pill: null, sub: "Agent", aria: "Izzy" },
+      { name: "Izzy", pill: null, sub: "Bot", aria: "Izzy" },
     ]);
     expect(el.textContent).not.toContain("906VYS");
   });

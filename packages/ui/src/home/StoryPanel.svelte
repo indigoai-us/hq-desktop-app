@@ -22,7 +22,7 @@
     type Project,
     type Story,
   } from "../projects/projects-model.js";
-  import { relativeActivity } from "../sessions/sessions.js";
+  import { relativeActivity } from "../common/relative-activity.js";
   import { createStoryMutationGuard } from "./story-mutation-guard.js";
   import LabelChip from "../common/LabelChip.svelte";
   import OpenFileInClaudeCode from "../files/OpenFileInClaudeCode.svelte";
@@ -342,7 +342,7 @@
         <section
           class="live-monitor"
           data-testid="task-agent-activity"
-          aria-label="Agent activity"
+          aria-label="Bot activity"
         >
           <div class="live-run-head">
             <span class="live-run-phase">
@@ -385,7 +385,7 @@
           class="section agent-empty"
           data-testid="task-agent-activity-empty"
         >
-          <h3>Agent activity</h3>
+          <h3>Bot activity</h3>
           <p>No active run</p>
         </section>
       {/if}

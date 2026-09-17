@@ -27,6 +27,9 @@ describe("macOS bundle name and LaunchAgent label stay stable", () => {
     );
     expect(launchagent).toContain('pub const PRODUCT_BUNDLE_NAME: &str = "HQ.app";');
     expect(launchagent).toContain('pub const LEGACY_BUNDLE_NAME: &str = "HQ Sync.app";');
+    expect(launchagent).toContain(
+      'pub const LAUNCH_AGENT_RELAUNCH_ARG: &str = "--from-launch-agent";',
+    );
 
     expect(`${tauri.productName}.app`).toBe("HQ.app");
     expect(tauri.identifier).toBe("ai.indigo.hq-sync-menubar");

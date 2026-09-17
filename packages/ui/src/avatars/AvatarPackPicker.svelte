@@ -3,6 +3,7 @@
    * Grid picker of avatar packs. Ghost layout: search, pack headings, a
    * 4-column swatch grid, keyboard movement, Save.
    */
+  import { untrack } from "svelte";
   import { resolvePackItemSrc } from "./parse-pack.js";
   import { paintableAvatarSrc } from "./csp-image-src.js";
   import {
@@ -24,6 +25,20 @@
     saving?: boolean;
     error?: string | null;
     onsave?: (selection: AvatarSelection) => void | Promise<void>;
+    /**
+     * Live selection changes (create-bot flow: the pick is saved after the
+     * bot exists, so the picker reports instead of saving). Receives the
+     * resolved tile src alongside the selection for previews.
+     */
+    onchange?: (selection: AvatarSelection, src: string | null) => void;
+    /**
+     * The pick the host already holds. Read once, when the picker opens, so a
+     * picker reopened (or remounted on a step change) shows the avatar the
+     * person chose rather than snapping back to the generated mark.
+     */
+    selected?: AvatarSelection | null;
+    /** Hide the Save button (the host owns the commit). */
+    hideSave?: boolean;
   }
 
   let {
@@ -34,13 +49,17 @@
     saving = false,
     error = null,
     onsave,
+    onchange,
+    selected = null,
+    hideSave = false,
   }: Props = $props();
 
   let query = $state("");
   let remotePacks = $state<AvatarPack[] | null>(null);
   let loadError = $state<string | null>(null);
   let loadingRemote = $state(false);
-  let selection = $state<AvatarSelection>({ kind: "generated" });
+  // Seeded once from `selected`; the picker owns it from there on.
+  let selection = $state<AvatarSelection>(untrack(() => selected) ?? { kind: "generated" });
   let cursor = $state(0);
   let broken = $state(new Set<string>());
 
@@ -103,12 +122,14 @@
 
   function selectGenerated(): void {
     selection = { kind: "generated" };
+    onchange?.(selection, null);
   }
 
   function selectRow(row: FlatPickerRow): void {
     selection = { kind: "item", packId: row.packId, itemId: row.itemId };
     const index = rows.findIndex((entry) => entry.key === row.key);
     if (index >= 0) cursor = index;
+    onchange?.(selection, row.item.fullUrl ?? row.src ?? null);
   }
 
   function onGridKeydown(event: KeyboardEvent): void {
@@ -204,7 +225,7 @@
               {@const src = resolvePackItemSrc(group.pack, item)}
               {@const tileSrc = paintableAvatarSrc(src)}
               {@const key = `${group.pack.id}:${item.id}`}
-              {@const selected =
+              {@const isSelected =
                 selection.kind === "item" &&
                 selection.packId === group.pack.id &&
                 selection.itemId === item.id}
@@ -213,10 +234,10 @@
               <button
                 type="button"
                 class="sw"
-                class:on={selected}
+                class:on={isSelected}
                 class:focus={focused}
                 role="option"
-                aria-selected={selected}
+                aria-selected={isSelected}
                 aria-label={item.name}
                 data-testid="avatar-pack-item"
                 data-pack={group.pack.id}
@@ -257,15 +278,17 @@
     <p class="err" role="alert" data-testid="avatar-pack-error">{error}</p>
   {/if}
 
-  <button
-    type="button"
-    class="save"
-    data-testid="avatar-pack-save"
-    disabled={saving || loading}
-    onclick={() => void save()}
-  >
-    {saving ? "Saving…" : "Save"}
-  </button>
+  {#if !hideSave}
+    <button
+      type="button"
+      class="save"
+      data-testid="avatar-pack-save"
+      disabled={saving || loading}
+      onclick={() => void save()}
+    >
+      {saving ? "Saving…" : "Save"}
+    </button>
+  {/if}
 </div>
 
 <style>

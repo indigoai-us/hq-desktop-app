@@ -127,7 +127,92 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// class. The ledger does throw on a two-real-area duplicate, but as a plain
 /// `Error` carrying an `area-ledger:` message, so it lands in the generic
 /// bucket exactly as it did before and adds no identity.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.26";
+///
+/// The `~6.16.26` -> `~6.16.33` bump (the journal fingerprint write baseline,
+/// hq-cloud#513) was re-derived from both hq-cloud trees. The 52 distinct
+/// `this.name` identities remain 52 — matching the prior derivation — and the
+/// three `readonly name` identities (`InvalidSignalTypeError`,
+/// `InvalidSourceChannelError`, and `SignalNotFoundError`) also remain, for 55
+/// distinct identities across both declarations at each tag. There is no
+/// identity delta, and `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains
+/// (`error`, `auth-error`). The seven releases touch 43 files in aggregate,
+/// including journal, state-store, watcher, conflict, manifest, and ignore
+/// code; the #513 release itself changes only `src/journal.ts`, its baseline
+/// test, the package version, and its design note. No new vocabulary arm is
+/// needed, but the source-version marker moves with the verified runner pin.
+///
+/// The `~6.16.33` -> `~6.16.34` bump (terminal per-company cross-tenant push
+/// denial, hq-cloud#514) was re-derived from both hq-cloud trees. The
+/// `this.name` identities rise 52 -> 53 because
+/// `PushScopeForbiddenError` is new in `src/sync/push-transport.ts`; the three
+/// `readonly name` identities remain, so the total across both declarations is
+/// 55 -> 56. `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). The new error does not reach the runner event/error-identity
+/// surface: `PushEventEmitter` catches it, forbids that realtime company scope,
+/// and calls `onError` once; the event-sync callback logs `err.message` rather
+/// than serializing the error. The release touches eight files — the packed
+/// journal design note and package version, `journal-row-store` and its test,
+/// `push-transport` and its test, plus `watcher` and its test — so no new
+/// desktop vocabulary arm is needed, but the source-version marker moves with
+/// the verified runner pin.
+///
+/// The `~6.16.34` -> `~6.16.35` bump (packed `JournalStore` rows and frozen
+/// public-boundary rows, hq-cloud#516/#517) was re-derived from both hq-cloud
+/// trees: all 56 identities remain at each tag, with no identity-set diff, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). The release touches 20 files for journal representation,
+/// public-row freezing, and related sync-runner memory behavior; it adds no
+/// runner event or error-emission change. No new vocabulary arm is needed, but
+/// the source-version marker moves with the verified runner pin.
+///
+/// The `~6.16.35` -> `~6.16.36` bump (streaming v3 snapshot-journal decoding,
+/// hq-cloud#529, and the reader-only HQSNAP4 snapshot format, hq-cloud#531)
+/// was re-derived from both hq-cloud trees: all 56 identities remain at each
+/// tag, with no identity-set diff, and `src/bin/sync-runner-events.ts`
+/// `ERROR_TYPES` remains (`error`, `auth-error`). HQSNAP4 validation adds new
+/// plain `Error` messages — for example, `HQSNAP4 payload has an invalid byte
+/// length` — rather than a named runner-error identity; if surfaced, they use
+/// the existing generic `error` event type. No new vocabulary arm is needed,
+/// but the source-version marker moves with the verified runner pin.
+///
+/// The `~6.16.36` -> `~6.16.38` bump (area-journal clone removal,
+/// manifest-build memory reduction, reporter upgrade, HQSNAP4 assertion
+/// streaming, and session-host modules, hq-cloud#537/#538/#539/#540/#541) was
+/// re-derived from both hq-cloud trees. The literal `this.name` set remains
+/// 53 and the three `readonly name` identities remain, so the raw source total
+/// remains 56 with no identity-set diff. `HQ_CLOUD_IDENTITIES` remains 52: it
+/// covers the `this.name` identities that can reach the desktop runner-error
+/// event surface, excluding the already-accounted-for
+/// `PushScopeForbiddenError`, which `PushEventEmitter` catches and reports via
+/// `onError` rather than serializing as an error identity. The new
+/// `session-host-*` modules add only plain `Error` throws, no named class or
+/// cause. `src/bin/sync-runner-events.ts` `ERROR_TYPES` also remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+///
+/// The `~6.16.38` -> `~6.16.45` bump was also re-derived. Its rescue-preflight
+/// diagnostics, unsupported-snapshot-format message, and denied session-log
+/// delete handling add no named runner-error identity, so the vocabulary remains
+/// unchanged and only this source-version marker moves with the verified pin.
+///
+/// The `~6.16.45` -> `~6.16.47` bump was re-derived from both hq-cloud trees.
+/// The Windows realpath fallback and Windows rsync-shim launcher change rescue
+/// behavior, not runner-error identities: the complete `this.name` and
+/// `readonly name` identity sets have no diff, `HQ_CLOUD_IDENTITIES` remains
+/// 52 with the same event-surface exclusions, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+///
+/// The `~6.16.47` -> `~6.16.50` bump was re-derived from both hq-cloud trees.
+/// The external-agent credential flow, content-lineage work, rescue writability
+/// preflight, and verified snapshot recovery add no named runner-error identity:
+/// the complete `this.name` and `readonly name` identity sets have no diff,
+/// `HQ_CLOUD_IDENTITIES` remains 52 with the same event-surface exclusions, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.50";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -3105,10 +3190,13 @@ mod tests {
 
     // ── Completed vocabulary + residual signature (this reopen) ────────────────
 
-    /// The COMPLETE hq-cloud `this.name` identity set at
-    /// `CAUSE_VOCABULARY_SOURCE_VERSION`, derived mechanically from
-    /// `git grep -hoE 'this\.name = "[A-Za-z0-9]+"'` over the pinned hq-cloud
-    /// source. Re-derive when the pin bumps — the
+    /// The COMPLETE hq-cloud `this.name` identity set that can reach the
+    /// desktop runner-error event surface at `CAUSE_VOCABULARY_SOURCE_VERSION`.
+    /// It is derived mechanically from the literal `this.name` assignments in
+    /// the pinned hq-cloud source, then excludes `PushScopeForbiddenError`:
+    /// that internal error is caught by
+    /// `PushEventEmitter` and reaches `onError` without being serialized as an
+    /// error identity. Re-derive when the pin bumps — the
     /// `cause_vocabulary_source_version_is_pinned_to_the_runner` guard fails the
     /// build if the pin moves without this list (and the vocabulary) refreshed.
     const HQ_CLOUD_IDENTITIES: &[&str] = &[
@@ -3168,11 +3256,12 @@ mod tests {
 
     #[test]
     fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
-        // Completeness over the FULL derived identity set (not a sample): every
-        // hq-cloud this.name must classify as a specific, non-residual cause, and
-        // the 52 identities must map to 52 DISTINCT tokens — the exact property
-        // the prior 16-name sample violated, collapsing every out-of-sample
-        // company fault to the flat residual and reopening this lane. The set
+        // Completeness over the FULL event-surface identity set (not a sample):
+        // every hq-cloud this.name that can reach the runner error event must
+        // classify as a specific, non-residual cause, and the 52 identities
+        // must map to 52 DISTINCT tokens — the exact property the prior 16-name
+        // sample violated, collapsing every out-of-sample company fault to the
+        // flat residual and reopening this lane. The set
         // grew from 45 to 46 when the runner pin moved to ~6.15.79 (added
         // ChildProcessSyncWorkerError), from 46 to 50 at ~6.16.0 (added
         // RealtimeUnavailableError, WindowsRenameBlockedError, and the two

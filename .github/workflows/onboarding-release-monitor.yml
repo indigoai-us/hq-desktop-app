@@ -27,5 +27,11 @@ jobs:
           pnpm exec vitest run
           src/components/onboarding/OnboardingWizard.test.ts
           src/lib/onboarding-wizard.test.ts
+      - name: Install layout regression browsers
+        working-directory: apps/sync
+        run: pnpm exec playwright install --with-deps chromium webkit
+      - name: Verify desktop scroll containment
+        working-directory: apps/sync
+        run: pnpm test:e2e:browser
       - name: Verify published updater and installer links
         run: pnpm exec tsx scripts/onboarding-release-monitor.ts

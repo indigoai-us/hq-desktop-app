@@ -69,6 +69,54 @@ use crate::paths;
 /// this rather than allowing an unlocked npx race.
 const MATERIALIZATION_LOCK_WAIT: Duration = Duration::from_secs(30);
 const MATERIALIZATION_LOCK_RETRY: Duration = Duration::from_millis(100);
+const MATERIALIZATION_LOCK_TIMEOUT_MESSAGE: &str =
+    "HQ Sync is still preparing its npm cache in another window. \
+     Wait a moment, then try Sync again.";
+
+/// `LockFileEx` reports lock contention with raw Win32 errors instead of
+/// `ErrorKind::WouldBlock`: 32 is `ERROR_SHARING_VIOLATION` and 33 is
+/// `ERROR_LOCK_VIOLATION`.
+///
+/// This is compiled for tests on every platform so the raw-code classification
+/// is covered without a real Windows lock. Production callers use it only on
+/// Windows through [`is_retryable_materialization_lock_error`].
+#[cfg(any(windows, test))]
+fn is_windows_lock_contention(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(32 | 33))
+}
+
+#[cfg(windows)]
+fn is_retryable_materialization_lock_error(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::WouldBlock || is_windows_lock_contention(err)
+}
+
+#[cfg(not(windows))]
+fn is_retryable_materialization_lock_error(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::WouldBlock
+}
+
+fn wait_for_materialization_lock(
+    wait: Duration,
+    mut try_lock: impl FnMut() -> std::io::Result<()>,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        match try_lock() {
+            Ok(()) => return Ok(()),
+            Err(err) if is_retryable_materialization_lock_error(&err) => {
+                if started.elapsed() >= wait {
+                    return Err(MATERIALIZATION_LOCK_TIMEOUT_MESSAGE.to_string());
+                }
+                thread::sleep(MATERIALIZATION_LOCK_RETRY);
+            }
+            Err(err) => {
+                return Err(format!(
+                    "HQ Sync could not coordinate npm cache preparation: {err}"
+                ));
+            }
+        }
+    }
+}
 
 /// Hold the advisory lock only while npx creates/updates its shared package
 /// cache. The file intentionally persists: advisory locks are released by the
@@ -106,27 +154,8 @@ fn acquire_materialization_lock_in(
         .create(true)
         .open(lock_path)
         .map_err(|err| format!("HQ Sync could not open its npm cache lock: {err}"))?;
-    let started = Instant::now();
-    loop {
-        match file.try_lock_exclusive() {
-            Ok(()) => return Ok(MaterializationLock { file }),
-            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                if started.elapsed() >= wait {
-                    return Err(
-                        "HQ Sync is still preparing its npm cache in another window. \
-                         Wait a moment, then try Sync again."
-                            .to_string(),
-                    );
-                }
-                thread::sleep(MATERIALIZATION_LOCK_RETRY);
-            }
-            Err(err) => {
-                return Err(format!(
-                    "HQ Sync could not coordinate npm cache preparation: {err}"
-                ));
-            }
-        }
-    }
+    wait_for_materialization_lock(wait, || file.try_lock_exclusive())?;
+    Ok(MaterializationLock { file })
 }
 
 fn materialization_lock_path() -> Result<std::path::PathBuf, String> {
@@ -277,6 +306,45 @@ mod tests {
         assert!(err.contains("still preparing"));
         drop(first);
         assert!(acquire_materialization_lock_in(&lock_path, Duration::ZERO).is_ok());
+    }
+
+    #[test]
+    fn windows_lock_contention_codes_are_classified_without_retrying_elsewhere() {
+        let sharing_violation = std::io::Error::from_raw_os_error(32);
+        let lock_violation = std::io::Error::from_raw_os_error(33);
+        let permission_denied = std::io::Error::from(ErrorKind::PermissionDenied);
+
+        assert!(is_windows_lock_contention(&sharing_violation));
+        assert!(is_windows_lock_contention(&lock_violation));
+        assert!(!is_windows_lock_contention(&permission_denied));
+
+        #[cfg(windows)]
+        {
+            assert!(is_retryable_materialization_lock_error(&sharing_violation));
+            assert!(is_retryable_materialization_lock_error(&lock_violation));
+        }
+
+        #[cfg(not(windows))]
+        {
+            assert!(!is_retryable_materialization_lock_error(&sharing_violation));
+            assert!(!is_retryable_materialization_lock_error(&lock_violation));
+        }
+    }
+
+    #[test]
+    fn permanently_contended_lock_returns_the_timeout_message() {
+        let mut attempts = 0;
+        let err = wait_for_materialization_lock(Duration::ZERO, || {
+            attempts += 1;
+            Err(std::io::Error::new(
+                ErrorKind::WouldBlock,
+                "another HQ window holds the lock",
+            ))
+        })
+        .unwrap_err();
+
+        assert_eq!(err, MATERIALIZATION_LOCK_TIMEOUT_MESSAGE);
+        assert_eq!(attempts, 1, "the retry budget must terminate the loop");
     }
 
     #[test]

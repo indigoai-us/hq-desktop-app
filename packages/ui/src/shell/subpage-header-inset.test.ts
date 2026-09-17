@@ -25,6 +25,12 @@ const PAGE_BACK_TESTIDS = [
   "shared-files-back",
 ] as const;
 
+/** In-app history Back lives in the title bar / unavailable view, not PageHeader. */
+const NON_PAGE_HEADER_BACK = [
+  "home/V4TitleBar.svelte",
+  "shell/DesktopApp.svelte",
+] as const;
+
 function svelteFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
@@ -95,6 +101,7 @@ describe("sub-page Back headers share PageHeader + titlebar inset", () => {
       const rel = relative(SRC, file);
       if (rel === "shell/PageHeader.svelte") continue;
       if ((BACK_HEADER_PAGES as readonly string[]).includes(rel)) continue;
+      if ((NON_PAGE_HEADER_BACK as readonly string[]).includes(rel)) continue;
       const source = readFileSync(file, "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/<!--[\s\S]*?-->/g, "");

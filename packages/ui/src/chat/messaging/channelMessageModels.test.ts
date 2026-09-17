@@ -5,8 +5,8 @@ import {
   parseAttachment,
   parseLifecycleCard,
   parseMessageAttachments,
+  isHiddenTimelineMessage,
   parseSystemEvent,
-  shouldHideSystemMessage,
   systemModelForMessage,
 } from "./channelMessageModels.js";
 
@@ -78,12 +78,6 @@ describe("parseSystemEvent — work_session card", () => {
       status: "done",
       note: "US-006 throwaway cleanup",
     });
-    expect(
-      shouldHideSystemMessage({
-        messageKind: "system",
-        systemEvent: { v: 1, type: "work_session", status: "in_progress" },
-      }),
-    ).toBe(false);
   });
 
   it("accepts additive envelope fields and ignores unknown keys", () => {
@@ -304,14 +298,6 @@ describe("parseSystemEvent — lifecycle_card", () => {
     });
   });
 
-  it("does not hide a parseable lifecycle_card system message", () => {
-    expect(
-      shouldHideSystemMessage({
-        messageKind: "system",
-        systemEvent: envelope,
-      }),
-    ).toBe(false);
-  });
 });
 
 describe("systemModelForMessage — member_added", () => {
@@ -363,5 +349,48 @@ describe("formatReadonlyTimestamp", () => {
     }
     expect(formatReadonlyTimestamp(null, now)).toBe("");
     expect(formatReadonlyTimestamp(undefined, now)).toBe("");
+  });
+});
+
+
+describe("retired lifecycle cards", () => {
+  const createAgent = {
+    v: 1,
+    type: "lifecycle_card",
+    cardId: "card_create_agent_1",
+    kind: "create_agent",
+    companyUid: "cmp_acme",
+    state: "open",
+    title: "Create a bot",
+    fields: [
+      { id: "name", label: "Name", control: "text", required: true, value: "" },
+    ],
+    actions: [{ id: "submit", label: "Continue", style: "primary" }],
+    viewer: { canAct: true },
+  };
+
+  it("keeps parsing a create_agent card so old history cannot break", () => {
+    expect(parseLifecycleCard(createAgent)?.cardKind).toBe("create_agent");
+  });
+
+  it("does not give the timeline a model for it", () => {
+    expect(
+      systemModelForMessage({ messageKind: "system", systemEvent: createAgent }),
+    ).toBeNull();
+    expect(isHiddenTimelineMessage({ systemEvent: createAgent })).toBe(true);
+  });
+
+  it("leaves every other lifecycle kind alone", () => {
+    for (const kind of ["create_company", "activate_cloud", "upgrade_plan", "status"] as const) {
+      const card = {
+        ...createAgent,
+        kind,
+        companyUid: kind === "create_company" ? null : "cmp_acme",
+      };
+      expect(isHiddenTimelineMessage({ systemEvent: card })).toBe(false);
+      expect(
+        systemModelForMessage({ messageKind: "system", systemEvent: card }),
+      ).not.toBeNull();
+    }
   });
 });

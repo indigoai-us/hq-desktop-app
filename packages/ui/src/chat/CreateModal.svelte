@@ -16,6 +16,12 @@
    */
   import type { Channel } from "./channels.js";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
+  import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
+  import type { LocalBotEntryResult } from "./local-bots.js";
+  import type { AvatarPack } from "../avatars/types.js";
+  import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
@@ -99,9 +105,41 @@
      * navigates; the modal only closes on success or shows the reason inline.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
-    oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
+    oncreateagent?:
+      | ((companyUid: string, draft: { name: string; handle: string }) => Promise<EntryPointResult>)
+      | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
+    /**
+     * Personal local bot (local-bots): the host creates it through the desktop
+     * adapter and opens its DM; the modal collects name + settings. Unset on
+     * hosts without local bots (web) and the row is hidden.
+     */
+    oncreatebot?:
+      | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
+      | null;
+    /** `{ claude: true, codex: false, … }` — which runtimes are signed in here. */
+    botRuntimeReady?: Record<string, boolean> | null;
+    /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
+    botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /** Names the user's local bots already use (availability check). */
+    existingBotNames?: readonly string[] | null;
+    /** The owner's companies (slugs) a Local company bot can belong to. */
+    botCompanies?: ReadonlyArray<{ slug: string; label: string }> | null;
+    /** Inline runtime sign-in (browser login + status poll) for the Home step. */
+    botSignIn?: RuntimeSignInApi | null;
+    /** A runtime just signed in — the host refreshes `botRuntimeReady`. */
+    onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    /** Avatar packs for the Details step; `loadAvatarPacks` fetches lazily. */
+    avatarPacks?: AvatarPack[] | null;
+    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
+    /**
+     * What to create inside a company: a company channel (default) or a
+     * project channel — an invite-only channel that is the home of one
+     * project (its files, work, and people). #welcome's "Start a project
+     * channel" opens the modal in project mode.
+     */
+    initialKind?: "channel" | "project";
   }
 
   let {
@@ -118,22 +156,38 @@
     oncreatecompany = null,
     oncreateagent = null,
     agentCompanies = null,
+    oncreatebot = null,
+    botRuntimeReady = null,
+    botWorkers = null,
+    existingBotNames = null,
+    botCompanies = null,
+    botSignIn = null,
+    onbotsignedin = null,
+    avatarPacks = null,
+    loadAvatarPacks = null,
+    initialKind = "channel",
   }: Props = $props();
 
-  // ── lifecycle entry points (New company / New agent) ─────────────────────
+  /** Company channel vs project channel; only meaningful inside a company. */
+  let channelKind = $state<"channel" | "project">(initialKind);
+
+  // ── lifecycle entry points (New company / New bot) ───────────────────────
   const agentTargets = $derived<ScopeCompany[]>(
     (agentCompanies ?? scopeCompanies).filter((c) => c.companyUid.trim()),
   );
+  /** A Cloud bot can be added: the host wired it and there is a company to add it to. */
+  const canCreateCloudBot = $derived(!!oncreateagent && agentTargets.length > 0);
+  /** A Local bot can be created on this Mac. */
+  const canCreateLocalBot = $derived(!!oncreatebot);
   const showEntryPoints = $derived(
-    !!oncreatecompany || (!!oncreateagent && agentTargets.length > 0),
+    !!oncreatecompany || canCreateCloudBot || canCreateLocalBot,
   );
-  let entryBusy = $state<"company" | "agent" | null>(null);
+  let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
-  let agentPickerOpen = $state(false);
 
   async function runEntry(
-    kind: "company" | "agent",
-    run: () => Promise<EntryPointResult>,
+    kind: "company" | "agent" | "bot",
+    run: () => Promise<EntryPointResult | LocalBotEntryResult>,
   ): Promise<void> {
     if (entryBusy) return;
     entryBusy = kind;
@@ -141,7 +195,6 @@
     try {
       const result = await run();
       if (result.ok) {
-        agentPickerOpen = false;
         onclose();
         return;
       }
@@ -158,20 +211,23 @@
     void runEntry("company", oncreatecompany);
   }
 
-  /** One company: go straight to it. Several: open the inline picker. */
-  function newAgent(): void {
+  /** Cloud bot: the host runs the company's create sequence and opens its channel. */
+  function newAgentFor(companyUid: string, draft: { name: string; handle: string }): void {
     if (!oncreateagent) return;
-    if (agentTargets.length === 1) {
-      void runEntry("agent", () => oncreateagent!(agentTargets[0]!.companyUid));
-      return;
-    }
-    entryError = null;
-    agentPickerOpen = !agentPickerOpen;
+    void runEntry("agent", () => oncreateagent!(companyUid, draft));
   }
 
-  function newAgentFor(companyUid: string): void {
-    if (!oncreateagent) return;
-    void runEntry("agent", () => oncreateagent!(companyUid));
+  // ── New bot: the create-bot flow (kind → home → details) ──────────────────
+  function newBot(): void {
+    if (!canCreateLocalBot && !canCreateCloudBot) return;
+    entryError = null;
+    step = "bot";
+  }
+
+  /** Local: the flow hands us the CLI input (+ avatar pick); we run the entry. */
+  function submitLocalBot(input: LocalBotCreateInput, extras: CreateBotExtras): Promise<void> {
+    if (!oncreatebot) return Promise.resolve();
+    return runEntry("bot", () => oncreatebot!(input, extras));
   }
 
   function onEntryPickerKey(event: KeyboardEvent): void {
@@ -191,7 +247,8 @@
     next?.focus();
   }
 
-  type Step = "find" | "create" | "summary";
+  /** `email` — compose a first message to an address the picker cannot match. */
+  type Step = "find" | "create" | "summary" | "bot" | "email";
 
   interface MemberChip {
     key: string;
@@ -276,6 +333,18 @@
   let createdName = $state("");
   let issues = $state<Issue[]>([]);
 
+  // ── Message-by-email (find step → compose) ────────────────────────────────
+  /** The address being messaged; set when the "Message <email>" row is taken. */
+  let emailTarget = $state("");
+  let emailBody = $state("");
+  let emailSending = $state(false);
+  /** Why the LAST send failed — shown inline with a retry, never swallowed. */
+  let emailError = $state<string | null>(null);
+  let emailOutcome = $state<{
+    state: "delivered" | "connectionRequested";
+    personUid: string | null;
+  } | null>(null);
+
   let dialogEl = $state<HTMLDivElement | null>(null);
   let listEl = $state<HTMLDivElement | null>(null);
   let suggestionsEl = $state<HTMLDivElement | null>(null);
@@ -289,6 +358,9 @@
     typeof api.sendChannelMessage === "function",
   );
   const canInviteByEmail = $derived(typeof api.sendDmToEmail === "function");
+  const emailSubmitDisabled = $derived(
+    emailSending || emailOutcome !== null || emailBody.trim().length === 0,
+  );
   const selfUid = $derived(self?.uid?.trim() || null);
 
   // 110 ms — the sidebar's convention, and the `setTimeout(150)` test wait
@@ -364,8 +436,19 @@
     }),
   );
   const findKind = $derived(classifyFindQuery(queryDebounced).kind);
+  /**
+   * The address a "Message <email>" row is offered for. Only when the host can
+   * actually send by email — otherwise the honest "no match" note stays.
+   */
+  const emailOffer = $derived(
+    findKind === "email" && canInviteByEmail
+      ? classifyFindQuery(queryDebounced).email
+      : null,
+  );
   const flatCount = $derived(
-    findResults.rows.length + (findResults.createSlug ? 1 : 0),
+    findResults.rows.length +
+      (findResults.createSlug ? 1 : 0) +
+      (emailOffer ? 1 : 0),
   );
 
   type RenderItem =
@@ -388,7 +471,7 @@
             ? "Channels"
             : row.kind === "person"
               ? "People"
-              : "Agents";
+              : "Bots";
         if (label !== heading) {
           items.push({ kind: "heading", label });
           heading = label;
@@ -644,7 +727,7 @@
    * The picker list lives in a nested scroller inside `.create-body`, and at
    * the app's 600px minimum height most of it is below the fold. `nearest`
    * scrolls both ancestors, so the highlighted candidate — including the whole
-   * "Agents" group — is always visible.
+   * "Bots" group — is always visible.
    */
   function scrollPickIntoView(): void {
     scrollOptionIntoView(suggestionsEl, `create-pick-${pickerHighlight}`);
@@ -667,12 +750,19 @@
   function activateIndex(index: number): void {
     const row = findResults.rows[index];
     if (row) {
-      onpick(row.row);
+      // Same split as the click handler: a channel is a destination, a person
+      // is the first member of something being composed.
+      if (row.kind === "channel") onpick(row.row);
+      else enterCreateWithPerson(row);
       return;
     }
     // Only the trailing create row may fall through here — a stale index into
     // the row range must never be reinterpreted as "create a channel".
     if (index < findResults.rows.length) return;
+    if (emailOffer) {
+      enterEmailCompose(emailOffer);
+      return;
+    }
     if (findResults.createSlug) enterCreate(query);
   }
 
@@ -696,7 +786,12 @@
         return;
       }
       // The debounced list is stale (fast type-then-Enter) — recompute from the
-      // RAW value so the create offer is never lost.
+      // RAW value so the create/message offer is never lost.
+      const rawKind = classifyFindQuery(query);
+      if (rawKind.kind === "email") {
+        if (canInviteByEmail && rawKind.email) enterEmailCompose(rawKind.email);
+        return;
+      }
       const raw = buildFindResults({
         rows,
         query,
@@ -706,6 +801,73 @@
       });
       if (raw.createSlug) enterCreate(query);
     }
+  }
+
+  /**
+   * Picking a PERSON from the find list starts a group, it does not navigate.
+   *
+   * Clicking the first name used to call `onpick` straight through, which
+   * opened that DM and tore the modal down — so a second person could never be
+   * added and a group was unreachable from here. Land in the create step with
+   * them already added instead: the "With" picker takes more people, the name
+   * field is required before Create, and the first message is optional.
+   * A one-to-one DM is still one click away (`Message … directly`).
+   */
+  function enterCreateWithPerson(row: FindRow): void {
+    const uid = row.row.personUid?.trim() ?? "";
+    // Staging a group is only worth it when this host can actually finish one.
+    // Without create/add-member seams the create step is a dead end — a
+    // disabled Create button and no way to add anybody — so opening the DM is
+    // strictly better than stranding the user there.
+    if (!uid || !canCreate || !canAddMembers) {
+      onpick(row.row);
+      return;
+    }
+    channelName = "";
+    slugOverride = null;
+    companyUid = defaultCompanyUid(activeScope, targetCompanies);
+    members = [
+      chipFor(
+        {
+          key: `${row.kind === "agent" ? "agent" : "person"}:${uid}`,
+          type: row.kind === "agent" ? "agent" : "person",
+          personUid: uid,
+          email: null,
+          label: row.label,
+          sublabel: row.sublabel,
+          companyUid: row.row.companyUid ?? null,
+        },
+        null,
+      ),
+    ];
+    syncScope();
+    firstMessage = "";
+    createError = null;
+    createUnconfirmed = false;
+    pickerQuery = "";
+    confirmPick = null;
+    step = "create";
+  }
+
+  /**
+   * The direct-DM escape from the create step. Only offered while the group is
+   * still exactly one person and unnamed, which is precisely the state the old
+   * click-through produced — so the fast path costs one extra click, not a
+   * dead end.
+   */
+  const soleHumanMember = $derived(
+    members.length === 1 &&
+      members[0].personUid &&
+      members[0].type !== "email" &&
+      channelName.trim() === ""
+      ? members[0]
+      : null,
+  );
+
+  function messageSoleMemberDirectly(): void {
+    const uid = soleHumanMember?.personUid?.trim();
+    if (!uid) return;
+    onpick(dmRowFor(uid));
   }
 
   function enterCreate(raw: string): void {
@@ -721,6 +883,93 @@
     pickerQuery = "";
     confirmPick = null;
     step = "create";
+  }
+
+  function enterEmailCompose(email: string): void {
+    emailTarget = email.trim();
+    emailBody = "";
+    emailError = null;
+    emailOutcome = null;
+    step = "email";
+  }
+
+  /** Back from compose keeps the address in the search box. */
+  function backFromEmail(): void {
+    query = emailTarget;
+    queryDebounced = emailTarget;
+    emailError = null;
+    activeIndex = 0;
+    step = "find";
+  }
+
+  /** A person uid already known for this address (rows first, then roster). */
+  function knownPersonUid(email: string): string | null {
+    const needle = email.trim().toLowerCase();
+    if (!needle) return null;
+    const row = rows.find(
+      (r) => r.kind === "dm" && r.email?.trim().toLowerCase() === needle,
+    );
+    if (row?.personUid) return row.personUid;
+    const contact = contacts.find(
+      (c) => c.email?.trim().toLowerCase() === needle,
+    );
+    return contact?.personUid?.trim() || null;
+  }
+
+  function dmRowFor(uid: string): ConversationRow {
+    const existing = rows.find((r) => r.kind === "dm" && r.personUid === uid);
+    if (existing) return existing;
+    const contact = contacts.find((c) => c.personUid === uid);
+    return {
+      id: `dm:${uid}`,
+      kind: "dm",
+      title: contact?.displayName?.trim() || emailTarget,
+      companyUid: contact?.companyUid ?? null,
+      unreadDot: false,
+      lastActivityAt: 0,
+      pinned: false,
+      personUid: uid,
+      email: emailTarget,
+    };
+  }
+
+  async function sendEmailMessage(): Promise<void> {
+    const send = api.sendDmToEmail;
+    const body = emailBody.trim();
+    if (!send || !body || emailSending || emailOutcome) return;
+    emailSending = true;
+    emailError = null;
+    try {
+      const outcome = await send({ toEmail: emailTarget, body });
+      emailOutcome = {
+        state:
+          outcome?.state === "delivered" ? "delivered" : "connectionRequested",
+        personUid: outcome?.personUid?.trim() || null,
+      };
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err ?? "");
+      // Bridges prefix the machine code (`[http-429] …`); the person reading
+      // this wants the sentence, not the code.
+      const cleaned = stripRawUids(raw.replace(/^\[[^\]]+\]\s*/, "")).trim();
+      emailError = cleaned
+        ? `Couldn't send: ${cleaned}`
+        : "Couldn't send. Check your connection and try again.";
+    } finally {
+      emailSending = false;
+    }
+  }
+
+  /**
+   * Leave after a send. If we know who the address belongs to, land in that
+   * DM (the host closes the modal on pick); otherwise just close.
+   */
+  function finishEmail(): void {
+    const uid = emailOutcome?.personUid ?? knownPersonUid(emailTarget);
+    if (uid) {
+      onpick(dmRowFor(uid));
+      return;
+    }
+    onclose();
   }
 
   /** Back preserves the NAME (the thing that round-trips) and nothing else. */
@@ -741,7 +990,11 @@
    * the backdrop must refuse too.
    */
   function closeAll(): void {
-    if (creating) return;
+    if (creating || emailSending) return;
+    if (step === "email" && emailOutcome) {
+      finishEmail();
+      return;
+    }
     if (step === "summary") {
       onclose(createdChannelId ?? undefined, createdHint());
       return;
@@ -789,9 +1042,19 @@
         cancelConfirm();
         return;
       }
-      if (creating) return;
+      if (creating || emailSending) return;
       if (step === "create") {
         backToFind();
+        return;
+      }
+      if (step === "bot") {
+        if (entryBusy) return;
+        entryError = null;
+        step = "find";
+        return;
+      }
+      if (step === "email" && !emailOutcome) {
+        backFromEmail();
         return;
       }
       closeAll();
@@ -817,7 +1080,11 @@
       if (step === "create" && !submitDisabled) {
         event.preventDefault();
         void submitCreate();
+      } else if (step === "email" && !emailSubmitDisabled) {
+        event.preventDefault();
+        void sendEmailMessage();
       }
+      // The bot flow handles its own ⌘↵ (it knows when the draft is complete).
       return;
     }
     if (event.key !== "Tab") return;
@@ -1034,7 +1301,7 @@
         : "couldn't add them — they're not reachable from here.";
     }
     if (reason === "member-agent-scope") {
-      return "agents can only join channels in a workspace they belong to.";
+      return "bots can only join channels in a workspace they belong to.";
     }
     return "couldn't add them.";
   }
@@ -1131,7 +1398,12 @@
 
     const name = slugOverride ? channelSlug(slugOverride) : channelName.trim();
     const slug = slugCanonical;
-    const scope: "personal" | "company" = companyUid ? "company" : "personal";
+    const asProject = Boolean(companyUid) && channelKind === "project";
+    const scope: "personal" | "company" | "project" = asProject
+      ? "project"
+      : companyUid
+        ? "company"
+        : "personal";
 
     let channelId = "";
     try {
@@ -1139,6 +1411,9 @@
         name,
         scope,
         ...(companyUid ? { companyUid } : {}),
+        // A project channel is invite-only and keyed by its project id — the
+        // channel's slug is the project's handle until a PRD claims it.
+        ...(asProject ? { projectId: slug, visibility: "invite" as const } : {}),
       });
       channelId = created?.channelId ?? "";
     } catch (err) {
@@ -1404,6 +1679,7 @@
   <div
     bind:this={dialogEl}
     class="create-card"
+    class:create-card--wide={step === "bot"}
     role="dialog"
     aria-modal="true"
     aria-labelledby="create-modal-title"
@@ -1441,8 +1717,8 @@
           role="combobox"
           data-testid="chat-create-query"
           use:focusOnMount
-          placeholder="Search people, agents, and channels — or type a new channel name"
-          aria-label="Search people, agents, and channels, or type a new channel name"
+          placeholder="Search people, bots, and channels — or type a new channel name"
+          aria-label="Search people, bots, and channels, or type a new channel name"
           aria-expanded={flatCount > 0}
           aria-controls="create-results"
           aria-autocomplete="list"
@@ -1453,20 +1729,36 @@
           onkeydown={onFindKey}
         />
       {:else}
-        {#if step === "create"}
+        {#if step === "create" || step === "bot" || (step === "email" && !emailOutcome)}
           <button
             type="button"
             class="create-back"
             data-testid="chat-create-back"
             aria-label="Back to search"
-            disabled={creating}
-            onclick={backToFind}
+            disabled={creating || emailSending || entryBusy !== null}
+            onclick={() => {
+              if (step === "bot") {
+                entryError = null;
+                step = "find";
+              } else if (step === "email") backFromEmail();
+              else backToFind();
+            }}
           >
             <span aria-hidden="true">‹</span>
           </button>
         {/if}
         <h2 id="create-modal-title" class="create-title">
-          {step === "create" ? "New channel" : "Channel created"}
+          {step === "create"
+            ? "New channel"
+            : step === "bot"
+              ? "New bot"
+              : step === "email"
+                ? emailOutcome
+                  ? emailOutcome.state === "delivered"
+                    ? "Message sent"
+                    : "Request sent"
+                  : `Message ${emailTarget}`
+                : "Channel created"}
         </h2>
         <span class="create-spacer"></span>
       {/if}
@@ -1474,7 +1766,7 @@
         type="button"
         class="create-close"
         aria-label="Close"
-        disabled={creating}
+        disabled={creating || emailSending}
         onclick={closeAll}
       >
         <span aria-hidden="true">×</span>
@@ -1505,7 +1797,10 @@
                 data-testid="chat-create-result"
                 aria-selected={highlightIndex === item.index}
                 onmouseenter={() => (activeIndex = item.index)}
-                onclick={() => onpick(item.row.row)}
+                onclick={() =>
+                  item.row.kind === "channel"
+                    ? onpick(item.row.row)
+                    : enterCreateWithPerson(item.row)}
               >
                 {#if item.row.kind === "channel"}
                   <span class="create-glyph" aria-hidden="true">#</span>
@@ -1543,9 +1838,28 @@
               </button>
             {/if}
           {/each}
+        {:else if emailOffer}
+          <!-- Nobody on HQ matches the address, but the host can message it:
+               the server delivers to a connection, or holds the message behind
+               a connection request (and emails an invite to a stranger). -->
+          <button
+            type="button"
+            class="create-row create-row-action"
+            id="create-opt-0"
+            role="option"
+            tabindex="-1"
+            data-testid="chat-create-email-row"
+            aria-selected={highlightIndex === 0}
+            onmouseenter={() => (activeIndex = 0)}
+            onclick={() => enterEmailCompose(emailOffer)}
+          >
+            <span class="create-glyph" aria-hidden="true">@</span>
+            <span class="create-row-name">Message {emailOffer}</span>
+            <span class="create-row-meta">Not on HQ yet, or not connected</span>
+          </button>
         {/if}
       </div>
-      {#if findKind === "email"}
+      {#if findKind === "email" && !canInviteByEmail}
         <div class="create-group" role="presentation">No match</div>
         <p
           class="create-note"
@@ -1594,19 +1908,14 @@
               <span class="create-entry-hint">Opens the setup step in #setup</span>
             </button>
           {/if}
-          {#if oncreateagent && agentTargets.length > 0}
+          {#if canCreateLocalBot || canCreateCloudBot}
             <button
               type="button"
               class="create-row create-entry-row"
-              data-testid="chat-create-new-agent"
-              aria-busy={entryBusy === "agent" ? "true" : undefined}
-              aria-haspopup={agentTargets.length > 1 ? "listbox" : undefined}
-              aria-expanded={agentTargets.length > 1 ? agentPickerOpen : undefined}
-              aria-controls={agentTargets.length > 1
-                ? "create-agent-company-picker"
-                : undefined}
+              data-testid="chat-create-new-bot"
+              aria-busy={entryBusy === "bot" || entryBusy === "agent" ? "true" : undefined}
               disabled={entryBusy !== null}
-              onclick={newAgent}
+              onclick={newBot}
             >
               <span class="create-entry-ic" aria-hidden="true">
                 <svg viewBox="0 0 16 16" fill="none">
@@ -1627,42 +1936,17 @@
                   />
                 </svg>
               </span>
-              <span class="create-entry-label">New agent</span>
+              <span class="create-entry-label">New bot</span>
               <span class="create-entry-hint">
-                {agentTargets.length === 1
-                  ? `In ${agentTargets[0]?.label}`
-                  : "Pick a company"}
+                {canCreateLocalBot && canCreateCloudBot
+                  ? "Runs on this Mac or in the cloud"
+                  : canCreateLocalBot
+                    ? "Runs on this Mac"
+                    : agentTargets.length === 1
+                      ? `In ${agentTargets[0]?.label}`
+                      : "Pick a company"}
               </span>
             </button>
-            {#if agentPickerOpen && agentTargets.length > 1}
-              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-              <div
-                id="create-agent-company-picker"
-                class="create-entry-picker"
-                role="listbox"
-                aria-label="Add an agent to which company?"
-                data-testid="chat-create-agent-picker"
-                onkeydown={onEntryPickerKey}
-              >
-                {#each agentTargets as company (company.companyUid)}
-                  <button
-                    type="button"
-                    class="create-row create-entry-sub"
-                    role="option"
-                    aria-selected="false"
-                    data-testid="chat-create-agent-company"
-                    data-company={company.companyUid}
-                    disabled={entryBusy !== null}
-                    onclick={() => newAgentFor(company.companyUid)}
-                  >
-                    <span class="create-entry-tile" aria-hidden="true">
-                      {company.label.trim().slice(0, 1).toUpperCase()}
-                    </span>
-                    <span class="create-entry-label">{company.label}</span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
           {/if}
           {#if entryError}
             <p
@@ -1673,6 +1957,92 @@
               {entryError}
             </p>
           {/if}
+        </div>
+      {/if}
+    {:else if step === "bot"}
+      <CreateBotFlow
+        {botRuntimeReady}
+        {botWorkers}
+        existingNames={existingBotNames}
+        {botCompanies}
+        agentTargets={canCreateCloudBot ? agentTargets : []}
+        onCloudCreate={canCreateCloudBot ? newAgentFor : null}
+        oncreate={canCreateLocalBot ? submitLocalBot : null}
+        onback={() => {
+          entryError = null;
+          step = "find";
+        }}
+        {entryBusy}
+        {entryError}
+        signInApi={botSignIn}
+        onsignedin={onbotsignedin}
+        {avatarPacks}
+        {loadAvatarPacks}
+      />
+    {:else if step === "email"}
+      {#if emailOutcome}
+        <div
+          class="create-body"
+          role="status"
+          aria-live="polite"
+          data-testid="chat-create-email-result"
+          data-state={emailOutcome.state}
+        >
+          <p class="create-summary-lead">
+            {emailOutcome.state === "delivered"
+              ? `Delivered to ${emailTarget}.`
+              : `Request sent to ${emailTarget} — your message is held until they accept.`}
+          </p>
+          {#if emailOutcome.state !== "delivered"}
+            <p class="create-summary-draft">
+              If they're not on HQ yet, they'll get an email invite.
+            </p>
+          {/if}
+        </div>
+        <div class="create-footer">
+          <span class="create-hint" aria-hidden="true"></span>
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-email-done"
+            use:focusOnMount
+            onclick={finishEmail}>Done</button
+          >
+        </div>
+      {:else}
+        <div class="create-body">
+          <p class="create-note create-email-note" data-testid="chat-create-email-note">
+            Sent as a direct message. If you're not connected yet, it's held
+            until they accept — and an email invite goes out if they aren't on
+            HQ.
+          </p>
+          <textarea
+            class="create-textarea"
+            data-testid="chat-create-email-body"
+            placeholder="Write your first message"
+            aria-label="First message to {emailTarget}"
+            disabled={emailSending}
+            use:focusOnMount
+            bind:value={emailBody}
+          ></textarea>
+        </div>
+        {#if emailError}
+          <p class="create-error" role="alert" data-testid="chat-create-email-error">
+            {emailError}
+          </p>
+        {/if}
+        <div class="create-footer">
+          <span class="create-hint" aria-hidden="true">⌘↵ TO SEND</span>
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-email-send"
+            disabled={emailSubmitDisabled}
+            aria-busy={emailSending}
+            onclick={() => void sendEmailMessage()}
+          >
+            {emailSending ? "Sending…" : emailError ? "Try again" : "Send"}
+          </button>
         </div>
       {/if}
     {:else if step === "create"}
@@ -1795,6 +2165,43 @@
           </p>
         {/if}
 
+        {#if companyUid}
+          <div class="create-field">
+            <span class="create-label" id="create-kind-label">Type</span>
+            <div class="create-kind" role="radiogroup" aria-labelledby="create-kind-label">
+              <button
+                type="button"
+                role="radio"
+                class="create-kind-option"
+                class:selected={channelKind === "channel"}
+                aria-checked={channelKind === "channel"}
+                data-testid="chat-channel-kind-channel"
+                disabled={creating}
+                onclick={() => (channelKind = "channel")}
+              >
+                Channel
+              </button>
+              <button
+                type="button"
+                role="radio"
+                class="create-kind-option"
+                class:selected={channelKind === "project"}
+                aria-checked={channelKind === "project"}
+                data-testid="chat-channel-kind-project"
+                disabled={creating}
+                onclick={() => (channelKind = "project")}
+              >
+                Project channel
+              </button>
+            </div>
+          </div>
+          <p class="create-help" data-testid="chat-channel-kind-help">
+            {channelKind === "project"
+              ? "One home for a project: its work, files, and people. Invite-only."
+              : "A shared channel everyone in the company can find."}
+          </p>
+        {/if}
+
         {#if canAddMembers}
           <div class="create-members">
             <div class="create-cell">
@@ -1812,7 +2219,7 @@
                       <!-- D10: agent-vs-person is THE distinction, so it gets
                            the legible pill; "external" stays secondary. -->
                       {#if chip.type === "agent"}
-                        <span class="create-tag create-tag-strong">agent</span>
+                        <span class="create-tag create-tag-strong">bot</span>
                       {:else if chip.type === "email"}
                         <span class="create-tag">not on hq</span>
                       {/if}
@@ -1837,7 +2244,7 @@
                     role="combobox"
                     data-testid="chat-channel-participants"
                     placeholder={members.length === 0
-                      ? "Add people, agents, or an email…"
+                      ? "Add people, bots, or an email…"
                       : ""}
                     aria-labelledby="create-with-label"
                     aria-expanded={pickerCandidates.length > 0}
@@ -1874,10 +2281,10 @@
                 {#each pickerCandidates as candidate, i (candidate.key)}
                   {#if i === 0 && candidate.type !== "email"}
                     <div class="create-group" role="presentation">
-                      {candidate.type === "agent" ? "Agents" : "People"}
+                      {candidate.type === "agent" ? "Bots" : "People"}
                     </div>
                   {:else if candidate.type === "agent" && pickerCandidates[i - 1]?.type !== "agent"}
-                    <div class="create-group" role="presentation">Agents</div>
+                    <div class="create-group" role="presentation">Bots</div>
                   {/if}
                   <button
                     type="button"
@@ -1934,6 +2341,18 @@
       {/if}
 
       <div class="create-footer" inert={confirmSubject !== null}>
+        {#if soleHumanMember}
+          <!-- Still one unnamed person: a plain DM needs no channel at all. -->
+          <button
+            type="button"
+            class="create-direct"
+            data-testid="chat-channel-message-directly"
+            disabled={creating}
+            onclick={messageSoleMemberDirectly}
+          >
+            Message {soleHumanMember.label} directly
+          </button>
+        {/if}
         {#if blockReason}
           <span class="create-hint create-hint-block" id="create-submit-reason"
             >{blockReason}</span
@@ -2091,6 +2510,12 @@
     outline: none;
   }
 
+  /* The bot flow needs room for three cards and a preview rail. */
+  .create-card--wide {
+    width: min(880px, 100%);
+    max-height: min(88vh, 720px);
+  }
+
   .create-head {
     display: flex;
     align-items: center;
@@ -2174,6 +2599,32 @@
   .create-submit:focus-visible,
   .create-inline-btn:focus-visible,
   .create-chip-x:focus-visible,
+  .create-kind {
+    display: inline-flex;
+    gap: 4px;
+    padding: 3px;
+    border: 1px solid var(--v4-control-border, var(--border));
+    border-radius: 8px;
+  }
+  .create-kind-option {
+    font: inherit;
+    font-size: 13px;
+    padding: 4px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-2, inherit);
+    cursor: pointer;
+  }
+  .create-kind-option.selected {
+    background: var(--v4-active-row, rgba(127, 127, 127, 0.18));
+    color: var(--text-1, inherit);
+  }
+  .create-kind-option:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 1px;
+  }
+
   .create-select:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: var(--v4-focus-offset, 2px);
@@ -2282,6 +2733,11 @@
     font-size: 13px;
   }
 
+  .create-email-note {
+    padding: 14px 16px 0;
+    font-size: 12px;
+  }
+
   /* Lifecycle entry points: a hairline, a mono label, ghost rows. */
   .create-entry {
     display: flex;
@@ -2295,14 +2751,12 @@
     min-height: 32px;
   }
 
-  .create-entry-row:disabled,
-  .create-entry-sub:disabled {
+  .create-entry-row:disabled {
     cursor: default;
     opacity: 0.6;
   }
 
-  .create-entry-row:focus-visible,
-  .create-entry-sub:focus-visible {
+  .create-entry-row:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: -2px;
   }
@@ -2333,31 +2787,6 @@
     flex: 0 0 auto;
     color: var(--t3);
     font-size: 11px;
-  }
-
-  .create-entry-picker {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding-left: 24px;
-  }
-
-  .create-entry-sub {
-    min-height: 28px;
-    padding-top: 4px;
-    padding-bottom: 4px;
-  }
-
-  .create-entry-tile {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 5px;
-    background: var(--raised);
-    color: var(--t2);
-    font: 600 10px/1 var(--font-ui);
-    flex: 0 0 auto;
   }
 
   .create-entry-error {
@@ -2413,6 +2842,11 @@
     outline: none;
   }
 
+  .create-select {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+  }
   .create-input::placeholder {
     color: var(--t3);
   }
@@ -2449,6 +2883,22 @@
     color: var(--t1);
     font: inherit;
     cursor: pointer;
+  }
+
+  .create-direct {
+    margin: 0;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--v4-text-2, inherit);
+    font: 500 12px/1 var(--font-ui, system-ui);
+    cursor: pointer;
+  }
+
+  .create-direct:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 
   .create-chips {

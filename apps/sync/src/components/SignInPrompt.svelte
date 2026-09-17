@@ -3,6 +3,19 @@
   import { open } from '@tauri-apps/plugin-shell';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import { emitDesktopOperationalTelemetry } from '../lib/desktop-telemetry';
+  import {
+    continuationDeps,
+    loadContinuationContext,
+  } from '../lib/desktop-continuation-tauri';
+  import {
+    beginContinuation,
+    cancelContinuation,
+    confirmContinuation,
+    flushReceipts,
+    resolveRollout,
+    type ContinuationDeps,
+    type ContinuationState,
+  } from '../lib/desktop-session-continuation';
 
   interface Props {
     reauth?: boolean;
@@ -24,6 +37,106 @@
 
   let loadingProvider = $state<SignInProvider | null>(null);
   let error = $state('');
+
+  // ── Browser session continuation ────────────────────────────────────
+  //
+  // Someone who signed up on the website minutes ago is standing here being
+  // asked to sign in again, and a third of them stop. This finishes the
+  // sign-in they already started. Everything below is inert unless the backend
+  // says otherwise: `continuation` stays at `idle`, no command is called, and
+  // what renders is exactly the provider buttons that ship today.
+  let continuation = $state<ContinuationState>({ phase: 'idle' });
+  let continuationDepsRef: ContinuationDeps | null = null;
+  let continuationBusy = $state(false);
+
+  /**
+   * Set the moment a provider button is pressed, and never cleared.
+   *
+   * Deliberately a plain variable rather than `$state`: the effect below must
+   * run exactly once on mount, and reading a rune inside it would make it
+   * re-run every time the manual flow changed. Nothing renders from this.
+   */
+  let manualSignInStarted = false;
+
+  $effect(() => {
+    void prepareContinuation();
+  });
+
+  async function prepareContinuation() {
+    const context = await loadContinuationContext();
+    if (!context) return;
+    const deps = continuationDeps(context);
+    continuationDepsRef = deps;
+
+    // Deliver anything a previous launch could not. Receipts are replayed byte
+    // for byte — including their original timestamps — because the backend
+    // derives its idempotency key from the timestamp the client sent, so a
+    // re-stamped retry would be counted as a second event.
+    void flushReceipts(deps).catch(() => undefined);
+
+    // Fetching the config is a network round trip, and someone who did not
+    // want to wait for it has already pressed Google or Microsoft. Starting
+    // now would arm a second flow whose `arm_oauth_flow` cancels the listener
+    // the manual attempt is waiting on — the person would watch their own
+    // sign-in die. The native side refuses this too (`AttemptInFlight`); this
+    // is the cheaper half of the same rule, checked before and after the wait.
+    if (manualSignInStarted) return;
+
+    const decision = await resolveRollout(deps);
+    if (!decision.enabled || manualSignInStarted) return;
+
+    await beginContinuation(
+      deps,
+      decision,
+      (next) => {
+        continuation = next;
+      },
+      () => !manualSignInStarted,
+    );
+  }
+
+  async function handleContinuationConfirm() {
+    if (continuation.phase !== 'confirming' || !continuationDepsRef || continuationBusy) return;
+    continuationBusy = true;
+    try {
+      const next = await confirmContinuation(
+        continuationDepsRef,
+        continuation,
+        (state) => {
+          continuation = state;
+        },
+      );
+      if (next.phase === 'activated') {
+        const auth = await invoke<{ authenticated: boolean; expiresAt: string }>(
+          'get_auth_state',
+        );
+        if (auth.authenticated) onsuccess?.(auth);
+      } else {
+        error = 'That sign-in did not finish. Choose your provider and try once more.';
+      }
+    } finally {
+      continuationBusy = false;
+    }
+  }
+
+  /**
+   * **Use another account.** Discards the pending credentials and falls back to
+   * the provider buttons — which is the point of showing the email at all. A
+   * shared laptop, a forwarded installer, and a browser signed in as a
+   * colleague all end here.
+   */
+  async function handleContinuationReject() {
+    if (!continuationDepsRef || continuationBusy) return;
+    continuationBusy = true;
+    try {
+      await cancelContinuation(continuationDepsRef, continuation, (next) => {
+        continuation = next;
+      });
+    } finally {
+      continuationBusy = false;
+    }
+  }
+
   let lastProvider = $state<SignInProvider | null>(null);
   let activeState = $state<string | null>(null);
   let cancelling = $state(false);
@@ -44,6 +157,11 @@
 
   async function handleSignIn(provider: SignInProvider) {
     const run = ++signInRun;
+    // Claim the flow before anything awaits, so a continuation whose config
+    // lands mid-click sees this rather than racing it.
+    manualSignInStarted = true;
+    // Preparation observes this claim and leaves continuation unarmed. Manual
+    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
     loadingProvider = provider;
     error = '';
     lastProvider = provider;
@@ -202,7 +320,39 @@
         : 'Use Google or Microsoft to sync your HQ files.'}
     </p>
 
-    <div class="sign-in-actions">
+    {#if continuation.phase === 'confirming'}
+      <div class="continuation-card" data-testid="continuation-confirm">
+        <p class="continuation-lead">You're already signed in as</p>
+        <p class="continuation-email">{continuation.identity.email}</p>
+        <button
+          class="sign-in-btn continuation-primary"
+          onclick={handleContinuationConfirm}
+          disabled={continuationBusy}
+        >
+          {continuationBusy ? 'Signing in…' : `Continue as ${continuation.identity.email}`}
+        </button>
+        <button
+          class="cancel-btn"
+          onclick={handleContinuationReject}
+          disabled={continuationBusy}
+        >
+          Use another account
+        </button>
+      </div>
+    {:else if continuation.phase === 'opening' || continuation.phase === 'waiting'}
+      <p class="loading-hint" data-testid="continuation-waiting">
+        Finishing your sign-in in the browser…
+      </p>
+      <button class="cancel-btn" onclick={handleContinuationReject} disabled={continuationBusy}>
+        Cancel
+      </button>
+    {/if}
+
+    <div
+      class="sign-in-actions"
+      class:secondary={continuation.phase === 'confirming'}
+      hidden={continuation.phase === 'opening' || continuation.phase === 'waiting'}
+    >
       {#each providers as provider}
         <button
           class="sign-in-btn"
@@ -363,6 +513,41 @@
     display: grid;
     gap: 0.625rem;
     width: 100%;
+  }
+
+  /* Demoted, not hidden. When continuation has an account to offer, the
+     provider buttons are still the way out for anyone who is not that person —
+     a shared laptop, a forwarded installer, a browser signed in as a
+     colleague. Removing them would trap exactly the people the confirmation
+     step exists to protect. */
+  .sign-in-actions.secondary {
+    margin-top: 0.75rem;
+    opacity: 0.75;
+  }
+
+  .sign-in-actions[hidden] {
+    display: none;
+  }
+
+  .continuation-card {
+    display: grid;
+    gap: 0.5rem;
+    width: 100%;
+    text-align: center;
+  }
+
+  .continuation-lead {
+    margin: 0;
+    font-size: 0.8125rem;
+    opacity: 0.75;
+  }
+
+  .continuation-email {
+    margin: 0 0 0.25rem;
+    font-weight: 600;
+    /* An address is arbitrary length and arbitrary content. Wrap it rather
+       than let it push the card wider than the popover. */
+    overflow-wrap: anywhere;
   }
 
   .sign-in-btn {

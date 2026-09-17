@@ -16,22 +16,25 @@
     applyRecommendBanner,
     clearRecommendBanner,
     createChatWakeBus,
+    createRosterRefresher,
     dispatchEmbeddedNavigation,
     markDownloaded,
     markInstallStarted,
     reportDownloadProgress,
     reportIdleWait,
     reportInstallFailed,
+    subscribeRosterRefreshEvents,
     toSelfIdentity,
     workspacesFromMembershipRows,
     common,
     type ConversationRow,
-    type RowExtrasResolver,
+    type EmbeddedNavigationTarget,
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
-  import { flushSync, onMount, tick, type ComponentProps } from 'svelte';
+  import { flushSync, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
+  import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
@@ -42,17 +45,7 @@
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
-  import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
-  import { parseSessionsParam } from './pages/sessions-route-param';
-  import { projectLinksStore } from './lib/project-links-store.svelte';
-  import {
-    newSessionParam,
-    historySessionParam,
-    rowExtrasFor,
-    PROJECT_CHANNEL_LINKED_EVENT,
-    type ProjectChannelLinked,
-    type ProjectLink,
-  } from './lib/session-project-links';
+  import { SETUP_PROMPT } from './lib/setup-launch';
   import {
     createNativeWorkShellCapabilities,
     type NativeInvokeFn,
@@ -63,11 +56,14 @@
     invokeFn?: SyncInvokeFn;
     /** Tests shorten the first-paint bound so a hung fetch cannot stall. */
     bootTimeoutMs?: number;
+    /** Backoff between failed workspace-roster fetches (tests shorten it). */
+    rosterRetryDelaysMs?: readonly number[];
   }
 
   let {
     invokeFn = tauriInvoke as SyncInvokeFn,
     bootTimeoutMs,
+    rosterRetryDelaysMs,
   }: Props = $props();
 
   const adapter = createSyncPlatformAdapter({
@@ -109,98 +105,16 @@
   let notificationWakeSeq = $state(0);
   let hydration = $state(0);
   let authGeneration = $state(0);
+  // Diagnostic bridge for the shared shell: writes to ~/.hq/logs/hq-sync.log.
+  (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog = (tag, message) => {
+    void invokeFn('frontend_log', { tag, message }).catch(() => undefined);
+  };
   let authAccountId = $state<string | null>(null);
   let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
   let updateWakeSeq = $state(0);
-  let inAppSessionsOn = $state(false);
-  const sessionsEnabled = $derived(inAppSessionsOn || import.meta.env.DEV);
   type HostExtraPages = NonNullable<ComponentProps<typeof WorkShell>['extraPages']>;
-  const extraPages = $derived<HostExtraPages>(
-    sessionsEnabled
-      ? {
-          sessions: {
-            label: 'Sessions',
-            detail: 'Run a Codex or Claude session inside the app',
-            // A unique draft route also resets an already-open empty composer.
-            // Global creation is standalone; project actions bind explicitly.
-            createAction: { label: 'New session', param: () => `new?draft=${crypto.randomUUID()}` },
-            component: SessionsExtraPage,
-          },
-        }
-      : {},
-  );
-
-  /**
-   * Project channels ↔ sessions. The shared sidebar paints a badge, nested
-   * session rows and a "New session" action on project-channel rows through the
-   * generic `rowExtras` seam; what those mean comes from this host's
-   * `session_project_links` store, keyed by company slug. A new resolver on
-   * every store change is what makes the rows repaint.
-   */
-  const companySlugByUid = $derived(
-    new Map(
-      (companies ?? [])
-        .filter((company) => company.cloudUid)
-        .map((company) => [company.cloudUid as string, company.slug]),
-    ),
-  );
-
-  function companyOfLink(
-    link: ProjectLink,
-    byCompany: Record<string, ProjectLink[]>,
-  ): string | null {
-    return Object.entries(byCompany).find(([, links]) => links.includes(link))?.[0] ?? null;
-  }
-
-  const rowExtras = $derived.by<RowExtrasResolver | null>(() => {
-    if (!sessionsEnabled || lifecycle !== 'ready') return null;
-    const byCompany = projectLinksStore.byCompany;
-    const slugByUid = companySlugByUid;
-    return (row: ConversationRow, destination) => {
-      const route = destination?.page === 'sessions' ? parseSessionsParam(destination.param) : null;
-      const selectedSessionId = route?.kind === 'session' || route?.kind === 'history' || route?.kind === 'shared' ? route.sessionId : null;
-      const slug = row.companyUid ? slugByUid.get(row.companyUid) : undefined;
-      const links = slug ? (byCompany[slug] ?? []) : Object.values(byCompany).flat();
-      return rowExtrasFor(
-        row,
-        links,
-        null,
-        (link) => {
-          const company = slug ?? companyOfLink(link, byCompany);
-          if (!company) return;
-          navigation.navigate({
-            kind: 'extra',
-            page: 'sessions',
-            param: newSessionParam(company, link.project, link.channelId),
-          });
-        },
-        (_link, session) => {
-          const company = slug ?? companyOfLink(_link, byCompany);
-          if (!company) return;
-          navigation.navigate({
-            kind: 'extra',
-            page: 'sessions',
-            param: historySessionParam(company, _link.project, session),
-          });
-        },
-        selectedSessionId,
-        (link, visible) => {
-          const company = slug ?? companyOfLink(link, byCompany);
-          if (company) projectLinksStore.watchSharedChannel(company, link, visible);
-        },
-      );
-    };
-  });
-
-  $effect(() => {
-    if (lifecycle !== 'ready' || !sessionsEnabled) return;
-    const slugs = (companies ?? [])
-      .filter((company) => company.kind === 'company' && company.slug !== 'personal')
-      .map((company) => company.slug);
-    projectLinksStore.start(slugs);
-    return () => projectLinksStore.stop();
-  });
+  const extraPages = $derived<HostExtraPages>({});
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -275,6 +189,7 @@
     workspaceError = null;
     identityError = null;
     signOutError = null;
+    navigation.clear();
 
     if (next.status === 'credentials_absent') {
       signedOutReason = 'signed-out';
@@ -315,42 +230,58 @@
     }
   }
 
-  async function refreshWorkspaces(request: number, generation = authGeneration): Promise<void> {
+  /**
+   * Resolves `true` when the roster applied (or the session moved on — nothing
+   * left to retry) and `false` when the fetch failed for the session that asked.
+   */
+  let workspaceRequest = 0;
+  async function refreshWorkspaces(request: number, generation = authGeneration): Promise<boolean> {
+    const sequence = ++workspaceRequest;
+    const isCurrent = () => sequence === workspaceRequest && request === hydration && generation === authGeneration && lifecycle === 'ready';
     try {
+      // The native request keeps running after the UI deadline. Accept a late
+      // success while it still belongs to this account and newest request.
+      const pending = adapter.identity.listWorkspaces().then((result) => {
+        if (isCurrent() && result.ok) {
+          companies = workspacesFromMembershipRows(result.value);
+          workspaceError = null;
+        }
+        return result;
+      });
       const result = await bounded(
-        adapter.identity.listWorkspaces(),
+        pending,
         'Workspace lookup',
       );
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return;
+      if (!isCurrent()) return true;
       if (!result.ok) {
-        companies = null;
+        // Keep a previously good roster on screen; the refresher retries.
         workspaceError = result.message ?? 'Couldn’t load company workspaces.';
-        return;
+        return false;
       }
       companies = workspacesFromMembershipRows(result.value);
       workspaceError = null;
+      return true;
     } catch (error) {
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return;
-      companies = null;
+      if (!isCurrent()) return true;
       workspaceError = readableError(error, 'Couldn’t load company workspaces.');
+      return false;
     }
   }
 
-  async function refreshSessionsPreference(
-    request: number,
-    generation = authGeneration,
-  ): Promise<void> {
-    try {
-      const result = await bounded(adapter.settings.getSettings(), 'Settings lookup');
-      if (request !== hydration || generation !== authGeneration || !result.ok) return;
-      inAppSessionsOn = result.value?.inAppSessions === true;
-    } catch {
-      // Best effort: keep the last known machine preference.
-    }
-  }
+  // One bounded refresher serves the first fetch, its backoff retries, the
+  // manual Retry button, and the sync runner's company events. Before this,
+  // a failed first fetch left the roster empty until the user retried by hand.
+  const rosterRefresher = createRosterRefresher({
+    load: () => {
+      if (lifecycle !== 'ready') return Promise.resolve(true);
+      return refreshWorkspaces(hydration, authGeneration);
+    },
+    delaysMs: rosterRetryDelaysMs,
+  });
 
   async function hydrateSession(expectedGeneration = authGeneration): Promise<void> {
     const request = ++hydration;
+    rosterRefresher.cancel();
     lifecycle = 'loading';
     identityError = null;
     workspaceError = null;
@@ -408,8 +339,7 @@
       });
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
-      void refreshWorkspaces(request, expectedGeneration);
-      void refreshSessionsPreference(request, expectedGeneration);
+      void rosterRefresher.refresh();
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
@@ -426,7 +356,7 @@
   async function retryWorkspaces(): Promise<void> {
     if (lifecycle !== 'ready') return;
     workspaceError = null;
-    await refreshWorkspaces(hydration, authGeneration);
+    await rosterRefresher.refresh();
   }
 
   function requestRevalidation(options: { automatic?: boolean } = {}): void {
@@ -445,6 +375,7 @@
     try {
       await invokeFn('sign_out');
       navigation.clear();
+      rosterRefresher.cancel();
       authGeneration += 1;
       authAccountId = null;
       self = null;
@@ -486,6 +417,12 @@
         if (!closed && lifecycle === 'ready' && self?.uid === personUid) {
           notificationWakeSeq += 1;
         }
+      },
+      listContacts: async () => {
+        const result = await adapter.messaging.listContacts();
+        return result.ok
+          ? (result.value as unknown as DmRequestContact[])
+          : [];
       },
     });
     return () => {
@@ -633,6 +570,11 @@
     const unlistenAuthReadyPromise = listen('auth:session-ready', () => {
       if (!cancelled) requestRevalidation();
     }).catch(() => () => {});
+    // Website-created companies are provisioned by the sync runner after
+    // sign-in; re-read the roster when it says so instead of after a restart.
+    const unsubscribeRosterEvents = subscribeRosterRefreshEvents(listen, () => {
+      if (!cancelled && lifecycle === 'ready') void rosterRefresher.refresh();
+    });
 
     // Native View-menu accelerators (⌘⇧]/⌘⇧[/⌘N/⌘/) are consumed by AppKit
     // before the webview sees the keydown; the menu handler emits the binding
@@ -721,23 +663,6 @@
     };
     window.addEventListener('keydown', onKeyDown);
 
-    const onProjectChannelLinked = (event: Event) => {
-      if (cancelled) return;
-      const detail = (event as CustomEvent<ProjectChannelLinked>).detail;
-      const companyUid =
-        (companies ?? []).find((company) => company.slug === detail?.company)?.cloudUid ?? null;
-      if (detail?.channelId && detail.channelName) {
-        wakes.emit?.('channel:updated', {
-          channelId: detail.channelId,
-          name: detail.channelName,
-          scope: 'company',
-          companyUid,
-          membership: 'joined',
-        });
-      }
-      wakes.emit?.('channel:unread-changed', undefined);
-    };
-    window.addEventListener(PROJECT_CHANNEL_LINKED_EVENT, onProjectChannelLinked);
 
     const revalidateOnRecovery = () => {
       if (!cancelled) requestRevalidation({ automatic: true });
@@ -754,6 +679,8 @@
       cancelled = true;
       clearTimeout(bootRevealTimeoutId);
       hydration += 1;
+      unsubscribeRosterEvents();
+      rosterRefresher.dispose();
       detachNavigation?.();
       detachNavigation = null;
       void unlistenSetupPromise.then((unlisten) => safeUnlisten(unlisten)());
@@ -774,7 +701,6 @@
       void unlistenForcePromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener(PROJECT_CHANNEL_LINKED_EVENT, onProjectChannelLinked);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
       window.removeEventListener('pageshow', revalidateOnRecovery);
@@ -821,9 +747,9 @@
     </section>
   {:else if capabilities}
     {#if workspaceError}
-      <div class="workspace-warning" data-testid="hq-work-workspace-error" role="alert">
-        <span>{workspaceError}</span>
-        <button type="button" onclick={() => void retryWorkspaces()}>Retry workspaces</button>
+      <div class="workspace-warning" data-testid="hq-work-workspace-error" role="status">
+        <span>Workspaces couldn’t refresh.</span>
+        <button type="button" onclick={() => void retryWorkspaces()}>Retry</button>
       </div>
     {/if}
     {#if signOutError}
@@ -831,6 +757,7 @@
         <span>{signOutError}</span>
       </div>
     {/if}
+    <div class="work-shell-frame">
     {#key authGeneration}
       <WorkShell
         data={{ user: capabilities.hostIdentity }}
@@ -838,6 +765,7 @@
         fetch={capabilities.fetch}
         onUnauthorized={capabilities.onUnauthorized}
         loadFilePreview={capabilities.loadFilePreview}
+        callsHost={capabilities.calls}
         hostIdentity={capabilities.hostIdentity}
         hostTenantAccountId={authAccountId}
         hostTenantGeneration={authGeneration}
@@ -853,13 +781,14 @@
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
-        {rowExtras}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');
         }}
         onembeddednavigationready={() => {
           detachNavigation?.();
+          // Pending-route bridge only: the shared shell converts `target`
+          // through destinationFromEmbeddedTarget and commits via navigate().
           const detach = navigation.attach((target) => {
             dispatchEmbeddedNavigation(target);
           });
@@ -871,6 +800,7 @@
         }}
       />
     {/key}
+    </div>
   {/if}
 </div>
 
@@ -881,14 +811,43 @@
     width: 100%;
     height: 100%;
     margin: 0;
+    /* The document owns WebKit's viewport scrolling. Clipping only the
+       embedded shell leaves native rubber-banding free to move all chrome. */
+    overflow: hidden;
+    overscroll-behavior: none;
   }
 
   .hq-work-embedded {
+    display: flex;
+    flex-direction: column;
     width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  /* PR #772's staged window backing, below the shared surface tokens.
+     AppKit supplies the blur; repeating backdrop-filter inside WebKit washes
+     the native window out. Preserve the existing opacity control, with the
+     reference's .82/.86 alphas at its default transparency of 65.
+     The dark backing follows the supplied rendered PR reference: unobstructed
+     canvas samples (600,200) = #171435 and (540,940) = #12182e on its
+     1920x1305 preview. This retains that reference appearance across desktops. */
+  .hq-work-embedded {
+    background: rgb(250 250 252 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.276923), 1));
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-force-theme="light"])) .hq-work-embedded {
+      --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
+      background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
+    }
+  }
+
+  :global(:root[data-force-theme="dark"]) .hq-work-embedded {
+    --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
+    background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
   }
 
   .lifecycle-state {
@@ -909,8 +868,7 @@
     margin: 0;
   }
 
-  .lifecycle-state > button,
-  .workspace-warning button {
+  .lifecycle-state > button {
     width: fit-content;
     padding: 7px 10px;
     border: 1px solid #4b5563;
@@ -933,19 +891,46 @@
   }
 
   .workspace-warning {
-    position: absolute;
-    z-index: 100;
-    right: 16px;
-    bottom: 16px;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 10px;
-    max-width: min(560px, calc(100% - 32px));
-    padding: 10px 12px;
-    border: 1px solid #854d0e;
-    border-radius: 8px;
-    color: #fef3c7;
-    background: #3b2f10;
+    justify-content: center;
+    gap: 12px;
+    box-sizing: border-box;
+    padding: 3px 10px;
+    border-bottom: 1px solid var(--v4-hairline, #414141);
+    font-family: var(--font-sans, system-ui, sans-serif);
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--v4-text-2, #b0b0b0);
+    background: var(--v4-surface-solid, #282828);
+  }
+
+  .work-shell-frame {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .workspace-warning button {
+    flex-shrink: 0;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 4px;
+    font: inherit;
+    color: var(--v4-text-1, #ededed);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .workspace-warning button:hover {
+    background: var(--c-hover, rgb(128 128 128 / 15%));
+  }
+
+  .workspace-warning button:focus-visible {
+    outline: 2px solid var(--v4-text-1, #ededed);
+    outline-offset: 2px;
   }
 
   .hq-work-boot {

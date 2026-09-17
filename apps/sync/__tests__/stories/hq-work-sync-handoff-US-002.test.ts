@@ -9,10 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   HQ_WORK_BUNDLE_ID,
   detectHqWorkInstalled,
-  getHqWorkHandoff,
-  hqWorkHandoffEnabled,
   launchHqWork,
-  setHqWorkHandoff,
   type HqWorkInvoker,
 } from '../../src/lib/hq-work';
 
@@ -36,13 +33,6 @@ function mockInvoker(
 }
 
 describe('US-002 HQ Work detection, launch, and handoff flag', () => {
-  it('hqWorkHandoffEnabled is always true, including a retired false key', () => {
-    expect(hqWorkHandoffEnabled(undefined)).toBe(true);
-    expect(hqWorkHandoffEnabled(null)).toBe(true);
-    expect(hqWorkHandoffEnabled(false)).toBe(true);
-    expect(hqWorkHandoffEnabled(true)).toBe(true);
-  });
-
   it('bundle id is ai.getindigo.hq-work', () => {
     expect(HQ_WORK_BUNDLE_ID).toBe('ai.getindigo.hq-work');
   });
@@ -76,46 +66,21 @@ describe('US-002 HQ Work detection, launch, and handoff flag', () => {
     ]);
   });
 
-  it('getHqWorkHandoff and setHqWorkHandoff round-trip through the invoker', async () => {
-    let stored = false;
-    const invokeFn = mockInvoker((command, args) => {
-      if (command === 'get_hq_work_handoff') return stored;
-      if (command === 'set_hq_work_handoff') {
-        stored = Boolean(args?.enabled);
-        return undefined;
-      }
-      return undefined;
-    });
-    expect(await getHqWorkHandoff(invokeFn)).toBe(false);
-    await setHqWorkHandoff(invokeFn, true);
-    expect(await getHqWorkHandoff(invokeFn)).toBe(true);
-    expect(invokeFn.calls.map((c) => c.command)).toEqual([
-      'get_hq_work_handoff',
-      'set_hq_work_handoff',
-      'get_hq_work_handoff',
-    ]);
-    expect(invokeFn.calls[1].args).toEqual({ enabled: true });
-  });
-
-  it('installed + flag-on launches a channel URL', async () => {
+  it('an installed HQ Work app launches a channel URL', async () => {
     const invokeFn = mockInvoker((command) => {
       if (command === 'hq_work_installed') return true;
-      if (command === 'get_hq_work_handoff') return true;
       return undefined;
     });
     const installed = await detectHqWorkInstalled(invokeFn);
-    const flag = await getHqWorkHandoff(invokeFn);
     expect(installed).toBe(true);
-    expect(hqWorkHandoffEnabled(flag)).toBe(true);
-    if (installed && hqWorkHandoffEnabled(flag)) {
+    if (installed) {
       await launchHqWork(invokeFn, 'hqwork://open?channel=X');
     }
     expect(invokeFn.calls.map((c) => c.command)).toEqual([
       'hq_work_installed',
-      'get_hq_work_handoff',
       'launch_hq_work',
     ]);
-    expect(invokeFn.calls[2].args).toEqual({
+    expect(invokeFn.calls[1].args).toEqual({
       url: 'hqwork://open?channel=X',
     });
     for (const forbidden of SETUP_COMMANDS) {

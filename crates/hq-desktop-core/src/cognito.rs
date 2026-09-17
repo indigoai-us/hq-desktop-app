@@ -42,10 +42,6 @@ fn cache() -> &'static Mutex<Option<CachedTokens>> {
     TOKEN_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-// hq-prod stack (canonical post-2026-04-25 cutover). MUST stay in sync with
-// oauth.rs's COGNITO_CLIENT_ID — drift between the two breaks token refresh
-// (sign-in succeeds against one client but refresh hits InvalidClient).
-const COGNITO_CLIENT_ID: &str = "7acei2c8v870enheptb1j5foln";
 const COGNITO_ENDPOINT: &str = "https://cognito-idp.us-east-1.amazonaws.com/";
 /// 2-minute buffer before expiry (in milliseconds)
 const EXPIRY_BUFFER_MS: i64 = 120_000;
@@ -664,6 +660,16 @@ pub struct IdTokenClaims {
     pub name: Option<String>,
     pub given_name: Option<String>,
     pub family_name: Option<String>,
+    /// Echo of the `nonce` the authorize request sent.
+    ///
+    /// Browser continuation binds the token it receives back to the attempt
+    /// that asked for it: a token whose nonce does not match, or which carries
+    /// none at all, is discarded rather than held. Absent on tokens minted by
+    /// the older provider-button flow, which does not send a nonce — hence
+    /// `Option`, and hence continuation treating `None` as a mismatch rather
+    /// than as permission.
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 impl IdTokenClaims {
@@ -754,7 +760,7 @@ pub async fn refresh_access_token_classified(
 
     let body = serde_json::json!({
         "AuthFlow": "REFRESH_TOKEN_AUTH",
-        "ClientId": COGNITO_CLIENT_ID,
+        "ClientId": crate::oauth::cognito_client_id(),
         "AuthParameters": {
             "REFRESH_TOKEN": refresh_token
         }

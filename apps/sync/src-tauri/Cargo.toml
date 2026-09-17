@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.221"
+version = "0.10.276"
 edition = "2021"
 
 [build-dependencies]
@@ -13,6 +13,8 @@ hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
 hq-platform = { path = "../../../crates/hq-platform" }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
+# Test-only embedded loopback WebDriver; absent from normal builds.
+tauri-plugin-wdio-webdriver = { version = "=1.4.0", optional = true }
 tauri-plugin-http = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
@@ -95,6 +97,7 @@ webpki-roots = "1"
 ulid = "1"
 bytes = "1"
 notify = "8"
+os_info = "3.14"
 # Strict SemVer comparison for the release-channel resolver in
 # `util/release_channel.rs`. We need correct pre-release ordering
 # (`1.0.0-alpha.1 < 1.0.0-beta.1 < 1.0.0`) when picking the newest
@@ -213,6 +216,8 @@ mac-notification-sys = "0.6"
 objc2-core-foundation = "0.3"
 
 [features]
+# Explicit opt-in for packaged native QA only. Never enable for distribution.
+meet-native-webdriver = ["dep:tauri-plugin-wdio-webdriver"]
 journal-cli = []
 
 # CI-only probe compiled into the production menubar binary. It is off by

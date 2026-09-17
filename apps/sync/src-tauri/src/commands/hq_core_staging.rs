@@ -28,6 +28,8 @@
 //!     report always renders even when staging is unreachable.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -73,7 +75,7 @@ fn staging_index_cache_is_fresh(built_at: Instant, now: Instant, ttl: Duration) 
 // ── Eligibility + token resolution ────────────────────────────────────────────
 
 /// Read the signed-in email from the locally-cached Cognito id_token. Same
-/// reader the sync path + `event_push_eligible` use; any failure → None.
+/// reader used by the sync path; any failure → None.
 fn signed_in_email() -> Option<String> {
     crate::commands::cognito::read_tokens_from_file()
         .ok()
@@ -463,6 +465,22 @@ pub struct RescueRunResult {
     pub log_tail: String,
     /// Full log file path on disk for `Open in Finder` / debug.
     pub log_path: String,
+    /// Sanitized bounded diagnostic retained only for consent-gated telemetry.
+    #[serde(skip_serializing)]
+    pub(crate) rescue_stderr_tail: String,
+    /// Path-free provenance of the `npx` executable used for this rescue.
+    #[serde(skip_serializing)]
+    pub(crate) npx_resolution: crate::commands::hq_core_state::CoreUpdateNpxResolution,
+    /// Whether the post-update drift baseline was written. This stays off the
+    /// IPC result: exit code remains the user's update outcome, while native
+    /// retry bookkeeping must know that drift data still needs repair.
+    #[serde(skip_serializing)]
+    pub(crate) baseline_persisted: bool,
+    /// Target recorded with a failed baseline write. This stays off IPC just
+    /// like `baseline_persisted`; it lets both manual and automatic wrappers
+    /// arm the same durable repair path without re-resolving the target.
+    #[serde(skip_serializing)]
+    pub(crate) baseline_retry_target: String,
 }
 
 /// Resolve the user's HQ folder using the same 4-tier resolver the rest of
@@ -494,9 +512,26 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
 ///
 /// Crate-public: shared by `hq_core_update::install_hq_core_update` so the
 /// prod-update and staging paths build the invocation identically.
-pub(crate) fn rescue_command() -> tokio::process::Command {
-    let npx = paths::resolve_bin("npx");
-    let mut cmd = paths::tokio_spawn_command(&npx, &[]);
+fn npx_telemetry_resolution(
+    npx: &paths::ResolvedProgram,
+) -> crate::commands::hq_core_state::CoreUpdateNpxResolution {
+    crate::commands::hq_core_state::CoreUpdateNpxResolution {
+        resolved: npx.is_spawnable(),
+        source: if npx.is_resolved() {
+            paths::resolution_source_of(Path::new(&npx.path)).telemetry_value()
+        } else {
+            "not_resolved"
+        },
+    }
+}
+
+pub(crate) fn rescue_command() -> (
+    tokio::process::Command,
+    crate::commands::hq_core_state::CoreUpdateNpxResolution,
+) {
+    let npx = paths::resolve_bin_with_kind("npx");
+    let npx_resolution = npx_telemetry_resolution(&npx);
+    let mut cmd = paths::tokio_spawn_command(&npx.path, &[]);
     cmd.arg("-y")
         .arg(format!(
             "--package={}@{}",
@@ -508,7 +543,9 @@ pub(crate) fn rescue_command() -> tokio::process::Command {
         // node/npx install dirs so npx can resolve `node`. Mirrors the
         // runner spawn in `commands::sync`.
         .env("PATH", paths::child_path());
-    cmd
+    #[cfg(not(windows))]
+    cmd.envs(crate::commands::install_deps::managed_git_env());
+    (cmd, npx_resolution)
 }
 
 /// Canonical rescue argument vector — the SHARED invocation contract.
@@ -635,7 +672,15 @@ async fn run_replace_from_staging_observed(
         None,
     );
 
-    let outcome = run_replace_from_staging_inner().await;
+    let outcome = run_replace_from_staging_inner(observation.source()).await;
+    if let Ok(run) = &outcome {
+        crate::commands::hq_core_state::arm_baseline_retry_after_successful_core_update(
+            crate::commands::hq_core_state::Channel::Staging,
+            &run.baseline_retry_target,
+            run.exit_code,
+            run.baseline_persisted,
+        );
+    }
     match &outcome {
         Ok(run) if run.exit_code == 0 => {
             crate::commands::hq_core_state::emit_core_update_event(
@@ -654,41 +699,47 @@ async fn run_replace_from_staging_observed(
                 None,
             );
         }
-        Ok(run) => crate::commands::hq_core_state::emit_core_update_event(
-            "core_update_failed",
+        Ok(run) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
-            "failed",
-            Some(crate::commands::hq_core_state::Channel::Staging),
+            crate::commands::hq_core_state::Channel::Staging,
             local_before.as_deref(),
-            None,
             auto_updates,
             Some(eligible),
             observation.version_behind(),
             started.elapsed(),
             Some(run.exit_code),
-            Some("rescue_exit"),
-            None,
+            "rescue_exit",
+            crate::commands::hq_core_state::CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(&run.rescue_stderr_tail),
+                rescue_failure_category:
+                    crate::commands::hq_core_state::classify_rescue_exit_failure(
+                        &run.rescue_stderr_tail,
+                        run.npx_resolution,
+                    ),
+                npx_resolution: Some(run.npx_resolution),
+                // Staging updates never run the production managed-Git retry.
+                managed_git_retry:
+                    crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
+            },
         ),
-        Err(error) => crate::commands::hq_core_state::emit_core_update_event(
-            "core_update_failed",
+        Err(error) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
-            "failed",
-            Some(crate::commands::hq_core_state::Channel::Staging),
+            crate::commands::hq_core_state::Channel::Staging,
             local_before.as_deref(),
-            None,
             auto_updates,
             Some(eligible),
             observation.version_behind(),
             started.elapsed(),
             None,
-            Some(error.kind().label()),
-            None,
+            error.kind().label(),
+            crate::commands::hq_core_state::core_update_failure_details(error),
         ),
     }
     outcome
 }
 
 async fn run_replace_from_staging_inner(
+    update_source: &'static str,
 ) -> Result<RescueRunResult, crate::commands::hq_core_state::CoreUpdateError> {
     // Settings toggle: @indigo user opted out of the DEFAULT staging
     // channel. The pill should already be hidden when the toggle is
@@ -764,11 +815,13 @@ async fn run_replace_from_staging_inner(
 
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so a rescue can't race prewarm/sync into a corrupt `_npx` tree.
+    let (mut cmd, npx_resolution) = rescue_command();
     materialize_rescue_cache().await.map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
             crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
             error,
         )
+        .with_npx_resolution(npx_resolution)
     })?;
 
     let _update_guard =
@@ -777,13 +830,13 @@ async fn run_replace_from_staging_inner(
                 crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
                 error,
             )
+            .with_npx_resolution(npx_resolution)
         })?;
 
     // npx -y --package=@indigoai-us/hq-cloud@<pin> hq-rescue
     //     --hq-root <folder> --source <repo> --yes
     // Staging leaves --ref to the engine default (main) and has no floor SHA.
     // Token is passed via env (never in argv — argv shows up in `ps`).
-    let mut cmd = rescue_command();
     cmd.args(build_rescue_args(&hq_folder, &repo, None, None))
         .env("GH_TOKEN", &token)
         .stdout(std::process::Stdio::from(log_file_for_stdout))
@@ -794,33 +847,52 @@ async fn run_replace_from_staging_inner(
             crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
             format!("spawn rescue script: {error}"),
         )
+        .with_npx_resolution(npx_resolution)
     })?;
 
     let exit_code = status.code().unwrap_or(-1);
-    if exit_code == 0 {
-        let client = authed_client(&token).map_err(|error| {
-            crate::commands::hq_core_state::CoreUpdateError::new(
-                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                error,
+    let baseline_persisted = if exit_code == 0 {
+        match authed_client(&token) {
+            Ok(client) => match crate::commands::hq_core_state::persist_remote_baseline(
+                &hq_folder, &client, &repo, "main",
             )
-        })?;
-        let commit = crate::commands::hq_core_state::persist_remote_baseline(
-            &hq_folder, &client, &repo, "main",
-        )
-        .await
-        .map_err(|error| {
-            crate::commands::hq_core_state::CoreUpdateError::new(
-                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                format!("staging update applied but baseline persistence failed: {error}"),
-            )
-        })?;
-        log(
-            "hq-core-staging",
-            &format!("persisted normalized drift baseline {repo}@{commit}"),
-        );
-    }
+            .await
+            {
+                Ok(commit) => {
+                    log(
+                        "hq-core-staging",
+                        &format!("persisted normalized drift baseline {repo}@{commit}"),
+                    );
+                    true
+                }
+                Err(error) => {
+                    crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                        update_source,
+                        crate::commands::hq_core_state::Channel::Staging,
+                        "hq-core-staging",
+                        &format!("staging update applied but baseline persistence failed: {error}"),
+                    );
+                    false
+                }
+            },
+            Err(error) => {
+                crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                    update_source,
+                    crate::commands::hq_core_state::Channel::Staging,
+                    "hq-core-staging",
+                    &format!(
+                        "staging update applied but baseline persistence failed: build baseline client: {error}"
+                    ),
+                );
+                false
+            }
+        }
+    } else {
+        true
+    };
     let log_tail =
         tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+    let rescue_stderr_tail = read_rescue_diagnostic_tail(&log_path).unwrap_or_default();
 
     log(
         "hq-core-staging",
@@ -831,7 +903,36 @@ async fn run_replace_from_staging_inner(
         exit_code,
         log_tail,
         log_path: log_path.display().to_string(),
+        rescue_stderr_tail,
+        npx_resolution,
+        baseline_persisted,
+        // The staged rescue follows `main`; the durable marker is channel
+        // scoped, so a later resolved main SHA can perform the repair.
+        baseline_retry_target: "main".to_string(),
     })
+}
+
+/// Read only the terminal 16 KiB of the combined rescue log before applying
+/// the Core-update diagnostic redaction. The file itself is never attached to
+/// telemetry, and this bounded read avoids making a maliciously large log part
+/// of the update reporting path.
+pub(crate) fn read_rescue_diagnostic_tail(path: &Path) -> Result<String, String> {
+    let mut file =
+        std::fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let length = file
+        .metadata()
+        .map_err(|error| format!("stat {}: {error}", path.display()))?
+        .len();
+    let limit = hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES as u64;
+    file.seek(SeekFrom::Start(length.saturating_sub(limit)))
+        .map_err(|error| format!("seek {}: {error}", path.display()))?;
+    let mut bytes = Vec::with_capacity(length.min(limit) as usize);
+    file.take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    Ok(hq_telemetry::redact_core_update_diagnostic_tail(
+        &String::from_utf8_lossy(&bytes),
+    ))
 }
 
 /// Read the last N lines of a log file. Pure stdlib so we don't pull in
@@ -851,6 +952,129 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
+    use crate::util::test_support::{scoped_home, write_usable_managed_git, ENV_MUTEX};
+
+    #[test]
+    fn non_spawnable_windows_npx_shim_is_not_reported_as_resolved() {
+        for kind in [
+            paths::ResolvedProgramKind::Extensionless,
+            paths::ResolvedProgramKind::OtherExtension,
+        ] {
+            let npx = paths::ResolvedProgram {
+                path: "C:\\Users\\alice\\AppData\\Roaming\\npm\\npx".to_string(),
+                kind,
+            };
+
+            assert!(!npx_telemetry_resolution(&npx).resolved, "{kind:?}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rescue_command_sets_managed_git_environment_when_installed() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        write_usable_managed_git(home.path());
+        crate::commands::install_deps::ensure_managed_git_shim_in(home.path())
+            .expect("managed git shim");
+        let _home = scoped_home(home.path());
+
+        let (command, _) = rescue_command();
+        let env: std::collections::HashMap<_, _> = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect();
+
+        assert_eq!(
+            env.get("GIT_EXEC_PATH").map(String::as_str),
+            Some(
+                home.path()
+                    .join("Library/Application Support/Indigo HQ/toolchain/git/libexec/git-core")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            env.get("GIT_TEMPLATE_DIR").map(String::as_str),
+            Some(
+                home.path()
+                    .join("Library/Application Support/Indigo HQ/toolchain/git/share/git-core/templates")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rescue_command_leaves_git_environment_unset_without_managed_git() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _home = scoped_home(home.path());
+
+        let (command, _) = rescue_command();
+        let env_names: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_EXEC_PATH"),
+            "a system git must keep its own exec-path configuration: {env_names:?}"
+        );
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_TEMPLATE_DIR"),
+            "a system git must keep its own template configuration: {env_names:?}"
+        );
+    }
+
+    #[test]
+    fn rescue_diagnostic_tail_is_capped_at_the_shared_16kib_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("rescue.log");
+        let input = format!(
+            "discard-me-{}diagnostic-tail",
+            "x".repeat(hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES)
+        );
+        std::fs::write(&log_path, input).unwrap();
+
+        let tail = read_rescue_diagnostic_tail(&log_path).unwrap();
+
+        assert_eq!(
+            tail.len(),
+            hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES
+        );
+        assert!(tail.ends_with("diagnostic-tail"));
+        assert!(!tail.contains("discard-me-"));
+    }
+
+    #[test]
+    fn rescue_diagnostic_tail_redacts_home_paths_before_sentry() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("rescue.log");
+        std::fs::write(
+            &log_path,
+            "HOME=/Users/alice\nfatal: cannot read /Users/alice/.npm/_logs/rescue.log",
+        )
+        .unwrap();
+
+        let tail = read_rescue_diagnostic_tail(&log_path).unwrap();
+
+        assert!(!tail.contains("alice"));
+        assert!(!tail.contains("HOME="));
+        assert!(!tail.contains("/Users/[user]/.npm/_logs/rescue.log"));
+        assert!(tail.contains("[Filtered]"));
+    }
 
     #[test]
     fn staging_index_cache_is_fresh_inside_ttl() {

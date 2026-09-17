@@ -1348,7 +1348,11 @@ pub fn cli_install_needed(local: Option<&str>, latest: &str, hq_installed: bool)
 /// CLI below this version as missing and reinstalls it on the next prompt. Keep
 /// the two in sync: a CLI hq-core refuses to run with is one the desktop app
 /// should not sit on for the updater's launch stagger or its 6h interval either.
-pub const HQ_CLI_MIN_VERSION: &str = "5.103.26";
+///
+/// 5.115.4: the create-bot flow passes `--kind`/`--company` for company bots
+/// and relies on the bot-kinds contract (hq-cli #596/#598/#599/#605); an
+/// older CLI answers `unknown option '--kind'`.
+pub const HQ_CLI_MIN_VERSION: &str = "5.115.4";
 
 /// Is a *readable* installed version below [`HQ_CLI_MIN_VERSION`]?
 ///
@@ -3998,6 +4002,14 @@ fn npm_error_code(detail: &str) -> String {
 /// Temporary npm registry and resolution failures already retry on the next
 /// scheduled update. Preserve this current-main classification while rebasing
 /// the permission diagnostics so a telemetry fix cannot make them noisy again.
+///
+/// This is the ENV-BLIND code allow-list and must stay one: it never contains
+/// E404. The env-aware [`classify_install_failure_with_environment`] separately
+/// maps a pinned npmjs tarball 404 to `ExpectedTransientRegistry` (HQ-DESKTOP-6D,
+/// the tarball-layer twin of the ETARGET lag) via
+/// [`is_npmjs_pinned_tarball_not_yet_served`], WITHOUT widening this list — so
+/// every env-blind caller and `InstallEnvironment::default()` keep today's exact
+/// behaviour.
 fn is_expected_transient_registry_failure(detail: &str) -> bool {
     matches!(
         npm_error_code(detail).as_str(),
@@ -4184,6 +4196,12 @@ fn foreign_registry_404_signature(detail: &str) -> String {
 /// definitionally `unknown`/`none` for a 404 and carry no discriminating power.
 /// Derived from the shared [`e404_discriminator`] so the group and the episode
 /// key agree.
+///
+/// An npmjs TARBALL 404 reaches this signature (`E404:npmjs:tarball`) ONLY when it
+/// is NOT the pinned-version serving lag — an unpinned/default env, or a pin for a
+/// different version — because [`classify_install_failure_with_environment`]
+/// reclassifies the pinned case to `ExpectedTransientRegistry` upstream
+/// (HQ-DESKTOP-6D), so it never stays `Unexpected` and never reaches here.
 fn unexpected_e404_signature(detail: &str) -> String {
     let (origin, resource) = e404_discriminator(detail);
     format!("E404:{}:{}", origin.tag_value(), resource.tag_value())
@@ -4220,6 +4238,45 @@ fn npm_404_names_hq_cli_packument(detail: &str) -> bool {
     path.ends_with("/@indigoai-us%2fhq-cli") || path.ends_with("/@indigoai-us/hq-cli")
 }
 
+/// Whether npm's 404 GET line names the requested `@indigoai-us/hq-cli` TARBALL
+/// object for EXACTLY `version` — a path ending in
+/// `/@indigoai-us/hq-cli/-/hq-cli-<version>.tgz` on whatever host the 404 line
+/// named. The tarball-layer companion to [`npm_404_names_hq_cli_packument`]:
+/// registry.npmjs.org lists a version in the packument only once its publish PUT
+/// landed, so a 404 for that same version's own tarball object is a serving lag
+/// (HQ-DESKTOP-6D), not an absent version. `version` is the exact string the
+/// updater pinned into [`install_argv`] (`env.target_version`); an empty version,
+/// or an absent/unparseable 404 URL, returns false. Uses the same line-prefix and
+/// path-parsing discipline as [`npm_404_names_hq_cli_packument`] — lowercase the
+/// URL, strip scheme+authority, drop any query/fragment and trailing slash — and
+/// lowercases `version` so a case difference cannot hide a match. The parsed path
+/// is consumed only for this boolean and never reaches Sentry.
+fn npm_404_names_hq_cli_tarball_for(detail: &str, version: &str) -> bool {
+    let version = version.trim().to_ascii_lowercase();
+    if version.is_empty() {
+        return false;
+    }
+    let Some(url) = npm_404_get_url(detail) else {
+        return false;
+    };
+    let lower = url.to_ascii_lowercase();
+    let Some(after_scheme) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let Some(slash) = after_scheme.find('/') else {
+        return false;
+    };
+    let path = after_scheme[slash..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    path.ends_with(&format!("/@indigoai-us/hq-cli/-/hq-cli-{version}.tgz"))
+}
+
 /// Whether a failed npm install is the "this machine's npm resolves the
 /// `@indigoai-us` scope through a registry that does not carry hq-cli" condition:
 /// an E404 whose own 404 line names a non-npmjs host AND the requested
@@ -4228,11 +4285,13 @@ fn npm_404_names_hq_cli_packument(detail: &str) -> bool {
 /// auth-gated 403 masked as a 404 — that no updater code change can install
 /// through, so it is reported at Warning under its own attributed group.
 ///
-/// Keyed on npm's OWN structured signals and disjoint from every other arm: no
-/// other classifier arm matches `code == E404` today, and the lifecycle
-/// exclusion keeps a third-party build failure whose stderr merely mentions 404
-/// on its own per-package lifecycle attribution. The packument gate is
-/// deliberately narrow: a foreign-host 404 for a TARBALL or a transitive
+/// Keyed on npm's OWN structured signals and disjoint from every other arm: it
+/// requires a FOREIGN origin, so it cannot overlap the env-aware npmjs-pinned
+/// tarball transient ([`is_npmjs_pinned_tarball_not_yet_served`], the only other
+/// arm that matches `code == E404`, which requires the npmjs origin); the
+/// lifecycle exclusion keeps a third-party build failure whose stderr merely
+/// mentions 404 on its own per-package lifecycle attribution. The packument gate
+/// is deliberately narrow: a foreign-host 404 for a TARBALL or a transitive
 /// DEPENDENCY (rather than the hq-cli package document itself) is NOT proof the
 /// configured registry lacks hq — it can be a broken published artifact — so it
 /// stays `Unexpected` at Error under its own `E404:foreign:<resource>` signature.
@@ -4240,6 +4299,36 @@ fn is_foreign_registry_package_missing(detail: &str) -> bool {
     npm_error_code(detail) == "E404"
         && npm_registry_origin(detail) == NpmRegistryOrigin::Foreign
         && npm_404_names_hq_cli_packument(detail)
+        && !has_npm_lifecycle_failure_marker(detail)
+        && !npm_lifecycle_failure(detail).failed
+}
+
+/// Whether a failed npm install is the "registry.npmjs.org lists the version the
+/// updater just resolved but is not yet serving its tarball object" condition
+/// (HQ-DESKTOP-6D): an E404 whose own 404 line names registry.npmjs.org AND the
+/// `@indigoai-us/hq-cli` TARBALL for the EXACT version the updater pinned
+/// (`env.target_version`), with no lifecycle failure. This is the tarball-layer
+/// twin of the ETARGET packument lag that [`is_expected_transient_registry_failure`]
+/// already absorbs: npm stores the tarball in the SAME publish PUT that updates
+/// the packument, so a listed-but-unserved tarball is a self-healing serving-lag
+/// transient by construction — the next scheduled check installs it, and no
+/// updater code change can install through a registry-served 404.
+///
+/// Deliberately confined to hq-cli's OWN tarball at the pinned version: an npmjs
+/// packument 404, a foreign-host 404, a tarball for any OTHER package or any
+/// version OTHER than the pin, a default (unpinned) environment, and any E404 with
+/// a lifecycle marker all fall outside this predicate and stay loud at Error. The
+/// pin requirement is what confines the downgrade to the version the updater
+/// itself resolved from `/latest`. Keyed on npm's OWN structured signals; the
+/// parsed URL is consumed only for the boolean and never reaches Sentry.
+fn is_npmjs_pinned_tarball_not_yet_served(detail: &str, env: &InstallEnvironment) -> bool {
+    npm_error_code(detail) == "E404"
+        && npm_registry_origin(detail) == NpmRegistryOrigin::Npmjs
+        && npm_404_resource(detail) == Npm404Resource::Tarball
+        && env
+            .target_version
+            .as_deref()
+            .is_some_and(|version| npm_404_names_hq_cli_tarball_for(detail, version))
         && !has_npm_lifecycle_failure_marker(detail)
         && !npm_lifecycle_failure(detail).failed
 }
@@ -4936,7 +5025,10 @@ pub fn classify_install_failure_with_final_attempt(
         // documents. npm resolved the `@indigoai-us` scope through a registry that
         // does not carry the package: a permanent local registry misconfiguration,
         // reported at Warning under its own attributed group. Disjoint from every
-        // other arm because no other arm matches `code == E404`.
+        // other arm in this env-blind ladder; the only other E404 arm — the
+        // env-aware npmjs-pinned tarball transient — lives in
+        // `classify_install_failure_with_environment` and requires the npmjs origin
+        // this Foreign arm excludes.
         InstallFailureKind::ForeignRegistryPackageMissing
     } else if is_missing_global_install_target(detail, prefix) {
         // Placed AFTER the lifecycle arm so a third-party build failure keeps its
@@ -4980,13 +5072,23 @@ fn probed_node_major(env: &InstallEnvironment) -> Option<u32> {
 
 /// Classify a failed npm install WITH the probed toolchain environment. A strict
 /// refinement of [`classify_install_failure_with_final_attempt`]: it delegates
-/// first and rewrites the result ONLY when the delegate returned exactly
-/// `Unexpected` AND the probed Node major parsed AND is strictly below
-/// [`MIN_NODE_MAJOR`] — a runtime the CLI's own `engines.node` makes install
-/// impossible on. Every expected/lifecycle kind is returned untouched, and a
-/// machine on a supported Node (or one whose probe was unparseable) is
-/// byte-identical to the env-blind classifier, so `InstallEnvironment::default()`
-/// reproduces today's behaviour for every existing caller.
+/// first and rewrites the result ONLY from a base of exactly `Unexpected`, in two
+/// disjoint cases —
+///   * [`is_npmjs_pinned_tarball_not_yet_served`] holds (HQ-DESKTOP-6D): an npmjs
+///     tarball 404 for the exact pinned version is the mid-publish serving-lag
+///     twin of ETARGET, so it becomes `ExpectedTransientRegistry`; OR
+///   * the probed Node major parsed AND is strictly below [`MIN_NODE_MAJOR`] — a
+///     runtime the CLI's own `engines.node` makes install impossible on — so it
+///     becomes `UnsupportedNode`.
+///
+/// The tarball refinement is checked FIRST: npm's own structured 404 proves npm
+/// ran and resolved the packument for this attempt, so the Node-floor inference
+/// (which fires when npm dies BEFORE emitting a structured block) does not apply;
+/// once the serving lag clears, the next check reclassifies exactly as today.
+/// Every expected/lifecycle kind is returned untouched, and because the tarball
+/// arm requires a pinned `target_version` (absent by default) and the Node arm a
+/// sub-floor probe, `InstallEnvironment::default()` stays byte-identical to the
+/// env-blind classifier and reproduces today's behaviour for every existing caller.
 pub fn classify_install_failure_with_environment(
     exit_code: Option<i32>,
     detail: &str,
@@ -5000,6 +5102,18 @@ pub fn classify_install_failure_with_environment(
         prefix,
         final_attempt_forced,
     );
+    if base == InstallFailureKind::Unexpected && is_npmjs_pinned_tarball_not_yet_served(detail, env)
+    {
+        // HQ-DESKTOP-6D: registry.npmjs.org lists the version the updater just
+        // resolved but is not yet serving its tarball object — the tarball-layer
+        // twin of the ETARGET packument lag. It self-heals on the next scheduled
+        // check and no updater change can install through it, so reuse the existing
+        // transient-registry disposition (no Sentry capture, transient UI copy,
+        // scheduled retry). Refined BEFORE the unsupported-Node arm: npm's own
+        // structured 404 proves npm ran for this attempt, so the Node-floor
+        // inference does not apply.
+        return InstallFailureKind::ExpectedTransientRegistry;
+    }
     if base == InstallFailureKind::Unexpected
         && probed_node_major(env).is_some_and(|major| major < MIN_NODE_MAJOR)
     {
@@ -6142,7 +6256,10 @@ pub fn report_install_failure_with_environment(
             // broken local npm prefix; the foreign-registry downgrade fires ONLY when
             // npm's own 404 line names a non-npmjs host, so a npmjs- or unknown-origin
             // E404 stays at Error (see report_install_failure_with_environment's E404
-            // arm and install_failure_signature).
+            // arm and install_failure_signature) — EXCEPT the pinned npmjs tarball
+            // serving lag (HQ-DESKTOP-6D), which classify_install_failure_with_environment
+            // reclassifies to ExpectedTransientRegistry upstream, so it returns None
+            // from the report and never reaches this level decision at all.
             let level = if matches!(
                 kind,
                 InstallFailureKind::ExpectedBinCollision
@@ -6258,7 +6375,9 @@ pub fn install_failure_episode_key_with_environment(
         // This preserves today's once-per-published-version cadence for E404 (the
         // reported HQ-DESKTOP-5Q count was bounded that way) while carrying the new
         // origin/resource attribution. E404 is never the shapeless `none` shape, so
-        // the carve-out below cannot swallow it.
+        // the carve-out below cannot swallow it. (The pinned npmjs tarball serving
+        // lag, HQ-DESKTOP-6D, is ExpectedTransientRegistry rather than Unexpected, so
+        // it is NotReportable and never mints a key here.)
         if npm_error_code(detail) == "E404" {
             let key = format!("{latest}|unexpected|{}", unexpected_e404_signature(detail));
             return Some(if env.managed_toolchain_retry {
@@ -12934,7 +13053,7 @@ mod tests {
             interpreter_dir.to_str().unwrap(),
         );
 
-        assert_eq!(result.local.as_deref(), Some("5.88.1"));
+        assert_eq!(result.local.as_deref(), Some("5.88.1"), "{:?}", result.probes);
         assert_eq!(result.probes.hq_version, VersionProbeOutcome::Succeeded);
         assert!(!should_report_unreadable_version(&result));
     }
@@ -15545,6 +15664,231 @@ mod tests {
             ),
             InstallFailureKind::Unexpected
         );
+    }
+
+    // --- E404 npmjs tarball serving lag (HQ-DESKTOP-6D) -------------------------
+
+    /// An npmjs tarball serving-lag E404 (HQ-DESKTOP-6D): npm's own 404 line names
+    /// registry.npmjs.org and the `@indigoai-us/hq-cli` tarball object for `version`,
+    /// plus the "not in this registry" tail. Parameterised on the line prefix so both
+    /// the modern `npm error` and legacy `npm err!` spellings are covered.
+    fn npmjs_tarball_e404_stderr(prefix: &str, version: &str) -> String {
+        format!(
+            "{prefix} code E404\n\
+             {prefix} 404 Not Found - GET https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-{version}.tgz - Not found\n\
+             {prefix} 404\n\
+             {prefix} 404  '@indigoai-us/hq-cli@{version}' is not in this registry."
+        )
+    }
+
+    /// The install environment for a failure that pinned `version` — the version the
+    /// updater resolved from `/latest` and pinned into `install_argv`.
+    fn pinned_env(version: &str) -> InstallEnvironment {
+        InstallEnvironment::default().with_pinned_target_version(version)
+    }
+
+    #[test]
+    fn npmjs_tarball_404_for_the_pinned_version_is_an_expected_transient() {
+        // For both npm line prefixes and both toolchain sources, an npmjs tarball 404
+        // for the EXACT pinned version is the mid-publish serving transient: the same
+        // kind, suppressed report, transient UI copy, and non-reportable episode that
+        // ETARGET already earns.
+        for prefix in ["npm error", "npm err!"] {
+            for source in [NpmToolchainSource::Managed, NpmToolchainSource::UserPath] {
+                let stderr = npmjs_tarball_e404_stderr(prefix, "5.109.6");
+                let env = InstallEnvironment {
+                    toolchain_source: source,
+                    ..pinned_env("5.109.6")
+                };
+                assert_eq!(
+                    classify_install_failure_with_environment(Some(1), &stderr, None, false, &env),
+                    InstallFailureKind::ExpectedTransientRegistry,
+                    "{prefix} / {source:?}"
+                );
+                assert_eq!(
+                    install_failure_report_with_environment(Some(1), &stderr, None, false, &env),
+                    None,
+                    "{prefix} / {source:?}: a transient must not report"
+                );
+                let detail =
+                    install_failure_detail_with_environment(Some(1), &stderr, None, false, &env);
+                assert!(
+                    detail.contains("temporarily unavailable or was mid-publish")
+                        && detail.contains("retry automatically"),
+                    "{prefix} / {source:?}: transient UI copy: {detail}"
+                );
+                assert_eq!(
+                    report_install_failure_episode(
+                        Some(1),
+                        &stderr,
+                        None,
+                        false,
+                        &env,
+                        "5.109.6",
+                        &[],
+                    ),
+                    InstallFailureEpisode::NotReportable,
+                    "{prefix} / {source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn npmjs_tarball_404_stays_loud_outside_the_pinned_window() {
+        let stderr = npmjs_tarball_e404_stderr("npm error", "5.109.6");
+        // No pin (default env) and a pin for a DIFFERENT version both stay a loud
+        // Unexpected E404 with the attributed signature and once-per-version key.
+        for env in [InstallEnvironment::default(), pinned_env("5.109.5")] {
+            let kind =
+                classify_install_failure_with_environment(Some(1), &stderr, None, false, &env);
+            assert_eq!(kind, InstallFailureKind::Unexpected);
+            assert_eq!(
+                install_failure_signature(kind, &stderr, None),
+                "E404:npmjs:tarball"
+            );
+            assert!(
+                install_failure_report_with_environment(Some(1), &stderr, None, false, &env)
+                    .is_some()
+            );
+            assert_eq!(
+                install_failure_episode_key_with_environment(
+                    Some(1),
+                    &stderr,
+                    None,
+                    false,
+                    "5.109.6",
+                    &env,
+                ),
+                Some("5.109.6|unexpected|E404:npmjs:tarball".to_string())
+            );
+        }
+        // A tarball for a DIFFERENT npmjs package under the matching pin is not
+        // hq-cli's own tarball, so it stays loud too.
+        let other_package = "npm error code E404\n\
+            npm error 404 Not Found - GET https://registry.npmjs.org/some-dep/-/some-dep-1.2.3.tgz - Not found";
+        let kind = classify_install_failure_with_environment(
+            Some(1),
+            other_package,
+            None,
+            false,
+            &pinned_env("5.109.6"),
+        );
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, other_package, None),
+            "E404:npmjs:tarball"
+        );
+        // A lifecycle marker beside the same tarball 404 keeps it loud — the
+        // `!has_npm_lifecycle_failure_marker` clause is load-bearing, not incidental.
+        let with_lifecycle = format!(
+            "{}\nnpm error command failed\nnpm error command sh -c node-gyp rebuild",
+            npmjs_tarball_e404_stderr("npm error", "5.109.6")
+        );
+        assert_ne!(
+            classify_install_failure_with_environment(
+                Some(1),
+                &with_lifecycle,
+                None,
+                false,
+                &pinned_env("5.109.6"),
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
+        assert!(install_failure_report_with_environment(
+            Some(1),
+            &with_lifecycle,
+            None,
+            false,
+            &pinned_env("5.109.6"),
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn e404_anti_masking_guard_survives_the_tarball_refinement() {
+        // Every other E404 shape keeps its pre-HQ-DESKTOP-6D classification and
+        // signature even under a matching pin — the tarball refinement is disjoint.
+        // The npmjs PACKUMENT 404 (not a tarball) stays Unexpected/`E404:npmjs:packument`.
+        let npmjs_packument = npmjs_e404_stderr("npm error");
+        let kind = classify_install_failure_with_environment(
+            Some(1),
+            &npmjs_packument,
+            None,
+            false,
+            &pinned_env("5.103.27"),
+        );
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, &npmjs_packument, None),
+            "E404:npmjs:packument"
+        );
+        // A foreign-host TARBALL 404 stays Unexpected/`E404:foreign:tarball`.
+        let foreign_tarball = "npm error code E404\n\
+            npm error 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz - Not found";
+        let kind = classify_install_failure_with_environment(
+            Some(1),
+            foreign_tarball,
+            None,
+            false,
+            &pinned_env("5.109.6"),
+        );
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, foreign_tarball, None),
+            "E404:foreign:tarball"
+        );
+        // A foreign-host hq-cli PACKUMENT 404 stays ForeignRegistryPackageMissing.
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                &foreign_e404_stderr("npm error"),
+                None,
+                false,
+                &pinned_env("5.103.27"),
+            ),
+            InstallFailureKind::ForeignRegistryPackageMissing
+        );
+        // An unparseable E404 stays Unexpected/`E404:unknown:none`.
+        let unparseable = "npm error code E404\nnpm error 404 Not Found";
+        let kind = classify_install_failure_with_environment(
+            Some(1),
+            unparseable,
+            None,
+            false,
+            &pinned_env("5.109.6"),
+        );
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, unparseable, None),
+            "E404:unknown:none"
+        );
+    }
+
+    #[test]
+    fn npmjs_tarball_transient_covers_a_prerelease_pin_and_gates_on_exact_version() {
+        // A valid SemVer prerelease the updater pinned is matched too (both sides are
+        // lowercased), and the legacy `npm err!` prefix is handled.
+        let stderr = npmjs_tarball_e404_stderr("npm err!", "6.0.0-beta.1");
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                &stderr,
+                None,
+                false,
+                &pinned_env("6.0.0-beta.1"),
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
+        // The exact-version gate holds: a different version, or an empty version,
+        // never matches hq-cli's own `<version>.tgz`.
+        assert!(npm_404_names_hq_cli_tarball_for(&stderr, "6.0.0-beta.1"));
+        assert!(!npm_404_names_hq_cli_tarball_for(&stderr, "6.0.0-beta.2"));
+        assert!(!npm_404_names_hq_cli_tarball_for(&stderr, ""));
+        // A trailing query on the tarball URL is dropped before the compare.
+        let with_query = "npm error code E404\n\
+            npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz?cache=1 - Not found";
+        assert!(npm_404_names_hq_cli_tarball_for(with_query, "5.109.6"));
     }
 
     #[test]

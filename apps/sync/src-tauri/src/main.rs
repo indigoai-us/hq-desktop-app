@@ -3,6 +3,9 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
+#[cfg(feature = "meet-native-webdriver")]
+mod meet_native;
+
 mod boot_watchdog;
 mod commands;
 mod deep_link;
@@ -230,6 +233,14 @@ where
 /// `cleanup_before_exit()` (`tauri/src/app.rs`). No pump iteration intervenes,
 /// so exiting here is guaranteed to beat the fatal dispatch.
 ///
+/// This callback is the FALLBACK seam: it only fires when tao's handler was free
+/// at `WM_ENDSESSION` (the non-re-entrant path). When the handler is already
+/// taken — a `WM_ENDSESSION` delivered inside wry's `wait_with_pump` during
+/// WebView2 creation — tao panics re-entrantly before `RunEvent::Exit` can run,
+/// so that path is caught earlier by the `WH_CALLWNDPROC` intercept in
+/// `commands::session_end_intercept`. Both seams route through the same
+/// idempotent `windows_session_end_teardown`.
+///
 /// `app_initiated` is the discriminator, and it is sound in both directions:
 /// tauri-runtime-wry emits `RunEvent::ExitRequested` only when the last window
 /// is destroyed or on `Message::RequestExit` (which `AppHandle::exit` sends),
@@ -257,6 +268,12 @@ where
     terminate();
 }
 
+#[cfg(feature = "meet-native-webdriver")]
+fn main() {
+    meet_native::run();
+}
+
+#[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
     // The copied Windows update helper must run before Sentry, Tauri, and the
     // single-instance plugin. It waits for the real app to exit, then launches
@@ -295,6 +312,16 @@ fn main() {
         SENTRY_IDENTITY,
     );
     hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Running);
+
+    // HQ-DESKTOP-44 (re-entrant path): install the thread-local WH_CALLWNDPROC
+    // session-end intercept on THIS (event-loop) thread now — BEFORE
+    // `tauri::Builder::build()` — so it is armed for a `WM_ENDSESSION` that lands
+    // during the config-window / widget WebView2 creation tauri runs inside the
+    // `RunEvent::Ready` dispatch, where tao's handler is already taken and
+    // `RunEvent::Exit` can never fire. Do NOT move this after `build()`. See
+    // `commands::session_end_intercept` and the "Exit Lifecycle" doc.
+    #[cfg(target_os = "windows")]
+    commands::session_end_intercept::install_session_end_intercept();
 
     // Wire the foundation crate's injected dependencies before anything reads them:
     //  - the user-facing client version (from build-time APP_VERSION), and
@@ -340,7 +367,7 @@ fn main() {
         }
     }
 
-    crate::recovery::register_protocol(tauri::Builder::default())
+    let builder = crate::recovery::register_protocol(tauri::Builder::default())
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
             webview_asset_cache::handle_page_load(webview.label(), payload.event());
@@ -384,8 +411,18 @@ fn main() {
                 return;
             }
 
+            if hq_platform::launchagent::argv_is_launch_agent_relaunch(&argv) {
+                util::logfile::log(
+                    "app",
+                    "single-instance: ignored launchd KeepAlive relaunch (no focus steal)",
+                );
+                return;
+            }
+
             surface_existing_instance(app);
-        }))
+        }));
+
+    builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(
@@ -509,6 +546,21 @@ fn main() {
                 if window.label() == crate::recovery::WINDOW_LABEL {
                     crate::recovery::on_recovery_closed(window.app_handle());
                 }
+                // US-016: the call window — and ONLY the call window — owns the
+                // call registry. Once it is destroyed (user close, crash, kill)
+                // the session is gone with it, so drop every entry and any
+                // undrained pending target. Without this a crashed call window
+                // would leave the registry hot and refuse the next open with
+                // CALL_ACTIVE forever.
+                if crate::commands::calls::owns_window_label(window.label()) {
+                    let released = crate::commands::calls::release_all_sessions();
+                    if !released.is_empty() {
+                        crate::util::logfile::log(
+                            "calls",
+                            &format!("window destroyed; released={}", released.join(",")),
+                        );
+                    }
+                }
             }
             // No eager standalone-install probe here. `refresh_hq_work_install_cache`
             // force-probes with no TTL — on macOS that falls through to a fresh
@@ -534,7 +586,15 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::meet_transcript_projection::meet_transcript_project,
+            commands::meet_transcript_projection::meet_personal_transcript_project,
+            commands::meet_transcript_outbox::meet_transcript_outbox_enqueue,
+            commands::meet_transcript_outbox::meet_transcript_outbox_read,
+            commands::meet_transcript_outbox::meet_transcript_outbox_ack,
+            commands::meet_transcription::meet_transcription_status,
+            commands::meet_transcription::meet_transcribe_pcm,
             commands::app::quit_app,
+            commands::app::frontend_log,
             commands::app::bring_main_window_to_front,
             commands::app::hide_main_window,
             commands::app::open_settings_window,
@@ -552,6 +612,18 @@ fn main() {
             commands::oauth::start_oauth_login,
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
+            // Browser session continuation. Inert until the backend's rollout
+            // document says otherwise: `desktop_continuation_context`
+            // answers "off" on every failure, and the renderer only calls the
+            // rest after it answers "on".
+            commands::desktop_auth::desktop_continuation_context,
+            commands::desktop_auth::desktop_continuation_config,
+            commands::desktop_auth::desktop_continuation_deliver,
+            commands::desktop_auth::desktop_continuation_may_start,
+            commands::desktop_auth::desktop_continuation_start,
+            commands::desktop_auth::desktop_continuation_await_identity,
+            commands::desktop_auth::desktop_continuation_confirm,
+            commands::desktop_auth::desktop_continuation_cancel,
             commands::auth::get_auth_state,
             commands::auth::whoami,
             commands::auth::get_auth_session,
@@ -569,19 +641,20 @@ fn main() {
             commands::hq_work::install_hq_work,
             commands::hq_work::get_hq_work_handoff_card_shown,
             commands::hq_work::mark_hq_work_handoff_card_shown,
-            commands::config::get_hq_work_handoff,
-            commands::config::set_hq_work_handoff,
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
             commands::first_run::is_first_run,
             commands::first_run::should_show_auto_sync_notice,
             commands::first_run::mark_first_run_complete,
+            commands::window_material::window_material_capability,
+            commands::setup_secret::setup_store_secret,
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_main_window_vibrancy,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_setup_status,
+            commands::lifecycle::mark_welcome_setup_complete,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,
             commands::session_end_latch::session_end_latch_status,
@@ -624,6 +697,7 @@ fn main() {
             commands::install_manifest::record_install_complete,
             commands::install_stages::git_init,
             commands::install_stages::git_probe_user,
+            commands::install_stages::take_onboarding_failure_detail,
             commands::install_stages::register_search_index,
             commands::install_stages::install_default_packages,
             commands::install_stages::personalize_hq,
@@ -640,6 +714,13 @@ fn main() {
             commands::install_deps::install_git,
             commands::install_deps::install_gh,
             commands::install_deps::install_claude_code,
+            commands::install_deps::install_codex,
+            commands::install_deps::install_grok,
+            commands::agent_providers::preflight::agent_session_preflight,
+            commands::agent_providers::agent_provider_login_start,
+            commands::agent_providers::agent_provider_login_status,
+            commands::agent_providers::agent_provider_login_cancel,
+            commands::install_deps::install_session_provider,
             commands::install_deps::install_qmd,
             commands::install_deps::install_hq_cli,
             commands::install_deps::install_yq,
@@ -688,6 +769,17 @@ fn main() {
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
             commands::feedback::submit_bug_report,
+            commands::bots::local_bots_list,
+            commands::bots::local_bots_create,
+            commands::bots::local_bots_start,
+            commands::bots::local_bots_stop,
+            commands::bots::local_bots_remove,
+            commands::bots::local_bots_configure,
+            commands::bots::local_bots_promote,
+            commands::bots::local_bots_workers,
+            commands::bots::local_bots_list_remote,
+            commands::bots::local_bots_adopt,
+            commands::bots::local_bots_restore,
             commands::packages::list_packages,
             commands::packages::list_packages_cached,
             commands::packages::check_package_updates,
@@ -707,27 +799,8 @@ fn main() {
             // reader and the polling loop emits `sessions:updated`).
             // In-app agent sessions (feature-flagged dark by
             // `agent_session_flags`): the live registry + Claude driver.
-            commands::agent_session::agent_session_preflight,
-            commands::agent_session::provider_auth::agent_provider_login_start,
-            commands::agent_session::provider_auth::agent_provider_login_status,
-            commands::agent_session::provider_auth::agent_provider_login_cancel,
-            commands::agent_session::agent_session_start,
-            commands::agent_session::agent_session_send,
-            commands::agent_session::agent_session_respond_permission,
-            commands::agent_session::agent_session_answer_question,
-            commands::agent_session::agent_session_interrupt,
-            commands::agent_session::agent_session_set_permission_mode,
-            commands::agent_session::agent_session_end,
-            commands::agent_session::agent_session_list,
-            commands::agent_session::agent_session_replay,
-            commands::agent_session::agent_session_history_page,
-            commands::agent_session::agent_session_slash_commands,
             // Sessions composer `@`-mentions: the company directory + the DM
             // fan-out that runs after a mentioned message is sent.
-            commands::session_mentions::session_mention_candidates,
-            commands::session_mentions::session_mention_notify,
-            commands::agent_session::agent_session_cli_session_id,
-            commands::agent_session_launch::agent_session_open_in_app,
             // HQ-native context for the Sessions composer (read-only).
             commands::hq_context::hq_skill_catalog,
             commands::hq_context::hq_company_projects,
@@ -736,19 +809,9 @@ fn main() {
             commands::hq_context::hq_vault_files,
             commands::hq_context::hq_reference_text,
             commands::hq_context::hq_share_to_channel_preflight,
-            commands::session_share_channel::session_share_to_channel,
             // Project channels ↔ sessions: the join behind the sidebar's
             // session badges / hover cards and the strip's project pill.
-            commands::session_project_links::session_project_links,
-            commands::project_session_sharing::project_sessions_read,
             // Open / Share / Deploy on files a session produced.
-            commands::session_artifacts::session_artifact_stat,
-            commands::session_artifacts::session_artifact_open,
-            commands::session_artifacts::session_artifact_share,
-            commands::sessions::list_agent_sessions,
-            commands::sessions::claude::list_local_claude_sessions,
-            commands::sessions::codex::list_local_codex_sessions,
-            commands::sessions::history::list_session_history,
             // Mission Control — agency teams + answerable questions (read + answer).
             commands::agency::list_agency_teams,
             commands::agency::list_agency_questions,
@@ -817,11 +880,20 @@ fn main() {
             commands::meetings::meetings_cancel_bot,
             commands::meetings::meetings_set_company,
             commands::meetings::meetings_take_pending_focus,
+            commands::calls::calls_open_window,
+            commands::calls::calls_take_pending_target,
+            commands::calls::calls_window_ready,
+            commands::calls::calls_release,
+            commands::calls::calls_persist_pending,
+            commands::calls::calls_take_recovered,
+            commands::calls::calls_disposed,
             commands::meetings::open_meetings_window,
             commands::meetings::meetings_check_bot_for_url,
             commands::meetings::meetings_notify_detected,
             commands::meetings::meetings_clear_prompt_badge,
             commands::permissions::permissions_open_settings,
+            commands::permissions::call_media_permissions,
+            commands::permissions::call_media_permission_request,
             commands::permissions::permissions_force_native_register,
             commands::permissions::meetings_permissions_state,
             commands::permissions::open_meeting_permissions_window,
@@ -945,7 +1017,6 @@ fn main() {
                 return Ok(());
             }
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
-            commands::project_session_sharing::start_recovery(app.handle());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.
             #[cfg(target_os = "macos")]
@@ -968,6 +1039,14 @@ fn main() {
                 app.manage(commands::session_end_observer::SessionEndObserverHandle::start(
                     tracker,
                 ));
+                // HQ-DESKTOP-44 (re-entrant path): give the WH_CALLWNDPROC
+                // intercept the app handle so its bounded teardown can reach the
+                // session-end observer, and — only under the e2e-automation
+                // feature and the marker env var — arm the deterministic
+                // re-entrancy proof that parks the main thread in a nested pump.
+                commands::session_end_intercept::set_app_handle(app.handle().clone());
+                #[cfg(feature = "e2e-automation")]
+                commands::session_end_intercept::maybe_arm_reentrancy_probe(app.handle());
             }
             // Classify this launch (FirstRun / ExistingUpdate / Normal) and
             // cache it in managed state. MUST run before anything that can
@@ -975,8 +1054,12 @@ fn main() {
             // share/dm pollers below) — `machineId` is the tiebreaker that
             // distinguishes a brand-new install from a legacy user updating.
             // See commands/first_run.rs for the full rationale.
-            let launch_kind = commands::first_run::classify_launch(app.handle());
+            // Lifecycle first: it may write a missing `firstRunCompleted` back
+            // for a machine that is plainly set up, and the launch kind must
+            // read the repaired file — otherwise a lost marker still opens the
+            // setup card and sends the Dock click to the popover.
             commands::lifecycle::setup_lifecycle(app.handle());
+            let launch_kind = commands::first_run::classify_launch(app.handle());
 
             // US-104: cold-start hqwork:// on argv (if the OS delivered one).
             // Not an OS-scheme registration — only handle what we were given.
@@ -1076,7 +1159,13 @@ fn main() {
                 set_app_icon_from_bytes(HQ_ICON_PNG);
             }
 
-            let first_run = commands::first_run::should_autoshow_on_launch(launch_kind);
+            // Open the setup card on a brand-new install AND on any launch
+            // where HQ is not installed on this machine yet (see
+            // `lifecycle::launch_should_show_setup_card`).
+            let first_run = commands::lifecycle::launch_should_show_setup_card(
+                commands::first_run::should_autoshow_on_launch(launch_kind),
+                commands::lifecycle::current_lifecycle_state(app.handle()),
+            );
 
             // The very first launch opens the onboarding FLOATING CARD (transparent,
             // centered, no frosted popover material, no native window shadow) rather
@@ -1168,9 +1257,6 @@ fn main() {
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
-            // U59: hq-cloud itself decides V2 rollout admission; this sidecar
-            // only forwards local file changes through its minimal stdin API.
-            commands::realtime_mutation::setup_realtime_mutation_watcher(app.handle());
             // Supervise the watch daemon: respawn it if it dies while auto-sync
             // is on, so a crash/kill doesn't leave sync silently quiet.
             commands::daemon::setup_daemon_supervisor(app.handle());
@@ -1208,26 +1294,15 @@ fn main() {
             #[cfg(target_os = "macos")]
             commands::un_notify::register_delegate(app.handle());
 
-            // Mission Control safety poll (US-005). Since the filesystem watcher
-            // below carries local freshness, this timer is now a slow backstop
-            // (HQ_SYNC_SESSIONS_POLL_SECS, default 90s) for the change no file
-            // records — a `claude`/`codex` process exiting, seen only by the
-            // `pgrep` liveness scan. It emits the typed `sessions:updated` event
-            // on the same independent-timer pattern as the share/dm poller above.
-            commands::sessions::setup_sessions_poller(app.handle().clone());
-
-            // Mission Control event-driven wake (perf). Watches the local Claude/
-            // Codex session stores and the HQ `workspace` ledgers with `notify`,
-            // so an appended transcript refreshes the snapshot in ~300ms instead
-            // of waiting up to a full safety-poll interval. Best-effort: if the
-            // watcher cannot start it logs and the poll above remains the only
-            // refresh path.
-            commands::sessions::watch::setup_sessions_watcher(app.handle().clone());
+            // Mission Control polling loop (US-005). Re-scans the local Claude/
+            // Codex fleet on a configurable interval (HQ_SYNC_SESSIONS_POLL_SECS,
+            // default 5s) and emits the typed `sessions:updated` event so the UI
+            // stays fresh without a manual refresh — same independent-timer
+            // pattern as the share/dm poller above.
 
             // Project watch: notices a `prd.json` HQ writes while a session is
             // live, binds the session to it and emits
             // `agent-session:project-created` so the chat can offer a channel.
-            commands::session_project_links::setup_project_watch(app.handle().clone());
 
             // Agent CLI children spawned by `hq_desktop_core::stdio` join the
             // same process registry `terminate_all_for_exit` drains on quit.
@@ -1244,8 +1319,6 @@ fn main() {
             // the rest of the realtime surface; every path is best-effort.
             #[cfg(target_os = "macos")]
             {
-                commands::sessions::outpost::setup_outpost_mqtt_receiver(app.handle().clone());
-                commands::sessions::outpost::setup_outpost_pollers(app.handle().clone());
             }
 
             // SPIKE: env-var trigger to preview the custom notification banner
@@ -1440,107 +1513,58 @@ fn main() {
                 // with its honest `deferred` provenance rather than lose it to the
                 // deferral horizon. Bounded, panic-free, no Event Log work.
                 commands::daemon::flush_pending_watcher_fault_captures("app_quit_flush");
+                // Likewise a NON-fault capture whose deferred report read is still in
+                // flight (HQ-DESKTOP-66) names a measured crash — read + emit it now
+                // (a fast local-file read) rather than lose it to the deferral horizon.
+                commands::daemon::flush_pending_runner_report_captures("app_quit_flush");
                 #[cfg(target_os = "windows")]
                 if let Some(observer) = _app_handle
                     .try_state::<commands::session_end_observer::SessionEndObserverHandle>()
                 {
                     observer.shutdown(std::time::Duration::from_millis(500));
                 }
+                // US-016: a live call owns its own window. Give it a bounded
+                // chance to dispose its session (stopping camera + microphone
+                // and flushing pending completion work) before the process
+                // tears down. Never blocks the quit past its own budget.
+                commands::calls::dispose_call_windows_for_exit(
+                    _app_handle,
+                    commands::calls::DISPOSE_WAIT,
+                );
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
             }
 
             if matches!(&event, tauri::RunEvent::Exit) {
                 hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Destroyed);
 
-                // Windows only, and only when no ExitRequested preceded this:
-                // the OS is ending the desktop session, tao's event-loop runner
-                // is already latched in `Destroyed`, and the very next message
-                // its still-live pump dispatches would panic out of an
-                // `extern "system"` window procedure and abort the process.
-                // Run the teardown that ExitRequested would have run, then
-                // leave before the pump gets another iteration.
+                // Windows only, and only when no `ExitRequested` preceded this:
+                // the OS is ending the desktop session while tao's handler is
+                // FREE, so tao's runner is latched in `Destroyed` and the next
+                // message its still-live pump dispatches would panic out of an
+                // `extern "system"` window procedure and abort the process. Run
+                // the shared teardown, then leave before the pump gets another
+                // iteration.
                 //
-                // Every step is individually capped and the total is ~1.75s
-                // against Windows' 5s default `WaitToKillAppTimeout`. Children
-                // are terminated BEFORE the Sentry flush: at shutdown the
-                // network may already be down, and an orphaned sync daemon is a
-                // worse outcome than a dropped report.
+                // This arm is the FALLBACK seam for the non-re-entrant path. The
+                // re-entrant path — a `WM_ENDSESSION` delivered while the handler
+                // is already taken, inside wry's `wait_with_pump` during WebView2
+                // creation — panics before `RunEvent::Exit` can ever run, so it is
+                // caught earlier by the `WH_CALLWNDPROC` intercept installed in
+                // `main()` (`commands::session_end_intercept`). Both seams call the
+                // SAME `windows_session_end_teardown`, which is idempotent (a
+                // process-wide once-latch): whichever fires first wins and a second
+                // entry is a no-op. Every step is individually capped (~1.75s total
+                // against Windows' 5s default `WaitToKillAppTimeout`), children are
+                // terminated BEFORE the Sentry flush, and the owned-pid report is
+                // written BEFORE termination — ordering pinned by
+                // `scripts/native-seam-wiring.test.ts`.
                 #[cfg(target_os = "windows")]
                 handle_run_event_exit(
                     commands::process::app_initiated_exit(),
                     || {
-                        use commands::session_end_observer::SessionEndObserverHandle;
-                        use hq_desktop_core::sync_outcome::WindowsTerminatorAttribution;
-
-                        // FIRST, before anything else in the session-end teardown:
-                        // reaching this arm is unambiguous OS evidence that the
-                        // session is ending (tao raises `RunEvent::Exit` without a
-                        // preceding `ExitRequested` only on `WM_ENDSESSION`). Make
-                        // that durable in the process-global latch BEFORE the
-                        // one-shot `drop_pending_session_end_captures` sweep runs,
-                        // so a watcher capture built microseconds later — after the
-                        // sweep, during its own grace — still sees positive
-                        // evidence at resolution and suppresses (HQ-DESKTOP r3).
-                        // Bounded, allocation-free and panic-free: one monotonic
-                        // read and one atomic store, safe inside this window
-                        // procedure.
-                        commands::session_end_latch::note_windows_session_end();
-
-                        hq_telemetry::record_native_panic_seam(
-                            hq_telemetry::NativePanicSeam::AppSessionEndExit,
-                        );
-
-                        // Reaching this arm IS the affirmation a deferred
-                        // session-end watcher capture was waiting for: the OS told
-                        // this app directly that the session is ending. Drop the
-                        // held-back (benign) event instead of letting it race the
-                        // teardown. Bounded and allocation-only — it adds no
-                        // uncapped work to a teardown that runs inside a window
-                        // procedure.
-                        commands::daemon::drop_pending_session_end_captures();
-                        // A deferred FAULT capture is different: it names a real
-                        // 0xC0000409-class crash, not a benign session end, so it
-                        // must NOT be dropped here. Flush it immediately with its
-                        // honest `deferred` provenance, ahead of the capped Sentry
-                        // flush below. Bounded, panic-free, no Event Log work.
-                        commands::daemon::flush_pending_watcher_fault_captures("session_end_flush");
-
-                        // Corroborating signal, read BEFORE the observer is shut
-                        // down (shutdown moves its readiness out of the
-                        // affirming states). Recorded alongside — never instead
-                        // of — the branch marker, so a residual report shows
-                        // whether the two independent signals agreed.
-                        if let Some(observer) = _app_handle.try_state::<SessionEndObserverHandle>()
-                        {
-                            if observer.tracker().attribution_now()
-                                == WindowsTerminatorAttribution::SessionEndObserved
-                            {
-                                hq_telemetry::record_native_panic_seam(
-                                    hq_telemetry::NativePanicSeam::AppSessionEndObserved,
-                                );
-                            }
-                            observer.shutdown(std::time::Duration::from_millis(500));
-                        }
-
-                        // Ownership report, emitted while the registry still
-                        // holds the children about to be terminated. Env-gated
-                        // (`HQ_SYNC_SESSION_END_OWNED_PIDS`), so this is inert
-                        // in every shipped build; the live session-end proof
-                        // points it at a temp file. Its existence is what tells
-                        // that proof this teardown actually ran, and the pids
-                        // it lists are what the proof then requires to be dead
-                        // — the app declares what it owns instead of the test
-                        // guessing from process names.
-                        commands::process::report_session_end_owned_pids();
-
-                        commands::process::terminate_all_for_exit(
-                            std::time::Duration::from_millis(500),
-                        );
-
-                        // Leaving the process here skips the
-                        // `ClientInitGuard` drop that normally flushes Sentry,
-                        // so flush by hand under a hard cap.
-                        hq_telemetry::flush_within(std::time::Duration::from_millis(750));
+                        commands::session_end_intercept::windows_session_end_teardown(Some(
+                            _app_handle,
+                        ))
                     },
                     || std::process::exit(0),
                 );
@@ -1554,10 +1578,9 @@ fn main() {
             // US-004 WindowRouter: `DockIconClick` resolves to ShowDesktop, so
             // this opens the full desktop window — a Dock icon is the
             // affordance users associate with an application's main window,
-            // while the menu-bar icon stays the compact popover's affordance.
+            // and the menu-bar icon opens the same desktop workspace.
             // Show, never toggle: a Dock click that hides the window reads as a
-            // no-op. Signed-out users fall back to the popover's SignInPrompt
-            // inside `show_desktop_window`.
+            // no-op. Signed-out users can sign in inside the desktop workspace.
             //
             // `has_visible_windows` is deliberately ignored: the always-on-top
             // floating widget counts as a visible window, so honouring the flag
@@ -1569,8 +1592,10 @@ fn main() {
                 let _ = commands::desktop_alt::activation_policy(
                     commands::desktop_alt::ActivationSource::DockIconClick,
                 );
-                tray::show_desktop_window(_app_handle);
-                util::logfile::log("dock", "dock icon clicked: showing desktop window");
+                // Same rule as every other activation source: while setup
+                // still owns `main`, a Dock click lands on the installer card.
+                tray::activate_primary_surface(_app_handle);
+                util::logfile::log("dock", "dock icon clicked: opening primary surface");
             }
         });
 }
@@ -1659,5 +1684,96 @@ mod native_panic_tests {
             calls.borrow().is_empty(),
             "the app-initiated quit path must stay behaviourally unchanged"
         );
+    }
+}
+
+#[cfg(test)]
+mod mutation_trigger_removal_tests {
+    use std::path::{Path, PathBuf};
+
+    fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                rust_sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The shapes the removed trigger took in source: its module name, the
+    /// one-string form of the hq-cloud subcommand, and a `"sync"` literal
+    /// followed within a few tokens by a `"mutation"` literal, which is how a
+    /// spawn site lists npx arguments whether it writes them as `&str`s or
+    /// `.to_string()`s. Assembled at runtime so this file does not match
+    /// itself. A bare `"mutation"` literal is deliberately not enough:
+    /// unrelated code may legitimately contain that word.
+    fn references_mutation_trigger(text: &str) -> Option<String> {
+        let module = ["realtime_", "muta", "tion"].concat();
+        let one_string = ["sync ", "muta", "tion"].concat();
+        for needle in [&module, &one_string] {
+            if text.contains(needle.as_str()) {
+                return Some(needle.clone());
+            }
+        }
+        let sync_literal = "\"sync\"";
+        let mutation_literal = ["\"muta", "tion\""].concat();
+        let mut from = 0;
+        while let Some(at) = text[from..].find(sync_literal) {
+            let start = from + at + sync_literal.len();
+            let window_end = text
+                .char_indices()
+                .map(|(index, _)| index)
+                .find(|&index| index >= start + 48)
+                .unwrap_or(text.len());
+            if text[start..window_end].contains(mutation_literal.as_str()) {
+                return Some([sync_literal, " .. ", mutation_literal.as_str()].concat());
+            }
+            from = start;
+        }
+        None
+    }
+
+    /// Negative control for the scan: the detector must fire on the exact
+    /// lines the removed module used, or the sweep below proves nothing.
+    #[test]
+    fn detector_matches_the_removed_spawn_shapes() {
+        let module_use = ["commands::realtime_", "muta", "tion::setup"].concat();
+        let arg_vec = ["\"sync\".to_string(),\n\"muta", "tion\".to_string(),"].concat();
+        let arg_slice = ["[\"sync\", \"muta", "tion\", \"--stdin-json\"]"].concat();
+        let one_string = ["\"hq-cloud sync ", "muta", "tion --stdin-json\""].concat();
+        assert!(references_mutation_trigger(&module_use).is_some());
+        assert!(references_mutation_trigger(&arg_vec).is_some());
+        assert!(references_mutation_trigger(&arg_slice).is_some());
+        assert!(references_mutation_trigger(&one_string).is_some());
+        let unrelated = ["let kind = \"", "muta", "tion\"; // GraphQL operation"].concat();
+        assert!(references_mutation_trigger(&unrelated).is_none());
+    }
+
+    /// The desktop used to spawn the hq-cloud one-shot mutation subcommand
+    /// through npx for every changed path under the HQ root (measured at 15 npx+node
+    /// pairs a minute on an active HQ, each ~0.7 s CPU and ~220 MB) while the
+    /// runner's `--event-push` watcher already delivers realtime sync. The
+    /// trigger is gone; this keeps it from creeping back under another name.
+    #[test]
+    fn no_desktop_module_spawns_hq_cloud_sync_mutation() {
+        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_sources(&src, &mut files);
+        assert!(
+            !files.is_empty(),
+            "no Rust sources found under {}",
+            src.display()
+        );
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("read source");
+            if let Some(needle) = references_mutation_trigger(&text) {
+                panic!(
+                    "{} still references the removed realtime mutation trigger ({needle})",
+                    file.display()
+                );
+            }
+        }
     }
 }

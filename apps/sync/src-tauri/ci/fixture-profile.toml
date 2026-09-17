@@ -15,6 +15,35 @@
 # The other three workspace crates and every dependency are already cheap or
 # already cached. So the override is aimed at exactly that crate.
 #
+# The number below was 1, and at 1 this override bought nothing. Both facts
+# are now measured rather than assumed, because the reasoning that produced
+# `opt-level = 1` and a later `debug = false` attempt was wrong twice.
+#
+# Measurements, all from the bridge installer build:
+#
+#   opt-level  codegen/link block   cargo total   job
+#   3 (default)   ~375s             8m37s         -            run 33651446024
+#   1             418-446s          7m54s-8m21s   729s         run 35067622738
+#   0             92s               2m09s         268s, 385s   runs 35073514411,
+#                                                              35075102250
+#
+# Baseline for the job column is 762/764/769/773/788/802s over six runs, so
+# opt-level 0 lands far outside it while opt-level 1 never left it.
+#
+# The lesson is the shape of the curve, not the knob: for this crate opt-level 1
+# costs essentially what opt-level 3 costs, and only 0 skips enough of LLVM to
+# matter. A previous attempt read "opt-level = 1 changed nothing" as "the cost
+# is not codegen at any opt-level" and went looking at the linker and the PDB
+# instead. `debug = false` was tried on that theory and moved 28s / 6%; it was
+# reverted. The cost is codegen, and 0 is the only setting that avoids it.
+#
+# What this costs: the fixture binary is unoptimized, so it runs slower. That
+# matters because windows-installer-e2e and the live app suite are
+# timing-sensitive. Measured across the two runs above, both stayed inside their
+# normal range -- installer E2E 105s/118s against 112-119s, live app 797s/794s
+# against 806-811s -- and neither went red. If either suite starts flaking on
+# timing, this setting is the first thing to suspect and the easiest to revert.
+#
 # IMPORTANT -- the scope below is load-bearing, not conservatism.
 #
 # The CI step writes this file AFTER rust-cache has computed its key, so the
@@ -31,4 +60,4 @@
 # workflow's env instead and accept the new cache lane.
 
 [profile.release.package.hq-sync-menubar]
-opt-level = 1
+opt-level = 0
