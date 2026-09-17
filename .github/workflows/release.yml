@@ -196,6 +196,7 @@ jobs:
           path: .release-control
           sparse-checkout: |
             scripts/release-asset-contract.mjs
+            scripts/release-previous-published-tag.mjs
             scripts/release-stable-order.mjs
             .github/scripts/check-changelog.mjs
           sparse-checkout-cone-mode: false
@@ -398,12 +399,17 @@ jobs:
       # has no written notes and publishes GitHub's generated list as before.
       # A stable tag is also refused when the previous stable release's notes
       # are still under ## [Unreleased] (its sync to main failed), because they
-      # would be published again under this version.
+      # would be published again under this version. "Previous" is resolved by
+      # publication, not by tag order: an ancestor tag whose release run failed
+      # before publish never shipped its notes, so this release is the one that
+      # ships them.
       - name: Refuse to release empty release notes
         env:
           EVENT_NAME: ${{ github.event_name }}
           TAG: ${{ steps.classify.outputs.tag }}
           CHANNEL: ${{ steps.classify.outputs.channel }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
@@ -416,8 +422,24 @@ jobs:
               echo "::warning::Prerelease $TAG has empty release notes; allowed for beta/alpha only."
             exit 0
           fi
+          # "Previous" is the previous PUBLISHED release, never just the
+          # previous tag. A release run can fail after its tag exists and so
+          # never publish (v0.10.277 died in the Windows build); those notes
+          # were never shipped and belong in THIS release. Collect the stable
+          # ancestors nearest-first and let the script pick the first one that
+          # actually published.
+          CANDIDATES="$RUNNER_TEMP/previous-stable-candidates.txt"
+          : > "$CANDIDATES"
+          cursor="${TAG}^"
+          while candidate=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' "$cursor" 2>/dev/null); do
+            printf '%s\n' "$candidate" >> "$CANDIDATES"
+            cursor="${candidate}^"
+            [ "$(wc -l < "$CANDIDATES")" -lt 20 ] || break
+          done
+          PREVIOUS_TAG="$(node .release-control/scripts/release-previous-published-tag.mjs \
+            --repository "$TARGET_REPOSITORY" --candidates "$CANDIDATES")"
           previous=()
-          if PREVIOUS_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' "${TAG}^" 2>/dev/null) &&
+          if [ -n "$PREVIOUS_TAG" ] &&
             git show "${PREVIOUS_TAG}:CHANGELOG.md" > "$RUNNER_TEMP/previous-CHANGELOG.md" 2>/dev/null; then
             previous=(--previous "$RUNNER_TEMP/previous-CHANGELOG.md" --previous-version "$PREVIOUS_TAG")
           fi
