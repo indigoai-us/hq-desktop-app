@@ -39,9 +39,9 @@
 
 use super::cognito::{AuthState, CognitoTokens};
 use hq_desktop_core::oauth::{
-    build_authorize_url_from, cognito_identity_provider, cognito_token_url, compute_code_challenge,
-    generate_code_verifier, parse_callback, AuthorizeRequest, CallbackOutcome, CallbackRejection,
-    cognito_client_id, REDIRECT_URI,
+    build_authorize_url_from, cognito_client_id, cognito_identity_provider, cognito_token_url,
+    compute_code_challenge, generate_code_verifier, parse_callback, AuthorizeRequest,
+    CallbackOutcome, CallbackRejection, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -269,11 +269,7 @@ fn receive_loopback_callback(
                                 }
                                 _ => "400 Bad Request",
                             };
-                            write_response(
-                                &mut stream,
-                                status,
-                                "<!doctype html><title>HQ</title>",
-                            );
+                            write_response(&mut stream, status, "<!doctype html><title>HQ</title>");
                         }
                     }
                 }
@@ -645,6 +641,19 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // Persist, publish, announce — the shared completion browser continuation
     // also ends on, so there is exactly one definition of "signed in".
     let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;
+    // The control cohort needs the same durable login-completed edge as the
+    // continuation cohort. Persist before background delivery so a transient
+    // telemetry failure cannot make its completed sign-in disappear.
+    if let Some(account_id) = state.account_id.as_deref() {
+        crate::commands::desktop_auth::record_desktop_login_completed(
+            &app,
+            account_id,
+            "manual_oauth",
+            "control",
+        );
+    } else {
+        eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
+    }
     eprintln!("[oauth] token exchange completed");
     Ok(state)
 }

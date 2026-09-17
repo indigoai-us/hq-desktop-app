@@ -46,6 +46,27 @@ fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
     AUTH_SESSION_ENVELOPE.get_or_init(|| Mutex::new(None))
 }
 
+/// Returns the non-secret identity snapshot for an operation that must retain
+/// its original authorizer after work is handed to a background task. This is
+/// memory-only: command paths must not reread credential files just to prepare
+/// telemetry.
+pub(crate) fn active_auth_session_snapshot() -> Option<AuthSessionEnvelope> {
+    let guard = auth_session_envelope_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.as_ref().and_then(|session| {
+        (session.status == AuthSessionStatus::Active)
+            .then_some(session)
+            .filter(|session| {
+                session
+                    .account_id
+                    .as_deref()
+                    .is_some_and(|account_id| !account_id.trim().is_empty())
+            })
+            .cloned()
+    })
+}
+
 fn bounded_reason(reason: Option<&str>) -> Option<String> {
     reason
         .map(str::trim)
@@ -147,12 +168,7 @@ pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> Strin
     ]
     .into_iter()
     .flatten()
-    .find_map(|token| {
-        cognito::decode_id_token_claims(token)
-            .ok()
-            .and_then(|claims| claims.sub)
-    })
-    .filter(|sub| !sub.trim().is_empty())
+    .find_map(notification_identity_from_bearer_token)
     .unwrap_or_else(|| {
         // Fail partition-safe when a malformed legacy token lacks claims:
         // never collapse multiple accounts into one "unknown" cursor key.
@@ -168,6 +184,17 @@ pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> Strin
             cognito::access_token_fingerprint(stable_credential)
         )
     })
+}
+
+/// Extract the account partition from the exact bearer token about to cross a
+/// network boundary. Unlike [`notification_identity_from_tokens`], this has no
+/// credential fingerprint fallback: an undecodable bearer must never authorize
+/// a queued receipt for an account we cannot prove it belongs to.
+pub(crate) fn notification_identity_from_bearer_token(token: &str) -> Option<String> {
+    cognito::decode_id_token_claims(token)
+        .ok()
+        .and_then(|claims| claims.sub)
+        .filter(|sub| !sub.trim().is_empty())
 }
 
 /// Auth state plus the non-secret claims the embedded shell needs to render
@@ -373,6 +400,12 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
 #[tauri::command]
 pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
     let (state, _) = resolve_authoritative_auth_session(&app).await;
+    if state.authenticated {
+        // A prior process may have stopped between queueing an onboarding
+        // receipt and sending it. Retries are native and non-blocking, so the
+        // renderer never receives a bearer token or waits on analytics.
+        crate::commands::desktop_auth::flush_pending_authenticated_desktop_receipts();
+    }
     Ok(state)
 }
 
@@ -494,6 +527,15 @@ mod tests {
         );
 
         assert_eq!(notification_identity_from_tokens(&tokens), "id-subject");
+    }
+
+    #[test]
+    fn bearer_identity_never_falls_back_for_an_undecodable_token() {
+        assert_eq!(
+            notification_identity_from_bearer_token(&jwt_with_sub("access-subject")),
+            Some("access-subject".to_string()),
+        );
+        assert_eq!(notification_identity_from_bearer_token("not-a-jwt"), None);
     }
 
     #[test]

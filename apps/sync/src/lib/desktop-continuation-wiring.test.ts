@@ -24,6 +24,7 @@ const read = (path: string) => readFileSync(join(ROOT, path), 'utf8');
 
 const desktopAuth = read('src-tauri/src/commands/desktop_auth.rs');
 const oauth = read('src-tauri/src/commands/oauth.rs');
+const workspaces = read('src-tauri/src/commands/workspaces.rs');
 const main = read('src-tauri/src/main.rs');
 const adapter = read('src/lib/desktop-continuation-tauri.ts');
 const signInPrompt = read('src/components/SignInPrompt.svelte');
@@ -207,5 +208,68 @@ describe('the anonymous HTTP runs natively, so it works in both windows', () => 
   it('does not widen the expanded window’s capability to compensate', () => {
     const permissions = JSON.parse(desktopAltCapability).permissions as unknown[];
     expect(permissions).not.toContain('http:default');
+  });
+});
+
+describe('authenticated desktop receipts keep the install-to-company join intact', () => {
+  it('reports a completed browser sign-in from native code, where the bearer token lives', () => {
+    const confirm = rustFunction(desktopAuth, 'desktop_continuation_confirm');
+    expect(confirm).toContain('record_desktop_login_completed');
+    expect(confirm).toContain('"browser_continuation", "continuation"');
+    const manualOauth = rustFunction(oauth, 'oauth_exchange_code');
+    expect(manualOauth).toContain('record_desktop_login_completed');
+    expect(manualOauth).toContain('"manual_oauth"');
+    expect(manualOauth).toContain('"control"');
+    expect(desktopAuth).toContain('session_activated_url()');
+    expect(desktopAuth).toContain('super::first_run::install_attempt_id()?');
+    expect(desktopAuth).toContain('.bearer_auth(jwt)');
+    expect(desktopAuth).toContain('schedule_authenticated_desktop_receipt');
+    expect(desktopAuth).toContain('authorized_account_id');
+  });
+
+  it('reports the company after the person explicitly connects it, without changing provisioning', () => {
+    const connect = rustFunction(workspaces, 'connect_workspace_to_cloud');
+    expect(connect).toContain('record_desktop_workspace_selected');
+    expect(connect.indexOf('record_desktop_workspace_selected')).toBeGreaterThan(
+      connect.indexOf('Ok(result) =>'),
+    );
+    expect(desktopAuth).toContain('workspace_selected_url()');
+    expect(desktopAuth).toContain('"workspaceKind"');
+    expect(desktopAuth).toContain('"companyUid"');
+    const workspaceReceipt = rustFunction(desktopAuth, 'record_desktop_workspace_selected');
+    expect(workspaceReceipt).toContain('"workspace_selection"');
+    expect(workspaceReceipt).toContain('"native"');
+    expect(workspaceReceipt).toContain('tauri::async_runtime::spawn(async move {');
+    expect(workspaceReceipt).toContain('authorizer: Option<WorkspaceReceiptAuthorization>');
+    expect(workspaceReceipt).toContain('let Some(authorizer) = authorizer else');
+    expect(workspaceReceipt).toContain('workspace_selected_receipt_for_authorizer');
+    expect(workspaceReceipt).not.toContain('cognito::get_tokens');
+    expect(workspaceReceipt).not.toContain('notification_identity_from_tokens');
+    expect(workspaceReceipt).not.toContain('current_authenticated_account_id');
+    expect(connect).toContain('workspace_receipt_authorization()');
+    expect(connect).toMatch(
+      /record_desktop_workspace_selected\(\s*&app,\s*company_uid,\s*workspace_receipt_authorizer\.clone\(\),/,
+    );
+    expect(connect).not.toMatch(
+      /record_desktop_workspace_selected\([^)]*\)\s*\.await/,
+    );
+  });
+
+  it('keeps a partial cloud provision in the installer-to-company join', () => {
+    const connect = rustFunction(workspaces, 'connect_workspace_to_cloud');
+    expect(connect).toContain('partial_sync_company_uid(&e)');
+    expect(connect).toContain('record_desktop_workspace_selected');
+    expect(workspaces).toContain('CliProvisionError::Sync');
+  });
+
+  it('keeps receipt disk I/O and retries out of authentication and workspace commands', () => {
+    const confirm = rustFunction(desktopAuth, 'desktop_continuation_confirm');
+    const workspaceReceipt = rustFunction(desktopAuth, 'record_desktop_workspace_selected');
+    expect(confirm).not.toContain('write_authenticated_receipt_queue');
+    expect(workspaceReceipt).not.toContain('write_authenticated_receipt_queue');
+    expect(desktopAuth).toContain('spawn_blocking');
+    expect(desktopAuth).toContain('may_deliver_for_account');
+    expect(desktopAuth).toContain('classify_receipt_http_status');
+    expect(desktopAuth).toContain('next_receipt_retry_at_ms');
   });
 });
