@@ -23,12 +23,12 @@ import { readRepoFile } from './harness';
  *      consults the diagnosed cause and the probed Node ABI (a full disk, a dead
  *      network, or a run already on the managed ABI earns no provision).
  *   3. The retry is bounded to ONE provision and ONE re-run: no loop.
- *   4. The retry installs into HQ's OWN managed npm prefix (never the user's),
- *      derived from the shared `paths::managed_npm_prefix_in` helper the first-run
- *      installer also uses, so ABI-127 artifacts land in a prefix whose shim runs
- *      under managed Node 22 — build ABI and execute ABI match by construction.
+ *   4. When the executed user copy is verified and has the same Node ABI, the retry
+ *      installs into that copy's prefix and runs the managed npm shim with the same
+ *      Node. With an unknown or different ABI, it refuses to make a shadow copy or
+ *      take over PATH.
  *   5. Convergence is ABI/runtime-aware, not version-only: the installed binary
- *      must resolve INSIDE the managed prefix AND actually execute; anything short
+ *      must resolve INSIDE the prefix the retry targeted AND actually execute; anything short
  *      routes through the shared non-convergent path, never a "healed" success.
  *   6. A converged retry emits NO Sentry event; a failed retry reports once with
  *      managed provenance (`managed_toolchain_retry=true`) and provenance-aware
@@ -55,6 +55,8 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     cli.indexOf('async fn managed_toolchain_retry('),
     cli.indexOf('fn record_non_convergent_version('),
   );
+  // Comments describe the bound but cannot satisfy the control-flow check.
+  const retryBody = retryHelper.replace(/^\s*\/\/.*$/gm, '');
 
   it('reuses the existing managed-Node installer instead of adding a second one', () => {
     // `repair_managed_node` already wraps the installer and already carries the
@@ -96,8 +98,8 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // UNCHANGED runtime conditions — HQ's checksum-verified managed npm bypasses a
     // broken user npm/shim entirely. Only the non-npm origin arms.
     expect(cli).toContain('unattributed_origin: Option<&str>');
-    expect(cli).toContain(
-      'kind == InstallFailureKind::Unexpected && unattributed_origin == Some(STDERR_ORIGIN_NON_NPM)',
+    expect(cli).toMatch(
+      /kind\s*==\s*InstallFailureKind::Unexpected\s*&&\s*unattributed_origin\s*==\s*Some\(STDERR_ORIGIN_NON_NPM\)/,
     );
     expect(cli).toContain(
       'repairable_runtime && (repairable_lifecycle || unsupported_node || unattributed_non_npm)',
@@ -124,7 +126,7 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // Exactly one provision call in the whole updater module...
     expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
     // ...and the retry body never loops.
-    expect(retryHelper).not.toMatch(/\b(loop|while)\b/);
+    expect(retryBody).not.toMatch(/\b(loop|while)\b/);
     // The provision result is reduced to a disposition (Repaired / Deferred /
     // Failed). Per the HQ-DESKTOP-5E fix, a cooldown deferral or a failed FRESH
     // provision NO LONGER abandons the retry: the pure start decision proceeds
@@ -142,21 +144,30 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(retryHelper).toContain('return ManagedRetryAttempt::Declined(outcome)');
   });
 
-  it('installs into HQ`s managed prefix, never the user prefix, with ABI-aware convergence', () => {
-    // The retry rebuilds its argv against the MANAGED prefix and the pinned
-    // version, and hands the SAME managed prefix to the retry ladder (so the
-    // EEXIST/ENOTEMPTY cleanup scope is confined to the managed tree).
+  it('updates the matching-ABI copy the user resolves, with ABI-aware convergence', () => {
+    // The retry carries the already-verified user prefix through only when its
+    // runtime ABI matches HQ's managed Node. It rebuilds argv and the cleanup
+    // scope against that exact target, so a managed fallback cannot leave the
+    // user on an old nvm copy.
     expect(retryHelper).toContain(
-      'install_argv(Some(managed_prefix.as_str()), Some(latest))',
+      'managed_retry_user_prefix_aim(executed_user_aim, executed_node_abi, MANAGED_NODE_ABI)',
     );
-    expect(retryHelper).toContain('Some(managed_prefix.as_str())');
-    // The old user-prefix reuse is gone: the retry no longer replays base_args.
+    expect(retryHelper).toContain('install_argv(Some(retry_prefix.as_str()), Some(latest))');
+    expect(retryHelper).toContain('Some(retry_prefix.as_str())');
+    expect(retryHelper).toContain('path_with_interpreter_hint(&managed_path, bin)');
     expect(retryHelper).not.toContain('base_args.to_vec()');
+    // An unverified or mismatched user runtime must not receive a managed build
+    // and HQ must not route around it with a second PATH-winning copy.
+    expect(retryHelper).toContain(
+      'executed_user_aim.is_some() && executed_node_abi != Some(MANAGED_NODE_ABI)',
+    );
+    expect(cli).toContain('ManagedRetryAttempt::CannotSafelyTargetExecutedUserCopy');
+    expect(cli).toContain('managed_retry_user_copy_detail()');
     // Convergence is ABI/runtime-aware, not version-only: the resolved binary must
-    // live inside the managed prefix (b) AND actually execute (c).
+    // live inside the retry target (b) AND actually execute (c).
     expect(retryHelper).toContain('managed_retry_converged(');
     expect(cli).toContain('async fn managed_retry_converged(');
-    expect(cli).toContain('.starts_with(managed_prefix)');
+    expect(cli).toContain('.starts_with(target_prefix)');
     expect(cli).toContain('hq_version_string(Path::new(&hq))');
     expect(cli).toContain('managed_retry_after_version(');
     // Anything short routes through the SHARED decide_post_install path, never a
@@ -165,7 +176,7 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(cli).toContain('apply_post_install_with_app(app, &outcome)');
   });
 
-  it('defers the persistent PATH change until the retry has converged', () => {
+  it('defers a managed PATH change until convergence and skips it for the active copy', () => {
     // The raw shell-profile / Windows-PATH mutation lives in a dedicated helper...
     expect(cli).toContain('fn configure_managed_shell_path(');
     const pathHelper = cli.slice(
@@ -177,7 +188,8 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // ...and the retry invokes it ONLY on a converged install, guarded by the
     // convergence result — so a FAILED retry never persists a PATH change that could
     // shadow the user's still-working CLI under a mismatched Node.
-    expect(retryHelper).toContain('configure_managed_shell_path(app, &managed_prefix)');
+    expect(retryHelper).toContain('if !targets_user_copy {');
+    expect(retryHelper).toContain('configure_managed_shell_path(app, &retry_prefix)');
     // The convergence result gates the branches: the PATH change lives in the
     // Ok(info) arm only, so a failed retry never persists it.
     expect(retryHelper).toContain('match converged {');

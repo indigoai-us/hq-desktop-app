@@ -83,45 +83,41 @@ use hq_desktop_core::toolchain::{classify_runtime, ManagedRuntime};
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, auto_install_allowed, auto_update_enabled,
-    bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_environment,
-    classify_install_failure_with_final_attempt,
-    classify_install_failure, cli_auto_update_enabled, cli_below_floor, cli_below_floor_of,
-    cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
+    apply_post_install_effects, auto_install_allowed, auto_update_enabled, bun_home_from_hq_bin,
+    bun_install_argv, classify_install_failure, classify_install_failure_with_environment,
+    classify_install_failure_with_final_attempt, cli_auto_update_enabled, cli_below_floor,
+    cli_below_floor_of, cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
     delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for, get_local_version,
-    get_local_version_diagnostics, launch_cli_check, launch_cli_check_with_floor, LaunchCliCheck,
-    HQ_CLI_MIN_VERSION,
-    hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
-    install_executor_for_first_install, install_executor_for_hq_bin, install_failure_detail,
-    install_failure_detail_with_environment, install_failure_detail_with_final_attempt,
-    install_failure_report, installed_hq_cli_version_in_bun_global,
-    installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
-    is_cli_update_dismissed, is_missing_global_install_target, is_npm_bin_collision,
-    is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
-    legacy_marker_needs_recovery, managed_retry_start_decision, non_convergent_cli_contract,
-    non_convergent_cli_version, non_convergent_detail, non_convergent_episode_blocked,
-    non_convergent_episode_key, non_convergent_episode_record, non_convergent_episode_reported,
-    npm_install_attempt_summary, npm_lifecycle_cause, npm_prefix_from_hq_bin,
-    partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
-    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
-    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
-    report_install_failure_episode, report_install_failure_with_environment,
-    report_install_failure_with_final_attempt, report_non_convergent_install,
-    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_unreadable_version, resolved_hq_version, should_auto_install,
-    user_prefix_aim_decision, DeliveredPrefixShim, ExecutedCopyAim, UserPrefixAim,
-    should_report_unreadable_version, suppress_for_dismissal, unattributed_install_stderr_origin,
-    version_from_hq_binary,
-    version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
-    RequestedSpecKind,
-    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LocalVersionProbeDiagnostics,
-    LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
-    ManagedShadowRepairAction, ManagedShadowRepairOutcome, MissingTargetState,
-    SettingsPathTelemetry,
-    NonConvergenceKind, NonConvergentReport, NpmLatest,
-    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
-    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
+    get_local_version_diagnostics, hq_cli_version_under_pnpm_root, hq_version_string, install_argv,
+    install_converged, install_executor_for_first_install, install_executor_for_hq_bin,
+    install_failure_detail, install_failure_detail_with_environment,
+    install_failure_detail_with_final_attempt, install_failure_report,
+    installed_hq_cli_version_in_bun_global, installed_hq_cli_version_in_pnpm_store,
+    installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_missing_global_install_target,
+    is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
+    is_windows_locked_binary_failure, launch_cli_check, launch_cli_check_with_floor,
+    legacy_marker_needs_recovery, managed_retry_start_decision, managed_retry_user_copy_detail,
+    managed_retry_user_prefix_aim, non_convergent_cli_contract, non_convergent_cli_version,
+    non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
+    non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
+    npm_lifecycle_cause, npm_prefix_from_hq_bin, partial_install_scope_from_npm_path,
+    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version,
+    pnpm_install_argv, pnpm_store_family, read_installed_version, redact_home, redact_home_in,
+    repair_managed_shadow, report_install_failure, report_install_failure_episode,
+    report_install_failure_with_environment, report_install_failure_with_final_attempt,
+    report_non_convergent_install, report_non_convergent_marker_unpersisted,
+    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
+    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, HqCliUpdateInfo,
+    InstallEnvironment, InstallExecutor, InstallFailureEpisode, InstallFailureKind,
+    InterpreterRecovery, LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
+    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
+    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
+    NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
+    PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects, PostInstallOutcome,
+    RequestedSpecKind, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
+    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
     NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
     STDERR_ORIGIN_NON_NPM,
 };
@@ -1861,27 +1857,29 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     // stays matched), and a FIRST install keeps aiming at HQ's own managed prefix.
     // Otherwise this is a no-op: the managed / hq-derived prefix and the resolved
     // npm stand exactly as before.
-    let (prefix, npm, path) =
-        match select_ordinary_install_aim(&hq, &managed_roots, paths::home_dir().as_deref()) {
-            Some(aim) if !first_install => {
-                // Prepend the aimed npm's own bin dir so its co-located Node
-                // resolves (the shim is a `#!/usr/bin/env node` script), keeping
-                // build runtime matched to execute runtime.
-                let path = match Path::new(&aim.npm).parent() {
-                    Some(hint) => paths::path_with_interpreter_hint(&path, hint),
-                    None => path,
-                };
-                log(
-                    "hq-cli-update",
-                    &format!(
-                        "aiming ordinary update at the executed copy's own prefix (npm={})",
-                        redact_home(&aim.npm)
-                    ),
-                );
-                (Some(aim.prefix), aim.npm, path)
-            }
-            _ => (prefix, npm, path),
-        };
+    let ordinary_user_aim = (!first_install)
+        .then(|| select_ordinary_install_aim(&hq, &managed_roots, paths::home_dir().as_deref()))
+        .flatten();
+    let (prefix, npm, path) = match ordinary_user_aim.as_ref() {
+        Some(aim) => {
+            // Prepend the aimed npm's own bin dir so its co-located Node
+            // resolves (the shim is a `#!/usr/bin/env node` script), keeping
+            // build runtime matched to execute runtime.
+            let path = match Path::new(&aim.npm).parent() {
+                Some(hint) => paths::path_with_interpreter_hint(&path, hint),
+                None => path,
+            };
+            log(
+                "hq-cli-update",
+                &format!(
+                    "aiming ordinary update at the executed copy's own prefix (npm={})",
+                    redact_home(&aim.npm)
+                ),
+            );
+            (Some(aim.prefix.clone()), aim.npm.clone(), path)
+        }
+        _ => (prefix, npm, path),
+    };
     // Pin the target BEFORE building the install argv. The app resolved `latest`
     // from the registry's /latest endpoint; it must ask npm for THAT EXACT
     // version, not the `@latest` dist-tag. npm re-resolves that tag through its
@@ -2018,6 +2016,8 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 &npm_cache,
                 before_version.as_deref(),
                 already_blocked,
+                ordinary_user_aim.as_ref(),
+                failing_node_abi,
             )
             .await
             {
@@ -2031,6 +2031,13 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 // or as non-convergence for a shadowed exit-0 — so surface its
                 // detail without a second capture.
                 ManagedRetryAttempt::RanAndReported(detail) => return Err(detail),
+                // HQ can identify the user's hq copy but cannot safely build into
+                // it with the managed runtime. Do not install a shadow copy and
+                // quietly take over PATH; the returned message gives the one-time
+                // action that updates the command the user actually runs.
+                ManagedRetryAttempt::CannotSafelyTargetExecutedUserCopy => {
+                    return Err(managed_retry_user_copy_detail());
+                }
                 // The retry did not run. Record WHICH branch declined on the
                 // user-path event so the next occurrence is self-diagnosing (the
                 // HQ-DESKTOP-5E evidence gap), then fall through and report the
@@ -2173,8 +2180,8 @@ fn install_failure_earns_managed_retry(
     // origin is `non-npm` (npm's logger produced nothing at all). Only the non-npm
     // origin arms — an `npm-logger` origin or an empty stderr is folded into `None`
     // by the caller, so this can never fire for a failure npm actually reported.
-    let unattributed_non_npm =
-        kind == InstallFailureKind::Unexpected && unattributed_origin == Some(STDERR_ORIGIN_NON_NPM);
+    let unattributed_non_npm = kind == InstallFailureKind::Unexpected
+        && unattributed_origin == Some(STDERR_ORIGIN_NON_NPM);
     // A `ForeignRegistryPackageMissing` (HQ-DESKTOP-5Q) is a registry
     // misconfiguration, NOT a runtime/prebuild or npm-prefix fault: provisioning a
     // different Node cannot make a registry that lacks the package carry it, and the
@@ -2611,11 +2618,17 @@ async fn settings_path_repair_and_refinalize(
                     true
                 }
                 Ok(crate::commands::install_deps::SettingsPathWriteOutcome::Skipped(reason)) => {
-                    log("hq-cli-update", &format!("settings-path repair skipped: {reason}"));
+                    log(
+                        "hq-cli-update",
+                        &format!("settings-path repair skipped: {reason}"),
+                    );
                     false
                 }
                 Err(error) => {
-                    log("hq-cli-update", &format!("settings-path repair failed: {error}"));
+                    log(
+                        "hq-cli-update",
+                        &format!("settings-path repair failed: {error}"),
+                    );
                     false
                 }
             }
@@ -2669,7 +2682,8 @@ async fn settings_path_repair_and_refinalize(
         managed_roots,
         paths::home_dir().as_deref(),
     );
-    let delivered_prefix_shim = delivered_prefix_shim_for(Some(prefix), delivered_version.as_deref());
+    let delivered_prefix_shim =
+        delivered_prefix_shim_for(Some(prefix), delivered_version.as_deref());
     // Closed, path-free settings-PATH telemetry for the residual event: which file
     // won, whether it now lists HQ's managed bin dir, and what the repair achieved.
     let winning_file = paths::winning_settings_path_file(&hq_root);
@@ -2920,15 +2934,15 @@ fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
 }
 
 /// The after-version the managed-retry convergence decision should use: the
-/// EXECUTED version only when the resolved binary lives inside the managed prefix
-/// (condition b), else `None` so `decide_post_install` is non-convergent. A `None`
-/// executed version (condition c: the shim could not start) is likewise
+/// EXECUTED version only when the resolved binary lives inside the prefix this
+/// retry targeted (condition b), else `None` so `decide_post_install` is
+/// non-convergent. A `None` executed version (condition c: the shim could not start) is likewise
 /// non-convergent. Pure so both conditions are unit-testable without an install.
 fn managed_retry_after_version<'a>(
-    resolves_in_managed_prefix: bool,
+    resolves_in_target_prefix: bool,
     executed_version: Option<&'a str>,
 ) -> Option<&'a str> {
-    if resolves_in_managed_prefix {
+    if resolves_in_target_prefix {
         executed_version
     } else {
         None
@@ -2938,9 +2952,9 @@ fn managed_retry_after_version<'a>(
 /// Convergence gate for the managed-toolchain retry, with ABI/runtime evidence a
 /// version-only check cannot provide (the P1 the automated review raised). A
 /// managed retry counts as converged only when ALL THREE hold:
-///   (a) the version npm delivered INTO the managed prefix reaches `latest`;
-///   (b) the `hq` the app now RESOLVES lives inside the managed prefix — the copy
-///       just written, not a stale user-path shim resolved ahead of it;
+///   (a) the version npm delivered INTO the target prefix reaches `latest`;
+///   (b) the `hq` the app now RESOLVES lives inside that target prefix — the copy
+///       just written, not a stale copy resolved ahead of it;
 ///   (c) that binary actually STARTS under the app's child PATH and reports a
 ///       version — an EXECUTION probe (never a package.json read), proving the
 ///       managed shim's `env node` selects a runtime that can run the CLI.
@@ -2955,7 +2969,7 @@ async fn managed_retry_converged(
     app: &AppHandle,
     before_bin: &str,
     installer_npm: &str,
-    managed_prefix: &str,
+    target_prefix: &str,
     before_version: Option<&str>,
     latest: &str,
     already_blocked: bool,
@@ -2963,8 +2977,8 @@ async fn managed_retry_converged(
     let post_install_hq = paths::resolve_bin("hq");
 
     // (b) The binary the app will EXECUTE must be the one just written INTO the
-    // managed prefix.
-    let resolves_in_managed_prefix = Path::new(&post_install_hq).starts_with(managed_prefix);
+    // prefix the retry targeted.
+    let resolves_in_target_prefix = Path::new(&post_install_hq).starts_with(target_prefix);
 
     // (c) EXECUTION probe: `hq_version_string` spawns the binary under the app's
     // child PATH, never reading a package.json. A shim that cannot start (ABI
@@ -2977,10 +2991,10 @@ async fn managed_retry_converged(
             .flatten()
     };
 
-    // (a) Delivery evidence: the version npm actually wrote into the managed
+    // (a) Delivery evidence: the version npm actually wrote into the target
     // prefix's manifest.
     let delivered_version = {
-        let prefix = managed_prefix.to_string();
+        let prefix = target_prefix.to_string();
         let hq = post_install_hq.clone();
         tauri::async_runtime::spawn_blocking(move || {
             installed_hq_cli_version_in_prefix(&prefix, &hq)
@@ -2991,20 +3005,20 @@ async fn managed_retry_converged(
     };
 
     // Convergence requires (b) AND (c): feed the EXECUTED version as the decision's
-    // after-version, but only when the resolved binary lives in the managed prefix;
+    // after-version, but only when the resolved binary lives in the target prefix;
     // otherwise force `None` so `decide_post_install` is non-convergent. Record the
     // ABI provenance so a future divergence is observable rather than silent.
     log(
         "hq-cli-update",
         &format!(
-            "managed retry convergence: resolved_in_managed_prefix={resolves_in_managed_prefix} \
+            "managed retry convergence: resolved_in_target_prefix={resolves_in_target_prefix} \
              executed_version_present={} delivered_version_present={}",
             executed_version.is_some(),
             delivered_version.is_some()
         ),
     );
     let after_version =
-        managed_retry_after_version(resolves_in_managed_prefix, executed_version.as_deref());
+        managed_retry_after_version(resolves_in_target_prefix, executed_version.as_deref());
     // Thread the managed roots so a same-root shadow here is classified as such
     // (no durable marker, bounded capture) rather than misread as foreign-managed
     // and wedged; the next scheduled `finalize_convergence` self-repairs it.
@@ -3016,7 +3030,7 @@ async fn managed_retry_converged(
             before_version,
             after_version,
             latest,
-            Some(managed_prefix),
+            Some(target_prefix),
             installer_npm,
             already_blocked,
             delivered_version.as_deref(),
@@ -3034,7 +3048,7 @@ async fn managed_retry_converged(
             installer_npm,
             before_version,
             latest,
-            managed_prefix,
+            target_prefix,
             already_blocked,
             &managed_roots,
             &post_install_hq,
@@ -3123,6 +3137,10 @@ enum ManagedRetryAttempt {
     /// provenance-aware wording that never re-blames the user's runtime. The caller
     /// surfaces this detail without a second capture.
     RanAndReported(String),
+    /// The resolved user-owned CLI has a different or unreadable Node ABI, so
+    /// HQ refuses to install a managed-runtime build into it or silently route
+    /// around it with a second copy. The caller shows a precise one-time action.
+    CannotSafelyTargetExecutedUserCopy,
     /// No retry ran. The caller reports the original user-path failure, tagging this
     /// closed-enumeration outcome so the next occurrence names which branch declined.
     Declined(ManagedRetryOutcome),
@@ -3134,10 +3152,14 @@ enum ManagedRetryAttempt {
 /// Provisioning goes through the shared `sync::repair_managed_node` seam — never
 /// the lower-level Node installer directly — so the shared repair cooldown and the
 /// single installer are preserved (the same contract HQ-DESKTOP-49 locked for the
-/// Connect lane). The retry installs into HQ's OWN managed npm prefix (never the
-/// user's), reusing the already-pinned `latest` — never `fetch_latest` again, so the
-/// post-publish registry race commit 13ef8859 closed cannot reopen here. Exactly one
-/// provision attempt and one re-run: there is no loop.
+/// Connect lane). The retry reuses the already-pinned `latest` — never
+/// `fetch_latest` again, so the post-publish registry race commit 13ef8859 closed
+/// cannot reopen here. When the verified user copy runs the same Node ABI, the
+/// managed npm retries into that copy. When the ABI differs or cannot be read,
+/// HQ refuses to write into either copy: a managed-prefix install would leave the
+/// command the user runs stale, and taking over PATH would change a deliberate
+/// user installation. Exactly one provision attempt and one re-run: there is no
+/// loop.
 ///
 /// The HQ-DESKTOP-5E fix lives in the START decision. `repair_managed_node` reports
 /// whether a FRESH provision happened, NOT whether a managed toolchain EXISTS: its
@@ -3157,7 +3179,22 @@ async fn managed_toolchain_retry(
     npm_cache: &Path,
     before_version: Option<&str>,
     already_blocked: bool,
+    executed_user_aim: Option<&UserPrefixAim>,
+    executed_node_abi: Option<u32>,
 ) -> ManagedRetryAttempt {
+    // A known user-owned target with an unknown or different Node ABI cannot be
+    // fixed by installing HQ's managed-runtime build elsewhere: that leaves the
+    // user's command stale, and making the managed copy win would silently take
+    // over their deliberate install. The ordinary attempt already used this copy's
+    // own npm; if it failed, only the user can repair that distinct runtime.
+    if executed_user_aim.is_some() && executed_node_abi != Some(MANAGED_NODE_ABI) {
+        log(
+            "hq-cli-update",
+            "managed retry declined: the executed user CLI has an incompatible or unreadable Node ABI",
+        );
+        return ManagedRetryAttempt::CannotSafelyTargetExecutedUserCopy;
+    }
+
     // Provision through the shared seam, then reduce its outcome to the disposition
     // the START decision turns on. A Failed provision still logs its reason (used
     // nowhere else) before being collapsed.
@@ -3193,21 +3230,45 @@ async fn managed_toolchain_retry(
             }
         };
 
-    log(
-        "hq-cli-update",
-        "managed npm available — retrying the pinned install once under HQ's managed toolchain, into HQ's managed npm prefix",
-    );
+    // The ordinary path can already aim directly at a verified nvm-owned hq. If
+    // that first attempt failed, retrying HQ's managed npm into its OWN prefix can
+    // only create a second copy: the app still executes the nvm copy and reports
+    // the same stale version. The managed npm may instead target the executed
+    // prefix only when the runtime ABI was proven identical, so native packages
+    // remain compatible. An unknown/different ABI for a known user copy returned
+    // above with a one-time instruction rather than creating a managed shadow.
+    let user_target =
+        managed_retry_user_prefix_aim(executed_user_aim, executed_node_abi, MANAGED_NODE_ABI);
+    let (retry_prefix, retry_path, targets_user_copy) = match user_target {
+        Some(aim) => {
+            let retry_path = Path::new(&aim.npm)
+                .parent()
+                .map(|bin| paths::path_with_interpreter_hint(&managed_path, bin))
+                .unwrap_or_else(|| managed_path.clone());
+            log(
+                "hq-cli-update",
+                "managed npm available — retrying the pinned install once into the executed user CLI prefix",
+            );
+            (aim.prefix, retry_path, true)
+        }
+        None => {
+            log(
+                "hq-cli-update",
+                "managed npm available — retrying the pinned install once under HQ's managed toolchain, into HQ's managed npm prefix",
+            );
+            (managed_prefix, managed_path, false)
+        }
+    };
 
-    // Rebuild the argv against HQ's MANAGED prefix (never the user's), reusing the
-    // SAME pinned `latest`. The managed prefix is also handed to the retry ladder so
-    // the EEXIST/ENOTEMPTY cleanup scope is confined to the managed tree and can
-    // never delete inside the user's own prefix.
-    let retry_args = install_argv(Some(managed_prefix.as_str()), Some(latest));
+    // Keep the retry ladder's cleanup scope aligned with the prefix it actually
+    // targets. `retry_prefix` is either HQ's managed prefix or the pre-validated,
+    // matching-ABI user prefix above; no raw path is invented here.
+    let retry_args = install_argv(Some(retry_prefix.as_str()), Some(latest));
     let retry_run = match run_npm_install_with_retries(
         &managed_npm,
-        &managed_path,
+        &retry_path,
         npm_cache,
-        Some(managed_prefix.as_str()),
+        Some(retry_prefix.as_str()),
         retry_args,
     )
     .await
@@ -3224,14 +3285,14 @@ async fn managed_toolchain_retry(
 
     if retry_run.output.status.success() {
         // Judge convergence with ABI/runtime evidence, not version alone: the
-        // installed binary must resolve INSIDE the managed prefix AND actually start
-        // under the app's child PATH. Anything short routes through the shared
-        // non-convergent path, never a "healed" success.
+        // installed binary must resolve INSIDE the prefix this retry targeted AND
+        // actually start under the app's child PATH. Anything short routes through
+        // the shared non-convergent path, never a "healed" success.
         let converged = managed_retry_converged(
             app,
             hq,
             &managed_npm,
-            &managed_prefix,
+            &retry_prefix,
             before_version,
             latest,
             already_blocked,
@@ -3239,11 +3300,12 @@ async fn managed_toolchain_retry(
         .await;
         return match converged {
             Ok(info) => {
-                // Only NOW — with a managed CLI proven installed AND runnable — make
-                // its bin dir reachable from the user's interactive shell. Deferring
-                // the persistent PATH change until convergence means a FAILED retry
-                // never shadows the user's still-working CLI under a mismatched Node.
-                configure_managed_shell_path(app, &managed_prefix);
+                // A retry into the already-executed user copy needs no PATH change.
+                // Keep the existing managed-path configuration only for the legacy
+                // managed-prefix route, and only after it has fully converged.
+                if !targets_user_copy {
+                    configure_managed_shell_path(app, &retry_prefix);
+                }
                 ManagedRetryAttempt::Converged(info)
             }
             // Ran under the managed toolchain but did not converge; the non-convergent
@@ -3261,7 +3323,7 @@ async fn managed_toolchain_retry(
     let detail = managed_retry_failure_detail(
         retry_run.output.status.code(),
         &raw_detail,
-        Some(managed_prefix.as_str()),
+        Some(retry_prefix.as_str()),
     );
     log(
         "hq-cli-update",
@@ -3272,7 +3334,7 @@ async fn managed_toolchain_retry(
     );
     let mut install_env = probe_install_environment(
         &managed_npm,
-        &managed_path,
+        &retry_path,
         /* managed_toolchain_retry */ true,
     )
     .await;
@@ -3288,7 +3350,7 @@ async fn managed_toolchain_retry(
     persist_reported_episode(report_install_failure_episode(
         retry_run.output.status.code(),
         &raw_detail,
-        Some(managed_prefix.as_str()),
+        Some(retry_prefix.as_str()),
         retry_run.final_attempt_forced,
         &install_env,
         latest,
@@ -3901,16 +3963,16 @@ mod tests {
     }
 
     #[test]
-    fn managed_retry_argv_targets_the_managed_prefix_with_the_pinned_version() {
-        // The retry rebuilds its argv against HQ's managed prefix and the SAME
-        // pinned version — never the user's prefix, never a re-resolved @latest.
+    fn managed_fallback_argv_targets_its_pinned_prefix() {
+        // A retry that cannot prove ABI compatibility keeps the managed-prefix
+        // fallback, with the SAME pinned version and never a re-resolved @latest.
         let managed_prefix = "/managed/toolchain/npm-global";
         let user_prefix = "/Users/me/.nvm/versions/node/v20.19.5/lib/node_modules";
         let pinned = "5.97.2";
 
         let argv = install_argv(Some(managed_prefix), Some(pinned));
 
-        // `--prefix` is immediately followed by the MANAGED prefix.
+        // `--prefix` is immediately followed by the fallback target prefix.
         let prefix_pos = argv
             .iter()
             .position(|arg| arg == "--prefix")
@@ -4106,9 +4168,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_retry_after_version_requires_managed_prefix_resolution() {
+    fn managed_retry_after_version_requires_target_prefix_resolution() {
         // (b)+(c): the executed version counts only when the resolved binary lives
-        // INSIDE the managed prefix. Outside it, the after-version is forced to
+        // INSIDE the retry target prefix. Outside it, the after-version is forced to
         // None so the shared decision is non-convergent (never healed).
         assert_eq!(
             managed_retry_after_version(true, Some("5.97.2")),
