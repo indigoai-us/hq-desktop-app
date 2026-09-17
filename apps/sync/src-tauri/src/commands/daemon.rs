@@ -31,7 +31,7 @@ use crate::commands::sync::{PreflightFailure, ProvisionAttempt, RunTotals};
 use crate::commands::windows_teardown_probe::{
     sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
 };
-use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
+use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT};
 use crate::util::logfile::log;
 use crate::util::paths;
 use hq_desktop_core::daemon::{
@@ -341,6 +341,13 @@ fn handle_watch_stdout_line<R: tauri::Runtime>(
     // "Sync Now" runs (handle_sync_line) and stay empty in normal use.
     if let SyncEvent::Progress(payload) = &event {
         crate::commands::activity::record_progress(app, payload);
+    }
+    // Auto-sync hits the same divergences a manual run does, and the shell
+    // clears its conflict rows on `sync:all-complete` (emitted below), so the
+    // watcher forwards the per-file detail too. Without this the rows would
+    // only ever appear after a hand-pressed "Sync Now".
+    if let SyncEvent::Conflict(payload) = &event {
+        let _ = app.emit(EVENT_SYNC_CONFLICT, payload.clone());
     }
     if let SyncEvent::AllComplete(payload) = &event {
         let conflicts = {
@@ -6466,6 +6473,44 @@ mod tests {
         // later unpaused start is never wedged by a paused attempt. Not
         // asserted via `try_register_handle` here because DAEMON_HANDLE is
         // process-global and other tests exercise it concurrently.
+    }
+
+    /// Auto-sync is the path most conflicts arrive on — the user never
+    /// presses "Sync Now". The watcher must forward the runner's per-file
+    /// `conflict` line so the shell's conflict rows appear there too.
+    #[test]
+    fn handle_watch_stdout_line_emits_a_per_file_conflict_event() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        handle.listen(EVENT_SYNC_CONFLICT, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        let line = r#"{"type":"conflict","company":"indigo","path":"knowledge/readme.md","direction":"pull","resolution":"keep"}"#;
+        assert!(handle_watch_stdout_line(
+            &handle,
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            line,
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["path"], "knowledge/readme.md");
     }
 
     // ── Double-start prevention ──────────────────────────────────────────
