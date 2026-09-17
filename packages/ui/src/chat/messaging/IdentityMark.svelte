@@ -69,6 +69,10 @@
       class="avatar-img"
       src={effectiveAvatarUrl}
       alt=""
+      width={size === "small" ? 22 : 32}
+      height={size === "small" ? 22 : 32}
+      loading="lazy"
+      decoding="async"
       onerror={() => (imageBroken = true)}
     />
   {:else if kind === "group"}

@@ -20,7 +20,11 @@ function memoryStorage(seed: Record<string, string> = {}) {
 describe("settings prefs", () => {
   it("fills defaults for junk payloads", () => {
     expect(parseSettingsPrefs(null).showInDock).toBe(true);
-    expect(parseSettingsPrefs({ windowOpacity: 20 }).windowOpacity).toBe(50);
+    // The floor is the shipped default (transparency 65 → opacity 35), not 50:
+    // a 50 floor could not represent the default the app actually ships with.
+    expect(parseSettingsPrefs({ windowOpacity: 20 }).windowOpacity).toBe(35);
+    expect(parseSettingsPrefs({ windowOpacity: 35 }).windowOpacity).toBe(35);
+    expect(parseSettingsPrefs({ windowOpacity: 140 }).windowOpacity).toBe(100);
     expect(parseSettingsPrefs({ uiSize: "large" }).uiSize).toBe("large");
     expect(parseSettingsPrefs(null).showSidebarScopeLabels).toBe(true);
     expect(parseSettingsPrefs({ showSidebarScopeLabels: false }).showSidebarScopeLabels).toBe(

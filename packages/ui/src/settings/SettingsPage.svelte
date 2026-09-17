@@ -30,8 +30,6 @@
   } from "./appearance-seam";
   import {
     appearanceThemeOptions,
-    applyReducedTransparency,
-    readReducedTransparency,
   } from "./shell-settings-model";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import "../chat/tokens.css";
@@ -422,7 +420,6 @@
     appearanceSeam?.read() ?? { colorTheme: "system", windowTransparency: 65 },
   );
   let interfaceZoom = $state(zoomSeam?.read() ?? 1);
-  let reduceTransparency = $state(readReducedTransparency());
 
   const windowOpacity = $derived(
     windowOpacityFromTransparency(appearance.windowTransparency),
@@ -2709,22 +2706,6 @@
                   </span>
                 </label>
               {/if}
-
-              <label class="setting-row appearance-row">
-                <span>
-                  <strong>Reduce transparency</strong>
-                  <small
-                    >Replaces the frosted panels with solid ones. Scrolling is
-                    smoother; the window stops blending with what is behind it.</small
-                  >
-                </span>
-                <input
-                  type="checkbox"
-                  data-testid="settings-reduce-transparency"
-                  bind:checked={reduceTransparency}
-                  onchange={() => applyReducedTransparency(reduceTransparency)}
-                />
-              </label>
 
               {#if zoomSeam}
                 <label class="setting-row appearance-row">

@@ -1,17 +1,22 @@
 <script lang="ts">
   /**
-   * Step C for a Cloud bot: the name and the @handle it is created under.
+   * Step C for a Cloud bot: the name, the @handle it is created under, and an
+   * optional job title.
    *
-   * The company channel's "Create a bot" card used to ask for these two and is
-   * no longer shown, so this step is the only place they are chosen. Both are
-   * prefilled — the handle follows the name until the person edits it — and
-   * both are sent to the server exactly as they read here.
+   * The company channel's "Create a bot" card used to ask for the name and the
+   * handle and is no longer shown, so this step is the only place they are
+   * chosen. Both are prefilled — the handle follows the name until the person
+   * edits it — and both are sent to the server exactly as they read here. The
+   * title is not part of that card sequence at all: the host writes it onto
+   * the bot's agent profile once the bot exists, exactly as the Local step does.
    */
   import IdentityMark from "../messaging/IdentityMark.svelte";
   import {
+    TITLE_MAX,
     botHandle,
     cloudNameIssue,
     handleIssue,
+    titleIssue,
     type CreateBotDraft,
   } from "./create-bot-model.js";
   import "./create-bot.css";
@@ -31,6 +36,7 @@
   const nameError = $derived(cloudNameIssue(draft.name));
   const handleError = $derived(handleIssue(draft));
   const nameTouched = $derived(draft.name.trim().length > 0);
+  const titleError = $derived(titleIssue(draft.title));
 
   function focusOnMount(node: HTMLInputElement): void {
     if (autofocus) {
@@ -60,6 +66,27 @@
     />
     <p class="cb-help" class:error={nameTouched && nameError} id="create-bot-name-help" data-testid="chat-bot-name-help">
       {nameError ?? `What ${companyLabel} will call it.`}
+    </p>
+  </div>
+
+  <div class="cb-field">
+    <label class="cb-label" for="create-bot-title">Title</label>
+    <input
+      id="create-bot-title"
+      class="cb-input"
+      type="text"
+      autocomplete="off"
+      data-testid="chat-bot-title"
+      placeholder="Ad account analyst"
+      maxlength={TITLE_MAX + 20}
+      aria-describedby="create-bot-title-help"
+      aria-invalid={titleError ? "true" : undefined}
+      value={draft.title}
+      disabled={disabled}
+      oninput={(event) => onpatch({ title: (event.currentTarget as HTMLInputElement).value })}
+    />
+    <p class="cb-help" class:error={titleError} id="create-bot-title-help" data-testid="chat-bot-title-help">
+      {titleError ?? "Optional. What it does, shown under its name."}
     </p>
   </div>
 

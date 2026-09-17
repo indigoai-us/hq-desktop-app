@@ -4034,55 +4034,103 @@ error: clone failed";
         );
     }
 
+    /// Collects envelopes like `sentry::test::TestTransport`, but also exposes a
+    /// NON-draining count so a waiter can observe delivery.
+    ///
+    /// The count has to be taken here, at the transport, rather than in a
+    /// `before_send` hook. `Client::capture_event` calls `before_send` (inside
+    /// `prepare_event`) and only afterwards builds the envelope and calls
+    /// `transport.send_envelope`. A waiter counting in `before_send` can
+    /// therefore see the full expected count while the last envelope has not
+    /// reached the collected list yet — it then stops waiting, the hub unwinds,
+    /// and the snapshot comes back one event short. That is a real race, and it
+    /// failed CI on an unrelated pull request.
+    #[derive(Default)]
+    struct CountingTestTransport {
+        collected: Mutex<Vec<sentry::Envelope>>,
+    }
+
+    impl CountingTestTransport {
+        /// Number of collected envelopes whose event message is one we asked for.
+        fn matching(&self, expected_messages: &[&'static str]) -> usize {
+            self.collected
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|envelope| envelope.event())
+                .filter(|event| {
+                    expected_messages
+                        .iter()
+                        .any(|expected| *expected == event.message.as_deref().unwrap_or_default())
+                })
+                .count()
+        }
+
+        fn take_events(&self) -> Vec<sentry::protocol::Event<'static>> {
+            std::mem::take(&mut *self.collected.lock().unwrap())
+                .into_iter()
+                .filter_map(|envelope| envelope.event().cloned())
+                .collect()
+        }
+    }
+
+    impl sentry::Transport for CountingTestTransport {
+        fn send_envelope(&self, envelope: sentry::Envelope) {
+            self.collected.lock().unwrap().push(envelope);
+        }
+    }
+
     fn captured_dispatched_core_update_events(
         expected_messages: &[&'static str],
         report: impl FnOnce(),
     ) -> Vec<sentry::protocol::Event<'static>> {
-        let expected_messages = expected_messages.to_vec();
         let expected_count = expected_messages.len();
-        let dispatched = Arc::new(AtomicUsize::new(0));
-        let dispatched_in_before_send = Arc::clone(&dispatched);
-        let events = sentry::test::with_captured_events_options(
-            || {
-                let main_hub = sentry::Hub::main();
-                // The test transport is installed on this test's temporary hub.
-                // Production initialization binds the client to the process hub,
-                // so mirror that setup before exercising cross-thread reporting.
-                // Wait only for the report this test asked for: another Core
-                // report can be in flight from a neighbouring test.
-                main_hub.bind_client(sentry::Hub::current().client());
-                report();
+        let transport = Arc::new(CountingTestTransport::default());
+        let options = sentry::ClientOptions {
+            dsn: Some(
+                "https://public@sentry.invalid/1"
+                    .parse()
+                    .expect("the test DSN parses"),
+            ),
+            transport: Some(Arc::new(transport.clone())),
+            ..Default::default()
+        };
+        let client: Arc<sentry::Client> = Arc::new(options.into());
 
-                let deadline = Instant::now() + Duration::from_secs(1);
-                while dispatched.load(Ordering::Acquire) < expected_count
-                    && Instant::now() < deadline
-                {
-                    std::thread::yield_now();
-                }
-                assert_eq!(
-                    dispatched.load(Ordering::Acquire),
-                    expected_count,
-                    "each requested Core update report must reach the Sentry transport"
-                );
+        let hub = Arc::new(sentry::Hub::new(
+            Some(Arc::clone(&client)),
+            Arc::new(Default::default()),
+        ));
+        sentry::Hub::run(hub, || {
+            let main_hub = sentry::Hub::main();
+            // The test transport is installed on this test's temporary hub.
+            // Production initialization binds the client to the process hub, so
+            // mirror that setup before exercising cross-thread reporting.
+            main_hub.bind_client(Some(Arc::clone(&client)));
+            report();
 
-                main_hub.configure_scope(|scope| scope.set_user(None));
-                main_hub.bind_client(None);
-            },
-            sentry::ClientOptions {
-                before_send: Some(Arc::new(move |event| {
-                    if expected_messages
-                        .iter()
-                        .any(|expected| *expected == event.message.as_deref().unwrap_or_default())
-                    {
-                        dispatched_in_before_send.fetch_add(1, Ordering::AcqRel);
-                    }
-                    Some(event)
-                })),
-                ..Default::default()
-            },
-        );
+            // Wait on the TRANSPORT, so the loop cannot finish before the
+            // envelopes it is waiting for have actually been collected. Count
+            // only the messages this test asked for: another Core report can be
+            // in flight from a neighbouring test.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while transport.matching(expected_messages) < expected_count
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(
+                transport.matching(expected_messages),
+                expected_count,
+                "each requested Core update report must reach the Sentry transport"
+            );
 
-        events
+            main_hub.configure_scope(|scope| scope.set_user(None));
+            main_hub.bind_client(None);
+        });
+
+        transport
+            .take_events()
             .into_iter()
             .filter(is_core_update_sentry_event)
             .collect()

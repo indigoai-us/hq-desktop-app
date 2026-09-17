@@ -462,7 +462,55 @@ export function mergeFetchedTimeline(
   const kept = existing.filter(
     (row) => !replyIds.has(row.eventId) && !isReplyMessage(row),
   );
-  return mergeTimelineMessages(kept, messagesForDisplay(raw));
+  const merged = mergeTimelineMessages(kept, messagesForDisplay(raw));
+  // The safety catch-up refetches the open page every few seconds; when the
+  // page carries nothing new, hand back the caller's own array so `$state`
+  // consumers (and every derived hanging off the timeline) stay untouched.
+  if (merged === existing) return existing;
+  return timelinesContentEqual(existing, merged) ? existing : merged;
+}
+
+function shallowValueEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  // `null` and a missing/undefined field are the same absent wire value.
+  if (a == null || b == null) return a == null && b == null;
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
+function timelineRowsEqual(
+  a: ConversationMessageWire,
+  b: ConversationMessageWire,
+): boolean {
+  if (a === b) return true;
+  if (a.eventId !== b.eventId) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<
+    keyof ConversationMessageWire
+  >;
+  for (const key of keys) {
+    // A missing key and an explicit `undefined` are the same wire value.
+    if (!shallowValueEqual(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+/** True when both timelines hold the same rows in the same order — same
+ * length, same eventIds, and every row field content-equal (so edits,
+ * reactions, attachments and reply metadata still count as changes). */
+export function timelinesContentEqual(
+  a: ConversationMessageWire[],
+  b: ConversationMessageWire[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (!timelineRowsEqual(a[i], b[i])) return false;
+  }
+  return true;
 }
 
 /** Exclusive `since` for GET /messages: last durable local timestamp, else

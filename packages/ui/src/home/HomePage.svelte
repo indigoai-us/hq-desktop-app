@@ -346,7 +346,7 @@
             class:indeterminate={progressModel.pct == null}
             style={progressModel.pct == null
               ? undefined
-              : `width: ${progressModel.pct}%`}
+              : `--fill: ${progressModel.pct / 100}`}
           ></div>
         </div>
         <ol class="home-fanout">
@@ -900,14 +900,20 @@
   }
 
   .home-progress-fill {
+    width: 100%;
     height: 100%;
     border-radius: var(--v4-radius-pill);
     background: var(--v4-text-1);
-    transition: width 200ms ease;
+    /* --fill (0..1) + scaleX keeps the transition on the compositor. */
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left center;
+    transition: transform 200ms ease;
   }
 
   .home-progress-fill.indeterminate {
     width: 30%;
+    transform: none;
+    transition: none;
     animation: home-progress-slide 1.2s ease-in-out infinite;
   }
 
