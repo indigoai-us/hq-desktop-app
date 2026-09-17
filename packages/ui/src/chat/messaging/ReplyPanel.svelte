@@ -1439,7 +1439,7 @@
     margin: 0;
     /* Match the timeline reading size. */
     font-size: 14px;
-    line-height: 1.55;
+    line-height: 1.6;
     color: var(--t1, var(--message-markdown-text));
     overflow-wrap: anywhere;
   }

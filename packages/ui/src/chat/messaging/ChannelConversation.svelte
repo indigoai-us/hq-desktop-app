@@ -1992,8 +1992,8 @@
        hover-chrome fade cannot invalidate layout outside the thread. */
     contain: layout paint;
     /* 16px bottom so the last message's reaction bar doesn't kiss the
-       composer frame. */
-    padding: 8px 16px 16px;
+       composer frame. Sides follow --conv-inset (set on .chat-stage). */
+    padding: 8px var(--conv-inset, 16px) 16px;
     /* Float the 4px thumb 8px off the window edge, the way every other
        scroller in the design does — the sidebar already did this and the
        timeline did not, so the two rails disagreed down the same window. */
@@ -2061,7 +2061,7 @@
   .dm-load-earlier {
     display: block;
     width: calc(100% - 24px);
-    margin: 8px 12px 4px;
+    margin: 8px var(--conv-inset, 12px) 4px;
     padding: 6px 10px;
     border: 0;
     border-radius: 8px;
@@ -2265,9 +2265,10 @@
     max-width: 100%;
     margin: 0;
     font-family: var(--font-ui);
-    /* Match the composer and shell body; authors and metadata carry hierarchy. */
+    /* Match the composer and shell body; authors and metadata carry hierarchy.
+       1.6 leading: the timeline is long-form reading, not a form field. */
     font-size: 13px;
-    line-height: 1.5;
+    line-height: 1.6;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
@@ -2676,7 +2677,7 @@
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-    margin: 0 16px 20px;
+    margin: 0 var(--conv-inset, 16px) 20px;
     /* Concept `.composer`: 10px radius, 12px of air above the caret. */
     padding: 12px 8px 8px 14px;
     background: var(--raised, var(--pop-hover));

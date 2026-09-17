@@ -7059,6 +7059,11 @@
           <header
             class="channel-header chat-shell"
             data-testid="channel-header"
+            data-reply-open={openReplyRootId ||
+            openProfileMember ||
+            openAgentMember
+              ? "true"
+              : "false"}
           >
             <div class="channel-title-block">
               <div class="channel-title">
@@ -8268,6 +8273,20 @@
     font: 400 12px/1.4 var(--font-ui);
   }
 
+  /* Horizontal inset shared by the channel header, the timeline, and the
+     composer so their left edges line up. Wide when the conversation has the
+     column to itself; pulled in when a thread or profile pane takes the
+     right-hand third, so the messages keep a readable measure. */
+  .channel-header,
+  .chat-stage {
+    --conv-inset: 40px;
+  }
+
+  .channel-header[data-reply-open="true"],
+  .chat-stage[data-reply-open="true"] {
+    --conv-inset: 20px;
+  }
+
   .channel-header {
     position: relative;
     z-index: 20;
@@ -8276,7 +8295,7 @@
     gap: 10px;
     flex: 0 0 auto;
     height: 52px;
-    padding: 0 20px;
+    padding: 0 var(--conv-inset, 20px);
     overflow: visible;
     border-bottom: 1px solid var(--line);
   }
