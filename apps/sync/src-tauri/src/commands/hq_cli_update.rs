@@ -118,8 +118,8 @@ pub use hq_desktop_core::hq_cli_update::{
     PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects, PostInstallOutcome,
     RequestedSpecKind, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
-    STDERR_ORIGIN_NON_NPM,
+    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, NPM_INSTALL_CHILD_ENV,
+    PINNED_MARKER_CONTRACT, STDERR_ORIGIN_NON_NPM,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -598,6 +598,13 @@ fn log_npm_install_attempt_ledger(ledger: &[NpmInstallAttempt]) {
 /// Build the npm child with the exact PATH and app-owned cache the updater
 /// needs. Keeping this at the process boundary means every retry inherits the
 /// same cache instead of falling back to a potentially root-owned `~/.npm`.
+///
+/// The child also carries `NPM_INSTALL_CHILD_ENV` (HQ-DESKTOP-5E): node-llama-cpp
+/// (pulled in via hq-cli -> @tobilu/qmd) has a `postinstall` that exits 1 when it
+/// cannot load/build a llama.cpp binary, which under HQ's managed toolchain aborts
+/// the whole hq-cli update even though the postinstall is not needed at runtime.
+/// The two env keys make that postinstall a no-op. PATH, NPM_CONFIG_CACHE, and the
+/// argv are unchanged.
 fn npm_install_command(
     npm: &str,
     path: &str,
@@ -607,7 +614,8 @@ fn npm_install_command(
     let mut cmd = paths::spawn_command(npm, &[]);
     cmd.args(args)
         .env("PATH", path)
-        .env("NPM_CONFIG_CACHE", npm_cache);
+        .env("NPM_CONFIG_CACHE", npm_cache)
+        .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
     cmd
 }
 
@@ -1303,7 +1311,13 @@ async fn install_hq_cli_update_via_pnpm(
         let pnpm_home = pnpm_env.as_ref().map(|env| env.home.clone());
         tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = paths::spawn_command(&pnpm, &[]);
-            cmd.args(&args).env("PATH", &path);
+            // Carry NPM_INSTALL_CHILD_ENV (HQ-DESKTOP-5E) here too: a pnpm-managed
+            // hq update installs @indigoai-us/hq-cli -> node-llama-cpp via `pnpm add
+            // -g`, and on pnpm configurations that run dependency lifecycle scripts
+            // the same postinstall would abort the update.
+            cmd.args(&args)
+                .env("PATH", &path)
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
             // Without PNPM_HOME the child falls back to its own default, which
             // on a Dock-launched app is not necessarily the home that owns the
             // shim we are trying to replace.
@@ -1486,9 +1500,13 @@ async fn install_hq_cli_update_via_bun(
         let args = args.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = paths::spawn_command(&bun, &[]);
+            // A Bun-managed hq update installs node-llama-cpp too, and Bun runs
+            // dependency lifecycle scripts by default, so carry the same
+            // NPM_INSTALL_CHILD_ENV skip knobs (HQ-DESKTOP-5E).
             cmd.args(&args)
                 .env("PATH", &path)
-                .env("BUN_INSTALL", &bun_home);
+                .env("BUN_INSTALL", &bun_home)
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
             cmd.output()
         })
         .await
@@ -4294,6 +4312,13 @@ mod tests {
             env_value("NPM_CONFIG_CACHE"),
             Some("/tmp/app-cache/npm".into())
         );
+        // HQ-DESKTOP-5E: the node-llama-cpp postinstall skip knobs ride the child
+        // env, next to PATH and the app-owned cache — nothing else changes.
+        assert_eq!(
+            env_value("NODE_LLAMA_CPP_SKIP_DOWNLOAD"),
+            Some("true".into())
+        );
+        assert_eq!(env_value("NODE_LLAMA_CPP_POSTINSTALL"), Some("skip".into()));
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             args.iter().map(OsStr::new).collect::<Vec<_>>(),
@@ -4324,7 +4349,7 @@ count=0
 if [ -f "$state" ]; then count=$(cat "$state"); fi
 count=$((count + 1))
 printf '%s' "$count" > "$state"
-printf '%s|%s\n' "$NPM_CONFIG_CACHE" "$*" >> "$attempts"
+printf '%s|%s|%s|%s\n' "$NPM_CONFIG_CACHE" "$NODE_LLAMA_CPP_SKIP_DOWNLOAD" "$NODE_LLAMA_CPP_POSTINSTALL" "$*" >> "$attempts"
 case "{}:$count" in
   eexist:1) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
   enotempty:1) printf '%s\n' 'npm error code ENOTEMPTY' >&2; exit 1 ;;
@@ -4366,12 +4391,123 @@ exit 0
                 .collect();
             assert_eq!(lines.len(), expected_attempts, "{mode} attempt count");
             for line in lines {
+                // Every rung inherits the app-owned npm cache AND the node-llama-cpp
+                // postinstall skip knobs (HQ-DESKTOP-5E) — the plain first attempt and
+                // every forced/cleanup retry alike.
                 assert!(
-                    line.starts_with(&format!("{}|", npm_cache.display())),
-                    "{mode} lost its app-owned npm cache: {line}"
+                    line.starts_with(&format!("{}|true|skip|", npm_cache.display())),
+                    "{mode} lost its app-owned npm cache or node-llama-cpp env: {line}"
                 );
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn node_llama_cpp_postinstall_gate_no_longer_aborts_the_managed_toolchain_install() {
+        // HQ-DESKTOP-5E, proven with a REAL `npm install -g --prefix` child against a
+        // local fixture package literally named `node-llama-cpp` whose postinstall
+        // mirrors 3.18.1's gate: exit 0 iff NODE_LLAMA_CPP_SKIP_DOWNLOAD is truthy or
+        // NODE_LLAMA_CPP_POSTINSTALL / npm_config_node_llama_cpp_postinstall == skip;
+        // otherwise it prints node-llama-cpp's own "A prebuilt binary was not found,
+        // falling back to building from source" and exits 1 (the reported shape).
+        //
+        // BASE (no env): a raw `npm install` of the fixture exits 1 — the pre-fix hard
+        // stop. CANDIDATE: the same install through `run_npm_install_with_retries`,
+        // which adds `NPM_INSTALL_CHILD_ENV`, exits 0 and lays the package down. Same
+        // fixture, same npm, same prefix shape, so the env our code adds — not the
+        // fixture — is what converged. Runs on the macOS Rust CI job (Node provisioned
+        // by actions/setup-node); it self-skips where npm is not on PATH.
+        use std::fs;
+
+        let npm = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|dir| dir.join("npm"))
+            .find(|candidate| candidate.is_file());
+        let Some(npm) = npm else {
+            eprintln!("skipping node-llama-cpp postinstall e2e: npm not found on PATH");
+            return;
+        };
+        let npm = npm.to_str().unwrap().to_string();
+
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("node-llama-cpp");
+        fs::create_dir_all(fixture.join("dist/cli")).unwrap();
+        fs::write(
+            fixture.join("package.json"),
+            r#"{"name":"node-llama-cpp","version":"3.18.1","scripts":{"postinstall":"node ./dist/cli/cli.js postinstall"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            fixture.join("dist/cli/cli.js"),
+            r#"const truthy = (v) => v != null && v !== "" && v !== "false" && v !== "0";
+if (truthy(process.env.NODE_LLAMA_CPP_SKIP_DOWNLOAD)) process.exit(0);
+const cfg = process.env.NODE_LLAMA_CPP_POSTINSTALL || process.env.npm_config_node_llama_cpp_postinstall;
+if (cfg === "skip") process.exit(0);
+process.stderr.write("[node-llama-cpp] A prebuilt binary was not found, falling back to building from source\n");
+process.exit(1);
+"#,
+        )
+        .unwrap();
+
+        let path = std::env::var("PATH").unwrap();
+        let cache = temp.path().join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        let fixture_str = fixture.to_str().unwrap().to_string();
+        let install_args = |prefix: &str| {
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "--prefix".to_string(),
+                prefix.to_string(),
+                "--no-audit".to_string(),
+                "--no-fund".to_string(),
+                fixture_str.clone(),
+            ]
+        };
+
+        // BASE: raw npm with NO node-llama-cpp env -> the fixture's gate fails, so the
+        // install exits nonzero. This is the pre-fix behaviour the whole update aborts
+        // on.
+        let base_prefix = temp.path().join("base-prefix");
+        // Spawn the base control through the same sanctioned launcher production
+        // uses (paths::spawn_command), just WITHOUT the node-llama-cpp env — so the
+        // only difference from the candidate is the env our code adds.
+        let mut base_cmd = paths::spawn_command(&npm, &[]);
+        base_cmd
+            .args(install_args(base_prefix.to_str().unwrap()))
+            .env("PATH", &path)
+            .env("NPM_CONFIG_CACHE", &cache);
+        let base = base_cmd.output().expect("spawn base npm");
+        assert!(
+            !base.status.success(),
+            "base install must fail on node-llama-cpp's postinstall without the skip env; stderr: {}",
+            String::from_utf8_lossy(&base.stderr)
+        );
+
+        // CANDIDATE: the same install through the production retry path (which builds
+        // the child via `npm_install_command`, carrying `NPM_INSTALL_CHILD_ENV`)
+        // converges and lays the package down.
+        let cand_prefix = temp.path().join("cand-prefix");
+        let run = run_npm_install_with_retries(
+            &npm,
+            &path,
+            &cache,
+            Some(cand_prefix.to_str().unwrap()),
+            install_args(cand_prefix.to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            run.output.status.success(),
+            "candidate install must converge with the node-llama-cpp skip env; stderr: {}",
+            String::from_utf8_lossy(&run.output.stderr)
+        );
+        assert!(
+            cand_prefix
+                .join("lib/node_modules/node-llama-cpp")
+                .exists(),
+            "the fixture package must be laid down under the target prefix"
+        );
     }
 
     #[cfg(unix)]

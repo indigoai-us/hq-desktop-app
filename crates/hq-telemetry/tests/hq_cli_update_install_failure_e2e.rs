@@ -62,6 +62,11 @@ fn assert_unexpected_install_event(
     expected_stderr_len: &str,
     expected_lifecycle_package: Option<&str>,
     expected_lifecycle_cause: &str,
+    // HQ-DESKTOP-5E: the node-llama-cpp postinstall stage, present exactly when the
+    // cause is `postinstall-script`. `Some` appends ` postinstall_stage=<v>` as the
+    // LAST npm_diagnostics key and asserts the matching tag; `None` asserts the tag
+    // is absent and the diagnostics string is byte-identical to today.
+    expected_postinstall_stage: Option<&str>,
     expected_signature: &str,
 ) {
     assert_eq!(event.level, sentry::Level::Error);
@@ -155,14 +160,24 @@ fn assert_unexpected_install_event(
             "unexpected {tag_key} tag"
         );
     }
+    let mut expected_diagnostics = format!(
+        "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 errno=unknown stderr_len={expected_stderr_len} lifecycle_cause={expected_lifecycle_cause} node_version=unknown node_abi=unknown npm_version=unknown toolchain_source=unknown managed_retry_outcome=not-armed"
+    );
+    if let Some(stage) = expected_postinstall_stage {
+        expected_diagnostics.push_str(&format!(" postinstall_stage={stage}"));
+    }
     assert_eq!(
         event.extra.get("npm_diagnostics"),
-        Some(&Value::String(
-            format!(
-                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 errno=unknown stderr_len={expected_stderr_len} lifecycle_cause={expected_lifecycle_cause} node_version=unknown node_abi=unknown npm_version=unknown toolchain_source=unknown managed_retry_outcome=not-armed"
-            )
-            .into()
-        ))
+        Some(&Value::String(expected_diagnostics.into()))
+    );
+    // The stage tag is present exactly when a postinstall stage is expected.
+    assert_eq!(
+        event
+            .tags
+            .get("npm_lifecycle_postinstall_stage")
+            .map(String::as_str),
+        expected_postinstall_stage,
+        "npm_lifecycle_postinstall_stage tag"
     );
     assert!(
         !event.extra.contains_key("npm_stderr"),
@@ -697,6 +712,7 @@ fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics()
         cache_eacces_len.as_str(),
         None,
         "none",
+        None,
         "EACCES:unknown:npm-cache",
     );
     assert_path_safe(&events[0], &["/Users/", "alice", "_cacache", "npm error"]);
@@ -716,6 +732,7 @@ fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics()
         unknown_len.as_str(),
         Some("unrecognized"),
         "unknown",
+        None,
         // A symbolic npm code is a real discriminator, so it is kept.
         "ELIFECYCLE:unknown:other",
     );
@@ -751,6 +768,10 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
         // still captured, still Unexpected (no attributable third-party package),
         // and still path-safe.
         "postinstall-script",
+        // The failing package is unidentifiable here (no `npm error path`), so the
+        // lifecycle package is `unrecognized`, not node-llama-cpp — the node-llama-cpp
+        // stage tag is correctly withheld (HQ-DESKTOP-5E is node-llama-cpp-specific).
+        None,
         // npm echoed the build script's own status as its code; a bare number
         // must collapse instead of re-keying the group on the exit status.
         "none:unknown:none",
@@ -955,6 +976,7 @@ fn force_exhausted_structured_bin_collision_stays_visible_as_a_warning() {
         bin_collision.len().to_string().as_str(),
         None,
         "none",
+        None,
         "EEXIST:unknown:bin-hq",
     );
 }
@@ -984,6 +1006,7 @@ fn second_shim_collision_is_recognized_and_names_the_shim() {
         second_shim.len().to_string().as_str(),
         None,
         "none",
+        None,
         "EEXIST:unknown:bin-hq",
     );
     assert_eq!(tag(&unforced, "npm_bin_target"), Some("hq-auth-refresh"));
@@ -2116,6 +2139,216 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         managed_events.len(),
         1,
         "the managed-provenance episode must still page"
+    );
+}
+
+/// The 2026-09-16 recurrence reconstructed end to end through the real
+/// `before_send` scrubber: node-llama-cpp's postinstall failed under HQ's OWN
+/// managed toolchain (Node 22.17.0 / ABI 127, npm 10.9.2), where the managed
+/// retry is correctly `not-armed` (no other runtime to try), aborting the pinned
+/// hq-cli 5.117.0 update. The reproduction's stderr — "A prebuilt binary was not
+/// found, falling back to building from source" — pins the stage to
+/// `prebuilt-missing`. The new `npm_lifecycle_postinstall_stage` tag and the
+/// `postinstall_stage=` diagnostics key close the sub-cause gap Sentry's
+/// length-scrubbed stderr could not carry, while the group, message, and every
+/// pre-existing 5E tag stay byte-identical so the issue never splits.
+#[test]
+fn hq_desktop_5e_managed_toolchain_postinstall_failure_carries_the_postinstall_stage() {
+    let stderr = format!(
+        "npm error code 1\n\
+         npm error path {SELECTED_PREFIX}/lib/node_modules/node-llama-cpp\n\
+         npm error command failed\n\
+         npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+         [node-llama-cpp] A prebuilt binary was not found, falling back to building from source"
+    );
+    let env = InstallEnvironment {
+        node_version: Some("22.17.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::Managed,
+        managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
+        missing_target_state: MissingTargetState::Unknown,
+        target_version: Some("5.117.0".to_string()),
+        requested_spec_kind: RequestedSpecKind::PinnedVersion,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            &stderr,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+        )
+    }));
+
+    // Group unchanged: the exact message and fingerprint HQ-DESKTOP-5E carries.
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (lifecycle:node-llama-cpp:postinstall-script)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected-lifecycle",
+            "lifecycle:node-llama-cpp:postinstall-script"
+        ]
+    );
+    // Every pre-existing 5E tag byte-identical, plus the NEW stage tag.
+    for (key, value) in [
+        ("hq_cli_update_kind", "install-failed"),
+        ("install_failure_kind", "unexpected-lifecycle"),
+        ("npm_lifecycle_package", "node-llama-cpp"),
+        ("npm_lifecycle_cause", "postinstall-script"),
+        ("npm_lifecycle_builder", "postinstall-script"),
+        ("npm_toolchain_source", "managed"),
+        ("npm_managed_toolchain_retry", "false"),
+        ("npm_managed_retry_outcome", "not-armed"),
+        ("node_version", "22.17.0"),
+        ("node_abi", "127"),
+        ("npm_version", "10.9.2"),
+        ("hq_cli_target_version", "5.117.0"),
+        ("npm_requested_spec_kind", "pinned-version"),
+        ("npm_path_shape", "selected-prefix-node-modules"),
+        ("eacces", "false"),
+        ("exit_code", "1"),
+        // The NEW evidence: which stage of the postinstall died.
+        ("npm_lifecycle_postinstall_stage", "prebuilt-missing"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    // The diagnostics extra carries the same stage value, appended LAST (after the
+    // managed provenance suffix), so every non-postinstall event stays byte-identical.
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(value)) => value.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(
+        diagnostics.contains(
+            "lifecycle_cause=postinstall-script node_version=22.17.0 node_abi=127 npm_version=10.9.2 toolchain_source=managed managed_retry_outcome=not-armed"
+        ),
+        "npm_diagnostics missing the managed provenance suffix: {diagnostics}"
+    );
+    assert!(
+        diagnostics.ends_with(" postinstall_stage=prebuilt-missing"),
+        "postinstall_stage must be the LAST npm_diagnostics key: {diagnostics}"
+    );
+    // No path or raw stderr leaks — the reported 1269 bytes of stderr stay local.
+    assert_path_safe(
+        &event,
+        &["/Users/", "alice", ".npm-global", "npm error", "prebuilt binary"],
+    );
+}
+
+/// The stage tag is NOT part of the episode key `<latest>|<package>|<cause>`, so
+/// two node-llama-cpp postinstall failures that differ ONLY in which stage died
+/// still collapse to one episode: the second, with the key already recorded, is a
+/// SuppressedRepeat. Non-vacuous — the two stderrs classify to DIFFERENT stage
+/// tags (`prebuilt-missing` vs `prebuilt-load-failed`).
+#[test]
+fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_postinstall_stage_tag() {
+    let base = |stage_line: &str| {
+        format!(
+            "npm error code 1\n\
+             npm error path {SELECTED_PREFIX}/lib/node_modules/node-llama-cpp\n\
+             npm error command failed\n\
+             npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+             {stage_line}"
+        )
+    };
+    let missing = base(
+        "[node-llama-cpp] A prebuilt binary was not found, falling back to building from source",
+    );
+    let load_failed =
+        base("[node-llama-cpp] Failed to load a prebuilt mac-arm64-metal. Error: dlopen");
+    let latest = "5.117.0";
+    let user_path = InstallEnvironment {
+        node_version: Some("24.14.0".to_string()),
+        node_abi: Some("137".to_string()),
+        npm_version: Some("11.9.0".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::ProvisionDeferred,
+        missing_target_state: MissingTargetState::Unknown,
+        target_version: None,
+        requested_spec_kind: RequestedSpecKind::Unknown,
+    };
+    let key = "5.117.0|node-llama-cpp|postinstall-script".to_string();
+
+    // First occurrence (prebuilt-missing) pages and asks to persist its key.
+    let first = captured_events(|| {
+        assert!(matches!(
+            report_install_failure_episode(
+                Some(1),
+                &missing,
+                Some(SELECTED_PREFIX),
+                false,
+                &user_path,
+                latest,
+                &[],
+            ),
+            InstallFailureEpisode::Reported {
+                persist_keys: Some(_)
+            }
+        ));
+    });
+    assert_eq!(first.len(), 1, "first 5E occurrence must page");
+
+    // A DIFFERENT stage (prebuilt-load-failed) but the same tuple, key already
+    // recorded, is suppressed — the stage never entered the repeat key.
+    let repeat = captured_events(|| {
+        assert!(matches!(
+            report_install_failure_episode(
+                Some(1),
+                &load_failed,
+                Some(SELECTED_PREFIX),
+                false,
+                &user_path,
+                latest,
+                std::slice::from_ref(&key),
+            ),
+            InstallFailureEpisode::SuppressedRepeat
+        ));
+    });
+    assert!(
+        repeat.is_empty(),
+        "a repeat differing only by the postinstall stage must not page"
+    );
+}
+
+/// The stage tag is gated on the failing package, not just the generic
+/// `postinstall-script` cause (which is produced for ANY package's failed
+/// postinstall). A DIFFERENT package's postinstall failure — even one whose output
+/// happens to carry a phrase the stage classifier recognises ("a prebuilt binary
+/// was not found") — must NOT receive an `npm_lifecycle_postinstall_stage` tag or a
+/// `postinstall_stage=` diagnostics key.
+#[test]
+fn postinstall_stage_tag_is_only_emitted_for_node_llama_cpp() {
+    let stderr = format!(
+        "npm error code 1\n\
+         npm error path {SELECTED_PREFIX}/lib/node_modules/better-sqlite3\n\
+         npm error command failed\n\
+         npm error command sh -c node ./scripts/postinstall.js\n\
+         A prebuilt binary was not found, falling back to building from source"
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &stderr, Some(SELECTED_PREFIX))
+    }));
+    // It is still a captured postinstall-script lifecycle failure …
+    assert_eq!(tag(&event, "npm_lifecycle_package"), Some("better-sqlite3"));
+    assert_eq!(tag(&event, "npm_lifecycle_cause"), Some("postinstall-script"));
+    // … but the node-llama-cpp-specific stage tag and diagnostics key are absent.
+    assert_eq!(tag(&event, "npm_lifecycle_postinstall_stage"), None);
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(value)) => value.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(
+        !diagnostics.contains("postinstall_stage="),
+        "postinstall_stage must not be emitted for a non-node-llama-cpp package: {diagnostics}"
     );
 }
 

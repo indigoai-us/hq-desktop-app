@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - You will not see a difference in daily use, but when a Core update fails, HQ now records whether it could not read a file for the safety backup, found a shortcut in the HQ folder that points outside it, or needs a newer version of Git for the update download. This does not fix the update by itself. It helps us see which cause happens most often, so we can fix that cause first instead of guessing.
+- Updating the `hq` command-line tool no longer gets blocked by an optional add-on that prepares on-device search. That add-on runs a setup step while `hq` is installing, and if that step failed — which could happen on some Macs, even under HQ's own bundled Node — the whole update stopped and told you a build step had failed, so `hq` silently stayed on the old version. HQ now skips that setup step during install. It was never needed to update `hq`: the search add-on prepares itself the first time you actually use it, exactly as before, so nothing about search changes. First-time installs of `hq` and its search tool get the same fix.
 
 ## [0.10.281] — 2026-09-17
 

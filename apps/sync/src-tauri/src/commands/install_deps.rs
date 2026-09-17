@@ -2321,6 +2321,21 @@ async fn run_streaming<R: tauri::Runtime>(
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
+    run_streaming_with_env(app, program, args, &[]).await
+}
+
+/// Like `run_streaming`, but also injects `extra_env` into the child process on
+/// top of `PATH = extended_search_path()`. The npm install sites pass
+/// `NPM_INSTALL_CHILD_ENV` (HQ-DESKTOP-5E) so node-llama-cpp's postinstall is a
+/// no-op instead of aborting the install; every other caller passes `&[]` and is
+/// byte-identical to before. Streamed stdout/stderr handling is unchanged.
+#[cfg(not(windows))]
+async fn run_streaming_with_env<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> Result<String, String> {
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
@@ -2328,6 +2343,7 @@ async fn run_streaming<R: tauri::Runtime>(
     command
         .args(args)
         .env("PATH", extended_search_path())
+        .envs(extra_env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
@@ -3357,7 +3373,18 @@ async fn npm_install_global_managed(
     spec: &str,
     tag: &str,
 ) -> Result<String, String> {
-    match run_streaming(app, npm, &["install", "-g", "--prefix", prefix, spec]).await {
+    // Both rungs carry NPM_INSTALL_CHILD_ENV (HQ-DESKTOP-5E): this is the macOS
+    // first-run installer for @tobilu/qmd and @indigoai-us/hq-cli, both of which
+    // pull node-llama-cpp, so the same postinstall gate that aborted the updater
+    // applies here. The env is inert for @anthropic-ai/claude-code.
+    match run_streaming_with_env(
+        app,
+        npm,
+        &["install", "-g", "--prefix", prefix, spec],
+        hq_desktop_core::hq_cli_update::NPM_INSTALL_CHILD_ENV,
+    )
+    .await
+    {
         Ok(out) => Ok(out),
         Err(first) if !looks_like_registry_failure(&first) => Err(first),
         Err(first) => {
@@ -3366,7 +3393,7 @@ async fn npm_install_global_managed(
                 &format!("[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"),
             );
             clear_recovered_setup_command_failure();
-            run_streaming(
+            run_streaming_with_env(
                 app,
                 npm,
                 &[
@@ -3382,6 +3409,7 @@ async fn npm_install_global_managed(
                     "--@xai-official:registry=https://registry.npmjs.org/",
                     spec,
                 ],
+                hq_desktop_core::hq_cli_update::NPM_INSTALL_CHILD_ENV,
             )
             .await
             .map_err(|second| {
@@ -4487,6 +4515,21 @@ async fn run_streaming<R: tauri::Runtime>(
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
+    run_streaming_with_env(app, program, args, &[]).await
+}
+
+/// Like `run_streaming`, but also injects `extra_env` into the child process on
+/// top of `PATH = extended_search_path()`. The npm install sites pass
+/// `NPM_INSTALL_CHILD_ENV` (HQ-DESKTOP-5E) so node-llama-cpp's postinstall is a
+/// no-op instead of aborting the install; every other caller passes `&[]` and is
+/// byte-identical to before. Streamed stdout/stderr handling is unchanged.
+#[cfg(windows)]
+async fn run_streaming_with_env<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> Result<String, String> {
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
@@ -4515,6 +4558,7 @@ async fn run_streaming<R: tauri::Runtime>(
     command
         .args(args)
         .env("PATH", &search_path)
+        .envs(extra_env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
@@ -5364,7 +5408,9 @@ async fn install_claude_code_windows(app: AppHandle) -> Result<String, String> {
 #[cfg(windows)]
 async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
     emit_progress(&app, "Installing qmd via npm (@tobilu/qmd)...");
-    let result = run_streaming(
+    // @tobilu/qmd pulls node-llama-cpp, so carry NPM_INSTALL_CHILD_ENV
+    // (HQ-DESKTOP-5E) so its postinstall cannot abort the install.
+    let result = run_streaming_with_env(
         &app,
         "npm",
         &[
@@ -5376,6 +5422,7 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
             "--no-fund",
             &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"),
         ],
+        hq_desktop_core::hq_cli_update::NPM_INSTALL_CHILD_ENV,
     )
     .await?;
     append_user_path(&managed_npm_bin())?;
@@ -6041,7 +6088,10 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                     return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
                 }
                 emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
-                let result_inner = run_streaming(
+                // @indigoai-us/hq-cli pulls node-llama-cpp (via @tobilu/qmd), so
+                // carry NPM_INSTALL_CHILD_ENV (HQ-DESKTOP-5E) so its postinstall
+                // cannot abort the install.
+                let result_inner = run_streaming_with_env(
                     &app,
                     "npm",
                     &[
@@ -6053,6 +6103,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                         "--registry=https://registry.npmjs.org/",
                         "@indigoai-us/hq-cli",
                     ],
+                    hq_desktop_core::hq_cli_update::NPM_INSTALL_CHILD_ENV,
                 )
                 .await?;
                 append_user_path(&managed_npm_bin())?;
