@@ -45,6 +45,10 @@
 //! not tidiness — `src-tauri` cannot be compiled without a GTK/JavaScriptCore
 //! toolchain, so logic placed here is logic that no unit test can reach.
 
+use hq_desktop_core::authenticated_receipts::{
+    classify_receipt_http_status, may_deliver_for_account, next_receipt_attempt_count,
+    next_receipt_retry_at_ms, ReceiptHttpDisposition,
+};
 use hq_desktop_core::continuation_custody::{
     ContinuationCustody, CustodyError, PendingCredentials, VerifiedIdentity,
 };
@@ -77,9 +81,17 @@ static CUSTODY: Mutex<Option<ContinuationCustody>> = Mutex::new(None);
 /// another. File mutations use a separate short-lived lock and never span HTTP.
 static AUTHENTICATED_RECEIPT_FLUSH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static AUTHENTICATED_RECEIPT_QUEUE_IO: Mutex<()> = Mutex::new(());
+/// Receipts enter in-memory custody synchronously, then a dedicated blocking
+/// worker performs the lock/read/fsync/rename sequence. This keeps authentication
+/// and workspace commands off the filesystem while retaining each receipt until
+/// its durable append succeeds.
+static AUTHENTICATED_RECEIPT_CUSTODY: Mutex<Vec<AuthenticatedDesktopReceipt>> =
+    Mutex::new(Vec::new());
 
 fn with_custody<T>(f: impl FnOnce(&mut ContinuationCustody) -> T) -> T {
-    let mut guard = CUSTODY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = CUSTODY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     f(guard.get_or_insert_with(ContinuationCustody::new))
 }
 
@@ -380,10 +392,14 @@ pub async fn desktop_continuation_confirm(
     let state = super::auth::complete_auth_session(&app, &tokens).await?;
 
     // This is the first durable, human-authenticated edge in the browser
-    // continuation flow. The queue write happens before the background
-    // delivery so quitting during an outage preserves its original event id
-    // and timestamp for a later retry.
-    record_desktop_login_completed(&app, "browser_continuation", "continuation");
+    // continuation flow. It enters process custody before the background
+    // durable writer runs, so quitting after a completed write preserves its
+    // original event id and timestamp for a later retry.
+    if let Some(account_id) = state.account_id.as_deref() {
+        record_desktop_login_completed(&app, account_id, "browser_continuation", "continuation");
+    } else {
+        eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
+    }
 
     // The account just changed. Anything still pending is about a question
     // nobody asked any more.
@@ -401,11 +417,7 @@ pub async fn desktop_continuation_cancel(attempt_id: String) -> Result<(), Strin
     // finished attempt has no state to hand over. Scoped to this attempt id so
     // a late Cancel for a superseded attempt cannot tear down the listener the
     // current one is waiting on.
-    let state = with_custody(|custody| {
-        custody
-            .active_state_for(&attempt_id)
-            .map(str::to_string)
-    });
+    let state = with_custody(|custody| custody.active_state_for(&attempt_id).map(str::to_string));
     with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Cancelled));
 
     // Dropping the custody entry is not cancelling. Without this the listener
@@ -435,7 +447,6 @@ fn release_listener(state: &str) {
 /// installation id used by the anonymous first-launch receipt, which is what
 /// lets raw telemetry join an installer to a later authenticated action.
 const AUTHENTICATED_RECEIPT_QUEUE_VERSION: u8 = 1;
-const MAX_AUTHENTICATED_RECEIPTS: usize = 64;
 const AUTHENTICATED_RECEIPT_QUEUE_FILE: &str = "desktop-onboarding-receipts.json";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -450,6 +461,14 @@ enum AuthenticatedReceiptEndpoint {
 struct AuthenticatedDesktopReceipt {
     endpoint: AuthenticatedReceiptEndpoint,
     body: serde_json::Value,
+    /// Cognito subject of the account that authorized this receipt. Older rows
+    /// deserialize as unbound and are retained rather than sent as a new user.
+    #[serde(default)]
+    authorized_account_id: Option<String>,
+    #[serde(default)]
+    attempts: u8,
+    #[serde(default)]
+    next_attempt_at_ms: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -513,18 +532,63 @@ fn write_authenticated_receipt_queue(
 
 /// Persist a receipt before scheduling any network work. The event id and
 /// occurredAt in `receipt.body` are never re-minted by a retry.
-fn enqueue_authenticated_desktop_receipt(
-    receipt: AuthenticatedDesktopReceipt,
+fn enqueue_authenticated_desktop_receipts(
+    pending: Vec<AuthenticatedDesktopReceipt>,
 ) -> Result<(), String> {
+    if pending.is_empty() {
+        return Ok(());
+    }
     let path = authenticated_receipt_queue_path()
         .ok_or_else(|| "desktop receipt queue home is unavailable".to_string())?;
     let _queue_guard = AUTHENTICATED_RECEIPT_QUEUE_IO
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut receipts = read_authenticated_receipt_queue(&path)?;
-    receipts.push(receipt);
-    let start = receipts.len().saturating_sub(MAX_AUTHENTICATED_RECEIPTS);
-    write_authenticated_receipt_queue(&path, &receipts[start..])
+    receipts.extend(pending);
+    write_authenticated_receipt_queue(&path, &receipts)
+}
+
+/// Take receipts from process custody and write them on Tauri's blocking pool.
+/// A failed or interrupted write restores the complete batch; a duplicate after
+/// an ambiguous write is safe because the server event id is stable.
+async fn persist_authenticated_receipt_custody() {
+    let pending = {
+        let mut custody = AUTHENTICATED_RECEIPT_CUSTODY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *custody)
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let restore = pending.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        enqueue_authenticated_desktop_receipts(pending)
+    })
+    .await
+    .map_err(|error| format!("desktop receipt persistence task failed: {error}"))
+    .and_then(|result| result);
+    if let Err(error) = result {
+        eprintln!("[desktop-onboarding] receipt queue persistence failed: {error}");
+        let mut custody = AUTHENTICATED_RECEIPT_CUSTODY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        custody.splice(0..0, restore);
+        return;
+    }
+    flush_pending_authenticated_desktop_receipts();
+}
+
+/// Accept a receipt immediately and schedule its durable write without making
+/// an auth or workspace command wait for filesystem I/O.
+fn schedule_authenticated_desktop_receipt(receipt: AuthenticatedDesktopReceipt) {
+    {
+        let mut custody = AUTHENTICATED_RECEIPT_CUSTODY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        custody.push(receipt);
+    }
+    tauri::async_runtime::spawn(async { persist_authenticated_receipt_custody().await });
 }
 
 fn without_terminal_receipts(
@@ -541,11 +605,22 @@ enum AuthenticatedReceiptDelivery {
     Delivered,
     Retry,
     Rejected,
+    HeldForAuthorizedAccount,
+}
+
+async fn current_authenticated_account_id() -> Result<Option<String>, String> {
+    cognito::get_tokens()
+        .await
+        .map(|tokens| tokens.map(|tokens| super::auth::notification_identity_from_tokens(&tokens)))
 }
 
 async fn post_authenticated_desktop_receipt(
     receipt: &AuthenticatedDesktopReceipt,
+    active_account_id: Option<&str>,
 ) -> Result<AuthenticatedReceiptDelivery, String> {
+    if !may_deliver_for_account(receipt.authorized_account_id.as_deref(), active_account_id) {
+        return Ok(AuthenticatedReceiptDelivery::HeldForAuthorizedAccount);
+    }
     let url = match receipt.endpoint {
         AuthenticatedReceiptEndpoint::SessionActivated => endpoints().session_activated_url(),
         AuthenticatedReceiptEndpoint::WorkspaceSelected => endpoints().workspace_selected_url(),
@@ -558,15 +633,15 @@ async fn post_authenticated_desktop_receipt(
         .send()
         .await
         .map_err(|error| format!("desktop telemetry request failed: {error}"))?;
-    let status = response.status();
-    if status.is_success() {
-        return Ok(AuthenticatedReceiptDelivery::Delivered);
+    let status = response.status().as_u16();
+    match classify_receipt_http_status(status) {
+        ReceiptHttpDisposition::Delivered => Ok(AuthenticatedReceiptDelivery::Delivered),
+        ReceiptHttpDisposition::Retry => Ok(AuthenticatedReceiptDelivery::Retry),
+        ReceiptHttpDisposition::Rejected => {
+            eprintln!("[desktop-onboarding] rejecting receipt after permanent HTTP {status}");
+            Ok(AuthenticatedReceiptDelivery::Rejected)
+        }
     }
-    if status.is_server_error() {
-        return Ok(AuthenticatedReceiptDelivery::Retry);
-    }
-    eprintln!("[desktop-onboarding] rejecting receipt after HTTP {status}");
-    Ok(AuthenticatedReceiptDelivery::Rejected)
 }
 
 /// Drain persisted receipts oldest-first. Runs only after authentication, so
@@ -587,23 +662,47 @@ async fn flush_authenticated_desktop_receipts() -> Result<(), String> {
         return Ok(());
     }
 
+    let active_account_id = current_authenticated_account_id().await?;
     let mut terminal = Vec::new();
+    let mut retries = Vec::new();
+    let now = now_ms();
     for receipt in queued {
-        match post_authenticated_desktop_receipt(&receipt).await {
+        if receipt.next_attempt_at_ms > now {
+            continue;
+        }
+        match post_authenticated_desktop_receipt(&receipt, active_account_id.as_deref()).await {
             Ok(
                 AuthenticatedReceiptDelivery::Delivered | AuthenticatedReceiptDelivery::Rejected,
             ) => terminal.push(receipt),
-            Ok(AuthenticatedReceiptDelivery::Retry) => {}
+            Ok(AuthenticatedReceiptDelivery::Retry) => {
+                let mut retry = receipt.clone();
+                retry.next_attempt_at_ms = next_receipt_retry_at_ms(now, retry.attempts);
+                retry.attempts = next_receipt_attempt_count(retry.attempts);
+                retries.push((receipt, retry));
+            }
+            Ok(AuthenticatedReceiptDelivery::HeldForAuthorizedAccount) => {
+                eprintln!("[desktop-onboarding] receipt held for its authorizing account");
+            }
             Err(error) => {
                 eprintln!("[desktop-onboarding] receipt delivery will retry: {error}");
+                let mut retry = receipt.clone();
+                retry.next_attempt_at_ms = next_receipt_retry_at_ms(now, retry.attempts);
+                retry.attempts = next_receipt_attempt_count(retry.attempts);
+                retries.push((receipt, retry));
             }
         }
     }
     let _queue_guard = AUTHENTICATED_RECEIPT_QUEUE_IO
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let current = read_authenticated_receipt_queue(&path)?;
-    write_authenticated_receipt_queue(&path, &without_terminal_receipts(current, &terminal))
+    let mut current =
+        without_terminal_receipts(read_authenticated_receipt_queue(&path)?, &terminal);
+    for (original, retry) in retries {
+        if let Some(position) = current.iter().position(|candidate| candidate == &original) {
+            current[position] = retry;
+        }
+    }
+    write_authenticated_receipt_queue(&path, &current)
 }
 
 /// Schedule a retry after a durable receipt has been written. The same helper
@@ -638,7 +737,12 @@ fn desktop_receipt_base(app: &AppHandle) -> Option<serde_json::Value> {
 /// Record the successful native sign-in edge. This has no company attribution:
 /// a login can complete before a workspace is selected, and pretending one was
 /// selected would corrupt the person-to-company join.
-pub(crate) fn record_desktop_login_completed(app: &AppHandle, flow: &str, variant: &str) {
+pub(crate) fn record_desktop_login_completed(
+    app: &AppHandle,
+    authorized_account_id: &str,
+    flow: &str,
+    variant: &str,
+) {
     let result = (|| -> Result<(), String> {
         let mut body = desktop_receipt_base(app)
             .ok_or_else(|| "desktop installation id is unavailable".to_string())?;
@@ -648,16 +752,19 @@ pub(crate) fn record_desktop_login_completed(app: &AppHandle, flow: &str, varian
         object.insert("flow".to_string(), serde_json::json!(flow));
         object.insert("variant".to_string(), serde_json::json!(variant));
         object.insert("provider".to_string(), serde_json::json!("cognito"));
-        enqueue_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
+        schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
             endpoint: AuthenticatedReceiptEndpoint::SessionActivated,
             body,
-        })
+            authorized_account_id: Some(authorized_account_id.to_string()),
+            attempts: 0,
+            next_attempt_at_ms: 0,
+        });
+        Ok(())
     })();
     if let Err(error) = result {
         eprintln!("[desktop-onboarding] login_completed receipt queue failed: {error}");
         return;
     }
-    flush_pending_authenticated_desktop_receipts();
 }
 
 /// Record the company the person explicitly connected from the desktop shell.
@@ -665,7 +772,18 @@ pub(crate) fn record_desktop_login_completed(app: &AppHandle, flow: &str, varian
 /// the client never gets to assert either identity. A selection can occur long
 /// after sign-in, so it intentionally carries no auth cohort fields rather
 /// than guessing that it belongs to the manual-control arm.
-pub(crate) fn record_desktop_workspace_selected(app: &AppHandle, company_uid: String) {
+pub(crate) async fn record_desktop_workspace_selected(app: &AppHandle, company_uid: String) {
+    let authorized_account_id = match current_authenticated_account_id().await {
+        Ok(Some(account_id)) => account_id,
+        Ok(None) => {
+            eprintln!("[desktop-onboarding] workspace_selected receipt not queued without an authenticated account");
+            return;
+        }
+        Err(error) => {
+            eprintln!("[desktop-onboarding] workspace_selected account lookup failed: {error}");
+            return;
+        }
+    };
     let result = (|| -> Result<(), String> {
         let mut body = desktop_receipt_base(app)
             .ok_or_else(|| "desktop installation id is unavailable".to_string())?;
@@ -674,16 +792,22 @@ pub(crate) fn record_desktop_workspace_selected(app: &AppHandle, company_uid: St
             .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
         object.insert("workspaceKind".to_string(), serde_json::json!("company"));
         object.insert("companyUid".to_string(), serde_json::json!(company_uid));
-        enqueue_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
+        // This exact pair is validated by hq-pro's workspace receipt contract.
+        object.insert("flow".to_string(), serde_json::json!("workspace_selection"));
+        object.insert("variant".to_string(), serde_json::json!("native"));
+        schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
             endpoint: AuthenticatedReceiptEndpoint::WorkspaceSelected,
             body,
-        })
+            authorized_account_id: Some(authorized_account_id.clone()),
+            attempts: 0,
+            next_attempt_at_ms: 0,
+        });
+        Ok(())
     })();
     if let Err(error) = result {
         eprintln!("[desktop-onboarding] workspace_selected receipt queue failed: {error}");
         return;
     }
-    flush_pending_authenticated_desktop_receipts();
 }
 
 // ── Anonymous HTTP, performed natively ─────────────────────────────────
@@ -710,7 +834,10 @@ pub async fn desktop_continuation_config() -> Result<serde_json::Value, String> 
     if !response.status().is_success() {
         // Not a config. The renderer reads any error here as disabled, which is
         // the provider buttons — the screen that ships today.
-        return Err(format!("CONTINUATION_CONFIG_STATUS_{}", response.status().as_u16()));
+        return Err(format!(
+            "CONTINUATION_CONFIG_STATUS_{}",
+            response.status().as_u16()
+        ));
     }
 
     response
@@ -825,6 +952,9 @@ mod authenticated_receipt_tests {
                 "occurredAt": occurred_at,
                 "installAttemptId": "install_123",
             }),
+            authorized_account_id: Some("person-a".to_string()),
+            attempts: 0,
+            next_attempt_at_ms: 0,
         }
     }
 
@@ -870,6 +1000,21 @@ mod authenticated_receipt_tests {
             path.exists(),
             "the unknown queue remains available for a future migration"
         );
+    }
+
+    #[test]
+    fn legacy_unbound_receipts_are_read_but_cannot_cross_an_account_switch() {
+        let legacy: AuthenticatedDesktopReceipt = serde_json::from_value(serde_json::json!({
+            "endpoint": "workspace_selected",
+            "body": { "eventId": "evt_legacy" },
+        }))
+        .expect("legacy queue row");
+
+        assert_eq!(legacy.authorized_account_id, None);
+        assert!(!may_deliver_for_account(
+            legacy.authorized_account_id.as_deref(),
+            Some("person-b"),
+        ));
     }
 
     #[test]

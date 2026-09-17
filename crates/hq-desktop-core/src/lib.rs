@@ -4,6 +4,7 @@
 
 pub mod activity;
 pub mod agency;
+pub mod authenticated_receipts;
 pub mod bandwidth;
 pub mod banner;
 pub mod claude_launch;
@@ -75,4 +76,3 @@ pub mod workspaces;
 
 #[cfg(test)]
 pub(crate) mod test_support;
-

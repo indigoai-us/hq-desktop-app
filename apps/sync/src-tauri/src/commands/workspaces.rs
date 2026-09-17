@@ -49,11 +49,11 @@
 //! covers the common case (re-provision a single broken slug) without needing
 //! the full repair surface.
 
+use futures_util::{stream, FutureExt, StreamExt, TryStreamExt};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use futures_util::{stream, FutureExt, StreamExt, TryStreamExt};
 
 use serde::Serialize;
 
@@ -415,7 +415,11 @@ where
             .name
             .clone()
             .filter(|name| !name.trim().is_empty())
-            .or_else(|| mem.company_name.clone().filter(|name| !name.trim().is_empty()))
+            .or_else(|| {
+                mem.company_name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+            })
             .or_else(|| {
                 local_by_slug
                     .get(entity.slug.as_str())
@@ -585,17 +589,26 @@ pub(crate) async fn fetch_cloud_roster(
         });
     }
 
-    let ids = memberships.iter().map(|mem| mem.company_uid.clone()).collect();
+    let ids = memberships
+        .iter()
+        .map(|mem| mem.company_uid.clone())
+        .collect();
     let fetched = fetch_workspace_entities(ids, |uid| async {
         match vault.find_entity_by_uid(&uid).await {
             Ok(entity) => Ok((uid, entity)),
             Err(error) => {
-                let membership = memberships.iter().find(|mem| mem.company_uid == uid)
-                    .map(|mem| mem.display_id()).unwrap_or_else(|| uid.clone());
-                Err(format!("fetch entity {uid} for membership {membership}: {error}"))
+                let membership = memberships
+                    .iter()
+                    .find(|mem| mem.company_uid == uid)
+                    .map(|mem| mem.display_id())
+                    .unwrap_or_else(|| uid.clone());
+                Err(format!(
+                    "fetch entity {uid} for membership {membership}: {error}"
+                ))
             }
         }
-    }).await?;
+    })
+    .await?;
     let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
     for (uid, entity) in fetched {
         if let Some(e) = entity {
@@ -651,7 +664,9 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                 "workspaces",
                 &format!(
                     "cloud roster: person={} memberships={} companies={:?}",
-                    p.as_ref().map(|person| person.uid.as_str()).unwrap_or("none"),
+                    p.as_ref()
+                        .map(|person| person.uid.as_str())
+                        .unwrap_or("none"),
                     m.len(),
                     slugs
                 ),
@@ -715,15 +730,18 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
 }
 
 type LocalDiscovery = (Vec<LocalCompanyEntry>, Option<String>);
-type PendingLocalDiscovery = futures_util::future::Shared<futures_util::future::BoxFuture<'static, LocalDiscovery>>;
+type PendingLocalDiscovery =
+    futures_util::future::Shared<futures_util::future::BoxFuture<'static, LocalDiscovery>>;
 
 /// A blocked filesystem open (for example a macOS folder-access stall) must
 /// not block the cloud roster or spawn another stuck thread on every retry.
 async fn bounded_local_discovery(root: &Path) -> LocalDiscovery {
     static PENDING: OnceLock<Mutex<BTreeMap<PathBuf, PendingLocalDiscovery>>> = OnceLock::new();
     let pending = {
-        let mut jobs = PENDING.get_or_init(|| Mutex::new(BTreeMap::new()))
-            .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut jobs = PENDING
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         reuse_local_discovery(&mut jobs, root, || local_discovery_job(root.to_path_buf()))
     };
     wait_local_discovery(pending, Duration::from_secs(3)).await
@@ -735,7 +753,9 @@ fn reuse_local_discovery(
     create: impl FnOnce() -> PendingLocalDiscovery,
 ) -> PendingLocalDiscovery {
     if let Some(job) = jobs.get(root) {
-        if job.peek().is_none() { return job.clone(); }
+        if job.peek().is_none() {
+            return job.clone();
+        }
     }
     let job = create();
     jobs.insert(root.to_path_buf(), job.clone());
@@ -751,16 +771,31 @@ async fn wait_local_discovery(pending: PendingLocalDiscovery, budget: Duration) 
 
 fn local_discovery_job(root: PathBuf) -> PendingLocalDiscovery {
     async move {
-        tokio::task::spawn_blocking(move || discover_local_companies(&root)).await
-            .unwrap_or_else(|error| (Vec::new(), Some(format!("Local workspace discovery failed: {error}"))))
-    }.boxed().shared()
+        tokio::task::spawn_blocking(move || discover_local_companies(&root))
+            .await
+            .unwrap_or_else(|error| {
+                (
+                    Vec::new(),
+                    Some(format!("Local workspace discovery failed: {error}")),
+                )
+            })
+    }
+    .boxed()
+    .shared()
 }
 
 /// Bound fan-out while avoiding one network round trip per membership in series.
 async fn fetch_workspace_entities<T, F, Fut>(ids: Vec<String>, fetch: F) -> Result<Vec<T>, String>
-where F: Fn(String) -> Fut, Fut: std::future::Future<Output = Result<T, String>> {
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
     let ids: std::collections::BTreeSet<_> = ids.into_iter().collect();
-    stream::iter(ids).map(fetch).buffer_unordered(8).try_collect().await
+    stream::iter(ids)
+        .map(fetch)
+        .buffer_unordered(8)
+        .try_collect()
+        .await
 }
 
 #[tauri::command]
@@ -1142,7 +1177,8 @@ pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> 
             // user-visible result. The server verifies this membership before
             // retaining the person/company join.
             let company_uid = result.cloud_uid.clone();
-            crate::commands::desktop_auth::record_desktop_workspace_selected(&app, company_uid);
+            crate::commands::desktop_auth::record_desktop_workspace_selected(&app, company_uid)
+                .await;
             Ok(())
         }
         Err(e) => {
@@ -1150,10 +1186,8 @@ pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> 
                 // The CLI reached entity + manifest + config success before
                 // the initial upload failed. Keep the UI's sync error, while
                 // retaining the completed workspace-selection join.
-                crate::commands::desktop_auth::record_desktop_workspace_selected(
-                    &app,
-                    company_uid,
-                );
+                crate::commands::desktop_auth::record_desktop_workspace_selected(&app, company_uid)
+                    .await;
             }
             let msg = format!("hq CLI failed for '{slug}': {e}");
             log("workspaces", &msg);
@@ -1419,12 +1453,21 @@ mod tests {
         });
         let (rows, error) = super::wait_local_discovery(first, Duration::from_millis(5)).await;
         assert!(rows.is_empty());
-        assert!(error.unwrap().contains("Cloud workspaces are still available"));
-        let retry = super::reuse_local_discovery(&mut jobs, root, || panic!("retry spawned a second blocked read"));
+        assert!(error
+            .unwrap()
+            .contains("Cloud workspaces are still available"));
+        let retry = super::reuse_local_discovery(&mut jobs, root, || {
+            panic!("retry spawned a second blocked read")
+        });
         send.send((Vec::new(), None)).unwrap();
-        assert_eq!(super::wait_local_discovery(retry, Duration::from_secs(1)).await, (Vec::new(), None));
+        assert_eq!(
+            super::wait_local_discovery(retry, Duration::from_secs(1)).await,
+            (Vec::new(), None)
+        );
         let refreshed = super::reuse_local_discovery(&mut jobs, root, || {
-            futures_util::future::ready((Vec::new(), Some("fresh read".to_string()))).boxed().shared()
+            futures_util::future::ready((Vec::new(), Some("fresh read".to_string())))
+                .boxed()
+                .shared()
         });
         assert_eq!(refreshed.await.1.as_deref(), Some("fresh read"));
     }
@@ -1445,7 +1488,9 @@ mod tests {
             tokio::task::yield_now().await;
             active.fetch_sub(1, Ordering::SeqCst);
             Ok(id)
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert_eq!(rows.len(), 12);
         assert!(peak.load(Ordering::SeqCst) > 1);
         assert!(peak.load(Ordering::SeqCst) <= 8);
@@ -1455,7 +1500,8 @@ mod tests {
     async fn workspace_entity_failure_is_not_reported_as_complete_membership() {
         let result = fetch_workspace_entities(vec!["broken".into()], |_| async {
             Err::<String, _>("network unavailable".to_string())
-        }).await;
+        })
+        .await;
         assert_eq!(result.unwrap_err(), "network unavailable");
     }
 
@@ -1929,7 +1975,10 @@ mod tests {
         let mut mem = membership("mem_1", "prs_x", "cmp_t", "active");
         mem.company_name = Some("HQTestCo".to_string());
         let mut entities = BTreeMap::new();
-        entities.insert("cmp_t".to_string(), company_entity("cmp_t", "hqtestco", None));
+        entities.insert(
+            "cmp_t".to_string(),
+            company_entity("cmp_t", "hqtestco", None),
+        );
         let result =
             assemble_workspaces(tmp.path(), Some(&p), &[mem], &entities, &[], true, |_| None);
         assert_eq!(result[1].display_name, "HQTestCo");

@@ -218,12 +218,13 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(confirm).toContain('"browser_continuation", "continuation"');
     const manualOauth = rustFunction(oauth, 'oauth_exchange_code');
     expect(manualOauth).toContain('record_desktop_login_completed');
-    expect(manualOauth).toContain('"manual_oauth",\n        "control"');
+    expect(manualOauth).toContain('"manual_oauth"');
+    expect(manualOauth).toContain('"control"');
     expect(desktopAuth).toContain('session_activated_url()');
     expect(desktopAuth).toContain('super::first_run::install_attempt_id()?');
     expect(desktopAuth).toContain('.bearer_auth(jwt)');
-    expect(desktopAuth).toContain('enqueue_authenticated_desktop_receipt');
-    expect(desktopAuth).toContain('flush_pending_authenticated_desktop_receipts');
+    expect(desktopAuth).toContain('schedule_authenticated_desktop_receipt');
+    expect(desktopAuth).toContain('authorized_account_id');
   });
 
   it('reports the company after the person explicitly connects it, without changing provisioning', () => {
@@ -236,8 +237,12 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(desktopAuth).toContain('"workspaceKind"');
     expect(desktopAuth).toContain('"companyUid"');
     const workspaceReceipt = rustFunction(desktopAuth, 'record_desktop_workspace_selected');
-    expect(workspaceReceipt).not.toContain('"manual_oauth"');
-    expect(workspaceReceipt).not.toContain('"control"');
+    expect(workspaceReceipt).toContain('"workspace_selection"');
+    expect(workspaceReceipt).toContain('"native"');
+    expect(workspaceReceipt).toContain('current_authenticated_account_id');
+    expect(connect).toMatch(
+      /record_desktop_workspace_selected\(&app,\s*company_uid\)\s*\.await/,
+    );
   });
 
   it('keeps a partial cloud provision in the installer-to-company join', () => {
@@ -245,5 +250,16 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(connect).toContain('partial_sync_company_uid(&e)');
     expect(connect).toContain('record_desktop_workspace_selected');
     expect(workspaces).toContain('CliProvisionError::Sync');
+  });
+
+  it('keeps receipt disk I/O and retries out of authentication and workspace commands', () => {
+    const confirm = rustFunction(desktopAuth, 'desktop_continuation_confirm');
+    const workspaceReceipt = rustFunction(desktopAuth, 'record_desktop_workspace_selected');
+    expect(confirm).not.toContain('write_authenticated_receipt_queue');
+    expect(workspaceReceipt).not.toContain('write_authenticated_receipt_queue');
+    expect(desktopAuth).toContain('spawn_blocking');
+    expect(desktopAuth).toContain('may_deliver_for_account');
+    expect(desktopAuth).toContain('classify_receipt_http_status');
+    expect(desktopAuth).toContain('next_receipt_retry_at_ms');
   });
 });
