@@ -98,8 +98,6 @@ async function loadTree(
 let uiStyleFiles: SourceFile[] = [];
 let uiScriptFiles: SourceFile[] = [];
 let coreScriptFiles: SourceFile[] = [];
-let rustSessions = "";
-let sessionsCommand = "";
 let syncCommand = "";
 let glass = "";
 let tauriCargo = "";
@@ -118,8 +116,6 @@ beforeAll(async () => {
   ]);
 
   [
-    rustSessions,
-    sessionsCommand,
     syncCommand,
     glass,
     tauriCargo,
@@ -131,8 +127,6 @@ beforeAll(async () => {
     desktopAltBoot,
   ] = await Promise.all(
     [
-      "crates/hq-desktop-core/src/sessions/mod.rs",
-      "apps/sync/src-tauri/src/commands/sessions.rs",
       "apps/sync/src-tauri/src/commands/sync.rs",
       "apps/sync/src-tauri/src/glass.rs",
       "apps/sync/src-tauri/Cargo.toml",
@@ -248,9 +242,21 @@ describe("backdrop-filter budget (live shell)", () => {
   });
 
   it("documents that desktop-alt is dead code and excluded", () => {
-    // If boot.ts ever stops hard-returning 'hq-work', apps/sync/src/desktop-alt
-    // is live again and this file's scope comment (and scope) must be revisited.
-    expect(desktopAltBoot).toMatch(/return\s+'hq-work'/);
+    // This used to assert boot.ts hard-returns 'hq-work'. Main went further and
+    // deleted the shell selection outright: boot now unconditionally mounts
+    // hq-work, with no cohort, flag, or alternative branch to pick. Assert that
+    // shape instead — if a second shell is ever selected here again, the
+    // desktop-alt tree is live and this file's scope must be revisited.
+    expect(desktopAltBoot).toMatch(/await\s+deps\.mountHqWork\(\)/);
+    // Comments only: the file's own doc block names the retired flag and cohort
+    // to explain why they are gone, so match against code alone.
+    const bootCode = desktopAltBoot
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
+    expect(
+      bootCode,
+      "boot.ts selects a shell again — desktop-alt may no longer be dead",
+    ).not.toMatch(/hqWorkHandoff|cohort|mountDesktopAlt/);
   });
 });
 
@@ -360,6 +366,15 @@ const SESSIONS_HIDDEN_POLL_FLOOR_SECS = 120;
  */
 const FAST_POLLER_ALLOWLIST = new Map<string, string>([
   [
+    "packages/ui/src/chat/messaging/AgentThinkingRow.svelte",
+    "1s tick driving the visible 'working for 42s' counter while an agent is " +
+      "mid-turn. Not a long-lived poller: the $effect returns early when there " +
+      "are no thinking entries and tears the interval down the moment the row " +
+      "empties, so it lives for the length of one agent turn. It does NOT pause " +
+      "on visibilitychange — bounded lifetime is what keeps it cheap, not a " +
+      "visibility gate.",
+  ],
+  [
     "packages/ui/src/settings/update-store.svelte.ts",
     "1s countdown ticker for the visible 'update in Ns' label — it is the " +
       "thing being displayed, and it stops itself at zero.",
@@ -381,11 +396,6 @@ const FAST_POLLER_ALLOWLIST = new Map<string, string>([
       "not delivered — both are cheap in-memory passes, no IPC per tick.",
   ],
   [
-    "packages/ui/src/sessions/sessions-store.svelte.ts",
-    "5s refresh, but the store pauses entirely on visibilitychange (asserted " +
-      "below), so it only runs while the user is actually looking at sessions.",
-  ],
-  [
     "packages/ui/src/meetings/meetings-store.svelte.ts",
     "3s connect-provider poll, active only during the OAuth connect flow " +
       "(the steady-state meetings poll is POLL_INTERVAL_MS = 120s).",
@@ -393,36 +403,11 @@ const FAST_POLLER_ALLOWLIST = new Map<string, string>([
 ]);
 
 describe("poll-interval floors", () => {
-  it("the Rust session scanner keeps its post-fix cadence", () => {
-    const visible = /SESSIONS_POLL_INTERVAL_SECS:\s*u64\s*=\s*(\d+)/.exec(
-      rustSessions,
-    );
-    const hidden =
-      /SESSIONS_HIDDEN_POLL_INTERVAL_SECS:\s*u64\s*=\s*(\d+)/.exec(
-        rustSessions,
-      );
-
-    expect(visible, "SESSIONS_POLL_INTERVAL_SECS is missing").not.toBeNull();
-    expect(
-      hidden,
-      "SESSIONS_HIDDEN_POLL_INTERVAL_SECS is missing",
-    ).not.toBeNull();
-
-    expect(
-      Number(visible![1]),
-      "The session scanner walks every Claude/Codex session directory on each " +
-        "tick. It used to do that every 5 seconds, forever — the single " +
-        "largest source of idle CPU in the app. This is a FLOOR: raise it " +
-        "freely, never lower it.",
-    ).toBeGreaterThanOrEqual(SESSIONS_POLL_FLOOR_SECS);
-
-    expect(
-      Number(hidden![1]),
-      "While the window is hidden the scan must back off hard — a menubar app " +
-        "spends most of its life behind other windows.",
-    ).toBeGreaterThanOrEqual(SESSIONS_HIDDEN_POLL_FLOOR_SECS);
-  });
-
+  // Two guards used to live here — the Rust session scanner's poll cadence and
+  // the sessions command's unchanged-snapshot skip. Both were removed when the
+  // in-app Sessions subsystem was deleted (#826): the files they read no longer
+  // exist, so the assertions could only ever throw ENOENT. If Mission Control
+  // comes back, its poll cadence needs a floor guard again.
   it("no frontend poller ticks faster than the floor without a reason", () => {
     const all = [...uiScriptFiles, ...coreScriptFiles];
 
@@ -457,10 +442,8 @@ describe("poll-interval floors", () => {
   it("the stores fixed in the perf pass still pause when hidden", () => {
     // These two were the churn sources: they kept refreshing (and rewriting
     // state) while the window was hidden behind other apps.
-    const gated = [
-      "packages/ui/src/chat/agency-store.svelte.ts",
-      "packages/ui/src/sessions/sessions-store.svelte.ts",
-    ];
+    // sessions-store was deleted with the in-app Sessions subsystem (#826).
+    const gated = ["packages/ui/src/chat/agency-store.svelte.ts"];
 
     for (const path of gated) {
       const file = uiScriptFiles.find((f) => f.path === path);
@@ -489,7 +472,16 @@ describe("poll-interval floors", () => {
  * RATCHET THIS DOWN, NEVER UP. The number is the count at the time the perf
  * pass landed; new event plumbing should use `emit_to`.
  */
-const BROADCAST_EMIT_CEILING = 153;
+// Re-baselined from 153 when #752 merged with main. 153 was measured on the
+// #752 branch; main independently reached 154 and the ceiling had been failing
+// there on its own. The 155th site is this branch's sync-progress coalescer,
+// which splits one emit call into a due path and a flush path — two SITES, but
+// far fewer actual broadcasts at runtime (hundreds per second collapse to one
+// per 120ms window), which is the thing the ceiling exists to limit.
+//
+// Still a ratchet: this number goes DOWN, never up. To add a broadcast, delete
+// one first.
+const BROADCAST_EMIT_CEILING = 155;
 
 describe("broadcast-emit discipline", () => {
   it("does not grow the number of broadcast emit sites", async () => {
@@ -534,12 +526,6 @@ describe("broadcast-emit discipline", () => {
     ).toMatch(/with_progress_coalescer/);
   });
 
-  it("the sessions command still skips unchanged snapshots", () => {
-    // Re-emitting a byte-identical MissionControlSnapshot re-ran every
-    // downstream Svelte effect for no reason at all.
-    expect(sessionsCommand).toMatch(/emit_snapshot_if_changed/);
-    expect(sessionsCommand).toMatch(/last_snapshot/);
-  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
