@@ -51,7 +51,7 @@
     widgetWindowSize,
   } from '../stores/widgetNotifications';
   import {
-    getLastReadTs,
+    fetchServerUnreadIds,
     loadNotificationTimeline,
   } from '../lib/notificationFeedData';
   import type { Channel } from '../lib/channels';
@@ -862,14 +862,24 @@
     const generation = ++historyLoadGeneration;
     historyHydration = 'loading';
     try {
-      const timeline = await loadNotificationTimeline();
+      // Read state comes from the server, in parallel with the timeline. A
+      // failed read-state fetch is NOT a failed hydration: rows still render,
+      // just without dots, and the next refresh retries. It must never fall
+      // back to the local watermark — that is the second read model this
+      // change removes.
+      const [timeline, unreadIds] = await Promise.all([
+        loadNotificationTimeline(),
+        fetchServerUnreadIds().catch((err: unknown): ReadonlySet<string> => {
+          console.error('widget: fetch_notifications (unread ids) failed', err);
+          return new Set<string>();
+        }),
+      ]);
       if (generation !== historyLoadGeneration) return;
       if (timeline.historyState === 'failed') {
         throw new Error('Native notification history is unavailable');
       }
       const items = timeline.items;
-      const lastRead = getLastReadTs();
-      const historyRows = items.map((it) => historyFeedItemToStackItem(it, lastRead));
+      const historyRows = items.map((it) => historyFeedItemToStackItem(it, unreadIds));
       let channelRows: WidgetStackItem[] | null = null;
       try {
         const { invoke } = await import('@tauri-apps/api/core');

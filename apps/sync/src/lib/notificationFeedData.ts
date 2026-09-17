@@ -277,6 +277,82 @@ export async function loadNotificationItems(
   return (await loadNotificationTimeline(limit, options)).items;
 }
 
+// ── Server read state ────────────────────────────────────────────────────────
+
+/**
+ * Map one NOTIF-store row onto the `Item.id` shape this module mints
+ * (`dm:${eventId}`, `share:${eventId}`, `file:${eventId}`), or null when the
+ * row cannot be matched.
+ *
+ * Keyed by `sourceEventId`, not the store row `id`: the store row is a
+ * notification ABOUT an event, and this module mints ids from the event
+ * itself, so `sourceEventId` is the only field the two sides share. That is
+ * also the key the desktop composer dedupes on
+ * (packages/ui/src/inbox/live-notifications.ts, `composeLiveNotifications`),
+ * and the type→prefix map here mirrors its `liveSourceKind`. A row with no
+ * `sourceEventId` is skipped rather than keyed on the store id, because that
+ * could never match anything and would only look like coverage.
+ */
+export function serverRowToItemId(row: {
+  type?: unknown;
+  sourceEventId?: unknown;
+}): string | null {
+  const source = typeof row.sourceEventId === 'string' ? row.sourceEventId.trim() : '';
+  if (!source) return null;
+  const t = (typeof row.type === 'string' ? row.type : '').trim().toLowerCase();
+  if (t === 'dm' || t === 'dm_received') return `dm:${source}`;
+  if (t === 'file_share' || t === 'file_shared') return `share:${source}`;
+  if (t === 'new_file' || t === 'file_added') return `file:${source}`;
+  return null;
+}
+
+/** One page cap; unread is small in practice but a reader with 99+ exists. */
+const UNREAD_PAGE_LIMIT = 100;
+/** Hard stop on the cursor walk so a misbehaving cursor cannot spin forever. */
+const UNREAD_MAX_PAGES = 10;
+
+/**
+ * Ids the SERVER says are unread, in `Item.id` shape.
+ *
+ * This replaces the local `hq-sync:notifications-last-read` watermark for the
+ * widget. The watermark had exactly one writer — the popover feed's Mark all
+ * read — so retiring the popover would have frozen it, and every dot in the
+ * widget with it. The store is what the desktop feed already reads, so this is
+ * the same read model rather than a second one that can disagree.
+ *
+ * Walks `nextCursor` so the tail of a large unread set does not render as
+ * read. Rejects on transport failure; the caller decides what "the server said
+ * nothing" means for its surface, and it must NOT be "fall back to the
+ * watermark" — that is the two-models bug this exists to remove.
+ */
+interface UnreadPage {
+  notifications?: Array<{ type?: unknown; status?: unknown; sourceEventId?: unknown }>;
+  nextCursor?: unknown;
+}
+
+export async function fetchServerUnreadIds(): Promise<ReadonlySet<string>> {
+  const ids = new Set<string>();
+  let cursor: string | null = null;
+  for (let page = 0; page < UNREAD_MAX_PAGES; page++) {
+    const res: UnreadPage | null = await invoke<UnreadPage | null>('fetch_notifications', {
+      limit: UNREAD_PAGE_LIMIT,
+      cursor,
+      unreadOnly: true,
+    });
+    for (const row of res?.notifications ?? []) {
+      // `unreadOnly` is a server filter; re-check so a lenient server cannot
+      // light a dot for a read row.
+      if (row.status !== 'unread') continue;
+      const id = serverRowToItemId(row);
+      if (id) ids.add(id);
+    }
+    const next: string = typeof res?.nextCursor === 'string' ? res.nextCursor.trim() : '';
+    if (!next) break;
+    cursor = next;
+  }
+  return ids;
+}
+
 // ── Read watermark ────────────────────────────────────────────────────────────
 
 const LAST_READ_KEY = 'hq-sync:notifications-last-read';

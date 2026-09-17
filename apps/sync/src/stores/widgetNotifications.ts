@@ -1178,7 +1178,12 @@ function pathBasename(path: string): string {
  */
 export function historyFeedItemToStackItem(
   item: HistoryFeedItem,
-  lastReadTs: number,
+  /**
+   * Ids the server says are unread (`fetchServerUnreadIds`). Membership is
+   * the whole read model here — timestamps play no part, because the local
+   * watermark they were compared against no longer has a writer.
+   */
+  unreadIds: ReadonlySet<string>,
 ): WidgetStackItem {
   let type: WidgetRowType;
   let text: string;
@@ -1245,7 +1250,9 @@ export function historyFeedItemToStackItem(
         ? item.update.version
         : undefined,
     expiresAt: 0,
-    unread: item.ts > lastReadTs,
+    // Pending updates are local updater state, not server notifications, so
+    // the store has no read row for them; one stays actionable until installed.
+    unread: item.kind === 'update' ? true : unreadIds.has(item.id),
   };
 }
 
