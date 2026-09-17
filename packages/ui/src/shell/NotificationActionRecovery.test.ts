@@ -2,11 +2,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('svelte', async () => {
-  // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
-  return await import('../../node_modules/svelte/src/index-client.js');
-});
-
 import { flushSync, mount, unmount } from 'svelte';
 import NotificationActionRecovery from './NotificationActionRecovery.svelte';
 

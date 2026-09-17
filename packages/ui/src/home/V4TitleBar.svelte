@@ -15,6 +15,8 @@
   import { safeHref } from "../common/markdown.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import Tooltip from "../common/Tooltip.svelte";
+  import BrandLogoSlot from "../brand/BrandLogoSlot.svelte";
+  import { isEntitledBrand, type CachedBrand } from "../brand/brand.js";
   import Caret from "../common/Caret.svelte";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
@@ -67,6 +69,14 @@
     onopenMeetings?: () => void;
     onopenNotifications?: () => void;
     primaryAction?: { label: string; onselect: () => void };
+    /**
+     * White-label brand for the header slot (PL-04). Resolved by the shell
+     * from the same membership enrichment the popover reads, so an entitled
+     * company shows its logo here and an unentitled one is left alone.
+     */
+    brand?: CachedBrand | null;
+    /** Company name for the tenant logo's alt text. */
+    brandCompanyName?: string | null;
     /** Unread count drives monochrome bell dot only (no red pill). */
     unreadCount?: number;
     /**
@@ -147,6 +157,8 @@
     onopenMeetings,
     onopenNotifications,
     primaryAction,
+    brand = null,
+    brandCompanyName = null,
     unreadCount = 0,
     syncStatus = null,
     onopenSync,
@@ -173,6 +185,14 @@
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
+
+  /**
+   * Same gate as the popover's slot: entitlement must be explicitly true AND
+   * at least one brand field set. Anything else leaves the HQ wordmark alone.
+   */
+  const brandEntitled = $derived(
+    !!brand && isEntitledBrand(brand.brandingEnabled, brand.brand),
+  );
   const backHoverLabel = $derived(
     canGoBack && backLabel.trim() ? backLabel : "Back",
   );
@@ -634,12 +654,31 @@
         <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
       </svg>
     </button>
-    <span
-      class="v4-wordmark"
-      data-testid="titlebar-wordmark"
-      aria-label="HQ"
-      data-tauri-drag-region>HQ</span
-    >
+    {#if brandEntitled}
+      <!-- White-label header slot (PL-04): the tenant logo replaces the HQ
+           wordmark, with the permanent powered-by lockup underneath. Gated on
+           the same `isEntitledBrand` check the popover uses, so an unentitled
+           company keeps the wordmark chrome exactly as it was. -->
+      <div
+        class="v4-brand-slot"
+        data-testid="titlebar-brand-slot"
+        data-tauri-drag-region
+      >
+        <BrandLogoSlot
+          {brand}
+          brandingEnabled={true}
+          companyName={brandCompanyName}
+          size="desktop"
+        />
+      </div>
+    {:else}
+      <span
+        class="v4-wordmark"
+        data-testid="titlebar-wordmark"
+        aria-label="HQ"
+        data-tauri-drag-region>HQ</span
+      >
+    {/if}
     <span
       class="v4-day-date"
       data-testid="titlebar-day-date"
@@ -1022,6 +1061,14 @@
     user-select: none;
     -webkit-user-select: none;
     cursor: default;
+  }
+
+  .v4-brand-slot {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    min-width: 0;
+    margin-right: 2px;
   }
 
   .v4-titlebar-leading {

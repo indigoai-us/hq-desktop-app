@@ -5,7 +5,7 @@
   import { onMount, untrack } from 'svelte';
   import ConflictModal from './ConflictModal.svelte';
   import NotificationFeed from './NotificationFeed.svelte';
-  import NotificationActionRecovery from './NotificationActionRecovery.svelte';
+  import { NotificationActionRecovery } from '@hq/ui';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import { joinableMemberships, type Workspace } from '../lib/workspaces';
@@ -23,7 +23,7 @@
   } from '../lib/popover-window-size';
   import type { ConflictFile } from '../stores/conflicts';
   import type { NativeNotificationRecovery } from '../lib/nativeNotificationRecovery';
-  import BrandLogoSlot from '../lib/BrandLogoSlot.svelte';
+  import { BrandLogoSlot } from '@hq/ui/brand';
   import type { CachedBrand } from '../lib/brand';
 
 
