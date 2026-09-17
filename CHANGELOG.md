@@ -13,6 +13,7 @@ The release moves it under the version it ships in.
 - Notifications about channel messages now say who sent the message ("Jacob Posel sent a message"), with the channel underneath as context and the sender's initials on the avatar. They used to name the channel as the sender, hash suffix and all ("#project-fleet-bots-ga-sprint-a61db44b sent a message").
 - Channel names in notifications no longer show the random id at the end, so you see "#project-fleet-bots-ga-sprint" instead of "#project-fleet-bots-ga-sprint-a61db44b".
 - When someone adds a batch of files, the notifications list now shows one line per person instead of one per file — "cnueno@gmail.com added 14 files", with the shared folder underneath and the time of the most recent one. Clicking it opens what the newest file would have opened, and the unread count counts the batch once. A single file still reads "added a file".
+- In the main HQ window, the Core panel's buttons for a file that changed in two places now work. Keep local, Keep cloud and Open in editor did nothing there — the resolve step only existed in the menu-bar panel. "Resolve conflicts" in the Core panel now opens Settings › Sync.
 
 ## [0.10.286] — 2026-09-17
 
