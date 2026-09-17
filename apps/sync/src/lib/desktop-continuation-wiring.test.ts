@@ -240,14 +240,15 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(workspaceReceipt).toContain('"workspace_selection"');
     expect(workspaceReceipt).toContain('"native"');
     expect(workspaceReceipt).toContain('tauri::async_runtime::spawn(async move {');
-    expect(workspaceReceipt).toContain('cognito::get_tokens().await');
-    expect(workspaceReceipt).toContain('notification_identity_from_tokens(&tokens)');
+    expect(workspaceReceipt).toContain('authorizer: Option<WorkspaceReceiptAuthorization>');
+    expect(workspaceReceipt).toContain('let Some(authorizer) = authorizer else');
+    expect(workspaceReceipt).toContain('workspace_selected_receipt_for_authorizer');
+    expect(workspaceReceipt).not.toContain('cognito::get_tokens');
+    expect(workspaceReceipt).not.toContain('notification_identity_from_tokens');
     expect(workspaceReceipt).not.toContain('current_authenticated_account_id');
-    expect(workspaceReceipt.indexOf('cognito::get_tokens().await')).toBeGreaterThan(
-      workspaceReceipt.indexOf('tauri::async_runtime::spawn(async move {'),
-    );
+    expect(connect).toContain('workspace_receipt_authorization()');
     expect(connect).toMatch(
-      /record_desktop_workspace_selected\(&app,\s*company_uid\);/,
+      /record_desktop_workspace_selected\(\s*&app,\s*company_uid,\s*workspace_receipt_authorizer\.clone\(\),/,
     );
     expect(connect).not.toMatch(
       /record_desktop_workspace_selected\([^)]*\)\s*\.await/,

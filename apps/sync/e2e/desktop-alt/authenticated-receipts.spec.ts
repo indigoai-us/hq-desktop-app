@@ -64,7 +64,10 @@ describe('authenticated desktop receipts — account and I/O boundary contracts'
     );
     expect(workspaceBeforeBackground).not.toContain('cognito::get_tokens');
     expect(workspaceBeforeBackground).not.toContain('desktop_receipt_base');
-    expect(workspaces).toContain('record_desktop_workspace_selected(&app, company_uid);');
+    expect(workspaces).toContain('workspace_receipt_authorization()');
+    expect(workspaces).toMatch(
+      /record_desktop_workspace_selected\(\s*&app,\s*company_uid,\s*workspace_receipt_authorizer\.clone\(\),/,
+    );
     expect(workspaces).not.toContain('record_desktop_workspace_selected(&app, company_uid).await');
   });
 });
