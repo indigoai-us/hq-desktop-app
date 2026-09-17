@@ -11,6 +11,7 @@
   import PageHeader from "../shell/PageHeader.svelte";
   import {
     buildNotificationsView,
+    quickReplyTarget,
     notificationDestination,
     classifyNotificationsError,
     emptyFeedState,
@@ -20,6 +21,7 @@
     parseNotificationsResponse,
     reduceAck,
     reduceActionUsed,
+    reduceFeedAppended,
     reduceFeedLoaded,
     reduceFilter,
     reduceReadAll,
@@ -66,7 +68,15 @@
   let loadGeneration = 0;
   let unavailableNotification = $state<NotificationItem | null>(null);
 
-  const view = $derived(buildNotificationsView(feedState));
+  /**
+   * Session-local dismissals. There is no backend dismiss, so this is a "not
+   * now" gesture: the row leaves the list, `unreadCount` is untouched, and the
+   * bell keeps counting it. Deliberately NOT persisted — a dismissal that
+   * outlived the session would hide a notification the reader never handled,
+   * with no way to get it back.
+   */
+  let dismissed = $state<ReadonlySet<string>>(new Set<string>());
+  const view = $derived(buildNotificationsView(feedState, Date.now(), dismissed));
   /** Track filter as a primitive so load effect does not re-fire on every feedState rewrite. */
   const filter = $derived(feedState.filter);
   const unreadCount = $derived(feedState.unreadCount);
@@ -81,6 +91,8 @@
 
   let lastReportedUnread = $state<number | null>(null);
   let feedReady = $state(false);
+  let loadingMore = $state(false);
+  let loadMoreError = $state<string | null>(null);
 
   // Re-fetch when All | Unread toggles, or when a mesh wake bumps wakeSeq —
   // never when items/unreadCount update.
@@ -105,6 +117,9 @@
     loading = true;
     listError = null;
     listKind = "ok";
+    // A fresh top-of-list load supersedes any failed page.
+    loadMoreError = null;
+    loadingMore = false;
     try {
       const raw = await api.fetchNotifications({
         limit: 50,
@@ -141,6 +156,100 @@
         feedReady = true;
       }
     }
+  }
+
+  /**
+   * Fetch the next page and append it.
+   *
+   * Deliberately NOT folded into `loadFeed`: that one owns the whole-list
+   * replace, shares `loadGeneration` with the filter effect, and flips the
+   * page-level `loading` flag. Reusing it here would blank the list the reader
+   * is looking at, and a filter change landing mid-page would replace the
+   * appended rows anyway. This keeps its own in-flight flag and its own error,
+   * so a failed page leaves the rows already on screen untouched.
+   *
+   * Guards on `loadingMore` as well as the cursor: the button is disabled while
+   * a page is in flight, but a double-activation (Enter plus click, or a fast
+   * double tap) can still arrive before Svelte re-renders the disabled state,
+   * and two concurrent fetches on the same cursor would append the same page
+   * twice. `reduceFeedAppended` dedupes, so this is belt and braces.
+   */
+  async function loadMore(): Promise<void> {
+    const cursor = feedState.nextCursor;
+    if (!cursor || loadingMore) return;
+    const generation = loadGeneration;
+    loadingMore = true;
+    loadMoreError = null;
+    try {
+      const raw = await api.fetchNotifications({
+        limit: 50,
+        cursor,
+        unreadOnly: feedState.filter === "unread",
+      });
+      // A filter flip (or a refresh) while this page was in flight means these
+      // rows belong to a list that no longer exists. Drop them.
+      if (generation !== loadGeneration) return;
+      feedState = reduceFeedAppended(feedState, parseNotificationsResponse(raw));
+    } catch (err) {
+      if (generation !== loadGeneration) return;
+      console.error("notifications-view: load more failed", err);
+      loadMoreError = "Couldn't load older notifications. Try again.";
+    } finally {
+      if (generation === loadGeneration) loadingMore = false;
+    }
+  }
+
+  /** Row id whose reply box is open. Only ever one at a time. */
+  let replyingTo = $state<string | null>(null);
+  let replyDraft = $state("");
+  let replySending = $state(false);
+  let replyError = $state<string | null>(null);
+
+  function openReply(id: string): void {
+    // Switching rows discards the previous draft on purpose: carrying text
+    // between recipients is how a message reaches the wrong person.
+    if (replyingTo !== id) replyDraft = "";
+    replyingTo = id;
+    replyError = null;
+  }
+
+  function closeReply(): void {
+    replyingTo = null;
+    replyDraft = "";
+    replyError = null;
+  }
+
+  /**
+   * Send the draft (or a preset emoji) as a DM.
+   *
+   * The popover's "react" was never a reaction — no per-event DM reaction
+   * exists, so it sent the emoji as an ordinary reply body. This does the same
+   * thing rather than implying a reaction the backend cannot store.
+   *
+   * On failure the draft stays on screen with the error, because the row owns
+   * the text and silently losing a typed message is worse than an error.
+   */
+  async function sendReply(item: NotificationItem, body: string): Promise<void> {
+    const target = quickReplyTarget(item);
+    const text = body.trim();
+    if (!target || !text || replySending || !api.sendDm) return;
+    replySending = true;
+    replyError = null;
+    try {
+      await api.sendDm({ toPersonUid: target.personUid, body: text });
+      closeReply();
+    } catch (err) {
+      console.error("notifications-view: quick reply failed", err);
+      replyError = "Couldn't send. Try again.";
+    } finally {
+      replySending = false;
+    }
+  }
+
+  function dismissRow(id: string): void {
+    const next = new Set(dismissed);
+    next.add(id);
+    dismissed = next;
   }
 
   function setFilter(next: NotificationsFilter): void {
@@ -483,18 +592,301 @@
                         aria-label="Unread"
                       ></span>
                     {/if}
+                    {#if api.sendDm && quickReplyTarget(row)}
+                      <button
+                        type="button"
+                        class="notif-quick-reply"
+                        data-testid="notifications-reply"
+                        aria-label={`Reply to ${row.actorName || "sender"}`}
+                        aria-expanded={replyingTo === row.id}
+                        title="Reply without leaving this list"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          if (replyingTo === row.id) closeReply();
+                          else openReply(row.id);
+                        }}
+                        onkeydown={(e) => e.stopPropagation()}
+                      >
+                        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
+                          <path
+                            d="M6.5 4.25 3 7.5l3.5 3.25M3.4 7.5H9a4 4 0 0 1 4 4v.75"
+                            stroke="currentColor"
+                            stroke-width="1.3"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    {/if}
+                    <!-- stopPropagation: the whole row is a button that opens
+                         the conversation, and dismissing must not also open it. -->
+                    <button
+                      type="button"
+                      class="notif-dismiss"
+                      data-testid="notifications-dismiss"
+                      aria-label={`Dismiss: ${row.verbText}`}
+                      title="Dismiss for now"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        dismissRow(row.id);
+                      }}
+                      onkeydown={(e) => e.stopPropagation()}
+                    >
+                      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
+                        <path
+                          d="M4.5 4.5l7 7M11.5 4.5l-7 7"
+                          stroke="currentColor"
+                          stroke-width="1.3"
+                          stroke-linecap="round"
+                        />
+                      </svg>
+                    </button>
                   </span>
                 </div>
+                {#if replyingTo === row.id}
+                  <!-- Outside the row button: a form nested in a button is
+                       invalid, and Enter inside it must not activate the row. -->
+                  <div
+                    class="notif-reply"
+                    data-testid="notifications-reply-box"
+                    onclick={(e) => e.stopPropagation()}
+                    onkeydown={(e) => e.stopPropagation()}
+                    role="presentation"
+                  >
+                    <div class="notif-reply-emoji">
+                      {#each ["👍", "🎉", "👀", "🙏"] as emoji (emoji)}
+                        <button
+                          type="button"
+                          class="notif-emoji-btn"
+                          data-testid="notifications-reply-emoji"
+                          aria-label={`Reply with ${emoji}`}
+                          disabled={replySending}
+                          onclick={() => void sendReply(row, emoji)}
+                        >
+                          {emoji}
+                        </button>
+                      {/each}
+                    </div>
+                    <div class="notif-reply-row">
+                      <!-- svelte-ignore a11y_autofocus -->
+                      <input
+                        class="notif-reply-input"
+                        data-testid="notifications-reply-input"
+                        type="text"
+                        autofocus
+                        placeholder={`Reply to ${row.actorName || "sender"}…`}
+                        aria-label={`Reply to ${row.actorName || "sender"}`}
+                        bind:value={replyDraft}
+                        disabled={replySending}
+                        onkeydown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void sendReply(row, replyDraft);
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            closeReply();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        class="notif-reply-send"
+                        data-testid="notifications-reply-send"
+                        disabled={replySending || !replyDraft.trim()}
+                        onclick={() => void sendReply(row, replyDraft)}
+                      >
+                        {replySending ? "Sending…" : "Send"}
+                      </button>
+                    </div>
+                    {#if replyError}
+                      <p class="notif-reply-error" role="alert">{replyError}</p>
+                    {/if}
+                  </div>
+                {/if}
               </li>
             {/each}
           </ul>
         </section>
       {/each}
+      {#if feedState.nextCursor}
+        <div class="notif-more">
+          {#if loadMoreError}
+            <p class="notif-more-error" role="alert">{loadMoreError}</p>
+          {/if}
+          <button
+            type="button"
+            class="notif-more-btn"
+            data-testid="notifications-load-more"
+            disabled={loadingMore}
+            aria-busy={loadingMore}
+            onclick={() => void loadMore()}
+          >
+            {loadingMore
+              ? "Loading…"
+              : loadMoreError
+                ? "Try again"
+                : "Load older notifications"}
+          </button>
+        </div>
+      {/if}
     {/if}
   </div>
 </section>
 
 <style>
+  .notif-dismiss {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    padding: 2px;
+    margin-left: 2px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    /* Revealed on row hover or when focused, so it never competes with the
+       content at rest but stays keyboard-reachable. */
+    opacity: 0;
+  }
+
+  .notif-row:hover .notif-dismiss,
+  .notif-dismiss:focus-visible {
+    opacity: 1;
+  }
+
+  .notif-dismiss:hover {
+    color: var(--t1);
+    background: var(--v4-inset);
+  }
+
+  .notif-quick-reply {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    padding: 2px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    opacity: 0;
+  }
+
+  .notif-row:hover .notif-quick-reply,
+  .notif-quick-reply:focus-visible,
+  .notif-quick-reply[aria-expanded="true"] {
+    opacity: 1;
+  }
+
+  .notif-quick-reply:hover {
+    color: var(--t1);
+    background: var(--v4-inset);
+  }
+
+  .notif-reply {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px 12px 44px;
+  }
+
+  .notif-reply-emoji {
+    display: flex;
+    gap: 4px;
+  }
+
+  .notif-emoji-btn {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: transparent;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 13px;
+    line-height: 1.4;
+    cursor: pointer;
+  }
+
+  .notif-emoji-btn:hover:not(:disabled) {
+    background: var(--v4-inset);
+  }
+
+  .notif-reply-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .notif-reply-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+
+  .notif-reply-send {
+    appearance: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 12px;
+    cursor: pointer;
+  }
+
+  .notif-reply-send:disabled,
+  .notif-emoji-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .notif-reply-error {
+    margin: 0;
+    font-size: 11px;
+    color: var(--t2);
+  }
+
+  .notif-more {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 0 20px;
+  }
+
+  .notif-more-error {
+    margin: 0;
+    font-size: 12px;
+    color: var(--t2);
+  }
+
+  .notif-more-btn {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .notif-more-btn:hover:not(:disabled) {
+    background: var(--v4-inset);
+  }
+
+  .notif-more-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
   .notif-unavailable {
     margin: 12px 20px;
     padding: 12px;

@@ -44,6 +44,18 @@
     type LifecycleCardActionEvent,
   } from "./channelMessageModels";
   import { parseWorkSessionEvent } from "./workSessionEvent";
+
+  // Hoisted once per module: constructing an Intl.DateTimeFormat (what
+  // toLocaleTimeString/DateString do under the hood) per row per render was a
+  // measurable share of timeline paint time on long channels.
+  const TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  });
   import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
   import { authorAvatarUrl } from "./agent-avatars";
   import { presenceStatus } from "../presence-store.svelte.js";
@@ -128,7 +140,9 @@
       body: string,
       mentions: MentionTarget[],
       files?: File[],
-    ) => void | Promise<void>;
+      /** Optionally resolve with the persisted eventId so the optimistic row
+       *  reconciles against the echo exactly rather than by content. */
+    ) => void | string | Promise<void | string>;
     /** Presign a vault GET so image thumbs and the tray can render bytes. */
     previewCache?: ImagePreviewCache | null;
     onpresign?: (
@@ -347,6 +361,8 @@
 
   // Optimistic local sends appended to the injected timeline (no persistence).
   let localSends = $state<ConversationMessageWire[]>([]);
+  /** Monotonic so a temp id is never reused after a row is removed. */
+  let sendSeq = 1;
   let extraOlder = $state(0);
   /** Avoid scheduling the same history page twice from a burst of top scrolls. */
   let loadingEarlier = $state(false);
@@ -361,12 +377,99 @@
     }
   }
 
+  /**
+   * Optimistic-send bookkeeping, keyed by the temp row's synthetic eventId.
+   * `knownIds` are the event ids already on screen when the row was created, so
+   * an older identical message from the same author can never be mistaken for
+   * this send's echo. `echoId` is the real event id when `onsend` returns one.
+   */
+  interface LocalSendMeta {
+    knownIds: Set<string>;
+    echoId?: string;
+  }
+  const sendMeta = new Map<string, LocalSendMeta>();
+
+  /** Server echoes may land up to this far from the optimistic timestamp. */
+  const ECHO_MATCH_WINDOW_MS = 2 * 60 * 1000;
+
+  function sameAuthor(
+    a: ConversationMessageWire,
+    b: ConversationMessageWire,
+  ): boolean {
+    const au = (a.fromPersonUid ?? "").trim();
+    const bu = (b.fromPersonUid ?? "").trim();
+    if (au && bu) return au === bu;
+    return (
+      (a.fromDisplayName ?? "").trim() === (b.fromDisplayName ?? "").trim()
+    );
+  }
+
+  /**
+   * Drop the optimistic rows that the server has now echoed back.
+   *
+   * Temp rows carry synthetic `local-send-N` ids that the server never returns,
+   * so the eventId-keyed timeline dedupe can never reconcile them. Match on the
+   * real signal instead — same author, same body, same attachment count, close
+   * timestamp, and an event id that was NOT already on screen when the row was
+   * created. Each incoming message reconciles at most one temp row, so sending
+   * the same text twice still leaves both rows until both echoes arrive.
+   *
+   * This deliberately does NOT key on "the newest event id changed": an echo
+   * can land mid-timeline when the server clock is skewed, or when a concurrent
+   * inbound message sorts after it.
+   */
+  function reconcileLocalSends(
+    pending: ConversationMessageWire[],
+    incoming: ConversationMessageWire[],
+  ): ConversationMessageWire[] {
+    const consumed = new Set<string>();
+    const kept: ConversationMessageWire[] = [];
+    for (const row of pending) {
+      const meta = sendMeta.get(row.eventId ?? "");
+      const body = (row.body ?? "").trim();
+      const sentAt = Date.parse(row.createdAt ?? "");
+      const attachmentCount = row.attachments?.length ?? 0;
+      const echo = incoming.find((msg) => {
+        const id = (msg.eventId ?? "").trim();
+        if (!id || consumed.has(id)) return false;
+        if (meta?.echoId) return id === meta.echoId;
+        if (meta?.knownIds.has(id)) return false;
+        if ((msg.body ?? "").trim() !== body) return false;
+        if ((msg.attachments?.length ?? 0) !== attachmentCount) return false;
+        if (!sameAuthor(row, msg)) return false;
+        const at = Date.parse(msg.createdAt ?? "");
+        if (Number.isNaN(sentAt) || Number.isNaN(at)) return true;
+        return Math.abs(at - sentAt) <= ECHO_MATCH_WINDOW_MS;
+      });
+      const echoId = (echo?.eventId ?? "").trim();
+      if (echoId) consumed.add(echoId);
+      else kept.push(row);
+    }
+    return kept;
+  }
+
+  function forgetLocalSends(rows: ConversationMessageWire[]): void {
+    revokeLocalPreviews(rows);
+    for (const row of rows) sendMeta.delete(row.eventId ?? "");
+  }
+
+  // Optimistic rows are removed on POSITIVE reconciliation against the server
+  // echo (body + author + timestamp window), never on newest-id identity: a
+  // synthetic local id can never match the echo, and the echo does not always
+  // land as the newest row. `extraOlder` is deliberately NOT reset here — once
+  // the reader has opened older history (locally windowed or fetched through
+  // `onloadearlier`) a live refresh must not collapse it back.
   $effect(() => {
-    void messages.at(-1)?.eventId;
-    // untrack: reading localSends here would make this effect re-run on its
-    // own `localSends = []` write (effect depth explosion).
-    untrack(() => revokeLocalPreviews(localSends));
-    localSends = [];
+    const rows = messages;
+    // untrack: reading/writing localSends here would make this effect re-run on
+    // its own write (effect depth explosion).
+    untrack(() => {
+      if (localSends.length === 0) return;
+      const kept = reconcileLocalSends(localSends, rows);
+      if (kept.length === localSends.length) return;
+      forgetLocalSends(localSends.filter((row) => !kept.includes(row)));
+      localSends = kept;
+    });
   });
   const rootMessages = $derived(messages.filter((msg) => !isReplyMessage(msg)));
   const windowed = $derived(
@@ -458,6 +561,10 @@
    * that flush several times over for a single painted frame. The question
    * asked here is only "where is the scroller now", which one read per frame
    * answers at exactly the freshness a frame can display.
+   *
+   * The `$state` writes are guarded on an actual change: assigning the same
+   * value still invalidates the subtree in Svelte 5, so an unguarded write per
+   * scroll event re-ran the timeline's deriveds for no visible difference.
    */
   /**
    * Was the user already inside the top zone last time we looked? Loading
@@ -477,10 +584,11 @@
     if (!scroller) return;
     const distance =
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    stickToBottom = distance <= STICK_THRESHOLD_PX;
-    if (stickToBottom) hasUnseenBelow = false;
+    const pinned = distance <= STICK_THRESHOLD_PX;
+    if (pinned !== stickToBottom) stickToBottom = pinned;
+    if (pinned && hasUnseenBelow) hasUnseenBelow = false;
     const atTop = scroller.scrollTop <= STICK_THRESHOLD_PX;
-    if (atTop && !wasAtTop) showEarlier();
+    if (atTop && !wasAtTop) void showEarlier();
     wasAtTop = atTop;
   }
 
@@ -731,9 +839,7 @@
 
   function formatTime(iso: string): string {
     const d = new Date(iso);
-    return Number.isNaN(d.getTime())
-      ? ""
-      : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return Number.isNaN(d.getTime()) ? "" : TIME_FORMAT.format(d);
   }
 
   function formatRelative(iso: string): string {
@@ -786,15 +892,6 @@
     return Number.isNaN(d.getTime()) ? "" : d.toDateString();
   }
 
-  /** True when this row opens a new calendar day (drives the TODAY divider). */
-  function startsNewDay(index: number): boolean {
-    if (index === 0) return true;
-    return (
-      dayKey(timeline[index - 1].createdAt) !==
-      dayKey(timeline[index].createdAt)
-    );
-  }
-
   /** Divider label — Today / Yesterday / "Aug 15" (the CSS uppercases it). */
   function formatDateSeparator(iso: string): string {
     const d = new Date(iso);
@@ -804,7 +901,7 @@
     yesterday.setDate(today.getDate() - 1);
     if (d.toDateString() === today.toDateString()) return "Today";
     if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    return DATE_FORMAT.format(d);
   }
 
   /** Bursts group only within this window; older same-author rows re-header. */
@@ -830,9 +927,13 @@
   function messagesShareGroup(
     prev: ConversationMessageWire | undefined,
     cur: ConversationMessageWire | undefined,
+    /** Precomputed `isSpecialTimelineRow` results (renderRows already has
+     *  the system models in hand; avoids re-deriving them per pair). */
+    prevSpecial: boolean = prev ? isSpecialTimelineRow(prev) : false,
+    curSpecial: boolean = cur ? isSpecialTimelineRow(cur) : false,
   ): boolean {
     if (!prev || !cur) return false;
-    if (isSpecialTimelineRow(prev) || isSpecialTimelineRow(cur)) return false;
+    if (prevSpecial || curSpecial) return false;
     if ((prev.direction ?? "in") !== (cur.direction ?? "in")) return false;
     if (senderKey(prev) !== senderKey(cur)) return false;
     if (dayKey(prev.createdAt) !== dayKey(cur.createdAt)) return false;
@@ -845,10 +946,50 @@
     return elapsed >= 0 && elapsed <= MESSAGE_GROUP_WINDOW_MS;
   }
 
-  function startsGroup(index: number): boolean {
-    if (index === 0) return true;
-    return !messagesShareGroup(timeline[index - 1], timeline[index]);
+  /**
+   * Everything the row template needs that is a pure function of the
+   * timeline, computed ONCE per timeline change instead of per row per
+   * render: system-event model (was called up to 3x per row via
+   * `startsGroup` → `messagesShareGroup` → `isSpecialTimelineRow`), the
+   * work-session JSON parse, group/day boundaries, and the Date +
+   * Intl-formatted labels.
+   */
+  interface RenderRow {
+    msg: ConversationMessageWire;
+    systemModel: ReturnType<typeof systemModelForMessage>;
+    workActivity: ReturnType<typeof parseWorkSessionEvent>;
+    groupStart: boolean;
+    startsNewDay: boolean;
+    timeLabel: string;
+    dateLabel: string;
   }
+  const renderRows = $derived.by((): RenderRow[] => {
+    const out: RenderRow[] = [];
+    let prev: ConversationMessageWire | undefined;
+    let prevSpecial = false;
+    let prevDay = "";
+    for (const msg of timeline) {
+      const day = dayKey(msg.createdAt);
+      const startsNewDay = prev === undefined || day !== prevDay;
+      const systemModel = systemModelForMessage(msg);
+      const special = systemModel !== null;
+      out.push({
+        msg,
+        systemModel,
+        workActivity: parseWorkSessionEvent(msg.body ?? ""),
+        groupStart:
+          prev === undefined ||
+          !messagesShareGroup(prev, msg, prevSpecial, special),
+        startsNewDay,
+        timeLabel: formatTime(msg.createdAt),
+        dateLabel: startsNewDay ? formatDateSeparator(msg.createdAt) : "",
+      });
+      prev = msg;
+      prevSpecial = special;
+      prevDay = day;
+    }
+    return out;
+  });
 
   function toggle(messageId: string, emoji: string): void {
     localReactions = {
@@ -976,7 +1117,14 @@
     if (!body && pendingFiles.length === 0) return;
     const mentions = mentionPayloadTargets(selectedMentions);
     const files = [...pendingFiles];
-    const eventId = `local-send-${localSends.length + 1}`;
+    const eventId = `local-send-${sendSeq++}`;
+    sendMeta.set(eventId, {
+      knownIds: new Set(
+        messages
+          .map((msg) => (msg.eventId ?? "").trim())
+          .filter((id) => id !== ""),
+      ),
+    });
     localSends = [
       ...localSends,
       {
@@ -1010,9 +1158,15 @@
     attachError = null;
     discardDraft();
     try {
-      await onsend?.(body, mentions, files);
+      // Hosts that can name the persisted event return its id; that makes the
+      // echo match exact instead of content-based.
+      const persistedId = await onsend?.(body, mentions, files);
+      const meta = sendMeta.get(eventId);
+      if (meta && typeof persistedId === "string" && persistedId.trim()) {
+        meta.echoId = persistedId.trim();
+      }
     } catch (err) {
-      revokeLocalPreviews(localSends.filter((row) => row.eventId === eventId));
+      forgetLocalSends(localSends.filter((row) => row.eventId === eventId));
       localSends = localSends.filter((row) => row.eventId !== eventId);
       const raw = err instanceof Error ? err.message.trim() : "";
       attachError = formatComposerSendError(raw, files.length > 0);
@@ -1169,17 +1323,18 @@
             {earlierError ? "Couldn't load earlier messages. Retry" : windowed.hidden > 0 ? `Show ${windowed.hidden} earlier messages` : "Load earlier messages"}
           </button>
         {/if}
-        {#each timeline as msg, index (msg.eventId)}
-          {@const systemModel = systemModelForMessage(msg)}
-          {@const workActivity = parseWorkSessionEvent(msg.body ?? "")}
-          {@const groupStart = startsGroup(index)}
-          {#if startsNewDay(index)}
+        {#each renderRows as row (row.msg.eventId)}
+          {@const msg = row.msg}
+          {@const systemModel = row.systemModel}
+          {@const workActivity = row.workActivity}
+          {@const groupStart = row.groupStart}
+          {#if row.startsNewDay}
             <div
               class="date-separator"
               data-testid="date-separator"
-              aria-label={formatDateSeparator(msg.createdAt)}
+              aria-label={row.dateLabel}
             >
-              <span>{formatDateSeparator(msg.createdAt)}</span>
+              <span>{row.dateLabel}</span>
             </div>
           {/if}
           {#if systemModel?.kind === "work_session_card"}
@@ -1202,7 +1357,7 @@
               systemModel.type === "work_session_finished"
                 ? null
                 : messageAuthor(msg)}
-              time={formatTime(msg.createdAt)}
+              time={row.timeLabel}
             />
           {:else if systemModel?.kind === "run_complete"}
             <div
@@ -1223,7 +1378,7 @@
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
                   <span class="dm-msg-header-time"
-                    >{formatTime(msg.createdAt)}</span
+                    >{row.timeLabel}</span
                   >
                 </div>
                 <RunCompleteCard model={systemModel} {onopenurl} />
@@ -1257,7 +1412,7 @@
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
                   <span class="dm-msg-header-time"
-                    >{formatTime(msg.createdAt)}</span
+                    >{row.timeLabel}</span
                   >
                 </div>
                 <LifecycleCard
@@ -1283,7 +1438,7 @@
                 ...workActivity,
                 actor: resolveWorkActor(workActivity.actor, msg),
               }}
-              time={formatTime(msg.createdAt)}
+              time={row.timeLabel}
             />
           {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
             {@const rich = richContentForMessage(msg)}
@@ -1319,7 +1474,7 @@
               {:else}
                 <span class="dm-msg-avatar-spacer" aria-hidden="true">
                   <span class="dm-msg-gutter-time"
-                    >{formatTime(msg.createdAt)}</span
+                    >{row.timeLabel}</span
                   >
                 </span>
               {/if}
@@ -1338,7 +1493,7 @@
                       <span class="dm-msg-author">{messageAuthor(msg)}</span>
                     {/if}
                     <span class="dm-msg-header-time"
-                      >{formatTime(msg.createdAt)}</span
+                      >{row.timeLabel}</span
                     >
                   </div>
                 {/if}
@@ -1833,6 +1988,9 @@
     min-width: 0;
     overflow-x: hidden;
     overflow-y: auto;
+    /* The scroller is an independent layout/paint island: a row re-render or
+       hover-chrome fade cannot invalidate layout outside the thread. */
+    contain: layout paint;
     /* 16px bottom so the last message's reaction bar doesn't kiss the
        composer frame. */
     padding: 8px 16px 16px;
@@ -2442,15 +2600,25 @@
        solid window ground so the message never bleeds through it. */
     background-color: var(--v4-ground, #1c1c1f);
     background-image: linear-gradient(var(--panel-bg), var(--panel-bg));
-    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
+    /* No shadow at rest: the large blur is the expensive part to rasterize on
+       every row, and opacity:0 alone still paints the layer. Do NOT reach for
+       `visibility: hidden` here — it strips the buttons from the tab order, and
+       rows without another focusable descendant (plain text, burst
+       continuations) can then never fire :focus-within, leaving react/reply
+       unreachable for keyboard and screen-reader users. */
+    box-shadow: none;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.12s ease;
+    transition:
+      opacity 0.12s ease,
+      box-shadow 0.12s ease;
   }
 
   .dm-msg:hover .dm-quick-react,
   .dm-msg:focus-within .dm-quick-react,
+  .dm-quick-react:focus-within,
   .dm-quick-react:has([aria-expanded="true"]) {
+    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
     opacity: 1;
     pointer-events: auto;
   }
@@ -2458,6 +2626,7 @@
   /* Touch input has no hover state, so a hover-only toolbar is unreachable. */
   @media (hover: none) {
     .dm-quick-react {
+      box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
       opacity: 1;
       pointer-events: auto;
     }

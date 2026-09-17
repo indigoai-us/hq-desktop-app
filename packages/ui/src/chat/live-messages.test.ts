@@ -136,6 +136,62 @@ describe("mergeFetchedTimeline", () => {
     expect(merged.map((row) => row.eventId)).toEqual(["evt_ping"]);
     expect(merged[0]?.replyCount).toBe(1);
   });
+
+  it("returns the existing array reference when the page adds nothing new", () => {
+    const page = {
+      messages: [
+        {
+          eventId: "evt_1",
+          body: "one",
+          createdAt: "2026-08-23T16:05:00.000Z",
+          reactions: [{ emoji: "+1", count: 1 }],
+        },
+        {
+          eventId: "evt_2",
+          body: "two",
+          createdAt: "2026-08-23T16:06:00.000Z",
+        },
+      ],
+    };
+    const existing = mergeFetchedTimeline([], page);
+    expect(existing).toHaveLength(2);
+    // Same page re-fetched by the safety catch-up: fresh objects, same content.
+    expect(mergeFetchedTimeline(existing, JSON.parse(JSON.stringify(page)))).toBe(
+      existing,
+    );
+    // Empty page is also a no-op.
+    expect(mergeFetchedTimeline(existing, { messages: [] })).toBe(existing);
+  });
+
+  it("returns a new array when the page changes content", () => {
+    const base = {
+      eventId: "evt_1",
+      body: "one",
+      createdAt: "2026-08-23T16:05:00.000Z",
+    };
+    const existing = mergeFetchedTimeline([], { messages: [base] });
+
+    const appended = mergeFetchedTimeline(existing, {
+      messages: [
+        base,
+        { eventId: "evt_2", body: "two", createdAt: "2026-08-23T16:06:00.000Z" },
+      ],
+    });
+    expect(appended).not.toBe(existing);
+    expect(appended.map((r) => r.eventId)).toEqual(["evt_1", "evt_2"]);
+
+    const edited = mergeFetchedTimeline(existing, {
+      messages: [{ ...base, body: "one (edited)" }],
+    });
+    expect(edited).not.toBe(existing);
+    expect(edited[0]?.body).toBe("one (edited)");
+
+    const reacted = mergeFetchedTimeline(existing, {
+      messages: [{ ...base, reactions: [{ emoji: "+1", count: 1 }] }],
+    });
+    expect(reacted).not.toBe(existing);
+    expect(reacted[0]?.reactions?.length).toBe(1);
+  });
 });
 
 describe("isReplyMessage", () => {

@@ -238,6 +238,19 @@ describe("steps", () => {
     expect(stepIssue("details", draft({ home: "cloud", companyUid: "cmp_acme", name: "Polar", scope: "company" }), c)).toBeNull();
   });
 
+  it("cloud details validates the optional title too, after the name and handle", () => {
+    const c = ctx();
+    const cloud = (over: Partial<CreateBotDraft>) => draft({ home: "cloud", companyUid: "cmp_acme", ...over }, c);
+    expect(stepIssue("details", cloud({ name: "Polar", title: "Ad account analyst" }), c)).toBeNull();
+    expect(stepIssue("details", cloud({ name: "Polar", title: "x".repeat(61) }), c)).toContain("under 60");
+    expect(stepIssue("details", cloud({ name: "Polar", title: "ad\u001banalyst" }), c)).toContain("control characters");
+    // The name and the handle are still reported first: a title is optional.
+    expect(stepIssue("details", cloud({ name: "", title: "x".repeat(61) }), c)).toBe("Give your bot a name.");
+    expect(stepIssue("details", cloud({ name: "Polar", handle: "!!!", title: "x".repeat(61) }), c)).toContain(
+      "Give your bot a handle",
+    );
+  });
+
   it("cloud details validates the name and the @handle it will be created under", () => {
     const c = ctx({ existingNames: ["scout"] });
     const cloud = (over: Partial<CreateBotDraft>) => draft({ home: "cloud", companyUid: "cmp_acme", ...over }, c);

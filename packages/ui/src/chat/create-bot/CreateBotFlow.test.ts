@@ -444,6 +444,55 @@ describe("CreateBotFlow", () => {
     });
   });
 
+  it("Cloud asks for a title too, shows it in the preview, and hands it to the host", async () => {
+    const onCloudCreate = vi.fn(async () => undefined);
+    render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+
+    // The same field the Local details step has, in the same place: under the name.
+    expect(q('[data-testid="chat-bot-title"]')).toBeTruthy();
+    type(q<HTMLInputElement>('[data-testid="chat-bot-name"]')!, "Polar");
+    await settle();
+    type(q<HTMLInputElement>('[data-testid="chat-bot-title"]')!, "Ad account analyst");
+    await settle();
+    expect(q('[data-testid="bot-preview-title"]')?.textContent).toBe("Ad account analyst");
+
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    // No turn of the server's create_agent sequence asks for a title, so it
+    // travels beside the name and handle for the host to save afterwards.
+    expect(onCloudCreate).toHaveBeenCalledWith("cmp_indigo", {
+      name: "Polar",
+      handle: "polar",
+      title: "Ad account analyst",
+    });
+  });
+
+  it("a Cloud title over 60 characters blocks the create", async () => {
+    const onCloudCreate = vi.fn(async () => undefined);
+    render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    type(q<HTMLInputElement>('[data-testid="chat-bot-title"]')!, "x".repeat(61));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("under 60");
+    cmdEnter();
+    await settle();
+    expect(onCloudCreate).not.toHaveBeenCalled();
+  });
+
   it("Cloud will not create a bot with no name", async () => {
     const onCloudCreate = vi.fn(async () => undefined);
     render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });

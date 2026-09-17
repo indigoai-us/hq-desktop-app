@@ -151,7 +151,7 @@
             class="progress-fill"
             data-status={status}
             class:live-run={liveRun !== null}
-            style={`width: ${progress.percent}%;`}
+            style={`--fill: ${progress.percent / 100};`}
           ></div>
         </div>
         {#if !showPortfolioMeta}
@@ -413,10 +413,15 @@
   }
 
   .progress-fill {
+    width: 100%;
     height: 100%;
     border-radius: 999px;
     background: var(--muted-2, var(--v4-text-2));
-    transition: width 300ms ease;
+    /* Fill ratio via --fill (0..1) + scaleX so the transition runs on the
+       compositor; the track clips + rounds the visible bar. */
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left center;
+    transition: transform 300ms ease;
   }
   .progress-fill[data-status="live"],
   .progress-fill.live-run {

@@ -115,6 +115,16 @@ export class PresenceStore {
   private readonly companies = new Map<string, Map<string, PresenceEntry>>();
   private readonly listeners = new Set<PresenceListener>();
   private readonly snapshotListeners = new Set<PresenceSnapshotListener>();
+  /** Per-company frozen copies handed out by the last `snapshot()`; reused
+   *  verbatim for companies that have not mutated since (see `dirty`). */
+  private readonly snapshotCache = new Map<
+    string,
+    ReadonlyMap<string, PresenceEntry>
+  >();
+  /** Companies mutated since their cached snapshot map was built. */
+  private readonly dirty = new Set<string>();
+  /** True while a coalesced snapshot emit is queued on the microtask queue. */
+  private snapshotPending = false;
 
   /** Subscribe to per-actor changes. Returns unsubscribe. */
   subscribe(listener: PresenceListener): () => void {
@@ -136,12 +146,27 @@ export class PresenceStore {
     return this.companies.get(companyUid)?.get(actorUid);
   }
 
-  /** Deep-frozen-ish snapshot suitable for UI reads. */
+  /** Deep-frozen-ish snapshot suitable for UI reads. The outer map is fresh
+   *  on every call, but each company's inner map is only rebuilt when that
+   *  company changed since the previous snapshot — unchanged companies keep
+   *  the same inner map identity so consumers can cheaply skip them. */
   snapshot(): PresenceSnapshot {
     const outer = new Map<string, ReadonlyMap<string, PresenceEntry>>();
     for (const [companyUid, actors] of this.companies) {
-      outer.set(companyUid, new Map(actors));
+      let cached = this.snapshotCache.get(companyUid);
+      if (!cached || this.dirty.has(companyUid)) {
+        cached = new Map(actors);
+        this.snapshotCache.set(companyUid, cached);
+      }
+      outer.set(companyUid, cached);
     }
+    // Drop cache entries for companies that no longer exist.
+    if (this.snapshotCache.size !== this.companies.size) {
+      for (const companyUid of [...this.snapshotCache.keys()]) {
+        if (!this.companies.has(companyUid)) this.snapshotCache.delete(companyUid);
+      }
+    }
+    this.dirty.clear();
     return outer;
   }
 
@@ -203,6 +228,7 @@ export class PresenceStore {
       }
     }
     this.companies.set(uid, next);
+    this.dirty.add(uid);
     for (const change of changes) this.emitChange(change);
     this.emitSnapshot();
     return changes;
@@ -212,6 +238,8 @@ export class PresenceStore {
   clear(): void {
     if (this.companies.size === 0) return;
     this.companies.clear();
+    this.snapshotCache.clear();
+    this.dirty.clear();
     this.emitSnapshot();
   }
 
@@ -235,6 +263,7 @@ export class PresenceStore {
       return null;
     }
     actors.set(actorUid, entry);
+    this.dirty.add(companyUid);
     const change: PresenceChange = {
       companyUid,
       actorUid,
@@ -249,9 +278,19 @@ export class PresenceStore {
     for (const listener of this.listeners) listener(change);
   }
 
+  /** Coalesce snapshot notifications onto one microtask so a burst of
+   *  presence messages (e.g. the retained flood on reconnect) builds and
+   *  delivers a single snapshot instead of one per message. Per-actor change
+   *  listeners are still invoked synchronously. */
   private emitSnapshot(): void {
     if (this.snapshotListeners.size === 0) return;
-    const snap = this.snapshot();
-    for (const listener of this.snapshotListeners) listener(snap);
+    if (this.snapshotPending) return;
+    this.snapshotPending = true;
+    queueMicrotask(() => {
+      this.snapshotPending = false;
+      if (this.snapshotListeners.size === 0) return;
+      const snap = this.snapshot();
+      for (const listener of this.snapshotListeners) listener(snap);
+    });
   }
 }

@@ -18,6 +18,7 @@ import {
   personUidFromTargetRef,
   reduceAck,
   reduceActionUsed,
+  reduceFeedAppended,
   reduceFeedLoaded,
   reduceReadAll,
   type NotificationItem,
@@ -404,5 +405,109 @@ describe("notifications-model (US-012)", () => {
       expect(classifyNotificationsError("Not signed in: expired")).toBe("auth");
       expect(classifyNotificationsError("Network error")).toBe("generic");
     });
+  });
+});
+
+describe("reduceFeedAppended (pagination)", () => {
+  it("appends the next page instead of replacing the list", () => {
+    const first = reduceFeedLoaded(emptyFeedState(), {
+      items: [item({ id: "a" }), item({ id: "b" })],
+      unreadCount: 9,
+      nextCursor: "cur-1",
+    });
+
+    const second = reduceFeedAppended(first, {
+      items: [item({ id: "c" })],
+      unreadCount: 9,
+      nextCursor: "cur-2",
+    });
+
+    expect(second.items.map((i) => i.id)).toEqual(["a", "b", "c"]);
+    expect(second.nextCursor).toBe("cur-2");
+  });
+
+  it("drops a row the previous page already delivered", () => {
+    // The server paginates over a list that is still taking new rows at the
+    // top, so consecutive pages can overlap. Appending blindly would show the
+    // same notification twice, and marking one read would leave its twin
+    // behind looking unread.
+    const first = reduceFeedLoaded(emptyFeedState(), {
+      items: [item({ id: "a" }), item({ id: "b" })],
+      unreadCount: 4,
+      nextCursor: "cur-1",
+    });
+
+    const second = reduceFeedAppended(first, {
+      items: [item({ id: "b" }), item({ id: "c" })],
+      unreadCount: 4,
+      nextCursor: null,
+    });
+
+    expect(second.items.map((i) => i.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps the copy already on screen, preserving an optimistic ack", () => {
+    const loaded = reduceFeedLoaded(emptyFeedState(), {
+      items: [item({ id: "a", status: "unread" })],
+      unreadCount: 1,
+      nextCursor: "cur-1",
+    });
+    // Reader marks it read before paging.
+    const acked = reduceAck(loaded, "a");
+    expect(acked.items[0]!.status).toBe("read");
+
+    // The next page re-delivers it in its original unread shape.
+    const appended = reduceFeedAppended(acked, {
+      items: [item({ id: "a", status: "unread" }), item({ id: "b" })],
+      unreadCount: 0,
+      nextCursor: null,
+    });
+
+    expect(appended.items.map((i) => i.id)).toEqual(["a", "b"]);
+    expect(appended.items[0]!.status).toBe("read");
+  });
+
+  it("takes unreadCount from the payload rather than summing pages", () => {
+    // unreadCount is a whole-feed total from the server, not a page count.
+    const first = reduceFeedLoaded(emptyFeedState(), {
+      items: [item({ id: "a" })],
+      unreadCount: 12,
+      nextCursor: "cur-1",
+    });
+    const second = reduceFeedAppended(first, {
+      items: [item({ id: "b" })],
+      unreadCount: 12,
+      nextCursor: null,
+    });
+    expect(second.unreadCount).toBe(12);
+  });
+
+  it("preserves the active filter and ends pagination on a null cursor", () => {
+    const first = reduceFeedLoaded(emptyFeedState("unread"), {
+      items: [item({ id: "a" })],
+      unreadCount: 3,
+      nextCursor: "cur-1",
+    });
+    const second = reduceFeedAppended(first, {
+      items: [item({ id: "b" })],
+      unreadCount: 3,
+      nextCursor: null,
+    });
+    expect(second.filter).toBe("unread");
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("returns the same items array when the page adds nothing new", () => {
+    const first = reduceFeedLoaded(emptyFeedState(), {
+      items: [item({ id: "a" })],
+      unreadCount: 1,
+      nextCursor: "cur-1",
+    });
+    const second = reduceFeedAppended(first, {
+      items: [item({ id: "a" })],
+      unreadCount: 1,
+      nextCursor: null,
+    });
+    expect(second.items).toBe(first.items);
   });
 });

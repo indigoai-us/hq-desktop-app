@@ -35,10 +35,52 @@
       : null,
   );
 
-  // Stick to the bottom as the conversation grows.
+  /** Within this many px of the bottom still counts as pinned. */
+  const STICK_THRESHOLD_PX = 48;
+  /**
+   * Follow the newest message as the conversation grows — but only while the
+   * reader is pinned to the bottom, so a poll never yanks them out of history.
+   *
+   * Plain `let`, deliberately: it is only ever read inside the scroll effect
+   * below, which declares its own dependencies (`selected`, then
+   * `messages.length`). Making it `$state` would not help — effects flush in
+   * declaration order, so a separate "reset on team switch" effect could only
+   * ever run after the scroll effect had already read the stale value.
+   */
+  let stickToBottom = true;
+  function onThreadScroll(): void {
+    if (!scroller) return;
+    const distance =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    stickToBottom = distance <= STICK_THRESHOLD_PX;
+  }
+  /** Team identity by VALUE: `selected` is a fresh object on every poll, so
+   *  object identity would read as a team switch on every refresh. */
+  let lastThreadKey: string | null = null;
   $effect(() => {
+    // Read `selected` BEFORE `messages` so a team switch is always observed,
+    // even when the new team's message list is identical (the store skips the
+    // `messages` write when the serialized payload is unchanged).
+    const key = selected ? teamKey(selected.company, selected.team) : null;
     void messages.length;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    const switched = key !== lastThreadKey;
+    lastThreadKey = key;
+    // Switching teams shows a conversation the reader has never scrolled: land
+    // at its bottom. Staying in the same team keeps their scroll position.
+    if (switched) stickToBottom = true;
+    if (scroller && stickToBottom) scroller.scrollTop = scroller.scrollHeight;
+  });
+
+  /** Stable keys: ts + inbox, with an occurrence suffix only for duplicates
+   *  (no positional index, so a prepend/removal does not re-key every row). */
+  const keyedMessages = $derived.by(() => {
+    const seen = new Map<string, number>();
+    return messages.map((m) => {
+      const base = `${m.ts}/${m.inbox}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return { key: n === 0 ? base : `${base}#${n}`, m };
+    });
   });
 
   const KIND_BADGE: Record<string, string> = {
@@ -126,11 +168,11 @@
   {#if !selected}
     <p class="empty">No team selected.</p>
   {:else}
-    <div class="thread" bind:this={scroller}>
+    <div class="thread" bind:this={scroller} onscroll={onThreadScroll}>
       {#if messages.length === 0}
         <p class="empty">No messages yet.</p>
       {/if}
-      {#each messages as m, i (m.ts + "/" + m.inbox + "/" + i)}
+      {#each keyedMessages as { key, m } (key)}
         <div class="msg">
           <span class={`dot ${senderTone(m.from)}`} aria-hidden="true"></span>
           <div class="mbody">

@@ -536,5 +536,11 @@ export function createLiveNotificationsApi(
       if (!r.ok) throw new Error(unwrapMessage(r));
       return r.value;
     },
+    // Quick reply from a notification row. Rejects on failure so the row keeps
+    // the typed draft visible for a retry — resolving would eat the message.
+    sendDm: async ({ toPersonUid, body }) => {
+      const r = await adapter.messaging.sendDm(toPersonUid, body);
+      if (!r.ok) throw new Error(unwrapMessage(r));
+    },
   };
 }

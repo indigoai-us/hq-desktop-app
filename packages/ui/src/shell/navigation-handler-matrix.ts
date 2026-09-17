@@ -89,6 +89,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   handleRecommendedUpdateNow: "none",
   applyFetchedTimeline: "none",
   openMemberProfile: "none",
+  openNewChat: "none",
   closeMemberProfile: "none",
   openAgentProfileFromHeader: "none",
   closeAgentDetail: "none",
@@ -414,7 +415,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "keydown-cmd-comma",
     file: SHARED_SHELL_FILE,
-    needle: 'key === ","',
+    needle: 'id: "view.settings"',
     destinationKind: "settings",
     history: "push",
     host: "shared-shell",
@@ -423,7 +424,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "keydown-cmd-1-notifications",
     file: SHARED_SHELL_FILE,
-    needle: 'key === "1"',
+    needle: 'id: "view.notifications"',
     destinationKind: "notifications",
     history: "push",
     host: "shared-shell",
@@ -432,7 +433,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "keydown-cmd-2-meetings",
     file: SHARED_SHELL_FILE,
-    needle: 'key === "2"',
+    needle: 'id: "view.meetings"',
     destinationKind: "meetings",
     history: "push",
     host: "shared-shell",
@@ -441,7 +442,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "keydown-cmd-3-marketplace",
     file: SHARED_SHELL_FILE,
-    needle: 'key === "3"',
+    needle: 'id: "view.marketplace"',
     destinationKind: "library",
     history: "push",
     host: "shared-shell",
@@ -450,7 +451,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "keydown-cmd-4-library",
     file: SHARED_SHELL_FILE,
-    needle: 'key === "4"',
+    needle: 'id: "view.library"',
     destinationKind: "library",
     history: "push",
     host: "shared-shell",

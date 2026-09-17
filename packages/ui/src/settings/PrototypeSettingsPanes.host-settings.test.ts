@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { failure, ok, unavailable, type PlatformAdapter } from "@hq/platform";
 
@@ -775,5 +775,106 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
 
     expect(dock?.getAttribute("aria-checked")).toBe("false");
+  });
+});
+
+describe("PrototypeSettingsPanes window opacity", () => {
+  const rootEl = () => document.documentElement;
+
+  // Earlier tests in this file mount without a host marker, which writes the
+  // fallback vars onto the real <html>; reset both sides around every case.
+  const resetRoot = () => {
+    delete rootEl().dataset.windowTransparency;
+    rootEl().style.removeProperty("--hq-window-transparency-factor");
+  };
+  beforeEach(resetRoot);
+  afterEach(resetRoot);
+
+  function mountAppearance() {
+    const { adapter } = trayAdapter(vi.fn(async () => ok({})));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "appearance", adapter },
+    });
+    return host.querySelector<HTMLInputElement>('[aria-label="Window opacity"]')!;
+  }
+
+  it("seeds from the host marker and does not clobber the host on mount", async () => {
+    memoryStorage.setItem(
+      "hq-work-settings-prefs",
+      JSON.stringify({ windowOpacity: 90 }),
+    );
+    rootEl().dataset.windowTransparency = "40";
+    const requests: unknown[] = [];
+    const onRequest = (event: Event) =>
+      requests.push((event as CustomEvent).detail);
+    window.addEventListener("hq:appearance-request", onRequest);
+    try {
+      const slider = mountAppearance();
+      await tick();
+      expect(slider.value).toBe("60");
+      expect(requests).toEqual([]);
+      expect(
+        rootEl().style.getPropertyValue("--hq-window-transparency-factor"),
+      ).toBe("");
+    } finally {
+      window.removeEventListener("hq:appearance-request", onRequest);
+    }
+  });
+
+  it("dispatches the inverse transparency to the host when the slider moves", async () => {
+    rootEl().dataset.windowTransparency = "35";
+    // The host applies the request detail RAW — a partial payload would make
+    // its normalizeColorTheme(undefined) === "system" delete data-force-theme
+    // and drop the user's forced Light. So the detail must be complete.
+    rootEl().dataset.forceTheme = "light";
+    const requests: unknown[] = [];
+    const onRequest = (event: Event) =>
+      requests.push((event as CustomEvent).detail);
+    window.addEventListener("hq:appearance-request", onRequest);
+    try {
+      const slider = mountAppearance();
+      await tick();
+      slider.value = "80";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+      await tick();
+      expect(requests).toEqual([
+        { colorTheme: "light", windowTransparency: 20 },
+      ]);
+      expect(host.querySelector(".range-val")?.textContent).toBe("80%");
+    } finally {
+      window.removeEventListener("hq:appearance-request", onRequest);
+      delete rootEl().dataset.forceTheme;
+    }
+  });
+
+  it("follows hq:appearance-change from the host", async () => {
+    rootEl().dataset.windowTransparency = "35";
+    const slider = mountAppearance();
+    await tick();
+    expect(slider.value).toBe("65");
+    rootEl().dataset.windowTransparency = "10";
+    window.dispatchEvent(
+      new CustomEvent("hq:appearance-change", {
+        detail: { colorTheme: "system", windowTransparency: 10 },
+      }),
+    );
+    await tick();
+    expect(slider.value).toBe("90");
+  });
+
+  it("applies the local pref itself when no host is installed", async () => {
+    memoryStorage.setItem(
+      "hq-work-settings-prefs",
+      JSON.stringify({ windowOpacity: 70 }),
+    );
+    const slider = mountAppearance();
+    await tick();
+    expect(slider.value).toBe("70");
+    expect(
+      rootEl().style.getPropertyValue("--hq-window-transparency-factor"),
+    ).toBe("0.30");
   });
 });
