@@ -92,7 +92,9 @@ function bench(
           }),
         };
       }
-      return { status: 503, body: "{}" };
+      // 404, not 503: this is "no stub for that route", and 503 is a
+      // throttle the shared request policy legitimately retries.
+      return { status: 404, body: "{}" };
     }
     return null;
   };
@@ -482,13 +484,13 @@ function liveBench(options: {
       if (url === CONSENT_PATH) {
         consents.push(body);
         const value = options.consent?.(body, consents.length - 1) ?? {};
-        if (value === null) return { status: 503, body: "{}" };
+        if (value === null) return { status: 404, body: "{}" };
         return { status: 200, body: JSON.stringify(value) };
       }
       if (url === RECONCILE_PATH) {
         reconciles += 1;
         const next = options.roster(reconciles, peerKey);
-        if (!next) return { status: 503, body: "{}" };
+        if (!next) return { status: 404, body: "{}" };
         return { status: 200, body: JSON.stringify({ code: "OK", ...next }) };
       }
       // Signals and everything else succeed quietly: this bench is about the
@@ -1018,7 +1020,7 @@ describe("the call window admits itself", () => {
             body: JSON.stringify({ code: "COMPANY_ACCESS_DENIED" }),
           };
         }
-        return { status: 503, body: "{}" };
+        return { status: 404, body: "{}" };
       },
     });
     const handle = await startCallWindow(harness.deps);
@@ -1061,7 +1063,7 @@ describe("the call window admits itself", () => {
             }),
           };
         }
-        return { status: 503, body: "{}" };
+        return { status: 404, body: "{}" };
       },
     });
     const started = startCallWindow(harness.deps);

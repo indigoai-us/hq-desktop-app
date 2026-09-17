@@ -39,6 +39,26 @@ import {
   createFeatureFlagGate,
   type FeatureFlagGate,
 } from "../flags.js";
+import {
+  retryThrottled,
+  type RequestPolicyOptions,
+} from "../request-policy.js";
+
+/** One HTTP attempt: the caller-facing result plus what the policy reads. */
+interface WebAttempt<T> {
+  result: AdapterResult<T>;
+  status: number | null;
+  retryAfter?: string | null;
+}
+
+/** `Retry-After` off a Response, tolerating a header-less test double. */
+function readRetryAfter(res: Response): string | null {
+  try {
+    return res.headers?.get?.("retry-after") ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /** Provisional hq-pro REST paths, centralized so they are easy to correct. */
 export const WEB_PATHS = {
@@ -209,6 +229,11 @@ export interface WebPlatformAdapterConfig {
    * /auth/signin. Tests can inject a spy; desktop does not use this adapter.
    */
   onUnauthorized?: () => void;
+  /**
+   * Overrides for the shared 429/503 policy. Tests inject a synchronous
+   * `sleep` and a deterministic `random`; production uses the defaults.
+   */
+  requestPolicy?: RequestPolicyOptions;
 }
 
 function defaultOnUnauthorized(): void {
@@ -415,6 +440,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly headers: Record<string, string>;
   private readonly onUnauthorized: () => void;
   private readonly flags: FeatureFlagGate;
+  private readonly requestPolicy: RequestPolicyOptions;
   private activeCompany: string | null = null;
 
   constructor(config: WebPlatformAdapterConfig) {
@@ -426,6 +452,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.fetchFn = f;
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
+    this.requestPolicy = config.requestPolicy ?? {};
     this.flags = createFeatureFlagGate({
       endpoint: this.baseUrl,
       getToken: () => bearerTokenFromHeaders(this.headers),
@@ -459,6 +486,25 @@ export class WebPlatformAdapter implements PlatformAdapter {
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
+    // Shared policy (R2): 429/503 are honoured — `Retry-After` when the server
+    // sends one, jittered exponential backoff otherwise — and the result the
+    // caller finally sees is the same AdapterResult it saw before.
+    const attempted = await retryThrottled<WebAttempt<T>>(
+      () => this.attempt<T>(method, path, body),
+      (outcome) => ({
+        status: outcome.status,
+        retryAfter: outcome.retryAfter,
+      }),
+      this.requestPolicy,
+    );
+    return attempted.result;
+  }
+
+  private async attempt<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): Promise<WebAttempt<T>> {
     try {
       const hasBody = body !== undefined;
       const res = await this.fetchFn(`${this.baseUrl}${path}`, {
@@ -493,18 +539,30 @@ export class WebPlatformAdapter implements PlatformAdapter {
         } catch {
           /* keep http-status defaults */
         }
-        return failure(code, message);
+        return {
+          result: failure(code, message),
+          status: res.status,
+          retryAfter: readRetryAfter(res),
+        };
       }
       if (res.status === 204) {
-        return ok(undefined as T);
+        return { result: ok(undefined as T), status: res.status };
       }
       const text = await res.text();
-      return ok((text ? JSON.parse(text) : undefined) as T);
+      return {
+        result: ok((text ? JSON.parse(text) : undefined) as T),
+        status: res.status,
+      };
     } catch (err) {
-      return failure(
-        "network",
-        err instanceof Error ? err.message : String(err),
-      );
+      // A transport error has no status, so the policy does not retry it —
+      // same single-shot behaviour callers already handle.
+      return {
+        result: failure(
+          "network",
+          err instanceof Error ? err.message : String(err),
+        ),
+        status: null,
+      };
     }
   }
 

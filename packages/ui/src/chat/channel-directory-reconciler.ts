@@ -32,6 +32,8 @@
 /** One server-shaped directory row. `lastActivityAt` is `null` for a channel
  * with no durable messages — never fabricate a timestamp for it (an empty
  * channel must NEVER bucket under "today"). */
+import { startJitteredPoll } from "@hq/platform";
+
 export interface ChannelDirectoryRow {
   channelId: string;
   /** Fabric taxonomy: "chat" | "dm" | "project". */
@@ -182,8 +184,10 @@ export interface ChannelDirectoryReconcilerOptions {
   now?: () => number;
   /** Safety-refetch period; injectable for tests. */
   safetyIntervalMs?: number;
-  setIntervalFn?: typeof setInterval;
-  clearIntervalFn?: typeof clearInterval;
+  /** Jitter draw; injectable so a test can pin the scheduled delay. */
+  random?: () => number;
+  setTimeoutFn?: (fn: () => void, ms: number) => unknown;
+  clearTimeoutFn?: (handle: unknown) => void;
 }
 
 export interface ChannelDirectoryReconciler {
@@ -241,8 +245,9 @@ export function createChannelDirectoryReconciler(
     now = Date.now,
     safetyIntervalMs = CHANNEL_DIRECTORY_SAFETY_REFETCH_MS,
   } = options;
-  const setIntervalFn = options.setIntervalFn ?? setInterval;
-  const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
+  const setTimeoutFn = options.setTimeoutFn;
+  const clearTimeoutFn = options.clearTimeoutFn;
+  const random = options.random;
 
   let lifecycleEpoch = 0;
   let stopped = false;
@@ -254,7 +259,7 @@ export function createChannelDirectoryReconciler(
   let initialized = false;
   let currentStatus: ChannelDirectoryReconcileStatus = "idle";
   let byId = new Map<string, ChannelDirectoryRow>();
-  let safetyTimer: ReturnType<typeof setInterval> | null = null;
+  let stopSafetyPoll: (() => void) | null = null;
 
   function transition(next: ChannelDirectoryReconcileStatus): void {
     currentStatus = next;
@@ -345,18 +350,25 @@ export function createChannelDirectoryReconciler(
   function setSafetyPolling(enabled: boolean): void {
     if (stopped) return;
     if (enabled) {
-      if (safetyTimer !== null) return;
-      safetyTimer = setIntervalFn(() => {
-        // Errors already reach onError/status; the interval must never
-        // produce an unhandled rejection.
-        void reconcile("interval").catch(() => {});
-      }, safetyIntervalMs);
+      if (stopSafetyPoll !== null) return;
+      // Jittered, not a fixed interval: every client armed this poll at the
+      // same moment (the socket dropped), so a fixed period would have the
+      // whole fleet refetch the directory in phase. A throttled pass also
+      // pushes the next one out rather than firing on schedule.
+      stopSafetyPoll = startJitteredPoll({
+        intervalMs: safetyIntervalMs,
+        tick: () =>
+          // Errors already reach onError/status; the poll must never produce
+          // an unhandled rejection.
+          reconcile("interval").catch(() => {}),
+        ...(random ? { random } : {}),
+        ...(setTimeoutFn ? { setTimeoutFn } : {}),
+        ...(clearTimeoutFn ? { clearTimeoutFn } : {}),
+      });
       return;
     }
-    if (safetyTimer !== null) {
-      clearIntervalFn(safetyTimer);
-      safetyTimer = null;
-    }
+    stopSafetyPoll?.();
+    stopSafetyPoll = null;
   }
 
   return {
@@ -369,10 +381,8 @@ export function createChannelDirectoryReconciler(
       stopped = true;
       lifecycleEpoch += 1;
       trailing = false;
-      if (safetyTimer !== null) {
-        clearIntervalFn(safetyTimer);
-        safetyTimer = null;
-      }
+      stopSafetyPoll?.();
+      stopSafetyPoll = null;
       transition("idle");
     },
     invalidate() {

@@ -4,6 +4,32 @@ export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./library-shelf.js";
 
+// Shared 429 / Retry-After policy and the jittered background pollers (R2).
+export {
+  MIN_POLL_INTERVAL_MS,
+  POLL_JITTER_RATIO,
+  RETRYABLE_STATUSES,
+  RETRY_BASE_MS,
+  RETRY_CAP_MS,
+  RETRY_MAX_ATTEMPTS,
+  createThrottleSignal,
+  fullJitterBackoffMs,
+  globalThrottleSignal,
+  isRetryableStatus,
+  jitterIntervalMs,
+  nextPollDelayMs,
+  parseRetryAfterMs,
+  retryThrottled,
+  setJitterRandomForTests,
+  startJitteredPoll,
+} from "./request-policy.js";
+export type {
+  AttemptClassification,
+  JitteredPollOptions,
+  RequestPolicyOptions,
+  ThrottleSignal,
+} from "./request-policy.js";
+
 // Native calling (US-014): contract mirror, evidence preflight, calls group.
 export * from "./calls/contract.js";
 export * from "./calls/evidence.js";

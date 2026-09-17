@@ -1,3 +1,5 @@
+import { startJitteredPoll } from "@hq/platform";
+
 import type { AgencyTeam, AgencyQuestion, AgencyMessage } from "./agency";
 
 // ---------------------------------------------------------------------------
@@ -44,7 +46,7 @@ let loading = $state(true);
 let error = $state("");
 
 let started = false;
-let timer: ReturnType<typeof setInterval> | null = null;
+let stopPoll: (() => void) | null = null;
 
 const REFRESH_MS = 15000;
 
@@ -85,16 +87,21 @@ function onVisibilityChange(): void {
 }
 
 function startTimer(): void {
-  if (timer) return;
-  timer = setInterval(() => {
-    if (isHidden()) return;
-    void refresh();
-  }, REFRESH_MS);
+  if (stopPoll) return;
+  // Jittered so the fleet's agency refreshes do not land in phase, and
+  // extended whenever a server throttle is outstanding.
+  stopPoll = startJitteredPoll({
+    intervalMs: REFRESH_MS,
+    tick: () => {
+      if (isHidden()) return;
+      return refresh();
+    },
+  });
 }
 
 function stopTimer(): void {
-  if (timer) clearInterval(timer);
-  timer = null;
+  stopPoll?.();
+  stopPoll = null;
 }
 
 /** Keep `selected` pointing at a team that still exists (default: the first). */

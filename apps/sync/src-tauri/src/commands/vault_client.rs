@@ -2,6 +2,7 @@ use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::util::client_info::build_client;
+use hq_desktop_core::request_policy::RequestBuilderExt;
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
@@ -404,7 +405,7 @@ impl VaultClient {
             .post(format!("{}/entity", self.base_url))
             .bearer_auth(&self.auth_token)
             .json(input)
-            .send()
+            .send_retrying()
             .await?;
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         serde_json::from_value(wrapper["entity"].clone())
@@ -420,7 +421,7 @@ impl VaultClient {
             .client
             .get(format!("{}/entity/by-type/{}", self.base_url, entity_type))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         serde_json::from_value(wrapper["entities"].clone())
@@ -441,7 +442,7 @@ impl VaultClient {
                 self.base_url, entity_type, slug
             ))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         if resp.status().as_u16() == 404 {
             return Ok(None);
@@ -470,7 +471,7 @@ impl VaultClient {
             .get(format!("{}/entity/check-slug/me", self.base_url))
             .query(&[("type", "company"), ("slug", slug)])
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         let check: CallerSlugCheck = self.handle_response(resp).await?;
 
@@ -497,7 +498,7 @@ impl VaultClient {
             .client
             .get(format!("{}/entity/{}", self.base_url, uid))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         if resp.status().as_u16() == 404 {
             return Ok(None);
@@ -523,7 +524,7 @@ impl VaultClient {
                 self.base_url, person_uid
             ))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         serde_json::from_value(wrapper["memberships"].clone())
@@ -539,7 +540,7 @@ impl VaultClient {
             .client
             .get(format!("{}/membership/me", self.base_url))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         serde_json::from_value(wrapper["memberships"].clone())
@@ -556,7 +557,7 @@ impl VaultClient {
             .client
             .get(format!("{}/membership/pending-by-email", self.base_url))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         match wrapper.get("invites") {
@@ -585,7 +586,7 @@ impl VaultClient {
             .post(format!("{}/membership/claim-by-email", self.base_url))
             .bearer_auth(&self.auth_token)
             .json(&serde_json::Value::Object(body))
-            .send()
+            .send_retrying()
             .await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -623,7 +624,7 @@ impl VaultClient {
                 encode_path_segment(membership_id)
             ))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         self.handle_response(resp).await
     }
@@ -645,7 +646,7 @@ impl VaultClient {
             ))
             .bearer_auth(&self.auth_token)
             .json(input)
-            .send()
+            .send_retrying()
             .await?;
         self.handle_response(resp).await
     }
@@ -666,7 +667,7 @@ impl VaultClient {
                 self.base_url, uid
             ))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
@@ -686,7 +687,7 @@ impl VaultClient {
             .post(format!("{}/provision/bucket", self.base_url))
             .bearer_auth(&self.auth_token)
             .json(&body)
-            .send()
+            .send_retrying()
             .await?;
         self.handle_response(resp).await
     }
@@ -701,7 +702,7 @@ impl VaultClient {
             .post(format!("{}/sts/vend-child", self.base_url))
             .bearer_auth(&self.auth_token)
             .json(input)
-            .send()
+            .send_retrying()
             .await?;
         self.handle_response(resp).await
     }
@@ -733,7 +734,7 @@ impl VaultClient {
             .client
             .get(format!("{}{}", self.base_url, "/v1/usage/opt-in"))
             .bearer_auth(&self.auth_token)
-            .send()
+            .send_retrying()
             .await?;
         self.handle_response(resp).await
     }
@@ -785,7 +786,7 @@ impl VaultClient {
             .post(format!("{}{}", self.base_url, "/v1/usage/opt-in"))
             .bearer_auth(&self.auth_token)
             .json(&payload)
-            .send()
+            .send_retrying()
             .await?;
         let status = resp.status();
         if !status.is_success() {
@@ -808,7 +809,7 @@ impl VaultClient {
             .post(format!("{}{}", self.base_url, "/v1/usage"))
             .bearer_auth(&self.auth_token)
             .json(batch)
-            .send()
+            .send_retrying()
             .await?;
         let status = resp.status();
         if !status.is_success() {
@@ -834,7 +835,7 @@ impl VaultClient {
             .post(format!("{}{}", self.base_url, "/v1/telemetry/events"))
             .bearer_auth(&self.auth_token)
             .json(batch)
-            .send()
+            .send_retrying()
             .await?;
         let status = resp.status();
         if !status.is_success() {
@@ -860,7 +861,7 @@ impl VaultClient {
             .post(format!("{}{}", self.base_url, "/sts/vend-self"))
             .bearer_auth(&self.auth_token)
             .json(input)
-            .send()
+            .send_retrying()
             .await?;
 
         let status = resp.status();

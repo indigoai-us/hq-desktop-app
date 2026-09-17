@@ -20,6 +20,22 @@ const LOG_TAG: &str = "hq_pro";
 pub struct HqProHttpResponse {
     pub status: u16,
     pub body: String,
+    /// Raw `Retry-After` when the server sent one (429/503). The webview's
+    /// shared request policy honours it; without this field the header was
+    /// dropped at the bridge and every throttle became a blind retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<String>,
+}
+
+/// `Retry-After` as the server sent it, or None when absent/unreadable.
+pub fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?;
+    let text = raw.to_str().ok()?.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
 }
 
 pub fn normalize_method(method: &str) -> Result<Method, String> {
@@ -117,6 +133,7 @@ pub async fn hq_pro_fetch(
         format!("Network error: {e}")
     })?;
     let status = resp.status().as_u16();
+    let retry_after = retry_after_header(resp.headers());
     let text = resp.text().await.unwrap_or_default();
     let outcome = if (200..300).contains(&status) {
         "OK"
@@ -127,7 +144,11 @@ pub async fn hq_pro_fetch(
         LOG_TAG,
         &format!("HQ_PRO_FETCH_{outcome} method={method} status={status}"),
     );
-    Ok(HqProHttpResponse { status, body: text })
+    Ok(HqProHttpResponse {
+        status,
+        body: text,
+        retry_after,
+    })
 }
 
 #[cfg(test)]
@@ -172,6 +193,33 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("443"), "{err}");
+    }
+
+    #[test]
+    fn reads_retry_after_when_present() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "2".parse().unwrap());
+        assert_eq!(retry_after_header(&headers), Some("2".to_string()));
+    }
+
+    #[test]
+    fn retry_after_is_none_when_absent_or_blank() {
+        let empty = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_after_header(&empty), None);
+        let mut blank = reqwest::header::HeaderMap::new();
+        blank.insert(reqwest::header::RETRY_AFTER, "   ".parse().unwrap());
+        assert_eq!(retry_after_header(&blank), None);
+    }
+
+    #[test]
+    fn retry_after_serializes_as_camel_case_for_the_webview() {
+        let json = serde_json::to_string(&HqProHttpResponse {
+            status: 429,
+            body: String::new(),
+            retry_after: Some("2".to_string()),
+        })
+        .unwrap();
+        assert!(json.contains("\"retryAfter\":\"2\""), "{json}");
     }
 
     #[test]

@@ -3262,12 +3262,14 @@ mod codex_telemetry_tests {
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
 
+        // A 503 is retryable under the shared request policy, so the emit
+        // exhausts its attempt budget and still swallows the failure.
         let reqs = server.received_requests().await.unwrap();
         assert_eq!(
             reqs.iter()
                 .filter(|request| request.method == wiremock::http::Method::POST)
                 .count(),
-            1
+            hq_desktop_core::request_policy::RETRY_MAX_ATTEMPTS as usize
         );
     }
 

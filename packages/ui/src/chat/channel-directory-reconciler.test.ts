@@ -305,7 +305,11 @@ describe("createChannelDirectoryReconciler", () => {
       expect(applied[0].map((x) => x.channelId)).toEqual(["ch_a"]);
 
       r.start();
-      await vi.advanceTimersByTimeAsync(CHANNEL_DIRECTORY_SAFETY_REFETCH_MS);
+      // The pass is jittered (±20%), so wait out the upper bound rather than
+      // the nominal interval.
+      await vi.advanceTimersByTimeAsync(
+        CHANNEL_DIRECTORY_SAFETY_REFETCH_MS * 1.2,
+      );
 
       expect(fetchFeed).toHaveBeenCalledTimes(2);
       expect(applied.at(-1)!.map((x) => x.channelId)).toEqual([
@@ -315,12 +319,33 @@ describe("createChannelDirectoryReconciler", () => {
       r.stop();
       // stop() disarms the interval — no further fetches.
       await vi.advanceTimersByTimeAsync(
-        CHANNEL_DIRECTORY_SAFETY_REFETCH_MS * 3,
+        CHANNEL_DIRECTORY_SAFETY_REFETCH_MS * 3.6,
       );
       expect(fetchFeed).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("jitters the safety pass within ±20% instead of polling in phase", async () => {
+    const armed: number[] = [];
+    const draws = [0, 0.5, 0.999_999];
+    let draw = 0;
+    const r = createChannelDirectoryReconciler({
+      fetchFeed: vi.fn().mockResolvedValue(snapshotFeed([row("ch_a")])),
+      onApply: () => {},
+      now: () => NOW,
+      random: () => draws[draw++ % draws.length]!,
+      setTimeoutFn: (_fn, ms) => {
+        armed.push(ms);
+        return armed.length;
+      },
+      clearTimeoutFn: () => {},
+    });
+    r.start();
+    r.stop();
+    expect(armed).toEqual([CHANNEL_DIRECTORY_SAFETY_REFETCH_MS * 0.8]);
+    expect(armed[0]).not.toBe(CHANNEL_DIRECTORY_SAFETY_REFETCH_MS);
   });
 
   it("setSafetyPolling(false) disarms the interval without tearing down", async () => {
@@ -336,7 +361,7 @@ describe("createChannelDirectoryReconciler", () => {
       r.setSafetyPolling(true);
       r.setSafetyPolling(false);
       await vi.advanceTimersByTimeAsync(
-        CHANNEL_DIRECTORY_SAFETY_REFETCH_MS * 2,
+        CHANNEL_DIRECTORY_SAFETY_REFETCH_MS * 2.4,
       );
       expect(fetchFeed).toHaveBeenCalledTimes(1);
       r.stop();

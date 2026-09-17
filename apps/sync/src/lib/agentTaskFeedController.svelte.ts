@@ -25,6 +25,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { startJitteredPoll } from '@hq/platform';
 import { agentTaskFeed, roomTaskFeed, type AgentTask, type AgentTaskFeed } from '@hq/ui';
 import { memberKindFromUid } from '../desktop-alt/lib/team-telemetry';
 
@@ -60,7 +61,7 @@ export class AgentTaskFeedController {
   /** Per-agent source that produced the current rows. Reactive. */
   sources = $state<Map<string, TaskFeedSource>>(new Map());
 
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private stopPoll: (() => void) | null = null;
   private disposed = false;
   private cachedAgents: string[] | null = null;
   private readonly channelId: string | null;
@@ -76,8 +77,11 @@ export class AgentTaskFeedController {
     this.fetchTasks = options.fetchTasks ?? defaultFetch;
     this.fetchRoomTasks = options.fetchRoomTasks ?? defaultRoomFetch;
     this.pollMs = options.pollMs ?? AGENT_TASK_POLL_MS;
-    void this.tick();
-    this.timer = setInterval(() => void this.tick(), this.pollMs);
+    this.stopPoll = startJitteredPoll({
+      intervalMs: this.pollMs,
+      tick: () => this.tick(),
+      immediate: true,
+    });
   }
 
   /** Every task across every agent on the roster. */
@@ -153,7 +157,7 @@ export class AgentTaskFeedController {
 
   dispose(): void {
     this.disposed = true;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.stopPoll?.();
+    this.stopPoll = null;
   }
 }
