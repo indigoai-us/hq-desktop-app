@@ -15,7 +15,7 @@ import {
   type BrandSource,
   type CachedBrand,
   isSafeLogoUrl,
-} from './brand';
+} from './brand.js';
 
 const BRAND = {
   logoUrlLight: 'https://fixtures.test/logo-light.svg',

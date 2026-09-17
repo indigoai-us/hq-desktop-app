@@ -152,6 +152,20 @@
   } from "../settings/ShellSettings.svelte";
   import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
   import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
+  import SessionExpiredBanner from "./SessionExpiredBanner.svelte";
+  import NotificationActionRecovery from "./NotificationActionRecovery.svelte";
+  import {
+    cacheLogoAssets,
+    readBrandCache,
+    syncBrandFromWorkspaces,
+    type CachedBrand,
+  } from "../brand/brand.js";
+  import {
+    recoveryFromEvent,
+    RECOVERY_EVENT,
+    RETRY_EVENT,
+    type NativeNotificationRecovery,
+  } from "./notification-recovery.js";
   import type { SyncEventHost } from "./sync-events.js";
   import {
     emptySyncStatus,
@@ -575,6 +589,12 @@
     /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
     onretryroster?: () => void;
     /**
+     * Start reauthentication from the session-expired banner (PL-03). The
+     * desktop host clears the dead session and lands the user on its sign-in
+     * surface. Omitted → the banner states the problem without an action.
+     */
+    onsignin?: () => void | Promise<void>;
+    /**
      * Verified signed-in principal (host-supplied: web = Cognito session,
      * desktop = its auth source). Drives "you" tagging + admin gating in the
      * shared UI. Null on the unauth / empty path.
@@ -753,6 +773,7 @@
     syncEvents = null,
     rosterStatus = null,
     onretryroster,
+    onsignin,
     self = null,
     tenantAccountId = null,
     tenantGeneration = 0,
@@ -828,6 +849,133 @@
     for (const slug of slugs) next.add(slug);
     dismissedMemberships = next;
   }
+
+  /**
+   * Session-expired notice (PL-03). `start_sync` returns Ok on the needs-reauth
+   * path and emits `sync:auth-error` instead, so without this banner a paused
+   * session is invisible in the desktop window — the tray popover was the only
+   * surface that said so. Dismissal is session-only; the next auth error shows
+   * it again.
+   */
+  let authErrorMessage = $state<string | null>(null);
+  let authSignInPending = $state(false);
+
+  async function startReauth(): Promise<void> {
+    if (!onsignin || authSignInPending) return;
+    authSignInPending = true;
+    try {
+      await onsignin();
+    } catch (err) {
+      console.error("sign-in from session-expired banner failed:", err);
+    } finally {
+      authSignInPending = false;
+    }
+  }
+
+  /**
+   * Native-notification action retry (PL-03). The controller window owns the
+   * action routing, so it broadcasts its recovery record here and re-runs the
+   * action when this shell asks. See ./notification-recovery.ts.
+   */
+  let notificationRecovery = $state<NativeNotificationRecovery | null>(null);
+  let notificationRetrying = $state(false);
+
+  function retryNotificationAction(): void {
+    const host = syncEvents;
+    if (!host?.emit || !notificationRecovery || notificationRetrying) return;
+    // Optimistic: the controller echoes the authoritative state back on
+    // RECOVERY_EVENT, which either clears the banner or releases the control.
+    notificationRetrying = true;
+    void Promise.resolve(host.emit(RETRY_EVENT)).catch((err) => {
+      console.error("notification retry: emit failed:", err);
+      notificationRetrying = false;
+    });
+  }
+
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    void host
+      .listen(RECOVERY_EVENT, (event) => {
+        const parsed = recoveryFromEvent(event?.payload);
+        if (!parsed) return;
+        notificationRecovery = parsed.recovery;
+        notificationRetrying = parsed.recovery ? parsed.retrying : false;
+      })
+      .then(
+        (un) => {
+          if (disposed) un();
+          else unlisten = un;
+        },
+        (err) => {
+          console.error("notification recovery: subscribe failed:", err);
+        },
+      );
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
+
+  /**
+   * White-label brand for the title bar (PL-04). Resolved from the same
+   * membership enrichment the popover reads (`Workspace.brand` +
+   * `brandingEnabled`), through the shared runtime so the cache, the
+   * entitlement rule and the offline fallback stay identical.
+   */
+  let brandState = $state<CachedBrand | null>(null);
+
+  function brandStorage(): Storage | null {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      // Storage disabled (private mode / sandboxed host): no cache, no brand
+      // beyond what the live roster carries this session.
+      return null;
+    }
+  }
+
+  $effect(() => {
+    const storage = brandStorage();
+    if (!storage) return;
+    const roster = companies;
+    // A roster that has not arrived (or failed to) is not evidence that the
+    // entitlement was withdrawn. Keep painting the cached logo — that is the
+    // offline launch the brand cache exists for.
+    if (roster == null || rosterStatus === "failed") {
+      brandState = readBrandCache(storage);
+      return;
+    }
+    const preferSlug = selectedCompanySlug || null;
+    const next = syncBrandFromWorkspaces(roster, {
+      cloudReachable: true,
+      preferSlug,
+      storage,
+    });
+    brandState = next;
+    if (next) {
+      void cacheLogoAssets(next, storage).then(
+        (cached) => {
+          brandState = cached;
+        },
+        (err) => {
+          console.error("brand: caching logo assets failed:", err);
+        },
+      );
+    }
+  });
+
+  const brandCompanyName = $derived.by(() => {
+    const slug = brandState?.companySlug;
+    if (!slug) return null;
+    return (
+      (companies ?? []).find((c) => c.slug === slug)?.displayName ?? slug
+    );
+  });
 
   /**
    * `start_sync` returns as soon as the runner is REGISTERED, not when the
@@ -940,6 +1088,20 @@
         membershipSyncError =
           message?.trim() ||
           "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
+        // The membership banner only exists while there is a company to pull.
+        // The session is broken either way, so say so in its own banner too.
+        authErrorMessage =
+          message?.trim() ||
+          "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
+      }),
+    );
+    // `begin_reauth` clears the dead session and announces it without a sync
+    // run, so the banner must hear this event as well or a reauth started
+    // elsewhere leaves this window looking signed in.
+    track(
+      host.listen("auth:reauth-required", () => {
+        authErrorMessage =
+          "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
       }),
     );
     // `sync:complete` is emitted PER COMPANY (SyncCompleteEvent carries
@@ -955,6 +1117,8 @@
           membershipSyncPending = false;
           membershipSyncError = null;
         }
+        // A completed run proves the session works again.
+        authErrorMessage = null;
       }),
     );
     // Terminal backstop: a run that attempts the company but never emits a
@@ -6850,6 +7014,8 @@
     watchedCount={watched}
     {unreadCount}
     {syncStatus}
+    brand={brandState}
+    {brandCompanyName}
     onopenSync={() => openSettings("sync")}
     {sidebarCollapsed}
     coreUseFixtures={coreFixtures}
@@ -6906,6 +7072,27 @@
         dismissBotRestorePrompt();
       }}
     />
+  {/if}
+
+  {#if authErrorMessage}
+    <SessionExpiredBanner
+      message={authErrorMessage}
+      signingIn={authSignInPending}
+      onsignin={onsignin ? () => void startReauth() : undefined}
+      ondismiss={() => (authErrorMessage = null)}
+    />
+  {/if}
+
+  {#if notificationRecovery}
+    <!-- The compact native retry banner could not be created, so the action is
+         recovered here instead of dying in the console. -->
+    <div class="notification-recovery-banner">
+      <NotificationActionRecovery
+        message={notificationRecovery.message}
+        pending={notificationRetrying}
+        onretry={retryNotificationAction}
+      />
+    </div>
   {/if}
 
   {#if adapter.isAvailable("canSync") && membershipsToPull.length > 0}
@@ -8704,6 +8891,14 @@
     font-size: 12px;
     line-height: 1.4;
   }
+  /* Hosts the popover-sized recovery row in the shell's banner stack, so the
+     moved component keeps its own compact idiom without floating. */
+  .notification-recovery-banner {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--v4-hairline, rgba(0, 0, 0, 0.08));
+    background: color-mix(in srgb, var(--v4-text-1, #111) 6%, transparent);
+  }
+
   .bot-auto-restore-banner {
     margin: 8px 16px;
     padding: 8px 12px;

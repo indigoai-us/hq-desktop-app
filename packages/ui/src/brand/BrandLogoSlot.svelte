@@ -7,7 +7,7 @@
     type CachedBrand,
     type ColorScheme,
     type CompanyBrandSettings,
-  } from './brand';
+  } from './brand.js';
 
   /**
    * In-app header logo slot (US-005).

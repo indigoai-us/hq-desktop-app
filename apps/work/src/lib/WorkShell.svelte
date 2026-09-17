@@ -93,7 +93,7 @@
     signOutFromShell,
   } from "./desktop-shell";
   import { tauriInvoke } from "./tauri-invoke";
-  import { tauriListen } from "./tauri-listen";
+  import { tauriEmit, tauriListen } from "./tauri-listen";
   import workPackage from "../../package.json";
 
   type WorkShellHostIdentity = {
@@ -258,6 +258,38 @@
       });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(nativeInvoke) : null;
+
+  /**
+   * App-level event bridge for the shell's sync-outcome surfaces: the
+   * membership banner's pull result, the session-expired banner
+   * (`sync:auth-error`, which `start_sync` emits INSTEAD of failing), and the
+   * native notification retry. Desktop only — the browser host has no such bus,
+   * and those banners degrade rather than claim a state they cannot observe.
+   */
+  const syncEvents =
+    adapter.kind === "desktop"
+      ? {
+          listen: (
+            event: string,
+            handler: (event: { payload?: unknown }) => void,
+          ) => nativeListen(event, handler),
+          emit: (event: string, payload?: unknown) => tauriEmit(event, payload),
+        }
+      : null;
+
+  /**
+   * Reauthenticate from the session-expired banner. On the desktop
+   * `begin_reauth` clears the dead session and opens the workspace window,
+   * which is where sign-in happens; the browser host goes to its sign-in route.
+   */
+  async function startReauth(): Promise<void> {
+    if (adapter.kind === "desktop") {
+      await nativeInvoke("begin_reauth");
+      return;
+    }
+    (onUnauthorized ?? redirectToSigninWithCallback)();
+  }
+
   const wakes = hostWakes ?? createChatWakeBus();
   let localNotificationRows = $state<Record<string, unknown>[]>([]);
   const notificationsApi = createNotificationsApi(adapter, {
@@ -827,6 +859,8 @@
       onopenurl={hostOpenUrl ?? openUrl}
       {wakes}
       {companies}
+      {syncEvents}
+      onsignin={startReauth}
       {rosterStatus}
       onretryroster={retryRoster}
       {self}

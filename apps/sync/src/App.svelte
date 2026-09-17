@@ -42,6 +42,7 @@
     surfaceNativeNotificationRetry,
     type NativeNotificationRecovery,
   } from './lib/nativeNotificationRecovery';
+  import { RECOVERY_EVENT, RETRY_EVENT } from '@hq/ui';
   import {
     applyBrandToDocument,
     cacheLogoAssets,
@@ -516,6 +517,22 @@
   );
   let notificationActionRetrying = $state(false);
   let notificationActionRecoveryGeneration = 0;
+
+  /**
+   * Broadcast the recovery record so the desktop window can render the retry
+   * banner too (PL-03). This window is the only one that can execute a
+   * notification action, so it stays the producer and the executor; the shell
+   * only displays the record and asks for the retry on RETRY_EVENT.
+   */
+  $effect(() => {
+    const payload = {
+      recovery: notificationActionRecovery,
+      retrying: notificationActionRetrying,
+    };
+    void emit(RECOVERY_EVENT, payload).catch((error) => {
+      console.error('notification recovery broadcast failed', error);
+    });
+  });
 
   // hq CLI updater state — populated by `hq-cli-update:available` from the
   // Rust background checker (launch+15s, then every 6h). Non-null means
@@ -1358,6 +1375,14 @@
         expiresAt = '';
         resetUnreadSummary();
         await invoke('set_tray_state', { state: 'reauth' });
+      })
+    );
+
+    // The desktop window shows the same recovery banner; its Retry asks this
+    // window to re-run the action, because the action routing lives here.
+    unlisteners.push(
+      await listen(RETRY_EVENT, async () => {
+        await handleRetryNotificationAction();
       })
     );
 
