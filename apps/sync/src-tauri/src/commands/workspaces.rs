@@ -951,6 +951,19 @@ fn repair_earns_retry(repair: &ToolchainRepair) -> bool {
     matches!(repair, ToolchainRepair::Repaired)
 }
 
+/// Exit code 3 means the cloud company exists even though its first upload did
+/// not. Preserve that successful selection in the funnel before returning the
+/// same sync error to the UI.
+fn partial_sync_company_uid(error: &CliProvisionError) -> Option<String> {
+    match error {
+        CliProvisionError::Sync {
+            partial: Some(result),
+            ..
+        } => Some(result.cloud_uid.clone()),
+        _ => None,
+    }
+}
+
 /// Run a provision, and if it fails only because the machine has no Node,
 /// install HQ's managed Node once and retry exactly once.
 ///
@@ -1128,25 +1141,20 @@ pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> 
             // already, so a telemetry outage is logged but never changes its
             // user-visible result. The server verifies this membership before
             // retaining the person/company join.
-            let telemetry_app = app.clone();
             let company_uid = result.cloud_uid.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) =
-                    crate::commands::desktop_auth::record_desktop_workspace_selected(
-                        &telemetry_app,
-                        company_uid,
-                    )
-                    .await
-                {
-                    log(
-                        "workspaces",
-                        &format!("workspace_selected receipt failed: {error}"),
-                    );
-                }
-            });
+            crate::commands::desktop_auth::record_desktop_workspace_selected(&app, company_uid);
             Ok(())
         }
         Err(e) => {
+            if let Some(company_uid) = partial_sync_company_uid(&e) {
+                // The CLI reached entity + manifest + config success before
+                // the initial upload failed. Keep the UI's sync error, while
+                // retaining the completed workspace-selection join.
+                crate::commands::desktop_auth::record_desktop_workspace_selected(
+                    &app,
+                    company_uid,
+                );
+            }
             let msg = format!("hq CLI failed for '{slug}': {e}");
             log("workspaces", &msg);
             Err(msg)
@@ -1379,6 +1387,21 @@ mod node_self_repair_tests {
         assert!(repair_earns_retry(&ToolchainRepair::Repaired));
         assert!(!repair_earns_retry(&ToolchainRepair::Skipped));
         assert!(!repair_earns_retry(&ToolchainRepair::Failed("x".into())));
+    }
+
+    #[test]
+    fn partial_sync_success_keeps_the_created_company_uid_for_workspace_telemetry() {
+        let uid = partial_sync_company_uid(&CliProvisionError::Sync {
+            message: "initial upload timed out".into(),
+            partial: Some(ok_result()),
+        });
+
+        assert_eq!(uid.as_deref(), Some("co_1"));
+        assert!(partial_sync_company_uid(&CliProvisionError::Sync {
+            message: "no CLI result".into(),
+            partial: None,
+        })
+        .is_none());
     }
 }
 

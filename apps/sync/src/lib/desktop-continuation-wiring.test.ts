@@ -215,9 +215,15 @@ describe('authenticated desktop receipts keep the install-to-company join intact
   it('reports a completed browser sign-in from native code, where the bearer token lives', () => {
     const confirm = rustFunction(desktopAuth, 'desktop_continuation_confirm');
     expect(confirm).toContain('record_desktop_login_completed');
+    expect(confirm).toContain('"browser_continuation", "continuation"');
+    const manualOauth = rustFunction(oauth, 'oauth_exchange_code');
+    expect(manualOauth).toContain('record_desktop_login_completed');
+    expect(manualOauth).toContain('"manual_oauth",\n        "control"');
     expect(desktopAuth).toContain('session_activated_url()');
     expect(desktopAuth).toContain('super::first_run::install_attempt_id()?');
     expect(desktopAuth).toContain('.bearer_auth(jwt)');
+    expect(desktopAuth).toContain('enqueue_authenticated_desktop_receipt');
+    expect(desktopAuth).toContain('flush_pending_authenticated_desktop_receipts');
   });
 
   it('reports the company after the person explicitly connects it, without changing provisioning', () => {
@@ -229,5 +235,15 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(desktopAuth).toContain('workspace_selected_url()');
     expect(desktopAuth).toContain('"workspaceKind"');
     expect(desktopAuth).toContain('"companyUid"');
+    const workspaceReceipt = rustFunction(desktopAuth, 'record_desktop_workspace_selected');
+    expect(workspaceReceipt).not.toContain('"manual_oauth"');
+    expect(workspaceReceipt).not.toContain('"control"');
+  });
+
+  it('keeps a partial cloud provision in the installer-to-company join', () => {
+    const connect = rustFunction(workspaces, 'connect_workspace_to_cloud');
+    expect(connect).toContain('partial_sync_company_uid(&e)');
+    expect(connect).toContain('record_desktop_workspace_selected');
+    expect(workspaces).toContain('CliProvisionError::Sync');
   });
 });

@@ -373,6 +373,12 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
 #[tauri::command]
 pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
     let (state, _) = resolve_authoritative_auth_session(&app).await;
+    if state.authenticated {
+        // A prior process may have stopped between queueing an onboarding
+        // receipt and sending it. Retries are native and non-blocking, so the
+        // renderer never receives a bearer token or waits on analytics.
+        crate::commands::desktop_auth::flush_pending_authenticated_desktop_receipts();
+    }
     Ok(state)
 }
 

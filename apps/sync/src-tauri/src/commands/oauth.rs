@@ -645,6 +645,14 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // Persist, publish, announce — the shared completion browser continuation
     // also ends on, so there is exactly one definition of "signed in".
     let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;
+    // The control cohort needs the same durable login-completed edge as the
+    // continuation cohort. Persist before background delivery so a transient
+    // telemetry failure cannot make its completed sign-in disappear.
+    crate::commands::desktop_auth::record_desktop_login_completed(
+        &app,
+        "manual_oauth",
+        "control",
+    );
     eprintln!("[oauth] token exchange completed");
     Ok(state)
 }
