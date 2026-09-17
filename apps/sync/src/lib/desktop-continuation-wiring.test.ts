@@ -24,6 +24,7 @@ const read = (path: string) => readFileSync(join(ROOT, path), 'utf8');
 
 const desktopAuth = read('src-tauri/src/commands/desktop_auth.rs');
 const oauth = read('src-tauri/src/commands/oauth.rs');
+const workspaces = read('src-tauri/src/commands/workspaces.rs');
 const main = read('src-tauri/src/main.rs');
 const adapter = read('src/lib/desktop-continuation-tauri.ts');
 const signInPrompt = read('src/components/SignInPrompt.svelte');
@@ -207,5 +208,26 @@ describe('the anonymous HTTP runs natively, so it works in both windows', () => 
   it('does not widen the expanded window’s capability to compensate', () => {
     const permissions = JSON.parse(desktopAltCapability).permissions as unknown[];
     expect(permissions).not.toContain('http:default');
+  });
+});
+
+describe('authenticated desktop receipts keep the install-to-company join intact', () => {
+  it('reports a completed browser sign-in from native code, where the bearer token lives', () => {
+    const confirm = rustFunction(desktopAuth, 'desktop_continuation_confirm');
+    expect(confirm).toContain('record_desktop_login_completed');
+    expect(desktopAuth).toContain('session_activated_url()');
+    expect(desktopAuth).toContain('super::first_run::install_attempt_id()?');
+    expect(desktopAuth).toContain('.bearer_auth(jwt)');
+  });
+
+  it('reports the company after the person explicitly connects it, without changing provisioning', () => {
+    const connect = rustFunction(workspaces, 'connect_workspace_to_cloud');
+    expect(connect).toContain('record_desktop_workspace_selected');
+    expect(connect.indexOf('record_desktop_workspace_selected')).toBeGreaterThan(
+      connect.indexOf('Ok(result) =>'),
+    );
+    expect(desktopAuth).toContain('workspace_selected_url()');
+    expect(desktopAuth).toContain('"workspaceKind"');
+    expect(desktopAuth).toContain('"companyUid"');
   });
 });

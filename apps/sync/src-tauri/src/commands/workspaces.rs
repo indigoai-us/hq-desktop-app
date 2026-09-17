@@ -1123,6 +1123,27 @@ pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> 
                     result.initial_sync.files_uploaded,
                 ),
             );
+            // Connecting is the explicit company-selection action in the
+            // native shell. The receipt is ancillary: provisioning succeeded
+            // already, so a telemetry outage is logged but never changes its
+            // user-visible result. The server verifies this membership before
+            // retaining the person/company join.
+            let telemetry_app = app.clone();
+            let company_uid = result.cloud_uid.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    crate::commands::desktop_auth::record_desktop_workspace_selected(
+                        &telemetry_app,
+                        company_uid,
+                    )
+                    .await
+                {
+                    log(
+                        "workspaces",
+                        &format!("workspace_selected receipt failed: {error}"),
+                    );
+                }
+            });
             Ok(())
         }
         Err(e) => {

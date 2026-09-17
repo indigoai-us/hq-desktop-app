@@ -371,6 +371,18 @@ pub async fn desktop_continuation_confirm(
     let tokens: CognitoTokens = credentials.into_tokens();
     let state = super::auth::complete_auth_session(&app, &tokens).await?;
 
+    // This is the first durable, human-authenticated edge in the browser
+    // continuation flow. Report it natively: the renderer deliberately has no
+    // bearer token, and a telemetry outage must not turn a successful sign-in
+    // into a failed one. The retryable server receipt preserves the stable
+    // installation id, not a renderer-generated substitute.
+    let telemetry_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = record_desktop_login_completed(&telemetry_app).await {
+            eprintln!("[desktop-onboarding] login_completed receipt failed: {error}");
+        }
+    });
+
     // The account just changed. Anything still pending is about a question
     // nobody asked any more.
     note_auth_transition(AttemptEnd::Superseded);
@@ -412,6 +424,91 @@ fn release_listener(state: &str) {
     if let Err(error) = super::oauth::oauth_cancel_listen(Some(state.to_string())) {
         eprintln!("[continuation] listener teardown failed: {error}");
     }
+}
+
+// ── Authenticated desktop funnel receipts ──────────────────────────────
+
+/// The authenticated onboarding routes deliberately live in the native shell:
+/// the renderer never receives a bearer token. Both receipts use the durable
+/// installation id used by the anonymous first-launch receipt, which is what
+/// lets raw telemetry join an installer to a later authenticated action.
+async fn post_authenticated_desktop_receipt(
+    url: String,
+    body: serde_json::Value,
+) -> Result<(), String> {
+    let jwt = super::sync::resolve_jwt().await?;
+    let response = build_client()
+        .post(url)
+        .bearer_auth(jwt)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| format!("desktop telemetry request failed: {error}"))?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let detail = response
+        .text()
+        .await
+        .unwrap_or_else(|error| format!("response body unreadable: {error}"));
+    Err(format!("desktop telemetry returned {status}: {detail}"))
+}
+
+fn desktop_platform() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "mac"
+    }
+}
+
+fn desktop_receipt_base(app: &AppHandle) -> Option<serde_json::Value> {
+    let install_attempt_id = super::first_run::install_attempt_id()?;
+    Some(serde_json::json!({
+        "installAttemptId": install_attempt_id,
+        "eventId": uuid::Uuid::new_v4().to_string(),
+        "occurredAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "platform": desktop_platform(),
+        "version": app.package_info().version.to_string(),
+    }))
+}
+
+/// Record the successful native sign-in edge. This has no company attribution:
+/// a login can complete before a workspace is selected, and pretending one was
+/// selected would corrupt the person-to-company join.
+async fn record_desktop_login_completed(app: &AppHandle) -> Result<(), String> {
+    let mut body = desktop_receipt_base(app)
+        .ok_or_else(|| "desktop installation id is unavailable".to_string())?;
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
+    object.insert(
+        "flow".to_string(),
+        serde_json::json!("browser_continuation"),
+    );
+    object.insert("variant".to_string(), serde_json::json!("continuation"));
+    object.insert("provider".to_string(), serde_json::json!("cognito"));
+    post_authenticated_desktop_receipt(endpoints().session_activated_url(), body).await
+}
+
+/// Record the company the person explicitly connected from the desktop shell.
+/// The server resolves the person from the JWT and verifies active membership;
+/// the client never gets to assert either identity.
+pub(crate) async fn record_desktop_workspace_selected(
+    app: &AppHandle,
+    company_uid: String,
+) -> Result<(), String> {
+    let mut body = desktop_receipt_base(app)
+        .ok_or_else(|| "desktop installation id is unavailable".to_string())?;
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
+    object.insert("workspaceKind".to_string(), serde_json::json!("company"));
+    object.insert("companyUid".to_string(), serde_json::json!(company_uid));
+    object.insert("flow".to_string(), serde_json::json!("manual_oauth"));
+    object.insert("variant".to_string(), serde_json::json!("control"));
+    post_authenticated_desktop_receipt(endpoints().workspace_selected_url(), body).await
 }
 
 // ── Anonymous HTTP, performed natively ─────────────────────────────────
