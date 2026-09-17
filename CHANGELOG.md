@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The "Reduce transparency" setting is gone. It was a stopgap: the frosted panels were being blurred twice over, and turning the glass off entirely was the only lever available at the time. That double blur is now fixed at the source, so scrolling is smooth with the frosted look left on and there is nothing to trade away. If you turned the setting on, HQ goes back to the frosted panels on its own. Turning down transparency system-wide in macOS Accessibility still works exactly as before.
 - Keyboard shortcuts now work across the whole app, and pressing Cmd+/ shows the full list without leaving what you were typing. Cmd+1 through Cmd+4 jump between Notifications, Meetings, Marketplace and Library; Cmd+N starts a new chat; Cmd+F searches messages; Cmd+Shift+[ and Cmd+Shift+] step through your conversations in the order the sidebar shows them. Pressing g then a opens Atlas.
 - A message you send shows up instantly and stays put. It used to be possible for your own message to appear twice for a moment when the server sent it back, or for the wrong copy to disappear if you sent the same thing twice.
 - Long conversations paint faster. HQ was rebuilding the date and time on every visible row every time the list changed.
