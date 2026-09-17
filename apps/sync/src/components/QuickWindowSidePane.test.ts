@@ -2,10 +2,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { invokeMock, listenMock, loadItemsMock } = vi.hoisted(() => ({
+const { invokeMock, listenMock, loadItemsMock, unreadIdsMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   listenMock: vi.fn(),
   loadItemsMock: vi.fn(),
+  unreadIdsMock: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -17,8 +18,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 vi.mock('../lib/notificationFeedData', () => ({
-  getLastReadTs: () => 0,
-  isUnread: (item: Item, lastReadTs: number) => item.ts > lastReadTs,
+  fetchServerUnreadIds: () => unreadIdsMock(),
   loadNotificationItems: (...args: unknown[]) => loadItemsMock(...args),
 }));
 
@@ -56,6 +56,13 @@ beforeEach(() => {
   invokeMock.mockReset();
   listenMock.mockReset();
   loadItemsMock.mockReset();
+  unreadIdsMock.mockReset();
+  // Default: the server reports every loaded row unread, which is what the
+  // retired `lastReadTs = 0` watermark used to mean for these assertions.
+  unreadIdsMock.mockImplementation(async () => {
+    const items = (await loadItemsMock.mock.results[0]?.value) ?? [];
+    return new Set((items as Item[]).map((item) => item.id));
+  });
   listenMock.mockResolvedValue(vi.fn());
   invokeMock.mockResolvedValue({ channels: [] });
   host = document.createElement('div');

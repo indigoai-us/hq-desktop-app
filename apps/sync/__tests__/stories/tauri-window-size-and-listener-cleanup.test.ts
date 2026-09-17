@@ -11,7 +11,6 @@ const root = (rel: string) => fileURLToPath(new URL(`../../${rel}`, import.meta.
 const mainCapability = JSON.parse(
   readFileSync(root('src-tauri/capabilities/default.json'), 'utf8'),
 ) as { windows: string[]; permissions: string[] };
-const popover = readFileSync(root('src/components/Popover.svelte'), 'utf8');
 const onboarding = readFileSync(root('src/components/Onboarding.svelte'), 'utf8');
 const nativeMain = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
 const app = readFileSync(root('src/App.svelte'), 'utf8');
@@ -31,11 +30,13 @@ describe('HQ-DESKTOP-38: main-window resize ACL', () => {
     expect(mainCapability.permissions).toContain('core:window:allow-set-size');
   });
 
-  it('keeps the permission paired with the legitimate resize callers', () => {
-    expect(popover).toContain('getCurrentWindow().setSize');
-    // The cinematic intro made the size a parameter (card vs. full-screen
-    // film), so the call passes `target` — but every resize still routes
-    // through the work-area clamp, which is what this pins.
+  it('keeps the permission paired with its one remaining caller, onboarding', () => {
+    // PL-07 deleted the tray popover, which was the other `setSize` caller.
+    // Onboarding still grows the `main` window for the wizard and shrinks it
+    // back afterwards, so `core:window:allow-set-size` stays required. The
+    // cinematic intro made the size a parameter (card vs. full-screen film),
+    // so the call passes `target` — but every resize still routes through the
+    // work-area clamp, which is what this pins.
     expect(onboarding).toContain('win.setSize(await responsiveOnboardingSize(target))');
     expect(onboarding).toContain('win.setSize(POPOVER_SIZE)');
   });

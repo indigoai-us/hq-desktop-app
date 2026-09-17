@@ -106,7 +106,9 @@ describe('US-016: side pane conversation grouping', () => {
           body: 'izzy oldest',
         }),
       ];
-      const rows = conversationRows(items, 0, new Set());
+      // Server read state: every loaded row is still unread.
+      const unreadIds = new Set(items.map((item) => item.id));
+      const rows = conversationRows(items, unreadIds, new Set());
       expect(rows).toHaveLength(2);
       expect(rows[0].key).toBe('dm:prs_izzy');
       expect(rows[0].latest.dm?.body).toBe('izzy newest');
@@ -137,7 +139,12 @@ describe('US-016: side pane conversation grouping', () => {
       expect(paneSource).toContain('conversationRows');
       expect(paneSource).toContain('No conversations');
       expect(paneSource).toContain('includeUpdates: false');
+      // The side pane never writes read state. PL-07 went further: the local
+      // read watermark it used to read is gone, replaced by the server unread
+      // set, because the popover's "Mark all read" was its only writer.
       expect(paneSource).not.toContain('markAllNotificationsRead');
+      expect(paneSource).not.toContain('getLastReadTs');
+      expect(paneSource).toContain('fetchServerUnreadIds');
       expect(paneSource).not.toContain("window.addEventListener('pagehide'");
     });
 

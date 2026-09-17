@@ -1,4 +1,4 @@
-// Fixture props for rendering Popover in the browser preview harness.
+// Fixture data for the browser preview harness (dev-harness/Harness.svelte).
 import type { Workspace } from '../src/lib/workspaces';
 
 const minsAgo = (mins: number) => new Date(Date.now() - mins * 60 * 1000).toISOString();
@@ -139,34 +139,9 @@ export const coreState = {
   scannedAt: new Date().toISOString(),
 };
 
-// Minimal notification-panel popover props (US-001 chrome strip — no header
-// tabs, overflow menu, or desktop-view footer).
-export const popoverProps = {
-  syncState: 'idle' as const,
-  config: {
-    configured: true,
-    companySlug: 'indigo',
-    hqFolderPath: '/Users/corey/Documents/HQ',
-  },
-  workspaces,
-  cloudReachable: true,
-  cloudError: null,
-  manifestError: null,
-  conflicts: [],
-  showConflictModal: false,
-  updateAvailable: null,
-  updateInstalling: false,
-  onsync: () => console.debug('[harness] sync'),
-  onresolve: () => {},
-  onopen: () => {},
-  ondismissconflicts: () => {},
-  oninstallupdate: () => {},
-  bindStatsRefresh: () => {},
-};
-
 /**
- * Legacy shape kept for reference / future desktop-view surfaces (US-005).
- * The menubar popover no longer hosts the CLI-update overflow block.
+ * Reference shape for the desktop Settings → Updates surface, which owns the
+ * hq CLI update check, install and dismiss (packages/ui SettingsPage).
  */
 export const hqCliUpdateAvailable = {
   local: '5.38.2',

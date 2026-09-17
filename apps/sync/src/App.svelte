@@ -14,9 +14,6 @@
     requestHasHumanLabel,
   } from './lib/dmRequests';
   import SignInPrompt from './components/SignInPrompt.svelte';
-  import { conflictStore, type ConflictFile } from './stores/conflicts';
-  import { transferCountDelta } from './lib/transfer-count';
-  import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
   import {
     isExpectedUnauthenticatedError,
     shouldSkipSignIn,
@@ -24,9 +21,8 @@
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { wizardModeForLifecycle } from './lib/onboarding-wizard';
-  import { friendlyCompanyLabel } from './lib/company-label';
   import { ListenerRegistry, subscribeWindowFocus } from './lib/listener-registry';
-  import type { Workspace, WorkspacesResult } from './lib/workspaces';
+  import type { WorkspacesResult } from './lib/workspaces';
   import type { Channel } from './lib/channels';
   import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
   import { UnreadSummaryTracker } from './lib/unreadSummaryTracker';
@@ -52,7 +48,6 @@
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import { emitDesktopTelemetry } from './lib/desktop-telemetry';
-  import { refreshOnPopoverOpen } from './lib/popover-refresh';
   import {
     handleMeetingDetected,
     type MeetingDetectedPayload,
@@ -118,112 +113,20 @@
   // card — lets sync:external-idle know it should reset back to idle.
   let externalSyncActive = $state(false);
   let config = $state<Config | null>(null);
-  // Phase 7 runner protocol — progress is per-file with a path + bytes.
-  // We also track the company currently syncing (last progress event) and
-  // the count of companies in this fanout for "Syncing N of M" framing.
-  let syncProgress = $state<{
-    company: string;
-    path: string;
-    bytes: number;
-  } | null>(null);
-  let syncFanoutTotal = $state(0); // How many companies we're syncing
-  let syncFanoutDoneCount = $state(0); // How many have hit sync:complete
-  // Company list from the last fanout-plan event. `name` is optional —
-  // runners < v5.1.9 only emit `uid` + `slug`, so the UI falls back to the
-  // slug in that case. Rendered by Popover so the user sees *which* HQs
-  // they're connected to.
-  let syncCompanies = $state<Array<{ uid: string; slug: string; name?: string }>>([]);
-  // Per-run cumulative file counter — incremented per sync:progress event so
-  // the popover can show "234 files" alongside the current file. Reset on
-  // each Sync Now click; not reset by sync:all-complete (the final summary
-  // line takes over from there).
-  let syncFilesProgressed = $state(0);
-  // Personal first-push knows files_total upfront; we capture it so the
-  // live-progress card can show "234 of 1,247 files" instead of just a
-  // running count. Runner sync:progress events don't carry a total, so
-  // these stay null during the runner phase and the UI falls back to
-  // "234 files synced".
-  let personalFilesDone = $state(0);
-  let personalFilesTotal = $state<number | null>(null);
-  // Latched once the in-process Rust personal first-push completes; stays
-  // true until the next Sync click. Lets the popover keep "Syncing personal"
-  // as the current-workspace sub-label after personalFilesTotal resets.
-  let personalFirstPushDone = $state(false);
-  // Real total file count for the entire sync — emitted by the Rust pre-walk
-  // BEFORE any uploads begin (sums personal allowlist + every local company
-  // folder, after applying .hqignore + DEFAULT_IGNORES). Fallback
-  // denominator for the popover "N of M transferred" caption. 0 means
-  // pre-walk hasn't fired yet (or hit an error); the UI falls back to
-  // workspace-level counts in that case.
-  let syncTotalFiles = $state(0);
-  // Plan-event-derived denominator (hq-cloud@5.5.0+). Each plan event from
-  // the runner adds (filesToDownload + filesToUpload + filesToConflict)
-  // for one company / direction. When the runner is new enough to emit
-  // these, this gives us an accurate denominator for the transferred
-  // caption that includes BOTH push and pull work — improving on the older
-  // upload-only `syncTotalFiles` from the Rust pre-pass. When 0, the
-  // UI falls back to `syncTotalFiles`.
-  let syncPlanTotalFiles = $state(0);
-  // True once at least one `sync:plan` event has been processed this run.
-  // Gates `effectiveTotalFiles`: once the runner's plan is in, the strict
-  // transfer count (`syncPlanTotalFiles`) is authoritative — even at 0 —
-  // instead of falling back to the full pre-walk `syncTotalFiles`. Without
-  // this, an up-to-date HQ showed "Syncing … of <whole vault>".
-  let syncPlanReceived = $state(false);
   // filesSkipped is not on sync:all-complete (backend only aggregates
   // filesDownloaded), so we sum it client-side from per-company complete
-  // events. Lets the popover surface "Up to date" when everything was
-  // current instead of misreading as "Last sync · 0 files".
+  // events and report it in the manual-sync telemetry below.
   let syncFanoutFilesSkipped = $state(0);
-  let syncLastSummary = $state<{
-    companiesAttempted: number;
-    filesDownloaded: number;
-    bytesDownloaded: number;
-    filesSkipped: number;
-  } | null>(null);
-  let syncErrorMessage = $state(''); // Last auth-error or error message
-  // Company slug attached to the last `sync:error` event, threaded into the
-  // sync-failed Copy-Prompt so it can render `~/.hq/sync-journal.{slug}.json`
-  // as a concrete path. Empty for auth errors / discovery-phase failures /
-  // local catch-block failures where the slug isn't known.
-  let syncErrorCompany = $state('');
-
-  // Effective progress denominator — "files being synced right now", not the
-  // whole vault. When the runner is new enough to emit Stage-1 plan events
-  // (hq-cloud@5.5.0+), the strict transfer count `syncPlanTotalFiles` is
-  // authoritative once the plan has arrived — INCLUDING when it is 0, which
-  // is the "nothing to sync" signal. Only before any plan (or with a legacy
-  // runner that never emits one) do we fall back to the Rust pre-walk total
-  // `syncTotalFiles`. See lib/effective-total-files.ts for the rationale and
-  // the regression test (an up-to-date HQ must not show the full vault count).
-  const effectiveTotalFiles = $derived(
-    computeEffectiveTotalFiles({
-      planReceived: syncPlanReceived,
-      syncPlanTotalFiles,
-      syncTotalFiles,
-    })
-  );
-  let showConflictModal = $state(false);
-  let conflicts = $state<ConflictFile[]>([]);
-  // Conflict-aborted accounting (the actionable path). This window reads the
-  // aggregate `sync:complete {conflicts, aborted}` only — it does not subscribe
-  // to the per-file `sync:conflict` stream (the desktop shell does), so the
-  // ConflictModal never populates from a live sync here and the actionable
-  // surface is the banner driven by this count + company. Reset at every sync
-  // start so a resolved conflict doesn't linger. `syncConflictCompany` is ''
-  // when more than one company aborted (no single slug to name in the prompt).
-  let syncConflictCount = $state(0);
-  let syncConflictCompany = $state('');
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
   // decodes the cached Cognito id_token; GA — true for any signed-in user).
   // The icon doesn't render at all when this is false. Click opens the standalone
   // `meetings-window` (mirrors the `new-files-detail` window pattern) — the
-  // earlier modal-on-popover UX was too cramped.
+  // earlier modal-on-tray-window UX was too cramped.
   let meetingsEnabled = $state(false);
 
-  // Live counts for the popover Messages icon badge (US-009). Fed by the
+  // Live counts for the macOS menu-bar Messages badge (US-009). Fed by the
   // `dm:unread-summary` event (emitted by the SINGLE DM poll path on every
   // change — no separate poller) and seeded once on mount via
   // `get_unread_summary`. Reset to 0 unread by Rust when the Messages window
@@ -271,7 +174,7 @@
   }
   let memberships = $state<MembershipRow[]>([]);
   // Default company UID for new recordings — read from menubar.json on
-  // mount. Per-recording overrides happen in the popover row dropdown
+  // mount. Per-recording overrides happen in the MeetingsWindow row dropdown
   // and never write back here; that mutation belongs to Settings.
   let defaultRecordingCompanyUid = $state<string | null>(null);
 
@@ -286,7 +189,7 @@
    * on `recording:started` / `recording:ended` / `recording:error`,
    * and removed on `meeting:closed`.
    *
-   * Surfaced to the user via the Popover's "Active meetings" section,
+   * Surfaced to the user via MeetingsWindow's "Active meetings" strip,
    * where each entry gets a Record / Stop button wired back into the
    * `start_recording` / `stop_recording` Tauri commands.
    */
@@ -370,7 +273,7 @@
     const companyUid = row?.companyUserSet
       ? (row.companyUid ?? null)
       : (resolveValidDefault() ?? row?.companyUid ?? null);
-    // Reflect the resolved attribution back onto the row so the popover
+    // Reflect the resolved attribution back onto the row so the MeetingsWindow
     // dropdown shows what we actually recorded against.
     if (row && row.companyUid !== companyUid) {
       updateActiveMeeting(windowId, { companyUid });
@@ -419,7 +322,7 @@
    * Load the memberships list + the persisted default-recording-company
    * UID into module state. Called once on mount when the meeting-detect
    * feature is enabled for this user. Best-effort — both reads degrade
-   * to empty / null on error so a vault hiccup never blocks the popover
+   * to empty / null on error so a vault hiccup never blocks MeetingsWindow
    * from rendering or the user from recording (the row just shows
    * Personal as the only option, which is the safe default).
    */
@@ -479,18 +382,6 @@
     }
   }
 
-  // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
-  // legacy "No companies yet" dead-end with a union over Person + memberships
-  // + local company folders. `null` = first invocation in flight; non-null
-  // (even empty) = command completed at least once.
-  let workspaces = $state<Workspace[] | null>(null);
-  let workspacesCloudReachable = $state(true);
-  let workspacesError = $state<string | null>(null);
-  // Top-level manifest parse/IO error from list_syncable_workspaces. Distinct
-  // from workspacesError (which surfaces cloud-side failure). Both can fire
-  // independently — a broken manifest doesn't prevent us from talking to the
-  // cloud, and an unreachable cloud doesn't make the manifest unreadable.
-  let workspacesManifestError = $state<string | null>(null);
   // White-label brand (US-005). Seeded from localStorage so offline launches
   // keep the last entitled branding; refreshed from workspaces memberships.
   let brand = $state<CachedBrand | null>(null);
@@ -505,16 +396,12 @@
   // Updater state — populated by the `update:available` event from the Rust
   // background checker (launch+10s, then every 6h). Non-null means the user
   // is on an older version and the banner should be shown.
-  let updateAvailable = $state<{ version: string; body?: string; date?: string } | null>(null);
   // True while `invoke('install_update')` is in-flight — blocks duplicate
   // clicks and lets the button show a spinner. On macOS the process usually
   // terminates before the promise resolves, so this rarely flips back.
   let updateInstalling = $state(false);
-  // Last self-update failure. The menubar popover owns the visible recovery
-  // control, while App owns this state because it invokes the native updater.
-  let updateInstallError = $state<string | null>(null);
   // If even the compact native-action Retry banner cannot be created, retain
-  // the failed action here until its in-popover retry succeeds.
+  // the failed action here until the desktop window's retry succeeds.
   let notificationActionRecovery = $state<NativeNotificationRecovery | null>(
     null,
   );
@@ -537,95 +424,10 @@
     });
   });
 
-  // hq CLI updater state — populated by `hq-cli-update:available` from the
-  // Rust background checker (launch+15s, then every 6h). Non-null means
-  // the user's globally-installed `hq` is behind npm `latest`. The banner
-  // can't auto-install (npm globals require shell access we don't have),
-  // so it surfaces a copy-able upgrade command instead.
-  let hqCliUpdateAvailable = $state<{ local: string | null; latest: string } | null>(null);
-  // True while `invoke('install_hq_cli_update')` is in flight — disables
-  // the banner button and flips its label to "Installing…".
-  let hqCliUpdateInstalling = $state(false);
-  // Last error returned from `install_hq_cli_update`. When non-null, the
-  // banner switches to its error state and shows a Copy-command fallback
-  // (typical failure: EACCES against a system-prefix npm that needs sudo).
-  let hqCliUpdateError = $state<string | null>(null);
-  // Pack-update state — populated by `pack-update:available` from the Rust
-  // background checker (launch+20s, then every 6h). Non-null + count>0 means
-  // one or more installed packs have a newer upstream version; the banner
-  // prompts a one-click `hq packs update`.
-  let packUpdateAvailable = $state<{ count: number; names: string[] } | null>(null);
-  let packsUpdating = $state(false);
-  let packUpdateError = $state<string | null>(null);
-
-  // Unified HQ-core state — replaces the pre-refactor quad
-  // (hqCoreUpdateAvailable + hqCoreDrift + stagingDrift + stagingReplace)
-  // with one struct emitted on `core-state:changed` from the Rust
-  // background checker (see commands/hq_core_state.rs). The pill labels +
-  // visibility derive entirely from this one source of truth.
-  //
-  // `channel` chooses the comparison target:
-  //   * "release" → drift vs latest tag on indigoai-us/hq-core
-  //   * "staging" → drift vs main HEAD on hq-core-staging
-  //
-  // `driftReport.count` is THE drift count (USER-EDIT files only); MISSING +
-  // USER-ONLY are listed in modified/missing/added but don't add to count.
-  // `versionBehind` is true when the user is on an older release/SHA than
-  // the target. `needsUpdate = versionBehind || driftReport.count > 0` —
-  // i.e. the Update pill shows whenever the rescue would do something.
-  type DriftEntry = {
-    path: string;
-    size: number;
-    gitShaLocal: string | null;
-    gitShaUpstream: string | null;
-  };
-  type DriftReport = {
-    baselineStatus: 'Available' | 'BaselineUnavailable';
-    updateRequired: boolean;
-    count: number;
-    modified: DriftEntry[];
-    missing: DriftEntry[];
-    added: DriftEntry[];
-    scannedAt: string;
-    hqVersion: string;
-    targetRepo: string;
-    targetRef: string;
-  };
-  type CoreState = {
-    channel: 'release' | 'staging';
-    targetRepo: string;
-    targetVersion: string;
-    targetRef: string;
-    localVersion: string | null;
-    floorSha: string | null;
-    isEligible: boolean;
-    versionBehind: boolean;
-    driftReport: DriftReport;
-    unchangedCount: number;
-    userOnlyCount: number;
-    scannedAt: string;
-  };
-  let coreState = $state<CoreState | null>(null);
-  // Spinner / disable flag for the Update pill while the rescue script
-  // (release `install_hq_core_update` or staging `run_replace_from_staging`)
-  // is running.
-  let coreInstalling = $state<boolean>(false);
-  // Last install-run summary (success or error). Surfaced via Popover so
-  // the user sees ✓ / ✗ in the same row the pill lives in. Cleared at the
-  // start of a new run.
-  let coreInstallLastResult = $state<{
-    kind: 'ok' | 'err';
-    exitCode: number;
-    logTail: string;
-    logPath: string;
-  } | null>(null);
-
-  // Locally-installed hq-core `hqVersion` (or null when core.yaml is
-  // missing/unparseable). Always populated by a cheap on-disk read at app
-  // mount — independent of the unified state's 6h cadence. Drives the
-  // "HQ v14.2.1" footer row in Popover; null surfaces the repair affordance
-  // instead of silently hiding the row.
-  let hqVersion = $state<string | null>(null);
+  // The hq CLI updater, the pack updater and the unified hq-core state
+  // (drift, version-behind, the Restore/Update pill) are all owned by the
+  // desktop window — Settings → Updates and the titlebar Core popover. This
+  // window neither stores nor renders any of them.
 
   // `listen()` and `onFocusChanged()` resolve asynchronously. The app surface
   // normally stays mounted for the process lifetime, but it can be torn down
@@ -640,31 +442,6 @@
       config = await invoke<Config>('get_config');
     } catch (err) {
       console.error('Failed to load config:', err);
-    }
-  }
-
-  // Cheap on-disk read of hq-core's `hqVersion` from `core.yaml`. Null when
-  // unreadable — see `hqVersion` state declaration for why null is surfaced
-  // rather than swallowed. Errors are logged but treated as null so a
-  // transient Rust failure doesn't blank the row mid-session.
-  async function loadHqVersion() {
-    try {
-      hqVersion = await invoke<string | null>('get_hq_version');
-    } catch (err) {
-      console.error('Failed to load hq version:', err);
-      hqVersion = null;
-    }
-  }
-
-  // Refresh the unified core state on demand (mount, post-settings,
-  // post-rescue). Errors swallowed — the background listener will
-  // repopulate on the next 6h tick. Maps snake_case Rust → camelCase JS.
-  async function loadCoreState() {
-    try {
-      const s = await invoke<CoreState | null>('check_core_state');
-      coreState = s;
-    } catch (err) {
-      console.error('check_core_state failed:', err);
     }
   }
 
@@ -746,7 +523,7 @@
 
   // Reconcile the menu-bar Messages count from the existing DM/request summary
   // and the existing channel list. There is still no independent poller:
-  // startup, popover focus, and the established realtime events drive refreshes.
+  // startup, window focus, and the established realtime events drive refreshes.
   async function loadUnreadSummary() {
     if (!authenticated) {
       resetUnreadSummary();
@@ -780,82 +557,15 @@
   }
 
   // Unified "Update" action — dispatches to the right rescue command based
-  // on the active channel. Release channel runs `install_hq_core_update`
-  // (overlays the latest hq-core release tag); staging channel runs
-  // `run_replace_from_staging` (overlays staging main). Both return the
-  // same RescueRunResult shape so the surface is identical.
-  //
-  // Long-running (30-90s on first run because of the full-history clone +
-  // scan). The pill is disabled while the promise is pending; the result
-  // lands in `coreInstallLastResult` for Popover to surface. On success we
-  // refresh `hqVersion` + re-run the state check so drift + version pills
-  // both swing to the post-rescue truth without waiting for the 6h tick.
-  async function handleInstallCore() {
-    if (coreInstalling) return;
-    if (!coreState) return;
-    coreInstalling = true;
-    coreInstallLastResult = null;
-    const command =
-      coreState.channel === 'staging'
-        ? 'run_replace_from_staging'
-        : 'install_hq_core_update';
-    try {
-      const result = await invoke<{
-        exit_code: number;
-        log_tail: string;
-        log_path: string;
-      }>(command);
-      coreInstallLastResult = {
-        kind: result.exit_code === 0 ? 'ok' : 'err',
-        exitCode: result.exit_code,
-        logTail: result.log_tail,
-        logPath: result.log_path,
-      };
-      await loadHqVersion();
-      if (result.exit_code === 0) {
-        // Re-run unified state so version_behind + drift both swing to
-        // post-rescue truth. Fire-and-forget — failure leaves the prior
-        // state until the next background tick.
-        invoke('check_core_state').catch((e) =>
-          console.error('post-install core-state refresh failed:', e)
-        );
-        // Auto-dismiss the "✓ update done" chip after a few seconds. It's a
-        // momentary confirmation, not a persistent status — left up, it
-        // lingers next to a freshly-recomputed "Restore vX" pill (any
-        // remaining drift) and reads as a contradiction ("done" + "restore").
-        // Guard the clear so a NEW run started in the meantime isn't wiped.
-        const settledAt = coreInstallLastResult;
-        setTimeout(() => {
-          if (coreInstallLastResult === settledAt) coreInstallLastResult = null;
-        }, 6000);
-      }
-    } catch (err) {
-      console.error(`${command} failed:`, err);
-      coreInstallLastResult = {
-        kind: 'err',
-        exitCode: -1,
-        logTail: String(err),
-        logPath: '',
-      };
-    } finally {
-      coreInstalling = false;
-    }
-  }
-
   /**
-   * Fetch the workspaces union (Personal + memberships + local folders).
-   * Called on mount, after sync completes, and after settings change. Errors
-   * surface via the `cloudReachable` flag in the result — the Rust command
-   * never throws for cloud-side problems, only for environment failures
-   * (e.g. cannot resolve hq folder path).
+   * Re-derive the white-label brand from the workspaces union (Personal +
+   * memberships + local folders). Called on mount, on window focus and after
+   * a sync completes. The brand is applied to this window's document and
+   * written to the shared localStorage cache the desktop window reads.
    */
   async function loadWorkspaces() {
     try {
       const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
-      workspaces = result.workspaces;
-      workspacesCloudReachable = result.cloudReachable;
-      workspacesError = result.error;
-      workspacesManifestError = result.manifestError;
       // Brand rides the membership enrichment already on each workspace row —
       // no extra endpoint. Cloud-unreachable keeps the offline cache.
       const nextBrand = syncBrandFromWorkspaces(result.workspaces, {
@@ -870,12 +580,8 @@
         });
       }
     } catch (err) {
-      // Hard failure (e.g. couldn't resolve hq_root). Keep prior workspaces
-      // visible if we had any, but flag the error so the UI can soften.
+      // Hard failure (e.g. couldn't resolve hq_root).
       console.error('list_syncable_workspaces failed:', err);
-      workspacesCloudReachable = false;
-      workspacesError = String(err);
-      // Don't null out `workspaces` — last-good is better than empty.
       // Offline: keep cached branding if we have it.
       const cached = readBrandCache();
       brand = cached;
@@ -889,23 +595,7 @@
     manualSyncActive = true;
     manualSyncTelemetryPending = true;
     externalSyncActive = false;
-    syncProgress = null;
-    syncFanoutTotal = 0;
-    syncFanoutDoneCount = 0;
-    syncCompanies = [];
     syncFanoutFilesSkipped = 0;
-    syncFilesProgressed = 0;
-    personalFilesDone = 0;
-    personalFilesTotal = null;
-    personalFirstPushDone = false;
-    syncTotalFiles = 0;
-    syncPlanTotalFiles = 0;
-    syncPlanReceived = false;
-    syncLastSummary = null;
-    syncErrorMessage = '';
-    syncErrorCompany = '';
-    syncConflictCount = 0;
-    syncConflictCompany = '';
     await invoke('set_tray_state', { state: 'syncing' });
     try {
       await invoke('start_sync');
@@ -926,8 +616,6 @@
       manualSyncTelemetryPending = false;
       console.error('start_sync failed:', err);
       syncState = 'error';
-      syncErrorMessage = msg;
-      syncErrorCompany = '';
       await invoke('set_tray_state', { state: 'error' });
       void emitDesktopTelemetry({
         eventName: 'manual_sync_failed',
@@ -936,18 +624,6 @@
     }
   }
 
-  async function handleCancel() {
-    if (syncState !== 'syncing') return;
-    try {
-      await invoke('cancel_sync');
-      // Don't flip syncState here — the runner's exit triggers the
-      // existing "runner exited" path which emits sync:all-complete (or
-      // sync:error) and resets state. Avoids a race where cancel returns
-      // before the kill propagates.
-    } catch (err) {
-      console.error('cancel_sync failed:', err);
-    }
-  }
 
   async function handleSignOut() {
     // Invalidate every in-flight frontend snapshot before waiting on backend
@@ -967,126 +643,15 @@
     }
   }
 
-  async function handleResolveConflict(path: string, strategy: 'keep-local' | 'keep-remote') {
-    await conflictStore.resolveConflict(path, strategy);
-    conflicts = conflictStore.conflicts;
-    if (conflictStore.allResolved) {
-      syncState = 'idle';
-      await invoke('set_tray_state', { state: 'idle' });
-    }
-  }
 
-  async function handleOpenInEditor(path: string) {
-    await conflictStore.openInEditor(path);
-  }
 
-  function handleDismissConflicts() {
-    showConflictModal = false;
-  }
 
-  async function handleInstallHqCliUpdate() {
-    if (hqCliUpdateInstalling) return;
-    hqCliUpdateInstalling = true;
-    hqCliUpdateError = null;
-    try {
-      // Backend spawns `npm install -g @indigoai-us/hq-cli@latest` and
-      // re-checks on success. We clear the banner on success; on failure
-      // we surface the stderr so the banner can fall back to its
-      // copy-the-command affordance. See
-      // src-tauri/src/commands/hq_cli_update.rs:install_hq_cli_update.
-      const info = await invoke<{ local: string | null; latest: string }>(
-        'install_hq_cli_update'
-      );
-      // npm exited 0 but the version might still lag (e.g., npm picked
-      // up a cached resolution). Compare and only clear the banner when
-      // the local version is actually current.
-      if (info.local && info.local === info.latest) {
-        hqCliUpdateAvailable = null;
-      } else {
-        hqCliUpdateAvailable = info;
-      }
-    } catch (err) {
-      console.error('install_hq_cli_update failed:', err);
-      hqCliUpdateError = String(err);
-    } finally {
-      hqCliUpdateInstalling = false;
-    }
-  }
 
-  // Dismiss the hq CLI update notice for the current `latest`. Persists the
-  // dismissal per-version (backend writes `cliUpdateDismissedVersion` to
-  // menubar.json) so the banner stays hidden until a newer CLI version is
-  // published, then hides it locally. Optimistic: we null the banner first so
-  // the click feels instant; the persisted flag keeps it hidden across the
-  // on-focus `check_hq_cli_update` refresh and the 6h background check.
-  async function handleDismissHqCliUpdate() {
-    const latest = hqCliUpdateAvailable?.latest;
-    hqCliUpdateAvailable = null;
-    hqCliUpdateError = null;
-    if (!latest) return;
-    try {
-      await invoke('set_hq_cli_update_dismissed', { version: latest });
-    } catch (err) {
-      console.error('set_hq_cli_update_dismissed failed:', err);
-    }
-  }
 
-  async function handleUpdatePacks() {
-    if (packsUpdating) return;
-    packsUpdating = true;
-    packUpdateError = null;
-    try {
-      await invoke('update_packs', { names: packUpdateAvailable?.names ?? [] });
-      packUpdateAvailable = null;
-      await refreshPackUpdate();
-    } catch (e) {
-      packUpdateError = e instanceof Error ? e.message : String(e);
-    } finally {
-      packsUpdating = false;
-    }
-  }
-
-  // Pull the current CLI-update state on demand instead of waiting for the
-  // backend's fire-and-forget `hq-cli-update:available` event (launch+15s,
-  // then every 6h). Without this the banner is blind whenever the event
-  // fired before the listener attached or the popover is opened mid-cycle —
-  // the exact gap that hid Jacob's stale CLI. Called once on mount and on
-  // every popover focus; mirrors the on-focus `check_core_state` re-pull.
-  // Fire-and-forget: an in-flight install owns the state, so don't clobber it.
-  async function refreshHqCliUpdate() {
-    if (hqCliUpdateInstalling) return;
-    try {
-      const info = await invoke<{ local: string | null; latest: string } | null>(
-        'check_hq_cli_update'
-      );
-      // Some → an update is available (show banner); None → up to date or no
-      // CLI (leave any existing banner to be cleared by the :cleared event).
-      if (info) {
-        hqCliUpdateError = null;
-        hqCliUpdateAvailable = info;
-      } else {
-        hqCliUpdateAvailable = null;
-      }
-    } catch (err) {
-      console.error('check_hq_cli_update failed:', err);
-    }
-  }
-
-  async function refreshPackUpdate() {
-    try {
-      const info = await invoke<{ count: number; names: string[] } | null>(
-        'check_pack_update'
-      );
-      packUpdateAvailable = info;
-    } catch {
-      // Best-effort hydration only; the 6h background checker will retry.
-    }
-  }
 
   async function handleInstallUpdate(throwOnError = false) {
     if (updateInstalling) return;
     updateInstalling = true;
-    updateInstallError = null;
     try {
       // Backend re-runs updater.check() inside install_update because
       // tauri_plugin_updater::Update is not Clone — we can't stash the
@@ -1096,9 +661,9 @@
       await invoke('install_update');
     } catch (err) {
       console.error('install_update failed:', err);
-      updateInstallError = 'Couldn’t install the update. Try again.';
       updateInstalling = false;
-      // Preserve the existing in-popover error state for ordinary callers.
+      // Ordinary callers swallow the failure — the desktop window's Settings →
+      // Updates pane owns the visible install-error surface.
       // Custom notification actions request propagation so Rust can reject the
       // original banner_action IPC and leave the Retry affordance mounted.
       if (throwOnError) throw err;
@@ -1107,15 +672,10 @@
 
   async function handleCheckForUpdates() {
     try {
-      const info = await invoke<{ version: string; body?: string; date?: string } | null>(
-        'check_for_updates'
-      );
-      // Backend also emits `update:available` on hit, so the listener
-      // picks it up — but set it here too in case the listener races.
-      if (info) {
-        updateInstallError = null;
-        updateAvailable = info;
-      }
+      // Fire-and-forget: the backend emits `update:available` on a hit and
+      // the desktop shell renders it. The tray menu item only needs the
+      // check to run.
+      await invoke('check_for_updates');
     } catch (err) {
       console.error('check_for_updates failed:', err);
     }
@@ -1258,24 +818,19 @@
   }
 
   async function setupTrayListeners(unlisteners: ListenerRegistry) {
-    // Refresh workspaces every time the menubar popover gains focus. Cheap
-    // (single Tauri command + small vault round-trip) and catches external
-    // mutations: a new company added via /newcompany, a manifest patch from
-    // a CLI tool, or any folder created outside the app between popover
-    // openings. Without this, the list only refreshes on mount and after a
-    // sync — a brand-new company added between syncs would stay invisible
-    // until the next sync click.
+    // Refresh the workspaces read every time this window gains focus (it is
+    // shown for onboarding and sign-in). Cheap — a single Tauri command plus a
+    // small vault round-trip — and it catches external mutations: a company
+    // added via /newcompany, a manifest patch from a CLI tool, or a folder
+    // created outside the app. The white-label brand cache it writes is what
+    // the desktop window reads.
     unlisteners.push(
       await subscribeWindowFocus(getCurrentWindow(), ({ payload: focused }) => {
         if (focused) {
-          // Refresh the open-set on every popover open (fire-and-forget):
-          //  - workspaces, so a company added between syncs appears
-          //  - hq-cli update state, so a missed event surfaces within one
-          //    open instead of up to 6h
-          //  - hq-core version, so the footer recovers from a startup null
-          //    (transient core.yaml/folder-resolution race) without a relaunch
-          // Set is a typed contract in lib/popover-refresh — see its test.
-          refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
+          // Fire-and-forget: re-pull the workspace list so the white-label
+          // brand cache this window writes stays current for the desktop
+          // window that reads it.
+          loadWorkspaces();
           if (authenticated) void loadUnreadSummary();
           if (shouldRecheckAuthOnFocus(focused, authenticated)) void checkAuth();
         }
@@ -1369,7 +924,6 @@
         // state for a brand-new account, not an error. Don't flip the tray
         // to red; just stay in syncing until all-complete fires.
         syncState = 'syncing';
-        syncProgress = null;
       })
     );
 
@@ -1378,12 +932,9 @@
         syncState = 'auth-error';
         manualSyncActive = false;
         externalSyncActive = false;
-        syncProgress = null;
-        syncErrorMessage = event.payload.message;
-        syncErrorCompany = '';
         // The runner cannot recover from a failed refresh. Route directly to
-        // the sign-in screen instead of leaving an expired session in the
-        // popover, even though the runner exits with code 0.
+        // the sign-in screen instead of leaving an expired session in
+        // place, even though the runner exits with code 0.
         authenticated = false;
         expiresAt = '';
         resetUnreadSummary();
@@ -1409,53 +960,16 @@
       })
     );
 
-    // Pre-walk total — fired once after JWT resolution, before any uploads.
-    // Carries the real file count for this entire sync so the UI bar can
-    // show actual per-file progress instead of fake workspace thirds.
-    unlisteners.push(
-      await listen<{ totalFiles: number }>('sync:totals', async (event) => {
-        syncTotalFiles = event.payload.totalFiles;
-      })
-    );
-
-    // Stage-1 plan events from the runner (hq-cloud@5.5.0+). Each plan
-    // event covers one company / direction (push or pull). Accumulating
-    // gives a denominator that includes BOTH push and pull work — the
-    // older `sync:totals` event only counted uploads. When connected to
-    // an older runner that doesn't emit plan, this stays at 0 and the
-    // UI falls back to syncTotalFiles automatically (the renderer below
-    // picks the larger of the two — see `progressDenominator` derived).
-    unlisteners.push(
-      await listen<{
-        company: string;
-        filesToDownload: number;
-        bytesToDownload: number;
-        filesToUpload: number;
-        bytesToUpload: number;
-        filesToSkip: number;
-        filesToConflict: number;
-      }>('sync:plan', async (event) => {
-        const { filesToDownload, filesToUpload, filesToConflict } = event.payload;
-        // The plan is now authoritative: from here on the denominator is the
-        // strict transfer count, even if it stays 0 (nothing to sync).
-        syncPlanReceived = true;
-        // Sum work across the run: each plan event adds its own slice.
-        syncPlanTotalFiles += filesToDownload + filesToUpload + filesToConflict;
-      })
-    );
+    // `sync:totals` and `sync:plan` carry progress denominators for a
+    // progress surface. This window no longer paints one — the desktop shell
+    // reads sync progress through `get_sync_status` — so neither is consumed
+    // here.
 
     unlisteners.push(
       await listen<{ companies: Array<{ uid: string; slug: string; name?: string }> }>(
         'sync:fanout-plan',
         async (event) => {
           syncState = 'syncing';
-          syncFanoutTotal = event.payload.companies.length;
-          syncFanoutDoneCount = 0;
-          syncCompanies = event.payload.companies;
-          // Fresh run — clear any prior conflict-aborted accounting so a resolved
-          // conflict doesn't carry a stale banner into this sync.
-          syncConflictCount = 0;
-          syncConflictCompany = '';
           await invoke('set_tray_state', { state: 'syncing' });
         }
       )
@@ -1466,15 +980,9 @@
         'sync:progress',
         async (event) => {
           syncState = 'syncing';
-          syncProgress = {
-            company: friendlyCompanyLabel(event.payload.company, syncCompanies),
-            path: event.payload.path,
-            bytes: event.payload.bytes,
-          };
           // Cumulative transfer counter — the runner emits sync:progress
           // only for files it actually moves, so each event counts as one.
           // (Counting policy lives in lib/transfer-count.ts.)
-          syncFilesProgressed += transferCountDelta({ kind: 'runner-progress' });
           await invoke('set_tray_state', { state: 'syncing' });
         }
       )
@@ -1498,14 +1006,6 @@
         externalSyncActive = true;
         syncState = 'syncing';
         const p = event.payload;
-        syncProgress = {
-          company: friendlyCompanyLabel(p.company, syncCompanies),
-          path: p.currentFile ?? '',
-          bytes: 0,
-        };
-        syncFilesProgressed = p.filesDone;
-        syncPlanTotalFiles = p.filesTotal;
-        syncPlanReceived = true;
         await invoke('set_tray_state', { state: 'syncing' });
       })
     );
@@ -1515,7 +1015,6 @@
         if (!externalSyncActive) return;
         externalSyncActive = false;
         syncState = 'idle';
-        syncProgress = null;
         await invoke('set_tray_state', { state: 'idle' });
       })
     );
@@ -1528,78 +1027,20 @@
     // size — feeding walk totals into the caption made a 1-file delta read
     // "x of 2,877 files".
 
-    // Scan-phase liveness: fires per file EXAMINED (skips included).
-    // Surface the current path so the popover isn't frozen during the hash
-    // pass, but feed NOTHING into the file counters.
+    // Personal first-push phases. The per-file counters they used to feed
+    // belonged to the tray popover's progress card; all that is left for this
+    // window is keeping the tray in its syncing state while the push runs.
+    // `sync:personal-first-push-complete` carries nothing this window acts on.
     unlisteners.push(
-      await listen<{
-        personUid: string;
-        filesScanned: number;
-        filesTotal: number;
-        currentFile: string | null;
-      }>('sync:personal-first-push-scan', async (event) => {
+      await listen('sync:personal-first-push-scan', () => {
         syncState = 'syncing';
-        if (event.payload.currentFile) {
-          syncProgress = {
-            company: 'personal',
-            path: event.payload.currentFile,
-            bytes: 0,
-          };
-        }
       })
     );
-
-    // Upload-phase progress: fires per file in the upload plan, with
-    // filesTotal = plan (changed-file) size — the honest denominator for
-    // the "x of N files" caption.
     unlisteners.push(
-      await listen<{
-        personUid: string;
-        filesDone: number;
-        filesTotal: number;
-        currentFile: string | null;
-      }>('sync:personal-first-push-progress', async (event) => {
+      await listen('sync:personal-first-push-progress', async () => {
         syncState = 'syncing';
-        personalFilesDone = event.payload.filesDone;
-        personalFilesTotal = event.payload.filesTotal;
-        if (event.payload.currentFile) {
-          syncProgress = {
-            company: 'personal',
-            path: event.payload.currentFile,
-            bytes: 0, // personal-first-push doesn't carry per-file bytes
-          };
-          // Counted 0 here even though these are now real uploads — the
-          // counter credit comes once from filesUploaded on the complete
-          // event below, so counting both would double. (Policy lives in
-          // lib/transfer-count.ts.)
-          syncFilesProgressed += transferCountDelta({
-            kind: 'personal-first-push-progress',
-            currentFile: event.payload.currentFile,
-          });
-        }
         await invoke('set_tray_state', { state: 'syncing' });
       })
-    );
-
-    unlisteners.push(
-      await listen<{ personUid: string; filesUploaded: number; filesSkipped: number }>(
-        'sync:personal-first-push-complete',
-        async (event) => {
-          // Latch the done flag so the unified bar treats the personal
-          // slot as 100% filled while the runner spins up. Don't clear
-          // personalFilesTotal/Done — leaving them in place keeps the
-          // file-level caption visible until the runner takes over with
-          // its own caption.
-          personalFirstPushDone = true;
-          // Credit the walker's REAL uploads — the only place the personal
-          // phase reports actual transfers (per-file progress events fire
-          // for every examined file, skips included, and count as 0).
-          syncFilesProgressed += transferCountDelta({
-            kind: 'personal-first-push-complete',
-            filesUploaded: event.payload.filesUploaded,
-          });
-        }
-      )
     );
 
     unlisteners.push(
@@ -1618,21 +1059,12 @@
         // and the new pre-walk denominator counts only transfers too.
         // Adding skips here would inflate the numerator and break the
         // ratio.
-        syncFanoutDoneCount += 1;
         syncFanoutFilesSkipped += event.payload.filesSkipped;
         if (event.payload.aborted) {
-          // Conflict-aborted: surface the conflict state + an actionable banner.
-          // The runner doesn't emit per-file conflict events, so the ConflictModal
-          // can't populate — instead we drive a conflict banner from the aggregate
-          // count here (resolve-in-Claude-Code + Copy prompt), and the header Sync
-          // button retries. Accumulate the count across the fanout; null the
-          // company name when more than one company aborts (no single slug).
-          syncConflictCount += event.payload.conflicts;
-          if (syncConflictCompany === '') {
-            syncConflictCompany = event.payload.company;
-          } else if (syncConflictCompany !== event.payload.company) {
-            syncConflictCompany = '';
-          }
+          // Conflict-aborted. The tray goes to its conflict state; the
+          // actionable resolve surface (count, company, Copy prompt,
+          // Open in Claude Code) is the desktop window's Core popover,
+          // which reads the same aggregate from `get_sync_status`.
           syncState = 'conflict';
           await invoke('set_tray_state', { state: 'conflict' });
         }
@@ -1650,13 +1082,6 @@
         manualSyncTelemetryPending = false;
         manualSyncActive = false;
         externalSyncActive = false;
-        syncLastSummary = {
-          companiesAttempted: event.payload.companiesAttempted,
-          filesDownloaded: event.payload.filesDownloaded,
-          bytesDownloaded: event.payload.bytesDownloaded,
-          filesSkipped: syncFanoutFilesSkipped,
-        };
-        syncProgress = null;
         // Only flip to idle if nothing raised conflict/error mid-stream
         if (syncState !== 'conflict' && syncState !== 'error') {
           syncState = 'idle';
@@ -1699,9 +1124,6 @@
           manualSyncActive = false;
           externalSyncActive = false;
           syncState = 'error';
-          syncProgress = null;
-          syncErrorMessage = event.payload.message;
-          syncErrorCompany = event.payload.company ?? '';
           await invoke('set_tray_state', { state: 'error' });
           if (shouldEmitManualSync) {
             void emitDesktopTelemetry({
@@ -1714,94 +1136,19 @@
     );
 
     // --- Updater event listener ---
-    // Protocol (see src-tauri/src/updater.rs):
-    //   update:available — payload { version, body?, date? }
-    //     Emitted by setup_update_checker (launch+10s, every 6h) and
-    //     also by check_for_updates (on-demand). Render a banner.
-    unlisteners.push(
-      await listen<{ version: string; body?: string; date?: string }>(
-        'update:available',
-        (event) => {
-          updateInstallError = null;
-          updateAvailable = event.payload;
-        }
-      )
-    );
+    // `update:available` is consumed by the desktop shell (the Settings →
+    // Updates pane and the recommended-update banner); this window only needs
+    // to know when a pending update is cleared so a stalled in-flight install
+    // flag can't stick.
     unlisteners.push(
       await listen('update:cleared', () => {
-        updateAvailable = null;
         updateInstalling = false;
-        updateInstallError = null;
       })
     );
 
-    // --- hq CLI updater event listener ---
-    // Protocol (see src-tauri/src/commands/hq_cli_update.rs):
-    //   hq-cli-update:available — payload { local: string | null, latest: string }
-    //     `local` is null when the user doesn't have `hq` on PATH; the
-    //     checker doesn't emit in that case, but we type it permissively.
-    //   hq-cli-update:cleared — payload { local, latest } after an in-app
-    //     `npm install -g` finishes successfully. The handler returning
-    //     the same info already clears state, but we also listen here so
-    //     a background tray check that ran in parallel can't re-show the
-    //     banner stale.
-    unlisteners.push(
-      await listen<{ local: string | null; latest: string }>(
-        'hq-cli-update:available',
-        (event) => {
-          // A fresh check arrived — discard any stale error from a
-          // previous failed install so the button is clickable again.
-          hqCliUpdateError = null;
-          hqCliUpdateAvailable = event.payload;
-        }
-      )
-    );
-    unlisteners.push(
-      await listen<{ local: string | null; latest: string }>(
-        'hq-cli-update:cleared',
-        (event) => {
-          // Backend says install succeeded. Trust the version it
-          // reports — only clear the banner when local actually
-          // matches latest (a re-resolution that lagged the install
-          // would leave local stale).
-          if (event.payload.local && event.payload.local === event.payload.latest) {
-            hqCliUpdateAvailable = null;
-            hqCliUpdateError = null;
-          } else {
-            hqCliUpdateAvailable = event.payload;
-          }
-        }
-      )
-    );
-
-    unlisteners.push(
-      await listen<{ count: number; names: string[] }>('pack-update:available', (event) => {
-        packUpdateError = null;
-        packUpdateAvailable = event.payload;
-      })
-    );
-    unlisteners.push(
-      await listen('pack-update:cleared', () => {
-        packUpdateAvailable = null;
-        packUpdateError = null;
-      })
-    );
-    // Hydrate immediately rather than waiting for the launch+15s background
-    // emit — the listeners above are now attached, so pull current state.
-    refreshHqCliUpdate();
-    refreshPackUpdate();
-
-    // --- unified hq-core state listener ---
-    // Protocol (see src-tauri/src/commands/hq_core_state.rs):
-    //   core-state:changed — full CoreState payload. Emitted on every
-    //   background tick + every on-demand `check_core_state` invoke,
-    //   including the "no drift, on latest" case so the pill can swing
-    //   back to "in sync" after the user resolves.
-    unlisteners.push(
-      await listen<CoreState>('core-state:changed', (event) => {
-        coreState = event.payload;
-      })
-    );
+    // The hq CLI updater, pack updater and hq-core state events are consumed
+    // by the desktop shell (Settings → Updates and the titlebar Core popover).
+    // This window neither renders nor forwards them.
 
     // Tray menu "Check for Updates" → on-demand check.
     unlisteners.push(
@@ -1819,7 +1166,7 @@
     //
     // The rule it enforces: a meeting already covered by an active hq-pro bot
     // (a scheduled calendar bot, or one already in the call) surfaces NEITHER
-    // a recordable popover row NOR a macOS notification — the bot is handling
+    // a recordable MeetingsWindow row NOR a macOS notification — the bot is handling
     // it. Everything else (no bot, synthetic/URL-less detection, or a failed
     // bot check) surfaces both.
     unlisteners.push(
@@ -1923,7 +1270,7 @@
             return;
           }
           // User closed the meeting app without recording — drop the row
-          // so the popover doesn't show stale detections.
+          // so MeetingsWindow doesn't show stale detections.
           clearStopWatchdog(windowId);
           removeActiveMeeting(windowId);
         },
@@ -1931,9 +1278,10 @@
     );
 
     // --- Cross-window bridge to MeetingsWindow ---
-    // The Detected/Record row used to live inside Popover.svelte. As of
-    // 2026-05-30 it moved to MeetingsWindow's top strip so the popover
-    // stays focused on sync state. MeetingsWindow runs in a separate
+    // The Detected/Record row used to live inside the tray popover. As of
+    // 2026-05-30 it moved to MeetingsWindow's top strip; the event names below
+    // keep their historical `popover:` prefix because MeetingsWindow listens
+    // for them by name. MeetingsWindow runs in a separate
     // webview, so we ship the snapshot + dispatch actions over Tauri
     // custom events instead of via props.
     //
@@ -1982,9 +1330,9 @@
     // worker thread when the user interacts with a "Meeting detected"
     // notification. Two cases:
     //   action="open"   → user clicked the notification body. Open the
-    //                     popover so the active-meetings row is visible.
-    //   action="record" → user clicked the Record action button. Skip
-    //                     the popover and start recording directly.
+    //                     desktop window so the meeting is reachable.
+    //   action="record" → user clicked the Record action button. Skip the
+    //                     window and start recording directly.
     unlisteners.push(
       await listen<{ action: string; windowId: string; platform: string; meetingId?: string }>(
         'notification:meeting-action',
@@ -2005,10 +1353,9 @@
             return;
           }
           if (action === 'open') {
-            // Pop the main popover into view. Tauri doesn't expose a
-            // direct "open popover" command — the tray click is what
-            // normally toggles visibility. We invoke `show_main_window`
-            // (defined in main.rs) which focuses the popover window.
+            // `show_main_window` opens and focuses the desktop window
+            // (PL-05 retargeted it there); the tray window is no longer a
+            // surface a signed-in person is shown.
             invoke('show_main_window').catch((err) => {
               console.warn('show_main_window failed:', err);
             });
@@ -2046,7 +1393,7 @@
       }>>('share:new-events', async (_event) => {
         // No-op for now — the notification handler in Rust owns the side
         // effects (notification.show(), pending-events state, tray badge).
-        // This listener stays subscribed so a future in-popover share-
+        // This listener stays subscribed so a future in-window share-
         // events list can hook here without needing a second registration.
       })
     );
@@ -2122,7 +1469,7 @@
     // count changes (a new DM landed, or the badge was reset). It carries the
     // DM count immediately; the pending-request count is reconciled on the next
     // explicit `get_unread_summary` read. Keep both fields current so the
-    // popover Messages badge stays live without its own poller.
+    // menu-bar Messages badge stays live without its own poller.
     unlisteners.push(
       await listen<{ unreadDms: number; pendingRequests: number }>(
         'dm:unread-summary',
@@ -2146,7 +1493,7 @@
     // emits `dm:request-new` for a brand-new incoming request and
     // `dm:request-update` when a pending request leaves the set (accepted /
     // declined / blocked — or flipped from the Requests window via
-    // respond_dm_request). These keep the popover Messages request-count accent
+    // respond_dm_request). These keep the Messages request-count accent
     // (`unreadSummary.pendingRequests`) live and surface a DISTINCT native banner
     // ("{name} wants to connect") — separate copy from a normal incoming DM.
     unlisteners.push(
@@ -2154,7 +1501,7 @@
         if (!authenticated) return;
         const authEpoch = unreadSummaryTracker.captureAuthEpoch();
         unreadSummaryTracker.noteRequestEvent();
-        // Bump the popover request-count accent immediately (the poll path emits
+        // Bump the request-count accent immediately (the poll path emits
         // 0 for requests on dm:unread-summary by design). This must happen
         // before contact enrichment awaits, otherwise a concurrent summary can
         // include the request and the later increment double-counts it.
@@ -2192,10 +1539,10 @@
           if (!authenticated) return;
           unreadSummaryTracker.noteRequestEvent();
           // A pending request resolved (accepted / declined / blocked / pruned).
-          // Decrement the popover request-count accent (never below zero). The
+          // Decrement the request-count accent (never below zero). The
           // optimistic Pending→active bubble flip and the Requests-list prune
           // live in the Messages window (MessagesShell), which listens for this
-          // same event; here we only keep the popover accent honest.
+          // same event; here we only keep the accent honest.
           unreadSummary = {
             unreadDms: unreadSummary.unreadDms,
             pendingRequests: Math.max(0, unreadSummary.pendingRequests - 1),
@@ -2233,11 +1580,6 @@
     checkAuth();
     loadConfig();
     loadWorkspaces();
-    loadHqVersion();
-    // Fire-and-forget — background listener will overwrite on the next
-    // tick. Calling here gives the popover a populated state on first
-    // open instead of waiting 30s for the bg checker.
-    loadCoreState();
     const listenerRegistry = new ListenerRegistry();
     void setupTrayListeners(listenerRegistry).catch((err) => {
       // A failed registration must not turn into an unhandled rejection.
@@ -2280,8 +1622,8 @@
 
   // Broadcast the active-meetings snapshot to MeetingsWindow whenever the
   // pieces it renders mutate. Tauri `emit` fans out to every webview
-  // (including the popover itself, which ignores its own emit by virtue
-  // of the popover not subscribing). The snapshot is shaped to match
+  // (this window ignores its own emit by virtue of not subscribing).
+  // The snapshot is shaped to match
   // what MeetingsWindow renders 1:1 so the receiver is a dumb consumer.
   //
   // Don't depend on the receiver being mounted — `emit` is best-effort
@@ -2331,7 +1673,6 @@
       expiresAt = state.expiresAt ?? '';
       if (hadStoredToken && !state.authenticated) {
         syncState = 'auth-error';
-        syncErrorMessage = 'Sign in once and HQ will resume automatically.';
         await invoke('set_tray_state', { state: 'reauth' });
       }
     } catch {
@@ -2343,7 +1684,7 @@
     else resetUnreadSummary();
     // US-005: once signed in and NOT in first-run onboarding, ask the server
     // whether this person's recorded consent is stale and should be re-asked.
-    // Non-blocking and fail-quiet — the Popover renders immediately; if a
+    // Non-blocking and fail-quiet — the window renders immediately; if a
     // re-prompt is due it swaps in on the next tick.
     if (authenticated && !isOnboardingState(lifecycleState)) {
       void checkConsentReprompt();
@@ -2395,7 +1736,7 @@
 
   async function handleConsentRepromptFinish() {
     // The person answered or dismissed; the guard is persisted server/local-side.
-    // Return to the normal popover and refresh consent-dependent surfaces.
+    // Return to the normal surface and refresh consent-dependent state.
     consentReprompt = null;
   }
 
@@ -2411,7 +1752,6 @@
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
     syncState = 'idle';
-    syncErrorMessage = '';
     await invoke('set_tray_state', { state: 'idle' });
     void loadUnreadSummary();
     if (shouldResumeSync) {
@@ -2467,9 +1807,9 @@
 </main>
 
 <style>
-  /* Scoped to the main popover window via `data-window` (set in main.ts)
-     so MeetingsWindow's opaque dark body background can't bleed across CSS
-     bundle order and turn the transparent popover into a black box. */
+  /* Scoped to the `main` window via `data-window` (set in main.ts) so
+     MeetingsWindow's opaque dark body background can't bleed across CSS
+     bundle order and turn this transparent window into a black box. */
   :global(html[data-window='main']),
   :global(html[data-window='main'] body) {
     margin: 0;
@@ -2477,21 +1817,21 @@
     width: 100vw;
     height: 100vh;
     /* overflow:hidden prevents scrollbars from appearing on the root
-       document. The popover's own scroll container (.popover-body) is
-       the only legitimate scrollable region. */
+       document. The onboarding and sign-in cards own their own scroll
+       containers. */
     overflow: hidden;
     font-family: var(--font-sans);
-    /* Transparent so the Popover's rounded corners show the desktop
-       behind them (tauri window is transparent). The popover root
-       component paints its own background + border-radius. */
+    /* Transparent so the onboarding / sign-in card's rounded corners show
+       the desktop behind them (the tauri window is transparent). Each card
+       paints its own background + border-radius. */
     background: transparent;
     color: var(--popover-text, #e0e0e0);
   }
 
   main {
-    /* Fill the window exactly; popover sizes itself via 100vw/100vh.
-       No centering flex — that created a sub-viewport box that could
-       clip the popover if it ever exceeded window size. */
+    /* Fill the window exactly; the mounted card sizes itself via
+       100vw/100vh. No centering flex — that created a sub-viewport box that
+       could clip the card if it ever exceeded window size. */
     width: 100vw;
     height: 100vh;
     padding: 0;

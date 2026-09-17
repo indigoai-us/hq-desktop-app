@@ -1,10 +1,10 @@
 // PL-01 / PL-02 — the Core popover's sync status header and the four sync
 // trouble notices the retired tray popover used to own.
 //
-// The copy here is not decorative: it is asserted verbatim against
-// `apps/sync/src/components/Popover.svelte` so the relocated surface says
-// exactly what the tray popover said. Changing a string here without changing
-// it there (or vice versa) is the regression these tests exist to catch.
+// The copy here is not decorative: it was taken verbatim from the tray
+// popover (deleted in PL-07) so the relocated surface says exactly what the
+// tray popover said. These tests are now the only record of that wording —
+// changing a string here is changing what users read.
 
 import { describe, expect, it } from "vitest";
 import {

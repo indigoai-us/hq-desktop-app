@@ -456,9 +456,9 @@ export type CoreSyncPhase =
 export type CoreSyncTone = "ok" | "warn" | "active";
 
 /**
- * State word. Copy is verbatim from the retired tray popover
- * (`apps/sync/src/components/Popover.svelte` `statusTitle`) so the two
- * surfaces never disagree about what a sync is doing.
+ * State word. Copy is verbatim from the retired tray popover's `statusTitle`
+ * (deleted in PL-07), carried over so the relocated surface never changed what
+ * a sync is called mid-flight.
  */
 export function syncStateWord(phase: string | null | undefined): string {
   switch ((phase ?? "").toLowerCase()) {

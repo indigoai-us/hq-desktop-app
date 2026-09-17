@@ -10,7 +10,6 @@ import {
   repeatedAutomatedMessageKey,
   type Item,
 } from './notificationGroups';
-import { isUnread } from './notificationFeedData';
 
 /** Max rows shown in a quick-window side pane (newest-first feed is already sorted). */
 const PANE_ITEM_CAP = 30;
@@ -65,16 +64,21 @@ export function paneItems(items: Item[]): Item[] {
 }
 
 /**
- * Unread for a pane row: newer than the watermark AND not yet viewed in this
- * quick-window session. Viewing a row (open selection / opening event) clears
- * its dot without advancing the global watermark.
+ * Unread for a pane row: the server still reports the item as unread AND it
+ * has not been viewed in this quick-window session. Viewing a row (open
+ * selection / opening event) clears its dot locally without changing the
+ * server's read state.
+ *
+ * `unreadIds` comes from `fetchServerUnreadIds()`. The old local "read
+ * watermark" this replaced died with the tray popover, which owned the only
+ * control that advanced it.
  */
 export function rowUnread(
   item: Item,
-  lastReadTs: number,
+  unreadIds: ReadonlySet<string>,
   viewedIds: ReadonlySet<string>,
 ): boolean {
-  return isUnread(item, lastReadTs) && !viewedIds.has(item.id);
+  return unreadIds.has(item.id) && !viewedIds.has(item.id);
 }
 
 /**
@@ -135,7 +139,7 @@ const PANE_ROW_CAP = 30;
  *  are rowUnread(...). Rows keep first-seen (newest-first) order, capped at 30. */
 export function conversationRows(
   items: Item[],
-  lastReadTs: number,
+  unreadIds: ReadonlySet<string>,
   viewedIds: ReadonlySet<string>,
 ): ConversationRow[] {
   const order: string[] = [];
@@ -144,7 +148,7 @@ export function conversationRows(
   for (const item of items) {
     if (item.kind !== 'dm' && item.kind !== 'share') continue;
     const key = conversationKey(item);
-    const unread = rowUnread(item, lastReadTs, viewedIds) ? 1 : 0;
+    const unread = rowUnread(item, unreadIds, viewedIds) ? 1 : 0;
     const existing = byKey.get(key);
     if (!existing) {
       byKey.set(key, {
@@ -175,14 +179,14 @@ export function conversationRows(
  */
 export function countUnreadConversations(
   items: Item[],
-  lastReadTs: number,
+  unreadIds: ReadonlySet<string>,
   viewedIds: ReadonlySet<string>,
 ): number {
   const unreadKeys = new Set<string>();
   for (const item of items) {
     if (
       (item.kind === 'dm' || item.kind === 'share') &&
-      rowUnread(item, lastReadTs, viewedIds)
+      rowUnread(item, unreadIds, viewedIds)
     ) {
       unreadKeys.add(conversationKey(item));
     }

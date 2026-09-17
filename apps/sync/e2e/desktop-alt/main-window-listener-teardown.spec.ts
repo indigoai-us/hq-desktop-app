@@ -73,6 +73,11 @@ vi.mock('@tauri-apps/api/core', () => ({
         source: 'test',
       };
     }
+    // The surface's own list reads want arrays. Returning `undefined` for them
+    // makes it throw asynchronously after unmount, which has nothing to do with
+    // the teardown contract under test and would fail the run as a stray
+    // uncaught exception.
+    if (command.startsWith('meetings_list_')) return [];
     return undefined;
   }),
 }));
@@ -111,7 +116,13 @@ vi.mock('@tauri-apps/api/window', () => ({
 // Compile the surfaces once during suite collection. Under full-suite parallel
 // load, a cold Svelte import can exceed the per-test timeout even though the
 // teardown churn itself takes only milliseconds.
-const { default: Popover } = await import('../../src/components/Popover.svelte');
+// PL-07 deleted Popover.svelte, which this spec used to mount. MeetingsWindow
+// is the surviving real focus surface: it subscribes through the same
+// `subscribeWindowFocus` helper and registers further native listeners of its
+// own, so it exercises the identical teardown path.
+const { default: MeetingsWindow } = await import(
+  '../../src/components/MeetingsWindow.svelte'
+);
 
 let host: HTMLElement | null = null;
 let component: Record<string, unknown> | null = null;
@@ -173,23 +184,16 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe('HQ-DESKTOP-39: popover stale Tauri listener teardown', () => {
+describe('HQ-DESKTOP-39: stale Tauri listener teardown on a real focus surface', () => {
   it.each([
     ['an async rejection', 'async-reject'],
     ['a synchronous throw', 'sync-throw'],
   ] as const)(
-    'contains %s across repeated real popover mount/unmount churn',
+    'contains %s across repeated real surface mount/unmount churn',
     async (_label, mode) => {
       teardownMode = mode;
       for (let cycle = 0; cycle < 3; cycle += 1) {
-        component = mount(Popover, {
-          target: host!,
-          props: {
-            syncState: 'idle',
-            config: null,
-            onsync: vi.fn(),
-          },
-        });
+        component = mount(MeetingsWindow, { target: host!, props: {} });
         flushSync();
         // The focus subscription now awaits two registrations, so give the
         // mount a real tick to finish wiring before tearing it down.
@@ -200,8 +204,8 @@ describe('HQ-DESKTOP-39: popover stale Tauri listener teardown', () => {
       }
       await drain();
 
-      // Popover owns its focus pair plus a `popover:opened` listener, and its
-      // real NotificationFeed child owns further native listeners.
+      // The surface owns its focus pair plus its own native listeners, across
+      // three mount/unmount cycles.
       expect(unlistenHandles.length).toBeGreaterThanOrEqual(6);
       for (const handle of unlistenHandles) {
         expect(handle.calls).toBe(1);
@@ -209,17 +213,20 @@ describe('HQ-DESKTOP-39: popover stale Tauri listener teardown', () => {
       // The point of the fix: nothing escaped, and every failure was reported
       // through the shared boundary rather than never having been produced.
       expect(unhandled).toEqual([]);
-      expect(warn).toHaveBeenCalledTimes(unlistenHandles.length);
+      // Count only the boundary's own report. The mounted surface warns for
+      // its own reasons too (its data commands see the bare double), and those
+      // must not be able to stand in for a teardown that was never contained.
+      const teardownWarnings = warn!.mock.calls.filter(
+        ([message]) => message === 'safeUnlisten: ignoring listener teardown error',
+      );
+      expect(teardownWarnings).toHaveLength(unlistenHandles.length);
     },
   );
 
   it('registers focus and blur separately instead of the discarding composite', async () => {
     // Proves the containment above is structural rather than incidental: the
-    // popover never asks the framework for a handle it cannot contain.
-    component = mount(Popover, {
-      target: host!,
-      props: { syncState: 'idle', config: null, onsync: vi.fn() },
-    });
+    // surface never asks the framework for a handle it cannot contain.
+    component = mount(MeetingsWindow, { target: host!, props: {} });
     flushSync();
     await drain();
 

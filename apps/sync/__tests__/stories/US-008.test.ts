@@ -1,46 +1,24 @@
 // US-008: Keep a simplified Inbox notification chronology while restoring the
-// complete Messages workspace as a first-class destination. Pure-model
-// assertions + source contracts lock both surfaces and their intent routing.
+// complete Messages workspace as a first-class destination.
+//
+// PL-07 deleted the tray popover's NotificationFeed, so the feed-source
+// contracts that used to live here are gone. The unified dm+share model claim
+// moved onto the surviving quick-window side pane, which groups both kinds into
+// one conversation rail; the desktop Inbox is covered by
+// packages/ui/src/inbox/NotificationsView.test.ts.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Workspace } from '../../src/lib/workspaces';
-import { buildNotificationGroups, type Item } from '../../src/lib/notificationGroups';
-import { countUnread } from '../../src/lib/notificationFeedData';
+import type { Item } from '../../src/lib/notificationGroups';
+import { conversationRows } from '../../src/lib/quickWindowPane';
 
 const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 const read = (...parts: string[]) => readFileSync(root(...parts), 'utf8');
-const notificationFeed = read('src/components/NotificationFeed.svelte');
 const notificationRow = read('src/components/NotificationRow.svelte');
 
-function workspace(overrides: Partial<Workspace>): Workspace {
-  return {
-    slug: 'indigo',
-    displayName: 'Indigo',
-    kind: 'company',
-    state: 'synced',
-    cloudUid: 'cmp_1',
-    bucketName: 'bucket',
-    hasLocalFolder: true,
-    localPath: '/tmp/HQ/companies/indigo',
-    membershipStatus: 'active',
-    role: 'member',
-    lastSyncedAt: null,
-    brokenReason: null,
-    invitedBy: null,
-    invitedAt: null,
-    ...overrides,
-  };
-}
-
-const workspaces: Workspace[] = [
-  workspace({ slug: 'indigo', displayName: 'Indigo' }),
-  workspace({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
-];
-
-describe('US-008: combined Inbox page shows both streams as one-line rows with unified unread state', () => {
-  it('buildNotificationGroups + countUnread treat dm and share as one unified feed', () => {
+describe('US-008: dm and share are one unified feed', () => {
+  it('conversationRows keeps dm and share rows side by side with unified unread state', () => {
     const now = Date.now();
     const dm: Item = {
       id: 'dm:1',
@@ -74,20 +52,13 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
       },
     };
 
-    const groups = buildNotificationGroups([dm, share], now);
-    expect(groups).toHaveLength(1);
-    const singles = groups[0].rows.filter((row) => row.type === 'single');
-    expect(singles).toHaveLength(2);
+    const allUnread = new Set(['dm:1', 'share:1']);
+    const rows = conversationRows([dm, share], allUnread, new Set());
+    expect(rows.map((row) => row.kind)).toEqual(['dm', 'share']);
+    expect(rows.reduce((n, row) => n + row.unreadCount, 0)).toBe(2);
 
-    expect(countUnread([dm, share], 0)).toBe(2);
-    expect(countUnread([dm, share], now + 1)).toBe(0);
-  });
-
-  it('NotificationFeed wires message rows with reply/react and share rows as share type', () => {
-    expect(notificationFeed).toContain('type="message"');
-    expect(notificationFeed).toContain('onreply=');
-    expect(notificationFeed).toContain('onreact=');
-    expect(notificationFeed).toContain('type="share"');
+    const noneUnread = conversationRows([dm, share], new Set(), new Set());
+    expect(noneUnread.reduce((n, row) => n + row.unreadCount, 0)).toBe(0);
   });
 
   it('NotificationRow message rows hover-expand and the type union covers all kinds including meeting', () => {

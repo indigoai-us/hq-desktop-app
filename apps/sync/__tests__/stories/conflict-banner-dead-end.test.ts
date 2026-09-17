@@ -6,71 +6,34 @@ import { describe, expect, it } from 'vitest';
 // conflicts in aggregate only (`sync:complete {conflicts, aborted}`) — it does
 // not subscribe to the runner's per-file `sync:conflict` stream, so the
 // per-file ConflictModal never populates here. Previously the conflict state was a silent dead-end: the
-// tray went red and the popover body showed NOTHING actionable. This wires an
-// honest, actionable conflict banner (resolve-in-Claude-Code + Copy prompt, with
-// the header Sync button as retry), driven by an aggregate count that is reset
-// at every sync start so a resolved conflict doesn't linger.
+// tray went red and the UI showed NOTHING actionable.
 //
-// Source-contract assertions (mirroring the US-* story tests) so a dropped wire
-// — the count accumulation, the reset, the prop pass-through, the banner branch
-// — fails fast without a macOS Tauri build.
+// PL-07 moved the actionable half of this out of the tray window. The tray
+// window still turns the aborted run into the conflict tray state; the
+// resolve-in-Claude-Code / Copy-prompt notice lives in the desktop window's
+// Core popover and is covered by packages/ui/src/home/CorePopover.sync-notices.test.ts
+// ("renders the conflict notice with Resolve and Copy prompt") and
+// core-popover-sync.test.ts ("reads Sync paused when conflicts exist").
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
-const popover = read('src/components/Popover.svelte');
 const app = read('src/App.svelte');
 
-describe('conflict dead-end: actionable conflict banner', () => {
-  it('App accumulates the aggregate conflict count on an aborted sync:complete', () => {
+describe('conflict dead-end: the aborted run still reaches the user', () => {
+  it('App turns an aborted sync:complete into the conflict state and the conflict tray icon', () => {
     const a = normalize(app);
-    expect(a).toContain('syncConflictCount += event.payload.conflicts');
-    // The single-vs-multi company hint: name the slug only when exactly one
-    // company aborted, otherwise blank it.
-    expect(a).toContain('syncConflictCompany = event.payload.company');
-    expect(app).toContain("syncConflictCompany = ''");
+    expect(a).toContain('if (event.payload.aborted) {');
+    expect(a).toMatch(
+      /if \(event\.payload\.aborted\) \{[^}]*syncState = 'conflict'; await invoke\('set_tray_state', \{ state: 'conflict' \}\);/,
+    );
   });
 
-  it('App resets the conflict accounting at every sync start (manual + fanout)', () => {
-    // Reset appears in handleSyncNow AND the sync:fanout-plan handler so a
-    // resolved conflict never carries a stale banner into the next run.
-    const resets = app.split('syncConflictCount = 0').length - 1;
-    expect(resets).toBeGreaterThanOrEqual(2);
-  });
-
-  it('App still owns the aggregate conflict count + company, with no popover to hand them to', () => {
-    // PL-06: the authenticated branch renders nothing, so the props are no
-    // longer passed anywhere. The controller state they were built from is
-    // what the desktop window's Core popover reads (PL-01/PL-02), and it must
-    // survive the branch flip.
-    expect(app).toContain('let syncConflictCount = $state(0)');
-    expect(app).toContain("let syncConflictCompany = $state('')");
-    expect(app).not.toContain('conflictCount={syncConflictCount}');
-    expect(app).not.toContain('conflictCompany={syncConflictCompany}');
-    // The prop names still exist on Popover.svelte, which PL-07 deletes whole.
-    expect(popover).toContain('conflictCount');
-    expect(popover).toContain('conflictCompany');
-  });
-
-  it('Popover renders an actionable conflict notice in the conflict state', () => {
-    const p = normalize(popover);
-    // A dedicated branch for the conflict state (not just auth/error). In the
-    // notifications-first redesign it folds into the feed as a pinned
-    // system-notice row, and is mutually exclusive with the detailed
-    // ConflictModal (tracked by the `conflictModalActive` derived).
-    expect(p).toContain("syncState === 'conflict'");
-    expect(p).toContain('const conflictModalActive = $derived(showConflictModal && conflicts.length > 0)');
-    expect(p).toContain("syncState === 'conflict' && !conflictModalActive");
-    // Plain, non-alarming framing — no raw paths, no "failed".
-    expect(p).toContain('Sync paused');
-    expect(p).not.toContain('Sync failed');
-    // The resolve action routes through the existing sync-conflict prompt with
-    // the aggregate count + company (the prompt builder runs /resolve-conflicts).
-    expect(p).toContain("kind: 'sync-conflict'");
-    expect(p).toContain('count: conflictCount');
-    expect(p).toContain('company: conflictCompany');
-    // Both an Open-in-Claude-Code affordance and a Copy-prompt fallback.
-    expect(popover).toContain('OpenInClaudeCodeButton');
-    expect(popover).toContain('Copy prompt');
+  it('App no longer keeps a second copy of the conflict accounting', () => {
+    // The desktop window reads the aggregate from `get_sync_status`, so a
+    // renderer-side count here would be a second, drifting model of the same
+    // fact (PL-01 / PL-02).
+    expect(app).not.toContain('syncConflictCount');
+    expect(app).not.toContain('syncConflictCompany');
   });
 });
