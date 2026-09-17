@@ -2191,9 +2191,12 @@
     border-radius: 4px;
   }
 
+  /* Sits beside the author like the thread pane ("Jacob Posel 3:48 PM"), not
+     flush right: the hover toolbar is pinned to the row's top-right corner,
+     and a right-aligned stamp lived exactly under it. */
   .dm-msg-header-time {
     flex: 0 0 auto;
-    margin-left: auto;
+    margin-left: 2px;
     color: var(--t3);
     font-family: var(--font-mono);
     font-size: 10px;
