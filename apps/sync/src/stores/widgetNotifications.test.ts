@@ -1158,7 +1158,6 @@ describe('widgetEmptyHoverWindowSize', () => {
 });
 
 describe('historyFeedItemToStackItem', () => {
-  const lastRead = 1_000;
 
   it('maps dm → message with openable body + data', () => {
     const dm = {
@@ -1178,7 +1177,7 @@ describe('historyFeedItemToStackItem', () => {
         ts: 5_000,
         dm,
       },
-      lastRead,
+      new Set(['dm:e1']),
     );
     expect(row).toMatchObject({
       id: 'dm:e1',
@@ -1211,7 +1210,7 @@ describe('historyFeedItemToStackItem', () => {
         ts: 4_000,
         share,
       },
-      lastRead,
+      new Set(['share:s1']),
     );
     expect(row).toMatchObject({
       type: 'share',
@@ -1234,7 +1233,7 @@ describe('historyFeedItemToStackItem', () => {
         ts: 500,
         file: { company: 'brand-honey', path: 'notes/sync.md' },
       },
-      lastRead,
+      new Set<string>(),
     );
     expect(row).toMatchObject({
       type: 'sync',
@@ -1261,7 +1260,7 @@ describe('historyFeedItemToStackItem', () => {
         ts: 6_000,
         update,
       },
-      lastRead,
+      new Set<string>(),
     );
     expect(row).toMatchObject({
       id: 'update:0.10.36-beta.1',
@@ -1355,7 +1354,7 @@ describe('mergeRecentWithHistory', () => {
           ts: 2_000,
           dm: { eventId: 'e1', body: 'hello', fromPersonUid: 'prs' },
         },
-        0,
+        new Set(['dm:e1']),
       ),
       historyFeedItemToStackItem(
         {
@@ -1366,7 +1365,7 @@ describe('mergeRecentWithHistory', () => {
           ts: 3_000,
           share: { paths: ['q2.xlsx'] },
         },
-        0,
+        new Set(['share:s1']),
       ),
       historyFeedItemToStackItem(
         {
@@ -1381,7 +1380,7 @@ describe('mergeRecentWithHistory', () => {
             date: '2026-07-27T15:00:00Z',
           },
         },
-        0,
+        new Set<string>(),
       ),
     ];
 
@@ -1457,7 +1456,7 @@ describe('mergeRecentWithHistory', () => {
           ts: 9_100,
           update: { version },
         },
-        0,
+        new Set<string>(),
       ),
     ];
 
@@ -1487,7 +1486,7 @@ describe('mergeRecentWithHistory', () => {
             ts: 9_200,
             update: { version: nextVersion },
           },
-          0,
+          new Set<string>(),
         ),
       ],
       { updatesAuthoritative: true },
@@ -1512,7 +1511,7 @@ describe('mergeRecentWithHistory', () => {
           ts: 1_000 + i,
           dm: { body: `${i}` },
         },
-        0,
+        new Set([`h${i}`]),
       ),
     );
     const merged = mergeRecentWithHistory([], history);
@@ -1531,7 +1530,7 @@ describe('mergeRecentWithHistory', () => {
           ts: 10_000 - i,
           share: { paths: [`f${i}.xlsx`] },
         },
-        0,
+        new Set([`h${i}`]),
       ),
     );
     const state = {
@@ -1734,5 +1733,28 @@ describe('meeting needs-action titles, focus, and dedupe', () => {
     expect(state.visible[0]?.text).toBe('Standup · later');
     expect(state.recent).toHaveLength(1);
     expect(meetingIdentityKey(state.visible[0]!)).toBe('meeting:bot_dup');
+  });
+});
+
+describe('historyFeedItemToStackItem — server read state', () => {
+  const dm = (id: string, ts: number) =>
+    ({ id, kind: 'dm', actor: 'A', summary: 'hi', ts, dm: { eventId: id.slice(3), body: 'hi' } }) as const;
+
+  it('marks a row unread when the server lists its id, however old it is', () => {
+    expect(historyFeedItemToStackItem(dm('dm:old', 1), new Set(['dm:old'])).unread).toBe(true);
+  });
+
+  it('marks a row read when the server omits its id, even if it is the newest', () => {
+    expect(historyFeedItemToStackItem(dm('dm:new', Number.MAX_SAFE_INTEGER), new Set(['dm:other'])).unread).toBe(
+      false,
+    );
+  });
+
+  it('keeps a pending update unread without a server row', () => {
+    const row = historyFeedItemToStackItem(
+      { id: 'update:1.0.0', kind: 'update', actor: 'HQ', summary: 'Version 1.0.0', ts: 1, update: { version: '1.0.0' } },
+      new Set<string>(),
+    );
+    expect(row.unread).toBe(true);
   });
 });

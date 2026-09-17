@@ -17,6 +17,7 @@ The release moves it under the version it ships in.
 - HQ no longer quietly stops part of what it is doing when the terminal or tool that started it goes away. If you launched HQ from a terminal or a script that was capturing its output and then closed that program, the next background task that tried to print a status line could crash on its own, so whatever you had asked for never finished. Printing a status line can no longer do that. The log at `~/.hq/logs/hq-sync.log` still records these details.
 
 ## [0.10.280] — 2026-09-17
+- The little widget's unread dots now come from the same place as the main notification list: a message shows as unread until you've actually read it, on any of your machines. Before this, the widget kept its own private "last looked" marker, so it could show old messages as new (or new ones as already read) with no way to fix it.
 
 - You can now reach every notification, not just the most recent 50. A "Load older notifications" button appears at the end of the list whenever there are more, and the ones already on screen stay put when you load more. Before this, if you had a few hundred notifications, most of them were simply unreachable in the app.
 - While HQ is syncing, a small counter next to the bell shows how far along it is — "3 of 28" — so you can see a sync happening without opening anything. It disappears when the sync finishes. If sync needs your attention, the HQ Core button still shows that, as before.

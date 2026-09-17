@@ -134,6 +134,21 @@ function defaultInvoke(command: string, args?: Record<string, unknown>): unknown
     throw new Error(`${command} unavailable`);
   }
   if (command === 'fetch_notification_history') return history;
+  // Read state is served from the NOTIF store, joined to history rows on the
+  // source event id. Default: every history row is unread.
+  if (command === 'fetch_notifications') {
+    return {
+      notifications: [
+        ...history.dms.map((dm) => ({ type: 'dm', status: 'unread', sourceEventId: dm.eventId })),
+        ...history.shares.map((share) => ({
+          type: 'file_share',
+          status: 'unread',
+          sourceEventId: share.eventId,
+        })),
+      ],
+      nextCursor: null,
+    };
+  }
   if (command === 'get_activity_log') return [];
   if (command === 'get_pending_update') return pendingUpdate;
   if (command === 'list_channels') return { channels: [] };
