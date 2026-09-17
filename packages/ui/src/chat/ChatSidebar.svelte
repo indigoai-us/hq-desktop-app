@@ -3757,10 +3757,13 @@
     margin-left: auto;
     padding: 0 5px;
     border-radius: 999px;
-    background: var(--ice-ink);
-    color: var(--badge-fg);
-    font-size: 10px;
+    /* A count, not an alert: muted text on the row's own background. The
+       filled pill read louder than the unread title it sits next to. */
+    background: transparent;
+    color: var(--t3);
+    font-size: 11px;
     font-weight: 500;
+    font-variant-numeric: tabular-nums;
     line-height: 1;
   }
 
