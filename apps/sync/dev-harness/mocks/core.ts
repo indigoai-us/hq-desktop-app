@@ -25,8 +25,6 @@ const settings = {
   },
   defaultRecordingCompanyUid: 'cmp_indigo' as string | null,
   telemetryEnabled: true,
-  widgetEnabled: true,
-  widgetDisplay: null as string | null,
 };
 
 function harnessPersona(): ShellPersona | null {
@@ -1055,10 +1053,7 @@ This final paragraph verifies spacing after a thematic break.
     if (scenario === 'settings-load-error') {
       throw new Error('Preview: menubar.json could not be read');
     }
-    return {
-      ...settings,
-      widgetDisplay: scenario === 'widget-disconnected' ? 'Studio Display' : settings.widgetDisplay,
-    };
+    return { ...settings };
   },
   save_settings: (args) => {
     const prefs = (args?.prefs ?? {}) as Partial<typeof settings>;
@@ -1317,17 +1312,6 @@ This final paragraph verifies spacing after a thematic break.
   get_hq_version: () => harnessCoreVersion,
   install_hq_core_update: () => runHarnessCoreInstall(),
   run_replace_from_staging: () => runHarnessCoreInstall(),
-  list_displays: () =>
-    harnessScenario() === 'widget-disconnected'
-      ? [
-          { name: 'Built-in Retina Display', primary: true },
-          { name: 'Projector', primary: false },
-        ]
-      : [
-          { name: 'Built-in Retina Display', primary: true },
-          { name: 'Studio Display', primary: false },
-        ],
-  apply_widget_settings: () => null,
   start_daemon: () => null,
   stop_daemon: () => null,
   daemon_status: () => ({ running: true }),

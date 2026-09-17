@@ -42,7 +42,6 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   const channelConversation = readRepoFile(
     '../../packages/ui/src/chat/messaging/ChannelConversation.svelte',
   );
-  const widget = readRepoFile('src/components/Widget.svelte');
   const main = readRepoFile('src/main.ts');
   const harness = readRepoFile('dev-harness/Harness.svelte');
   const mocks = readRepoFile('dev-harness/mocks/core.ts');
@@ -174,7 +173,6 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
       ['meeting-permissions', 'MeetingPermissionsWindow', 'permissions'],
       ['dm-detail', 'DmDetail', 'dm-detail'],
       ['dm-banner', 'BannerNotification', 'banner'],
-      ['widget', 'Widget', 'widget'],
     ] as const;
 
     for (const [windowLabel, component, view] of standaloneMounts) {
@@ -299,14 +297,5 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(groupStart, '.dm-msg-group-start selector should exist').not.toBe('');
     expect(groupStart).toContain('margin-top: var(--msg-group-gap, 12px);');
     expect(groupStart).not.toMatch(/margin-top:\s*10px/);
-  });
-
-  it('keeps the idle widget wordmark legible in forced light and dark visual previews', () => {
-    expect(rule(widget, ":global(html[data-force-theme='light']) .wm")).toContain(
-      '--wm-fg: #1d1d1d',
-    );
-    expect(rule(widget, ":global(html[data-force-theme='dark']) .wm")).toContain(
-      '--wm-fg: #fff',
-    );
   });
 });

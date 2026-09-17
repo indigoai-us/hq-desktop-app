@@ -357,7 +357,6 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
   const row = read('src/components/NotificationRow.svelte');
   const feed = read('src/components/NotificationFeed.svelte');
   const quickPane = read('src/components/QuickWindowSidePane.svelte');
-  const widget = read('src/components/Widget.svelte');
   const harness = read('dev-harness/mocks/core.ts');
 
   it('caps initial chronology rendering without changing total or unread semantics', () => {

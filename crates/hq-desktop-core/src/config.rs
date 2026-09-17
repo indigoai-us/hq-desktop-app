@@ -255,28 +255,6 @@ pub struct MenubarPrefs {
     /// keeps the standard `~/.claude/projects` behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_projects_dir: Option<String>,
-    /// Desktop widget on/off (US-004); defaults ON when absent so the widget
-    /// ships default-enabled after update; widget.rs also reads this key
-    /// untyped on every notification dispatch so toggling takes effect
-    /// without restart.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub widget_enabled: Option<bool>,
-    /// Localized display name (NSScreen.localizedName) the widget anchors to;
-    /// None = primary display.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub widget_display: Option<String>,
-    /// Widget stack corner: `bottom-right` (default), `bottom-left`,
-    /// `top-right`, `top-left`, or `follow-tray`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub widget_placement: Option<String>,
-    /// Seconds the live stack stays up while HQ is not focused. `None` → 8
-    /// (the row auto-collapse). `Some(0)` → never auto-hide.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub widget_auto_hide_seconds: Option<u32>,
-    /// When true (default), meeting needs-action rows appear in the widget
-    /// stack. When false they still land in the desktop notifications list.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub widget_show_needs_action: Option<bool>,
     /// macOS Dock icon on/off. When true (**the default**), HQ runs under
     /// `NSApplicationActivationPolicyRegular` — Dock icon, Cmd-Tab entry, and
     /// the standard app menu bar. When false, HQ keeps the classic
@@ -288,8 +266,7 @@ pub struct MenubarPrefs {
     /// Dock icon on upgrade and an explicit `false` is the only way back to
     /// the accessory posture. Applied at launch from `main.rs`
     /// `.setup()` and re-applied without a restart by `apply_dock_icon`, which
-    /// the Settings toggle calls after `save_settings` (same save-then-apply
-    /// contract as `widget_enabled` → `apply_widget_settings`).
+    /// the Settings toggle calls after `save_settings`.
     ///
     /// Inert on Windows/Linux — neither platform has an activation policy, and
     /// the app already owns a taskbar presence there.

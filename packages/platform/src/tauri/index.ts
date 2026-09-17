@@ -132,9 +132,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   }
 
   private async persistThenApplyPreference(
-    key: "dockIcon" | "widgetEnabled",
+    key: "dockIcon",
     value: boolean,
-    command: "apply_dock_icon" | "apply_widget_settings",
+    command: "apply_dock_icon",
   ): AdapterPromise<void> {
     const saved = await this.queueSettingsPatch({ [key]: value });
     if (!saved.ok) return saved;
@@ -591,8 +591,6 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     setDockVisible: (visible) =>
       this.persistThenApplyPreference("dockIcon", visible, "apply_dock_icon"),
     setAutostart: (enabled) => this.call("set_autostart_enabled", { enabled }),
-    setDesktopWidget: (enabled) =>
-      this.persistThenApplyPreference("widgetEnabled", enabled, "apply_widget_settings"),
     consumePendingRoute: () => this.call("consume_pending_route"),
     takePendingMessagesTarget: () => this.call("take_pending_messages_target"),
     setActiveCompany: (slug) => this.call("set_active_company", { slug }),

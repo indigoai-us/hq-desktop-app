@@ -8,12 +8,6 @@ use std::path::Path;
 /// Default platform allow-list (all five) when the field is absent from disk.
 const DEFAULT_PLATFORMS: &[&str] = &["zoom", "meet", "teams", "slack", "webex"];
 
-/// The floating widget is a macOS-oriented companion surface. Windows uses
-/// the notification-area tray popup by default; users can still opt in.
-const fn default_widget_enabled() -> bool {
-    !cfg!(target_os = "windows")
-}
-
 /// Read settings from ~/.hq/menubar.json.
 /// Returns current prefs with defaults applied for missing fields.
 ///
@@ -79,13 +73,6 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             // rather than defaulting on.
             telemetry_enabled: Some(true),
             claude_projects_dir: None,
-            // Windows defaults to the tray popup; macOS keeps the widget.
-            widget_enabled: Some(default_widget_enabled()),
-            // None = primary display.
-            widget_display: None,
-            widget_placement: Some("bottom-right".to_string()),
-            widget_auto_hide_seconds: Some(8),
-            widget_show_needs_action: Some(true),
             // Dock icon defaults ON — a fresh install shows up in the Dock
             // without the user finding the toggle first.
             dock_icon: Some(true),
@@ -192,19 +179,6 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // Preserve a previously saved exact activity folder as a hidden fallback.
         // No default is persisted because active profiles are discovered automatically.
         claude_projects_dir: prefs.claude_projects_dir,
-        // Platform default when absent; explicit user choices are preserved.
-        // widget.rs also reads widgetEnabled untyped on every notification
-        // dispatch so toggling takes effect without restart.
-        widget_enabled: Some(prefs.widget_enabled.unwrap_or_else(default_widget_enabled)),
-        // Pass-through — None = primary display (NSScreen.localizedName match).
-        widget_display: prefs.widget_display,
-        widget_placement: Some(
-            prefs
-                .widget_placement
-                .unwrap_or_else(|| "bottom-right".to_string()),
-        ),
-        widget_auto_hide_seconds: Some(prefs.widget_auto_hide_seconds.unwrap_or(8)),
-        widget_show_needs_action: Some(prefs.widget_show_needs_action.unwrap_or(true)),
         // Dock icon defaults ON. Absent in pre-dock-icon menubar.json files →
         // true, so existing installs gain the Dock icon on upgrade. Mirrors
         // `dock::effective_dock_icon`, which is what actually drives the

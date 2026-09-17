@@ -379,8 +379,8 @@ describe("PlatformAdapter contract", () => {
     expect(persisted).toMatchObject({ notifications: false, autoUpdate: false });
   });
 
-  it("uses the Sync host command names and persists dock/widget preferences before applying them", async () => {
-    let prefs: Record<string, unknown> = { dockIcon: true, widgetEnabled: true };
+  it("uses the Sync host command names and persists the dock preference before applying it", async () => {
+    let prefs: Record<string, unknown> = { dockIcon: true };
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const adapter = new TauriPlatformAdapter({
       invoke: async (command, args) => {
@@ -392,7 +392,6 @@ describe("PlatformAdapter contract", () => {
         }
         if (
           command === "apply_dock_icon" ||
-          command === "apply_widget_settings" ||
           command === "set_autostart_enabled" ||
           command === "notification_request_permission" ||
           command === "set_hq_cli_update_dismissed"
@@ -405,16 +404,14 @@ describe("PlatformAdapter contract", () => {
     });
 
     expect((await adapter.appShell.setDockVisible(false)).ok).toBe(true);
-    expect((await adapter.appShell.setDesktopWidget(false)).ok).toBe(true);
     expect((await adapter.appShell.setAutostart(false)).ok).toBe(true);
     expect(await adapter.appShell.requestNotificationPermission()).toMatchObject({
       ok: true,
       value: "denied",
     });
     expect((await adapter.updates.dismissCliUpdate()).ok).toBe(true);
-    expect(prefs).toMatchObject({ dockIcon: false, widgetEnabled: false });
+    expect(prefs).toMatchObject({ dockIcon: false });
     expect(calls).toContainEqual({ command: "apply_dock_icon", args: undefined });
-    expect(calls).toContainEqual({ command: "apply_widget_settings", args: undefined });
     expect(calls).toContainEqual({ command: "set_autostart_enabled", args: { enabled: false } });
     expect(calls).toContainEqual({ command: "notification_request_permission", args: undefined });
     expect(calls).toContainEqual({

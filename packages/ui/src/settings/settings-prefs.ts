@@ -2,7 +2,7 @@
  * Local presentation preferences for the embedded V2 shell.
  *
  * These values affect only visual treatment in this WebView (opacity and
- * density), or briefly bridge host-backed Dock/widget state while it hydrates.
+ * density), or briefly bridge host-backed Dock state while it hydrates.
  * All host-affecting settings live in native menubar.json via SettingsApi.
  */
 
@@ -15,7 +15,6 @@ export type SettingsUiSize = "compact" | "default" | "large";
 
 export interface ShellSettingsPrefs {
   showInDock: boolean;
-  desktopWidget: boolean;
   windowOpacity: number;
   uiSize: SettingsUiSize;
   /** Company names on channels/agents and emails on people, in the conversation rail. */
@@ -26,7 +25,6 @@ export const SETTINGS_PREFS_KEY = "hq-work-settings-prefs";
 
 export const DEFAULT_SETTINGS_PREFS: ShellSettingsPrefs = {
   showInDock: true,
-  desktopWidget: true,
   windowOpacity: 80,
   uiSize: "default",
   showSidebarScopeLabels: true,
@@ -61,10 +59,6 @@ export function parseSettingsPrefs(raw: unknown): ShellSettingsPrefs {
       typeof rec.showInDock === "boolean"
         ? rec.showInDock
         : DEFAULT_SETTINGS_PREFS.showInDock,
-    desktopWidget:
-      typeof rec.desktopWidget === "boolean"
-        ? rec.desktopWidget
-        : DEFAULT_SETTINGS_PREFS.desktopWidget,
     windowOpacity: parseOpacity(rec.windowOpacity),
     uiSize: parseUiSize(rec.uiSize),
     showSidebarScopeLabels:

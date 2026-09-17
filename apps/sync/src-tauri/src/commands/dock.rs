@@ -20,15 +20,6 @@
 //! `set_app_icon_from_bytes` with the bundled HQ mark, so the Dock renders the
 //! HQ glyph rather than a generic bundle icon.
 //!
-//! ## Why the widget is unaffected
-//!
-//! `commands/widget.rs` documents its non-activating behaviour as
-//! `.focusable(false)` *paired with* `ActivationPolicy::Accessory`. The load
-//! bearing half is `.focusable(false)`: it makes the NSWindow refuse key
-//! status, so hover/clicks on the floating wordmark cannot steal focus no
-//! matter which activation policy the app runs under. Regular policy therefore
-//! does not regress the widget.
-//!
 //! ## Two apply paths, and why they are not interchangeable
 //!
 //! [`apply_at_launch`] (`&mut App`) and [`apply_at_runtime`] (`AppHandle`) look
@@ -54,7 +45,7 @@ const LOG_TAG: &str = "dock";
 /// Default-ON: `None` prefs (no menubar.json at all) and a missing `dockIcon`
 /// key both mean "show the Dock icon", so a fresh install and every existing
 /// install pick it up without touching Settings. Only an explicit `false` opts
-/// out. Same default-on convention as `start_at_login` / `widget_enabled`.
+/// out. Same default-on convention as `start_at_login`.
 ///
 /// Kept pure (takes parsed prefs) so the default contract is unit testable on
 /// any platform, without a Tauri runtime or a real `~/.hq/menubar.json`.
@@ -154,8 +145,7 @@ pub fn apply_at_launch(app: &mut tauri::App, show_dock_icon: bool) {
 /// Safe to use the `AppHandle` setter here precisely because
 /// `applicationDidFinishLaunching` has already been and gone, so nothing will
 /// re-apply the stored aux-state over the top. The message is handled on the
-/// event-loop (main) thread, so no manual `run_on_main_thread` hop is needed —
-/// unlike the NSWindow work in `apply_widget_settings`.
+/// event-loop (main) thread, so no manual `run_on_main_thread` hop is needed.
 #[cfg(target_os = "macos")]
 pub fn apply_at_runtime(app: &tauri::AppHandle, show_dock_icon: bool) -> Result<(), String> {
     app.set_activation_policy(policy_for(show_dock_icon))
@@ -315,11 +305,6 @@ mod tests {
             default_recording_company_uid: None,
             telemetry_enabled: None,
             claude_projects_dir: None,
-            widget_enabled: None,
-            widget_display: None,
-            widget_placement: None,
-            widget_auto_hide_seconds: None,
-            widget_show_needs_action: None,
             dock_icon,
             hq_work_handoff: None,
             in_app_sessions: None,

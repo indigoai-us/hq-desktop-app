@@ -1039,7 +1039,6 @@ export class WebPlatformAdapter implements PlatformAdapter {
     quitApp: async () => DESKTOP_ONLY,
     setDockVisible: async () => ok(undefined),
     setAutostart: async () => DESKTOP_ONLY,
-    setDesktopWidget: async () => DESKTOP_ONLY,
     consumePendingRoute: async () => ok(null),
     takePendingMessagesTarget: async () => ok(null),
     setActiveCompany: async (slug) => {
