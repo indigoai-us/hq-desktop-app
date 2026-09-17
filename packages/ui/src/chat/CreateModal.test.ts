@@ -109,7 +109,11 @@ const $ = <T extends Element>(selector: string): T | null =>
   document.querySelector<T>(selector);
 
 async function settleQuery(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  // The query input debounces at 110 ms (CreateModal.svelte). This used to
+  // sleep a real 150 ms, once per call, ~47 times across the file (~7 s of the
+  // file's ~9 s). Fake timers jump the same 150 ms instantly and assert the
+  // same thing: the debounce has fired and its result has rendered.
+  await vi.advanceTimersByTimeAsync(150);
   await tick();
 }
 
@@ -134,6 +138,7 @@ async function gotoCreate(name: string): Promise<void> {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   window.localStorage?.clear?.();
   host = document.createElement("div");
   host.className = "desktop-shell chat-shell";
@@ -147,6 +152,7 @@ afterEach(async () => {
   document
     .querySelectorAll('[data-testid="chat-create-modal"]')
     .forEach((node) => node.remove());
+  vi.useRealTimers();
 });
 
 describe("CreateModal find step", () => {

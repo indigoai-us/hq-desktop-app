@@ -10032,9 +10032,64 @@ mod cancellation_reporting_tests {
         })
     }
 
+    /// Collects envelopes and exposes a NON-DRAINING count, so a waiter can
+    /// observe exactly the list the assertion later reads.
+    ///
+    /// `sentry::test::TestTransport::fetch_and_clear_events` drains, so a poll
+    /// loop built on it returns the first batch that happens to have landed and
+    /// throws away anything still in flight — the snapshot-one-event-short
+    /// failure mode fixed for the Core update reports in PR #881. The queued
+    /// cleanup-failure reports here have the same shape: they are dispatched
+    /// onto a background thread by `queue_setup_cancellation_cleanup_failure`,
+    /// so the test thread cannot assume they have all arrived.
     #[cfg(unix)]
-    fn capture_queued_events(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
-        let transport = sentry::test::TestTransport::new();
+    #[derive(Default)]
+    struct CountingTestTransport {
+        collected: Mutex<Vec<sentry::Envelope>>,
+    }
+
+    #[cfg(unix)]
+    impl CountingTestTransport {
+        /// Number of collected envelopes carrying an event. Never drains.
+        fn event_count(&self) -> usize {
+            self.collected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter_map(|envelope| envelope.event())
+                .count()
+        }
+
+        fn take_events(&self) -> Vec<sentry::protocol::Event<'static>> {
+            std::mem::take(&mut *self.collected.lock().unwrap_or_else(|e| e.into_inner()))
+                .into_iter()
+                .filter_map(|envelope| envelope.event().cloned())
+                .collect()
+        }
+    }
+
+    #[cfg(unix)]
+    impl sentry::Transport for CountingTestTransport {
+        fn send_envelope(&self, envelope: sentry::Envelope) {
+            self.collected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(envelope);
+        }
+    }
+
+    /// Run `f` and wait until `expected` dispatched reports have reached the
+    /// TRANSPORT — not merely `before_send` — then return them.
+    ///
+    /// The deadline is 5s with a 5ms sleep, matching PR #881: the old 1s spin
+    /// both burned a core while waiting and expired silently on a loaded CI
+    /// runner, surfacing as a confusing length mismatch one assertion later.
+    #[cfg(unix)]
+    fn capture_queued_events(
+        expected: usize,
+        f: impl FnOnce(),
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        let transport = Arc::new(CountingTestTransport::default());
         let options = sentry::ClientOptions {
             dsn: Some(
                 "https://public@sentry.invalid/1"
@@ -10051,14 +10106,16 @@ mod cancellation_reporting_tests {
 
         sentry::Hub::run(hub, || {
             f();
-            let deadline = Instant::now() + Duration::from_secs(1);
-            loop {
-                let events = transport.fetch_and_clear_events();
-                if !events.is_empty() || Instant::now() >= deadline {
-                    return events;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while transport.event_count() < expected && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
             }
+            assert_eq!(
+                transport.event_count(),
+                expected,
+                "every dispatched report must reach the Sentry transport"
+            );
+            transport.take_events()
         })
     }
 
@@ -10094,6 +10151,51 @@ mod cancellation_reporting_tests {
         );
     }
 
+    /// Regression for the transport race fixed in PR #881, in its second home.
+    ///
+    /// `queue_setup_cancellation_cleanup_failure` dispatches each report onto a
+    /// background thread, so two queued reports land at the transport at two
+    /// unrelated moments. The old waiter polled
+    /// `TestTransport::fetch_and_clear_events` and returned the first non-empty
+    /// batch, which DRAINS: whichever report had not landed yet was discarded
+    /// and the caller got a snapshot one event short. Against the old helper
+    /// this test fails on the count; the counting transport waits for both.
+    #[cfg(unix)]
+    #[test]
+    fn a_queued_capture_waits_for_every_dispatched_report() {
+        let scope = scope();
+        let diagnostic = diagnostic("cleanup failed");
+
+        let events = capture_queued_events(2, || {
+            queue_setup_cancellation_cleanup_failure(
+                scope.clone(),
+                "hq-cli",
+                CancellationCleanupFailure::from_unix_signal(
+                    Signal::SIGTERM,
+                    nix::errno::Errno::EPERM,
+                ),
+                diagnostic.clone(),
+            );
+            queue_setup_cancellation_cleanup_failure(
+                scope.clone(),
+                "yq",
+                CancellationCleanupFailure::from_unix_signal(
+                    Signal::SIGKILL,
+                    nix::errno::Errno::ESRCH,
+                ),
+                diagnostic.clone(),
+            );
+        });
+
+        assert_eq!(events.len(), 2);
+        let mut dependencies = events
+            .iter()
+            .map(|event| event.tags["setup_dependency"].clone())
+            .collect::<Vec<_>>();
+        dependencies.sort();
+        assert_eq!(dependencies, vec!["hq-cli".to_string(), "yq".to_string()]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn cleanup_failure_is_emitted_before_a_hung_child_exits() {
@@ -10109,7 +10211,7 @@ mod cancellation_reporting_tests {
             .spawn()
             .expect("hung child starts");
 
-        let events = capture_queued_events(|| {
+        let events = capture_queued_events(1, || {
             runtime.block_on(ACTIVE_ONBOARDING_FAILURE_SCOPE.scope(
                 scope(),
                 ACTIVE_SETUP_DEPENDENCY.scope(
