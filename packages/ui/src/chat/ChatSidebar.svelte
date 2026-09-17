@@ -3546,7 +3546,7 @@
   .chat-row {
     contain: content;
     content-visibility: auto;
-    contain-intrinsic-size: auto 32px;
+    contain-intrinsic-size: auto 34px;
     position: relative;
     display: flex;
     align-items: center;
@@ -3556,15 +3556,15 @@
     width: auto;
     min-width: 0;
     min-height: 0;
-    padding: 6px 8px;
+    padding: 7px 8px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--t2);
     font: inherit;
     /* One step under the timeline body so the rail reads as navigation, not
-       content. Line height is fixed in px so the row keeps the height it had
-       at 14px/1.2 (≈17px) and nothing below it shifts. */
+       content. Line height is fixed in px so row height is set by padding
+       alone (7px + 17px + 7px = 31px). */
     font-size: 13px;
     font-weight: 400;
     line-height: 17px;
