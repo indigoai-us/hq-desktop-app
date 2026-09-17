@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -3617,6 +3617,48 @@ pub fn reset_non_convergent_marker_unpersisted_capture_for_tests() {
     MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
 }
 
+// Same process-lifetime bound as the non-convergent marker above: an unwritable
+// menubar.json recurs at the background check cadence, so cap the compensating
+// diagnostic at once per app process.
+static SERVING_LAG_MARKER_UNPERSISTED_CAPTURED: AtomicBool = AtomicBool::new(false);
+
+/// Report that a deferred npmjs tarball serving-lag marker (HQ-DESKTOP-6D) could
+/// not be written to menubar.json. Without the marker every later check reads no
+/// prior deferral and treats the SAME still-failing tarball 404 as first-seen
+/// again, so a permanent (registry-side) 404 would be deferred forever and the
+/// anti-masking escalation would never fire. This makes that degraded state
+/// observable instead of silent. Closed payload only — never a filesystem path or
+/// raw I/O error — at Warning, at most once per app process.
+pub fn report_registry_serving_lag_marker_unpersisted() {
+    if SERVING_LAG_MARKER_UNPERSISTED_CAPTURED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "serving-lag-marker-unpersisted");
+            scope.set_tag("marker_store", "menubar-json");
+            scope.set_tag("marker_error_class", "persistence");
+            scope.set_fingerprint(Some(&["hq-cli-update", "serving-lag-marker-unpersisted"]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] could not persist npmjs serving-lag deferral marker",
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
+/// Test support for the process-lifetime capture bound above.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn reset_serving_lag_marker_unpersisted_capture_for_tests() {
+    SERVING_LAG_MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
+}
+
 /// Reduce a resolved executable to a closed, path-free source category for
 /// telemetry. On Unix, an absolute path outside the deterministic directories
 /// can only have come from the login-shell fallback; Windows `where.exe`
@@ -4034,7 +4076,7 @@ fn npm_error_code(detail: &str) -> String {
 /// E404. The env-aware [`classify_install_failure_with_environment`] separately
 /// maps a pinned npmjs tarball 404 to `ExpectedTransientRegistry` (HQ-DESKTOP-6D,
 /// the tarball-layer twin of the ETARGET lag) via
-/// [`is_npmjs_pinned_tarball_not_yet_served`], WITHOUT widening this list — so
+/// [`is_npmjs_tarball_serving_lag`], WITHOUT widening this list — so
 /// every env-blind caller and `InstallEnvironment::default()` keep today's exact
 /// behaviour.
 fn is_expected_transient_registry_failure(detail: &str) -> bool {
@@ -4224,11 +4266,14 @@ fn foreign_registry_404_signature(detail: &str) -> String {
 /// Derived from the shared [`e404_discriminator`] so the group and the episode
 /// key agree.
 ///
-/// An npmjs TARBALL 404 reaches this signature (`E404:npmjs:tarball`) ONLY when it
-/// is NOT the pinned-version serving lag — an unpinned/default env, or a pin for a
-/// different version — because [`classify_install_failure_with_environment`]
-/// reclassifies the pinned case to `ExpectedTransientRegistry` upstream
-/// (HQ-DESKTOP-6D), so it never stays `Unexpected` and never reaches here.
+/// An npmjs TARBALL 404 reaches this signature (`E404:npmjs:tarball`) when it is
+/// NOT a first-seen pinned serving lag: an unpinned/default env, OR — via the
+/// anti-masking recurrence guard — a pinned serving lag that has NOT cleared after
+/// [`REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES`]. A first-seen pinned lag is
+/// reclassified to `ExpectedTransientRegistry` upstream by
+/// [`classify_install_failure_with_environment`] (HQ-DESKTOP-6D) and deferred, so
+/// it does not reach here; only a stuck/permanent 404 escalates back into this
+/// group, keyed and grouped identically to today.
 fn unexpected_e404_signature(detail: &str) -> String {
     let (origin, resource) = e404_discriminator(detail);
     format!("E404:{}:{}", origin.tag_value(), resource.tag_value())
@@ -4265,45 +4310,6 @@ fn npm_404_names_hq_cli_packument(detail: &str) -> bool {
     path.ends_with("/@indigoai-us%2fhq-cli") || path.ends_with("/@indigoai-us/hq-cli")
 }
 
-/// Whether npm's 404 GET line names the requested `@indigoai-us/hq-cli` TARBALL
-/// object for EXACTLY `version` — a path ending in
-/// `/@indigoai-us/hq-cli/-/hq-cli-<version>.tgz` on whatever host the 404 line
-/// named. The tarball-layer companion to [`npm_404_names_hq_cli_packument`]:
-/// registry.npmjs.org lists a version in the packument only once its publish PUT
-/// landed, so a 404 for that same version's own tarball object is a serving lag
-/// (HQ-DESKTOP-6D), not an absent version. `version` is the exact string the
-/// updater pinned into [`install_argv`] (`env.target_version`); an empty version,
-/// or an absent/unparseable 404 URL, returns false. Uses the same line-prefix and
-/// path-parsing discipline as [`npm_404_names_hq_cli_packument`] — lowercase the
-/// URL, strip scheme+authority, drop any query/fragment and trailing slash — and
-/// lowercases `version` so a case difference cannot hide a match. The parsed path
-/// is consumed only for this boolean and never reaches Sentry.
-fn npm_404_names_hq_cli_tarball_for(detail: &str, version: &str) -> bool {
-    let version = version.trim().to_ascii_lowercase();
-    if version.is_empty() {
-        return false;
-    }
-    let Some(url) = npm_404_get_url(detail) else {
-        return false;
-    };
-    let lower = url.to_ascii_lowercase();
-    let Some(after_scheme) = lower
-        .strip_prefix("https://")
-        .or_else(|| lower.strip_prefix("http://"))
-    else {
-        return false;
-    };
-    let Some(slash) = after_scheme.find('/') else {
-        return false;
-    };
-    let path = after_scheme[slash..]
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("")
-        .trim_end_matches('/');
-    path.ends_with(&format!("/@indigoai-us/hq-cli/-/hq-cli-{version}.tgz"))
-}
-
 /// Whether a failed npm install is the "this machine's npm resolves the
 /// `@indigoai-us` scope through a registry that does not carry hq-cli" condition:
 /// an E404 whose own 404 line names a non-npmjs host AND the requested
@@ -4314,7 +4320,7 @@ fn npm_404_names_hq_cli_tarball_for(detail: &str, version: &str) -> bool {
 ///
 /// Keyed on npm's OWN structured signals and disjoint from every other arm: it
 /// requires a FOREIGN origin, so it cannot overlap the env-aware npmjs-pinned
-/// tarball transient ([`is_npmjs_pinned_tarball_not_yet_served`], the only other
+/// tarball transient ([`is_npmjs_tarball_serving_lag`], the only other
 /// arm that matches `code == E404`, which requires the npmjs origin); the
 /// lifecycle exclusion keeps a third-party build failure whose stderr merely
 /// mentions 404 on its own per-package lifecycle attribution. The packument gate
@@ -4330,32 +4336,44 @@ fn is_foreign_registry_package_missing(detail: &str) -> bool {
         && !npm_lifecycle_failure(detail).failed
 }
 
-/// Whether a failed npm install is the "registry.npmjs.org lists the version the
+/// Whether a failed npm install is the "registry.npmjs.org lists a version the
 /// updater just resolved but is not yet serving its tarball object" condition
-/// (HQ-DESKTOP-6D): an E404 whose own 404 line names registry.npmjs.org AND the
-/// `@indigoai-us/hq-cli` TARBALL for the EXACT version the updater pinned
-/// (`env.target_version`), with no lifecycle failure. This is the tarball-layer
-/// twin of the ETARGET packument lag that [`is_expected_transient_registry_failure`]
-/// already absorbs: npm stores the tarball in the SAME publish PUT that updates
-/// the packument, so a listed-but-unserved tarball is a self-healing serving-lag
-/// transient by construction — the next scheduled check installs it, and no
-/// updater code change can install through a registry-served 404.
+/// (HQ-DESKTOP-6D): an E404 whose own 404 line names registry.npmjs.org for a
+/// `/-/…​.tgz` TARBALL object, during a PINNED install (the updater resolved
+/// `latest` and pinned it into [`install_argv`], so `env.requested_spec_kind` is
+/// `PinnedVersion` with `env.target_version` present), with no lifecycle failure.
 ///
-/// Deliberately confined to hq-cli's OWN tarball at the pinned version: an npmjs
-/// packument 404, a foreign-host 404, a tarball for any OTHER package or any
-/// version OTHER than the pin, a default (unpinned) environment, and any E404 with
-/// a lifecycle marker all fall outside this predicate and stay loud at Error. The
-/// pin requirement is what confines the downgrade to the version the updater
-/// itself resolved from `/latest`. Keyed on npm's OWN structured signals; the
-/// parsed URL is consumed only for the boolean and never reaches Sentry.
-fn is_npmjs_pinned_tarball_not_yet_served(detail: &str, env: &InstallEnvironment) -> bool {
+/// The 404'd tarball may be hq-cli's OWN tarball OR any package in its install
+/// closure — the own-tarball name gate the prior fix used is deliberately dropped.
+/// npm builds the ideal tree by resolving every caret/tilde/star range to the
+/// newest version each dependency's packument lists, then fetches tarballs, and
+/// registry.npmjs.org lists a freshly published version in the packument (and
+/// moves its dist-tag) seconds before it begins serving that version's tarball
+/// object. So a machine whose scheduled check lands in the minutes after ANY
+/// closure dependency publishes gets a tarball 404 for that dependency — the exact
+/// reopened HQ-DESKTOP-6D shape: 7/7 reopen events landed 50–343 s after a closure
+/// dependency published, while hq-cli's own resolved version had published 48–67
+/// min earlier, so an own-tarball-only gate could never have covered them. npm
+/// stores the tarball in the SAME publish PUT that updated the packument, so a
+/// listed-but-unserved tarball is a self-healing serving-lag transient by
+/// construction — the next scheduled check installs it, and no updater code change
+/// can download a tarball the registry is not yet serving.
+///
+/// Confined to a PINNED install so the downgrade only ever covers the version the
+/// updater itself resolved from `/latest`; an npmjs packument 404, a foreign-host
+/// 404, a default (unpinned) environment, and any E404 with a lifecycle marker all
+/// fall outside this predicate and stay loud at Error. Keyed on npm's OWN
+/// structured signals; the parsed URL is consumed only for the closed
+/// [`Npm404Resource`] and never reaches Sentry. The anti-masking recurrence flag
+/// [`InstallEnvironment::registry_serving_lag_recurred`] is deliberately NOT part
+/// of this predicate: it gates the DISPOSITION (defer once vs. page a stuck lag) in
+/// [`classify_install_failure_with_environment`], not whether the shape IS a lag.
+fn is_npmjs_tarball_serving_lag(detail: &str, env: &InstallEnvironment) -> bool {
     npm_error_code(detail) == "E404"
         && npm_registry_origin(detail) == NpmRegistryOrigin::Npmjs
         && npm_404_resource(detail) == Npm404Resource::Tarball
-        && env
-            .target_version
-            .as_deref()
-            .is_some_and(|version| npm_404_names_hq_cli_tarball_for(detail, version))
+        && env.requested_spec_kind == RequestedSpecKind::PinnedVersion
+        && env.target_version.is_some()
         && !has_npm_lifecycle_failure_marker(detail)
         && !npm_lifecycle_failure(detail).failed
 }
@@ -5101,9 +5119,16 @@ fn probed_node_major(env: &InstallEnvironment) -> Option<u32> {
 /// refinement of [`classify_install_failure_with_final_attempt`]: it delegates
 /// first and rewrites the result ONLY from a base of exactly `Unexpected`, in two
 /// disjoint cases —
-///   * [`is_npmjs_pinned_tarball_not_yet_served`] holds (HQ-DESKTOP-6D): an npmjs
-///     tarball 404 for the exact pinned version is the mid-publish serving-lag
-///     twin of ETARGET, so it becomes `ExpectedTransientRegistry`; OR
+///   * [`is_npmjs_tarball_serving_lag`] holds (HQ-DESKTOP-6D) AND the anti-masking
+///     recurrence flag [`InstallEnvironment::registry_serving_lag_recurred`] is
+///     unset: an npmjs tarball 404 during a pinned install (hq-cli itself or any
+///     dependency in its install closure) is the mid-publish serving-lag twin of
+///     ETARGET, so on FIRST sight it becomes `ExpectedTransientRegistry` (and is
+///     deferred, not captured). When the flag IS set — a deferred marker for this
+///     same pinned version is already at least
+///     [`REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES`] old, so the lag has not
+///     cleared — this arm is skipped and the failure keeps its `Unexpected`/Error
+///     path, escalating a stuck 404 back to the loud `E404:npmjs:tarball` group; OR
 ///   * the probed Node major parsed AND is strictly below [`MIN_NODE_MAJOR`] — a
 ///     runtime the CLI's own `engines.node` makes install impossible on — so it
 ///     becomes `UnsupportedNode`.
@@ -5113,7 +5138,7 @@ fn probed_node_major(env: &InstallEnvironment) -> Option<u32> {
 /// (which fires when npm dies BEFORE emitting a structured block) does not apply;
 /// once the serving lag clears, the next check reclassifies exactly as today.
 /// Every expected/lifecycle kind is returned untouched, and because the tarball
-/// arm requires a pinned `target_version` (absent by default) and the Node arm a
+/// arm requires a pinned install (unpinned by default) and the Node arm a
 /// sub-floor probe, `InstallEnvironment::default()` stays byte-identical to the
 /// env-blind classifier and reproduces today's behaviour for every existing caller.
 pub fn classify_install_failure_with_environment(
@@ -5129,16 +5154,25 @@ pub fn classify_install_failure_with_environment(
         prefix,
         final_attempt_forced,
     );
-    if base == InstallFailureKind::Unexpected && is_npmjs_pinned_tarball_not_yet_served(detail, env)
+    if base == InstallFailureKind::Unexpected
+        && is_npmjs_tarball_serving_lag(detail, env)
+        && !env.registry_serving_lag_recurred
     {
-        // HQ-DESKTOP-6D: registry.npmjs.org lists the version the updater just
-        // resolved but is not yet serving its tarball object — the tarball-layer
-        // twin of the ETARGET packument lag. It self-heals on the next scheduled
-        // check and no updater change can install through it, so reuse the existing
-        // transient-registry disposition (no Sentry capture, transient UI copy,
-        // scheduled retry). Refined BEFORE the unsupported-Node arm: npm's own
-        // structured 404 proves npm ran for this attempt, so the Node-floor
-        // inference does not apply.
+        // HQ-DESKTOP-6D: registry.npmjs.org lists a version the updater just
+        // resolved (hq-cli itself or any dependency in its install closure) but is
+        // not yet serving that version's tarball object — the tarball-layer twin of
+        // the ETARGET packument lag. On FIRST sight it self-heals on the next
+        // scheduled check and no updater change can install through it, so reuse the
+        // existing transient-registry disposition (no Sentry capture, transient UI
+        // copy, scheduled retry); the episode reporter records a deferred marker on
+        // this path. The anti-masking guard holds it loud instead: when a deferred
+        // marker for this same pinned version is already at least
+        // REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES old the lag has NOT cleared,
+        // so `registry_serving_lag_recurred` is set (by the app, from the persisted
+        // markers) and this arm is skipped — the stuck 404 keeps its Unexpected/
+        // Error path. Refined BEFORE the unsupported-Node arm: npm's own structured
+        // 404 proves npm ran for this attempt, so the Node-floor inference does not
+        // apply.
         return InstallFailureKind::ExpectedTransientRegistry;
     }
     if base == InstallFailureKind::Unexpected
@@ -5895,6 +5929,18 @@ pub struct InstallEnvironment {
     /// dist-tag. TAG ONLY, defaulting to [`RequestedSpecKind::Unknown`] (emitted as
     /// NO tag), so every existing caller's tag set is unchanged until it opts in.
     pub requested_spec_kind: RequestedSpecKind,
+    /// Anti-masking guard for the npmjs tarball serving lag (HQ-DESKTOP-6D). Set by
+    /// the app from the persisted episode markers when a deferred serving-lag marker
+    /// for this same pinned version is already at least
+    /// [`REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES`] old — i.e. the lag has NOT
+    /// cleared and the 404 is stuck rather than mid-publish. When set,
+    /// [`classify_install_failure_with_environment`] keeps the failure
+    /// `Unexpected`/Error (escalating it back to the existing `E404:npmjs:tarball`
+    /// group) and [`report_install_failure_with_environment`] adds the single closed
+    /// tag `npm_registry_lag_recurred=true` to that one event. NEVER a fingerprint,
+    /// signature, or episode-key component; defaults to `false`, so every existing
+    /// caller's grouping and tag set is byte-identical.
+    pub registry_serving_lag_recurred: bool,
 }
 
 impl InstallEnvironment {
@@ -6031,6 +6077,14 @@ pub fn report_install_failure_with_environment(
         final_attempt_forced,
         env,
     );
+    // HQ-DESKTOP-6D anti-masking: this is the ONLY event that gains a new tag. It is
+    // true exactly for an ESCALATED serving lag — the app set the recurrence flag
+    // (a deferred marker for this pinned version has not cleared across the gap) AND
+    // the failure still has the serving-lag shape, so the classifier kept it
+    // Unexpected/Error under the existing `E404:npmjs:tarball` group. Every other
+    // event's tag set stays byte-identical.
+    let registry_lag_recurred =
+        env.registry_serving_lag_recurred && is_npmjs_tarball_serving_lag(detail, env);
     let Some(message) = install_failure_report_with_environment(
         exit_code,
         detail,
@@ -6219,6 +6273,11 @@ pub fn report_install_failure_with_environment(
             }
             if let Some(spec_kind) = requested_spec_kind_tag {
                 scope.set_tag("npm_requested_spec_kind", spec_kind);
+            }
+            // HQ-DESKTOP-6D anti-masking: present ONLY on an escalated (recurred)
+            // serving-lag event, so every other event's tag set is byte-identical.
+            if registry_lag_recurred {
+                scope.set_tag("npm_registry_lag_recurred", "true");
             }
             scope.set_tag(
                 "npm_managed_toolchain_retry",
@@ -6535,6 +6594,134 @@ pub fn install_failure_episode_record(
     kept
 }
 
+/// The minimum age (in minutes) a deferred npmjs-tarball serving-lag marker must
+/// reach before a still-failing pinned install for the SAME version escalates from
+/// "defer silently" to "page once at Error" (HQ-DESKTOP-6D anti-masking). 30
+/// minutes is well beyond the longest lag the reopen events showed (343 s), so a
+/// genuine mid-publish serving lag has always cleared by then and only a stuck or
+/// permanent 404 survives to page.
+pub const REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES: u64 = 30;
+
+/// The npm package whose tarball npm's 404 line named, as a bounded identifier for
+/// the serving-lag marker (HQ-DESKTOP-6D). Parsed from the tarball URL's
+/// `/<pkg>/-/<file>.tgz` path — everything before `/-/`, with the percent-encoded
+/// scope separator normalized — and accepted only when it is a valid npm package
+/// name ([`is_safe_npm_package_name`]); anything else collapses to `unknown`. This
+/// gives the deferred marker and the recurrence probe a STABLE per-package identity,
+/// so a later first-seen lag for a DIFFERENT closure dependency under the same pin is
+/// not mistaken for the original one persisting. Consumed only for the LOCAL marker
+/// key; never reaches Sentry.
+fn npmjs_404_tarball_package(detail: &str) -> String {
+    let unknown = || "unknown".to_string();
+    let Some(url) = npm_404_get_url(detail) else {
+        return unknown();
+    };
+    let lower = url.to_ascii_lowercase();
+    let Some(after_scheme) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return unknown();
+    };
+    let Some(slash) = after_scheme.find('/') else {
+        return unknown();
+    };
+    let path = after_scheme[slash..].split(['?', '#']).next().unwrap_or("");
+    let Some((pkg_part, _)) = path.split_once("/-/") else {
+        return unknown();
+    };
+    let pkg = pkg_part.trim_matches('/').replace("%2f", "/");
+    if is_safe_npm_package_name(&pkg) {
+        pkg
+    } else {
+        unknown()
+    }
+}
+
+/// The closed key prefix shared by a deferred serving-lag marker and the recurrence
+/// probe, so the two can never drift. Includes the failed package identity (see
+/// [`npmjs_404_tarball_package`]) so distinct closure dependencies get distinct
+/// markers. Unlike the reportable-episode keys, a serving lag is registry-side and
+/// toolchain-independent, so the marker carries NO `|managed` suffix — a managed
+/// retry and a user-path check observe the SAME registry lag.
+fn registry_serving_lag_deferred_key_prefix(latest: &str, pkg: &str) -> String {
+    format!("{latest}|deferred|E404:npmjs:tarball:{pkg}|")
+}
+
+/// The persisted marker recording that a FIRST-seen npmjs tarball serving lag for
+/// `pkg` under `latest` was deferred (not captured) at `now_unix_minutes`. Its
+/// integer suffix is the first-seen timestamp [`registry_serving_lag_recurred`]
+/// measures the gap against. Closed by construction — literal components, a
+/// validated package name, and one bounded integer — so it is safe to persist and
+/// log, and it is bounded and pruned per `latest` by [`install_failure_episode_record`].
+pub fn registry_serving_lag_deferred_key(latest: &str, pkg: &str, now_unix_minutes: u64) -> String {
+    format!(
+        "{}{now_unix_minutes}",
+        registry_serving_lag_deferred_key_prefix(latest, pkg)
+    )
+}
+
+/// Whether a deferred serving-lag marker for `pkg` under `latest` in `reported_keys`
+/// is at least [`REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES`] old — i.e. that
+/// package's lag has NOT cleared across the gap and the next pinned failure for it
+/// must escalate to the loud `E404:npmjs:tarball` group instead of being masked.
+///
+/// Fail-quiet: a marker whose integer suffix is missing, unparseable, or in the
+/// FUTURE relative to `now_unix_minutes` (clock skew, or a marker written on a
+/// pre-epoch clock) is ignored, so a corrupt marker can only ever fail toward
+/// deferring again, never toward a spurious page.
+pub fn registry_serving_lag_recurred(
+    reported_keys: &[String],
+    latest: &str,
+    pkg: &str,
+    now_unix_minutes: u64,
+) -> bool {
+    let prefix = registry_serving_lag_deferred_key_prefix(latest, pkg);
+    reported_keys.iter().any(|key| {
+        let Some(suffix) = key.strip_prefix(&prefix) else {
+            return false;
+        };
+        let Ok(deferred_at) = suffix.parse::<u64>() else {
+            return false;
+        };
+        now_unix_minutes
+            .checked_sub(deferred_at)
+            .is_some_and(|age| age >= REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES)
+    })
+}
+
+/// [`registry_serving_lag_recurred`] for the package named by THIS failure's
+/// `detail` — the form the app failure sites call, so package extraction stays in
+/// core. A non-tarball or unparseable `detail` yields the `unknown` package, whose
+/// marker only ever exists for a prior genuinely-unparseable lag, so the guard
+/// degrades to per-version at worst and never escalates across unrelated packages.
+pub fn registry_serving_lag_recurred_for_detail(
+    reported_keys: &[String],
+    latest: &str,
+    detail: &str,
+    now_unix_minutes: u64,
+) -> bool {
+    registry_serving_lag_recurred(
+        reported_keys,
+        latest,
+        &npmjs_404_tarball_package(detail),
+        now_unix_minutes,
+    )
+}
+
+/// The current wall-clock time in whole minutes since the Unix epoch, or 0 if the
+/// clock reads before the epoch. Minute granularity is all the recurrence gap needs
+/// and keeps the persisted marker small; a 0 on a pre-epoch clock keeps the
+/// recurrence probe fail-quiet on the READ side of a marker written this session
+/// (every real marker's suffix is far larger, so `now - deferred` underflows and is
+/// ignored).
+pub fn unix_minutes_now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() / 60)
+        .unwrap_or(0)
+}
+
 /// Outcome of [`report_install_failure_episode`], telling the caller both what
 /// happened and whether it must persist an updated marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6550,13 +6737,24 @@ pub enum InstallFailureEpisode {
     /// not sent, so a permanent per-machine build failure stops re-paging on every
     /// scheduled check. The caller still logs it locally and unconditionally.
     SuppressedRepeat,
+    /// A FIRST-seen npmjs tarball serving lag (HQ-DESKTOP-6D) during a pinned
+    /// install: nothing was captured, but the caller MUST persist `persist_keys` —
+    /// the reported-key set with a timestamped deferred marker added — so a later
+    /// check at least [`REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES`] apart can
+    /// escalate a stuck 404 to the loud `E404:npmjs:tarball` group instead of
+    /// masking it forever.
+    DeferredTransient { persist_keys: Vec<String> },
 }
 
 /// Report a CLI-install failure with the repeat-guard applied. The first
 /// occurrence of a `(latest × package × cause)` key reports at Error exactly as
 /// today (with the provenance from `env`); a repeat of any key already in
 /// `reported_keys` is suppressed; a new CLI target version, package, or cause
-/// reports again.
+/// reports again. A first-seen npmjs tarball serving lag during a pinned install
+/// (HQ-DESKTOP-6D) captures nothing and returns [`InstallFailureEpisode::DeferredTransient`]
+/// with a timestamped marker the caller persists; a lag that has not cleared across
+/// [`REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES`] escalates (the app sets
+/// `env.registry_serving_lag_recurred`) and reports once under the existing group.
 ///
 /// Persistence is deliberately left to the caller (mirroring how the
 /// non-convergent marker is read/written in the app layer): pass the machine's
@@ -6573,6 +6771,65 @@ pub fn report_install_failure_episode(
     latest: &str,
     reported_keys: &[String],
 ) -> InstallFailureEpisode {
+    report_install_failure_episode_at(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+        latest,
+        reported_keys,
+        unix_minutes_now(),
+    )
+}
+
+/// [`report_install_failure_episode`] with an explicit `now_unix_minutes`, so the
+/// HQ-DESKTOP-6D deferral marker's timestamp is deterministic under test. The
+/// public entrypoint delegates here with [`unix_minutes_now`]. All other behaviour
+/// is identical.
+#[allow(clippy::too_many_arguments)]
+pub fn report_install_failure_episode_at(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+    latest: &str,
+    reported_keys: &[String],
+    now_unix_minutes: u64,
+) -> InstallFailureEpisode {
+    // HQ-DESKTOP-6D: a FIRST-seen npmjs tarball serving lag during a pinned install
+    // is deferred, never captured. Record a timestamped marker so a later check at
+    // least REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES apart can escalate a stuck
+    // 404, then return without capturing. Checked BEFORE the not-reportable early
+    // return below because the lag classifies as ExpectedTransientRegistry (which
+    // reports nothing), so the marker would otherwise never be written. When the
+    // recurrence flag is set the classifier keeps the failure Unexpected/loud and
+    // this arm is skipped (its `!registry_serving_lag_recurred` guard), so the
+    // escalated event flows through the normal Reported/SuppressedRepeat path.
+    if is_npmjs_tarball_serving_lag(detail, env) && !env.registry_serving_lag_recurred {
+        let pkg = npmjs_404_tarball_package(detail);
+        let deferred_prefix = registry_serving_lag_deferred_key_prefix(latest, &pkg);
+        // Preserve the FIRST-seen timestamp only when an existing marker for THIS
+        // package is present AND valid (parseable, not in the future). A corrupt or
+        // future-dated marker (clock skew) is NOT preserved — it is replaced with a
+        // fresh one — so the anti-masking escalation cannot be suppressed forever
+        // (this matches registry_serving_lag_recurred's parsing). Re-minting a VALID
+        // marker on every check is otherwise avoided, since that would push the
+        // recurrence deadline out and never escalate. Nothing is captured here.
+        let has_valid_marker = reported_keys.iter().any(|key| {
+            key.strip_prefix(&deferred_prefix)
+                .and_then(|suffix| suffix.parse::<u64>().ok())
+                .is_some_and(|deferred_at| deferred_at <= now_unix_minutes)
+        });
+        if has_valid_marker {
+            return InstallFailureEpisode::NotReportable;
+        }
+        let deferred_key = registry_serving_lag_deferred_key(latest, &pkg, now_unix_minutes);
+        return InstallFailureEpisode::DeferredTransient {
+            persist_keys: install_failure_episode_record(reported_keys, &deferred_key, latest),
+        };
+    }
     // Only failures that would actually be captured are subject to the guard.
     if install_failure_report_with_environment(exit_code, detail, prefix, final_attempt_forced, env)
         .is_none()
@@ -14968,6 +15225,7 @@ mod tests {
             missing_target_state: MissingTargetState::Unknown,
             target_version: None,
             requested_spec_kind: RequestedSpecKind::Unknown,
+            registry_serving_lag_recurred: false,
         };
         let mut declined = base.clone();
         declined.managed_retry_outcome = ManagedRetryOutcome::ProvisionDeferred;
@@ -15815,49 +16073,96 @@ mod tests {
         InstallEnvironment::default().with_pinned_target_version(version)
     }
 
+    /// An npmjs tarball serving-lag E404 for a DEPENDENCY in hq-cli's install
+    /// closure (the reopened HQ-DESKTOP-6D shape the own-tarball gate missed): npm's
+    /// 404 line names the dependency's `/-/…​.tgz` tarball on registry.npmjs.org, and
+    /// its "not in this registry" tail carries the pkgid form npm prints (which, for
+    /// a resolved tarball, is `<name>@https://…`). Parameterised on the line prefix.
+    fn npmjs_dependency_tarball_e404_stderr(prefix: &str, pkg_path: &str, pkgid: &str) -> String {
+        format!(
+            "{prefix} code E404\n\
+             {prefix} 404 Not Found - GET https://registry.npmjs.org/{pkg_path} - Not found\n\
+             {prefix} 404\n\
+             {prefix} 404  '{pkgid}' is not in this registry."
+        )
+    }
+
     #[test]
-    fn npmjs_tarball_404_for_the_pinned_version_is_an_expected_transient() {
+    fn npmjs_tarball_404_during_a_pinned_install_is_an_expected_transient() {
         // For both npm line prefixes and both toolchain sources, an npmjs tarball 404
-        // for the EXACT pinned version is the mid-publish serving transient: the same
-        // kind, suppressed report, transient UI copy, and non-reportable episode that
-        // ETARGET already earns.
+        // during a PINNED install is the mid-publish serving transient on first sight
+        // — whether the 404 names hq-cli's OWN tarball or ANY dependency in its
+        // install closure. It earns the same kind, suppressed report, transient UI
+        // copy, and a DeferredTransient episode (with the timestamped marker) that
+        // ETARGET's twin does. The two dependency cases (@types/node 26.6.0 and
+        // @indigoai-us/hq-cloud 6.16.35) are the exact reopened shapes the prior
+        // own-tarball name gate could never cover.
         for prefix in ["npm error", "npm err!"] {
+            let own = npmjs_tarball_e404_stderr(prefix, "5.114.0");
+            let types_node = npmjs_dependency_tarball_e404_stderr(
+                prefix,
+                "@types/node/-/node-26.6.0.tgz",
+                "@types/node@https://registry.npmjs.org/@types/node/-/node-26.6.0.tgz",
+            );
+            let hq_cloud = npmjs_dependency_tarball_e404_stderr(
+                prefix,
+                "@indigoai-us/hq-cloud/-/hq-cloud-6.16.35.tgz",
+                "@indigoai-us/hq-cloud@6.16.35",
+            );
             for source in [NpmToolchainSource::Managed, NpmToolchainSource::UserPath] {
-                let stderr = npmjs_tarball_e404_stderr(prefix, "5.109.6");
-                let env = InstallEnvironment {
-                    toolchain_source: source,
-                    ..pinned_env("5.109.6")
-                };
-                assert_eq!(
-                    classify_install_failure_with_environment(Some(1), &stderr, None, false, &env),
-                    InstallFailureKind::ExpectedTransientRegistry,
-                    "{prefix} / {source:?}"
-                );
-                assert_eq!(
-                    install_failure_report_with_environment(Some(1), &stderr, None, false, &env),
-                    None,
-                    "{prefix} / {source:?}: a transient must not report"
-                );
-                let detail =
-                    install_failure_detail_with_environment(Some(1), &stderr, None, false, &env);
-                assert!(
-                    detail.contains("temporarily unavailable or was mid-publish")
-                        && detail.contains("retry automatically"),
-                    "{prefix} / {source:?}: transient UI copy: {detail}"
-                );
-                assert_eq!(
-                    report_install_failure_episode(
-                        Some(1),
-                        &stderr,
+                for (stderr, pkg) in [
+                    (own.as_str(), "@indigoai-us/hq-cli"),
+                    (types_node.as_str(), "@types/node"),
+                    (hq_cloud.as_str(), "@indigoai-us/hq-cloud"),
+                ] {
+                    let env = InstallEnvironment {
+                        toolchain_source: source,
+                        ..pinned_env("5.114.0")
+                    };
+                    assert_eq!(
+                        classify_install_failure_with_environment(
+                            Some(1),
+                            stderr,
+                            None,
+                            false,
+                            &env
+                        ),
+                        InstallFailureKind::ExpectedTransientRegistry,
+                        "{prefix} / {source:?}: {stderr}"
+                    );
+                    assert_eq!(
+                        install_failure_report_with_environment(Some(1), stderr, None, false, &env),
                         None,
-                        false,
-                        &env,
-                        "5.109.6",
-                        &[],
-                    ),
-                    InstallFailureEpisode::NotReportable,
-                    "{prefix} / {source:?}"
-                );
+                        "{prefix} / {source:?}: a transient must not report: {stderr}"
+                    );
+                    let detail =
+                        install_failure_detail_with_environment(Some(1), stderr, None, false, &env);
+                    assert!(
+                        detail.contains("temporarily unavailable or was mid-publish")
+                            && detail.contains("retry automatically"),
+                        "{prefix} / {source:?}: transient UI copy: {detail}"
+                    );
+                    // On first sight the episode reporter defers with a timestamped
+                    // marker (deterministic `now`); nothing is captured.
+                    assert_eq!(
+                        report_install_failure_episode_at(
+                            Some(1),
+                            stderr,
+                            None,
+                            false,
+                            &env,
+                            "5.114.0",
+                            &[],
+                            1000,
+                        ),
+                        InstallFailureEpisode::DeferredTransient {
+                            persist_keys: vec![format!(
+                                "5.114.0|deferred|E404:npmjs:tarball:{pkg}|1000"
+                            )],
+                        },
+                        "{prefix} / {source:?}: {stderr}"
+                    );
+                }
             }
         }
     }
@@ -15865,47 +16170,58 @@ mod tests {
     #[test]
     fn npmjs_tarball_404_stays_loud_outside_the_pinned_window() {
         let stderr = npmjs_tarball_e404_stderr("npm error", "5.109.6");
-        // No pin (default env) and a pin for a DIFFERENT version both stay a loud
-        // Unexpected E404 with the attributed signature and once-per-version key.
-        for env in [InstallEnvironment::default(), pinned_env("5.109.5")] {
-            let kind =
-                classify_install_failure_with_environment(Some(1), &stderr, None, false, &env);
-            assert_eq!(kind, InstallFailureKind::Unexpected);
-            assert_eq!(
-                install_failure_signature(kind, &stderr, None),
-                "E404:npmjs:tarball"
-            );
-            assert!(
-                install_failure_report_with_environment(Some(1), &stderr, None, false, &env)
-                    .is_some()
-            );
-            assert_eq!(
-                install_failure_episode_key_with_environment(
-                    Some(1),
-                    &stderr,
-                    None,
-                    false,
-                    "5.109.6",
-                    &env,
-                ),
-                Some("5.109.6|unexpected|E404:npmjs:tarball".to_string())
-            );
-        }
-        // A tarball for a DIFFERENT npmjs package under the matching pin is not
-        // hq-cli's own tarball, so it stays loud too.
-        let other_package = "npm error code E404\n\
-            npm error 404 Not Found - GET https://registry.npmjs.org/some-dep/-/some-dep-1.2.3.tgz - Not found";
-        let kind = classify_install_failure_with_environment(
-            Some(1),
-            other_package,
-            None,
-            false,
-            &pinned_env("5.109.6"),
-        );
+        // Only an UNPINNED (default) install stays a loud Unexpected E404 with the
+        // attributed signature and once-per-version key — the serving-lag downgrade
+        // requires a pinned install (the version the updater itself resolved).
+        let env = InstallEnvironment::default();
+        let kind = classify_install_failure_with_environment(Some(1), &stderr, None, false, &env);
         assert_eq!(kind, InstallFailureKind::Unexpected);
         assert_eq!(
-            install_failure_signature(kind, other_package, None),
+            install_failure_signature(kind, &stderr, None),
             "E404:npmjs:tarball"
+        );
+        assert!(
+            install_failure_report_with_environment(Some(1), &stderr, None, false, &env).is_some()
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                &stderr,
+                None,
+                false,
+                "5.109.6",
+                &env,
+            ),
+            Some("5.109.6|unexpected|E404:npmjs:tarball".to_string())
+        );
+        // INVERTED from the prior own-tarball gate: a mismatched pin cannot occur in
+        // production (npm only ever fetches the tarball for the version it pinned), so
+        // a pin for a "different" version is still a pinned install and its npmjs
+        // tarball 404 is the serving lag, downgraded to transient.
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                &stderr,
+                None,
+                false,
+                &pinned_env("5.109.5"),
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
+        // INVERTED likewise: a tarball for a DIFFERENT npmjs package under a pin is a
+        // dependency in the install closure — the exact reopened shape — so it is the
+        // serving lag now, not a loud defect.
+        let other_package = "npm error code E404\n\
+            npm error 404 Not Found - GET https://registry.npmjs.org/some-dep/-/some-dep-1.2.3.tgz - Not found";
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                other_package,
+                None,
+                false,
+                &pinned_env("5.109.6"),
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
         );
         // A lifecycle marker beside the same tarball 404 keeps it loud — the
         // `!has_npm_lifecycle_failure_marker` clause is load-bearing, not incidental.
@@ -15931,6 +16247,114 @@ mod tests {
             &pinned_env("5.109.6"),
         )
         .is_some());
+    }
+
+    #[test]
+    fn recurred_npmjs_tarball_404_keeps_the_existing_loud_group() {
+        // When the anti-masking flag is set (a deferred marker for this pinned version
+        // has not cleared across the gap), the SAME serving-lag stderr keeps its
+        // existing loud path: Unexpected, the `E404:npmjs:tarball` signature, and the
+        // once-per-version key — so a stuck 404 escalates instead of being masked.
+        let stderr = npmjs_tarball_e404_stderr("npm error", "5.114.0");
+        let env = InstallEnvironment {
+            registry_serving_lag_recurred: true,
+            ..pinned_env("5.114.0")
+        };
+        let kind = classify_install_failure_with_environment(Some(1), &stderr, None, false, &env);
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, &stderr, None),
+            "E404:npmjs:tarball"
+        );
+        assert!(
+            install_failure_report_with_environment(Some(1), &stderr, None, false, &env).is_some()
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                &stderr,
+                None,
+                false,
+                "5.114.0",
+                &env,
+            ),
+            Some("5.114.0|unexpected|E404:npmjs:tarball".to_string())
+        );
+    }
+
+    #[test]
+    fn registry_serving_lag_deferred_key_and_recurrence_gap() {
+        const PKG: &str = "@indigoai-us/hq-cli";
+        // The deferred marker is closed: literals, the validated package name, and one
+        // bounded integer, with no `|managed` suffix (a serving lag is registry-side
+        // and toolchain-independent).
+        let key = registry_serving_lag_deferred_key("5.114.0", PKG, 1000);
+        assert_eq!(
+            key,
+            "5.114.0|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|1000"
+        );
+        let keys = std::slice::from_ref(&key);
+        // 5 min old -> not yet recurred (below the 30-min gap); the gap and beyond ->
+        // recurred.
+        assert!(!registry_serving_lag_recurred(keys, "5.114.0", PKG, 1005));
+        assert!(registry_serving_lag_recurred(keys, "5.114.0", PKG, 1030));
+        assert!(registry_serving_lag_recurred(keys, "5.114.0", PKG, 5000));
+        // A DIFFERENT package under the same pin does not match — a later first-seen
+        // lag for another closure dependency is not mistaken for this one persisting.
+        assert!(!registry_serving_lag_recurred(
+            keys,
+            "5.114.0",
+            "@types/node",
+            5000
+        ));
+        // A DIFFERENT latest, a malformed suffix, a FUTURE timestamp (clock skew), and
+        // no marker at all all read as "not recurred" (fail-quiet).
+        assert!(!registry_serving_lag_recurred(keys, "5.114.1", PKG, 5000));
+        let malformed =
+            vec!["5.114.0|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|nan".to_string()];
+        assert!(!registry_serving_lag_recurred(
+            &malformed, "5.114.0", PKG, 5000
+        ));
+        assert!(!registry_serving_lag_recurred(keys, "5.114.0", PKG, 500));
+        assert!(!registry_serving_lag_recurred(&[], "5.114.0", PKG, 5000));
+        // A VALID existing marker for this package is NOT re-minted: the reporter
+        // returns NotReportable, preserving the first-seen timestamp.
+        let stderr = npmjs_tarball_e404_stderr("npm error", "5.114.0");
+        assert_eq!(
+            report_install_failure_episode_at(
+                Some(1),
+                &stderr,
+                None,
+                false,
+                &pinned_env("5.114.0"),
+                "5.114.0",
+                keys,
+                1005,
+            ),
+            InstallFailureEpisode::NotReportable
+        );
+        // But a FUTURE-dated marker (clock skew) is NOT preserved forever: the
+        // reporter replaces it by minting a fresh valid marker, so the anti-masking
+        // escalation cannot be suppressed indefinitely.
+        let future = vec![registry_serving_lag_deferred_key("5.114.0", PKG, 9000)];
+        assert_eq!(
+            report_install_failure_episode_at(
+                Some(1),
+                &stderr,
+                None,
+                false,
+                &pinned_env("5.114.0"),
+                "5.114.0",
+                &future,
+                1005,
+            ),
+            InstallFailureEpisode::DeferredTransient {
+                persist_keys: vec![
+                    "5.114.0|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|9000".to_string(),
+                    "5.114.0|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|1005".to_string(),
+                ],
+            }
+        );
     }
 
     #[test]
@@ -15994,9 +16418,10 @@ mod tests {
     }
 
     #[test]
-    fn npmjs_tarball_transient_covers_a_prerelease_pin_and_gates_on_exact_version() {
-        // A valid SemVer prerelease the updater pinned is matched too (both sides are
-        // lowercased), and the legacy `npm err!` prefix is handled.
+    fn npmjs_tarball_transient_covers_a_prerelease_pin_and_parses_a_query() {
+        // A valid SemVer prerelease the updater pinned is covered too — the predicate
+        // gates on "pinned install", not on matching the exact version string — and
+        // the legacy `npm err!` prefix is handled.
         let stderr = npmjs_tarball_e404_stderr("npm err!", "6.0.0-beta.1");
         assert_eq!(
             classify_install_failure_with_environment(
@@ -16008,15 +16433,20 @@ mod tests {
             ),
             InstallFailureKind::ExpectedTransientRegistry
         );
-        // The exact-version gate holds: a different version, or an empty version,
-        // never matches hq-cli's own `<version>.tgz`.
-        assert!(npm_404_names_hq_cli_tarball_for(&stderr, "6.0.0-beta.1"));
-        assert!(!npm_404_names_hq_cli_tarball_for(&stderr, "6.0.0-beta.2"));
-        assert!(!npm_404_names_hq_cli_tarball_for(&stderr, ""));
-        // A trailing query on the tarball URL is dropped before the compare.
+        // A trailing query on the tarball URL is still parsed as a tarball resource,
+        // so the pinned serving-lag downgrade still applies.
         let with_query = "npm error code E404\n\
             npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz?cache=1 - Not found";
-        assert!(npm_404_names_hq_cli_tarball_for(with_query, "5.109.6"));
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                with_query,
+                None,
+                false,
+                &pinned_env("5.109.6"),
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
     }
 
     #[test]

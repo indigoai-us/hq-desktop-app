@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
-    report_non_convergent_marker_unpersisted,
-    reset_non_convergent_marker_unpersisted_capture_for_tests, DeliveredPrefixShim,
-    ExecutedCopyAim, InstallExecutor, ManagedBinInSettingsPath, ManagedShadowRepairOutcome,
-    NonConvergenceKind, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    report_non_convergent_marker_unpersisted, report_registry_serving_lag_marker_unpersisted,
+    reset_non_convergent_marker_unpersisted_capture_for_tests,
+    reset_serving_lag_marker_unpersisted_capture_for_tests, DeliveredPrefixShim, ExecutedCopyAim,
+    InstallExecutor, ManagedBinInSettingsPath, ManagedShadowRepairOutcome, NonConvergenceKind,
+    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
     PostInstallCoreEffects, ResolutionSource, SettingsPathRepair, SettingsPathTelemetry,
     NON_CONVERGENT_ERROR_PREFIX,
 };
@@ -118,6 +119,43 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
     let after_reset = captured_events(report_non_convergent_marker_unpersisted);
     assert_eq!(after_reset.len(), 1, "the test-only reset must re-arm once");
     reset_non_convergent_marker_unpersisted_capture_for_tests();
+}
+
+/// HQ-DESKTOP-6D: when a first-seen serving-lag deferral marker cannot be persisted
+/// (unwritable menubar.json), the degraded state is surfaced as a bounded,
+/// once-per-process Warning instead of being silent — otherwise the same permanent
+/// 404 would be deferred forever and never escalate. The payload carries only closed
+/// categories (no path input reaches it).
+#[test]
+fn serving_lag_marker_unpersisted_is_reported_once_per_process() {
+    reset_serving_lag_marker_unpersisted_capture_for_tests();
+    let first = captured_events(report_registry_serving_lag_marker_unpersisted);
+    assert_eq!(first.len(), 1, "the first persistence failure must page once");
+    let event = &first[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] could not persist npmjs serving-lag deferral marker")
+    );
+    assert_eq!(
+        event
+            .fingerprint
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>(),
+        ["hq-cli-update", "serving-lag-marker-unpersisted"]
+    );
+    // Bounded: a second call within the same process captures nothing.
+    let second = captured_events(report_registry_serving_lag_marker_unpersisted);
+    assert!(
+        second.is_empty(),
+        "must not re-page within one process: {second:?}"
+    );
+    // The test-only reset re-arms it.
+    reset_serving_lag_marker_unpersisted_capture_for_tests();
+    let after_reset = captured_events(report_registry_serving_lag_marker_unpersisted);
+    assert_eq!(after_reset.len(), 1, "reset must re-arm once");
+    reset_serving_lag_marker_unpersisted_capture_for_tests();
 }
 
 /// The Kurts marker contract: an unaimed pnpm run (home_source=Undetermined,
