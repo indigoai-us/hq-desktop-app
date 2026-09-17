@@ -2268,7 +2268,7 @@
     /* Match the composer and shell body; authors and metadata carry hierarchy.
        1.6 leading: the timeline is long-form reading, not a form field. */
     font-size: 13px;
-    line-height: 1.6;
+    line-height: 1.65;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
