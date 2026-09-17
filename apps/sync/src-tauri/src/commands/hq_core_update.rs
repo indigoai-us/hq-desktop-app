@@ -276,7 +276,15 @@ async fn install_hq_core_update_observed(
         None,
     );
 
-    let outcome = install_hq_core_update_inner().await;
+    let outcome = install_hq_core_update_inner(observation.source()).await;
+    if let Ok(run) = &outcome {
+        crate::commands::hq_core_state::arm_baseline_retry_after_successful_core_update(
+            crate::commands::hq_core_state::Channel::Release,
+            &run.result.baseline_retry_target,
+            run.result.exit_code,
+            run.result.baseline_persisted,
+        );
+    }
     match &outcome {
         Ok(run) if run.result.exit_code == 0 => {
             let installed = get_local_version();
@@ -334,6 +342,7 @@ async fn install_hq_core_update_observed(
 }
 
 async fn install_hq_core_update_inner(
+    update_source: &'static str,
 ) -> Result<CoreUpdateRescueRun, crate::commands::hq_core_state::CoreUpdateError> {
     let hq_folder = crate::commands::hq_core_staging::resolve_hq_folder();
     if !crate::commands::hq_core_staging::looks_like_hq_root(&hq_folder) {
@@ -589,37 +598,54 @@ async fn install_hq_core_update_inner(
         &log_path,
     );
 
-    if exit_code == 0 {
-        let client = reqwest::Client::builder()
+    let baseline_persisted = if exit_code == 0 {
+        match reqwest::Client::builder()
             .default_headers(crate::util::client_info::client_headers())
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .map_err(|error| {
-                crate::commands::hq_core_state::CoreUpdateError::new(
-                    crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                    format!("build baseline client: {error}"),
-                )
-                .with_managed_git_retry(retry.outcome)
-            })?;
-        let commit = crate::commands::hq_core_state::persist_remote_baseline(
-            &hq_folder,
-            &client,
-            PROD_HQ_CORE_REPO,
-            &git_ref,
-        )
-        .await
-        .map_err(|error| {
-            crate::commands::hq_core_state::CoreUpdateError::new(
-                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                format!("core update applied but baseline persistence failed: {error}"),
+        {
+            Ok(client) => match crate::commands::hq_core_state::persist_remote_baseline(
+                &hq_folder,
+                &client,
+                PROD_HQ_CORE_REPO,
+                &git_ref,
             )
-            .with_managed_git_retry(retry.outcome)
-        })?;
-        log(
-            "hq-core-update",
-            &format!("persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"),
-        );
-    }
+            .await
+            {
+                Ok(commit) => {
+                    log(
+                        "hq-core-update",
+                        &format!(
+                            "persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"
+                        ),
+                    );
+                    true
+                }
+                Err(error) => {
+                    crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                        update_source,
+                        crate::commands::hq_core_state::Channel::Release,
+                        "hq-core-update",
+                        &format!("core update applied but baseline persistence failed: {error}"),
+                    );
+                    false
+                }
+            },
+            Err(error) => {
+                crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                    update_source,
+                    crate::commands::hq_core_state::Channel::Release,
+                    "hq-core-update",
+                    &format!(
+                        "core update applied but baseline persistence failed: build baseline client: {error}"
+                    ),
+                );
+                false
+            }
+        }
+    } else {
+        true
+    };
     log(
         "hq-core-update",
         &format!(
@@ -637,6 +663,8 @@ async fn install_hq_core_update_inner(
             log_path: log_path.display().to_string(),
             rescue_stderr_tail,
             npx_resolution,
+            baseline_persisted,
+            baseline_retry_target: latest,
         },
         managed_git_retry: retry.outcome,
     })

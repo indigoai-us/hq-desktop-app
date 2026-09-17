@@ -3447,7 +3447,14 @@ mod tests {
             "the user-prefix hq is backed by a reachable manifest"
         );
 
-        let dirs = unix_hq_search_dirs_in(vec![settings.clone()], Some(&home));
+        // `user_cli_dirs` also asks the host's package managers for their
+        // configured prefixes. Those real installations are outside this
+        // fixture and can legitimately contain a backed `hq`, so retain only
+        // the injected settings path and fixture-home candidates here.
+        let dirs: Vec<_> = unix_hq_search_dirs_in(vec![settings.clone()], Some(&home))
+            .into_iter()
+            .filter(|dir| dir == &settings || dir.starts_with(&home))
+            .collect();
         let candidates = ["hq".to_string()];
         let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
         let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);

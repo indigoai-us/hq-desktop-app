@@ -212,8 +212,10 @@
   import { onDestroy, onMount, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
+    applyReducedTransparency,
     applyUiSize,
     applyWindowOpacity,
+    readReducedTransparency,
     readStoredTheme,
   } from "../settings/shell-settings-model.js";
   import { readSettingsPrefs } from "../settings/settings-prefs.js";
@@ -1539,8 +1541,25 @@
       personUid: agentUid,
     };
     handleSelect(row);
-    if (extras.avatar) void saveNewBotAvatar(agentUid, extras.avatar);
+    void saveNewBotProfile(agentUid, extras);
     return { ok: true, agentUid, name: input.name };
+  }
+  /**
+   * The parts of the create flow `hq bot create` has no flag for — the job
+   * title and the avatar pick — written onto the agent profile now that the
+   * bot has a uid. Sequential: both land on the same profile document.
+   */
+  async function saveNewBotProfile(agentUid: string, extras: CreateBotExtras): Promise<void> {
+    const title = extras.title?.trim() ?? "";
+    if (title) {
+      try {
+        await adapter.identity.updateAgentProfile(agentUid, { title });
+      } catch (err) {
+        // The bot exists and works; only its subtitle is missing.
+        console.warn("[hq-desktop] bot title save failed:", err);
+      }
+    }
+    if (extras.avatar) await saveNewBotAvatar(agentUid, extras.avatar);
   }
   /** Best effort: the avatar picked in the flow, saved once the bot has a uid. */
   async function saveNewBotAvatar(agentUid: string, selection: AvatarSelection): Promise<void> {
@@ -6185,6 +6204,10 @@
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
     applyColorTheme(readStoredTheme());
+    // Re-apply on boot, not just on toggle: the attribute lives on <html> and
+    // does not survive a reload, so without this the glass returns on every
+    // restart and the setting looks like it silently forgot itself.
+    applyReducedTransparency(readReducedTransparency());
     const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
     applyWindowOpacity(prefs.windowOpacity);

@@ -12,18 +12,24 @@ import type { AdapterResult, PlatformAdapter } from "@hq/platform";
 import type { NotificationsApi } from "../chat/chat-api";
 
 /** Kinds this slice actually has a backend for. */
-export const LIVE_NOTIFICATION_TYPES = ["dm", "file_share"] as const;
+export const LIVE_NOTIFICATION_TYPES = ["dm", "file_share", "new_file"] as const;
 
 export type LiveNotificationType = (typeof LIVE_NOTIFICATION_TYPES)[number];
 
 export const DM_ID_PREFIX = "dm:";
 export const SHARE_ID_PREFIX = "share:";
+export const FILE_ID_PREFIX = "file:";
 export const LOCAL_ID_PREFIX = "local:";
 
 export type NotificationAckTarget =
   | { kind: "store"; id: string }
   | { kind: "inbox"; eventId: string }
   | { kind: "share"; eventId: string }
+  /**
+   * New-file rows have no server ack. They arrive already-read (they never
+   * light the bell), so acknowledging one is a no-op rather than a call.
+   */
+  | { kind: "file"; eventId: string }
   | { kind: "local"; id: string };
 
 export interface LiveNotificationsOptions {
@@ -52,6 +58,17 @@ export interface ShareEventWire {
   note?: unknown;
   createdAt?: unknown;
   acknowledgedAt?: unknown;
+}
+
+/** One row of GET /v1/notify/file-history — see FileHistoryItem (Rust). */
+export interface FileHistoryWire {
+  eventId?: unknown;
+  path?: unknown;
+  bytes?: unknown;
+  addedBy?: unknown;
+  companyUid?: unknown;
+  companySlug?: unknown;
+  createdAt?: unknown;
 }
 
 export interface ComposedNotificationsFeed {
@@ -85,6 +102,7 @@ function liveSourceKind(
   const t = (type ?? "").trim().toLowerCase();
   if (t === "dm" || t === "dm_received") return "dm";
   if (t === "file_share" || t === "file_shared") return "file_share";
+  if (t === "new_file" || t === "file_added") return "new_file";
   return null;
 }
 
@@ -95,6 +113,9 @@ export function classifyNotificationAck(id: string): NotificationAckTarget {
   }
   if (trimmed.startsWith(SHARE_ID_PREFIX)) {
     return { kind: "share", eventId: trimmed.slice(SHARE_ID_PREFIX.length) };
+  }
+  if (trimmed.startsWith(FILE_ID_PREFIX)) {
+    return { kind: "file", eventId: trimmed.slice(FILE_ID_PREFIX.length) };
   }
   if (trimmed.startsWith(LOCAL_ID_PREFIX)) return { kind: "local", id: trimmed };
   return { kind: "store", id: trimmed };
@@ -156,6 +177,41 @@ export function mapShareEventToNotification(
   };
 }
 
+/**
+ * Map one new-file event into a feed row.
+ *
+ * Deliberately always `status: "read"`. These rows have no server ack
+ * (§ NOTIF store has no new_file type), so the only unread state available
+ * would be a client-side watermark — a second, divergent read model competing
+ * with the server's. Keeping them read makes new-file activity *findable*
+ * without ever lighting the bell, and leaves the server authoritative for
+ * everything that actually alerts. If the store later emits new_file rows,
+ * those win on dedup and the events become first-class unread for free.
+ */
+export function mapFileHistoryToNotification(
+  raw: FileHistoryWire,
+): Record<string, unknown> | null {
+  const eventId = asString(raw.eventId);
+  if (!eventId) return null;
+  const path = asString(raw.path);
+  if (!path) return null;
+  const actorName = asString(raw.addedBy) || "Someone";
+  const company = asString(raw.companySlug);
+  const context = company ? `${company} · ${path}` : path;
+  return {
+    id: `${FILE_ID_PREFIX}${eventId}`,
+    type: "new_file",
+    status: "read",
+    createdAt: asString(raw.createdAt),
+    actorName,
+    title: "Added a file",
+    body: context,
+    context,
+    targetRef: "/files",
+    sourceEventId: eventId,
+  };
+}
+
 function storeFeed(raw: unknown): {
   rows: Record<string, unknown>[];
   unreadCount: number | null;
@@ -183,6 +239,21 @@ function storeFeed(raw: unknown): {
 function eventList(raw: unknown): Record<string, unknown>[] {
   if (!isRecord(raw) || !Array.isArray(raw.events)) return [];
   return raw.events.filter(isRecord);
+}
+
+/**
+ * File history answers `{ files: [...] }`, not the `{ events: [...] }` envelope
+ * the DM and share inboxes use. Accept `events` too, so a host that normalises
+ * the three sources into one shape still composes.
+ */
+function fileList(raw: unknown): Record<string, unknown>[] {
+  if (!isRecord(raw)) return [];
+  const rows = Array.isArray(raw.files)
+    ? raw.files
+    : Array.isArray(raw.events)
+      ? raw.events
+      : [];
+  return rows.filter(isRecord);
 }
 
 function isUnreadRow(row: Record<string, unknown>): boolean {
@@ -215,6 +286,7 @@ export function composeLiveNotifications(args: {
   store?: unknown;
   inbox?: unknown;
   shares?: unknown;
+  files?: unknown;
   local?: Record<string, unknown>[];
   unreadOnly?: boolean;
 }): ComposedNotificationsFeed {
@@ -259,6 +331,23 @@ export function composeLiveNotifications(args: {
       continue;
     }
     extras.push({ ...mapped, status: "read" });
+  }
+
+  for (const event of fileList(args.files)) {
+    const mapped = mapFileHistoryToNotification(event);
+    if (!mapped) continue;
+    const source = asString(mapped.sourceEventId);
+    // A store row for the same event wins, exactly as for DM and share rows —
+    // if the server ever emits new_file into NOTIF, its read state governs and
+    // the history row is absorbed rather than duplicated.
+    if (source && bySource.has(`new_file:${source}`)) {
+      bySource.set(
+        `new_file:${source}`,
+        mergeRoutingFields(bySource.get(`new_file:${source}`)!, mapped),
+      );
+      continue;
+    }
+    extras.push(mapped);
   }
 
   const durableSources = new Set(store.rows.map(row => asString(row.sourceEventId)).filter(Boolean));
@@ -331,6 +420,10 @@ export function createLiveNotificationsApi(
       if (!r.ok) throw new Error(unwrapMessage(r));
       return;
     }
+    if (target.kind === "file") {
+      // No ack endpoint, and the row was never unread. Nothing to persist.
+      return;
+    }
     if (target.kind === "local") {
       options.ackLocalNotification?.(target.id);
       return;
@@ -353,10 +446,18 @@ export function createLiveNotificationsApi(
         ...(args.cursor ? { cursor: args.cursor } : {}),
         ...(args.unreadOnly ? { unreadOnly: true } : {}),
       };
-      const [store, inbox, shares] = await Promise.all([
+      // fetchFileHistory is optional on the adapter, and new-file rows are
+      // history rather than alerts. A host without it, or a server too old to
+      // answer, must still render DMs and shares — so this source never joins
+      // the auth check and never participates in the all-sources-failed throw.
+      const fileHistory = adapter.notifications.fetchFileHistory;
+      const [store, inbox, shares, files] = await Promise.all([
         adapter.notifications.fetchNotifications(qs),
         adapter.notifications.fetchDmInbox({ limit: args.limit }),
         adapter.notifications.fetchSharedWithMe({ limit: args.limit }),
+        fileHistory
+          ? fileHistory.call(adapter.notifications, { limit: args.limit })
+          : Promise.resolve(null),
       ]);
       if (
         isAuthFailure(store) ||
@@ -375,6 +476,7 @@ export function createLiveNotificationsApi(
         store: store.ok ? store.value : null,
         inbox: inbox.ok ? inbox.value : null,
         shares: shares.ok ? shares.value : null,
+        files: files && files.ok ? files.value : null,
         local: options.localNotifications?.() ?? [],
         unreadOnly: Boolean(args.unreadOnly),
       });
