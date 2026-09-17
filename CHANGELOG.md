@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Notifications about channel messages now say who sent the message ("Jacob Posel sent a message"), with the channel underneath as context and the sender's initials on the avatar. They used to name the channel as the sender, hash suffix and all ("#project-fleet-bots-ga-sprint-a61db44b sent a message").
+- Channel names in notifications no longer show the random id at the end, so you see "#project-fleet-bots-ga-sprint" instead of "#project-fleet-bots-ga-sprint-a61db44b".
+- When someone adds a batch of files, the notifications list now shows one line per person instead of one per file — "cnueno@gmail.com added 14 files", with the shared folder underneath and the time of the most recent one. Clicking it opens what the newest file would have opened, and the unread count counts the batch once. A single file still reads "added a file".
+
 ## [0.10.286] — 2026-09-17
 
 - In a thread, the "is thinking" line for a bot now lines up with the messages above it and keeps a small gap from the reply box, instead of hugging the left edge and touching it.

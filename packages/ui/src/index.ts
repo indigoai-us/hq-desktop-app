@@ -211,6 +211,7 @@ export { default as NotificationsView } from "./inbox/NotificationsView.svelte";
 export * from "./inbox/notifications-model.js";
 export * from "./inbox/notification-groups.js";
 export * from "./inbox/live-notifications.js";
+export * from "./inbox/file-bundles.js";
 
 // Wave 3 (US-010): remaining desktop-alt screens, area barrels.
 export * as common from "./common/index.js";
