@@ -121,10 +121,6 @@ pub struct NotificationDmActionEvent {
     pub event: DmEvent,
 }
 
-/// Managed state: the DM event pending for the detail window's ready-handshake.
-/// Mirrors `PendingShareEvents` in share_notify.rs.
-pub struct PendingDmEvents(pub Mutex<Vec<DmEvent>>);
-
 /// Managed state: running count of unread DMs since the user last opened the
 /// Messages window. Incremented by the SINGLE `do_poll` path as new DMs land
 /// (no parallel poller) and reset to 0 by `mark_messages_read`. The popover

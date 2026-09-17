@@ -7,7 +7,6 @@ import DriftDetail from './components/DriftDetail.svelte';
 import ActivityLog from './components/ActivityLog.svelte';
 import ShareDetail from './components/ShareDetail.svelte';
 import MeetingPermissionsWindow from './components/MeetingPermissionsWindow.svelte';
-import DmDetail from './components/DmDetail.svelte';
 import BannerNotification from './components/BannerNotification.svelte';
 import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
@@ -58,8 +57,6 @@ if (windowLabel === 'meetings-window') {
   Component = ShareDetail as unknown as typeof App;
 } else if (windowLabel === 'meeting-permissions') {
   Component = MeetingPermissionsWindow as unknown as typeof App;
-} else if (windowLabel === 'dm-detail') {
-  Component = DmDetail as unknown as typeof App;
 } else if (windowLabel === 'dm-banner') {
   Component = BannerNotification as unknown as typeof App;
 } else {

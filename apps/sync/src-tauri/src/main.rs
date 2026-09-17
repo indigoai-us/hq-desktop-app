@@ -531,7 +531,6 @@ fn main() {
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
-        .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::NotificationSessionState::new())
         .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
         .manage(commands::dm_notify::PairUnreadState::new())
@@ -945,7 +944,6 @@ fn main() {
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::open_inbox_window,
             commands::dm_notify::open_communications_window,
-            commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
             commands::dm_notify::send_dm_to_email,
             commands::dm_notify::fetch_dm_thread,

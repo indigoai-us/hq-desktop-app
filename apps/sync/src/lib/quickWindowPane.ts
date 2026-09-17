@@ -1,9 +1,9 @@
 /**
  * Pure helpers for the quick-window left side pane (US-011).
  *
- * Share-detail and dm-detail notification windows share a side-pane of recent
- * DMs + shares. These helpers stay framework-free so they unit-test cleanly
- * and stay out of the Svelte component lifecycle.
+ * The share-detail notification window carries a side-pane of recent DMs +
+ * shares. These helpers stay framework-free so they unit-test cleanly and stay
+ * out of the Svelte component lifecycle.
  */
 
 import {

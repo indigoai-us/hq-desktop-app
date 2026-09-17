@@ -171,7 +171,6 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
       ['activity-log', 'ActivityLog', 'activity'],
       ['share-detail', 'ShareDetail', 'share-detail'],
       ['meeting-permissions', 'MeetingPermissionsWindow', 'permissions'],
-      ['dm-detail', 'DmDetail', 'dm-detail'],
       ['dm-banner', 'BannerNotification', 'banner'],
     ] as const;
 
@@ -268,10 +267,7 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   it('uses message chrome only where it carries meaning', () => {
     const bubble = rule(channelConversation, '.dm-bubble');
     const author = rule(channelConversation, '.dm-msg-author');
-    const sharedFile = rule(
-      conversation,
-      ":global(html[data-window='dm-detail']) .dm-bubble.dm-bubble-share",
-    );
+    const sharedFile = rule(conversation, '.dm-bubble-share');
 
     expect(bubble).toContain('background: transparent');
     expect(bubble).toContain('border-radius: 0');

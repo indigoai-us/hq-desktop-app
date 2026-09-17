@@ -710,24 +710,24 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 ---
 
-### DM Notifications (click → DmDetail, reply)
+### DM Notifications (click → desktop conversation, reply)
 
 > Send test DMs with `hq dm <recipient> <body>` (plain), `--prompt`, and/or `--details`
-> to exercise each payload shape. Reply (DM-103/104) requires the hq-pro
+> to exercise each payload shape. Reply requires the hq-pro
 > `POST /v1/notify/dm` endpoint to be deployed.
 
-#### DM-101: Every DM type opens the DmDetail window on body-click
+#### DM-101: Every DM type opens the conversation on body-click
 
 - [ ] 1. Send the test user a **plain** DM (no prompt, no details) and click the banner body
-- [ ] 2. Verify the **DmDetail** window ("Direct Message") opens showing sender name/email + body
+- [ ] 2. Verify the **desktop window** opens on that sender's conversation
 - [ ] 3. Repeat with a **prompt-only** DM, a **details-only** DM, and a **prompt+details** DM
-- [ ] 4. Verify the body-click opens DmDetail in **all four** cases (previously plain DMs did nothing and prompt DMs copied instead of opening)
+- [ ] 4. Verify the body-click opens the conversation in **all four** cases
 
 #### DM-102: "Copy prompt" action button still copies (rich DM)
 
 - [ ] 1. Send a DM with a `prompt`; on the banner, choose the **Copy prompt** action (not body-click)
 - [ ] 2. Paste into a text editor — verify the prompt text is on the clipboard
-- [ ] 3. Verify body-clicking the same banner type opens DmDetail (does NOT copy)
+- [ ] 3. Verify body-clicking the same banner type opens the conversation (does NOT copy)
 
 #### DM-103: CPU stays bounded with multiple unactioned DMs
 
@@ -735,9 +735,9 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] 2. In Activity Monitor, verify `hq-sync` CPU stays near a single capped spin slot (~1 core max), not one core per banner
 - [ ] 3. Dismiss the banners — verify CPU returns to idle
 
-#### DM-104: Reply from DmDetail (requires deployed `POST /v1/notify/dm`)
+#### DM-104: Reply from the conversation (requires deployed `POST /v1/notify/dm`)
 
-- [ ] 1. Open a DM in DmDetail, type a reply, click **Send** (or ⌘↵)
+- [ ] 1. Open a DM conversation, type a reply, click **Send** (or ⌘↵)
 - [ ] 2. Verify the textarea clears and "Sent ✓" appears briefly
 - [ ] 3. On the original **sender's** machine, verify the reply arrives as a DM notification
 - [ ] 4. Inspect `~/.hq/logs/hq-sync.log` — verify `DM_NOTIFY_SEND_OK`
@@ -745,7 +745,7 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 #### DM-105: Reply error is surfaced (no silent failure)
 
 - [ ] 1. With the send endpoint unavailable (or signed out), attempt a reply
-- [ ] 2. Verify an inline error message appears in DmDetail (not a silent no-op)
+- [ ] 2. Verify an inline error message appears in the composer (not a silent no-op)
 - [ ] 3. Inspect `~/.hq/logs/hq-sync.log` — verify a `DM_NOTIFY_SEND_FAIL` line
 
 ---

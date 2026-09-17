@@ -13,7 +13,6 @@
   import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
   import DriftDetail from '../src/components/DriftDetail.svelte';
   import ShareDetail from '../src/components/ShareDetail.svelte';
-  import DmDetail from '../src/components/DmDetail.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
@@ -152,17 +151,6 @@
     },
   ];
 
-  const dmPreviewEvent = {
-    eventId: 'dm-preview-1',
-    fromPersonUid: 'prs_maya',
-    fromEmail: 'maya@getindigo.ai',
-    fromDisplayName: 'Maya Chen',
-    body: 'The auxiliary desktop pass is ready for a final visual review.',
-    details: 'Includes recovery, permissions, meetings, and shares.',
-    prompt: '/review hq-desktop-app --surface auxiliary',
-    createdAt: '2026-07-26T17:42:00.000Z',
-  };
-
   // View + theme driven by URL query so screenshots target a known state:
   //   ?view=settings|popover|signin|banner|shell   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
@@ -227,8 +215,6 @@
                 ? 'new-files-detail'
               : view === 'share-detail'
                 ? 'share-detail'
-                : view === 'dm-detail'
-                  ? 'dm-detail'
         : view === 'permissions'
           ? 'meeting-permissions'
           : view === 'conversation'
@@ -254,8 +240,6 @@
     setTimeout(() => void emit('new-files:list', newFilesPreview), 75);
   } else if (view === 'share-detail') {
     setTimeout(() => void emit('share:events-list', sharePreviewEvents), 75);
-  } else if (view === 'dm-detail') {
-    setTimeout(() => void emit('dm:detail-event', dmPreviewEvent), 75);
   }
 
   // Deterministic safety-state previews for the full desktop shell. The delay
@@ -292,9 +276,6 @@
 {:else if view === 'share-detail'}
   <!-- Shared-with-me quick window at its native 640x560 size. -->
   <ShareDetail />
-{:else if view === 'dm-detail'}
-  <!-- Inbox / direct-message quick window at its native 820x640 size. -->
-  <DmDetail />
 {:else if view === 'meetings'}
   <!-- Upcoming Meetings at its native 460x600 size. -->
   <MeetingsWindow />

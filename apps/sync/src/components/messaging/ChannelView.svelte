@@ -621,31 +621,6 @@
 
   /* Channel metadata is informative, not a stack of controls in rounded
      containers. Keep it quiet and inline in both Messages surfaces. */
-  :global(html[data-window='dm-detail']) .channel-header {
-    gap: 0.625rem;
-    padding: 0.75rem 1.125rem;
-  }
-
-  :global(html[data-window='dm-detail']) .scope-chip {
-    gap: 0.1875rem;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--pop-muted);
-    font-size: 0.6875rem;
-    font-weight: 560;
-  }
-
-  :global(html[data-window='dm-detail']) .scope-chip.personal {
-    background: transparent;
-    color: var(--pop-muted);
-  }
-
-  :global(html[data-window='dm-detail']) .member-count-btn {
-    font-size: 0.6875rem;
-  }
-
   .member-count-btn:active:not(:disabled),
   .btn:active:not(:disabled) {
     transform: scale(0.97);
@@ -655,21 +630,6 @@
   .btn:focus-visible {
     outline: 2px solid var(--pop-text);
     outline-offset: 2px;
-  }
-
-  :global(html[data-window='dm-detail']) .btn {
-    transition: transform 120ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
-  }
-
-  :global(html[data-window='dm-detail']) .btn-join {
-    border-radius: 6px;
-    background: var(--pop-text);
-    color: var(--pop-bg);
-  }
-
-  :global(html[data-window='dm-detail']) .btn-join:hover:not(:disabled) {
-    background: var(--pop-text);
-    filter: none;
   }
 
   @keyframes channel-spin {
