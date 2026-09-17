@@ -86,6 +86,15 @@
     coreUseFixtures?: boolean;
     /** USER-EDIT drift count from the shell's core-state scan (G7 dot tone). */
     driftCount?: number;
+    /**
+     * PL-02 — sync trouble the shell reads from `list_syncable_workspaces`.
+     * Forwarded to the Core popover, which owns the notice rows.
+     */
+    manifestError?: string | null;
+    cloudReachable?: boolean;
+    cloudError?: string | null;
+    /** Workspaces, used only to resolve uids in error copy. */
+    workspaces?: readonly Record<string, unknown>[] | null;
     oncloudtoggle?: (paused: boolean) => void;
     onresolveconflict?: (
       path: string,
@@ -121,6 +130,8 @@
     fanoutDone = 0,
     fanoutTotal = 0,
     errorSummary = null,
+    errorMessage = "",
+    errorCompany = null,
     hydrationIssue = null,
     hydrationRefreshing = false,
     conflictCount = 0,
@@ -143,6 +154,10 @@
     conflicts = [],
     coreUseFixtures = false,
     driftCount = 0,
+    manifestError = null,
+    cloudReachable = true,
+    cloudError = null,
+    workspaces = null,
     onresolveconflict,
     onopenconflict,
     onopendrift,
@@ -504,11 +519,44 @@
     { key: "grok", label: "Grok Build (terminal)" },
   ];
 
-  /** G7: amber dot while a conflict/attention item is pending; green when healthy. */
+  /**
+   * Live caption for the Core popover header while a run is in flight. The
+   * title bar already reduces the run (`syncStatusLabel`); the popover reuses
+   * that sentence rather than counting files a second time.
+   */
+  const syncCaptionText = $derived(
+    syncLabel?.tone === "busy"
+      ? [syncLabel.detail, syncLabel.text].filter(Boolean).join(" · ")
+      : null,
+  );
+
+  /** Message behind an `error` phase — the reduced run carries it. */
+  const syncErrorMessage = $derived(
+    syncStatus?.phase === "error"
+      ? (syncStatus.message ?? errorMessage ?? null)
+      : (errorMessage ?? null),
+  );
+
+  /**
+   * Phase the Core popover header speaks about.
+   *
+   * `syncState` is reduced from the on-disk journal, which only ever reports
+   * `idle` or `conflict`. The event-stream reducer (`syncStatus`) is the only
+   * source that sees a run start or a run fail, so a non-idle phase there
+   * wins — otherwise a failing sync would read "All synced".
+   */
+  const coreSyncPhase = $derived(
+    syncStatus && syncStatus.phase !== "idle" ? syncStatus.phase : syncState,
+  );
+
+  /** G7: amber dot while a conflict/attention item is pending; green when
+   *  healthy; a quiet blue while a run is in flight (PL-01). */
   const coreDotTone = $derived(
     corePillDotTone({
       conflictCount: Math.max(conflictCount, conflicts.length),
-      syncState,
+      syncState: coreSyncPhase,
+      manifestError,
+      cloudReachable,
       driftCount,
       cloudPaused,
     }),
@@ -905,6 +953,7 @@
               <span
                 class="v4-core-dot"
                 class:warn={coreDotTone === "warn"}
+                class:active={coreDotTone === "active"}
                 data-testid="titlebar-core-dot"
                 data-tone={coreDotTone}
                 aria-hidden="true">●</span
@@ -920,6 +969,18 @@
             appVersion={version}
             {conflicts}
             {cloudPaused}
+            syncState={coreSyncPhase}
+            {lastSyncLabel}
+            syncCaption={syncCaptionText}
+            conflictCount={Math.max(conflictCount, conflicts.length)}
+            {conflictCompany}
+            errorMessage={syncErrorMessage}
+            errorCompany={errorCompany ?? null}
+            {manifestError}
+            {cloudReachable}
+            {cloudError}
+            {workspaces}
+            {hqFolderPath}
             useFixtures={coreUseFixtures}
             recovery={recoveryCard}
             onrecovery={handleRecoveryAction}
@@ -1128,6 +1189,10 @@
 
   /* Attention pending (conflicts / sync error / paused): amber, tokens
      rgb(240,168,0) light / rgb(250,204,21) dark via --warn (G7). */
+  .v4-core-dot.active {
+    color: var(--ice-ink);
+  }
+
   .v4-core-dot.warn {
     color: var(--warn);
   }

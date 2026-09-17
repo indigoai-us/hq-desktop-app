@@ -3,7 +3,12 @@
  *
  * Derives conflict header copy, drift / update pills, pack rows, and
  * pause-gated Sync Now behaviour from plain inputs — no Svelte / Tauri.
+ *
+ * PL-01/PL-02 added the sync status header and the four sync trouble notices
+ * the retired tray popover used to own.
  */
+
+import type { Issue } from "./copy-prompts.js";
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
 
@@ -59,6 +64,14 @@ export interface BuildCorePopoverInput {
    * its own neutral label/pill until the read actually resolves.
    */
   coreChecking?: boolean;
+  /** Reduced sync phase for the status header (PL-01). */
+  syncState?: string | null;
+  /** Ago label for "Last sync · …" (PL-01). */
+  lastSyncLabel?: string | null;
+  /** Live caption while a run is in flight (PL-01). */
+  syncCaption?: string | null;
+  /** Sync trouble inputs for the notice rows (PL-02). */
+  notices?: BuildCoreNoticeRowsInput;
 }
 
 // ── Outputs ──────────────────────────────────────────────────────────────────
@@ -101,6 +114,10 @@ export interface CorePopoverViewModel {
   pausedNotice: string | null;
   /** Sync Now is a no-op while paused. */
   syncNowAllowed: boolean;
+  /** Status header: state word, last-sync line, live caption (PL-01). */
+  syncHeader: CorePopoverSyncHeader;
+  /** Sync trouble rows, in tray-popover order (PL-02). */
+  notices: CoreNoticeRow[];
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -186,12 +203,20 @@ export function corePillDotTone(input: {
   syncState?: string | null;
   driftCount?: number;
   cloudPaused?: boolean;
-}): "ok" | "warn" {
+  /** PL-01: manifest / cloud trouble also lights the pill. */
+  manifestError?: string | null;
+  cloudReachable?: boolean;
+}): "ok" | "warn" | "active" {
   if ((input.conflictCount ?? 0) > 0) return "warn";
   const s = (input.syncState ?? "").toLowerCase();
   if (s === "conflict" || s === "error" || s === "auth-error") return "warn";
   if ((input.driftCount ?? 0) > 0) return "warn";
   if (input.cloudPaused) return "warn";
+  if ((input.manifestError ?? "").trim()) return "warn";
+  if (input.cloudReachable === false) return "warn";
+  // A healthy run in flight is not trouble — it gets its own quiet tone so the
+  // pill reads as "something is happening", never as "something is wrong".
+  if (s === "syncing") return "active";
   return "ok";
 }
 
@@ -347,6 +372,23 @@ export function buildCorePopoverViewModel(
     cloudPaused,
     pausedNotice: cloudPaused ? CLOUD_PAUSED_NOTICE : null,
     syncNowAllowed: isSyncNowAllowed(cloudPaused),
+    syncHeader: buildCoreSyncHeader({
+      syncState: input.syncState,
+      lastSyncLabel: input.lastSyncLabel,
+      syncCaption: input.syncCaption,
+      // The journal count (from `notices`) is authoritative when the caller
+      // supplies one: a conflict recorded on disk is real even when this
+      // session's event stream has not replayed it.
+      conflictCount: Math.max(
+        conflictCount,
+        input.notices?.conflictCount ?? 0,
+      ),
+    }),
+    notices: buildCoreNoticeRows({
+      syncState: input.syncState,
+      conflictCount,
+      ...(input.notices ?? {}),
+    }),
   };
 }
 
@@ -389,4 +431,242 @@ export function corePopoverFixtureInput(
     core: { ...CORE_POPOVER_FIXTURE_CORE },
     ...overrides,
   };
+}
+
+// ── Sync status header (PL-01) ───────────────────────────────────────────────
+
+/**
+ * Sync phases the Core popover header speaks about.
+ *
+ * Deliberately a superset union of `SyncState` (common/sync-model) and
+ * `SyncPhase` (home/sync-status) so the popover can be fed by either reducer
+ * without the caller mapping first. Unknown strings fall back to the healthy
+ * word, matching the old tray popover's `else` branch.
+ */
+export type CoreSyncPhase =
+  | "idle"
+  | "syncing"
+  | "conflict"
+  | "error"
+  | "auth-error"
+  | "setup-needed";
+
+/** Header tone. `active` is the in-flight blue; `warn` is the amber already
+ *  used by the drift pill and conflict card. No new colours. */
+export type CoreSyncTone = "ok" | "warn" | "active";
+
+/**
+ * State word. Copy is verbatim from the retired tray popover
+ * (`apps/sync/src/components/Popover.svelte` `statusTitle`) so the two
+ * surfaces never disagree about what a sync is doing.
+ */
+export function syncStateWord(phase: string | null | undefined): string {
+  switch ((phase ?? "").toLowerCase()) {
+    case "syncing":
+      return "Syncing";
+    case "auth-error":
+      return "Sign in required";
+    case "conflict":
+      return "Sync paused";
+    case "error":
+      return "Needs attention";
+    default:
+      return "All synced";
+  }
+}
+
+export function syncStateTone(phase: string | null | undefined): CoreSyncTone {
+  switch ((phase ?? "").toLowerCase()) {
+    case "syncing":
+      return "active";
+    case "auth-error":
+    case "conflict":
+    case "error":
+      return "warn";
+    default:
+      return "ok";
+  }
+}
+
+/**
+ * "Last sync · 3m ago" / "Last sync · never".
+ *
+ * The ago label itself is `lastSyncLabelFromLive` in the shell — this only
+ * frames it, so there is one place that decides the word "never".
+ */
+export function lastSyncLine(label: string | null | undefined): string {
+  const trimmed = (label ?? "").trim();
+  return `Last sync · ${trimmed || "never"}`;
+}
+
+export interface CorePopoverSyncHeader {
+  /** "All synced" / "Syncing" / "Sync paused" / … */
+  stateWord: string;
+  tone: CoreSyncTone;
+  /** Always present: "Last sync · …". */
+  lastSyncLine: string;
+  /** Live per-run caption, only while syncing. Null otherwise. */
+  caption: string | null;
+  syncing: boolean;
+}
+
+export interface BuildCoreSyncHeaderInput {
+  /** Reduced phase — `syncStateFromLive`, or the richer event-stream phase. */
+  syncState?: string | null;
+  /** Ago label from `lastSyncLabelFromLive`. Null → "never". */
+  lastSyncLabel?: string | null;
+  /** Live caption while syncing (`syncStatusLabel(...).detail` in the shell). */
+  syncCaption?: string | null;
+  /** Unresolved conflicts. > 0 forces "Sync paused" on an otherwise idle read:
+   *  a journal that reports conflicts is not "All synced", whatever the
+   *  event-stream phase says. A run in flight still wins — it is more recent. */
+  conflictCount?: number;
+}
+
+export function buildCoreSyncHeader(
+  input: BuildCoreSyncHeaderInput = {},
+): CorePopoverSyncHeader {
+  const raw = (input.syncState ?? "idle").toLowerCase();
+  const conflicts = Math.max(0, Math.floor(input.conflictCount ?? 0));
+  const phase =
+    raw === "syncing" || raw === "auth-error" || raw === "error"
+      ? raw
+      : conflicts > 0
+        ? "conflict"
+        : raw;
+  const syncing = phase === "syncing";
+  const caption = (input.syncCaption ?? "").trim();
+  return {
+    stateWord: syncStateWord(phase),
+    tone: syncStateTone(phase),
+    lastSyncLine: lastSyncLine(input.lastSyncLabel),
+    caption: syncing && caption ? caption : null,
+    syncing,
+  };
+}
+
+// ── Sync trouble notices (PL-02) ─────────────────────────────────────────────
+
+export type CoreNoticeKind =
+  | "conflict"
+  | "sync-failed"
+  | "manifest-error"
+  | "cloud-unreachable";
+
+export interface CoreNoticeRow {
+  kind: CoreNoticeKind;
+  /** Glyph tone — `alert` for blocking trouble, `warn` for degraded. */
+  tone: "alert" | "warn";
+  title: string;
+  body: string;
+  /** Raw error for the row `title=` tooltip. Already sanitized by the caller. */
+  detail: string | null;
+  /** Copy-prompt button label. */
+  copyLabel: string;
+  /** Open-in-Claude-Code label; null → the row is copy-only. */
+  openLabel: string | null;
+  /** Prompt descriptor handed to CopyPromptButton / OpenIssueInClaudeCode. */
+  issue: Issue;
+}
+
+export interface BuildCoreNoticeRowsInput {
+  syncState?: string | null;
+  conflictCount?: number;
+  conflictCompany?: string | null;
+  /** Message behind an `error` phase. Empty → no sync-failed row (matches
+   *  the tray popover, which required `errorMessage` to render it). */
+  errorMessage?: string | null;
+  errorCompany?: string | null;
+  /** Non-null → companies/manifest.yaml could not be read. */
+  manifestError?: string | null;
+  /** False → the cloud listing fell back to local folders. */
+  cloudReachable?: boolean;
+  /** Cloud error, ALREADY passed through `sanitizeVisibleIdentifiers`. */
+  cloudError?: string | null;
+}
+
+export function conflictNoticeBody(count: number): string {
+  const n = Math.max(0, Math.floor(count));
+  if (n <= 0) {
+    return "A file changed in two places. Resolve in Claude Code, then Sync again.";
+  }
+  return `${n} file${n === 1 ? "" : "s"} changed in two places. Resolve in Claude Code, then Sync again.`;
+}
+
+/**
+ * The four trouble rows, in the same order the tray popover rendered them.
+ *
+ * Each row owns its copy AND its prompt payload, so a row can never show one
+ * problem and hand Claude Code another.
+ */
+export function buildCoreNoticeRows(
+  input: BuildCoreNoticeRowsInput = {},
+): CoreNoticeRow[] {
+  const rows: CoreNoticeRow[] = [];
+  const phase = (input.syncState ?? "").toLowerCase();
+  const conflictCount = Math.max(0, Math.floor(input.conflictCount ?? 0));
+  const conflictCompany = input.conflictCompany ?? "";
+  const errorMessage = (input.errorMessage ?? "").trim();
+
+  if (phase === "conflict" || conflictCount > 0) {
+    rows.push({
+      kind: "conflict",
+      tone: "alert",
+      title: "Sync paused",
+      body: conflictNoticeBody(conflictCount),
+      detail: null,
+      copyLabel: "Copy prompt",
+      openLabel: "Resolve",
+      issue: {
+        kind: "sync-conflict",
+        payload: { count: conflictCount, company: conflictCompany },
+      },
+    });
+  }
+
+  if (phase === "error" && errorMessage) {
+    rows.push({
+      kind: "sync-failed",
+      tone: "alert",
+      title: "Finish sync in Claude Code",
+      body: "Sync started but needs a hand to complete.",
+      detail: errorMessage,
+      copyLabel: "Copy prompt",
+      openLabel: "Finish in Claude Code",
+      issue: {
+        kind: "sync-failed",
+        payload: { message: errorMessage, company: input.errorCompany ?? "" },
+      },
+    });
+  }
+
+  const manifestError = (input.manifestError ?? "").trim();
+  if (manifestError) {
+    rows.push({
+      kind: "manifest-error",
+      tone: "alert",
+      title: "Couldn’t read companies list",
+      body: "companies/manifest.yaml could not be read.",
+      detail: manifestError,
+      copyLabel: "Copy fix prompt",
+      openLabel: null,
+      issue: { kind: "manifest-error", payload: { error: manifestError } },
+    });
+  }
+
+  if (input.cloudReachable === false) {
+    const cloudError = (input.cloudError ?? "").trim();
+    rows.push({
+      kind: "cloud-unreachable",
+      tone: "warn",
+      title: "Cloud unreachable",
+      body: "Showing local folders.",
+      detail: cloudError || null,
+      copyLabel: "Copy diagnose prompt",
+      openLabel: null,
+      issue: { kind: "cloud-unreachable", payload: { error: cloudError } },
+    });
+  }
+
+  return rows;
 }
