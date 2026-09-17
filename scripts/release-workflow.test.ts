@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -694,6 +694,171 @@ describe("release workflow channel contract", () => {
     expect(guard).not.toContain("continue-on-error");
     expect(jobBody("macos")).toContain("needs: validate");
     expect(jobBody("windows")).toContain("needs: validate");
+
+    // "Previous" means the previous PUBLISHED release, and a tag is not a
+    // release. `git describe` alone named v0.10.277 — tagged, failed both
+    // Windows builds, never published — so v0.10.278 was refused for repeating
+    // notes nobody had ever seen. The walk collects stable ancestors and the
+    // script keeps the first one that actually published.
+    expect(guard).not.toMatch(/PREVIOUS_TAG=\$\(git describe/);
+    expect(guard).toContain(
+      'while candidate=$(git describe --tags --abbrev=0 --match \'v[0-9]*\' --exclude \'*-*\' "$cursor" 2>/dev/null); do',
+    );
+    expect(guard).toContain(
+      "node .release-control/scripts/release-previous-published-tag.mjs",
+    );
+    expect(guard).toContain('--repository "$TARGET_REPOSITORY" --candidates "$CANDIDATES"');
+    // Reading releases needs a token and the repo name, and the script is only
+    // on disk if the control-plane checkout asked for it.
+    expect(guard).toContain("GH_TOKEN: ${{ github.token }}");
+    expect(guard).toContain("TARGET_REPOSITORY: ${{ github.repository }}");
+    expect(validate).toContain("scripts/release-previous-published-tag.mjs");
+  });
+
+  // Running the guard's own Bash against a repo shaped like the failure: three
+  // stable tags where the middle one was tagged but never published, and the
+  // notes it was meant to ship are still under ## [Unreleased] because its
+  // version sync never ran. Only the GitHub API call is stubbed — the walk, the
+  // tag the walk lands on, and check-changelog.mjs are the real thing.
+  describe("release notes guard behaviour", () => {
+    const RELEASED = `# Changelog
+
+## [Unreleased]
+
+## [1.0.0] — 2026-01-01
+
+### Fixed
+
+- Sync no longer stops when a file is renamed while it uploads.
+`;
+    const PENDING = `# Changelog
+
+## [Unreleased]
+
+### Fixed
+
+- The signup page loads again.
+
+## [1.0.0] — 2026-01-01
+
+### Fixed
+
+- Sync no longer stops when a file is renamed while it uploads.
+`;
+
+    // Both cases read the same history and differ only in which tags the
+    // releases API admits to having published, so build it once.
+    let repo = "";
+    let guardEnv: NodeJS.ProcessEnv = {};
+
+    beforeAll(async () => {
+      const caseRoot = await mkdtemp(join(releasePolicyWorkdir, "notes-"));
+      repo = join(caseRoot, "repo");
+      const runnerTemp = join(caseRoot, "runner-temp");
+      const stubBin = join(caseRoot, "bin");
+      await mkdir(runnerTemp, { recursive: true });
+      await mkdir(stubBin, { recursive: true });
+      await writeFile(join(caseRoot, "released-CHANGELOG.md"), RELEASED);
+      await writeFile(join(caseRoot, "pending-CHANGELOG.md"), PENDING);
+
+      // One shell for the whole history: three commits, three stable tags.
+      //   v1.0.0  shipped, and its notes were promoted into their own section
+      //   v1.1.0  tagged over a change whose notes sit under Unreleased
+      //   v1.2.0  a later commit, notes STILL under Unreleased
+      // Whether that last state is a bug depends entirely on whether v1.1.0
+      // ever published — the thing a bare `git describe` cannot see.
+      const setup = await runCommand(caseRoot, "bash", [
+        "-c",
+        `set -euo pipefail
+export GIT_AUTHOR_NAME="Release notes test" GIT_AUTHOR_EMAIL="release-test@example.com"
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+git init --initial-branch=main --quiet repo
+cd repo
+cp ../released-CHANGELOG.md CHANGELOG.md
+git add --all && git commit --quiet -m "release 1.0.0" && git tag v1.0.0
+cp ../pending-CHANGELOG.md CHANGELOG.md
+git add --all && git commit --quiet -m "fix the signup page" && git tag v1.1.0
+printf 'later work\\n' > app.txt
+git add --all && git commit --quiet -m "later work" && git tag v1.2.0`,
+      ]);
+      if (setup.code !== 0) {
+        throw new Error(`release notes fixture failed:\n${setup.output}`);
+      }
+
+      // The control plane, laid out as the sparse checkout leaves it.
+      await mkdir(join(repo, ".release-control/.github/scripts"), { recursive: true });
+      await mkdir(join(repo, ".release-control/scripts"), { recursive: true });
+      await copyFile(
+        resolve(rootDir, ".github/scripts/check-changelog.mjs"),
+        join(repo, ".release-control/.github/scripts/check-changelog.mjs"),
+      );
+      await writeFile(
+        join(repo, ".release-control/scripts/release-previous-published-tag.mjs"),
+        "throw new Error('the stubbed node must intercept this script');\n",
+      );
+
+      // Stub the one thing a test cannot reach: the releases API. The real
+      // selector's own behaviour is covered in
+      // scripts/release-previous-published-tag.test.ts.
+      const selector = join(caseRoot, "fake-selector.mjs");
+      await writeFile(
+        selector,
+        `import { readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const file = args[args.indexOf("--candidates") + 1];
+const published = new Set((process.env.FAKE_PUBLISHED_TAGS ?? "").split(",").filter(Boolean));
+const candidates = readFileSync(file, "utf8").split("\\n").map((line) => line.trim()).filter(Boolean);
+console.error(\`candidates: \${candidates.join(" ")}\`);
+const chosen = candidates.find((tag) => published.has(tag));
+if (chosen) console.log(chosen);
+`,
+      );
+      const stubNode = join(stubBin, "node");
+      await writeFile(
+        stubNode,
+        `#!/usr/bin/env bash
+if [ "\${1##*/}" = "release-previous-published-tag.mjs" ]; then
+  exec "$REAL_NODE" "${selector}" "$@"
+fi
+exec "$REAL_NODE" "$@"
+`,
+      );
+      await chmod(stubNode, 0o755);
+
+      guardEnv = {
+        EVENT_NAME: "push",
+        TAG: "v1.2.0",
+        CHANNEL: "stable",
+        GH_TOKEN: "test-token",
+        TARGET_REPOSITORY: "indigoai-us/hq-desktop-app",
+        RUNNER_TEMP: runnerTemp,
+        REAL_NODE: process.execPath,
+        PATH: `${stubBin}:${process.env.PATH ?? ""}`,
+      };
+    }, 60_000);
+
+    const invokeNotesGuard = (publishedTags: string[]) =>
+      runCommand(repo, "bash", ["-c", stepScript(jobBody("validate"), "Refuse to release empty release notes")], {
+        ...guardEnv,
+        FAKE_PUBLISHED_TAGS: publishedTags.join(","),
+      });
+
+    it("releases notes a tagged-but-unpublished predecessor never shipped", async () => {
+      const result = await invokeNotesGuard(["v1.0.0"]);
+
+      expect(result.code, result.output).toBe(0);
+      expect(result.output).toContain("to release as 1.2.0");
+      // Nearest ancestor first, so the happy path costs one API call.
+      expect(result.output).toContain("candidates: v1.1.0 v1.0.0");
+    }, 30_000);
+
+    it("still refuses to publish the previous release's notes a second time", async () => {
+      const result = await invokeNotesGuard(["v1.1.0", "v1.0.0"]);
+
+      expect(result.code, result.output).toBe(1);
+      expect(result.output).toContain("Refusing to release 1.2.0");
+      expect(result.output).toContain("1.1.0 already published");
+    }, 30_000);
   });
 
   it("leads the GitHub release body with the tag's CHANGELOG notes", () => {
