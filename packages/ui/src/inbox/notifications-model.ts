@@ -629,9 +629,18 @@ export function reduceFilter(
 }
 
 /** Visible items for the current filter, day-grouped. */
+const EMPTY_DISMISSED: ReadonlySet<string> = new Set<string>();
+
 export function buildNotificationsView(
   state: NotificationsFeedState,
   now: number = Date.now(),
+  /**
+   * Session-local dismissals, by row id. Filtered here rather than removed from
+   * `state.items` so a dismissal never looks like an ack: the row leaves the
+   * list, but `unreadCount` is untouched and the bell keeps counting it.
+   * Dismissing is "not now", not "I read this".
+   */
+  dismissed: ReadonlySet<string> = EMPTY_DISMISSED,
 ): {
   groups: NotificationsDayGroup[];
   headerTitle: string;
@@ -639,7 +648,11 @@ export function buildNotificationsView(
   badgeText: string | null;
   visibleCount: number;
 } {
-  const visible = filterNotifications(state.items, state.filter);
+  const kept =
+    dismissed.size === 0
+      ? state.items
+      : state.items.filter((item) => !dismissed.has(item.id));
+  const visible = filterNotifications(kept, state.filter);
   return {
     groups: groupNotificationsByDay(visible, now),
     headerTitle: "Notifications",

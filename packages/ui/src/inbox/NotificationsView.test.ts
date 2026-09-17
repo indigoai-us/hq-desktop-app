@@ -74,3 +74,48 @@ it('keeps the rows on screen when a page fails, and offers a retry', async () =>
     expect(host.querySelector<HTMLButtonElement>('[data-testid="notifications-load-more"]')!.textContent).toContain('Try again');
   } finally {await unmount(component); host.remove();}
 });
+
+it('dismisses a row without marking it read', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const ackNotification = vi.fn(async () => {});
+  const readAllNotifications = vi.fn(async () => {});
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications: async () => ({notifications: [
+      {id:'keep',type:'dm',actorName:'Ada',body:'keep me',targetRef:'/messages',status:'unread',createdAt:'2026-09-06T03:36:00Z'},
+      {id:'go',type:'dm',actorName:'Bob',body:'dismiss me',targetRef:'/messages',status:'unread',createdAt:'2026-09-06T03:35:00Z'},
+    ], unreadCount: 2, nextCursor: null}),
+    ackNotification, readAllNotifications, runNotificationAction: async () => ({}),
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('dismiss me'));
+    const rows = [...host.querySelectorAll<HTMLElement>('[data-testid="notifications-row"]')];
+    const target = rows.find((r) => r.dataset.notificationId === 'go')!;
+    target.querySelector<HTMLButtonElement>('[data-testid="notifications-dismiss"]')!.click();
+
+    await vi.waitFor(() => expect(host.textContent).not.toContain('dismiss me'));
+    expect(host.textContent).toContain('keep me');
+    // Dismiss is "not now", not "I read this": no ack goes to the server and
+    // the unread total is untouched, so the bell still counts it.
+    expect(ackNotification).not.toHaveBeenCalled();
+    expect(readAllNotifications).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('2 unread');
+  } finally {await unmount(component); host.remove();}
+});
+
+it('dismissing does not also open the conversation', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const onopen = vi.fn();
+  const component = mount(NotificationsView, {target: host, props: {onopen, api: {
+    fetchNotifications: async () => ({notifications: [
+      {id:'go',type:'dm',actorName:'Bob',body:'dismiss me',targetRef:'/messages',status:'unread',createdAt:'2026-09-06T03:35:00Z'},
+    ], unreadCount: 1, nextCursor: null}),
+    ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}),
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('dismiss me'));
+    // The whole row is a button; the dismiss control sits inside it.
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-dismiss"]')!.click();
+    await vi.waitFor(() => expect(host.textContent).not.toContain('dismiss me'));
+    expect(onopen).not.toHaveBeenCalled();
+  } finally {await unmount(component); host.remove();}
+});

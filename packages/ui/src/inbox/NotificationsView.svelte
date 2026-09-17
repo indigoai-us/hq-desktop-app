@@ -67,7 +67,15 @@
   let loadGeneration = 0;
   let unavailableNotification = $state<NotificationItem | null>(null);
 
-  const view = $derived(buildNotificationsView(feedState));
+  /**
+   * Session-local dismissals. There is no backend dismiss, so this is a "not
+   * now" gesture: the row leaves the list, `unreadCount` is untouched, and the
+   * bell keeps counting it. Deliberately NOT persisted — a dismissal that
+   * outlived the session would hide a notification the reader never handled,
+   * with no way to get it back.
+   */
+  let dismissed = $state<ReadonlySet<string>>(new Set<string>());
+  const view = $derived(buildNotificationsView(feedState, Date.now(), dismissed));
   /** Track filter as a primitive so load effect does not re-fire on every feedState rewrite. */
   const filter = $derived(feedState.filter);
   const unreadCount = $derived(feedState.unreadCount);
@@ -188,6 +196,12 @@
     } finally {
       if (generation === loadGeneration) loadingMore = false;
     }
+  }
+
+  function dismissRow(id: string): void {
+    const next = new Set(dismissed);
+    next.add(id);
+    dismissed = next;
   }
 
   function setFilter(next: NotificationsFilter): void {
@@ -530,6 +544,29 @@
                         aria-label="Unread"
                       ></span>
                     {/if}
+                    <!-- stopPropagation: the whole row is a button that opens
+                         the conversation, and dismissing must not also open it. -->
+                    <button
+                      type="button"
+                      class="notif-dismiss"
+                      data-testid="notifications-dismiss"
+                      aria-label={`Dismiss: ${row.verbText}`}
+                      title="Dismiss for now"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        dismissRow(row.id);
+                      }}
+                      onkeydown={(e) => e.stopPropagation()}
+                    >
+                      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
+                        <path
+                          d="M4.5 4.5l7 7M11.5 4.5l-7 7"
+                          stroke="currentColor"
+                          stroke-width="1.3"
+                          stroke-linecap="round"
+                        />
+                      </svg>
+                    </button>
                   </span>
                 </div>
               </li>
@@ -563,6 +600,32 @@
 </section>
 
 <style>
+  .notif-dismiss {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    padding: 2px;
+    margin-left: 2px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    /* Revealed on row hover or when focused, so it never competes with the
+       content at rest but stays keyboard-reachable. */
+    opacity: 0;
+  }
+
+  .notif-row:hover .notif-dismiss,
+  .notif-dismiss:focus-visible {
+    opacity: 1;
+  }
+
+  .notif-dismiss:hover {
+    color: var(--t1);
+    background: var(--v4-inset);
+  }
+
   .notif-more {
     display: flex;
     flex-direction: column;
