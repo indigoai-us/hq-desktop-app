@@ -4309,6 +4309,7 @@ mod windows_test_fixture {
     };
 
     pub(super) const DEADLINE: Duration = Duration::from_secs(30);
+    const READINESS_DEADLINE: Duration = Duration::from_secs(90);
     const POLL: Duration = Duration::from_millis(20);
     const STILL_ACTIVE: u32 = 259;
 
@@ -4342,35 +4343,95 @@ mod windows_test_fixture {
         path.to_string_lossy().replace('\'', "''")
     }
 
-    fn try_read_pid(path: &std::path::Path) -> Option<u32> {
-        std::fs::read_to_string(path)
-            .ok()?
-            .trim()
-            .parse::<u32>()
-            .ok()
+    fn await_marker(path: &std::path::Path, description: &str) {
+        let started = Instant::now();
+        let mut last_observation = "the marker has not been checked yet".to_string();
+        loop {
+            match std::fs::metadata(path) {
+                Ok(_) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    last_observation = "the marker does not exist".to_string();
+                }
+                Err(error) => {
+                    last_observation = format!("reading the marker failed: {error}");
+                }
+            }
+
+            if started.elapsed() >= READINESS_DEADLINE {
+                panic!(
+                    "timed out after {READINESS_DEADLINE:?} waiting for {description} at {}; last observed: {last_observation}",
+                    path.display()
+                );
+            }
+            thread::sleep(POLL);
+        }
     }
 
     /// A PID marker is ready only after its complete numeric contents are
     /// readable. `File::exists` observes the destination before a non-atomic
     /// writer necessarily completes, so it is not a publication acknowledgement.
     fn await_pid(path: &std::path::Path, description: &str) -> u32 {
-        let mut pid = None;
-        await_bounded(description, || {
-            pid = try_read_pid(path);
-            pid.is_some()
-        });
-        pid.expect("a successful PID readiness check must retain the parsed PID")
+        let started = Instant::now();
+        let mut last_observation = "the marker has not been checked yet".to_string();
+        loop {
+            match std::fs::read_to_string(path) {
+                Ok(contents) => match contents.trim().parse::<u32>() {
+                    Ok(pid) => return pid,
+                    Err(error) => {
+                        last_observation = format!(
+                            "the marker contained {:?}, not a complete numeric PID: {error}",
+                            contents.trim()
+                        );
+                    }
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    last_observation = "the marker does not exist".to_string();
+                }
+                Err(error) => {
+                    last_observation = format!("reading the marker failed: {error}");
+                }
+            }
+
+            if started.elapsed() >= READINESS_DEADLINE {
+                panic!(
+                    "timed out after {READINESS_DEADLINE:?} waiting for {description} at {}; last observed: {last_observation}",
+                    path.display()
+                );
+            }
+            thread::sleep(POLL);
+        }
+    }
+
+    fn await_descendant_of(root_pid: u32, descendant_pid: u32) {
+        let started = Instant::now();
+        let mut observed = Vec::new();
+        loop {
+            observed = windows_descendants(root_pid);
+            if observed.contains(&descendant_pid) {
+                return;
+            }
+
+            if started.elapsed() >= READINESS_DEADLINE {
+                panic!(
+                    "timed out after {READINESS_DEADLINE:?} waiting for descendant readiness PID {descendant_pid} to belong to fixture root {root_pid}; last observed descendants: {observed:?}"
+                );
+            }
+            thread::sleep(POLL);
+        }
     }
 
     /// The fixture has explicit start, descendant-ready, PID-publication, and
-    /// release/exit states. `exit_delay` is deliberately controlled by the
-    /// child itself so a natural delayed exit is testable without timing races.
+    /// release/exit states. Both its parent and descendant wait for the release
+    /// marker, so cancellation tests cannot race a naturally completed root.
+    /// `exit_delay` is deliberately controlled by the child itself so a natural
+    /// delayed exit is testable without timing races.
     pub(super) struct Protocol {
         _dir: tempfile::TempDir,
         start_gate: PathBuf,
         publish_gate: PathBuf,
         release_gate: PathBuf,
         parent_ready: PathBuf,
+        parent_hold_ready: PathBuf,
         descendant_ready: PathBuf,
         published_pid: PathBuf,
         exit_delay_ms: u64,
@@ -4404,6 +4465,7 @@ mod windows_test_fixture {
                 publish_gate: path("allow-pid-publication"),
                 release_gate: path("allow-descendant-exit"),
                 parent_ready: path("parent-ready.pid"),
+                parent_hold_ready: path("parent-hold-ready"),
                 descendant_ready: path("descendant-ready.pid"),
                 published_pid: path("descendant-published.pid"),
                 exit_delay_ms: exit_delay.as_millis().min(u128::from(u64::MAX)) as u64,
@@ -4459,6 +4521,8 @@ $child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'powershell.exe' 
 while (-not [System.IO.File]::Exists('{descendant_ready}')) {{ Start-Sleep -Milliseconds 10 }}
 while (-not [System.IO.File]::Exists('{publish_gate}')) {{ Start-Sleep -Milliseconds 10 }}
 Write-PidAtomically -Path '{published_pid}' -Value $child.Id
+[System.IO.File]::WriteAllText('{parent_hold_ready}', 'ready')
+while (-not [System.IO.File]::Exists('{release_gate}')) {{ Start-Sleep -Milliseconds 10 }}
 $child.WaitForExit()
 exit $child.ExitCode
 "#,
@@ -4470,6 +4534,7 @@ exit $child.ExitCode
                     exit_delay_ms = self.exit_delay_ms,
                     publish_gate = powershell_quote(&self.publish_gate),
                     published_pid = powershell_quote(&self.published_pid),
+                    parent_hold_ready = powershell_quote(&self.parent_hold_ready),
                 ),
             )
             .expect("write Windows parent fixture");
@@ -4489,9 +4554,10 @@ exit $child.ExitCode
         }
 
         pub(super) fn await_parent_ready(&self) {
-            await_bounded("the fixture parent to acknowledge its start gate", || {
-                self.parent_ready.exists()
-            });
+            await_marker(
+                &self.parent_ready,
+                "the fixture parent to acknowledge its start gate",
+            );
         }
 
         /// Drive the spawn handshake after the production runner registered the
@@ -4506,9 +4572,7 @@ exit $child.ExitCode
             std::fs::write(&self.start_gate, "go").expect("open descendant start gate");
             let descendant = await_pid(&self.descendant_ready, "descendant readiness PID");
             assert!(pid_alive(descendant), "the ready descendant must be live");
-            await_bounded("the ready descendant to belong to the fixture root", || {
-                windows_descendants(root_pid).contains(&descendant)
-            });
+            await_descendant_of(root_pid, descendant);
             assert!(
                 !self.published_pid.exists(),
                 "the parent must not publish its descendant PID before the publication gate"
@@ -4519,11 +4583,38 @@ exit $child.ExitCode
                 descendant,
                 "the parent must publish the same live PID that acknowledged readiness"
             );
+            await_marker(
+                &self.parent_hold_ready,
+                "the fixture parent to acknowledge its release hold",
+            );
             descendant
         }
 
         pub(super) fn release_descendant(&self) {
             std::fs::write(&self.release_gate, "go").expect("open descendant release gate");
+        }
+
+        /// This is the precondition for a cancellation proof. With the release
+        /// marker absent, neither fixture process has a natural exit path; the
+        /// liveness checks make that invariant observable immediately before
+        /// production cancellation is issued.
+        pub(super) fn assert_tree_held(&self, root_pid: u32, descendant_pid: u32) {
+            assert!(
+                !self.release_gate.exists(),
+                "the cancellation fixture must not release its tree before cancellation"
+            );
+            assert!(
+                self.parent_hold_ready.exists(),
+                "the fixture parent must acknowledge its release hold before cancellation"
+            );
+            assert!(
+                pid_alive(root_pid),
+                "the held fixture root must still be live immediately before cancellation"
+            );
+            assert!(
+                pid_alive(descendant_pid),
+                "the held fixture descendant must still be live immediately before cancellation"
+            );
         }
     }
 
@@ -5950,10 +6041,17 @@ mod windows_job_attachment_failure_tests {
     struct ExactChildGuard {
         child: Option<std::process::Child>,
         pid: u32,
+        reaped: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
 
     impl ExactChildGuard {
         fn spawn() -> Self {
+            Self::spawn_with_reap_acknowledgement(None)
+        }
+
+        fn spawn_with_reap_acknowledgement(
+            reaped: Option<Arc<std::sync::atomic::AtomicBool>>,
+        ) -> Self {
             let child = Command::new("cmd.exe")
                 .args(["/d", "/c", "ping 127.0.0.1 -n 600 > nul"])
                 .stdout(Stdio::null())
@@ -5964,6 +6062,7 @@ mod windows_job_attachment_failure_tests {
             Self {
                 child: Some(child),
                 pid,
+                reaped,
             }
         }
 
@@ -5987,6 +6086,9 @@ mod windows_job_attachment_failure_tests {
                 // failed kill/wait must leave it owned for Drop's retry and
                 // its diagnostic abort path.
                 let _ = self.child.take();
+                if let Some(reaped) = &self.reaped {
+                    reaped.store(true, std::sync::atomic::Ordering::Release);
+                }
             }
             result
         }
@@ -6137,6 +6239,11 @@ mod windows_job_attachment_failure_tests {
             cancel_process_for_generation(&self.handle, self.generation, cause, Duration::ZERO)
         }
 
+        fn assert_tree_held(&self) {
+            self.protocol
+                .assert_tree_held(self.root_pid, self.descendant_pid);
+        }
+
         fn tree_is_gone(&self) -> bool {
             (self.root_pid == 0 || !pid_alive(self.root_pid))
                 && (self.descendant_pid == 0 || !pid_alive(self.descendant_pid))
@@ -6231,6 +6338,7 @@ mod windows_job_attachment_failure_tests {
         }
 
         fn finish_cancelled(&mut self, cause: SyncCancelCause) -> Terminal {
+            self.assert_tree_held();
             let attempt = self.cancel(cause);
             assert!(attempt.executed, "the exact generation must be cancellable");
             assert!(
@@ -6436,6 +6544,31 @@ mod windows_job_attachment_failure_tests {
     }
 
     #[test]
+    fn fixture_parent_stays_held_when_its_descendant_exits_early() {
+        let mut fixture = start_fixture_with_forced_attachment_failure(
+            "fixture-parent-hold",
+            TestJobAssignmentOutcome::CreateFailed,
+        );
+
+        // This models the prior race directly. The descendant must be able to
+        // disappear without making the parent naturally complete before the
+        // test explicitly releases the fixture. The old parent waited only on
+        // the child, so this assertion failed before cancellation could begin.
+        assert!(terminate_windows_pid_tree(fixture.descendant_pid));
+        await_bounded("the early fixture descendant to disappear", || {
+            !pid_alive(fixture.descendant_pid)
+        });
+        assert!(
+            pid_alive(fixture.root_pid),
+            "the release-gated fixture parent must remain live after its descendant exits"
+        );
+
+        fixture.protocol.release_descendant();
+        let _ = fixture.await_terminal();
+        fixture.assert_tree_gone();
+    }
+
+    #[test]
     fn fixture_protocol_isolated_under_repeated_parallel_use() {
         for cycle in 0..2 {
             let mut job = start_fixture(&format!("parallel-job-{cycle}"), None, Duration::ZERO);
@@ -6448,6 +6581,9 @@ mod windows_job_attachment_failure_tests {
             let job_generation = job.generation;
             let fallback_handle = fallback.handle.clone();
             let fallback_generation = fallback.generation;
+
+            job.assert_tree_held();
+            fallback.assert_tree_held();
 
             let (job_attempt, fallback_attempt) = thread::scope(|scope| {
                 let job = scope.spawn(|| {
@@ -6492,6 +6628,7 @@ mod windows_job_attachment_failure_tests {
             "job-fallback-ineffective",
             TestJobAssignmentOutcome::CreateFailed,
         );
+        fixture.assert_tree_held();
 
         // Force ONLY the root TerminateProcess to fail. The cancellation runs
         // on this thread, so the thread-local injection applies to it.
@@ -6669,12 +6806,14 @@ mod windows_job_attachment_failure_tests {
     #[test]
     fn unrelated_sibling_guard_kills_and_waits_during_unwind() {
         use std::panic::{catch_unwind, AssertUnwindSafe};
-        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
         let sibling_pid = Arc::new(AtomicU32::new(0));
+        let sibling_reaped = Arc::new(AtomicBool::new(false));
         let panic_pid = sibling_pid.clone();
+        let panic_reaped = sibling_reaped.clone();
         let panic_result = catch_unwind(AssertUnwindSafe(move || {
-            let sibling = ExactChildGuard::spawn();
+            let sibling = ExactChildGuard::spawn_with_reap_acknowledgement(Some(panic_reaped));
             panic_pid.store(sibling.pid(), Ordering::Release);
             panic!("injected assertion after unrelated sibling startup");
         }));
@@ -6682,9 +6821,10 @@ mod windows_job_attachment_failure_tests {
         assert!(panic_result.is_err(), "the injected assertion must unwind");
         let pid = sibling_pid.load(Ordering::Acquire);
         assert_ne!(pid, 0, "the sibling guard must publish its exact child PID");
-        await_bounded("the unwound sibling guard to reap its exact child", || {
-            !pid_alive(pid)
-        });
+        assert!(
+            sibling_reaped.load(Ordering::Acquire),
+            "the sibling guard must kill and wait for its exact child during unwind"
+        );
     }
 
     #[test]

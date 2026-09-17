@@ -26,6 +26,7 @@
 //! deliberately NOT used for writes here — a typed round-trip would silently
 //! drop unknown / future top-level keys.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -41,6 +42,22 @@ pub enum LaunchKind {
     ExistingUpdate,
     /// First-run sequence already completed on a prior launch.
     Normal,
+}
+
+/// Result of reading the untyped menubar settings object.
+///
+/// `Absent` is the only result that proves this is a fresh install. A present
+/// file that could not be read or did not contain a JSON object is evidence of
+/// an existing installation and must not be treated as an empty settings map.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MenubarRead {
+    Absent,
+    Object(Map<String, Value>),
+    Unreadable,
+    Unparseable,
+    /// A previous safe-write attempt moved corrupt settings aside but did not
+    /// finish writing a replacement before the process stopped.
+    PreservedCorrupt,
 }
 
 /// Pure classifier over an already-parsed `menubar.json` object. Kept
@@ -65,6 +82,21 @@ pub fn classify_from_map(obj: &Map<String, Value>) -> LaunchKind {
     }
 }
 
+/// Classify a launch from a status-aware menubar settings read.
+///
+/// A damaged settings file belongs to a machine that has run HQ before, so
+/// `Normal` is safer than re-opening onboarding and offering to overwrite the
+/// file with first-run defaults.
+pub fn classify_from_menubar_read(read: &MenubarRead) -> LaunchKind {
+    match read {
+        MenubarRead::Absent => classify_from_map(&Map::new()),
+        MenubarRead::Object(obj) => classify_from_map(obj),
+        MenubarRead::Unreadable | MenubarRead::Unparseable | MenubarRead::PreservedCorrupt => {
+            LaunchKind::Normal
+        }
+    }
+}
+
 /// Whether the launch should surface the main window automatically.
 ///
 /// Fresh installs need the installer/onboarding window immediately; existing
@@ -80,28 +112,133 @@ pub fn notice_shown_in_map(obj: &Map<String, Value>) -> bool {
         .unwrap_or(false)
 }
 
-/// Read `menubar.json` at `path` as an untyped object. Missing / malformed /
-/// non-object files degrade to an empty map (same leniency as
-/// `ensure_machine_id`).
-pub fn read_menubar_obj(path: &Path) -> Map<String, Value> {
-    if !path.exists() {
-        return Map::new();
+/// Read `menubar.json` without collapsing a damaged file into an empty map.
+pub fn read_menubar(path: &Path) -> MenubarRead {
+    match fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str::<Value>(&contents) {
+            Ok(Value::Object(obj)) => MenubarRead::Object(obj),
+            Ok(_) | Err(_) => MenubarRead::Unparseable,
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // A dangling symlink produces NotFound when opened even though a
+            // settings entry exists. It is not evidence of a fresh install.
+            if fs::symlink_metadata(path).is_ok() {
+                MenubarRead::Unreadable
+            } else if corrupt_menubar_backup_exists(path) {
+                MenubarRead::PreservedCorrupt
+            } else {
+                MenubarRead::Absent
+            }
+        }
+        Err(_) => MenubarRead::Unreadable,
     }
-    fs::read_to_string(path)
+}
+
+/// Read `menubar.json` as an untyped object for callers whose established
+/// absence behavior is an empty map. Launch classification and writes must use
+/// [`read_menubar`] so they can preserve the distinction above.
+pub fn read_menubar_obj(path: &Path) -> Map<String, Value> {
+    match read_menubar(path) {
+        MenubarRead::Object(obj) => obj,
+        MenubarRead::Absent
+        | MenubarRead::Unreadable
+        | MenubarRead::Unparseable
+        | MenubarRead::PreservedCorrupt => Map::new(),
+    }
+}
+
+fn corrupt_menubar_backup_path(path: &Path, attempt: u8) -> Result<std::path::PathBuf, String> {
+    let mut file_name: OsString = path
+        .file_name()
+        .map(OsString::from)
+        .ok_or_else(|| "HQ settings file could not be preserved".to_string())?;
+    if attempt == 0 {
+        file_name.push(".corrupt");
+    } else {
+        file_name.push(format!(".corrupt-{attempt}"));
+    }
+    Ok(path.with_file_name(file_name))
+}
+
+fn corrupt_menubar_backup_exists(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let Some(file_name) = path.file_name() else {
+        return false;
+    };
+    let prefix = format!("{}.corrupt", file_name.to_string_lossy());
+    fs::read_dir(parent)
         .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .any(|name| {
+            name == prefix
+                || name
+                    .strip_prefix(&prefix)
+                    .is_some_and(|rest| rest.starts_with('-'))
+        })
+}
+
+/// Rename a malformed settings file aside before creating a replacement.
+///
+/// Never write a replacement unless the original is safely recoverable. This
+/// also avoids making a truncated write permanent after a crash or power loss.
+fn preserve_unparseable_menubar(path: &Path) -> Result<(), String> {
+    for attempt in 0..=100 {
+        let backup = corrupt_menubar_backup_path(path, attempt)?;
+        // `rename` replaces an existing destination on Unix, so it cannot be
+        // used to claim a numbered recovery path. A hard link atomically adds
+        // the backup directory entry only when it is absent; after that claim,
+        // unlinking the original leaves the same bytes safely recoverable.
+        match fs::hard_link(path, &backup) {
+            Ok(()) => match fs::remove_file(path) {
+                Ok(()) => return Ok(()),
+                Err(_) => {
+                    return Err(
+                        "HQ settings file could not be preserved; it was not changed".to_string(),
+                    )
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => {
+                return Err(
+                    "HQ settings file could not be preserved; it was not changed".to_string(),
+                )
+            }
+        }
+    }
+    Err("HQ settings file could not be preserved; it was not changed".to_string())
+}
+
+/// Read settings before a write while preserving any corrupt source file.
+///
+/// A returned map is safe to merge and replace. `None` means the settings
+/// file is genuinely absent, or that an earlier guarded write already moved a
+/// corrupt source aside. A present but unreadable file is never replaced.
+pub fn prepare_menubar_write(path: &Path) -> Result<Option<Map<String, Value>>, String> {
+    match read_menubar(path) {
+        MenubarRead::Absent | MenubarRead::PreservedCorrupt => Ok(None),
+        MenubarRead::Object(obj) => Ok(Some(obj)),
+        MenubarRead::Unreadable => {
+            Err("HQ settings file could not be read; it was not changed".to_string())
+        }
+        MenubarRead::Unparseable => {
+            preserve_unparseable_menubar(path)?;
+            Ok(None)
+        }
+    }
 }
 
 /// Untyped-merge `updates` into the `menubar.json` at `path` and atomic-rename
 /// it back. Unknown / future top-level keys pass through unchanged. Mirrors the
 /// `config::ensure_machine_id` write algorithm exactly.
 ///
-/// `pub(crate)` so sibling commands (e.g. `hq_cli_update`'s per-version
-/// dismissal flag) write through the same untyped-merge path instead of the
-/// typed `save_settings` round-trip, which would drop any key not in
-/// `MenubarPrefs`.
+/// Callers (e.g. `hq_cli_update`'s per-version dismissal flag) write through
+/// the same untyped-merge path instead of the typed `save_settings`
+/// round-trip, which would drop any key not in `MenubarPrefs`.
 fn write_menubar_obj(path: &Path, obj: Map<String, Value>) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -116,7 +253,7 @@ fn write_menubar_obj(path: &Path, obj: Map<String, Value>) -> Result<(), String>
 }
 
 pub fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(), String> {
-    let mut obj = read_menubar_obj(path);
+    let mut obj = prepare_menubar_write(path)?.unwrap_or_default();
     for (k, v) in updates {
         obj.insert((*k).to_string(), v.clone());
     }
@@ -154,7 +291,10 @@ pub fn ensure_install_attempt_id(
         }
     }
     let minted = mint();
-    merge_menubar_flags(path, &[(INSTALL_ATTEMPT_ID_KEY, Value::String(minted.clone()))])?;
+    merge_menubar_flags(
+        path,
+        &[(INSTALL_ATTEMPT_ID_KEY, Value::String(minted.clone()))],
+    )?;
     Ok(minted)
 }
 
@@ -167,10 +307,9 @@ pub const RETIRED_HQ_WORK_HANDOFF_KEY: &str = "hqWorkHandoff";
 /// Remove top-level keys from `menubar.json`. Missing file / missing keys are
 /// success (idempotent). Returns whether any named key was actually present.
 pub fn remove_menubar_keys(path: &Path, keys: &[&str]) -> Result<bool, String> {
-    if !path.exists() {
+    let Some(mut obj) = prepare_menubar_write(path)? else {
         return Ok(false);
-    }
-    let mut obj = read_menubar_obj(path);
+    };
     let mut changed = false;
     for key in keys {
         if obj.remove(*key).is_some() {
@@ -530,6 +669,59 @@ mod tests {
     }
 
     #[test]
+    fn classify_absent_settings_file_is_first_run() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("menubar.json");
+
+        assert_eq!(
+            classify_from_menubar_read(&read_menubar(&path)),
+            LaunchKind::FirstRun
+        );
+    }
+
+    #[test]
+    fn classify_present_but_unreadable_settings_file_is_normal() {
+        let dir = TempDir::new().unwrap();
+        // A directory is present at the settings path, so `read_to_string`
+        // deterministically returns an I/O error without relying on platform
+        // permission semantics (or running tests as a particular user).
+        let path = dir.path().join("menubar.json");
+        fs::create_dir(&path).unwrap();
+
+        assert_eq!(
+            classify_from_menubar_read(&read_menubar(&path)),
+            LaunchKind::Normal
+        );
+    }
+
+    #[test]
+    fn classify_unparseable_settings_file_is_normal() {
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(&dir, r#"{"firstRunCompleted":true"#);
+
+        assert_eq!(
+            classify_from_menubar_read(&read_menubar(&path)),
+            LaunchKind::Normal
+        );
+    }
+
+    #[test]
+    fn classify_preserved_corrupt_settings_backup_is_normal() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(
+            path.with_file_name("menubar.json.corrupt"),
+            r#"{"truncated"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            classify_from_menubar_read(&read_menubar(&path)),
+            LaunchKind::Normal
+        );
+    }
+
+    #[test]
     fn classify_existing_user_update() {
         // machineId present (app ran before), but no firstRunCompleted yet.
         let obj = map(json!({ "machineId": "abc-123" }));
@@ -631,6 +823,66 @@ mod tests {
     }
 
     #[test]
+    fn merge_preserves_unparseable_settings_before_writing_replacement() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("menubar.json");
+        let corrupt = r#"{"machineId":"keep-me""#;
+        fs::write(&path, corrupt).unwrap();
+
+        merge_menubar_flags(&path, &[("autoSyncNoticeShown", Value::Bool(true))]).unwrap();
+
+        let preserved = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|candidate| {
+                candidate != &path && fs::read_to_string(candidate).ok().as_deref() == Some(corrupt)
+            });
+        assert!(
+            preserved.is_some(),
+            "the corrupt settings file must be preserved before a replacement is written"
+        );
+        assert!(notice_shown_in_map(&read_menubar_obj(&path)));
+    }
+
+    #[test]
+    fn merge_keeps_an_existing_recovery_copy_when_preserving_new_corruption() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("menubar.json");
+        let first_corruption = r#"{"machineId":"first""#;
+        let second_corruption = r#"{"machineId":"second""#;
+        let first_backup = path.with_file_name("menubar.json.corrupt");
+        fs::write(&first_backup, first_corruption).unwrap();
+        fs::write(&path, second_corruption).unwrap();
+
+        merge_menubar_flags(&path, &[("autoSyncNoticeShown", Value::Bool(true))]).unwrap();
+
+        assert_eq!(fs::read_to_string(&first_backup).unwrap(), first_corruption);
+        let second_backup = path.with_file_name("menubar.json.corrupt-1");
+        assert_eq!(
+            fs::read_to_string(second_backup).unwrap(),
+            second_corruption,
+            "a second corruption must get its own recovery copy"
+        );
+    }
+
+    #[test]
+    fn merge_does_not_clobber_unreadable_settings() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::create_dir(&path).unwrap();
+
+        let error = merge_menubar_flags(&path, &[("autoSyncNoticeShown", Value::Bool(true))])
+            .expect_err("an unreadable settings path must not be replaced");
+
+        assert_eq!(
+            error,
+            "HQ settings file could not be read; it was not changed"
+        );
+        assert!(path.is_dir());
+    }
+
+    #[test]
     fn merge_then_classify_roundtrip_is_normal() {
         // After mark_first_run_complete-style write, classification flips to
         // Normal even on a fresh map.
@@ -652,7 +904,6 @@ mod tests {
         );
     }
 }
-
 
 #[cfg(test)]
 mod install_attempt_id_tests {
@@ -714,7 +965,10 @@ mod install_attempt_id_tests {
     fn an_empty_or_blank_stored_value_is_replaced() {
         // A truncated write or a hand-edited file must not leave every event
         // from this machine landing on the empty-string partition.
-        for stored in [r#"{"installAttemptId":""}"#, r#"{"installAttemptId":"   "}"#] {
+        for stored in [
+            r#"{"installAttemptId":""}"#,
+            r#"{"installAttemptId":"   "}"#,
+        ] {
             let (_dir, path) = temp_menubar(Some(stored));
             let id = ensure_install_attempt_id(&path, || "minted-once".to_string()).expect("mint");
             assert_eq!(id, "minted-once");

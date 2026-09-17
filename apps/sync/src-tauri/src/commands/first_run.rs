@@ -29,12 +29,52 @@
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 
-use crate::util::paths;
+use crate::util::{logfile::log, paths};
 
 pub use hq_desktop_core::first_run::{
-    classify_from_map, ensure_install_attempt_id, merge_menubar_flags, notice_shown_in_map,
-    read_menubar_obj, should_autoshow_on_launch, LaunchKind,
+    classify_from_map, classify_from_menubar_read, ensure_install_attempt_id, merge_menubar_flags,
+    notice_shown_in_map, read_menubar, read_menubar_obj, should_autoshow_on_launch, LaunchKind,
+    MenubarRead,
 };
+
+/// Stable, path-free marker for settings files that prove this is not a fresh
+/// install but cannot safely supply their contents.
+const SETTINGS_FILE_READ_WARNING_MARKER: &str =
+    "hq_desktop.settings_file_present_but_unreadable_or_unparseable";
+
+fn settings_file_read_failure_kind(read: &MenubarRead) -> Option<&'static str> {
+    match read {
+        MenubarRead::Unreadable => Some("unreadable"),
+        MenubarRead::Unparseable | MenubarRead::PreservedCorrupt => Some("unparseable"),
+        MenubarRead::Absent | MenubarRead::Object(_) => None,
+    }
+}
+
+/// Record a closed-vocabulary warning without sending a path, file contents,
+/// or operating-system error text to Sentry.
+fn report_settings_file_read_failure(read: &MenubarRead) {
+    let Some(kind) = settings_file_read_failure_kind(read) else {
+        return;
+    };
+    let fingerprint = [SETTINGS_FILE_READ_WARNING_MARKER, kind];
+    log(
+        "first-run",
+        &format!("{SETTINGS_FILE_READ_WARNING_MARKER}: {kind}"),
+    );
+    sentry::with_scope(
+        |scope| {
+            scope.set_fingerprint(Some(&fingerprint));
+            scope.set_tag("marker", SETTINGS_FILE_READ_WARNING_MARKER);
+            scope.set_tag("settingsReadFailure", kind);
+            scope.set_tag("platform", crate::commands::version_gate::platform_tag());
+            scope.set_extra(
+                "settingsReadFailure",
+                sentry::protocol::Value::String(kind.to_string()),
+            );
+        },
+        || sentry::capture_message(SETTINGS_FILE_READ_WARNING_MARKER, sentry::Level::Warning),
+    );
+}
 
 /// This installation's attempt identifier, minted on first read.
 ///
@@ -60,10 +100,15 @@ pub struct LaunchKindState(pub LaunchKind);
 /// `machineId`.
 pub fn classify_launch(app: &AppHandle) -> LaunchKind {
     let kind = match paths::menubar_json_path() {
-        Ok(path) => classify_from_map(&read_menubar_obj(&path)),
-        // No resolvable home dir → treat as a fresh, safe default. A
-        // brand-new machine is the conservative assumption here.
-        Err(_) => LaunchKind::FirstRun,
+        Ok(path) => {
+            let read = read_menubar(&path);
+            report_settings_file_read_failure(&read);
+            classify_from_menubar_read(&read)
+        }
+        // Without a resolvable home directory, we cannot prove this is a
+        // first launch. Keep setup closed rather than risking a destructive
+        // first-run write against an unknown settings location.
+        Err(_) => LaunchKind::Normal,
     };
     app.manage(LaunchKindState(kind));
     kind
