@@ -5,7 +5,8 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, cli_install_needed, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, DeliveredPrefixShim,
-    ExecutedCopyAim, HqBacking, InstallExecutor, InterpreterRecovery, LocalVersionProbeDiagnostics,
+    ExecutedCopyAim, ExecutedCopyReaim, HqBacking, InstallExecutor, InterpreterRecovery,
+    LocalVersionProbeDiagnostics,
     LocalVersionProbeResult, ManagedBinInSettingsPath, ManagedRuntimeState,
     ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
     PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
@@ -100,6 +101,7 @@ fn pnpm_context<'a>(
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         settings_path: SettingsPathTelemetry::default(),
+        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present: false,
@@ -440,6 +442,231 @@ fn the_non_convergent_event_carries_hq_bin_lane_and_delivered_prefix_shim() {
             .unwrap();
         assert!(!lane.contains(forbidden) && !shim.contains(forbidden));
     }
+}
+
+/// The exact HQ-DESKTOP-46 09-15 field shape: an nvm v22.14.0 `hq` at 5.111.1
+/// resolved via the settings PATH while HQ delivered 5.111.2 into its managed
+/// prefix. `after_version`/`aim`/`reaim` vary across the base capture, a failed
+/// re-aim, and a converged re-aim.
+fn field_2026_09_15_ctx<'a>(
+    hq_bin: &'a str,
+    managed_prefix: &'a str,
+    managed_npm: &'a str,
+    roots: &'a [std::path::PathBuf],
+    after_version: Option<&'a str>,
+    aim: ExecutedCopyAim,
+    reaim: ExecutedCopyReaim,
+) -> PostInstallContext<'a> {
+    PostInstallContext::npm(
+        hq_bin,
+        hq_bin,
+        Some("5.111.1"),
+        after_version,
+        "5.111.2",
+        Some(managed_prefix),
+        managed_npm,
+        false,
+        // Delivered 5.111.2 INTO HQ's managed prefix — delivery is proven.
+        Some("5.111.2"),
+    )
+    .with_managed_roots(roots)
+    .with_executed_copy_aim(aim)
+    .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
+    .with_executed_copy_reaim(reaim)
+}
+
+/// Drive the real decide → effects → reporter seam without the shared harness's
+/// fixed-version record contract, so the 09-15 numbers (5.111.x) can be used and
+/// a CONVERGED re-aim (which clears rather than records) is expressible too.
+fn drive_field_events(
+    ctx: &PostInstallContext<'_>,
+) -> (Vec<sentry::protocol::Event<'static>>, usize, usize, bool) {
+    let records = Cell::new(0usize);
+    let captures = Cell::new(0usize);
+    let cleared = Cell::new(false);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(ctx);
+        let record = |_version: String| {
+            records.set(records.get() + 1);
+            Ok(())
+        };
+        let clear = || cleared.set(true);
+        let capture = |report: NonConvergentReport| {
+            captures.set(captures.get() + 1);
+            report_non_convergent_install(&report);
+        };
+        let record_failure = |_error: String| {};
+        let _ = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+    });
+    (events, records.get(), captures.get(), cleared.get())
+}
+
+/// Base-red on the tag: the exact 09-15 field event carries the closed
+/// `executed_copy_aim` token, so a residual occurrence names its own branch
+/// (`not-yet-aimed`) directly instead of by elimination. The base capture — no
+/// re-aim yet — stays a single non-blocking, marker-free envelope.
+#[test]
+fn the_2026_09_15_field_event_shape_names_its_aim() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let hq_bin = home
+        .join(".nvm/versions/node/v22.14.0/bin/hq")
+        .to_string_lossy()
+        .to_string();
+
+    let ctx = field_2026_09_15_ctx(
+        &hq_bin,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        Some("5.111.1"),
+        ExecutedCopyAim::NotYetAimed,
+        ExecutedCopyReaim::NotAttempted,
+    );
+    let (events, records, captures, _cleared) = drive_field_events(&ctx);
+    assert_eq!(records, 0, "a not-yet-aimed foreign run writes no durable marker");
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("executed_copy_aim").map(String::as_str),
+        Some("not-yet-aimed"),
+        "the field event now names its aim directly"
+    );
+    assert_eq!(
+        event.tags.get("executed_copy_reaim").map(String::as_str),
+        Some("not-attempted")
+    );
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("foreign-managed")
+    );
+    // The grouping fingerprint must not split on the new tags.
+    assert_eq!(fingerprint(event), ["hq-cli-update", "install-non-convergent"]);
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
+}
+
+/// After the in-run re-aim delivers 5.111.2 into the nvm prefix and the
+/// re-resolution reads 5.111.2 from the nvm copy (`Aimed`, `Converged`), the
+/// re-decide takes the normal success path: zero envelopes, zero marker writes,
+/// and the durable marker is cleared — so no HQ-DESKTOP-46 envelope is produced.
+#[test]
+fn a_re_aimed_nvm_copy_that_converges_captures_nothing_and_persists_no_marker() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    // After the re-aim, the app runs the nvm copy's OWN npm against its OWN
+    // prefix; both re-resolve to the nvm copy at 5.111.2.
+    let nvm_npm = home
+        .join(".nvm/versions/node/v22.14.0/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let nvm_prefix = home
+        .join(".nvm/versions/node/v22.14.0")
+        .to_string_lossy()
+        .to_string();
+    let hq_bin = home
+        .join(".nvm/versions/node/v22.14.0/bin/hq")
+        .to_string_lossy()
+        .to_string();
+
+    let converged = PostInstallContext::npm(
+        &hq_bin,
+        &hq_bin,
+        Some("5.111.1"),
+        Some("5.111.2"),
+        "5.111.2",
+        Some(&nvm_prefix),
+        &nvm_npm,
+        false,
+        Some("5.111.2"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::Aimed)
+    .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
+    .with_executed_copy_reaim(ExecutedCopyReaim::Converged);
+
+    // The composed pipeline records nothing and captures nothing...
+    let (events, records, captures, cleared) = drive_field_events(&converged);
+    assert_eq!(records, 0, "a converged re-aim writes no marker");
+    assert_eq!(captures, 0, "a converged re-aim captures nothing");
+    assert!(events.is_empty(), "a converged re-aim emits no envelope");
+    assert!(cleared, "a converged re-aim clears the non-convergent marker");
+    // ...and the decision itself is the normal success path.
+    let outcome = decide_post_install(&converged);
+    assert!(matches!(
+        outcome.verdict,
+        ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged
+    ));
+    assert!(outcome.clear_non_convergent);
+}
+
+/// A re-aim whose install FAILED keeps the deferred run non-blocking: the app
+/// re-decides with `executed_copy_aim = NotYetAimed`, so the run emits exactly
+/// one scrubbed, marker-free envelope that names both the aim (`not-yet-aimed`)
+/// and the failed re-aim (`install-failed`).
+#[test]
+fn a_failed_re_aim_keeps_the_deferred_run_non_blocking() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let hq_bin = home
+        .join(".nvm/versions/node/v22.14.0/bin/hq")
+        .to_string_lossy()
+        .to_string();
+
+    let ctx = field_2026_09_15_ctx(
+        &hq_bin,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        Some("5.111.1"),
+        ExecutedCopyAim::NotYetAimed,
+        ExecutedCopyReaim::InstallFailed,
+    );
+    let (events, records, captures, _cleared) = drive_field_events(&ctx);
+    assert_eq!(records, 0, "a failed re-aim writes no durable marker");
+    assert_eq!(captures, 1, "it stays observable once");
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("executed_copy_aim").map(String::as_str),
+        Some("not-yet-aimed")
+    );
+    assert_eq!(
+        event.tags.get("executed_copy_reaim").map(String::as_str),
+        Some("install-failed")
+    );
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(
+        !serialized.contains(&home_text),
+        "the scrubbed event carries no raw home path"
+    );
 }
 
 /// HQ-DESKTOP-46: once HQ rewrites the winning `.claude` settings file's PATH,
@@ -1794,6 +2021,7 @@ fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         settings_path: SettingsPathTelemetry::default(),
+        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,

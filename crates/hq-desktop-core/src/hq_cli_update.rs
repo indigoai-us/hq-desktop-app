@@ -1826,6 +1826,69 @@ impl ExecutedCopyAim {
     pub fn foreign_verdict_may_block(self) -> bool {
         !matches!(self, Self::NotYetAimed)
     }
+
+    /// The closed `executed_copy_aim` telemetry token. Never a path. Emitted on
+    /// every non-convergent event so a residual occurrence names, directly,
+    /// whether HQ aimed at the copy the app now executes — the fact the 09-15
+    /// HQ-DESKTOP-46 event could only be attributed by elimination.
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::Aimed => "aimed",
+            Self::Undrivable => "undrivable",
+            Self::NotYetAimed => "not-yet-aimed",
+        }
+    }
+}
+
+/// What HQ's in-run re-aim of a drivable-but-[`ExecutedCopyAim::NotYetAimed`]
+/// foreign-managed copy achieved, as a CLOSED telemetry token (never a path).
+/// The re-aim runs exactly ONE pinned install of `latest` into the executed
+/// copy's OWN user-owned prefix with that copy's OWN co-located npm, so a
+/// drivable copy the pre-install resolution missed converges in-run instead of
+/// deferring to the next 6h cycle (which is what pages HQ-DESKTOP-46 once per
+/// release). This value is report-only: the durable-marker decision stays gated
+/// on [`ExecutedCopyAim`] alone (a re-aim that did not complete is re-decided
+/// with `NotYetAimed`, so it stays non-blocking and episode-bounded exactly as
+/// today; a re-aim that ran and still resolves a foreign copy is re-decided with
+/// `Aimed`, so it blocks). Mirrors [`SettingsPathRepair`]; default
+/// [`Self::NotAttempted`] so every existing caller is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutedCopyReaim {
+    /// No re-aim was attempted for this decision — the value every run that is
+    /// not a deferred foreign-managed re-aim carries, and the pre-re-aim
+    /// classification.
+    #[default]
+    NotAttempted,
+    /// The re-aim's install exited 0 and the app now resolves `latest` from the
+    /// aimed copy — the deferred foreign layout converged in-run.
+    Converged,
+    /// The re-aim's install exited 0 but the app still resolves a foreign copy
+    /// short of `latest`. The re-decide treats this as `Aimed`, so it blocks
+    /// durably one cycle earlier than today, self-diagnosed by this token.
+    StillForeign,
+    /// The re-aim's install ran but exited non-zero. The deferred run stays
+    /// non-blocking (`NotYetAimed`) and episode-bounded; the raw npm output is
+    /// logged locally only.
+    InstallFailed,
+    /// The re-aim could not even spawn its install (no app npm cache, or a spawn
+    /// error). Non-blocking and episode-bounded, exactly like `InstallFailed`.
+    SpawnFailed,
+    /// The gate said `Attempt` was not reachable because no drivable user aim was
+    /// derivable for the executed copy — nothing to re-aim at. Non-blocking.
+    RefusedNoAim,
+}
+
+impl ExecutedCopyReaim {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "not-attempted",
+            Self::Converged => "converged",
+            Self::StillForeign => "still-foreign",
+            Self::InstallFailed => "install-failed",
+            Self::SpawnFailed => "spawn-failed",
+            Self::RefusedNoAim => "refused-no-aim",
+        }
+    }
 }
 
 /// Whether the shim the aimed prefix should expose after a delivered install is
@@ -2142,6 +2205,78 @@ pub fn executed_copy_aim_for(
         ExecutedCopyAim::Aimed
     } else {
         ExecutedCopyAim::NotYetAimed
+    }
+}
+
+/// Whether HQ should attempt an in-run re-aim of the executed copy, or the
+/// closed reason it must not. Pure over the classification the caller already
+/// computed — the non-convergence kind, whether HQ aimed at the executed copy,
+/// and whether a drivable user aim is derivable for it — so the gate is
+/// unit-testable without touching the filesystem. Only [`Self::Attempt`] runs
+/// the one pinned re-install; every refusal maps to the matching
+/// [`ExecutedCopyReaim`] value and leaves today's block-on-foreign behaviour
+/// unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutedCopyReaimGate {
+    Attempt,
+    /// The verdict is not a foreign-managed one, so there is no deferred foreign
+    /// copy to re-aim (a resolution shortfall, a managed shadow, an
+    /// installer-unaimed shape, a targeted defect, or a converged run).
+    RefusedNotForeign,
+    /// A foreign-managed verdict HQ either already aimed at in place
+    /// ([`ExecutedCopyAim::Aimed`]) or genuinely cannot drive
+    /// ([`ExecutedCopyAim::Undrivable`]); only a deferred
+    /// [`ExecutedCopyAim::NotYetAimed`] copy is re-aimed.
+    RefusedNotDeferred,
+    /// A deferred foreign-managed copy, but no drivable user aim was derivable
+    /// for it — nothing to install into.
+    RefusedNoAim,
+}
+
+/// Gate the in-run re-aim (HQ-DESKTOP-46 r4). Returns
+/// [`ExecutedCopyReaimGate::Attempt`] only for a `Some(ForeignManaged)` verdict
+/// whose executed copy is [`ExecutedCopyAim::NotYetAimed`] AND for which a
+/// drivable user aim was derived. The order is deliberate: a non-foreign verdict
+/// never re-aims (it has no deferred foreign copy), then a foreign copy HQ
+/// already aimed at or cannot drive is left to the existing block, then a
+/// deferred copy with no aim is refused for want of a target.
+pub fn executed_copy_reaim_gate(
+    kind: Option<NonConvergenceKind>,
+    aim: ExecutedCopyAim,
+    user_aim: Option<&UserPrefixAim>,
+) -> ExecutedCopyReaimGate {
+    if kind != Some(NonConvergenceKind::ForeignManaged) {
+        return ExecutedCopyReaimGate::RefusedNotForeign;
+    }
+    if aim != ExecutedCopyAim::NotYetAimed {
+        return ExecutedCopyReaimGate::RefusedNotDeferred;
+    }
+    match user_aim {
+        Some(_) => ExecutedCopyReaimGate::Attempt,
+        None => ExecutedCopyReaimGate::RefusedNoAim,
+    }
+}
+
+/// Map an [`ExecutedCopyReaimGate`] plus the re-aim install's exit status and the
+/// post-re-aim convergence into the [`ExecutedCopyReaim`] telemetry outcome. Pure
+/// so the mapping is unit-testable. Mirrors [`settings_path_repair_outcome`]. A
+/// spawn failure (the install never ran) is not expressible here — the caller
+/// records [`ExecutedCopyReaim::SpawnFailed`] directly when it cannot spawn.
+pub fn executed_copy_reaim_outcome(
+    gate: ExecutedCopyReaimGate,
+    install_exit_ok: bool,
+    converged: bool,
+) -> ExecutedCopyReaim {
+    match gate {
+        ExecutedCopyReaimGate::Attempt if install_exit_ok && converged => {
+            ExecutedCopyReaim::Converged
+        }
+        ExecutedCopyReaimGate::Attempt if install_exit_ok => ExecutedCopyReaim::StillForeign,
+        ExecutedCopyReaimGate::Attempt => ExecutedCopyReaim::InstallFailed,
+        ExecutedCopyReaimGate::RefusedNoAim => ExecutedCopyReaim::RefusedNoAim,
+        ExecutedCopyReaimGate::RefusedNotForeign | ExecutedCopyReaimGate::RefusedNotDeferred => {
+            ExecutedCopyReaim::NotAttempted
+        }
     }
 }
 
@@ -2545,6 +2680,16 @@ pub struct NonConvergentReport {
     /// settings-PATH foreign shadow's own mechanism without another planning
     /// round (HQ-DESKTOP-46).
     pub settings_path: SettingsPathTelemetry,
+    /// Whether HQ aimed this install at the copy the app now executes, emitted as
+    /// the closed `executed_copy_aim` tag (`aimed|undrivable|not-yet-aimed`).
+    /// Names, directly, the branch that produced a foreign-managed event — the
+    /// fact the 09-15 HQ-DESKTOP-46 event could only reach by elimination.
+    pub executed_copy_aim: ExecutedCopyAim,
+    /// What HQ's in-run re-aim of a deferred (`NotYetAimed`) foreign copy
+    /// achieved, emitted as the closed `executed_copy_reaim` tag. `NotAttempted`
+    /// for every run that did not re-aim, so a residual event says whether a
+    /// re-aim ran and how it turned out (HQ-DESKTOP-46 r4).
+    pub executed_copy_reaim: ExecutedCopyReaim,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2769,6 +2914,12 @@ pub struct PostInstallContext<'a> {
     /// (`NotAttempted` / `None` / `Unknown`), so every existing caller is
     /// unchanged.
     pub settings_path: SettingsPathTelemetry,
+    /// What HQ's in-run re-aim of a deferred foreign copy achieved, for the
+    /// `executed_copy_reaim` tag. Report-only — the durable block stays gated on
+    /// `executed_copy_aim` alone. The `npm()` constructor defaults it to
+    /// [`ExecutedCopyReaim::NotAttempted`]; the app threads the real outcome in
+    /// via [`Self::with_executed_copy_reaim`] on the post-re-aim re-decide.
+    pub executed_copy_reaim: ExecutedCopyReaim,
 }
 
 impl<'a> PostInstallContext<'a> {
@@ -2822,6 +2973,9 @@ impl<'a> PostInstallContext<'a> {
             // preserves today's block-on-foreign behaviour and emits the
             // not-attempted / none / unknown tokens.
             settings_path: SettingsPathTelemetry::default(),
+            // No in-run re-aim on the first decide; the app re-decides with the
+            // real outcome only after it runs one.
+            executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
         }
     }
 
@@ -2845,6 +2999,14 @@ impl<'a> PostInstallContext<'a> {
     /// the durable ForeignManaged block can stay conditional on a drivable aim.
     pub fn with_executed_copy_aim(mut self, aim: ExecutedCopyAim) -> Self {
         self.executed_copy_aim = aim;
+        self
+    }
+
+    /// Record what HQ's in-run re-aim of a deferred foreign copy achieved, for
+    /// the `executed_copy_reaim` tag on the post-re-aim re-decide. Report-only —
+    /// the durable block stays gated on `executed_copy_aim`.
+    pub fn with_executed_copy_reaim(mut self, reaim: ExecutedCopyReaim) -> Self {
+        self.executed_copy_reaim = reaim;
         self
     }
 
@@ -2931,6 +3093,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         hq_bin_lane,
         delivered_prefix_shim,
         settings_path,
+        executed_copy_reaim,
     } = ctx;
     let managed_roots = *managed_roots;
     let managed_shadow_repair = *managed_shadow_repair;
@@ -2938,6 +3101,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
     let hq_bin_lane = *hq_bin_lane;
     let delivered_prefix_shim = *delivered_prefix_shim;
     let settings_path = *settings_path;
+    let executed_copy_reaim = *executed_copy_reaim;
     let (executor, before_bin, after_bin, latest, installer_bin, already_blocked) = (
         *executor,
         *before_bin,
@@ -3150,6 +3314,8 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         hq_bin_lane,
         delivered_prefix_shim,
         settings_path,
+        executed_copy_aim,
+        executed_copy_reaim,
     });
 
     PostInstallOutcome {
@@ -3446,6 +3612,20 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
             scope.set_tag(
                 "delivered_prefix_shim",
                 report.delivered_prefix_shim.telemetry_value(),
+            );
+            // Whether HQ aimed at the copy the app executes, and what the in-run
+            // re-aim of a deferred foreign copy achieved. Both are closed,
+            // path-free tokens, so a residual foreign-managed event names its own
+            // branch — `not-yet-aimed` + a re-aim outcome — directly, instead of
+            // by elimination as the 09-15 HQ-DESKTOP-46 event had to be
+            // (HQ-DESKTOP-46 r4).
+            scope.set_tag(
+                "executed_copy_aim",
+                report.executed_copy_aim.telemetry_value(),
+            );
+            scope.set_tag(
+                "executed_copy_reaim",
+                report.executed_copy_reaim.telemetry_value(),
             );
             // Settings-PATH triple: which `.claude` file supplied the winning
             // env.PATH, whether it listed HQ's managed bin dir, and what the
@@ -7877,6 +8057,7 @@ mod tests {
             hq_bin_lane: paths::ResolutionSource::NotResolved,
             delivered_prefix_shim: DeliveredPrefixShim::Unknown,
             settings_path: SettingsPathTelemetry::default(),
+            executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
             pnpm: Some(pnpm.clone()),
         });
         assert_eq!(
@@ -7924,6 +8105,7 @@ mod tests {
                 hq_bin_lane: paths::ResolutionSource::NotResolved,
                 delivered_prefix_shim: DeliveredPrefixShim::Unknown,
                 settings_path: SettingsPathTelemetry::default(),
+                executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
                 pnpm: Some(PnpmRunDiagnostics {
                     home_source,
                     home_env_present: false,
@@ -8413,6 +8595,7 @@ mod tests {
             hq_bin_lane: paths::ResolutionSource::UserPrefix,
             delivered_prefix_shim: DeliveredPrefixShim::Absent,
             settings_path: SettingsPathTelemetry::default(),
+            executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
             pnpm: Some(PnpmRunDiagnostics {
                 home_source: PnpmHomeSource::FlatPnpmDir,
                 home_env_present: true,
@@ -8822,6 +9005,200 @@ mod tests {
             settings_path_repair_outcome(G::RefusedNotStale, true),
             SettingsPathRepair::RefusedNotStale
         );
+    }
+
+    // ---- in-run re-aim of a deferred foreign copy (HQ-DESKTOP-46 r4) ------
+
+    #[test]
+    fn executed_copy_reaim_gate_attempts_only_a_not_yet_aimed_foreign_run() {
+        use NonConvergenceKind::*;
+        let aim = UserPrefixAim {
+            prefix: "/Users/me/.nvm/versions/node/v22.14.0".to_string(),
+            npm: "/Users/me/.nvm/versions/node/v22.14.0/bin/npm".to_string(),
+        };
+        // The one shape that re-aims: a foreign-managed copy HQ has not yet aimed
+        // at, with a drivable user aim in hand.
+        assert_eq!(
+            executed_copy_reaim_gate(
+                Some(ForeignManaged),
+                ExecutedCopyAim::NotYetAimed,
+                Some(&aim)
+            ),
+            ExecutedCopyReaimGate::Attempt
+        );
+        // Foreign-managed but already aimed at, or undrivable: the existing block
+        // owns it, never a re-aim.
+        for taken in [ExecutedCopyAim::Aimed, ExecutedCopyAim::Undrivable] {
+            assert_eq!(
+                executed_copy_reaim_gate(Some(ForeignManaged), taken, Some(&aim)),
+                ExecutedCopyReaimGate::RefusedNotDeferred
+            );
+        }
+        // A deferred foreign copy but no drivable aim -> nothing to install into.
+        assert_eq!(
+            executed_copy_reaim_gate(Some(ForeignManaged), ExecutedCopyAim::NotYetAimed, None),
+            ExecutedCopyReaimGate::RefusedNoAim
+        );
+        // Every non-foreign verdict (or no verdict) never re-aims — it has no
+        // deferred foreign copy to converge in place.
+        for kind in [
+            None,
+            Some(ResolutionShortfall),
+            Some(ManagedShadowed),
+            Some(InstallerUnaimed),
+            Some(NpmTargeted),
+        ] {
+            assert_eq!(
+                executed_copy_reaim_gate(kind, ExecutedCopyAim::NotYetAimed, Some(&aim)),
+                ExecutedCopyReaimGate::RefusedNotForeign
+            );
+        }
+    }
+
+    #[test]
+    fn executed_copy_reaim_outcome_maps_gate_exit_and_convergence() {
+        use ExecutedCopyReaimGate as G;
+        // Attempt: the install exit and the post-re-aim convergence decide it.
+        assert_eq!(
+            executed_copy_reaim_outcome(G::Attempt, true, true),
+            ExecutedCopyReaim::Converged
+        );
+        assert_eq!(
+            executed_copy_reaim_outcome(G::Attempt, true, false),
+            ExecutedCopyReaim::StillForeign
+        );
+        // A non-zero install exit -> InstallFailed, whatever the (moot) convergence.
+        for converged in [true, false] {
+            assert_eq!(
+                executed_copy_reaim_outcome(G::Attempt, false, converged),
+                ExecutedCopyReaim::InstallFailed
+            );
+        }
+        // Refusals never ran an install: RefusedNoAim keeps its own token, the
+        // other refusals read as not-attempted.
+        assert_eq!(
+            executed_copy_reaim_outcome(G::RefusedNoAim, false, false),
+            ExecutedCopyReaim::RefusedNoAim
+        );
+        for gate in [G::RefusedNotForeign, G::RefusedNotDeferred] {
+            assert_eq!(
+                executed_copy_reaim_outcome(gate, false, false),
+                ExecutedCopyReaim::NotAttempted
+            );
+        }
+    }
+
+    #[test]
+    fn executed_copy_aim_and_reaim_tokens_are_closed_and_path_free() {
+        for (aim, token) in [
+            (ExecutedCopyAim::Aimed, "aimed"),
+            (ExecutedCopyAim::Undrivable, "undrivable"),
+            (ExecutedCopyAim::NotYetAimed, "not-yet-aimed"),
+        ] {
+            assert_eq!(aim.telemetry_value(), token);
+        }
+        for (reaim, token) in [
+            (ExecutedCopyReaim::NotAttempted, "not-attempted"),
+            (ExecutedCopyReaim::Converged, "converged"),
+            (ExecutedCopyReaim::StillForeign, "still-foreign"),
+            (ExecutedCopyReaim::InstallFailed, "install-failed"),
+            (ExecutedCopyReaim::SpawnFailed, "spawn-failed"),
+            (ExecutedCopyReaim::RefusedNoAim, "refused-no-aim"),
+        ] {
+            assert_eq!(reaim.telemetry_value(), token);
+            // A closed vocabulary never carries a path separator or home marker.
+            assert!(!reaim.telemetry_value().contains('/'));
+            assert!(!reaim.telemetry_value().contains('~'));
+        }
+    }
+
+    /// After a re-aim that could not converge (npm failed, or could not spawn),
+    /// the app re-decides the run with `executed_copy_aim = NotYetAimed`, so the
+    /// deferred foreign run stays non-blocking and episode-bounded exactly as
+    /// today; the `executed_copy_reaim` token rides the capture so the residual
+    /// event names the failed re-aim directly instead of by elimination.
+    #[test]
+    fn a_failed_re_aim_never_writes_the_durable_marker() {
+        let roots = [PathBuf::from(
+            "/Users/me/Library/Application Support/Indigo HQ/toolchain",
+        )];
+        let outcome = decide_post_install(
+            &PostInstallContext::npm(
+                "/Users/me/.nvm/versions/node/v22.14.0/bin/hq",
+                "/Users/me/.nvm/versions/node/v22.14.0/bin/hq",
+                Some("5.111.1"),
+                Some("5.111.1"),
+                "5.111.2",
+                Some("/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+                "/Users/me/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+                false,
+                Some("5.111.2"),
+            )
+            .with_managed_roots(&roots)
+            .with_executed_copy_aim(ExecutedCopyAim::NotYetAimed)
+            .with_executed_copy_reaim(ExecutedCopyReaim::InstallFailed),
+        );
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "a failed re-aim must not write the durable marker"
+        );
+        assert!(!outcome.capture_requires_durable_record);
+        assert!(outcome.record_nonblocking_episode.is_some());
+        let report = outcome
+            .capture
+            .expect("a failed re-aim stays observable once");
+        assert_eq!(report.executed_copy_aim, ExecutedCopyAim::NotYetAimed);
+        assert_eq!(report.executed_copy_reaim, ExecutedCopyReaim::InstallFailed);
+        assert_eq!(report.executed_copy_aim.telemetry_value(), "not-yet-aimed");
+        assert_eq!(report.executed_copy_reaim.telemetry_value(), "install-failed");
+    }
+
+    /// A re-aim whose npm exited 0 but whose re-resolution STILL lands a foreign
+    /// copy short of `latest` keeps the base deferred-foreign decision: the app
+    /// re-decides with `executed_copy_aim = NotYetAimed`, so it stays non-blocking
+    /// and episode-bounded (never re-classified as a targeted defect that would
+    /// page every retry), carrying `executed_copy_reaim = still-foreign` so the
+    /// residual event self-diagnoses.
+    #[test]
+    fn a_still_foreign_re_aim_stays_non_blocking_and_episode_bounded() {
+        let roots = [PathBuf::from(
+            "/Users/me/Library/Application Support/Indigo HQ/toolchain",
+        )];
+        let outcome = decide_post_install(
+            &PostInstallContext::npm(
+                "/Users/me/.nvm/versions/node/v22.14.0/bin/hq",
+                "/Users/me/.nvm/versions/node/v22.14.0/bin/hq",
+                Some("5.111.1"),
+                Some("5.111.1"),
+                "5.111.2",
+                Some("/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+                "/Users/me/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+                false,
+                Some("5.111.2"),
+            )
+            .with_managed_roots(&roots)
+            .with_executed_copy_aim(ExecutedCopyAim::NotYetAimed)
+            .with_executed_copy_reaim(ExecutedCopyReaim::StillForeign),
+        );
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "a still-foreign re-aim must not write the durable marker"
+        );
+        assert!(!outcome.capture_requires_durable_record);
+        assert!(outcome.record_nonblocking_episode.is_some());
+        let report = outcome
+            .capture
+            .expect("a still-foreign re-aim stays observable once");
+        assert_eq!(report.executed_copy_reaim, ExecutedCopyReaim::StillForeign);
+        assert_eq!(report.executed_copy_reaim.telemetry_value(), "still-foreign");
     }
 
     #[test]
@@ -10002,6 +10379,7 @@ mod tests {
                 hq_bin_lane: paths::ResolutionSource::NotResolved,
                 delivered_prefix_shim: DeliveredPrefixShim::Unknown,
                 settings_path: SettingsPathTelemetry::default(),
+                executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
                 pnpm: Some(pnpm_field_diagnostics(matches)),
             });
             assert_eq!(
@@ -10050,6 +10428,7 @@ mod tests {
                 hq_bin_lane: paths::ResolutionSource::NotResolved,
                 delivered_prefix_shim: DeliveredPrefixShim::Unknown,
                 settings_path: SettingsPathTelemetry::default(),
+                executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
                 pnpm: Some(pnpm_field_diagnostics(Some(false))),
             }
         }
@@ -10134,6 +10513,7 @@ mod tests {
             hq_bin_lane: paths::ResolutionSource::NotResolved,
             delivered_prefix_shim: DeliveredPrefixShim::Unknown,
             settings_path: SettingsPathTelemetry::default(),
+            executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
             pnpm: Some(pnpm_field_diagnostics(Some(true))),
         });
         assert_eq!(

@@ -181,6 +181,134 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('non_convergent_episode_blocked(');
   });
 
+  it('an undrivable settings-PATH foreign shadow is repaired in-run, not wedged (HQ-DESKTOP-46)', () => {
+    // The live macOS recurrence: the app executes a stale Homebrew `hq` resolved
+    // via the winning `.claude` settings file's PATH, while HQ delivered `latest`
+    // into its own managed prefix. HQ owns the one input it never fixed — the
+    // winning settings file's env.PATH — so it rewrites that file managed-first
+    // and re-resolves instead of writing the durable marker that wedges forever.
+
+    // 1. The reader and the writer agree on WHICH file supplies env.PATH via one
+    //    source of truth, so the composed managed-first value lands in the file
+    //    the resolver actually reads.
+    expect(paths).toContain('pub fn winning_settings_path_file(');
+    expect(paths).toContain('pub enum SettingsPathFile {');
+    expect(installDeps).toContain('pub(crate) fn write_managed_toolchain_settings_path(');
+    expect(installDeps).toContain('winning_settings_path_file(hq_root)');
+    expect(installDeps).toContain('"settings.local.json"');
+    expect(installDeps).toContain('"settings.json"');
+    // A symlinked settings file cannot redirect the write outside the HQ folder.
+    expect(installDeps).toContain('refusing to write settings PATH outside the HQ folder');
+
+    // 2. The updater's undrivable-foreign arm routes THIS shape into the in-run
+    //    repair — an npm ForeignManaged run that is undrivable, delivered a
+    //    present shim, and resolved via the settings PATH.
+    expect(normalize(cliUpdate)).toContain(
+      'if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged) ' +
+        '&& executed_copy_aim == ExecutedCopyAim::Undrivable ' +
+        '&& delivered_prefix_shim == DeliveredPrefixShim::Present ' +
+        '&& hq_bin_lane == paths::ResolutionSource::SettingsPath',
+    );
+    expect(cliUpdate).toContain('return settings_path_repair_and_refinalize(');
+    expect(cliUpdate).toContain('async fn settings_path_repair_and_refinalize(');
+    // The repair calls the SAME staged + atomic writer the installer uses.
+    expect(cliUpdate).toContain('write_managed_toolchain_settings_path(');
+    expect(cliUpdate).toContain('settings_path_repair_gate(');
+
+    // 3. The durable-marker write is gated on the repair outcome: only a
+    //    `Rewritten` repair relaxes the ForeignManaged block, so the re-decide
+    //    carries the outcome and every refusal still blocks byte-for-byte.
+    expect(cliUpdateCore).toContain('pub fn settings_path_repair_gate(');
+    expect(cliUpdateCore).toContain('pub fn settings_path_repair_outcome(');
+    expect(cliUpdateCore).toContain('pub enum SettingsPathRepair {');
+    expect(cliUpdateCore).toContain('if settings_path_repair == SettingsPathRepair::Rewritten {');
+    expect(cliUpdate).toContain('.with_settings_path(settings_path)');
+  });
+
+  it('a drivable copy resolved only after the install is re-aimed in-run (HQ-DESKTOP-46 r4)', () => {
+    // The 2026-09-15 regression reopen: the app installed `latest` into HQ's
+    // managed prefix, then finalize re-resolved a DRIVABLE user-owned copy (an
+    // nvm `hq` with its own npm) that the pre-install resolution had not
+    // identified — ForeignManaged + NotYetAimed. PR 731 only repairs an
+    // Undrivable settings-PATH shadow, so this success-path copy deferred to the
+    // next 6h cycle and paged HQ-DESKTOP-46 once per release. HQ now re-aims the
+    // copy it executes in place instead of deferring.
+
+    // 1. Core publishes the closed re-aim vocabulary and its two pure decisions,
+    //    mirroring the settings-PATH gate/outcome pair.
+    expect(cliUpdateCore).toContain('pub enum ExecutedCopyReaim {');
+    expect(cliUpdateCore).toContain('pub fn executed_copy_reaim_gate(');
+    expect(cliUpdateCore).toContain('pub fn executed_copy_reaim_outcome(');
+    // The durable block stays gated on `executed_copy_aim` alone — the re-aim
+    // token is report-only — so the marker policy is unchanged.
+    expect(cliUpdateCore).toContain('pub fn foreign_verdict_may_block(');
+    // Both closed tokens ride the non-convergent event so a residual occurrence
+    // names its own branch directly instead of by elimination.
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "executed_copy_aim",');
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "executed_copy_reaim",');
+    // The grouping fingerprint must not split on the new tags.
+    expect(cliUpdateCore).toContain(
+      'scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));',
+    );
+
+    // 2. finalize_convergence routes a ForeignManaged + NotYetAimed run into the
+    //    in-run re-aim, gated by the pure gate, AFTER the settings-PATH branch.
+    const finalize = cliUpdate.slice(
+      cliUpdate.indexOf('async fn finalize_convergence('),
+      cliUpdate.indexOf('fn managed_shadow_repair_outcome('),
+    );
+    expect(normalize(finalize)).toContain(
+      'if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged) ' +
+        '&& executed_copy_aim == ExecutedCopyAim::NotYetAimed',
+    );
+    expect(finalize).toContain('select_ordinary_install_aim(');
+    expect(finalize).toContain('executed_copy_reaim_gate(');
+    expect(finalize).toContain('== ExecutedCopyReaimGate::Attempt');
+    expect(finalize).toContain('return executed_copy_reaim_and_refinalize(');
+    // The settings-PATH repair still comes FIRST — the re-aim is the success-path
+    // branch PR 731 left untouched, not a replacement for it.
+    expect(finalize.indexOf('return settings_path_repair_and_refinalize('))
+      .toBeLessThan(finalize.indexOf('return executed_copy_reaim_and_refinalize('));
+
+    // 3. The re-aim runs exactly ONE pinned install INTO the executed copy's own
+    //    prefix, through its OWN co-located npm, with that npm's bin dir first on
+    //    PATH — HQ's managed npm never touches a user prefix.
+    const reaim = cliUpdate.slice(
+      cliUpdate.indexOf('async fn executed_copy_reaim_and_refinalize('),
+      cliUpdate.indexOf('fn persist_reported_episode('),
+    );
+    expect(cliUpdate).toContain('fn executed_copy_reaim_plan(');
+    expect(normalize(cliUpdate)).toContain(
+      'let argv = install_argv(Some(aim.prefix.as_str()), Some(latest));',
+    );
+    expect(cliUpdate).toContain('paths::path_with_interpreter_hint(base_path, hint)');
+    expect(reaim).toContain('run_npm_install_with_retries(');
+    // Exactly one install invocation — no loop, no second re-aim.
+    expect(reaim.match(/run_npm_install_with_retries\(/g) ?? []).toHaveLength(1);
+    // A nonzero npm exit is a failure even if a manifest was partially written:
+    // convergence is gated on a clean exit AND a `latest` reading, mirroring the
+    // primary install path, so a failed re-aim never clears the marker.
+    expect(normalize(reaim)).toContain(
+      'let converged = install_exit_ok && install_converged(resolved.as_deref(), latest);',
+    );
+    // Only a clean convergence reports success (Converged token); an unspawnable
+    // install self-diagnoses as spawn-failed.
+    expect(reaim).toContain('.with_executed_copy_reaim(ExecutedCopyReaim::Converged)');
+    expect(reaim).toContain('ExecutedCopyReaim::SpawnFailed');
+    // Every non-converged result keeps the caller's original deferred-foreign
+    // decision (non-blocking, episode-bounded) and only stamps the re-aim tag —
+    // it never re-classifies against the aimed prefix (which would page every
+    // retry as NpmTargeted).
+    expect(reaim).toContain('let mut outcome = base_outcome.clone();');
+    expect(reaim).toContain('report.executed_copy_reaim = executed_copy_reaim;');
+
+    // 4. The re-aim NEVER writes a settings file or a shell profile — it
+    //    converges the copy the app executes, it does not reorder PATH.
+    expect(reaim).not.toContain('write_managed_toolchain_settings_path');
+    expect(reaim).not.toContain('configure_managed_shell_path');
+    expect(reaim).not.toContain('configure_claude_settings_path');
+  });
+
   it('the pnpm executor shares the npm executor’s convergence contract', () => {
     // HQ-DESKTOP-46 era 2: on hq-sync 0.10.69 the pnpm branch exited 0 without
     // moving ~/Library/pnpm/bin/hq, and it reached the reporter through its own
