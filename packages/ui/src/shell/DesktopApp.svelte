@@ -154,6 +154,12 @@
   import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
   import type { SyncEventHost } from "./sync-events.js";
   import {
+    emptySyncStatus,
+    reduceSyncEvent,
+    SYNC_STATUS_EVENTS,
+    type SyncStatusState,
+  } from "../home/sync-status.js";
+  import {
     dismissRecommendBanner,
     installRecommendedUpdate,
     orchestrationAdapterFrom,
@@ -860,6 +866,43 @@
       membershipSyncPending = false;
     }
   }
+
+  /**
+   * Live sync progress for the title bar chip.
+   *
+   * The runner emits no running total: `sync:plan` says how many files a
+   * company intends to move and `sync:progress` fires once per file, so the
+   * count is reduced here rather than read off any single event. Separate
+   * subscription from the membership-banner effect below because that one
+   * filters to one company and this one deliberately watches every run.
+   */
+  let syncStatus = $state<SyncStatusState>(emptySyncStatus());
+
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    let disposed = false;
+    const handles: Array<() => void> = [];
+
+    for (const name of SYNC_STATUS_EVENTS) {
+      void host.listen(name, (event) => {
+        syncStatus = reduceSyncEvent(syncStatus, name, event?.payload);
+      }).then(
+        (un) => {
+          if (disposed) un();
+          else handles.push(un);
+        },
+        (err) => {
+          console.error(`sync status: subscribe to ${name} failed:`, err);
+        },
+      );
+    }
+
+    return () => {
+      disposed = true;
+      for (const un of handles) un();
+    };
+  });
 
   /**
    * Sync outcome events. Without these the banner cannot distinguish "pulled"
@@ -6725,6 +6768,8 @@
     conflictCount={liveSync.conflicts}
     watchedCount={watched}
     {unreadCount}
+    {syncStatus}
+    onopenSync={() => openSettings("sync")}
     {sidebarCollapsed}
     coreUseFixtures={coreFixtures}
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
