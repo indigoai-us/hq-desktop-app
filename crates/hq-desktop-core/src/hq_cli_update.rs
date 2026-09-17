@@ -4719,6 +4719,57 @@ fn has_postinstall_stage_evidence(detail: &str) -> bool {
     detail.to_ascii_lowercase().contains("postinstall")
 }
 
+/// When the failing lifecycle was node-llama-cpp's own postinstall (cause
+/// `postinstall-script`), classify WHICH stage of its `OnPostInstallCommand`
+/// died, as a CLOSED enumeration, so the next HQ-DESKTOP-5E occurrence is
+/// self-diagnosing without the raw stderr Sentry scrubs to a length by design.
+///
+/// Matching keys ONLY on node-llama-cpp's / Node's own emitted lines (node-llama-cpp
+/// 3.18.1's real message vocabulary), NEVER the echoed `sh -c node
+/// ./dist/cli/cli.js postinstall` command or any path text — so a bare command
+/// echo yields `unknown`, and no path- or attacker-derived text can reach Sentry
+/// through this `&'static str`. Callers gate this on
+/// `npm_lifecycle_cause(detail) == "postinstall-script"`.
+///
+/// Precedence is deliberate:
+///   * `rosetta` — the Rosetta refusal (`llama.cpp is not supported under
+///     Rosetta …`) exits before any binary work; no env knob can help.
+///   * `module-load-failed` — the postinstall crashed at import time
+///     (`ERR_MODULE_NOT_FOUND` / "cannot find package/module") before its own
+///     handler ran; also unreachable by the skip knobs.
+///   * `prebuilt-load-failed` — a prebuilt was present but failed to LOAD
+///     (`Failed to load a prebuilt …`), distinct from one that was MISSING.
+///   * `prebuilt-missing` — no prebuilt was found (`A prebuilt binary was not
+///     found …`), the shape the reported 2026-09-16 event fits.
+///   * `source-build-attempted` — the from-source fallback ran (`falling back to
+///     building from source` / `Failed to build llama.cpp` / `Failed to clone …`).
+///   * `unknown` — a postinstall failure with none of the above vocabulary.
+fn npm_lifecycle_postinstall_stage(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("not supported under rosetta") {
+        return "rosetta";
+    }
+    if lower.contains("err_module_not_found")
+        || lower.contains("cannot find package")
+        || lower.contains("cannot find module")
+    {
+        return "module-load-failed";
+    }
+    if lower.contains("failed to load a prebuilt") {
+        return "prebuilt-load-failed";
+    }
+    if lower.contains("a prebuilt binary was not found") {
+        return "prebuilt-missing";
+    }
+    if lower.contains("falling back to building from source")
+        || lower.contains("failed to build llama.cpp")
+        || lower.contains("failed to clone")
+    {
+        return "source-build-attempted";
+    }
+    "unknown"
+}
+
 /// A normalized local-log record for an npm attempt. It deliberately contains
 /// only bounded npm code and path-shape values, never raw npm output or paths.
 pub fn npm_install_attempt_summary(
@@ -6073,6 +6124,16 @@ pub fn report_install_failure_with_environment(
     } else {
         None
     };
+    // HQ-DESKTOP-5E: when the failing lifecycle was node-llama-cpp's own
+    // postinstall, classify WHICH stage of it died (closed set) so the next
+    // occurrence is self-diagnosing without the raw stderr Sentry scrubs by
+    // length. A tag and `npm_diagnostics` key ONLY — never a fingerprint,
+    // signature, message, or episode-key component — so HQ-DESKTOP-5E never
+    // splits into a new issue. Present exactly when the diagnosed cause is
+    // `postinstall-script` (which implies `npm_lifecycle.failed`).
+    let postinstall_stage = lifecycle_cause
+        .filter(|cause| *cause == "postinstall-script")
+        .map(|_| npm_lifecycle_postinstall_stage(detail));
     let node_version = sanitized_version_token(env.node_version.as_deref());
     let node_abi = sanitized_version_token(env.node_abi.as_deref());
     let npm_version = sanitized_version_token(env.npm_version.as_deref());
@@ -6154,6 +6215,13 @@ pub fn report_install_failure_with_environment(
             " registry_origin={origin} npm_404_resource={resource}"
         ));
     }
+    // Append the postinstall stage as the LAST key, only for a postinstall-script
+    // lifecycle failure (HQ-DESKTOP-5E). Every other event's `npm_diagnostics`
+    // string stays byte-identical to today, so no pre-existing exact-string
+    // assertion changes.
+    if let Some(stage) = postinstall_stage {
+        npm_diagnostics.push_str(&format!(" postinstall_stage={stage}"));
+    }
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
@@ -6202,6 +6270,13 @@ pub fn report_install_failure_with_environment(
             }
             if let Some(builder) = lifecycle_builder {
                 scope.set_tag("npm_lifecycle_builder", builder);
+            }
+            // HQ-DESKTOP-5E: which stage of node-llama-cpp's postinstall died
+            // (closed enum), present exactly when the cause is `postinstall-script`.
+            // A tag and `npm_diagnostics` key only — never a fingerprint, signature,
+            // or episode-key component — so HQ-DESKTOP-5E's group is unchanged.
+            if let Some(stage) = postinstall_stage {
+                scope.set_tag("npm_lifecycle_postinstall_stage", stage);
             }
             // Toolchain provenance — the fields the reported 4R/4S events lacked,
             // which make the next occurrence self-diagnosing. Each is a closed
@@ -7344,6 +7419,35 @@ pub fn install_argv(prefix: Option<&str>, target_version: Option<&str>) -> Vec<S
     argv.push(hq_cli_package_spec(target_version));
     argv
 }
+
+/// Environment injected into every desktop-spawned `npm install` child that can
+/// pull node-llama-cpp — the updater's `npm_install_command` and the first-run
+/// installer's managed npm sites (@tobilu/qmd and @indigoai-us/hq-cli both
+/// depend on it). Defined ONCE here so the updater and the installer can never
+/// drift (the same discipline the codebase applies to the managed npm prefix).
+///
+/// HQ-DESKTOP-5E: node-llama-cpp's `postinstall` (`node ./dist/cli/cli.js
+/// postinstall`) tries to load a prebuilt llama.cpp binary and, failing that,
+/// build one from source; any throw calls `process.exit(1)`. Under HQ's own
+/// managed toolchain that exit aborts the WHOLE hq-cli update, even though the
+/// postinstall is not needed for hq or qmd to work — qmd loads the binary lazily
+/// at runtime with `build:auto` and the prebuilt optional dependency is installed
+/// regardless of scripts. Both keys turn that postinstall into a no-op per
+/// node-llama-cpp's own `OnPostInstallCommand` contract, and both are set so any
+/// node-llama-cpp version hq-cli/qmd pins honours one:
+///   * `NODE_LLAMA_CPP_SKIP_DOWNLOAD=true` — returns `exit 0` before any work.
+///   * `NODE_LLAMA_CPP_POSTINSTALL=skip`   — the explicit v3 "skip" knob.
+///
+/// This is applied ONLY to the child process environment at the spawn boundary —
+/// never process-global env, the user's `.npmrc`, or persisted settings — and the
+/// npm argv is unchanged: no `--ignore-scripts` (better-sqlite3's install script
+/// must still run) and optional dependencies stay enabled so the
+/// `@node-llama-cpp/<platform>` prebuilt is still installed for the lazy runtime
+/// load.
+pub const NPM_INSTALL_CHILD_ENV: &[(&str, &str)] = &[
+    ("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true"),
+    ("NODE_LLAMA_CPP_POSTINSTALL", "skip"),
+];
 
 /// Read the version field from the installed package.json inside the npm
 /// global prefix. We do this instead of `hq --version` because the CLI's
@@ -12395,6 +12499,179 @@ mod tests {
                 "builder {builder:?} is not one of the closed constants"
             );
         }
+    }
+
+    #[test]
+    fn npm_install_child_env_is_a_closed_stable_set() {
+        // The exact env shared by the updater's `npm_install_command` and the
+        // first-run installer's managed npm sites. Both crates reference this one
+        // definition, so the updater and the installer cannot drift.
+        assert_eq!(
+            NPM_INSTALL_CHILD_ENV,
+            &[
+                ("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true"),
+                ("NODE_LLAMA_CPP_POSTINSTALL", "skip"),
+            ]
+        );
+    }
+
+    #[test]
+    fn npm_lifecycle_postinstall_stage_classifies_each_closed_value_from_node_llama_cpp_output() {
+        // One fixture per stage, using node-llama-cpp 3.18.1's real message
+        // vocabulary (OnPostInstallCommand + getLlama).
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(
+                "[node-llama-cpp] llama.cpp is not supported under Rosetta on Apple Silicone Macs."
+            ),
+            "rosetta"
+        );
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(
+                "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'node-llama-cpp' imported from /x"
+            ),
+            "module-load-failed"
+        );
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(
+                "[node-llama-cpp] Failed to load a prebuilt binary (mac-arm64-metal). Error: dlopen failed"
+            ),
+            "prebuilt-load-failed"
+        );
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(
+                "[node-llama-cpp] A prebuilt binary was not found, falling back to building from source"
+            ),
+            "prebuilt-missing"
+        );
+        assert_eq!(
+            npm_lifecycle_postinstall_stage("[node-llama-cpp] falling back to building from source"),
+            "source-build-attempted"
+        );
+        assert_eq!(
+            npm_lifecycle_postinstall_stage("Failed to build llama.cpp"),
+            "source-build-attempted"
+        );
+        assert_eq!(
+            npm_lifecycle_postinstall_stage("Failed to clone git bundle, cloning from GitHub instead"),
+            "source-build-attempted"
+        );
+        // A postinstall failure carrying none of node-llama-cpp's vocabulary.
+        assert_eq!(
+            npm_lifecycle_postinstall_stage("Error: postinstall step failed"),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn npm_lifecycle_postinstall_stage_precedence_and_never_from_the_command_echo() {
+        // Precedence when several lines co-occur (the real logs interleave them):
+        // load-failed beats missing beats source-build; rosetta beats all.
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(
+                "Failed to load a prebuilt mac-arm64-metal\nA prebuilt binary was not found, falling back to building from source"
+            ),
+            "prebuilt-load-failed"
+        );
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(
+                "A prebuilt binary was not found, falling back to building from source"
+            ),
+            "prebuilt-missing"
+        );
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(
+                "not supported under Rosetta\nA prebuilt binary was not found\nfalling back to building from source"
+            ),
+            "rosetta"
+        );
+        // NEVER derived from the echoed command: the bare `sh -c … postinstall`
+        // wrapper carries no stage vocabulary, so it is `unknown`.
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(
+                "npm error command sh -c node ./dist/cli/cli.js postinstall"
+            ),
+            "unknown"
+        );
+        // Adversarial input only ever returns a closed constant — never leaked
+        // path or attacker text (the return type is `&'static str`).
+        let allowed = [
+            "rosetta",
+            "module-load-failed",
+            "prebuilt-load-failed",
+            "prebuilt-missing",
+            "source-build-attempted",
+            "unknown",
+        ];
+        for adversarial in [
+            "/Users/attacker/secret token=abc123",
+            "\u{0}\u{7f}\nrandom noise",
+            "cannot find module '/home/victim/.ssh/id_rsa'",
+            "",
+        ] {
+            let stage = npm_lifecycle_postinstall_stage(adversarial);
+            assert!(
+                allowed.contains(&stage),
+                "stage {stage:?} is not one of the closed constants"
+            );
+        }
+    }
+
+    #[test]
+    fn postinstall_stage_is_never_a_grouping_component() {
+        // Three node-llama-cpp postinstall failures whose ONLY difference is which
+        // stage died. The classified failure kind and the grouping signature (and
+        // therefore the fingerprint, which is `[.., kind, signature]`) must be
+        // byte-identical, so adding the stage tag can never split HQ-DESKTOP-5E.
+        // The episode-key invariance is proven separately by the hq-telemetry
+        // repeat-guard test.
+        let base = |stage_line: &str| {
+            format!(
+                "npm error code 1\n\
+                 npm error path /Users/alice/.npm-global/lib/node_modules/node-llama-cpp\n\
+                 npm error command failed\n\
+                 npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+                 {stage_line}"
+            )
+        };
+        let prefix = Some("/Users/alice/.npm-global");
+        let env = InstallEnvironment::default();
+        let missing = base(
+            "[node-llama-cpp] A prebuilt binary was not found, falling back to building from source",
+        );
+        let load_failed =
+            base("[node-llama-cpp] Failed to load a prebuilt mac-arm64-metal. Error: dlopen");
+        let rosetta =
+            base("[node-llama-cpp] llama.cpp is not supported under Rosetta on Apple Silicone Macs.");
+
+        // Non-vacuous: the three details classify to three DISTINCT stages …
+        assert_eq!(npm_lifecycle_postinstall_stage(&missing), "prebuilt-missing");
+        assert_eq!(
+            npm_lifecycle_postinstall_stage(&load_failed),
+            "prebuilt-load-failed"
+        );
+        assert_eq!(npm_lifecycle_postinstall_stage(&rosetta), "rosetta");
+        // … yet share one cause, one kind, and one signature.
+        for detail in [&missing, &load_failed, &rosetta] {
+            assert_eq!(npm_lifecycle_cause(detail), "postinstall-script");
+        }
+        let kind = classify_install_failure_with_environment(Some(1), &missing, prefix, false, &env);
+        let signature = install_failure_signature_with_environment(kind, &missing, prefix, &env);
+        for detail in [&load_failed, &rosetta] {
+            assert_eq!(
+                classify_install_failure_with_environment(Some(1), detail, prefix, false, &env),
+                kind,
+                "stage must not change the failure kind"
+            );
+            assert_eq!(
+                install_failure_signature_with_environment(kind, detail, prefix, &env),
+                signature,
+                "stage must not change the grouping signature"
+            );
+        }
+        assert_eq!(
+            signature.as_str(),
+            "lifecycle:node-llama-cpp:postinstall-script"
+        );
     }
 
     #[test]
