@@ -31,9 +31,11 @@
 //!    forces an immediate commit without waiting for the window. The acceptance
 //!    is billed and the durable wedge clock cleared only *after* that `git commit`
 //!    actually lands ([`run_mirror`]); a drain whose commit fails keeps its wedge
-//!    and is reported as an aged `bulk-delete-refused` (`drain_failed=true`), so a
-//!    persistently failing commit still escalates on the ladder rather than
-//!    clearing itself silently every pass.
+//!    and is reported under its own `bulk-delete-drain-failed` kind
+//!    (`drain_failed=true`, with a closed `drain_failure_class` and a small
+//!    `drain_exit_code`) so it fingerprints apart from an ordinary confirmed
+//!    refusal (HQ-DESKTOP-43) yet a persistently failing commit still escalates
+//!    on the ladder rather than clearing itself silently every pass.
 //! 2. **It must not wedge the repo.** Every git child here writes
 //!    `.git/index.lock`, and a killed child leaves it behind — which then
 //!    blocks *every* HQ git write, including the autocommit hook, until
@@ -2331,8 +2333,12 @@ pub fn drive_wedge_report_for_test(
 /// `drain_failed` models the reopen fix's failure path: when the decision is
 /// [`AcceptSettled`](BulkDeleteAction::AcceptSettled) but the drain's `git commit`
 /// would have failed, production bills NO acceptance and instead reports the
-/// now-aged, unheld refusal with `drain_failure` set — so the seam routes that
-/// case through the SAME gate and [`emit_bulk_refusal`] an ordinary refusal uses.
+/// now-aged, unheld drain failure with `drain_failure` set — so the seam routes
+/// that case through the SAME gate and [`emit_bulk_refusal`] an ordinary refusal
+/// uses, which fingerprints it apart as `bulk-delete-drain-failed`. This bool
+/// selects the representative `lock` sample;
+/// [`drive_bulk_delete_decision_with_sample_for_test`] takes a
+/// [`DrainFailureSampleForTest`] to choose the failure cause instead.
 ///
 /// Returns the `git_mirror_kind` of the envelope that was billed, or `"none"` when
 /// the decision allows silently OR the gate holds the banner.
@@ -2349,6 +2355,47 @@ pub fn drive_bulk_delete_decision_for_test(
     prefix_records: &[u8],
     drain_failed: bool,
 ) -> &'static str {
+    // The bool form keeps every existing caller working: a failed drain is the
+    // representative locked-`HEAD` sample. Callers that need to choose the failure
+    // cause (identity, nothing-to-commit, …) call the `_with_sample` sibling.
+    let drain_sample = if drain_failed {
+        DrainFailureSampleForTest::Lock
+    } else {
+        DrainFailureSampleForTest::Ordinary
+    };
+    drive_bulk_delete_decision_with_sample_for_test(
+        deletions,
+        tracked,
+        wedge_age_secs,
+        tree_present,
+        occurrences,
+        episode_age_secs,
+        reports_so_far,
+        prefix_records,
+        drain_sample,
+    )
+}
+
+/// The same seam as [`drive_bulk_delete_decision_for_test`], but the failed-drain
+/// case carries a CHOSEN [`DrainFailureSampleForTest`] instead of the single
+/// locked-`HEAD` sample — so an envelope test can prove each `drain_failure_class`
+/// and `drain_exit_code`, and that no sample's path, username or host survives
+/// `before_send`, through the REAL gate and REAL [`emit_bulk_refusal`]. The sample
+/// only routes when the decision is `AcceptSettled`; a `Refuse` reports an ordinary
+/// refusal exactly as the bool form does.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments)]
+pub fn drive_bulk_delete_decision_with_sample_for_test(
+    deletions: usize,
+    tracked: usize,
+    wedge_age_secs: Option<u64>,
+    tree_present: bool,
+    occurrences: usize,
+    episode_age_secs: u64,
+    reports_so_far: usize,
+    prefix_records: &[u8],
+    drain_sample: DrainFailureSampleForTest,
+) -> &'static str {
     let (prefixes, prefix_groups) = deletion_prefixes(prefix_records);
     let set = StagedDeletions {
         count: deletions,
@@ -2358,12 +2405,14 @@ pub fn drive_bulk_delete_decision_for_test(
     };
     let override_on = is_bulk_override_set();
     let wedge_age = wedge_age_secs.map(Duration::from_secs);
+    let drain_failure = drain_sample.as_error();
     match decide_bulk_delete_action(deletions, tracked, override_on, wedge_age, tree_present) {
-        BulkDeleteAction::AcceptSettled if drain_failed => {
+        BulkDeleteAction::AcceptSettled if drain_failure.is_some() => {
             // The drain was judged committable but its `git commit` failed:
-            // production keeps the wedge and reports the aged, unheld refusal with
-            // `drain_failure` set. Route through the SAME gate and reporter that
-            // path uses, so the failed-drain tags and hygiene are proven for real.
+            // production keeps the wedge and reports the aged, unheld drain failure
+            // with `drain_failure` set. Route through the SAME gate and reporter
+            // that path uses, so the failed-drain kind, tags and hygiene are proven
+            // for real.
             drive_refusal_gate_for_test(
                 &set,
                 deletions,
@@ -2373,7 +2422,7 @@ pub fn drive_bulk_delete_decision_for_test(
                 episode_age_secs,
                 wedge_age,
                 reports_so_far,
-                Some(DRAIN_FAILURE_SAMPLE),
+                drain_failure,
             )
         }
         BulkDeleteAction::AcceptSettled => {
@@ -2395,12 +2444,57 @@ pub fn drive_bulk_delete_decision_for_test(
     }
 }
 
-/// A representative `git commit` failure string, carrying an absolute path exactly
-/// as production's `run_git` error does, so the seam proves both the closed
-/// [`drain_failure_class`] and that `before_send` never lets the path reach an
-/// envelope.
+/// Which representative `git commit` failure the failed-drain seam feeds through
+/// the REAL reporter and scrubber. Each variant's sample carries an absolute path,
+/// a `user@host`, or both exactly as production's [`run_git`] error does, so an
+/// envelope test proves both the closed [`drain_failure_class`] / [`drain_exit_code`]
+/// and that `before_send` never lets that local detail reach a tag, extra, message
+/// or fingerprint.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy)]
+pub enum DrainFailureSampleForTest {
+    /// Not a failed drain — the ordinary refusal / acceptance path.
+    Ordinary,
+    /// A locked `HEAD` ref: exit 128, class `lock`, carries an absolute path.
+    Lock,
+    /// A blank git identity on a non-domain host: exit 128, class `identity`,
+    /// carries a `user@host` as git prints it.
+    Identity,
+    /// An empty-index race: exit 1, class `nothing-to-commit`.
+    NothingToCommit,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl DrainFailureSampleForTest {
+    /// The representative error string, or `None` for the ordinary refusal path.
+    fn as_error(self) -> Option<&'static str> {
+        match self {
+            DrainFailureSampleForTest::Ordinary => None,
+            DrainFailureSampleForTest::Lock => Some(DRAIN_FAILURE_SAMPLE),
+            DrainFailureSampleForTest::Identity => Some(DRAIN_IDENTITY_SAMPLE),
+            DrainFailureSampleForTest::NothingToCommit => Some(DRAIN_NOTHING_SAMPLE),
+        }
+    }
+}
+
+/// A representative locked-`HEAD` `git commit` failure, carrying an absolute path
+/// exactly as production's `run_git` error does, so the seam proves both the closed
+/// [`drain_failure_class`] (`lock`) and that `before_send` never lets the path
+/// reach an envelope.
 #[cfg(any(test, feature = "test-support"))]
 const DRAIN_FAILURE_SAMPLE: &str = "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed (exit 128): fatal: cannot lock ref 'HEAD': Unable to create '/Users/example/hq/.git/HEAD.lock': File exists.";
+
+/// A blank-identity `git commit` failure on a non-domain host, carrying the
+/// `user@host` git prints — the most consistent Westbound_Acct cause. Classifies as
+/// `identity`, exit 128; the `@`, the host and `ident name` must never survive
+/// `before_send`.
+#[cfg(any(test, feature = "test-support"))]
+const DRAIN_IDENTITY_SAMPLE: &str = "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed (exit 128): Author identity unknown\n\n*** Please tell me who you are.\n\nfatal: unable to auto-detect email address (got 'alice@WESTBOUND.(none)')";
+
+/// A nothing-to-commit race `git commit` failure. Classifies as `nothing-to-commit`,
+/// exit 1.
+#[cfg(any(test, feature = "test-support"))]
+const DRAIN_NOTHING_SAMPLE: &str = "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed (exit 1): nothing to commit, working tree clean";
 
 /// Drive the REAL reporting gate (including the REAL settle-hold) and, when it
 /// emits, the REAL [`emit_bulk_refusal`], over a supplied episode shape. Factored
@@ -2410,7 +2504,9 @@ const DRAIN_FAILURE_SAMPLE: &str = "git commit --no-gpg-sign --no-verify -m 'hq-
 /// bills its one warning. `emit_bulk_refusal` reads only the deletion set, the
 /// counts, `has_upstream`, `tree_present`, `drain_failure` and the outcome/
 /// persisted fields — never the git dir or hq folder — so the placeholders here
-/// never touch disk. Returns `"bulk-delete-refused"` on an emit, else `"none"`.
+/// never touch disk. Returns the emitted `git_mirror_kind` —
+/// `"bulk-delete-drain-failed"` for a failed drain, else `"bulk-delete-refused"` —
+/// on an emit, or `"none"` when the gate holds the banner.
 #[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::too_many_arguments)]
 fn drive_refusal_gate_for_test(
@@ -2476,7 +2572,11 @@ fn drive_refusal_gate_for_test(
         &outcome,
         &PersistedRefusalState::default(),
     );
-    "bulk-delete-refused"
+    if drain_failure.is_some() {
+        "bulk-delete-drain-failed"
+    } else {
+        "bulk-delete-refused"
+    }
 }
 
 /// Launch-time self-heal. A lock orphaned by a killed run blocks every HQ git
@@ -2976,14 +3076,16 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
         Err(e) => {
             if let Some(drain) = drain {
                 // The settled deletion was judged committable but the commit itself
-                // failed (a locked ref, a timeout, a dead git). Do NOT clear the
-                // wedge: report the now-aged, unheld refusal through the standard
-                // reporter. With the wedge clock intact and wedge_age >= the settle
+                // failed (a locked ref, a blank identity, a timeout, a dead git). Do
+                // NOT clear the wedge: report the now-aged, unheld drain failure
+                // through the standard reporter, which fingerprints it under its own
+                // `bulk-delete-drain-failed` kind rather than the ordinary-refusal
+                // issue. With the wedge clock intact and wedge_age >= the settle
                 // window the hold no longer applies, so it warns once
                 // (drain_failed=true) and then follows the existing cooldown and
                 // escalation ladder. The error text carries an absolute path, so it
-                // reaches only the local log; the report ships only a bool and a
-                // closed failure class.
+                // reaches only the local log; the report ships only a bool, a closed
+                // failure class, and a small exit code.
                 log(
                     LOG_TAG,
                     &format!(
@@ -3667,37 +3769,116 @@ fn report_bulk_refusal_at(
 }
 
 /// Classify a `git commit` failure into a CLOSED, path-free vocabulary so a
-/// failed-drain refusal can be triaged by cause without ever shipping the error
+/// failed-drain report can be triaged by cause without ever shipping the error
 /// text — which carries the absolute HQ path (`Unable to create
 /// '/Users/.../.git/HEAD.lock'`) and must never reach a Sentry tag, extra or
-/// message. Pure and total: every input maps to exactly one of five words, none
-/// containing a path separator. Checked in a fixed order so the more specific
-/// cause wins — a locked-ref failure is spelled `failed (exit 128): ... cannot
-/// lock ref ...`, so `lock` is tested before the generic `exit`. The raw error is
+/// message. Pure and total: every input maps to exactly one closed word, none
+/// containing a path separator, an `@`, or repository content. Matched case
+/// insensitively over the stderr [`run_git`] already embeds, in a FIXED order so
+/// the more specific cause wins: the transient `lock`/`timeout`/`spawn` triad
+/// first and unchanged, then the diagnosable persistent causes, then the generic
+/// `exit` for any other non-zero commit, and `other` last. The raw error is
 /// written only to the local diagnostic log.
 fn drain_failure_class(error: &str) -> &'static str {
-    if error.contains("cannot lock") || error.contains(".lock") {
+    let lower = error.to_ascii_lowercase();
+    let has = |needle: &str| lower.contains(needle);
+    if has("cannot lock") || has(".lock") {
         "lock"
-    } else if error.contains("timed out") {
+    } else if has("timed out") {
         "timeout"
-    } else if error.starts_with("spawn git") {
+    } else if lower.starts_with("spawn git") {
         "spawn"
-    } else if error.contains("failed (exit") {
+    } else if has("author identity unknown")
+        || has("tell me who you are")
+        || has("auto-detect email")
+        || has("auto-detection is disabled")
+        || has("empty ident name")
+    {
+        "identity"
+    } else if has("nothing to commit")
+        || has("nothing added to commit")
+        || has("no changes added to commit")
+    {
+        "nothing-to-commit"
+    } else if has("permission denied") || has("access is denied") {
+        "permission"
+    } else if has("no space left") || has("disk full") {
+        "disk"
+    } else if has("corrupt")
+        || has("bad object")
+        || has("loose object")
+        || has("index file smaller")
+    {
+        "corrupt"
+    } else if has("cannot update the ref") || has("unable to update") || has("reference broken") {
+        "ref"
+    } else if has("failed (exit") {
         "exit"
     } else {
         "other"
     }
 }
 
+/// Parse the numeric exit code out of a `git commit` failure so a failed-drain
+/// report carries the code as an independent signal beside [`drain_failure_class`]
+/// — a keyword class can misfile unusual stderr, but the exit code is exact.
+/// [`run_git`] formats a non-zero child as `git <args> failed (exit N): <stderr>`
+/// where `N` is the numeric code or the word `signal`; this reads that one token
+/// back out. Returns the digits, `"signal"`, or `"none"` when the error carries no
+/// such token at all (a spawn failure, a read-timeout). Always a small word or
+/// integer — never the error text, which stays in the local log only.
+fn drain_exit_code(error: &str) -> String {
+    match error.split_once("failed (exit ") {
+        Some((_, rest)) => {
+            let token = rest.split(')').next().unwrap_or("").trim();
+            if token == "signal" {
+                "signal".to_string()
+            } else if !token.is_empty() && token.bytes().all(|byte| byte.is_ascii_digit()) {
+                token.to_string()
+            } else {
+                "none".to_string()
+            }
+        }
+        None => "none".to_string(),
+    }
+}
+
+/// The Sentry message for an ordinary confirmed bulk-delete refusal — HQ-DESKTOP-43's
+/// grouping key. A const so the ordinary-refusal fingerprint is provably
+/// byte-identical across the emitter and its tests.
+const BULK_DELETE_REFUSED_MESSAGE: &str =
+    "[git-mirror] refused to commit a bulk deletion of the HQ folder";
+
+/// The Sentry message for a settled drain whose `git commit` failed — a DISTINCT
+/// grouping key from [`BULK_DELETE_REFUSED_MESSAGE`], so a failed drain opens its
+/// own issue rather than regressing HQ-DESKTOP-43.
+const BULK_DELETE_DRAIN_FAILED_MESSAGE: &str =
+    "[git-mirror] could not commit a settled bulk deletion of the HQ folder: the \
+     deletions outlived the settle window but the drain's git commit failed";
+
 /// Capture the one warning-grade Sentry event for a confirmed bulk-delete
-/// refusal. Extracted so the exact production emission — tags, extras, message
-/// and `Warning` level — has a single definition the test-support seam can drive
-/// through the real `before_send` scrubber without reconstructing it.
+/// refusal OR a settled drain whose `git commit` failed. Both ship the same
+/// evidence tags at `Warning` level through one definition the test-support seam
+/// can drive through the real `before_send` scrubber without reconstructing it —
+/// they differ only in fingerprint: an ordinary refusal keeps HQ-DESKTOP-43's
+/// `git_mirror_kind = "bulk-delete-refused"` and its message byte-for-byte, while
+/// a failed drain (`report.drain_failure.is_some()`) groups apart under
+/// `git_mirror_kind = "bulk-delete-drain-failed"` with a distinct message and the
+/// `drain_failure_class` / `drain_exit_code` cause tags, so a commit that never
+/// lands no longer regresses the ordinary-refusal issue.
 fn emit_bulk_refusal(
     report: &RefusalReport<'_>,
     outcome: &RefusalOutcome,
     persisted: &PersistedRefusalState,
 ) {
+    // A failed drain fingerprints apart from an ordinary confirmed refusal: a
+    // distinct kind and message so Sentry groups it as its own issue, while every
+    // evidence tag below stays shared. `None` drain_failure is the ordinary
+    // refusal and is byte-identical to the pre-split emission.
+    let (kind, message) = match report.drain_failure {
+        Some(_) => ("bulk-delete-drain-failed", BULK_DELETE_DRAIN_FAILED_MESSAGE),
+        None => ("bulk-delete-refused", BULK_DELETE_REFUSED_MESSAGE),
+    };
     let deletion_set_stable = outcome.distinct_sets <= 1;
     let prefixes: serde_json::Map<String, serde_json::Value> = report
         .deletions
@@ -3708,7 +3889,7 @@ fn emit_bulk_refusal(
 
     sentry::with_scope(
         |scope| {
-            scope.set_tag("git_mirror_kind", "bulk-delete-refused");
+            scope.set_tag("git_mirror_kind", kind);
             scope.set_tag("deletions", report.deletions.count.to_string());
             scope.set_tag("tracked", report.tracked.to_string());
             scope.set_tag(
@@ -3775,13 +3956,16 @@ fn emit_bulk_refusal(
             );
             // Whether this event is a settled drain whose `git commit` FAILED,
             // rather than an ordinary refusal. Always set so triage can filter
-            // mechanically; when it is a failed drain, `drain_failure_class` names
-            // the cause from a closed vocabulary. Both are a bool and a fixed word
-            // — never the error text, which carries an absolute path and stays in
-            // the local log only, so `before_send` passes them through unchanged.
+            // mechanically even though the two now carry different `git_mirror_kind`
+            // fingerprints; when it is a failed drain, `drain_failure_class` names
+            // the cause from a closed vocabulary and `drain_exit_code` carries the
+            // exact code. All are a bool, a fixed word, or a small integer — never
+            // the error text, which carries an absolute path and stays in the local
+            // log only, so `before_send` passes them through unchanged.
             scope.set_tag("drain_failed", report.drain_failure.is_some().to_string());
             if let Some(error) = report.drain_failure {
                 scope.set_tag("drain_failure_class", drain_failure_class(error));
+                scope.set_tag("drain_exit_code", drain_exit_code(error));
             }
             scope.set_extra("deletion_prefixes", serde_json::Value::Object(prefixes));
             scope.set_extra(
@@ -3790,10 +3974,7 @@ fn emit_bulk_refusal(
             );
         },
         || {
-            sentry::capture_message(
-                "[git-mirror] refused to commit a bulk deletion of the HQ folder",
-                sentry::Level::Warning,
-            );
+            sentry::capture_message(message, sentry::Level::Warning);
         },
     );
 }
@@ -9386,9 +9567,12 @@ mod tests {
 
     /// The reopen fix, red on base and on PR #800's hold alone: a settled drain
     /// whose `git commit` fails (a locked `HEAD`) keeps its wedge and bills ONE
-    /// aged `bulk-delete-refused` warning with `drain_failed=true`, never a silent
-    /// acceptance. On the pre-fix guard the acceptance is billed and the wedge
-    /// cleared before `run_mirror` ever commits, so every assertion below fails.
+    /// aged `bulk-delete-drain-failed` warning — its OWN fingerprint, not
+    /// HQ-DESKTOP-43's — with `drain_failed=true`, `drain_failure_class=lock` and
+    /// `drain_exit_code=128`, never a silent acceptance. On the pre-fix guard the
+    /// acceptance is billed and the wedge cleared before `run_mirror` ever commits,
+    /// and on PR #800 the same commit failure billed `bulk-delete-refused`, so the
+    /// kind, message and exit-code assertions below all fail there.
     #[test]
     fn a_failed_settled_drain_keeps_the_wedge_and_bills_no_acceptance() {
         let _serial = serial();
@@ -9432,25 +9616,45 @@ mod tests {
             0,
             "a failed drain bills zero acceptances"
         );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-refused"))
+                .count(),
+            0,
+            "a failed drain never lands on HQ-DESKTOP-43's ordinary-refusal fingerprint"
+        );
 
-        let refusals: Vec<_> = events
+        let drain_failures: Vec<_> = events
             .iter()
-            .filter(|e| is_kind(e, "bulk-delete-refused"))
+            .filter(|e| is_kind(e, "bulk-delete-drain-failed"))
             .collect();
         assert_eq!(
-            refusals.len(),
+            drain_failures.len(),
             1,
-            "a failed drain bills exactly one aged refusal warning, got {:?}",
+            "a failed drain bills exactly one aged drain-failed warning, got {:?}",
             events
                 .iter()
                 .map(|e| (e.level, e.tags.get("git_mirror_kind").cloned()))
                 .collect::<Vec<_>>()
         );
-        let event = refusals[0];
+        let event = drain_failures[0];
         assert_eq!(event.level, sentry::Level::Warning);
+        // Its own fingerprint: a message distinct from HQ-DESKTOP-43's, so Sentry
+        // never groups the failed drain back onto the ordinary-refusal issue.
+        assert_eq!(
+            event.message.as_deref(),
+            Some(BULK_DELETE_DRAIN_FAILED_MESSAGE)
+        );
+        assert_ne!(
+            event.message.as_deref(),
+            Some(BULK_DELETE_REFUSED_MESSAGE),
+            "a failed drain must not carry the ordinary-refusal message"
+        );
         let tag = |k: &str| event.tags.get(k).map(String::as_str);
         assert_eq!(tag("drain_failed"), Some("true"));
         assert_eq!(tag("drain_failure_class"), Some("lock"));
+        assert_eq!(tag("drain_exit_code"), Some("128"));
         assert_eq!(tag("report_source"), Some("first-confirmed"));
         assert_eq!(tag("settle_eligible"), Some("true"));
         assert_eq!(tag("tree_present"), Some("true"));
@@ -9499,10 +9703,10 @@ mod tests {
         assert_eq!(
             first
                 .iter()
-                .filter(|e| is_kind(e, "bulk-delete-refused"))
+                .filter(|e| is_kind(e, "bulk-delete-drain-failed"))
                 .count(),
             1,
-            "the first failed drain warns once"
+            "the first failed drain warns once under its own kind"
         );
 
         // Pass 2: still locked — a second failed drain is Suppressed inside the
@@ -9596,11 +9800,191 @@ mod tests {
         reset_refusal_report_state();
     }
 
+    /// The most consistent Westbound_Acct cause, proven end to end on real git: a
+    /// settle-eligible wedge whose drain commit cannot run because the HQ root has
+    /// no git identity. It classifies as `identity` (exit 128), keeps its wedge,
+    /// bills no acceptance and its OWN `bulk-delete-drain-failed` fingerprint — and
+    /// not one byte of git's identity error (which carries an `@`, a path and the
+    /// phrase "ident name") reaches any tag, extra or message. Restoring the identity
+    /// drains the wedge on the next pass. Base mislabels the cause `exit`; PR #800
+    /// bills it as an ordinary `bulk-delete-refused` — both red here.
+    #[test]
+    fn a_drain_that_cannot_commit_for_want_of_an_identity_reports_identity_and_keeps_the_wedge() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let git_dir = seed_never_bannered_wedge(&tmp);
+        let before = rev_count(tmp.path());
+        let seeded_anchor = read_persisted_state(&git_dir).unwrap().wedge_started_at;
+        assert!(
+            seeded_anchor.is_some(),
+            "the seed wrote a durable wedge clock"
+        );
+
+        // Blank the HQ root's git identity: every read and staging command still
+        // succeeds, and only `git commit` fails (exit 128, "empty ident name"),
+        // exactly as a non-domain host with no configured identity does.
+        assert!(git(tmp.path(), &["config", "user.name", ""])
+            .status
+            .success());
+        assert!(git(tmp.path(), &["config", "user.email", ""])
+            .status
+            .success());
+
+        let mut result = Ok(());
+        let events = sentry::test::with_captured_events(|| {
+            result = run_mirror_at(tmp.path());
+        });
+        assert!(
+            result.is_err(),
+            "a blank-identity drain returns Err, got {result:?}"
+        );
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "a failed drain commits nothing"
+        );
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            0,
+            "a failed drain bills zero acceptances"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-refused"))
+                .count(),
+            0,
+            "a failed drain never lands on HQ-DESKTOP-43's ordinary-refusal fingerprint"
+        );
+        let drain_failures: Vec<_> = events
+            .iter()
+            .filter(|e| is_kind(e, "bulk-delete-drain-failed"))
+            .collect();
+        assert_eq!(
+            drain_failures.len(),
+            1,
+            "a blank-identity drain bills exactly one drain-failed warning, got {:?}",
+            events
+                .iter()
+                .map(|e| (e.level, e.tags.get("git_mirror_kind").cloned()))
+                .collect::<Vec<_>>()
+        );
+        let event = drain_failures[0];
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(
+            event.message.as_deref(),
+            Some(BULK_DELETE_DRAIN_FAILED_MESSAGE)
+        );
+        let tag = |k: &str| event.tags.get(k).map(String::as_str);
+        assert_eq!(tag("drain_failed"), Some("true"));
+        assert_eq!(
+            tag("drain_failure_class"),
+            Some("identity"),
+            "a blank git identity classifies as `identity`, not the generic `exit`"
+        );
+        assert_eq!(tag("drain_exit_code"), Some("128"));
+        assert_eq!(tag("settle_eligible"), Some("true"));
+        assert_eq!(tag("tree_present"), Some("true"));
+
+        // Envelope hygiene on the emitter itself (before any before_send): git's
+        // identity error carries an `@`, an absolute path and "ident name", yet only
+        // the closed word and the exit code are shipped. No tag value, extra, or the
+        // message carries a path separator, an `@`, or "ident name", and the temp
+        // repo path never appears in the serialized event.
+        let temp_path = tmp.path().to_string_lossy().to_string();
+        for (k, v) in event.tags.iter() {
+            for forbidden in ['/', '\\', '@'] {
+                assert!(
+                    !v.contains(forbidden),
+                    "tag {k}={v} must not carry {forbidden:?}"
+                );
+            }
+        }
+        let message = event.message.clone().unwrap_or_default();
+        for needle in ["/", "\\", "@", "ident name"] {
+            assert!(
+                !message.contains(needle),
+                "the message must not carry {needle:?}: {message}"
+            );
+        }
+        let extras = serde_json::to_string(&event.extra).expect("serialize extras");
+        for needle in ["/", "\\", "@", "ident name"] {
+            assert!(
+                !extras.contains(needle),
+                "an extra must not carry {needle:?}: {extras}"
+            );
+        }
+        let serialized = serde_json::to_string(event).expect("serialize event");
+        assert!(
+            !serialized.contains("ident name") && !serialized.contains(&temp_path),
+            "no raw identity error and no temp path in the serialized event"
+        );
+
+        let kept = read_persisted_state(&git_dir).unwrap();
+        assert_eq!(
+            kept.wedge_started_at, seeded_anchor,
+            "a failed drain keeps the durable wedge clock verbatim"
+        );
+
+        // Restore the identity: the very next pass drains the wedge for real.
+        assert!(git(tmp.path(), &["config", "user.name", "hq-sync-test"])
+            .status
+            .success());
+        assert!(
+            git(tmp.path(), &["config", "user.email", "test@example.com"])
+                .status
+                .success()
+        );
+        let drained = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("the drain commits once the identity is restored");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the drain commits in one pass once the identity is restored"
+        );
+        let accepted: Vec<_> = drained
+            .iter()
+            .filter(|e| is_kind(e, "bulk-delete-accepted"))
+            .collect();
+        assert_eq!(accepted.len(), 1, "the restored drain bills one acceptance");
+        assert_eq!(accepted[0].level, sentry::Level::Info);
+        assert_eq!(
+            read_persisted_state(&git_dir).unwrap().wedge_started_at,
+            None,
+            "the drain clears the wedge clock"
+        );
+        reset_refusal_report_state();
+    }
+
     /// The classifier maps every real `run_git`/`git_output` failure string to one
-    /// of five path-free words, checked in a fixed order (lock before the generic
-    /// exit). The raw error — which carries an absolute path — is never returned.
+    /// closed, path-free word, checked in a FIXED order (the transient
+    /// lock/timeout/spawn triad first, then the diagnosable persistent causes, then
+    /// the generic `exit`, then `other`). Built from real git 2.50.1 strings. The
+    /// raw error — which can carry an absolute path, a username or an `@` — is never
+    /// returned: the class word carries none of those bytes.
     #[test]
     fn drain_failure_class_is_a_closed_vocabulary_that_never_carries_the_error() {
+        const CLOSED_SET: [&str; 11] = [
+            "lock",
+            "timeout",
+            "spawn",
+            "identity",
+            "nothing-to-commit",
+            "permission",
+            "disk",
+            "corrupt",
+            "ref",
+            "exit",
+            "other",
+        ];
         let cases = [
             (
                 "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
@@ -9616,7 +10000,44 @@ mod tests {
             ("spawn git: No such file or directory (os error 2)", "spawn"),
             (
                 "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
+                 (exit 128): Author identity unknown\n\n*** Please tell me who you are.\n\n\
+                 fatal: unable to auto-detect email address (got 'alice@WESTBOUND.(none)')",
+                "identity",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
+                 (exit 1): nothing to commit, working tree clean",
+                "nothing-to-commit",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
+                 (exit 128): error: unable to write file: Permission denied",
+                "permission",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
+                 (exit 128): fatal: write error: No space left on device",
+                "disk",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
+                 (exit 128): error: object file .git/objects/ab/cdef is corrupt",
+                "corrupt",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
+                 (exit 128): error: cannot update the ref 'HEAD': unable to append to \
+                 '.git/logs/HEAD'",
+                "ref",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
                  (exit 1): error: could not write commit object",
+                "exit",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'hq-sync: 2026-09-12T00:00:00Z' failed \
+                 (exit 1): [prepare-commit-msg] refusing: repository policy check did not pass",
                 "exit",
             ),
             (
@@ -9630,18 +10051,67 @@ mod tests {
             let class = drain_failure_class(error);
             assert_eq!(class, expected, "classifying: {error}");
             assert!(
-                ["lock", "timeout", "spawn", "exit", "other"].contains(&class),
-                "class must be one of the five closed-vocabulary words, got {class:?}"
+                CLOSED_SET.contains(&class),
+                "class must be one of the closed-vocabulary words, got {class:?}"
             );
-            assert!(
-                !class.contains('/'),
-                "a class word never carries a path: {class:?}"
-            );
+            // The class word is derived from an error that may carry a path, a
+            // username or an `@`; none of those bytes may ride along in the word.
+            for forbidden in ['/', '\\', '@'] {
+                assert!(
+                    !class.contains(forbidden),
+                    "a class word never carries {forbidden:?}: {class:?}"
+                );
+            }
         }
     }
 
-    /// The complement of the failed-drain tag: an ordinary refusal carries
-    /// `drain_failed=false` and no `drain_failure_class` tag at all.
+    /// `drain_exit_code` reads the numeric code back out of the wrapper's own
+    /// `failed (exit N)` token — an independent signal beside the keyword class:
+    /// the digits, `signal`, or `none` when there is no such token.
+    #[test]
+    fn drain_exit_code_is_the_wrapper_exit_token_or_signal_or_none() {
+        let cases = [
+            (
+                "git commit --no-gpg-sign --no-verify -m 'x' failed (exit 128): fatal: cannot \
+                 lock ref 'HEAD'",
+                "128",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'x' failed (exit 1): nothing to commit",
+                "1",
+            ),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'x' failed (exit signal): killed by a \
+                 signal",
+                "signal",
+            ),
+            ("spawn git: No such file or directory (os error 2)", "none"),
+            (
+                "git commit --no-gpg-sign --no-verify -m 'x' timed out after 120s of runnable \
+                 time and was killed",
+                "none",
+            ),
+        ];
+        for (error, expected) in cases {
+            let code = drain_exit_code(error);
+            assert_eq!(code, expected, "exit code of: {error}");
+            // Always a small word or integer — never a path or the error text.
+            assert!(
+                code == "signal" || code == "none" || code.bytes().all(|b| b.is_ascii_digit()),
+                "exit code must be digits, `signal`, or `none`, got {code:?}"
+            );
+            for forbidden in ['/', '\\', '@', ' '] {
+                assert!(
+                    !code.contains(forbidden),
+                    "exit code never carries {forbidden:?}: {code:?}"
+                );
+            }
+        }
+    }
+
+    /// The complement of the failed-drain tags: an ordinary refusal carries
+    /// `drain_failed=false`, no `drain_failure_class`, no `drain_exit_code`, and
+    /// HQ-DESKTOP-43's message byte-for-byte.
     #[test]
     fn an_ordinary_refusal_is_tagged_drain_failed_false() {
         let _serial = serial();
@@ -9674,6 +10144,13 @@ mod tests {
             .filter(|e| is_kind(e, "bulk-delete-refused"))
             .collect();
         assert_eq!(refusals.len(), 1, "one warning");
+        // The ordinary-refusal fingerprint is unchanged: HQ-DESKTOP-43's exact
+        // message and no drain-cause tags.
+        assert_eq!(
+            refusals[0].message.as_deref(),
+            Some(BULK_DELETE_REFUSED_MESSAGE),
+            "an ordinary refusal keeps HQ-DESKTOP-43's message byte-for-byte"
+        );
         assert_eq!(
             refusals[0].tags.get("drain_failed").map(String::as_str),
             Some("false"),
@@ -9682,6 +10159,10 @@ mod tests {
         assert!(
             !refusals[0].tags.contains_key("drain_failure_class"),
             "no drain_failure_class tag on an ordinary refusal"
+        );
+        assert!(
+            !refusals[0].tags.contains_key("drain_exit_code"),
+            "no drain_exit_code tag on an ordinary refusal"
         );
         reset_refusal_report_state();
     }

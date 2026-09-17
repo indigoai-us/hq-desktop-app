@@ -43,23 +43,62 @@
 //!   `bulk-delete-refused` envelope at the unchanged 30-minute gate.
 //!
 //!   Case C — envelope hygiene: every envelope survives `before_send` with its
-//!   tags — including the new `tree_present` / `settle_eligible` booleans — intact
-//!   and carries no absolute path, username, or repository content. It also feeds
-//!   a failed drain, whose error string carries an absolute path, through the real
-//!   scrubber and asserts that path never reaches a tag or the serialized event
-//!   while `drain_failed` / `drain_failure_class` survive intact.
+//!   tags — including the `tree_present` / `settle_eligible` booleans — intact and
+//!   carries no absolute path, username, or repository content. It feeds each
+//!   failed-drain sample (a locked HEAD's absolute path, a blank identity's
+//!   `user@host` and "ident name", a nothing-to-commit) through the real scrubber
+//!   and asserts none of that local detail ever reaches a tag, extra, message or the
+//!   serialized event, while `drain_failed` / `drain_failure_class` /
+//!   `drain_exit_code` survive intact under the `bulk-delete-drain-failed`
+//!   fingerprint.
 //!
-//!   Case D — a failed drain warns instead of accepting: the same aged, present,
-//!   partial wedge whose drain COMMIT fails bills exactly one `level=warning`
-//!   `bulk-delete-refused` envelope tagged `drain_failed=true` with a closed
-//!   `drain_failure_class`, and ZERO acceptances — while the identical inputs with
-//!   the commit succeeding still bill one `level=info` acceptance (case A). This is
-//!   the reopen fix's failure path: a drain that does not land escalates, never
-//!   silently clears.
+//!   Case D — a failed drain warns under its OWN fingerprint instead of accepting:
+//!   the same aged, present, partial wedge whose drain COMMIT fails bills exactly
+//!   one `level=warning` `bulk-delete-drain-failed` envelope (a message distinct
+//!   from HQ-DESKTOP-43's) tagged `drain_failed=true` with a closed
+//!   `drain_failure_class` and a `drain_exit_code`, and ZERO acceptances — while the
+//!   identical inputs with the commit succeeding still bill one `level=info`
+//!   acceptance (case A). This is the reopen fix's failure path: a drain that does
+//!   not land opens its own issue, never regresses HQ-DESKTOP-43 and never silently
+//!   clears.
+//!
+//!   Case E — the ordinary-refusal fingerprint is unchanged: an emitting
+//!   non-eligible refusal still bills `bulk-delete-refused` with HQ-DESKTOP-43's
+//!   byte-identical message and no `drain_*` cause tags, so the split never disturbs
+//!   the original issue.
 
 use std::sync::Arc;
 
-use hq_desktop_core::git_mirror::drive_bulk_delete_decision_for_test;
+use hq_desktop_core::git_mirror::{
+    drive_bulk_delete_decision_for_test, drive_bulk_delete_decision_with_sample_for_test,
+    DrainFailureSampleForTest,
+};
+
+/// HQ-DESKTOP-43's grouping key. A failed drain must never carry this message, and
+/// an ordinary refusal must carry it byte-for-byte.
+const REFUSAL_MESSAGE: &str = "[git-mirror] refused to commit a bulk deletion of the HQ folder";
+
+/// The full closed `drain_failure_class` vocabulary, mirrored from the classifier.
+const DRAIN_CLASS_VOCABULARY: [&str; 11] = [
+    "lock",
+    "timeout",
+    "spawn",
+    "identity",
+    "nothing-to-commit",
+    "permission",
+    "disk",
+    "corrupt",
+    "ref",
+    "exit",
+    "other",
+];
+
+/// `drain_exit_code` ships as the digits, `signal`, or `none` — never anything else.
+fn is_exit_code_shape(code: &str) -> bool {
+    code == "signal"
+        || code == "none"
+        || (!code.is_empty() && code.bytes().all(|b| b.is_ascii_digit()))
+}
 
 /// The recorded field shape of the 2026-09-05 MacBookPro event: 13,734 staged
 /// deletions of 17,036 tracked files (80.6%), an 8-day durable wedge.
@@ -286,56 +325,17 @@ fn case_c_no_local_detail_survives_scrubbing_and_the_new_tags_are_intact() {
         );
     });
 
-    // A settled drain whose COMMIT failed: the aged present partial wedge, but
-    // reported as a refusal carrying the git error string — which holds an absolute
-    // path. The new tags must survive `before_send`; the path must not.
-    let failed_drain = captured(|| {
-        let kind = drive_bulk_delete_decision_for_test(
-            FIELD_DELETIONS,
-            FIELD_TRACKED,
-            Some(EIGHT_DAYS_SECS),
-            true,
-            CONFIRMED_OCCURRENCES,
-            EIGHT_DAYS_SECS,
-            FIRST_BANNER,
-            &records,
-            true,
-        );
-        assert_eq!(
-            kind, "bulk-delete-refused",
-            "a failed drain reports a refusal"
-        );
-    });
-    assert_eq!(failed_drain.len(), 1, "a failed drain bills one envelope");
-    assert_eq!(
-        failed_drain[0].tags["drain_failed"], "true",
-        "the failed-drain discriminator survives scrubbing"
-    );
-    assert!(
-        ["lock", "timeout", "spawn", "exit", "other"]
-            .contains(&failed_drain[0].tags["drain_failure_class"].as_str()),
-        "drain_failure_class survives as a closed-vocabulary word, got {:?}",
-        failed_drain[0].tags.get("drain_failure_class")
-    );
-
-    for (label, events) in [
-        ("accepted", accepted),
-        ("refused", refused),
-        ("failed_drain", failed_drain),
-    ] {
+    // The acceptance and the ordinary refusal set only counts, durations, bools and
+    // fixed enums — no path, and `tree_present` must survive `before_send`.
+    for (label, events) in [("accepted", &accepted), ("refused", &refused)] {
         assert_eq!(events.len(), 1, "{label}");
         let event = &events[0];
-        // Every tag this path sets is a count, a duration, a bool, or a fixed
-        // enum — none carries a path or anything user-owned.
         for (k, v) in event.tags.iter() {
             assert!(
                 !v.contains('/'),
                 "{label}: tag {k}={v} must not carry a path"
             );
         }
-        // The new discriminator tags survive `before_send` with their values
-        // intact — a boolean is not scrubbable content, and both fingerprints
-        // carry `tree_present`.
         assert_eq!(
             event.tags["tree_present"], "true",
             "{label}: tree_present must survive scrubbing"
@@ -345,6 +345,94 @@ fn case_c_no_local_detail_survives_scrubbing_and_the_new_tags_are_intact() {
             assert!(
                 !serialized.contains(needle),
                 "{label}: local detail ({needle}) leaked into {serialized}"
+            );
+        }
+    }
+
+    // Each failed-drain sample carries local detail in its git error: a locked
+    // HEAD's absolute path, a blank identity's `user@host` and "ident name", or a
+    // clean nothing-to-commit. The reporter derives only a closed class word and a
+    // small exit code, so `before_send` has nothing to strip: the fingerprint is the
+    // new `bulk-delete-drain-failed`, the message is NOT HQ-DESKTOP-43's, and no
+    // path, username, host, `@` or "ident name" reaches any tag, extra or the event.
+    for sample in [
+        DrainFailureSampleForTest::Lock,
+        DrainFailureSampleForTest::Identity,
+        DrainFailureSampleForTest::NothingToCommit,
+    ] {
+        let events = captured(|| {
+            let kind = drive_bulk_delete_decision_with_sample_for_test(
+                FIELD_DELETIONS,
+                FIELD_TRACKED,
+                Some(EIGHT_DAYS_SECS),
+                true,
+                CONFIRMED_OCCURRENCES,
+                EIGHT_DAYS_SECS,
+                FIRST_BANNER,
+                &records,
+                sample,
+            );
+            assert_eq!(
+                kind, "bulk-delete-drain-failed",
+                "a failed drain reports its own kind"
+            );
+        });
+        assert_eq!(events.len(), 1, "a failed drain bills one envelope");
+        let event = &events[0];
+        assert_eq!(kind(event), Some("bulk-delete-drain-failed"));
+        assert_eq!(
+            event.tags["drain_failed"], "true",
+            "the failed-drain discriminator survives scrubbing"
+        );
+        assert!(
+            DRAIN_CLASS_VOCABULARY.contains(&event.tags["drain_failure_class"].as_str()),
+            "drain_failure_class survives as a closed-vocabulary word, got {:?}",
+            event.tags.get("drain_failure_class")
+        );
+        assert!(
+            is_exit_code_shape(&event.tags["drain_exit_code"]),
+            "drain_exit_code survives as digits/`signal`/`none`, got {:?}",
+            event.tags.get("drain_exit_code")
+        );
+        assert_ne!(
+            event.message.as_deref(),
+            Some(REFUSAL_MESSAGE),
+            "a failed drain must not carry HQ-DESKTOP-43's message"
+        );
+        assert_eq!(
+            event.tags["tree_present"], "true",
+            "tree_present must survive scrubbing"
+        );
+        for (k, v) in event.tags.iter() {
+            for forbidden in ['/', '\\', '@'] {
+                assert!(
+                    !v.contains(forbidden),
+                    "tag {k}={v} must not carry {forbidden:?}"
+                );
+            }
+        }
+        let extras = serde_json::to_string(&event.extra).expect("serialize extras");
+        for forbidden in ['/', '\\', '@'] {
+            assert!(
+                !extras.contains(forbidden),
+                "an extra must not carry {forbidden:?}: {extras}"
+            );
+        }
+        let serialized = serde_json::to_string(event).expect("serialize scrubbed event");
+        for needle in [
+            "/Users/",
+            "/home/",
+            "/private/",
+            "/tmp/",
+            "file-0",
+            "alice",
+            "WESTBOUND",
+            "ident name",
+            "HEAD.lock",
+        ] {
+            assert!(
+                !serialized.contains(needle),
+                "failed drain: local detail ({needle}) leaked into {serialized}"
             );
         }
     }
@@ -368,8 +456,8 @@ fn case_d_a_failed_drain_bills_one_warning_and_zero_acceptances() {
             true,
         );
         assert_eq!(
-            kind, "bulk-delete-refused",
-            "a failed drain reports an aged refusal, not an acceptance"
+            kind, "bulk-delete-drain-failed",
+            "a failed drain reports its own kind, not an acceptance or a refusal"
         );
     });
 
@@ -384,13 +472,24 @@ fn case_d_a_failed_drain_bills_one_warning_and_zero_acceptances() {
     );
     let event = &failed[0];
     assert_eq!(event.level, sentry::Level::Warning);
-    assert_eq!(kind(event), Some("bulk-delete-refused"));
+    assert_eq!(kind(event), Some("bulk-delete-drain-failed"));
+    // Its own fingerprint: a message distinct from HQ-DESKTOP-43's, so a failed
+    // drain never regresses the ordinary-refusal issue.
+    assert_ne!(
+        event.message.as_deref(),
+        Some(REFUSAL_MESSAGE),
+        "a failed drain must not carry HQ-DESKTOP-43's message"
+    );
     assert_eq!(event.tags["drain_failed"], "true");
     assert!(
-        ["lock", "timeout", "spawn", "exit", "other"]
-            .contains(&event.tags["drain_failure_class"].as_str()),
+        DRAIN_CLASS_VOCABULARY.contains(&event.tags["drain_failure_class"].as_str()),
         "drain_failure_class is a closed-vocabulary word, got {:?}",
         event.tags.get("drain_failure_class")
+    );
+    assert!(
+        is_exit_code_shape(&event.tags["drain_exit_code"]),
+        "drain_exit_code is digits/`signal`/`none`, got {:?}",
+        event.tags.get("drain_exit_code")
     );
     assert_eq!(event.tags["settle_eligible"], "true");
     assert_eq!(event.tags["tree_present"], "true");
@@ -423,4 +522,50 @@ fn case_d_a_failed_drain_bills_one_warning_and_zero_acceptances() {
     assert_eq!(ok.len(), 1, "a successful drain bills one acceptance");
     assert_eq!(ok[0].level, sentry::Level::Info);
     assert_eq!(kind(&ok[0]), Some("bulk-delete-accepted"));
+}
+
+#[test]
+fn case_e_the_ordinary_refusal_fingerprint_is_unchanged() {
+    let records = hq_subtree_records();
+
+    // A vanished whole tree (`deletions == tracked`): never settle-eligible, so the
+    // confirmed refusal emits its one warning at the unchanged 30-minute gate. The
+    // kind/message split must leave this fingerprint byte-identical: HQ-DESKTOP-43's
+    // kind and message, and none of the drain-cause tags.
+    let events = captured(|| {
+        let kind = drive_bulk_delete_decision_for_test(
+            REOPEN_TRACKED,
+            REOPEN_TRACKED,
+            Some(REOPEN_WEDGE_SECS),
+            true,
+            CONFIRMED_OCCURRENCES,
+            CONFIRMED_EPISODE_SECS,
+            FIRST_BANNER,
+            &records,
+            false,
+        );
+        assert_eq!(
+            kind, "bulk-delete-refused",
+            "an ordinary refusal still warns"
+        );
+    });
+
+    assert_eq!(events.len(), 1, "an ordinary refusal bills one warning");
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(kind(event), Some("bulk-delete-refused"));
+    assert_eq!(
+        event.message.as_deref(),
+        Some(REFUSAL_MESSAGE),
+        "HQ-DESKTOP-43's message is byte-identical after the split"
+    );
+    assert_eq!(event.tags["drain_failed"], "false");
+    assert!(
+        !event.tags.contains_key("drain_failure_class"),
+        "no drain_failure_class on an ordinary refusal"
+    );
+    assert!(
+        !event.tags.contains_key("drain_exit_code"),
+        "no drain_exit_code on an ordinary refusal"
+    );
 }
