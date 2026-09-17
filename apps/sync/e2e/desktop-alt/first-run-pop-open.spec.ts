@@ -39,9 +39,9 @@ describe('first-run routes through onboarding before completion', () => {
     // Open the desktop window first, dismiss the card only once it opened —
     // a failed open must not leave the user with no window at all.
     expect(firstRunRust).toMatch(
-      /pub async fn show_main_window_at_tray[\s\S]*?open_desktop_alt_window_inner\(app\.clone\(\), None\)\.await\?;[\s\S]*?crate::tray::hide_popover_window\(&app\);/,
+      /pub async fn show_main_window_at_tray[\s\S]*?open_desktop_alt_window_inner\(app\.clone\(\), None\)\.await\?;[\s\S]*?crate::tray::hide_onboarding_window\(&app\);/,
     );
-    expect(firstRunRust).not.toContain('crate::tray::show_popover_window(&app)');
+    expect(firstRunRust).not.toContain('crate::tray::show_onboarding_window(&app)');
     // The renderer no longer opens the desktop window itself and then hides
     // the card behind its back.
     expect(onboarding).not.toContain("invoke('open_desktop_alt_window')");
@@ -51,7 +51,7 @@ describe('first-run routes through onboarding before completion', () => {
     // Otherwise the launch-time onboarding pin keeps suppressing click-away
     // for the rest of the process after the handoff.
     expect(tray).toMatch(
-      /pub fn hide_popover_window[\s\S]*?note_popover_dismissed\(\)[\s\S]*?get_webview_window\("main"\)/,
+      /pub fn hide_onboarding_window[\s\S]*?note_onboarding_card_dismissed\(\)[\s\S]*?get_webview_window\("main"\)/,
     );
   });
 

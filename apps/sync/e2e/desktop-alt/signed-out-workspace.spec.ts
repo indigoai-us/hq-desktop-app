@@ -47,6 +47,6 @@ describe('signed-out users open the desktop workspace for sign-in', () => {
     expect(app).toContain("listen('tray:open-desktop'");
     expect(app).toContain("invoke('open_desktop_alt_window')");
     expect(auth).toContain('open_desktop_alt_window_inner(app, None)');
-    expect(auth).not.toContain('show_popover_window');
+    expect(auth).not.toContain('show_onboarding_window');
   });
 });

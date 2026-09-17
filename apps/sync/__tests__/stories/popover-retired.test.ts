@@ -148,7 +148,7 @@ describe('PL-06: `main` keeps running as the controller while it renders nothing
 describe('PL-06: no activation path can show an empty `main`', () => {
   it('routes tray left-click, the Dock icon and a second launch through the setup guard', () => {
     expect(tray).toMatch(
-      /pub fn activate_primary_surface[\s\S]*?onboarding_window_requires_blur_suppression\(app\)[\s\S]*?show_popover_window\(app\)[\s\S]*?show_desktop_window\(app\)/,
+      /pub fn activate_primary_surface[\s\S]*?onboarding_window_requires_blur_suppression\(app\)[\s\S]*?show_onboarding_window\(app\)[\s\S]*?show_desktop_window\(app\)/,
     );
     // Tray left-click (in-process icon) and the macOS helper both take it.
     expect(tray).toContain('activate_primary_surface(&app_handle)');
@@ -162,7 +162,7 @@ describe('PL-06: no activation path can show an empty `main`', () => {
     // Opt+Shift+O toggles `desktop-alt` and hides `main`; the retired
     // Opt+Shift+H popover toggle stayed retired in PL-05.
     expect(mainRs).not.toContain('toggle_popover_window');
-    expect(mainRs).not.toContain('show_popover_window');
+    expect(mainRs).not.toContain('show_onboarding_window');
     expect(mainRs).toMatch(/desktop_visible[\s\S]*?open_desktop_alt_window_inner/);
   });
 
@@ -173,11 +173,11 @@ describe('PL-06: no activation path can show an empty `main`', () => {
     expect(toggle).toContain('get_auth_state');
     expect(toggle).toMatch(/if !main_window_has_ui\([\s\S]*?\{[\s\S]*?return;/);
     // The show call is still there, behind the guard, for onboarding/sign-in.
-    expect(toggle).toContain('show_popover_window(&app_main)');
+    expect(toggle).toContain('show_onboarding_window(&app_main)');
   });
 
-  it('leaves exactly two callers of show_popover_window, both guarded', () => {
-    const callers = (tray.match(/(?<!fn )show_popover_window\(&?app/g) ?? []).length;
+  it('leaves exactly two callers of show_onboarding_window, both guarded', () => {
+    const callers = (tray.match(/(?<!fn )show_onboarding_window\(&?app/g) ?? []).length;
     expect(callers).toBe(2);
     // PL-05 removed the tray-anchored show helper; nothing reintroduced it.
     expect(tray).not.toContain('pub fn show_window_at_tray');

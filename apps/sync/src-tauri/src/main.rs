@@ -547,7 +547,7 @@ fn main() {
                         // Cmd-W is an explicit dismissal, same as Esc or the
                         // popover's close button — release the onboarding
                         // blur-hide pin so click-away works from here on.
-                        tray::note_popover_dismissed();
+                        tray::note_onboarding_card_dismissed();
                         let _ = window.hide();
                     });
                 }

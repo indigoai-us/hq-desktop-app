@@ -397,7 +397,7 @@ const boundaryContracts: BoundaryContract[] = [
     startMarker: "if let WindowEvent::Focused(false) = event {",
     endMarker: "// NOTE: on macOS there is no tao tray",
     afterMarkers: [
-      "let should_hide = should_hide_popover_on_blur(BlurHideInputs {",
+      "let should_hide = should_hide_onboarding_card_on_blur(BlurHideInputs {",
       "modal_open: is_modal_open()",
     ],
   },
