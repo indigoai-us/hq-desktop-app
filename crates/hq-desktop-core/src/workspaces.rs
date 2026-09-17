@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{HqConfig, MenubarPrefs};
+use crate::first_run::prepare_menubar_write;
 use crate::journal::read_journal;
 use crate::logfile::log;
 use crate::paths;
@@ -391,14 +392,7 @@ pub fn write_workspace_sync_enabled(slug: &str, enabled: bool) -> Result<(), Str
             .map_err(|e| format!("create menubar config directory: {e}"))?;
     }
 
-    let mut root = if path.exists() {
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
-    } else {
-        serde_json::Value::Object(serde_json::Map::new())
-    };
+    let mut root = serde_json::Value::Object(prepare_menubar_write(&path)?.unwrap_or_default());
 
     let obj = root
         .as_object_mut()
@@ -1115,5 +1109,39 @@ companies:
         assert_eq!(map.get("acme"), Some(&true));
         assert_eq!(map.get("zeta"), Some(&false));
         assert_eq!(disabled, vec!["zeta".to_string()]);
+    }
+
+    #[test]
+    fn workspace_sync_toggle_preserves_malformed_menubar_settings() {
+        use crate::test_support::ENV_MUTEX;
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let hq_dir = tmp.path().join(".hq");
+        std::fs::create_dir_all(&hq_dir).unwrap();
+        let path = hq_dir.join("menubar.json");
+        let corrupt = r#"{"workspaceSyncEnabled":{"acme":true"#;
+        std::fs::write(&path, corrupt).unwrap();
+
+        let prior_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
+        let result = write_workspace_sync_enabled("acme", false);
+        match prior_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        result.expect("the toggle should recover from malformed settings");
+
+        let recovery_copy = std::fs::read_dir(&hq_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|candidate| {
+                candidate != &path
+                    && std::fs::read_to_string(candidate).ok().as_deref() == Some(corrupt)
+            });
+        assert!(
+            recovery_copy.is_some(),
+            "workspace toggles must preserve malformed settings before replacement"
+        );
     }
 }

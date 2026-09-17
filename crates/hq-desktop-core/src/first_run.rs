@@ -189,8 +189,19 @@ fn corrupt_menubar_backup_exists(path: &Path) -> bool {
 fn preserve_unparseable_menubar(path: &Path) -> Result<(), String> {
     for attempt in 0..=100 {
         let backup = corrupt_menubar_backup_path(path, attempt)?;
-        match fs::rename(path, backup) {
-            Ok(()) => return Ok(()),
+        // `rename` replaces an existing destination on Unix, so it cannot be
+        // used to claim a numbered recovery path. A hard link atomically adds
+        // the backup directory entry only when it is absent; after that claim,
+        // unlinking the original leaves the same bytes safely recoverable.
+        match fs::hard_link(path, &backup) {
+            Ok(()) => match fs::remove_file(path) {
+                Ok(()) => return Ok(()),
+                Err(_) => {
+                    return Err(
+                        "HQ settings file could not be preserved; it was not changed".to_string(),
+                    )
+                }
+            },
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(_) => {
                 return Err(
@@ -296,10 +307,9 @@ pub const RETIRED_HQ_WORK_HANDOFF_KEY: &str = "hqWorkHandoff";
 /// Remove top-level keys from `menubar.json`. Missing file / missing keys are
 /// success (idempotent). Returns whether any named key was actually present.
 pub fn remove_menubar_keys(path: &Path, keys: &[&str]) -> Result<bool, String> {
-    if !path.exists() {
+    let Some(mut obj) = prepare_menubar_write(path)? else {
         return Ok(false);
-    }
-    let mut obj = read_menubar_obj(path);
+    };
     let mut changed = false;
     for key in keys {
         if obj.remove(*key).is_some() {
@@ -833,6 +843,27 @@ mod tests {
             "the corrupt settings file must be preserved before a replacement is written"
         );
         assert!(notice_shown_in_map(&read_menubar_obj(&path)));
+    }
+
+    #[test]
+    fn merge_keeps_an_existing_recovery_copy_when_preserving_new_corruption() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("menubar.json");
+        let first_corruption = r#"{"machineId":"first""#;
+        let second_corruption = r#"{"machineId":"second""#;
+        let first_backup = path.with_file_name("menubar.json.corrupt");
+        fs::write(&first_backup, first_corruption).unwrap();
+        fs::write(&path, second_corruption).unwrap();
+
+        merge_menubar_flags(&path, &[("autoSyncNoticeShown", Value::Bool(true))]).unwrap();
+
+        assert_eq!(fs::read_to_string(&first_backup).unwrap(), first_corruption);
+        let second_backup = path.with_file_name("menubar.json.corrupt-1");
+        assert_eq!(
+            fs::read_to_string(second_backup).unwrap(),
+            second_corruption,
+            "a second corruption must get its own recovery copy"
+        );
     }
 
     #[test]
