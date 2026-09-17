@@ -768,9 +768,10 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
         // still captured, still Unexpected (no attributable third-party package),
         // and still path-safe.
         "postinstall-script",
-        // This detail carries none of node-llama-cpp's stage vocabulary, so the
-        // stage is `unknown` — appended last in npm_diagnostics and on the tag.
-        Some("unknown"),
+        // The failing package is unidentifiable here (no `npm error path`), so the
+        // lifecycle package is `unrecognized`, not node-llama-cpp — the node-llama-cpp
+        // stage tag is correctly withheld (HQ-DESKTOP-5E is node-llama-cpp-specific).
+        None,
         // npm echoed the build script's own status as its code; a bare number
         // must collapse instead of re-keying the group on the exit status.
         "none:unknown:none",
@@ -2315,6 +2316,39 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_postinstall_stage_tag() {
     assert!(
         repeat.is_empty(),
         "a repeat differing only by the postinstall stage must not page"
+    );
+}
+
+/// The stage tag is gated on the failing package, not just the generic
+/// `postinstall-script` cause (which is produced for ANY package's failed
+/// postinstall). A DIFFERENT package's postinstall failure — even one whose output
+/// happens to carry a phrase the stage classifier recognises ("a prebuilt binary
+/// was not found") — must NOT receive an `npm_lifecycle_postinstall_stage` tag or a
+/// `postinstall_stage=` diagnostics key.
+#[test]
+fn postinstall_stage_tag_is_only_emitted_for_node_llama_cpp() {
+    let stderr = format!(
+        "npm error code 1\n\
+         npm error path {SELECTED_PREFIX}/lib/node_modules/better-sqlite3\n\
+         npm error command failed\n\
+         npm error command sh -c node ./scripts/postinstall.js\n\
+         A prebuilt binary was not found, falling back to building from source"
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &stderr, Some(SELECTED_PREFIX))
+    }));
+    // It is still a captured postinstall-script lifecycle failure …
+    assert_eq!(tag(&event, "npm_lifecycle_package"), Some("better-sqlite3"));
+    assert_eq!(tag(&event, "npm_lifecycle_cause"), Some("postinstall-script"));
+    // … but the node-llama-cpp-specific stage tag and diagnostics key are absent.
+    assert_eq!(tag(&event, "npm_lifecycle_postinstall_stage"), None);
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(value)) => value.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(
+        !diagnostics.contains("postinstall_stage="),
+        "postinstall_stage must not be emitted for a non-node-llama-cpp package: {diagnostics}"
     );
 }
 

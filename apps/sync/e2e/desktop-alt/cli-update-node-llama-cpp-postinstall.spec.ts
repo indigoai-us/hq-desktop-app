@@ -67,6 +67,16 @@ describe('node-llama-cpp postinstall no longer aborts the hq-CLI install (HQ-DES
     expect(body).toContain('.env("NPM_CONFIG_CACHE", npm_cache)');
   });
 
+  it('carries the shared env on the pnpm and bun updater executors too', () => {
+    // A pnpm- or Bun-managed hq update installs @indigoai-us/hq-cli -> node-llama-cpp
+    // and can run its postinstall, so those spawn sites carry the same skip env as
+    // the npm one (HQ-DESKTOP-5E).
+    const pnpmChild = sliceBetween(updater, 'spawn_command(&pnpm,', '.output()');
+    expect(pnpmChild).toContain('NPM_INSTALL_CHILD_ENV');
+    const bunChild = sliceBetween(updater, 'spawn_command(&bun,', '.output()');
+    expect(bunChild).toContain('NPM_INSTALL_CHILD_ENV');
+  });
+
   it('routes every first-run npm install for qmd/hq-cli through the env seam', () => {
     // The env seam exists and the plain wrapper delegates to it.
     expect(installer).toContain('async fn run_streaming_with_env');

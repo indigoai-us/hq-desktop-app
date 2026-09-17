@@ -6129,10 +6129,15 @@ pub fn report_install_failure_with_environment(
     // occurrence is self-diagnosing without the raw stderr Sentry scrubs by
     // length. A tag and `npm_diagnostics` key ONLY — never a fingerprint,
     // signature, message, or episode-key component — so HQ-DESKTOP-5E never
-    // splits into a new issue. Present exactly when the diagnosed cause is
-    // `postinstall-script` (which implies `npm_lifecycle.failed`).
+    // splits into a new issue. Present exactly when the failing lifecycle package
+    // is node-llama-cpp AND the cause is `postinstall-script`: the stage vocabulary
+    // is node-llama-cpp-specific and `postinstall-script` is the cause for ANY
+    // package's failed postinstall, so an unrelated package's postinstall failure
+    // (even one whose output happens to carry a generic phrase like "cannot find
+    // module") must never receive this node-llama-cpp diagnostic.
     let postinstall_stage = lifecycle_cause
         .filter(|cause| *cause == "postinstall-script")
+        .filter(|_| npm_lifecycle.package.as_deref() == Some("node-llama-cpp"))
         .map(|_| npm_lifecycle_postinstall_stage(detail));
     let node_version = sanitized_version_token(env.node_version.as_deref());
     let node_abi = sanitized_version_token(env.node_abi.as_deref());

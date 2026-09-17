@@ -1311,7 +1311,13 @@ async fn install_hq_cli_update_via_pnpm(
         let pnpm_home = pnpm_env.as_ref().map(|env| env.home.clone());
         tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = paths::spawn_command(&pnpm, &[]);
-            cmd.args(&args).env("PATH", &path);
+            // Carry NPM_INSTALL_CHILD_ENV (HQ-DESKTOP-5E) here too: a pnpm-managed
+            // hq update installs @indigoai-us/hq-cli -> node-llama-cpp via `pnpm add
+            // -g`, and on pnpm configurations that run dependency lifecycle scripts
+            // the same postinstall would abort the update.
+            cmd.args(&args)
+                .env("PATH", &path)
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
             // Without PNPM_HOME the child falls back to its own default, which
             // on a Dock-launched app is not necessarily the home that owns the
             // shim we are trying to replace.
@@ -1494,9 +1500,13 @@ async fn install_hq_cli_update_via_bun(
         let args = args.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = paths::spawn_command(&bun, &[]);
+            // A Bun-managed hq update installs node-llama-cpp too, and Bun runs
+            // dependency lifecycle scripts by default, so carry the same
+            // NPM_INSTALL_CHILD_ENV skip knobs (HQ-DESKTOP-5E).
             cmd.args(&args)
                 .env("PATH", &path)
-                .env("BUN_INSTALL", &bun_home);
+                .env("BUN_INSTALL", &bun_home)
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
             cmd.output()
         })
         .await
