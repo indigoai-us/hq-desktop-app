@@ -1166,8 +1166,14 @@
       {/if}
     </div>
 
-    <AgentThinkingRow entries={agentThinking} />
-    <AgentTaskStrip {tasks} />
+    <!-- Live rows sit between the list and the composer, so they carry the
+         list's horizontal inset themselves: the 18px avatar centres under the
+         36px avatar column of the rows above, and a gap keeps the last row
+         off the composer's border. -->
+    <div class="reply-live">
+      <AgentThinkingRow entries={agentThinking} />
+      <AgentTaskStrip {tasks} />
+    </div>
 
     <div class="reply-composer">
       {#if showMentionPicker}
@@ -1655,6 +1661,18 @@
   /* Mirrors the main composer (.dm-reply in ChannelConversation) so threaded
      replies get the same send box: raised 10px frame, focus ring on the frame,
      tools bottom-left, solid icon send bottom-right. */
+  .reply-live {
+    flex: 0 0 auto;
+    /* 12px list padding + 8px row padding, plus (36 - 18) / 2 so the small
+       avatar centres under the message avatar column. */
+    padding: 0 20px 0 29px;
+  }
+
+  .reply-live:has(:global(.agent-thinking)),
+  .reply-live:has(:global(.agent-tasks)) {
+    padding-bottom: 10px;
+  }
+
   .reply-composer {
     display: flex;
     flex-direction: column;
