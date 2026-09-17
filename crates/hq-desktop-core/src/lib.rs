@@ -2,6 +2,41 @@
 //! app(s). Extracted from `apps/sync/src-tauri/src/util` in Phase 4. No Tauri,
 //! no app-specific couplings.
 
+// --- HQ-DESKTOP-6C: best-effort stdio shadows (see `process_stdio`) ----------
+//
+// These `macro_rules!` shadow the std prelude print macros for THIS crate so
+// every `eprintln!`/`eprint!`/`println!`/`print!` call site below routes
+// through the best-effort helpers in `process_stdio` and can never panic when
+// stdout/stderr is a broken pipe (the HQ-DESKTOP-6C failure mode). Textual
+// macro scope makes this work: a `macro_rules!` is in scope from its definition
+// to the end of the crate root, INCLUDING every `mod` declared afterwards — so
+// this block MUST stay ABOVE the first `mod` line below, or the modules above
+// it silently keep the panicking std macros. `cfg(not(test))` keeps the std
+// macros (and libtest's output capture) under `cargo test`.
+// `scripts/process-stdio-contract.test.ts` fails if a shadow is removed, loses
+// its `cfg(not(test))`, stops delegating, or moves below the first `mod`.
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($arg:tt)*) => { $crate::best_effort_eprintln!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => { $crate::best_effort_eprint!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($arg:tt)*) => { $crate::best_effort_println!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! print {
+    ($($arg:tt)*) => { $crate::best_effort_print!($($arg)*) };
+}
+// --- end HQ-DESKTOP-6C shadows -----------------------------------------------
+
 pub mod activity;
 pub mod agency;
 pub mod bandwidth;
@@ -47,6 +82,7 @@ pub mod notify_authz;
 pub mod oauth;
 pub mod paths;
 pub mod prewarm;
+pub mod process_stdio;
 pub mod process_types;
 pub mod projects_local;
 pub mod recall_sdk;
