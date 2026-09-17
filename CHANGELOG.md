@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Back button in Settings now closes Settings and returns you to where you were before you opened it. It used to step backwards through each Settings tab you had visited first, so leaving Settings could take several clicks.
 - You will not see a difference in daily use, but when a Core update fails, HQ now records whether it could not read a file for the safety backup, found a shortcut in the HQ folder that points outside it, or needs a newer version of Git for the update download. This does not fix the update by itself. It helps us see which cause happens most often, so we can fix that cause first instead of guessing.
 
 ## [0.10.281] — 2026-09-17
