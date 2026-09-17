@@ -94,24 +94,30 @@ class FakeMqttClient {
   }
 }
 
-/** Manual fake timer host so poll intervals are deterministic (no real time). */
+/**
+ * Manual fake timer host so poll intervals are deterministic (no real time).
+ * The feed's poll is jittered, so it arms one timeout at a time and re-arms
+ * only after each refresh settles — `tick()` fires the pending timeout.
+ */
 function makeFakeTimers(): FeedTimerHost & { tick(): void; active(): number } {
-  const intervals = new Map<number, () => void>();
+  let pending: { fn: () => void; handle: number } | null = null;
   let nextId = 1;
   return {
-    setInterval(fn: () => void) {
-      const id = nextId++;
-      intervals.set(id, fn);
-      return id;
+    setTimeout(fn: () => void) {
+      const handle = nextId++;
+      pending = { fn, handle };
+      return handle;
     },
-    clearInterval(handle: unknown) {
-      intervals.delete(handle as number);
+    clearTimeout(handle: unknown) {
+      if (pending?.handle === handle) pending = null;
     },
     tick() {
-      for (const fn of [...intervals.values()]) fn();
+      const due = pending;
+      pending = null;
+      due?.fn();
     },
     active() {
-      return intervals.size;
+      return pending ? 1 : 0;
     },
   };
 }
@@ -518,6 +524,8 @@ describe("US-008: work-mesh Board web port", () => {
     expect(h.sessionFeed.mode).toBe("polling");
     await waitFor(() => h.getSessionRefreshes() === 1);
     h.timers.tick();
+    // The poll re-arms only after its own refresh settles.
+    await settle();
     h.timers.tick();
     await waitFor(() => h.getSessionRefreshes() === 3);
     expect(h.getSessions()).toEqual([]);
