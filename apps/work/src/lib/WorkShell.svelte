@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { addChannelNotification, readChannelNotifications, saveChannelNotifications } from "./channel-notifications";
+  import { addChannelNotification, readChannelNotifications, resolveWakeAuthorName, saveChannelNotifications } from "./channel-notifications";
   /**
    * ROOT = the full V2 desktop shell (the sidebar-first windowed app), filling
    * 100vw/100vh. The channel rail + title bar ARE the navigation.
@@ -639,7 +639,20 @@
     wakes.on("channel:new-message", (wake) => {
       if (!personUid) return;
       const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
-      const next = addChannelNotification(localNotificationRows, wake, personUid, channel?.name?.trim() || "");
+      // The wake carries ids, not names. Resolve the sender from what this
+      // client already knows so the row names a person, not the channel.
+      const authorName = resolveWakeAuthorName(wake, [
+        ...(channel?.members ?? []),
+        ...shallow.contacts,
+      ]);
+      const next = addChannelNotification(
+        localNotificationRows,
+        wake,
+        personUid,
+        channel?.name?.trim() || "",
+        Date.now(),
+        authorName,
+      );
       if (next === localNotificationRows) return;
       localNotificationRows = next;
       saveChannelNotifications(conversationCacheStorage, next);

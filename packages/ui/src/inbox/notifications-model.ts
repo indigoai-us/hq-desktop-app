@@ -11,6 +11,7 @@
  */
 
 import { dayKey, dayLabel } from "./notification-groups";
+import { bundleFileNotifications } from "./file-bundles";
 
 // ── Display taxonomy ─────────────────────────────────────────────────────────
 
@@ -109,6 +110,13 @@ export interface NotificationWire {
   actionable?: unknown;
   companyUid?: unknown;
   sourceEventId?: unknown;
+  /** Channel display name for channel_message rows (context, never the actor). */
+  channelName?: unknown;
+  /** Message author for channel_message rows, when the source knows it. */
+  authorName?: unknown;
+  authorDisplayName?: unknown;
+  fromDisplayName?: unknown;
+  fromEmail?: unknown;
 }
 
 export interface NotificationsResponseWire {
@@ -152,6 +160,30 @@ export function actorInitials(name: string): string {
     return words[0]!.slice(0, 2).toUpperCase() || "?";
   }
   return "?";
+}
+
+/**
+ * Strip the disambiguating id suffix a channel name carries in the directory
+ * ("project-fleet-bots-ga-sprint-a61db44b" → "project-fleet-bots-ga-sprint").
+ *
+ * Only a trailing run of 8+ hex characters after a separator is removed, so a
+ * human-named channel ("design-2026", "team-abc") keeps its name.
+ */
+export function stripChannelIdSuffix(name: string): string {
+  const trimmed = name.trim();
+  const stripped = trimmed.replace(/[-_\s]+[0-9a-f]{8,}$/i, "");
+  return stripped.trim() || trimmed;
+}
+
+/** True when a string reads as a channel handle ("#project-x") rather than a person. */
+export function looksLikeChannelHandle(value: string): boolean {
+  return value.trim().startsWith("#");
+}
+
+/** "#project-fleet-bots-ga-sprint" from any channel name spelling. */
+export function formatChannelLabel(name: string): string {
+  const bare = stripChannelIdSuffix(name.trim().replace(/^#+/, ""));
+  return bare ? `#${bare}` : "";
 }
 
 /**
@@ -346,13 +378,40 @@ export function mapNotificationRow(
 
   const serverType = asOptionalString(raw.type) ?? "unknown";
   const displayKind = mapServerType(serverType);
-  const actorName =
-    asOptionalString(raw.actorName) ??
-    (displayKind === "infra_flag" ? "System" : "Someone");
+  const rawActorName = asOptionalString(raw.actorName);
   const title = asOptionalString(raw.title);
   const body = asOptionalString(raw.body);
   const context = asOptionalString(raw.context);
-  const contextLine = context ?? body ?? title ?? "";
+
+  // A channel message is sent by a PERSON in a channel. Older payloads put the
+  // channel handle on `actorName`, which rendered "#project-x-a61db44b sent a
+  // message" with a "#P" avatar — the channel is context, never the actor.
+  const channelHandle =
+    displayKind === "channel_message"
+      ? (asOptionalString(raw.channelName) ??
+        (rawActorName && looksLikeChannelHandle(rawActorName)
+          ? rawActorName
+          : null))
+      : null;
+  const authorName =
+    displayKind === "channel_message"
+      ? (asOptionalString(raw.authorName) ??
+        asOptionalString(raw.authorDisplayName) ??
+        asOptionalString(raw.fromDisplayName) ??
+        asOptionalString(raw.fromEmail) ??
+        (rawActorName && !looksLikeChannelHandle(rawActorName)
+          ? rawActorName
+          : null))
+      : null;
+
+  const actorName =
+    (displayKind === "channel_message" ? authorName : rawActorName) ??
+    rawActorName ??
+    (displayKind === "infra_flag" ? "System" : "Someone");
+  const actorNameResolved =
+    displayKind === "channel_message" && !authorName ? "Someone" : actorName;
+  const channelLabel = channelHandle ? formatChannelLabel(channelHandle) : null;
+  const contextLine = channelLabel ?? context ?? body ?? title ?? "";
   const verb = verbForKind(displayKind, serverType, title);
   const rawActionKind = asOptionalString(raw.actionKind);
   const actionButtons = actionButtonsFor(rawActionKind, serverType);
@@ -365,9 +424,9 @@ export function mapNotificationRow(
     serverType,
     displayKind,
     typeIcon: typeIconForKind(displayKind),
-    actorName,
-    actorInitials: actorInitials(actorName),
-    verbText: formatVerbLine(actorName, verb),
+    actorName: actorNameResolved,
+    actorInitials: actorInitials(actorNameResolved),
+    verbText: formatVerbLine(actorNameResolved, verb),
     contextLine,
     status: asStatus(raw.status),
     createdAt,
@@ -652,12 +711,16 @@ export function buildNotificationsView(
     dismissed.size === 0
       ? state.items
       : state.items.filter((item) => !dismissed.has(item.id));
-  const visible = filterNotifications(kept, state.filter);
+  const filtered = filterNotifications(kept, state.filter);
+  // A folder sync emits one row per file. Bundling them per person keeps the
+  // feed readable and keeps the bell counting the bundle once, not per file.
+  const { items: visible, collapsedUnread } = bundleFileNotifications(filtered);
+  const unreadCount = Math.max(0, state.unreadCount - collapsedUnread);
   return {
     groups: groupNotificationsByDay(visible, now),
     headerTitle: "Notifications",
-    headerUnread: formatNotificationsUnread(state.unreadCount),
-    badgeText: formatBadgeCount(state.unreadCount),
+    headerUnread: formatNotificationsUnread(unreadCount),
+    badgeText: formatBadgeCount(unreadCount),
     visibleCount: visible.length,
   };
 }

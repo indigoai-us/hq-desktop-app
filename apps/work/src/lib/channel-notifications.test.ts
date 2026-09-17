@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createTenantStorage } from '@hq/ui';
-import { addChannelNotification, readChannelNotifications, saveChannelNotifications } from './channel-notifications';
+import { addChannelNotification, readChannelNotifications, resolveWakeAuthorName, saveChannelNotifications } from './channel-notifications';
 
 describe('channel notification history', () => {
   const wake = {channelId:'chan',eventId:'event',createdAt:'2026-09-08T12:00:00Z',absoluteUnread:true,unread:2};
@@ -17,7 +17,7 @@ describe('channel notification history', () => {
     const restored = readChannelNotifications(storage);
     expect(restored).toEqual(rows);
     expect(addChannelNotification(restored,wake,'self','dev')).toBe(restored);
-    expect(restored[0]).toMatchObject({sourceEventId:'event',status:'read',actorName:'#dev'});
+    expect(restored[0]).toMatchObject({sourceEventId:'event',status:'read',channelName:'#dev'});
   });
   it('accepts the production native payload containing only channelId and unread', () => {
     const rows = addChannelNotification([], {channelId:'chan',unread:3,absoluteUnread:true}, 'self', 'dev', 1000);
@@ -31,6 +31,20 @@ describe('channel notification history', () => {
     saveChannelNotifications(a,addChannelNotification([],wake,'self','dev'));
     expect(readChannelNotifications(a)).toHaveLength(1);
     expect(readChannelNotifications(b)).toEqual([]);
+  });
+  it('names the sender, keeping the channel as context', () => {
+    const rows = addChannelNotification([], {...wake,fromPersonUid:'prs_jacob'}, 'self', 'dev', 1000, 'Jacob Posel');
+    expect(rows[0]).toMatchObject({actorName:'Jacob Posel',authorName:'Jacob Posel',channelName:'#dev',actorPersonUid:'prs_jacob'});
+  });
+  it('prefers the name the mesh sent, then the client roster', () => {
+    expect(resolveWakeAuthorName({fromDisplayName:'Ada (bot)',fromPersonUid:'agt_ada'})).toBe('Ada (bot)');
+    expect(resolveWakeAuthorName({fromPersonUid:'prs_kai'},[{personUid:'prs_kai',displayName:'Kai'}])).toBe('Kai');
+    expect(resolveWakeAuthorName({fromPersonUid:'prs_kai'},[{personUid:'prs_kai',email:'kai@x.test'}])).toBe('kai@x.test');
+    expect(resolveWakeAuthorName({fromPersonUid:'prs_unknown'},[{personUid:'prs_kai',displayName:'Kai'}])).toBe('');
+  });
+  it('falls back to Someone when the sender cannot be resolved', () => {
+    const rows = addChannelNotification([], wake, 'self', 'dev', 1000);
+    expect(rows[0]).toMatchObject({actorName:'Someone',channelName:'#dev'});
   });
   it('bounds history and tolerates unavailable storage', () => {
     const rows = Array.from({length:60},(_,n)=>({id:`local:channel:${n}`}));

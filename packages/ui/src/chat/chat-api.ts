@@ -435,6 +435,9 @@ export interface ChatWakeEvents {
     eventId?: string;
     createdAt?: string;
     fromPersonUid?: string;
+    /** Author display name / email when the mesh payload carried one. */
+    fromDisplayName?: string;
+    fromEmail?: string;
     unread?: number;
     /** `unread` is an authoritative rollup, not a one-message delta. */
     absoluteUnread?: boolean;
