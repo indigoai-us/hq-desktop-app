@@ -853,6 +853,10 @@ const FAILED_DEPENDENCY_VALUES: &[&str] = &[
 
 const ERROR_CATEGORY_VALUES: &[&str] = &[
     "missing-dependency",
+    "snapshot-unreadable",
+    "snapshot-external-symlink",
+    "snapshot-failed",
+    "outdated-dependency",
     "auth",
     "network",
     "dns",
@@ -2535,6 +2539,21 @@ mod codex_telemetry_tests {
         assert_eq!(sanitized["failedDependency"], "unknown");
         assert_eq!(sanitized["errorCategory"], "unknown");
         assert!(!sanitized.to_string().contains("alice"));
+    }
+
+    #[test]
+    fn rescue_snapshot_error_categories_survive_desktop_telemetry_normalization() {
+        for category in [
+            "snapshot-unreadable",
+            "snapshot-external-symlink",
+            "snapshot-failed",
+            "outdated-dependency",
+        ] {
+            let sanitized = sanitize_desktop_properties(Some(json!({
+                "errorCategory": category,
+            })));
+            assert_eq!(sanitized["errorCategory"], category);
+        }
     }
 
     #[test]

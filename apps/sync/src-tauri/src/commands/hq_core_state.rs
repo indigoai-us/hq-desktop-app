@@ -284,6 +284,10 @@ impl ManagedGitRetryOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum RescueFailureCategory {
     MissingDependency,
+    SnapshotUnreadable,
+    SnapshotExternalSymlink,
+    SnapshotFailed,
+    OutdatedDependency,
     Auth,
     Network,
     Dns,
@@ -300,6 +304,10 @@ pub(crate) enum RescueFailureCategory {
 impl RescueFailureCategory {
     const ALL: &[Self] = &[
         Self::MissingDependency,
+        Self::SnapshotUnreadable,
+        Self::SnapshotExternalSymlink,
+        Self::SnapshotFailed,
+        Self::OutdatedDependency,
         Self::Auth,
         Self::Network,
         Self::Dns,
@@ -316,6 +324,10 @@ impl RescueFailureCategory {
     const fn label(self) -> &'static str {
         match self {
             Self::MissingDependency => "missing-dependency",
+            Self::SnapshotUnreadable => "snapshot-unreadable",
+            Self::SnapshotExternalSymlink => "snapshot-external-symlink",
+            Self::SnapshotFailed => "snapshot-failed",
+            Self::OutdatedDependency => "outdated-dependency",
             Self::Auth => "auth",
             Self::Network => "network",
             Self::Dns => "dns",
@@ -380,6 +392,22 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
         needle: "have not agreed to the xcode license",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::SnapshotExternalSymlink,
+        needle: "resolves outside the hq root",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::SnapshotUnreadable,
+        needle: "safety snapshot could not read",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::SnapshotFailed,
+        needle: "safety snapshot could not",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::OutdatedDependency,
+        needle: "unknown option `filter=blob:none'",
     },
     RescueStderrPattern {
         category: RescueFailureCategory::Permission,
@@ -480,6 +508,16 @@ const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
 
 fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
     let stderr = stderr.to_ascii_lowercase();
+    if let Some(category) = stderr.lines().find_map(|line| {
+        match line.strip_prefix("hq_rescue_failure_kind=").map(str::trim) {
+            Some("snapshot-copy-unreadable") => Some(RescueFailureCategory::SnapshotUnreadable),
+            Some("snapshot-copy-failed") => Some(RescueFailureCategory::SnapshotFailed),
+            _ => None,
+        }
+    }) {
+        return category;
+    }
+
     RESCUE_STDERR_PATTERNS
         .iter()
         .find(|pattern| stderr.contains(pattern.needle))
@@ -3428,6 +3466,124 @@ error: clone failed";
         assert_eq!(
             classify_rescue_stderr_failure("error: clone failed"),
             RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn rescue_snapshot_read_failure_with_errno_is_snapshot_unreadable() {
+        let stderr = "error: safety snapshot could not read <path> 102 (Unknown system error -11).";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::SnapshotUnreadable
+        );
+    }
+
+    #[test]
+    fn rescue_snapshot_read_failure_without_errno_is_snapshot_unreadable() {
+        let stderr = "error: safety snapshot could not read <path> (Unknown system error -11).";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::SnapshotUnreadable
+        );
+    }
+
+    #[test]
+    fn rescue_snapshot_external_symlink_failure_is_classified() {
+        let stderr = "error: safety snapshot could not safely record <path> (UNKNOWN): target for .mcp.json resolves outside the HQ root.";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::SnapshotExternalSymlink
+        );
+    }
+
+    #[test]
+    fn rescue_snapshot_record_failure_is_snapshot_failed() {
+        let stderr =
+            "error: safety snapshot could not safely record <path> (UNKNOWN): copy failed.";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::SnapshotFailed
+        );
+    }
+
+    #[test]
+    fn rescue_outdated_git_filter_option_is_an_outdated_dependency() {
+        let stderr = "error: unknown option `filter=blob:none'";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::OutdatedDependency
+        );
+    }
+
+    #[test]
+    fn rescue_snapshot_unreadable_marker_precedes_phrase_classification() {
+        let stderr = "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nerror: rescue failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::SnapshotUnreadable
+        );
+    }
+
+    #[test]
+    fn rescue_snapshot_failed_marker_precedes_phrase_classification() {
+        let raw_stderr = "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nerror: safety snapshot could not read <path> (Unknown system error -11).";
+        let stderr = hq_telemetry::redact_core_update_diagnostic_tail(raw_stderr);
+
+        assert_eq!(
+            classify_rescue_stderr_failure(&stderr),
+            RescueFailureCategory::SnapshotFailed
+        );
+    }
+
+    #[test]
+    fn rescue_snapshot_marker_is_classified_after_core_update_redaction() {
+        let raw_stderr = concat!(
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\n",
+            "error: safety snapshot could not read /Users/alice/HQ/core/release.txt 102 (Unknown system error -11)."
+        );
+        let stderr = hq_telemetry::redact_core_update_diagnostic_tail(raw_stderr);
+
+        assert!(stderr.contains("HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable"));
+        assert!(!stderr.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
+        assert_eq!(
+            classify_rescue_stderr_failure(&stderr),
+            RescueFailureCategory::SnapshotUnreadable
+        );
+    }
+
+    #[test]
+    fn rescue_skip_marker_survives_redaction_without_snapshot_classification() {
+        let raw_stderr = concat!(
+            "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\n",
+            "warning: snapshot skipped /Users/alice/HQ/core/release.txt. It was not backed up and was left untouched. The update continued.\n",
+            "error: clone failed"
+        );
+        let stderr = hq_telemetry::redact_core_update_diagnostic_tail(raw_stderr);
+
+        assert!(stderr.contains("HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable"));
+        assert!(!stderr.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
+        assert_eq!(
+            classify_rescue_stderr_failure(&stderr),
+            RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn rescue_unknown_marker_falls_through_to_stderr_patterns() {
+        let stderr =
+            "HQ_RESCUE_FAILURE_KIND=something-we-do-not-know\nerror: rsync preflight failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::MissingDependency
         );
     }
 

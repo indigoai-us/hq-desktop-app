@@ -2,6 +2,41 @@
 //! app(s). Extracted from `apps/sync/src-tauri/src/util` in Phase 4. No Tauri,
 //! no app-specific couplings.
 
+// --- HQ-DESKTOP-6C: best-effort stdio diagnostics -------------------------
+//
+// Shadow the std print macros with this crate's best-effort variants so every
+// `eprintln!`/`eprint!`/`println!`/`print!` below writes diagnostics without
+// panicking when fd 1/2 is closed or a broken pipe (see `process_stdio`). std's
+// `print_to` panics on any write error but `EBADF`; on a tokio worker thread
+// that unwinds the task and silently kills it.
+//
+// ORDER IS LOAD-BEARING: a `macro_rules!` shadow is textually scoped, so it only
+// covers modules declared *after* it. These definitions MUST stay above the
+// first `mod`/`pub mod` below, or the modules above them silently revert to the
+// panicking std macros. `scripts/process-stdio-contract.test.ts` fails if this
+// order changes or a shadow is removed. `#[cfg(not(test))]` keeps libtest output
+// capture (which hooks the std macros) unchanged under `cargo test`.
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($arg:tt)*) => { $crate::best_effort_eprintln!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => { $crate::best_effort_eprint!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($arg:tt)*) => { $crate::best_effort_println!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! print {
+    ($($arg:tt)*) => { $crate::best_effort_print!($($arg)*) };
+}
+
 pub mod activity;
 pub mod agency;
 pub mod authenticated_receipts;
@@ -48,6 +83,7 @@ pub mod notify_authz;
 pub mod oauth;
 pub mod paths;
 pub mod prewarm;
+pub mod process_stdio;
 pub mod process_types;
 pub mod projects_local;
 pub mod recall_sdk;
