@@ -3532,11 +3532,29 @@ error: clone failed";
 
     #[test]
     fn rescue_snapshot_failed_marker_precedes_phrase_classification() {
-        let stderr = "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nerror: safety snapshot could not read <path> (Unknown system error -11).";
+        let raw_stderr = "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nerror: safety snapshot could not read <path> (Unknown system error -11).";
+        let stderr = hq_telemetry::redact_core_update_diagnostic_tail(raw_stderr);
 
         assert_eq!(
-            classify_rescue_stderr_failure(stderr),
+            classify_rescue_stderr_failure(&stderr),
             RescueFailureCategory::SnapshotFailed
+        );
+    }
+
+    #[test]
+    fn rescue_snapshot_marker_is_classified_after_core_update_redaction() {
+        let raw_stderr = concat!(
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\n",
+            "error: safety snapshot could not read /Users/alice/HQ/core/release.txt 102 (Unknown system error -11)."
+        );
+        let stderr = hq_telemetry::redact_core_update_diagnostic_tail(raw_stderr);
+
+        assert!(stderr.contains("HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable"));
+        assert!(!stderr.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
+        assert_eq!(
+            classify_rescue_stderr_failure(&stderr),
+            RescueFailureCategory::SnapshotUnreadable
         );
     }
 

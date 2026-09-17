@@ -774,10 +774,25 @@ fn redact_npm_prefixed_tokens(value: &str) -> String {
 
 /// An environment dump is never useful telemetry. Drop conventional
 /// `NAME=value` lines before the other redactors inspect process output.
+///
+/// Core rescue emits one safe classification marker. Keep only its exact known
+/// values so the desktop can classify a redacted diagnostic without allowing
+/// arbitrary environment assignments to cross the telemetry boundary.
+fn is_known_core_rescue_failure_kind_marker(line: &str) -> bool {
+    matches!(
+        line,
+        "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable"
+            | "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed"
+    )
+}
+
 fn redact_environment_assignment_lines(value: &str) -> String {
     value
         .lines()
         .map(|line| {
+            if is_known_core_rescue_failure_kind_marker(line) {
+                return line;
+            }
             let trimmed = line.trim_start();
             let Some((name, _)) = trimmed.split_once('=') else {
                 return line;
@@ -2293,6 +2308,18 @@ mod tests {
         assert!(!diagnostic.contains("GH_TOKEN="));
         assert!(!diagnostic.contains("Ada"));
         assert!(diagnostic.contains("/Users/[user]/.npm/_logs/error.log"));
+    }
+
+    #[test]
+    fn core_update_diagnostic_tail_keeps_only_known_rescue_failure_kind_markers() {
+        let diagnostic = redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\nHQ_RESCUE_FAILURE_KIND=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
+        );
+
+        assert!(diagnostic.contains("HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable"));
+        assert!(!diagnostic.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
+        assert!(!diagnostic.contains("HQ_RESCUE_FAILURE_KIND=untrusted-value"));
+        assert!(!diagnostic.contains("ghp_abcdefghijklmnop"));
     }
 
     #[test]
