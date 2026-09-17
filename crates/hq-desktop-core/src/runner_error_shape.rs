@@ -221,7 +221,17 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
 /// `auth-error`). No new vocabulary arm is needed, but the source-version
 /// marker moves with the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.51";
+///
+/// The `~6.16.51` -> `~6.16.52` bump was re-derived from both published runner
+/// trees. Safety snapshots now skip a file they cannot copy, protect it from
+/// the update, emit `HQ_RESCUE_SKIPPED_KIND`, and retain incomplete snapshots
+/// within the configured limit. It adds no named runner-error identity: the
+/// `this.name` and `readonly name` identity sets have no diff,
+/// `HQ_CLOUD_IDENTITIES` remains 52 with the same event-surface exclusions, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.52";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
