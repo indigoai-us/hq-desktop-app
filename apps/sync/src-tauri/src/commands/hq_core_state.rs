@@ -3559,6 +3559,24 @@ error: clone failed";
     }
 
     #[test]
+    fn rescue_skip_marker_survives_redaction_without_snapshot_classification() {
+        let raw_stderr = concat!(
+            "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\n",
+            "warning: snapshot skipped /Users/alice/HQ/core/release.txt. It was not backed up and was left untouched. The update continued.\n",
+            "error: clone failed"
+        );
+        let stderr = hq_telemetry::redact_core_update_diagnostic_tail(raw_stderr);
+
+        assert!(stderr.contains("HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable"));
+        assert!(!stderr.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
+        assert_eq!(
+            classify_rescue_stderr_failure(&stderr),
+            RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
     fn rescue_unknown_marker_falls_through_to_stderr_patterns() {
         let stderr =
             "HQ_RESCUE_FAILURE_KIND=something-we-do-not-know\nerror: rsync preflight failed";
