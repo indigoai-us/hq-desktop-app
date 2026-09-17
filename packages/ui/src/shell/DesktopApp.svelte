@@ -27,9 +27,18 @@
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
-  import ChatSidebar from "../chat/ChatSidebar.svelte";
+  import ChatSidebar, {
+    type ChatSidebarActions,
+  } from "../chat/ChatSidebar.svelte";
   import type { RowExtrasResolver } from "../chat/row-extras.js";
   import DmRequestsPanel from "../chat/DmRequestsPanel.svelte";
+  import ShortcutCheatSheet from "../common/ShortcutCheatSheet.svelte";
+  import {
+    formatShortcut,
+    registerShortcuts,
+    type ShortcutBinding,
+  } from "../common/keyboard-shortcuts.js";
+  import { createGoChord } from "../common/go-chord.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -209,12 +218,19 @@
     type NavigationResolveOutcome,
   } from "./navigation-controller.js";
   import { consumeNavigationShortcut } from "./navigation-shortcuts.js";
-  import { onDestroy, onMount, untrack, type Component } from "svelte";
+  import {
+    onDestroy,
+    onMount,
+    tick as svelteTick,
+    untrack,
+    type Component,
+  } from "svelte";
   import {
     applyColorTheme,
     applyReducedTransparency,
     applyUiSize,
     applyWindowOpacity,
+    hasAppearanceHost,
     readReducedTransparency,
     readStoredTheme,
   } from "../settings/shell-settings-model.js";
@@ -425,6 +441,7 @@
   } from "../chat/messaging/upload-chat-attachments.js";
   import {
     isStrictlyRicherConversationRow,
+    stepConversation,
     type ConversationRow,
   } from "../chat/sidebar-model.js";
   import {
@@ -1120,6 +1137,11 @@
   })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  /** Rail rows in display order (pinned → days → expanded last week). */
+  let displayRows = $state<ConversationRow[]>([]);
+  /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
+  let sidebarActions = $state<ChatSidebarActions | null>(null);
+  let cheatSheetOpen = $state(false);
 
   // ── Personal local bots (local-bots US-009) ────────────────────────────────
   // The host's bots API shells to `hq bot list --json`; rows carry the server's
@@ -2352,12 +2374,29 @@
    */
   const paletteRows = $derived(mergePaletteRows(railRows, searchRows));
 
+  /** Palette `shortcut` label for a registered binding id. */
+  function shortcutLabel(id: string): string | undefined {
+    const binding = shellShortcuts.find((b) => b.id === id);
+    return binding ? formatShortcut(binding.keys) : undefined;
+  }
+
+  /** Companies eligible for "Show only …" scope rows (cloud-backed, non-personal). */
+  const scopeCompanies = $derived(
+    (companies ?? [])
+      .filter((w) => w.kind !== "personal" && (w.cloudUid ?? "").trim())
+      .map((w) => ({
+        companyUid: (w.cloudUid as string).trim(),
+        label: w.displayName?.trim() || w.slug,
+      })),
+  );
+
   const paletteCommands = $derived.by((): CommandPaletteItem[] => {
     const nav: CommandPaletteItem[] = [
       {
         id: "command-go-notifications",
         label: "Notifications",
         detail: "Open the notifications feed",
+        shortcut: shortcutLabel("view.notifications"),
         action: () => {
           void navigate({ kind: "notifications" });
         },
@@ -2366,6 +2405,7 @@
         id: "command-go-meetings",
         label: "Meetings",
         detail: "Open the meetings agenda",
+        shortcut: shortcutLabel("view.meetings"),
         action: () => {
           void navigate({ kind: "meetings" });
         },
@@ -2375,12 +2415,14 @@
       id: "command-go-library",
       label: "Library",
       detail: "Open skills available to you",
+      shortcut: shortcutLabel("view.library"),
       action: () => openLibrary("skills"),
     });
     nav.push({
       id: "command-go-settings",
       label: "Settings",
       detail: "Open settings",
+      shortcut: shortcutLabel("view.settings"),
       action: () => openSettings(),
     });
     for (const [id, page] of Object.entries(extraPages ?? {})) {
@@ -2396,8 +2438,44 @@
         id: "command-go-marketplace",
         label: "Marketplace",
         detail: "Open marketplace in the library",
+        shortcut: shortcutLabel("view.marketplace"),
         action: () => openLibrary("marketplace"),
       });
+    }
+    nav.push({
+      id: "command-new-chat",
+      label: "New chat",
+      detail: "Start a channel or direct message",
+      shortcut: shortcutLabel("chat.new"),
+      action: () => openNewChat(),
+    });
+    nav.push({
+      id: "command-keyboard-shortcuts",
+      label: "Keyboard shortcuts",
+      detail: "Show every shortcut",
+      shortcut: shortcutLabel("help.shortcuts"),
+      action: () => {
+        cheatSheetOpen = true;
+      },
+    });
+    // Company scope moved out of ⌘0/⌘1–5 (those keys switch main views now);
+    // the palette keeps scope switching one keystroke away.
+    if (scopeCompanies.length > 0) {
+      nav.push({
+        id: "command-scope-all",
+        label: "Show all companies",
+        detail: "Conversations from every company",
+        action: () => changeTenantCompany(null),
+      });
+      for (const company of scopeCompanies) {
+        nav.push({
+          id: `command-scope-${company.companyUid}`,
+          label: `Show only ${company.label}`,
+          detail: "Conversations from this company",
+          keywords: company.companyUid,
+          action: () => changeTenantCompany(company.companyUid),
+        });
+      }
     }
     // Human labels only. `paletteConversationItems` resolves the channel
     // display name / person name / project title for the primary line and the
@@ -2760,10 +2838,25 @@
     thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
   }
 
+  /** Same messages (by reference) in the same order — nothing to repaint. */
+  function sameTimeline(
+    a: ConversationMessageWire[],
+    b: ConversationMessageWire[],
+  ): boolean {
+    if (a === b) return true;
+    if (a.length !== b.length || a.length === 0) return false;
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
   function commitTimeline(
     row: ConversationRow,
     next: ConversationMessageWire[],
   ): void {
+    // The 8s safety poll re-merges an unchanged page; `mergeFetchedTimeline`
+    // hands back the same array when nothing moved, so skip the assignment
+    // (and the wake fan-out) instead of re-rendering an identical thread.
+    if (liveTimelineId === row.id && sameTimeline(liveTimeline, next)) return;
     liveTimeline = next;
     liveTimelineId = row.id;
     timelineCache.set(row.id, next);
@@ -3270,15 +3363,54 @@
    *  roster, the contacts list, the signed-in user's own profile, and any
    *  just-saved override. Feeds chat/thread/panel photos — including agent
    *  DMs whose photo arrived on a channel roster or contacts. */
-  const avatarByUid = $derived(
-    composeAvatarByUid({
-      rosters: Object.values(channelRosterById).flat(),
+  let avatarMemo: {
+    rosterKeys: string;
+    rosters: unknown[];
+    contacts: unknown;
+    selfUid: unknown;
+    selfAvatarUrl: unknown;
+    overrides: unknown;
+    value: Record<string, string>;
+  } | null = null;
+  const avatarByUid = $derived.by((): Record<string, string> => {
+    // Memoised on input identity: a roster load replaces one channel's array,
+    // and every other input is compared by reference, so the map keeps its
+    // identity (and downstream props stay stable) when nothing changed.
+    const rosterKeys = Object.keys(channelRosterById);
+    const rosters = rosterKeys.map((key) => channelRosterById[key]);
+    const rosterFingerprint = rosterKeys.join("\u0000");
+    const selfUid = self?.uid;
+    const memo = avatarMemo;
+    if (
+      memo &&
+      memo.rosterKeys === rosterFingerprint &&
+      memo.contacts === contactAvatarByUid &&
+      memo.selfUid === selfUid &&
+      memo.selfAvatarUrl === selfAvatarUrl &&
+      memo.overrides === avatarOverridesByUid &&
+      memo.rosters.length === rosters.length &&
+      memo.rosters.every((roster, i) => roster === rosters[i])
+    ) {
+      return memo.value;
+    }
+    const value = composeAvatarByUid({
+      rosters: rosters.flat(),
       contacts: contactAvatarByUid,
-      selfUid: self?.uid,
+      selfUid,
       selfAvatarUrl,
       overrides: avatarOverridesByUid,
-    }),
-  );
+    });
+    avatarMemo = {
+      rosterKeys: rosterFingerprint,
+      rosters,
+      contacts: contactAvatarByUid,
+      selfUid,
+      selfAvatarUrl,
+      overrides: avatarOverridesByUid,
+      value,
+    };
+    return value;
+  });
 
   const canEditOpenAgent = $derived(
     canEditAgentProfile({
@@ -3817,7 +3949,10 @@
     };
   }
 
-  const conversationApi = $derived<ConversationApi>({
+  // Built once: only closes over the platform adapter, which is fixed for
+  // the life of the shell (the host remounts on adapter change).
+  // svelte-ignore state_referenced_locally
+  const conversationApi: ConversationApi = {
     fetchChannel: async (args) => {
       const raw = unwrapAdapter(await adapter.messaging.fetchChannel(args));
       const page = timelinePageFromPayload(raw);
@@ -3921,7 +4056,7 @@
           };
         }
       : undefined,
-  });
+  };
 
   // ── Lifecycle entry points (New company / New agent) ─────────────────────
 
@@ -6200,6 +6335,176 @@
     void navigate(destination);
   }
 
+  // `g a` used to flip a standalone Atlas view. Main moved Atlas into a chat
+  // tab, so the chord hands the destination to the navigation controller and
+  // the history/back-forward stack stays correct.
+  const goChord = createGoChord((letter: string) => {
+    if (letter !== "a") return false;
+    meetingFocusRequest = null;
+    void navigate({ kind: "atlas" });
+    return true;
+  });
+
+  /** Run a sidebar entry point, mounting the rail first if it is collapsed. */
+  function withSidebar(fn: (actions: ChatSidebarActions) => void): void {
+    if (sidebarActions) {
+      fn(sidebarActions);
+      return;
+    }
+    sidebarCollapsed = false;
+    void svelteTick().then(() => {
+      if (sidebarActions) fn(sidebarActions);
+    });
+  }
+
+  function openNewChat(): void {
+    paletteOpen = false;
+    cheatSheetOpen = false;
+    withSidebar((actions) => actions.openCreate());
+  }
+
+  function stepSelectedConversation(delta: 1 | -1): void {
+    const next = stepConversation(displayRows, selectedRow?.id, delta);
+    if (!next) return;
+    cheatSheetOpen = false;
+    handleSelect(next);
+  }
+
+  /**
+   * App-wide bindings. Ids double as the native View-menu payload ids
+   * (`shortcut:invoke` → `runShortcut(id)`), so keep them stable.
+   */
+  // svelte-ignore state_referenced_locally
+  const shellShortcuts: ShortcutBinding[] = [
+    {
+      id: "palette.toggle",
+      keys: "Mod+K",
+      label: "Command palette",
+      group: "General",
+      run: () => {
+        cheatSheetOpen = false;
+        paletteOpen = !paletteOpen;
+        goChord.reset();
+      },
+    },
+    {
+      id: "view.settings",
+      keys: "Mod+,",
+      label: "Settings",
+      group: "General",
+      run: () => openSettings(),
+    },
+    {
+      id: "help.shortcuts",
+      keys: "Mod+/",
+      label: "Keyboard shortcuts",
+      group: "General",
+      // The composer holds focus for most of a session; the cheat sheet is
+      // exactly what someone reaches for while typing, so it must not be
+      // gated behind blurring the input first.
+      allowInInput: true,
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = !cheatSheetOpen;
+      },
+    },
+    {
+      id: "help.close",
+      keys: "Escape",
+      label: "Close this sheet",
+      group: "General",
+      allowInInput: true,
+      // Escape belongs to whichever overlay is open; only claim it for the
+      // cheat sheet, otherwise decline so other components keep it.
+      run: () => {
+        if (!cheatSheetOpen) return false;
+        cheatSheetOpen = false;
+        return true;
+      },
+    },
+    {
+      id: "view.notifications",
+      keys: "Mod+1",
+      label: "Notifications",
+      group: "Views",
+      run: () => {
+        meetingFocusRequest = null;
+        void navigate({ kind: "notifications" });
+      },
+    },
+    {
+      id: "view.meetings",
+      keys: "Mod+2",
+      label: "Meetings",
+      group: "Views",
+      run: () => {
+        meetingFocusRequest = null;
+        void navigate({ kind: "meetings" });
+      },
+    },
+    ...(adapter.kind !== "web"
+      ? [
+          {
+            id: "view.marketplace",
+            keys: "Mod+3",
+            label: "Marketplace",
+            group: "Views",
+            run: () => openLibrary("marketplace"),
+          } satisfies ShortcutBinding,
+        ]
+      : []),
+    {
+      id: "view.library",
+      keys: "Mod+4",
+      label: "Library",
+      group: "Views",
+      run: () => openLibrary("skills"),
+    },
+    {
+      id: "conversation.next",
+      keys: "Mod+Shift+]",
+      label: "Next conversation",
+      group: "Conversations",
+      run: () => stepSelectedConversation(1),
+    },
+    {
+      id: "conversation.previous",
+      keys: "Mod+Shift+[",
+      label: "Previous conversation",
+      group: "Conversations",
+      run: () => stepSelectedConversation(-1),
+    },
+    {
+      id: "chat.new",
+      keys: "Mod+N",
+      label: "New chat",
+      group: "Conversations",
+      run: () => openNewChat(),
+    },
+    {
+      id: "search.messages",
+      keys: "Mod+F",
+      label: "Search messages",
+      group: "Conversations",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = false;
+        withSidebar((actions) => actions.openHistory());
+      },
+    },
+    {
+      id: "search.conversations",
+      keys: "Mod+Shift+F",
+      label: "Jump to conversation",
+      group: "Conversations",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = false;
+        withSidebar((actions) => actions.openSearch());
+      },
+    },
+  ];
+
   function sweepStaleAttachmentTrays(reason: string): void {
     if (attachTray) return;
     const leftovers = document.querySelectorAll(
@@ -6227,7 +6532,11 @@
     applyReducedTransparency(readReducedTransparency());
     const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
-    applyWindowOpacity(prefs.windowOpacity);
+    // With the desktop appearance host installed, its persisted preference is
+    // already live; re-applying the local pref would round-trip a stale copy
+    // through the host and clobber the user's theme. Same guard as
+    // PrototypeSettingsPanes' onMount.
+    if (!hasAppearanceHost()) applyWindowOpacity(prefs.windowOpacity);
     const overlayQuery = window.matchMedia(
       `(max-width: ${REPLY_OVERLAY_MAX_PX}px)`,
     );
@@ -6267,7 +6576,17 @@
     startMeetingsStore();
     void prefetchMeetings();
 
+    // Modifier shortcuts live in the shared registry (one capture-phase
+    // listener; also the target of native View-menu `shortcut:invoke`).
+    const unregisterShortcuts = registerShortcuts(shellShortcuts);
+
     function onKey(event: KeyboardEvent) {
+      // Back/forward stay OUTSIDE the registry on purpose. The registry keys
+      // off a declared chord string; `consumeNavigationShortcut` owns a set of
+      // bindings that includes non-chord inputs, and re-declaring a subset of
+      // them here would silently drop the rest. It self-identifies its own
+      // events, so it runs first and returns when it has claimed one — before
+      // the modifier guard below, which would otherwise swallow them.
       if (
         consumeNavigationShortcut(event, {
           onBack: () => {
@@ -6280,32 +6599,14 @@
       ) {
         return;
       }
-      const meta = event.metaKey || event.ctrlKey;
-      if (meta) {
-        const key = event.key.toLowerCase();
-        if (key === "k") {
-          event.preventDefault();
-          paletteOpen = !paletteOpen;
-        } else if (key === ",") {
-          // macOS-standard ⌘, opens Settings.
-          event.preventDefault();
-          openSettings();
-        } else if (key === "1") {
-          event.preventDefault();
-          void navigate({ kind: "notifications" });
-        } else if (key === "2") {
-          event.preventDefault();
-          void navigate({ kind: "meetings" });
-        } else if (adapter.kind !== "web" && key === "3") {
-          event.preventDefault();
-          openLibrary("marketplace");
-        } else if (key === "4") {
-          event.preventDefault();
-          openLibrary("skills");
-        }
-        return;
+
+      // US-016: `g a` opens Atlas (Slack-style go chord). Unmodified chords
+      // are not a registry concern, so they keep a bubble-phase listener.
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (paletteOpen || cheatSheetOpen) return;
+      if (goChord.handleKeydown(event)) {
+        event.preventDefault();
       }
-      if (paletteOpen) return;
     }
     window.addEventListener("keydown", onKey);
 
@@ -6383,6 +6684,7 @@
       overlayQuery.removeEventListener("change", syncOverlay);
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
       window.removeEventListener("keydown", onKey);
+      unregisterShortcuts();
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
       window.removeEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
@@ -6395,10 +6697,15 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- `data-shell-focus-fallback` + tabindex="-1": stable focus destination for
+     modals whose trigger unmounted while the modal was open (policy
+     indigo-app-wide-modal-focus-return-survives-trigger-unmount). -->
 <div
   class="desktop-shell chat-shell"
   class:has-window-controls={hasWindowControls}
   data-testid="desktop-shell"
+  data-shell-focus-fallback
+  tabindex="-1"
   onclick={onShellLinkEvent}
   onauxclick={onShellLinkEvent}
   oncontextmenu={onShellLinkEvent}
@@ -6614,6 +6921,8 @@
             railRows = rows;
             directorySettled = true;
           }}
+          ondisplayrows={(rows) => (displayRows = rows)}
+          onactions={(actions) => (sidebarActions = actions)}
           {bootTimeoutMs}
           welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           {onShellReady}
@@ -7657,6 +7966,10 @@
     />
   {/if}
 
+  {#if cheatSheetOpen}
+    <ShortcutCheatSheet onclose={() => (cheatSheetOpen = false)} />
+  {/if}
+
   {#if attachTray}
     <AttachmentTray
       previewCache={imagePreviewCache}
@@ -7841,7 +8154,9 @@
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
-    transition: width 150ms ease;
+    background: var(--v4-ground, #161618);
+    /* No width transition: animating a flex column's width relayouts the
+       whole conversation pane every frame while the thread opens. */
   }
 
   /* Thread pane (not the profile panel): open at half the conversation
@@ -7874,12 +8189,6 @@
   .thread-resize-handle:focus-visible {
     background: var(--line);
     outline: 1px solid var(--t2);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .reply-column {
-      transition: none;
-    }
   }
 
   .reply-column.overlay {

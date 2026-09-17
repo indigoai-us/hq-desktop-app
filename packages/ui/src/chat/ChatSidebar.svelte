@@ -107,7 +107,6 @@
     saveRecentDms,
     saveSetupPinDismissed,
     saveShowFilter,
-    scopeFromHotkey,
     scopePillLabel,
     startOfLocalDay,
     searchCompanyUidFromScope,
@@ -115,6 +114,7 @@
     historyDayGroups,
     searchHitSnippet,
     takeRailConversations,
+    flattenGrouped,
     pickAutoOpenConversation,
     pickSettledBootConversation,
     pickWelcomeFirstConversation,
@@ -136,6 +136,7 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import { registerShortcuts } from "../common/keyboard-shortcuts";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { focusOnMount, menuPortal, portal } from "./portal.js";
   import {
@@ -156,6 +157,12 @@
     readSettingsPrefs,
     SETTINGS_PREFS_KEY,
   } from "../settings/settings-prefs.js";
+
+  export interface ChatSidebarActions {
+    openCreate: () => void;
+    openSearch: () => void;
+    openHistory: () => void;
+  }
 
   interface Props {
     /** Platform backend seam (web: REST via the platform adapter). */
@@ -246,6 +253,18 @@
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
+     * Emits the rail rows in DISPLAY order (pinned → day sections → "Last
+     * week" once expanded) so the shell's next/previous-conversation
+     * shortcuts walk exactly what the user sees.
+     */
+    ondisplayrows?: (rows: ConversationRow[]) => void;
+    /**
+     * Hands the shell imperative entry points (new chat, conversation
+     * switcher, message search) for app-wide shortcuts and the native menu.
+     * Called with null on teardown.
+     */
+    onactions?: (actions: ChatSidebarActions | null) => void;
+    /**
      * Bound for first-paint directory/contacts/DM-request reads. A hung or
      * 404'd optional fetch must not keep the conversation pane on a skeleton.
      * Tests pass a short value; production uses the default.
@@ -326,6 +345,8 @@
     localBots = null,
     ownedLocalBotUids = null,
     onrows,
+    ondisplayrows,
+    onactions,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     welcomeFirst = false,
     offscreen = false,
@@ -845,6 +866,17 @@
   const grouped = $derived(
     sortMode === "type" ? groupByType(railRows) : groupByDay(railRows),
   );
+  $effect(() => {
+    const emit = ondisplayrows;
+    if (!emit) return;
+    emit(flattenGrouped(grouped, lastWeekExpanded));
+  });
+  $effect(() => {
+    const emit = onactions;
+    if (!emit) return;
+    emit({ openCreate, openSearch, openHistory });
+    return () => emit(null);
+  });
   const historyHiddenCount = $derived(
     Math.max(0, filteredRows.length - railRows.length),
   );
@@ -1069,10 +1101,10 @@
     );
   }
 
-  function scopeShortcutLabel(optionId: string, companyIndex: number): string {
-    if (optionId === "all") return "⌘0";
+  function scopeShortcutLabel(optionId: string): string {
+    // Only Personal keeps a key: ⌘0 collides with zoom-reset and ⌘1–4 switch
+    // the main views app-wide.
     if (optionId === "personal") return "⌘P";
-    if (companyIndex >= 0 && companyIndex < 5) return `⌘${companyIndex + 1}`;
     return "";
   }
 
@@ -1705,26 +1737,20 @@
       );
     }
 
-    function onKeyDown(event: KeyboardEvent) {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      // Don't steal when typing in inputs.
-      const t = event.target;
-      if (
-        t instanceof HTMLElement &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.isContentEditable)
-      ) {
-        return;
-      }
-      const next = scopeFromHotkey(event.key, scopeCompanies);
-      if (next == null) return;
-      event.preventDefault();
-      event.stopPropagation();
-      selectScope(next);
-    }
+    // Company-scope hotkeys used to live here (⌘0 all, ⌘1–5 companies): they
+    // shadowed the shell's ⌘1–4 view switches and ⌘0 zoom-reset, so scope
+    // switching now goes through the scope menu / command palette. ⌘P
+    // (Personal) has no conflict and stays, routed through the shared registry.
+    const unregisterShortcuts = registerShortcuts([
+      {
+        id: "scope.personal",
+        keys: "Mod+P",
+        label: "Show only personal",
+        group: "Sidebar",
+        run: () => selectScope("personal"),
+      },
+    ]);
 
-    window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener(COMPOSER_DRAFT_CHANGED_EVENT, refreshDraftIds);
 
     return () => {
@@ -1739,7 +1765,7 @@
         clearTimeout(reconcileTimer);
         reconcileTimer = null;
       }
-      window.removeEventListener("keydown", onKeyDown, true);
+      unregisterShortcuts();
     };
   });
 
@@ -1908,7 +1934,7 @@
         aria-label={`Company scope: ${scopeLabel}. Open menu.`}
         aria-expanded={scopeMenuOpen}
         aria-haspopup="menu"
-        title="Company scope (⌘0 All, ⌘1–5 companies, ⌘P Personal)"
+        title="Company scope (⌘P Personal)"
         onclick={openScopeMenu}
       >
         {#if scope === "all"}
@@ -1963,10 +1989,6 @@
           onmousedown={(e) => e.stopPropagation()}
         >
           {#each scopeOptions as option, i (option.id)}
-            {@const companyIndex =
-              option.id === "all" || option.id === "personal"
-                ? -1
-                : scopeCompanies.findIndex((c) => c.companyUid === option.id)}
             <button
               type="button"
               class="chat-popover-row chat-scope-row"
@@ -1991,9 +2013,9 @@
               <span class="chat-scope-row-label">
                 {option.id === "all" ? "All companies" : option.label}
               </span>
-              {#if scopeShortcutLabel(option.id, companyIndex)}
+              {#if scopeShortcutLabel(option.id)}
                 <span class="chat-scope-shortcut">
-                  {scopeShortcutLabel(option.id, companyIndex)}
+                  {scopeShortcutLabel(option.id)}
                 </span>
               {/if}
             </button>
@@ -3289,6 +3311,9 @@
     flex-direction: column;
     min-height: 0;
     overflow-y: auto;
+    /* Row hover/unread churn stays inside the scroller's paint + layout;
+       overlays that must escape it are portaled (see portal.ts). */
+    contain: layout paint;
     margin-right: -8px;
     padding: 0 8px 12px 0;
     scrollbar-color: var(--line) transparent;

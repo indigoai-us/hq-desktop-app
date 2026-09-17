@@ -288,7 +288,9 @@ pub async fn show_banner(app: AppHandle, payload: BannerPayload) -> Result<(), S
                 // main window's apply_liquid_glass). Brighter / more translucent
                 // than HudWindow for a pure-glass feel.
                 NSVisualEffectMaterial::Popover,
-                Some(NSVisualEffectState::Active),
+                // FollowsWindowActiveState: stop re-sampling the desktop behind a
+                // background window; Active keeps the blur live even when unfocused.
+                Some(NSVisualEffectState::FollowsWindowActiveState),
                 Some(18.0), // match the card's border-radius
             ) {
                 log(LOG_TAG, &format!("apply_vibrancy FAILED: {e}"));
