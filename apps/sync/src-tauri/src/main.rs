@@ -3,6 +3,42 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
+// --- HQ-DESKTOP-6C: best-effort stdio shadows (see hq_desktop_core::process_stdio)
+//
+// Shadow the std prelude print macros for THIS binary so every
+// `eprintln!`/`eprint!`/`println!`/`print!` call site across the app routes
+// through hq-desktop-core's best-effort helpers and can never panic when
+// stdout/stderr is a broken pipe. That is the HQ-DESKTOP-6C failure mode: fd 2
+// is a pipe whose reader has gone away, std's print macro turns the EPIPE into
+// `panic!("failed printing to stderr: ...")`, and with no `panic = "abort"` the
+// panicking tokio worker thread dies while the frontend `invoke` awaiting it
+// never resolves. Textual macro scope reaches only modules declared AFTER the
+// definition, so this block MUST stay ABOVE the first `mod` below, or those
+// modules silently keep the panicking std macros. `cfg(not(test))` keeps the
+// std macros (and libtest output capture) under `cargo test`. Pinned by
+// `scripts/process-stdio-contract.test.ts`.
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($arg:tt)*) => { ::hq_desktop_core::best_effort_eprintln!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => { ::hq_desktop_core::best_effort_eprint!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($arg:tt)*) => { ::hq_desktop_core::best_effort_println!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! print {
+    ($($arg:tt)*) => { ::hq_desktop_core::best_effort_print!($($arg)*) };
+}
+// --- end HQ-DESKTOP-6C shadows -----------------------------------------------
+
 #[cfg(feature = "meet-native-webdriver")]
 mod meet_native;
 

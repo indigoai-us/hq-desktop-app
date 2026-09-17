@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ no longer stops partway through its work when the terminal or tool that launched it goes away. If HQ was started from a terminal or a script that was capturing its output, and that program then closed, the next background task that tried to print a status line could crash on its own — quietly — and whatever you had asked for would never finish. Those background tasks now keep running. Diagnostics are still written to the log at ~/.hq/logs/hq-sync.log.
 - You can now reach every notification, not just the most recent 50. A "Load older notifications" button appears at the end of the list whenever there are more, and the ones already on screen stay put when you load more. Before this, if you had a few hundred notifications, most of them were simply unreachable in the app.
 - While HQ is syncing, a small counter next to the bell shows how far along it is — "3 of 28" — so you can see a sync happening without opening anything. It disappears when the sync finishes. If sync needs your attention, the HQ Core button still shows that, as before.
 - You can reply to a direct message straight from its notification, without leaving the list. Click the reply arrow on the row, type, and press Enter — or tap one of the quick emoji. If the send fails, your message stays in the box so you can try again.
