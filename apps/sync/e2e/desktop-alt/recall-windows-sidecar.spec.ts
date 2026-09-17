@@ -50,14 +50,6 @@ const daemonCommandSource = readFileSync(
   appUrl('src-tauri/src/commands/daemon.rs'),
   'utf8',
 );
-const widgetSource = readFileSync(
-  appUrl('src-tauri/src/commands/widget.rs'),
-  'utf8',
-);
-const settingsSource = readFileSync(
-  appUrl('src-tauri/src/commands/settings.rs'),
-  'utf8',
-);
 const frontendMainSource = readFileSync(appUrl('src/main.ts'), 'utf8');
 const popoverSource = readFileSync(
   appUrl('src/components/Popover.svelte'),
@@ -240,13 +232,6 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(syncCommandSource).toContain('node_version_command()');
     expect(syncCommandSource).toContain('paths::resolve_bin("npx")');
     expect(syncCommandSource).toContain('this computer');
-  });
-
-  it('defaults the floating widget off on Windows without changing macOS', () => {
-    expect(widgetSource).toContain('fn default_widget_enabled() -> bool');
-    expect(widgetSource).toContain('!cfg!(target_os = "windows")');
-    expect(widgetSource).toContain('unwrap_or_else(default_widget_enabled)');
-    expect(settingsSource).toContain('default_widget_enabled()');
   });
 
   it('uses an opaque popover surface fallback on Windows', () => {

@@ -7,7 +7,7 @@
 // 1. 3 messages from Izzy + 2 from Lizzie → exactly two rows, latest preview, unread 3/2.
 // 2. Type distinction: badgeCount/agentActor wiring + share icon tint + unread-count testid.
 // 3. Agent marking: isAgentSender + agent-badge gated on agentActor.
-// Also: DmDetail/ShareDetail fold conversationIds into viewedIds.
+// Also: ShareDetail folds conversationIds into viewedIds.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -22,7 +22,6 @@ const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 
 const paneSource = readFileSync(root('src/components/QuickWindowSidePane.svelte'), 'utf8');
 const rowSource = readFileSync(root('src/components/NotificationRow.svelte'), 'utf8');
-const dmDetailSource = readFileSync(root('src/components/DmDetail.svelte'), 'utf8');
 const shareDetailSource = readFileSync(root('src/components/ShareDetail.svelte'), 'utf8');
 
 function dmItem(
@@ -180,12 +179,8 @@ describe('US-016: side pane conversation grouping', () => {
   });
 
   describe('viewed conversation marking', () => {
-    it('DmDetail and ShareDetail fold conversationIds into viewedIds', () => {
-      expect(dmDetailSource).toContain('...(conversationIds ?? [])');
+    it('ShareDetail folds conversationIds into viewedIds', () => {
       expect(shareDetailSource).toContain('...(conversationIds ?? [])');
-      expect(dmDetailSource).toContain(
-        'function onselect(item: Item, conversationIds?: string[], conversationItems?: Item[]): void',
-      );
       expect(shareDetailSource).toContain(
         'function onselect(item: Item, conversationIds?: string[], conversationItems?: Item[]): void',
       );
@@ -193,8 +188,8 @@ describe('US-016: side pane conversation grouping', () => {
 
     it('grouped share rows keep every share reachable in the main pane', () => {
       // Codex review P1: collapsing shares must not orphan older share cards —
-      // both quick windows render the full grouped share list, not just latest.
-      for (const src of [dmDetailSource, shareDetailSource]) {
+      // the quick window renders the full grouped share list, not just latest.
+      for (const src of [shareDetailSource]) {
         expect(src).toContain('let selectedShareEvents = $state<ShareEvent[]>([]);');
         expect(src).toContain(
           '{@const shareEvents = selectedShareEvents.length > 0 ? selectedShareEvents : [selected.share]}',

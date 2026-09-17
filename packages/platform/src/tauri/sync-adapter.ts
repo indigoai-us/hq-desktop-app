@@ -56,9 +56,9 @@ const NOT_MAPPED = unavailable(
 
 /**
  * Distinct from NOT_MAPPED: the Sync host already owns this surface natively
- * (tray, floating widget, notification banners) and the embedded HQ Work UI
+ * (tray, notification banners) and the embedded HQ Work UI
  * must not drive a second one. Project non-goal: "Porting the sync engine,
- * tray, or widget anywhere". Refusing loudly beats a silent `ok()`, which
+ * or tray anywhere". Refusing loudly beats a silent `ok()`, which
  * would make the embedded settings toggle look effective while nothing moved.
  */
 const HOST_OWNED = unavailable(
@@ -234,9 +234,9 @@ export function createSyncPlatformAdapter(
    * invoke them only after the requested value is persisted.
    */
   async function persistThenApplyAppShellPreference(
-    key: 'dockIcon' | 'widgetEnabled',
+    key: 'dockIcon',
     value: boolean,
-    applyCommand: 'apply_dock_icon' | 'apply_widget_settings',
+    applyCommand: 'apply_dock_icon',
   ): AdapterPromise<void> {
     const settingsInvoker: SettingsInvoker = <T>(
       command: string,
@@ -1038,12 +1038,6 @@ export function createSyncPlatformAdapter(
       requestNotificationPermission: () =>
         call('notification_request_permission'),
       openNotificationSettings: () => call('notification_open_settings'),
-      setDesktopWidget: (enabled) =>
-        persistThenApplyAppShellPreference(
-          'widgetEnabled',
-          enabled,
-          'apply_widget_settings',
-        ),
       showOsNotification: async () => HOST_OWNED,
     },
 

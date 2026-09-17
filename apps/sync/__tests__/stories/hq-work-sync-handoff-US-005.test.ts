@@ -24,7 +24,6 @@ describe('US-005 reroute desktop-alt opens to HQ Work', () => {
   const app = readRepo('src/App.svelte');
   const popover = readRepo('src/components/Popover.svelte');
   const feed = readRepo('src/components/NotificationFeed.svelte');
-  const widget = readRepo('src/components/Widget.svelte');
 
   describe('one seam', () => {
     it('adds LaunchHqWork to DesktopAltHandoffPlan', () => {
@@ -147,9 +146,7 @@ describe('US-005 reroute desktop-alt opens to HQ Work', () => {
       expect(popover).toContain("invoke('open_desktop_alt_window'");
       expect(feed).toContain("invoke('open_desktop_alt_window'");
       expect(feed).toContain("invoke('open_dm_detail'");
-      expect(widget).toContain("invoke('open_desktop_alt_window'");
-      expect(widget).toContain("invoke('open_communications_window'");
-      expect(widget).toContain("invoke('open_dm_detail'");
+      expect(popover).toContain("invoke('open_communications_window'");
     });
 
     it('retains desktop-alt window code for flag-off rollback', () => {

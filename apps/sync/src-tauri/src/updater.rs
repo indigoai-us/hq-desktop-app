@@ -805,10 +805,8 @@ async fn record_and_announce_update(
     // is represented persistently in Settings, the version popout, and Inbox.
     // Opening a separate banner for either case makes the desktop look like
     // windows are flashing while the user is already working in it.
-    // US-003: widget takeover must never fall back to native banners.
     if should_raise_transient_update_surface(announcement)
-        && (crate::commands::banner::custom_banner_enabled()
-            || crate::commands::widget::takeover_active(app))
+        && crate::commands::banner::custom_banner_enabled()
     {
         let _ = crate::commands::banner::show_update_banner(
             app.clone(),

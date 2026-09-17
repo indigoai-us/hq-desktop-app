@@ -273,7 +273,7 @@
     }
   }
 
-  /** Mirror DmDetail's composer: real send_dm to the message author. */
+  /** Mirror the DM thread composer: real send_dm to the message author. */
   async function replyDm(it: Item, text: string): Promise<void> {
     const peer = it.dm?.fromPersonUid;
     if (!peer || !text.trim()) {

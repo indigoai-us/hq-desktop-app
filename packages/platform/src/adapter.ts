@@ -971,8 +971,6 @@ export interface AppShellApi {
    *  visible either way — hiding the Dock icon does not hide the app. */
   setDockVisible(visible: boolean): AdapterPromise<void>;
   setAutostart(enabled: boolean): AdapterPromise<void>;
-  /** Show or hide the floating HQ wordmark widget without restart. */
-  setDesktopWidget(enabled: boolean): AdapterPromise<void>;
   consumePendingRoute(): AdapterPromise<string | null>;
   takePendingMessagesTarget(): AdapterPromise<Json | null>;
   setActiveCompany(slug: string): AdapterPromise<void>;

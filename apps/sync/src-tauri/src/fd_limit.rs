@@ -2,7 +2,7 @@
 //!
 //! macOS launches GUI apps with a soft `RLIMIT_NOFILE` of 256 while the hard
 //! limit is effectively unlimited. The menubar app holds a webview per
-//! surface (main popover, widget, notification banner), each with its own
+//! surface (main popover, notification banner), each with its own
 //! renderer handle set, plus log files, sockets, MQTT sessions, and every
 //! `hq-cloud` child it spawns. On one dogfood machine the process sat at
 //! ~300 handles against the 256 cap and every spawn, git mirror, manifest

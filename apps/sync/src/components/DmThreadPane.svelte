@@ -21,9 +21,9 @@
     createdAt: string;
   }
 
-  // Main thread + composer for dm-detail (and when a DM is selected from the
-  // quick-window side pane). Behavior-identical extract from DmDetail: thread
-  // load, live append, reactions, send reply. Reloads when `event` changes.
+  // Main thread + composer for a DM selected from the quick-window side pane.
+  // Behavior-identical extract from the retired DmDetail window: thread load,
+  // live append, reactions, send reply. Reloads when `event` changes.
 
   interface Props {
     event: DmEvent;

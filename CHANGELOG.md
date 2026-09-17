@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Clicking a direct-message notification now opens that conversation in the main HQ window. It used to try to open a separate small "Messages" window; that window stopped being reachable a while ago and has now been removed, so there is one less window to keep track of and nothing else changes.
+- The small floating HQ widget is gone. It sat on your desktop showing recent messages, conversations and activity. Everything it showed is in the HQ window's notification list, and a new message now arrives as the ordinary HQ notification banner again instead of being folded into the widget. The "Desktop widget" switch and the "Notifications widget" section of Settings are gone with it, as is the "Hide notifications" item in the menu-bar icon's right-click menu. If you had the widget turned off, nothing changes for you at all.
 - A Core update no longer stops because of one file it cannot back up, usually an iCloud file that has not been downloaded or a shortcut in your HQ folder that points outside it. HQ says which file it skipped, leaves it where it is, and finishes the rest of the update. That file is not backed up, so the snapshot cannot completely restore it. The update still stops if HQ cannot make a backup at all.
 - Renaming or copying a company skill folder no longer stops that company's sync. Before, the renamed skill kept its old identity, the cloud refused it, and every later sync of the company stopped before uploading or downloading anything, while the app still showed the sync as complete. Now HQ gives the skill the right identity before uploading, and if anything about one skill still fails, only that skill is skipped and named; the rest of the company syncs.
 

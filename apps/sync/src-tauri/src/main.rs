@@ -202,11 +202,6 @@ fn setup_startup_surfaces(
         util::logfile::log("app", "first-run launch: centered onboarding card");
     }
 
-    // US-002: always-on-top HQ wordmark widget (lower-right of the
-    // configured display). Gated by widgetEnabled in menubar.json
-    // (default on). Non-activating, appearance-reactive.
-    commands::widget::setup_widget_window(app);
-
     // macOS: the menu-bar item lives in a separate native helper process
     // (tao parks an in-process status item off-screen on Tahoe).
     #[cfg(target_os = "macos")]
@@ -352,7 +347,7 @@ fn main() {
     // HQ-DESKTOP-44 (re-entrant path): install the thread-local WH_CALLWNDPROC
     // session-end intercept on THIS (event-loop) thread now — BEFORE
     // `tauri::Builder::build()` — so it is armed for a `WM_ENDSESSION` that lands
-    // during the config-window / widget WebView2 creation tauri runs inside the
+    // during the config-window WebView2 creation tauri runs inside the
     // `RunEvent::Ready` dispatch, where tao's handler is already taken and
     // `RunEvent::Exit` can never fire. Do NOT move this after `build()`. See
     // `commands::session_end_intercept` and the "Exit Lifecycle" doc.
@@ -536,7 +531,6 @@ fn main() {
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
-        .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::NotificationSessionState::new())
         .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
         .manage(commands::dm_notify::PairUnreadState::new())
@@ -950,7 +944,6 @@ fn main() {
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::open_inbox_window,
             commands::dm_notify::open_communications_window,
-            commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
             commands::dm_notify::send_dm_to_email,
             commands::dm_notify::fetch_dm_thread,
@@ -1012,12 +1005,6 @@ fn main() {
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
             commands::banner::preview_meeting_banner,
-            commands::widget::resize_widget,
-            commands::widget::set_widget_focusable,
-            commands::widget::widget_ready,
-            commands::widget::list_displays,
-            commands::widget::apply_widget_settings,
-            commands::widget::hide_widget_stack,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
@@ -1618,10 +1605,9 @@ fn main() {
             // Show, never toggle: a Dock click that hides the window reads as a
             // no-op. Signed-out users can sign in inside the desktop workspace.
             //
-            // `has_visible_windows` is deliberately ignored: the always-on-top
-            // floating widget counts as a visible window, so honouring the flag
-            // would make the Dock icon inert for every user who has the widget
-            // enabled (the default on macOS).
+            // `has_visible_windows` is deliberately ignored: a hidden-but-live
+            // notification banner still counts as a visible window, so
+            // honouring the flag would make the Dock icon inert.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 // Same reason as the focus handler above: no eager force-probe.

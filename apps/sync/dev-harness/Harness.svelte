@@ -13,8 +13,6 @@
   import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
   import DriftDetail from '../src/components/DriftDetail.svelte';
   import ShareDetail from '../src/components/ShareDetail.svelte';
-  import DmDetail from '../src/components/DmDetail.svelte';
-  import Widget from '../src/components/Widget.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
@@ -24,11 +22,6 @@
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
-
-  import {
-    WIDGET_RECENT_STORAGE_KEY,
-    type WidgetStackItem,
-  } from '../src/stores/widgetNotifications';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
@@ -158,70 +151,6 @@
     },
   ];
 
-  const dmPreviewEvent = {
-    eventId: 'dm-preview-1',
-    fromPersonUid: 'prs_maya',
-    fromEmail: 'maya@getindigo.ai',
-    fromDisplayName: 'Maya Chen',
-    body: 'The auxiliary desktop pass is ready for a final visual review.',
-    details: 'Includes recovery, permissions, meetings, shares, and the widget.',
-    prompt: '/review hq-desktop-app --surface auxiliary',
-    createdAt: '2026-07-26T17:42:00.000Z',
-  };
-
-  const widgetPreviewItems: WidgetStackItem[] = [
-    {
-      id: 'widget-preview-message',
-      type: 'message',
-      actor: 'Maya',
-      text: 'The desktop recovery pass is ready for review.',
-      ts: Date.now() - 90_000,
-      kind: 'dm',
-      clickActionId: 'open',
-      actionId: 'open',
-      actionLabel: 'Open',
-      data: { fromPersonUid: 'prs_maya' },
-      expiresAt: Date.now() + 60 * 60_000,
-      unread: true,
-    },
-    {
-      id: 'widget-preview-share',
-      type: 'share',
-      actor: 'Indigo',
-      text: 'Shared the HQ Desktop acceptance criteria.',
-      ts: Date.now() - 8 * 60_000,
-      kind: 'share',
-      clickActionId: 'open',
-      actionId: 'open',
-      actionLabel: 'Open',
-      data: {},
-      expiresAt: Date.now() + 60 * 60_000,
-      unread: false,
-    },
-  ];
-
-  const widgetUpdatePreviewItems: WidgetStackItem[] = [
-    {
-      id: 'widget-preview-update',
-      type: 'system',
-      actor: 'HQ',
-      text: 'Version 0.10.36-beta.1 is ready to install.',
-      ts: Date.now() - 30_000,
-      kind: 'update',
-      clickActionId: 'open',
-      actionId: 'update',
-      actionLabel: 'Update now',
-      data: {
-        version: '0.10.36-beta.1',
-        body: 'Desktop surface repairs and updater recovery.',
-        date: '2026-07-26',
-        detectedAt: new Date(Date.now() - 30_000).toISOString(),
-      },
-      expiresAt: Date.now() + 60 * 60_000,
-      unread: true,
-    },
-  ];
-
   // View + theme driven by URL query so screenshots target a known state:
   //   ?view=settings|popover|signin|banner|shell   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
@@ -256,9 +185,6 @@
   // The routed session for ?view=sessions, owned here so the harness performs
   // the same navigate-and-remount the real shells do.
   let harnessSessionId = $state(params.get('session'));
-  if (view === 'widget') {
-    localStorage.removeItem(WIDGET_RECENT_STORAGE_KEY);
-  }
   const previewPopoverProps =
     stateOverride === 'error'
       ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
@@ -289,10 +215,6 @@
                 ? 'new-files-detail'
               : view === 'share-detail'
                 ? 'share-detail'
-                : view === 'dm-detail'
-                  ? 'dm-detail'
-                  : view === 'widget'
-                    ? 'widget'
         : view === 'permissions'
           ? 'meeting-permissions'
           : view === 'conversation'
@@ -318,8 +240,6 @@
     setTimeout(() => void emit('new-files:list', newFilesPreview), 75);
   } else if (view === 'share-detail') {
     setTimeout(() => void emit('share:events-list', sharePreviewEvents), 75);
-  } else if (view === 'dm-detail') {
-    setTimeout(() => void emit('dm:detail-event', dmPreviewEvent), 75);
   }
 
   // Deterministic safety-state previews for the full desktop shell. The delay
@@ -356,20 +276,6 @@
 {:else if view === 'share-detail'}
   <!-- Shared-with-me quick window at its native 640x560 size. -->
   <ShareDetail />
-{:else if view === 'dm-detail'}
-  <!-- Inbox / direct-message quick window at its native 820x640 size. -->
-  <DmDetail />
-{:else if view === 'widget'}
-  <!-- Floating widget: inspect idle at 66x43, or use ?state=stack at
-       the dynamic 340x480 maximum to exercise notification + mini-inbox UI. -->
-  <Widget
-    queued={scenario === 'update-available' || stateOverride === 'idle' ? 0 : 2}
-    initialItems={scenario === 'update-available'
-      ? widgetUpdatePreviewItems
-      : stateOverride === 'idle'
-        ? []
-        : widgetPreviewItems}
-  />
 {:else if view === 'meetings'}
   <!-- Upcoming Meetings at its native 460x600 size. -->
   <MeetingsWindow />

@@ -146,11 +146,8 @@
   // $effect below) instead of reading once at mount.
   const LIVE_SYNC_POLL_MS = 5000;
   let dockVisibilityChanged = false;
-  let desktopWidgetChanged = false;
   let dockWriteSeq = 0;
-  let desktopWidgetWriteSeq = 0;
   let dockAuthoritativeValue: boolean | undefined;
-  let desktopWidgetAuthoritativeValue: boolean | undefined;
   type NativeSettings = {
     startAtLogin: boolean;
     syncOnLaunch: boolean;
@@ -334,38 +331,6 @@
       patch({ showInDock: dockIcon });
     } else if (dockAuthoritativeValue !== undefined) {
       patch({ showInDock: dockAuthoritativeValue });
-    }
-  }
-
-  async function toggleDesktopWidget(): Promise<void> {
-    const next = !prefs.desktopWidget;
-    const writeSeq = ++desktopWidgetWriteSeq;
-    desktopWidgetChanged = true;
-    patch({ desktopWidget: next });
-    if (!adapter) return;
-    const result = await adapter.appShell.setDesktopWidget(next);
-    if (writeSeq !== desktopWidgetWriteSeq) return;
-    if (result.ok) {
-      desktopWidgetAuthoritativeValue = next;
-      return;
-    }
-    nativeError = actionableError("Desktop widget", result.message);
-    if (result.reason !== "error") return;
-    const settings = await adapter.settings.getSettings();
-    if (writeSeq !== desktopWidgetWriteSeq) return;
-    desktopWidgetChanged = false;
-    if (!settings.ok) {
-      if (desktopWidgetAuthoritativeValue !== undefined) {
-        patch({ desktopWidget: desktopWidgetAuthoritativeValue });
-      }
-      return;
-    }
-    const widgetEnabled = readHostBooleanSetting(settings.value, "widgetEnabled");
-    if (widgetEnabled !== undefined) {
-      desktopWidgetAuthoritativeValue = widgetEnabled;
-      patch({ desktopWidget: widgetEnabled });
-    } else if (desktopWidgetAuthoritativeValue !== undefined) {
-      patch({ desktopWidget: desktopWidgetAuthoritativeValue });
     }
   }
 
@@ -840,7 +805,7 @@
 
   function readHostBooleanSetting(
     raw: unknown,
-    key: "dockIcon" | "widgetEnabled",
+    key: "dockIcon",
   ): boolean | undefined {
     if (!raw || typeof raw !== "object") return undefined;
     const value = (raw as Record<string, unknown>)[key];
@@ -848,18 +813,11 @@
   }
 
   function hydrateHostBackedToggles(raw: unknown): void {
-    const next: Partial<
-      Pick<ShellSettingsPrefs, "showInDock" | "desktopWidget">
-    > = {};
+    const next: Partial<Pick<ShellSettingsPrefs, "showInDock">> = {};
     const dockIcon = readHostBooleanSetting(raw, "dockIcon");
     if (dockIcon !== undefined) {
       dockAuthoritativeValue = dockIcon;
       if (!dockVisibilityChanged) next.showInDock = dockIcon;
-    }
-    const widgetEnabled = readHostBooleanSetting(raw, "widgetEnabled");
-    if (widgetEnabled !== undefined) {
-      desktopWidgetAuthoritativeValue = widgetEnabled;
-      if (!desktopWidgetChanged) next.desktopWidget = widgetEnabled;
     }
     if (Object.keys(next).length > 0) patch(next);
   }
@@ -1093,10 +1051,6 @@
       <div class="set-row unavailable" data-testid="settings-menubar-unavailable">
         <div><div class="sn">Menubar quick access</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
         <span class="mono">HOST-OWNED</span>
-      </div>
-      <div class="set-row">
-        <div><div class="sn">Desktop widget</div><div class="sd">Float the mini notifications widget on your desktop</div></div>
-        <button type="button" class="toggle" class:on={prefs.desktopWidget} role="switch" aria-checked={prefs.desktopWidget} aria-label="Desktop widget" onclick={() => void toggleDesktopWidget()}></button>
       </div>
     {/if}
 

@@ -5,47 +5,19 @@ import { describe, expect, it } from 'vitest';
 const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 const read = (...parts: string[]) => readFileSync(root(...parts), 'utf8');
 
-const detail = read('src/components/DmDetail.svelte');
 const sidePane = read('src/components/QuickWindowSidePane.svelte');
 const channelView = read('src/components/messaging/ChannelView.svelte');
 
-describe('quick communications window hierarchy', () => {
-  it('orients the window around a Slack-like room rail with activity behind a shortcut', () => {
-    expect(detail).toContain("let activeTab = $state<'conversations' | 'notifications'>");
-    expect(detail).toContain("hidden={activeTab !== 'notifications'}");
-    expect(detail).toContain("hidden={activeTab !== 'conversations'}");
-    expect(detail).toContain('onopenactivity={() => selectTab(\'notifications\')}');
-    expect(detail).toContain('class="notifications-toolbar"');
-    expect(detail).toContain('<NotificationFeed');
-    expect(detail).toContain('density="comfortable"');
-    expect(detail).toContain('showDayLabels={false}');
+// The quick-communications side pane outlived the dm-detail window it was
+// built for; share-detail is now its only host. These assertions cover the
+// rail itself, which is unchanged by that window's removal.
+describe('quick communications rail', () => {
+  it('orients the rail around Slack-like rooms with activity behind a shortcut', () => {
     expect(sidePane).toContain('class="qw-rail-head"');
     expect(sidePane).toContain('class="qw-utility"');
     expect(sidePane).toContain('Mentions & activity');
     expect(sidePane).toContain('Open full desktop view');
-  });
-
-  it('keeps the conversation view two-pane and can select a channel', () => {
-    expect(detail).toContain('let selectedChannel = $state<Channel | null>(null)');
-    expect(detail).toContain('onselectchannel={selectChannel}');
-    expect(detail).toContain('selectedChannelId={selectedChannel?.channelId ?? null}');
-    expect(detail).toContain('<ChannelView');
-    expect(detail).toContain('channel={selectedChannel}');
-    expect(detail).toContain("invoke<AppConfig>('get_config')");
-    expect(detail).toContain('{selfPersonUid}');
-    expect(detail).toContain('data-testid="quick-communications-conversations"');
-    expect(detail).toContain("class:group-channel={selectedChannel?.scope === 'group'}");
-    expect(detail).toMatch(
-      /\.detail-main\.group-channel :global\(\.channel-hash\)\s*\{[^}]*display:\s*none/,
-    );
-  });
-
-  it('provides an honest asynchronous jump to the full Messages or Inbox view', () => {
-    expect(detail).toContain('async function openFullView()');
-    expect(detail).toContain("invoke('open_desktop_alt_window', { route: 'messages' })");
-    expect(detail).toContain("invoke('open_desktop_alt_window', { route: 'inbox' })");
-    expect(detail).toContain('aria-busy={openingFullView}');
-    expect(detail).toContain("{openingFullView ? 'Opening…' : 'Open inbox ↗'}");
+    expect(sidePane).toContain('onopenactivity?: () => void');
     expect(sidePane).toContain('onopenfull?: () => void');
   });
 
@@ -91,15 +63,6 @@ describe('quick communications window hierarchy', () => {
     expect(sidePane).toContain('aria-label="Loading conversations"');
     expect(sidePane).toContain('aria-busy={loading || loadingChannels}');
     expect(sidePane).toMatch(/\.conversation-row\s*\{[\s\S]*?min-height:\s*28px/);
-  });
-
-  it('keeps one native material, a browser fallback, and flat structural descendants', () => {
-    expect(detail).toMatch(/\.detail-window\s*\{[\s\S]*?backdrop-filter:/);
-    expect(detail).toMatch(/\.detail-window\.native-glass\s*\{[\s\S]*?backdrop-filter:\s*none/);
-    expect(detail).toContain('--compact-glass-bg');
-    expect(detail).toMatch(/\.conversations-layout\s*\{[\s\S]*?background:\s*transparent/);
-    expect(detail).toMatch(/\.detail-main\s*\{[\s\S]*?background:\s*transparent/);
-    expect(detail).toMatch(/\.notifications-pane\s*\{[\s\S]*?background:\s*transparent/);
   });
 
   it('distinguishes failed hydration from a true empty rail and exposes retry', () => {
