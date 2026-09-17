@@ -28,8 +28,8 @@
       {
         "label": "desktop-alt",
         "title": "HQ",
-        "width": 1180,
-        "height": 760,
+        "width": 1400,
+        "height": 920,
         "minWidth": 960,
         "minHeight": 600,
         "decorations": true,

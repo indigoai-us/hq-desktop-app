@@ -844,7 +844,7 @@ pub async fn open_desktop_alt_window_inner(
     // over the custom titlebar's sync-status text (the verdict). The window's
     // own UI provides the heading, so the macOS title is intentionally blank.
     .title("")
-    .inner_size(1180.0, 760.0)
+    .inner_size(1400.0, 920.0)
     .min_inner_size(960.0, 600.0)
     .resizable(true)
     .decorations(true)

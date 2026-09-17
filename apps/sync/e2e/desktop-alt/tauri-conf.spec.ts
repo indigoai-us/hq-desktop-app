@@ -59,8 +59,8 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
 
   it('keeps the desktop-alt window decorated at the expected size', () => {
     expect(desktopAlt.decorations).toBe(true);
-    expect(desktopAlt.width).toBe(1180);
-    expect(desktopAlt.height).toBe(760);
+    expect(desktopAlt.width).toBe(1400);
+    expect(desktopAlt.height).toBe(920);
   });
 
   it('keeps both declared and lazily built desktop windows transparent over native material', () => {
