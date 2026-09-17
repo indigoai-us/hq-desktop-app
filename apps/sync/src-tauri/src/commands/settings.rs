@@ -1,6 +1,8 @@
 use crate::commands::config::{MeetingDetectNotifyPrefs, MenubarPrefs};
 use crate::util::paths;
+use hq_desktop_core::first_run::prepare_menubar_write;
 use hq_desktop_core::settings::{default_meeting_detect_notify, merge_prefs_over_existing};
+use serde_json::Value;
 use std::path::Path;
 
 /// Default platform allow-list (all five) when the field is absent from disk.
@@ -257,11 +259,9 @@ pub(crate) fn save_settings_at(path: &Path, prefs: &MenubarPrefs) -> Result<(), 
             .map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
 
-    let existing = if path.exists() {
-        std::fs::read_to_string(&path).ok()
-    } else {
-        None
-    };
+    let existing = prepare_menubar_write(path)?
+        .map(|obj| serde_json::to_string(&Value::Object(obj)).map_err(|e| e.to_string()))
+        .transpose()?;
     let json = merge_prefs_over_existing(prefs, existing.as_deref())?;
 
     // Atomic write: stage to a temp file, fsync, rename into place.

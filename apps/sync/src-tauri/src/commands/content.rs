@@ -255,15 +255,8 @@ fn read_staging_source_from(path: &Path) -> bool {
 }
 
 fn write_staging_source_to(path: &Path, enabled: bool) -> Result<(), String> {
-    let mut obj: Map<String, Value> = if path.exists() {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default()
-    } else {
-        Map::new()
-    };
+    let mut obj: Map<String, Value> =
+        hq_desktop_core::first_run::prepare_menubar_write(path)?.unwrap_or_default();
     obj.insert(STAGING_SOURCE_KEY.to_string(), Value::Bool(enabled));
 
     if let Some(parent) = path.parent() {
@@ -349,19 +342,15 @@ async fn latest_release(
     failure_scope: Option<&OnboardingFailureScope>,
 ) -> Result<Option<ReleaseInfo>, String> {
     let url = format!("{GITHUB_API}/repos/{repo}/releases");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|error| {
-            record_onboarding_failure_detail(
-                "content",
-                failure_scope,
-                None,
-                content_error_category(&error),
-            );
-            format!("network error listing releases: {error}")
-        })?;
+    let resp = client.get(&url).send().await.map_err(|error| {
+        record_onboarding_failure_detail(
+            "content",
+            failure_scope,
+            None,
+            content_error_category(&error),
+        );
+        format!("network error listing releases: {error}")
+    })?;
     if !resp.status().is_success() {
         let api_err = format!(
             "GitHub API error {} listing releases for {repo}",
@@ -392,18 +381,15 @@ async fn latest_release(
         );
         return Err(api_err);
     }
-    let releases: Vec<ReleaseInfo> = resp
-        .json()
-        .await
-        .map_err(|error| {
-            record_onboarding_failure_detail(
-                "content",
-                failure_scope,
-                None,
-                content_error_category(&error),
-            );
-            format!("failed to parse releases response: {error}")
-        })?;
+    let releases: Vec<ReleaseInfo> = resp.json().await.map_err(|error| {
+        record_onboarding_failure_detail(
+            "content",
+            failure_scope,
+            None,
+            content_error_category(&error),
+        );
+        format!("failed to parse releases response: {error}")
+    })?;
     Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
 }
 
@@ -423,25 +409,24 @@ async fn latest_release_via_redirect(
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let url = format!("https://github.com/{repo}/releases/latest");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|error| {
-            record_onboarding_failure_detail(
-                "content",
-                failure_scope,
-                None,
-                content_error_category(&error),
-            );
-            format!("network error resolving {url}: {error}")
-        })?;
+    let resp = client.get(&url).send().await.map_err(|error| {
+        record_onboarding_failure_detail(
+            "content",
+            failure_scope,
+            None,
+            content_error_category(&error),
+        );
+        format!("network error resolving {url}: {error}")
+    })?;
     let location = resp
         .headers()
         .get(reqwest::header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let Some(tag) = location.as_deref().and_then(|l| tag_from_release_redirect(l, repo)) else {
+    let Some(tag) = location
+        .as_deref()
+        .and_then(|l| tag_from_release_redirect(l, repo))
+    else {
         return Ok(None);
     };
     Ok(Some(ReleaseInfo {
@@ -457,7 +442,11 @@ fn tag_from_release_redirect(location: &str, repo: &str) -> Option<String> {
     let needle = format!("/{repo}/releases/tag/");
     let idx = location.find(&needle)?;
     let tag = &location[idx + needle.len()..];
-    let tag = tag.split(['?', '#']).next().unwrap_or("").trim_end_matches('/');
+    let tag = tag
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
     if tag.is_empty() || tag.contains('/') {
         return None;
     }
@@ -551,19 +540,15 @@ async fn download_tarball_with_progress(
         return Err(content_cancelled_error());
     }
 
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| {
-            record_onboarding_failure_detail(
-                "content",
-                failure_scope,
-                None,
-                content_error_category(&error),
-            );
-            format!("network error downloading template: {error}")
-        })?;
+    let resp = client.get(url).send().await.map_err(|error| {
+        record_onboarding_failure_detail(
+            "content",
+            failure_scope,
+            None,
+            content_error_category(&error),
+        );
+        format!("network error downloading template: {error}")
+    })?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         record_onboarding_failure_detail(
             "content",
@@ -1715,22 +1700,45 @@ mod api_free_release_fallback_tests {
     #[test]
     fn parses_tag_from_release_redirect() {
         assert_eq!(
-            tag_from_release_redirect("https://github.com/indigoai-us/hq-core/releases/tag/v15.0.120", "indigoai-us/hq-core").as_deref(),
+            tag_from_release_redirect(
+                "https://github.com/indigoai-us/hq-core/releases/tag/v15.0.120",
+                "indigoai-us/hq-core"
+            )
+            .as_deref(),
             Some("v15.0.120")
         );
         assert_eq!(
-            tag_from_release_redirect("/indigoai-us/hq-core/releases/tag/v1.2.3?x=1", "indigoai-us/hq-core").as_deref(),
+            tag_from_release_redirect(
+                "/indigoai-us/hq-core/releases/tag/v1.2.3?x=1",
+                "indigoai-us/hq-core"
+            )
+            .as_deref(),
             Some("v1.2.3")
         );
         // no releases → redirect goes to /releases (no tag)
-        assert_eq!(tag_from_release_redirect("https://github.com/indigoai-us/hq-core/releases", "indigoai-us/hq-core"), None);
-        assert_eq!(tag_from_release_redirect("https://github.com/other/repo/releases/tag/v1", "indigoai-us/hq-core"), None);
+        assert_eq!(
+            tag_from_release_redirect(
+                "https://github.com/indigoai-us/hq-core/releases",
+                "indigoai-us/hq-core"
+            ),
+            None
+        );
+        assert_eq!(
+            tag_from_release_redirect(
+                "https://github.com/other/repo/releases/tag/v1",
+                "indigoai-us/hq-core"
+            ),
+            None
+        );
     }
 
     #[test]
     fn codeload_url_is_api_free() {
         let u = codeload_tarball_url("indigoai-us/hq-core", "v15.0.120");
-        assert_eq!(u, "https://github.com/indigoai-us/hq-core/archive/refs/tags/v15.0.120.tar.gz");
+        assert_eq!(
+            u,
+            "https://github.com/indigoai-us/hq-core/archive/refs/tags/v15.0.120.tar.gz"
+        );
         assert!(!u.contains("api.github.com"));
     }
 }

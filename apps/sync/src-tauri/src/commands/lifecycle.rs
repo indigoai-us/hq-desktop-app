@@ -1,4 +1,5 @@
 use chrono::Utc;
+use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 use hq_desktop_core::lifecycle::{
     classify_lifecycle, hq_root_valid, menubar_flags, LifecycleInputs, LifecycleState,
 };
@@ -16,7 +17,10 @@ pub struct LifecycleStateHandle(pub RwLock<LifecycleState>);
 
 impl LifecycleStateHandle {
     pub fn current(&self) -> LifecycleState {
-        *self.0.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+        *self
+            .0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -56,10 +60,33 @@ pub fn setup_lifecycle(app: &AppHandle) {
         }
     };
 
-    let menubar = menubar_path
-        .as_ref()
-        .map(|path| hq_desktop_core::first_run::read_menubar_obj(path))
-        .unwrap_or_else(Map::new);
+    let menubar_read = menubar_path.as_ref().map(|path| read_menubar(path));
+    if matches!(
+        menubar_read.as_ref(),
+        None | Some(
+            MenubarRead::Unreadable | MenubarRead::Unparseable | MenubarRead::PreservedCorrupt
+        )
+    ) {
+        // A present-but-damaged settings file, or an unavailable settings
+        // location, cannot prove that this machine is new. Do not route the
+        // person into setup or try to backfill over the unreadable state.
+        log(
+            "lifecycle",
+            "settings state unavailable; preserving the existing launch surface",
+        );
+        app.manage(LifecycleStateHandle(RwLock::new(
+            LifecycleState::SteadyState,
+        )));
+        return;
+    }
+    let menubar = match menubar_read {
+        Some(MenubarRead::Object(menubar)) => menubar,
+        Some(MenubarRead::Absent) => Map::new(),
+        Some(
+            MenubarRead::Unreadable | MenubarRead::Unparseable | MenubarRead::PreservedCorrupt,
+        )
+        | None => unreachable!(),
+    };
     let (install_completed, first_run_completed, had_machine_id) = menubar_flags(&menubar);
 
     // Compulsory consent: an installed machine whose consent is unanswered must
@@ -123,7 +150,10 @@ pub fn setup_lifecycle(app: &AppHandle) {
         let tools_present = ["hq", "node"].iter().all(|name| {
             paths::resolve_bin_with_kind(name).kind != paths::ResolvedProgramKind::NotResolved
         }) && crate::commands::install_deps::bundled_hq_cli_ready(app);
-        hq_desktop_core::lifecycle::require_local_toolchain(classify_lifecycle(inputs), tools_present)
+        hq_desktop_core::lifecycle::require_local_toolchain(
+            classify_lifecycle(inputs),
+            tools_present,
+        )
     };
     #[cfg(windows)]
     let verdict = classify_lifecycle(inputs);
@@ -226,10 +256,22 @@ pub struct SetupStatus {
 
 #[tauri::command]
 pub fn get_setup_status() -> SetupStatus {
-    let menubar = paths::menubar_json_path()
+    let menubar_read = paths::menubar_json_path()
         .ok()
-        .map(|path| hq_desktop_core::first_run::read_menubar_obj(&path))
-        .unwrap_or_else(Map::new);
+        .map(|path| read_menubar(&path));
+    let settings_unavailable = matches!(
+        menubar_read.as_ref(),
+        None | Some(
+            MenubarRead::Unreadable | MenubarRead::Unparseable | MenubarRead::PreservedCorrupt
+        )
+    );
+    let menubar = match menubar_read {
+        Some(MenubarRead::Object(menubar)) => menubar,
+        Some(MenubarRead::Absent)
+        | Some(MenubarRead::Unreadable | MenubarRead::Unparseable)
+        | Some(MenubarRead::PreservedCorrupt)
+        | None => Map::new(),
+    };
     let config = crate::commands::config::read_hq_config_lenient()
         .ok()
         .flatten();
@@ -242,7 +284,10 @@ pub fn get_setup_status() -> SetupStatus {
         hq_root_valid: root_valid,
         configured: config.is_some(),
         hq_folder_path: hq_root.to_string_lossy().to_string(),
-        welcome_setup_owed: hq_desktop_core::lifecycle::welcome_setup_owed(&menubar, root_valid),
+        // Do not surface another setup route when the settings file itself is
+        // the unavailable state that made launch conservative.
+        welcome_setup_owed: !settings_unavailable
+            && hq_desktop_core::lifecycle::welcome_setup_owed(&menubar, root_valid),
     }
 }
 
