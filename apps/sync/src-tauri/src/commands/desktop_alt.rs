@@ -817,6 +817,11 @@ pub async fn open_desktop_alt_window_inner(
         // rather than a bare show(): if the first-page-load reveal never
         // fired (wry can drop the Finished event — observed on macOS 26 dev
         // builds), the window exists but is still hidden and glass-less.
+        //
+        // Recover the frame first: a window whose display went away can be
+        // sitting off-screen or collapsed below its minimum size, and the tray
+        // toggle lands here every time.
+        enforce_desktop_alt_frame(&window);
         reveal_desktop_alt_window(&window);
         window.set_focus().map_err(|e| e.to_string())?;
         // Already mounted: it won't re-consume a pending route, so push the
@@ -909,6 +914,17 @@ pub async fn open_desktop_alt_window_inner(
     let _window = builder.build().map_err(|e| e.to_string())?;
     crate::recovery::note_desktop_window_created(&app);
 
+    // A display change while the window is open moves it and changes the scale
+    // factor; re-clamp so the next reveal is not the first thing to notice.
+    {
+        let tracked = _window.clone();
+        _window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::ScaleFactorChanged { .. }) {
+                enforce_desktop_alt_frame(&tracked);
+            }
+        });
+    }
+
     // Reveal watchdog (macOS): the atomic reveal depends on wry delivering a
     // `PageLoadEvent::Finished` for the first load. That event can be dropped
     // (observed on macOS 26: window stays alive + hidden forever, webview
@@ -967,6 +983,91 @@ pub async fn open_desktop_alt_window_inner(
     }
 
     Ok(())
+}
+
+/// Re-derive a usable frame for the desktop window on the monitor it is
+/// actually on.
+///
+/// macOS relocates a window when its display sleeps or is unplugged, and it can
+/// drop the window far below its declared minimum size — QA measured 133x164
+/// points for this 960x600-minimum window, and the tray toggle brought it back
+/// the same size every time because nothing re-checked the frame on show. Run
+/// this before every reveal and on scale-factor changes: it re-applies the
+/// minimum size, clamps the window into the current monitor's work area, and
+/// resets a collapsed frame to the default 1400x920 centred on that monitor.
+///
+/// Geometry is done in logical points (see `crate::window_restore`): the frame
+/// arrives from the window server in physical pixels, and a monitor change is
+/// usually a scale-factor change too, so the physical numbers are not
+/// comparable across displays.
+pub fn enforce_desktop_alt_frame(window: &tauri::WebviewWindow) {
+    use crate::window_restore::{
+        resolve_desktop_frame, Rect, DESKTOP_MIN_HEIGHT, DESKTOP_MIN_WIDTH,
+    };
+
+    // The declared minimum can be lost when the window is rebuilt or moved
+    // between displays, so re-assert it before measuring.
+    let _ = window.set_min_size(Some(tauri::LogicalSize::new(
+        DESKTOP_MIN_WIDTH,
+        DESKTOP_MIN_HEIGHT,
+    )));
+
+    let Some(monitor) = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+    else {
+        // No monitor to clamp against (headless / display asleep mid-query):
+        // leave the frame alone rather than guess a work area.
+        return;
+    };
+
+    let scale = monitor.scale_factor();
+    if !(scale.is_finite() && scale > 0.0) {
+        return;
+    }
+
+    let work_area = monitor.work_area();
+    let work_area = Rect::new(
+        work_area.position.x as f64 / scale,
+        work_area.position.y as f64 / scale,
+        work_area.size.width as f64 / scale,
+        work_area.size.height as f64 / scale,
+    );
+
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+        return;
+    };
+    let current = Rect::new(
+        position.x as f64 / scale,
+        position.y as f64 / scale,
+        size.width as f64 / scale,
+        size.height as f64 / scale,
+    );
+
+    let Some(resolved) = resolve_desktop_frame(current, work_area) else {
+        return;
+    };
+
+    eprintln!(
+        "[desktop-alt] frame recovery: {:.0}x{:.0} at ({:.0},{:.0}) -> {:.0}x{:.0} at ({:.0},{:.0})",
+        current.width,
+        current.height,
+        current.x,
+        current.y,
+        resolved.width,
+        resolved.height,
+        resolved.x,
+        resolved.y
+    );
+
+    if let Err(e) = window.set_size(tauri::LogicalSize::new(resolved.width, resolved.height)) {
+        eprintln!("[desktop-alt] frame recovery: set_size failed: {e}");
+    }
+    if let Err(e) = window.set_position(tauri::LogicalPosition::new(resolved.x, resolved.y)) {
+        eprintln!("[desktop-alt] frame recovery: set_position failed: {e}");
+    }
 }
 
 /// Reveal the desktop-alt window atomically: apply the native glass material,
