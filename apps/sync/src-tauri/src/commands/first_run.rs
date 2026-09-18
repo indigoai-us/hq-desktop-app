@@ -146,19 +146,22 @@ pub fn should_show_auto_sync_notice(state: State<'_, LaunchKindState>) -> bool {
 #[tauri::command]
 pub fn mark_first_run_complete(app: AppHandle) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
-    merge_menubar_flags(
-        &path,
-        &[
-            ("firstRunCompleted", Value::Bool(true)),
-            ("autoSyncNoticeShown", Value::Bool(true)),
-            ("realtimeSync", Value::Bool(true)),
-            ("personalSyncEnabled", Value::Bool(true)),
-            // A brand-new install is owed the welcome channel's guided setup.
-            // An updating user (`mark_auto_sync_notice_shown`, the lifecycle
-            // backfill) is not: they were set up before this flow existed.
-            ("welcomeSetupPending", Value::Bool(true)),
-        ],
-    )?;
+    let menubar = read_menubar_obj(&path);
+    let mut flags = vec![
+        ("firstRunCompleted", Value::Bool(true)),
+        ("autoSyncNoticeShown", Value::Bool(true)),
+        ("realtimeSync", Value::Bool(true)),
+        ("personalSyncEnabled", Value::Bool(true)),
+    ];
+    // A brand-new install is owed the welcome channel's guided setup.
+    // An updating user (`mark_auto_sync_notice_shown`, the lifecycle
+    // backfill) is not: they were set up before this flow existed.
+    // Re-running the installer after a misclassified launch must not
+    // reset a finished welcome (feedback #2290).
+    if hq_desktop_core::lifecycle::should_arm_welcome_setup_pending(&menubar) {
+        flags.push(("welcomeSetupPending", Value::Bool(true)));
+    }
+    merge_menubar_flags(&path, &flags)?;
     // Setup is done for this process too: window routing must stop treating
     // `main` as the setup card, or the next Dock / tray click reopens it.
     crate::commands::lifecycle::set_lifecycle_state(
