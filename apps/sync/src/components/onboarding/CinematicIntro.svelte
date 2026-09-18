@@ -201,7 +201,7 @@
           <div class="fstage" aria-hidden="true">
             <div class="fmove">
               <div class="fglow"></div>
-              <svg class="folder" viewBox="0 0 240 176" fill="none">
+              <svg class="folder" viewBox="0 0 200 176" preserveAspectRatio="xMidYMid meet" fill="none">
                 <defs>
                   <linearGradient id="fback" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0" stop-color="#8f74f5" /><stop offset="1" stop-color="#6a4fd8" />
@@ -214,21 +214,24 @@
                   </linearGradient>
                 </defs>
                 <!-- back panel with tab -->
-                <path d="M14 30 a10 10 0 0 1 10 -10 h60 a10 10 0 0 1 7.5 3.4 L100 34 h116 a10 10 0 0 1 10 10 v108 a12 12 0 0 1 -12 12 H26 a12 12 0 0 1 -12 -12 z" fill="url(#fback)" />
+                <path d="M12 24 a10 10 0 0 1 10 -10 h52 a10 10 0 0 1 7.5 3.4 L90 28 h88 a10 10 0 0 1 10 10 v108 a12 12 0 0 1 -12 12 H24 a12 12 0 0 1 -12 -12 z" fill="url(#fback)" />
                 <!-- sheets peeking out -->
-                <rect class="sheet" x="46" y="44" width="150" height="100" rx="6" fill="#fff" opacity=".92" transform="rotate(-3 121 94)" />
-                <rect class="sheet" x="52" y="48" width="150" height="100" rx="6" fill="#fff" transform="rotate(2.5 127 98)" />
+                <rect class="sheet" x="40" y="36" width="120" height="92" rx="6" fill="#fff" opacity=".92" transform="rotate(-3 100 82)" />
+                <rect class="sheet" x="46" y="40" width="120" height="92" rx="6" fill="#fff" transform="rotate(2.5 106 86)" />
                 <!-- front pocket, slightly shorter than the back -->
-                <path d="M8 74 a10 10 0 0 1 10 -10 h204 a10 10 0 0 1 10 10 v78 a12 12 0 0 1 -12 12 H20 a12 12 0 0 1 -12 -12 z" fill="url(#ffront)" />
-                <path d="M8 74 a10 10 0 0 1 10 -10 h204 a10 10 0 0 1 10 10 v22 H8 z" fill="url(#fsheen)" />
+                <path d="M6 72 a10 10 0 0 1 10 -10 h168 a10 10 0 0 1 10 10 v90 a12 12 0 0 1 -12 12 H18 a12 12 0 0 1 -12 -12 z" fill="url(#ffront)" />
+                <path d="M6 72 a10 10 0 0 1 10 -10 h168 a10 10 0 0 1 10 10 v22 H6 z" fill="url(#fsheen)" />
               </svg>
             </div>
 
-            <svg class="wire" viewBox="0 0 1100 420" fill="none" preserveAspectRatio="none">
-              <path class="w draw" d="M 282 210 H 400 V 40 H 470" pathLength="1" />
-              <circle class="wn pop-in" cx="282" cy="210" r="4" style="--d:2.5s" />
-              <circle class="wn pop-in" cx="470" cy="40" r="4" style="--d:3.05s" />
+            <svg class="wire" viewBox="0 0 1100 380" fill="none" preserveAspectRatio="none">
+              <!-- Only axis-aligned segments live in here: a stretched box
+                   leaves an H or a V segment straight, and the stroke width is
+                   non-scaling. Nothing round or diagonal may join them. -->
+              <path class="w draw" d="M 282 190 H 400 V 36.2 H 470" pathLength="1" />
             </svg>
+            <span class="wn pop-in" style="--d:2.5s; --wx:25.64%; --wy:50%;"></span>
+            <span class="wn pop-in" style="--d:3.05s; --wx:42.73%; --wy:9.53%;"></span>
 
             <div class="tree">
               <div class="troot r" style="--d:2.6s">HQ/</div>
@@ -555,9 +558,11 @@
     position: absolute;
     left: 50%;
     top: 50%;
-    width: 240px;
-    height: 176px;
-    margin: -88px 0 0 -120px;
+    /* 200 x 176 — the folder viewBox exactly. `aspect-ratio` pins the two to
+       each other, so a later height edit cannot squash the art. */
+    width: 200px;
+    aspect-ratio: 200 / 176;
+    margin: -88px 0 0 -100px;
     opacity: 0;
   }
 
@@ -571,15 +576,23 @@
 
   .fglow {
     position: absolute;
-    inset: -90px;
+    left: 50%;
+    top: 50%;
+    width: 380px;
+    height: 380px;
+    margin: -190px 0 0 -190px;
     border-radius: 50%;
     background: radial-gradient(closest-side, rgba(139, 109, 240, 0.42), rgba(229, 106, 179, 0.16) 46%, transparent 72%);
   }
 
   .folder {
     position: relative;
+    display: block;
     width: 100%;
     height: 100%;
+    /* Belt and braces with `preserveAspectRatio="xMidYMid meet"`: the art
+       letterboxes inside its box, it never stretches to fill it. */
+    object-fit: contain;
     filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.45));
   }
 
@@ -602,7 +615,17 @@
   .beat.active .w.draw { animation: draw 0.9s var(--ease) 2.55s forwards; }
   @keyframes draw { to { stroke-dashoffset: 0; } }
 
-  .wn { fill: #fff; opacity: 0; }
+  .wn {
+    position: absolute;
+    left: var(--wx);
+    top: var(--wy);
+    width: 8px;
+    height: 8px;
+    margin: -4px 0 0 -4px;
+    border-radius: 50%;
+    background: #fff;
+    opacity: 0;
+  }
   .beat.active .wn.pop-in { animation: pop 0.5s var(--ease) var(--d, 2.5s) forwards; }
 
   .tree {
@@ -681,11 +704,10 @@
   .beat.still .tspine {
     animation: none;
     opacity: 1;
-    transform: translateX(calc(var(--fw) * -0.36));
-    stroke-dashoffset: 0;
-    height: 158px;
   }
-  .beat.still .w, .beat.still .wn, .beat.still .tspine { transform: none; }
+  .beat.still .fmove { transform: translateX(calc(var(--fw) * -0.36)); }
+  .beat.still .w { stroke-dashoffset: 0; }
+  .beat.still .tspine { height: 158px; }
 
   /* ---- surfaces ---------------------------------------------------- */
 
