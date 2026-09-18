@@ -225,7 +225,7 @@ pub fn redirect_to_setup_if_unfinished(app: &AppHandle) -> bool {
     // Window ops must run on the main thread — callers include async command
     // bodies, which run on a tokio worker.
     let handle = app.clone();
-    let _ = app.run_on_main_thread(move || show_popover_window(&handle));
+    let _ = app.run_on_main_thread(move || show_onboarding_window(&handle));
     true
 }
 
