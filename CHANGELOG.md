@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On the "HQ is ready" screen at the end of setup, the Advanced section now starts open, so the Open in Claude Code and Codex buttons are in view straight away. Its note now recommends that path if you already use Claude Code or Codex. You can still close it.
 - Deleting an @mention from your draft before you send now really removes it. Previously a person you had picked from the mention list and then deleted was still mentioned when you hit send, which also invited them to the channel. Only the people still @mentioned in the message you send are mentioned and invited.
 - Bots no longer fill up your sidebar the moment someone creates them. Creating an agent announces it to everyone in the company, so a day of fleet work put dozens of never-used bot rows — each with a "1" badge from the announcement — at the top of every teammate's list. A bot now gets a row only once it has actually messaged you, you have messaged it, you pinned it, or it is one of your own bots. You can still find and start a conversation with any bot from the "+" and search, and sending the first message brings its row in.
 - The "… just joined" announcement no longer counts as an unread message, and no longer pops a desktop notification for every bot created. In the notifications list those announcements are hidden unless you run the company's bots, where they group into one line per company per ten minutes.
