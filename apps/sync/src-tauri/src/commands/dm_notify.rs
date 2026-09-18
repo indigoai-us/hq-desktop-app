@@ -2600,15 +2600,45 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
         return;
     }
 
+    // Agent membership announcements ("🤖 Izzy (an agent) just joined Indigo.")
+    // go to EVERY member of the company, so a fleet run that stands up thirty
+    // agents rings thirty banners on a teammate's Mac for something they never
+    // asked for. Keep them out of every banner path; they are still ACKed,
+    // still counted, and still emitted to the in-app feed, which bundles them.
+    let banner_worthy: Vec<DmEvent> = fresh
+        .iter()
+        .filter(|dm| {
+            !hq_desktop_core::agent_join::is_agent_join_notice(
+                &dm.from_person_uid,
+                &dm.from_email,
+                &dm.from_display_name,
+                &dm.body,
+                dm.details.as_deref(),
+                dm.prompt.as_deref(),
+            )
+        })
+        .cloned()
+        .collect();
+    if banner_worthy.len() < fresh.len() {
+        log(
+            LOG_TAG,
+            &format!(
+                "DM_NOTIFY_AGENT_JOIN_SUPPRESSED {} of {} DM(s)",
+                fresh.len() - banner_worthy.len(),
+                fresh.len()
+            ),
+        );
+    }
+
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
     // loop — and skip the native firing path entirely.
     if crate::commands::banner::custom_banner_enabled() {
         log(
             LOG_TAG,
-            &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", fresh.len()),
+            &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", banner_worthy.len()),
         );
-        for dm in &fresh {
+        for dm in &banner_worthy {
             match with_current_notification_auth_snapshot_async(app, auth, || {
                 crate::commands::banner::show_dm_banner(app.clone(), dm.clone())
             })
@@ -2667,7 +2697,7 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
                 ),
             );
         }
-        for dm in fresh.iter().filter(|_| native_allowed) {
+        for dm in banner_worthy.iter().filter(|_| native_allowed) {
             let title = dm.from_display_name.clone();
             let message = dm.body.clone();
             let title_for_log = title.clone();
@@ -2702,7 +2732,7 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
     #[cfg(not(target_os = "macos"))]
     {
         use tauri_plugin_notification::NotificationExt;
-        for dm in &fresh {
+        for dm in &banner_worthy {
             let title = dm.from_display_name.clone();
             let message = dm.body.clone();
             let dispatched = with_current_notification_mutation(app, auth, || async {

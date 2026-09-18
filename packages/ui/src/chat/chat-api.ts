@@ -466,6 +466,14 @@ export interface ChatWakeEvents {
     eventId?: string;
     createdAt?: string;
     direction?: "in" | "out";
+    /**
+     * Message body, when the transport carries one. The native inbox poll
+     * does; MQTT delivery does not. Present bodies let the rail tell an agent
+     * membership announcement from a message the agent actually sent.
+     */
+    body?: string | null;
+    details?: string | null;
+    prompt?: string | null;
     /** A preceding `dm:pair-unreads` event already set the exact badge count. */
     absoluteUnread?: boolean;
   };

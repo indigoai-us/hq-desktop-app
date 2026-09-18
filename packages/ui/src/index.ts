@@ -68,6 +68,7 @@ export * from "./chat/channel-admin.js";
 export * from "./chat/portfolio-session.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
+export * from "./chat/agent-stubs.js";
 export {
   DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
   CONVERSATION_BOOT_GRACE_MS,
@@ -212,6 +213,7 @@ export * from "./inbox/notifications-model.js";
 export * from "./inbox/notification-groups.js";
 export * from "./inbox/live-notifications.js";
 export * from "./inbox/file-bundles.js";
+export * from "./inbox/agent-join-bundles.js";
 
 // Wave 3 (US-010): remaining desktop-alt screens, area barrels.
 export * as common from "./common/index.js";
