@@ -65,6 +65,26 @@
   } from "./channel-admin";
   import { isSelf, selfIsAdmin, type SelfIdentity } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
+  import {
+    archiveConversations,
+    archivedRowCount,
+    filterByArchived,
+    loadArchived,
+    loadShowArchived,
+    saveArchived,
+    saveShowArchived,
+    unarchiveConversations,
+  } from "./session-archive.js";
+  import {
+    applyClick as applySelectionClick,
+    applySelectionKey,
+    clearSelection,
+    EMPTY_SELECTION,
+    pruneSelection,
+    selectAll as selectAllRows,
+    selectOnly,
+    type SelectionState,
+  } from "./session-selection.js";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import {
     createChannelDirectoryReconciler,
@@ -440,6 +460,14 @@
   });
   let sortMode = $state<SortMode>("recent");
   let showFilter = $state<ShowFilter>(loadShowFilter(storage));
+  /** Archived conversation ids — hidden from the rail until "Show archived". */
+  let archivedIds = $state<string[]>(loadArchived(storage));
+  const archivedSet = $derived(new Set(archivedIds));
+  let showArchived = $state<boolean>(loadShowArchived(storage));
+  /** Multi-select: off until the user cmd/shift-clicks or picks "Select". */
+  let selectionMode = $state(false);
+  let selection = $state<SelectionState>(EMPTY_SELECTION);
+  let focusedRowId = $state<string | null>(null);
   let personFilter = $state<string | null>(null);
   // People aren't company-scoped — switching company scope clears a stale
   // person filter so it can't silently empty the newly scoped list.
@@ -764,7 +792,11 @@
 
   const filteredRows = $derived(
     applySidebarFilters(
-      showFilter === "company-projects" ? [...allRows, ...browseRows] : allRows,
+      filterByArchived(
+        showFilter === "company-projects" ? [...allRows, ...browseRows] : allRows,
+        archivedSet,
+        showArchived,
+      ),
       {
         scope,
         show: showFilter,
@@ -866,11 +898,132 @@
   const grouped = $derived(
     sortMode === "type" ? groupByType(railRows) : groupByDay(railRows),
   );
+  /** Rows in painted order — the selection model's range/keyboard order. */
+  const renderedRows = $derived(flattenGrouped(grouped, lastWeekExpanded));
+  const orderedRowIds = $derived(renderedRows.map((row) => row.id));
   $effect(() => {
     const emit = ondisplayrows;
     if (!emit) return;
-    emit(flattenGrouped(grouped, lastWeekExpanded));
+    emit(renderedRows);
   });
+  // A filter change, an archive, or a company switch can drop selected rows.
+  $effect(() => {
+    const ids = orderedRowIds;
+    const next = pruneSelection(untrack(() => selection), ids);
+    if (next !== untrack(() => selection)) selection = next;
+  });
+  const selectionCount = $derived(selection.selected.length);
+  const selectionAllArchived = $derived(
+    selectionCount > 0 &&
+      selection.selected.every((id) => archivedSet.has(id)),
+  );
+  const archivedVisibleCount = $derived(archivedRowCount(allRows, archivedSet));
+
+  function setShowArchived(next: boolean): void {
+    showArchived = next;
+    saveShowArchived(next, storage);
+  }
+
+  function persistArchived(next: string[]): void {
+    archivedIds = next;
+    saveArchived(next, storage);
+  }
+
+  /**
+   * Archive is reversible and never deletes: it only adds the row id to the
+   * archived list, so unread counts and history come back untouched.
+   */
+  function archiveRows(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    persistArchived(archiveConversations(archivedIds, ids));
+  }
+
+  function unarchiveRows(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    persistArchived(unarchiveConversations(archivedIds, ids));
+  }
+
+  function toggleRowArchive(rowId: string): void {
+    if (archivedSet.has(rowId)) unarchiveRows([rowId]);
+    else archiveRows([rowId]);
+  }
+
+  function enterSelectionMode(rowId?: string): void {
+    selectionMode = true;
+    if (rowId) {
+      selection = selectOnly(rowId);
+      focusedRowId = rowId;
+    }
+  }
+
+  function exitSelectionMode(): void {
+    selectionMode = false;
+    selection = clearSelection();
+    focusedRowId = null;
+  }
+
+  function archiveSelection(): void {
+    const ids = selection.selected;
+    if (selectionAllArchived) unarchiveRows(ids);
+    else archiveRows(ids);
+    exitSelectionMode();
+  }
+
+  function selectAllVisible(): void {
+    selection = selectAllRows(orderedRowIds);
+    focusedRowId = orderedRowIds.at(-1) ?? null;
+  }
+
+  /**
+   * Row click. cmd/ctrl or shift enters selection mode and never opens the
+   * conversation; a plain click in selection mode moves the selection, and
+   * outside it opens the row as before.
+   */
+  function handleRowClick(row: ConversationRow, event: MouseEvent): void {
+    const multi = event.metaKey || event.ctrlKey || event.shiftKey;
+    if (!selectionMode && !multi) {
+      void openRow(row);
+      return;
+    }
+    event.preventDefault();
+    if (!selectionMode) selectionMode = true;
+    selection = applySelectionClick(selection, orderedRowIds, row.id, {
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+    });
+    focusedRowId = row.id;
+  }
+
+  function selectionKeydown(event: KeyboardEvent): void {
+    if (!selectionMode || event.isComposing) return;
+    const result = applySelectionKey(
+      selection,
+      orderedRowIds,
+      {
+        key: event.key,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+      },
+      focusedRowId,
+    );
+    if (!result.handled) return;
+    event.preventDefault();
+    selection = result.state;
+    focusedRowId = result.focusId;
+    if (result.state.selected.length === 0 && event.key === "Escape") {
+      exitSelectionMode();
+      return;
+    }
+    if (result.focusId) {
+      document
+        .querySelector<HTMLElement>(
+          `[data-conversation-id="${CSS.escape(result.focusId)}"]`,
+        )
+        ?.focus();
+    }
+  }
   $effect(() => {
     const emit = onactions;
     if (!emit) return;
@@ -964,6 +1117,18 @@
   function togglePinFromMenu(): void {
     if (!contextMenu) return;
     toggleRowPin(contextMenu.row.id);
+    contextMenu = null;
+  }
+
+  function archiveFromMenu(): void {
+    if (!contextMenu) return;
+    toggleRowArchive(contextMenu.row.id);
+    contextMenu = null;
+  }
+
+  function selectFromMenu(): void {
+    if (!contextMenu) return;
+    enterSelectionMode(contextMenu.row.id);
     contextMenu = null;
   }
 
@@ -1143,7 +1308,8 @@
       !filterOpen &&
       !footerMenuOpen &&
       !searchOpen &&
-      !contextMenu
+      !contextMenu &&
+      !selectionMode
     )
       return;
 
@@ -1183,6 +1349,11 @@
       }
       if (searchOpen) {
         searchOpen = false;
+        event.preventDefault();
+        return;
+      }
+      if (selectionMode) {
+        exitSelectionMode();
         event.preventDefault();
         return;
       }
@@ -2244,6 +2415,27 @@
               </button>
             {/if}
 
+            <button
+              type="button"
+              class="chat-filter-row"
+              class:active={showArchived}
+              data-testid="chat-filter-archived"
+              aria-pressed={showArchived}
+              onclick={() => setShowArchived(!showArchived)}
+            >
+              <span class="chat-filter-lead" aria-hidden="true">🗄</span>
+              <span class="chat-filter-text">Show archived</span>
+              {#if archivedVisibleCount > 0 && !showArchived}
+                <span
+                  class="chat-filter-meta"
+                  data-testid="chat-filter-archived-count">{archivedVisibleCount}</span
+                >
+              {/if}
+              {#if showArchived}
+                <span class="chat-filter-check" aria-hidden="true">✓</span>
+              {/if}
+            </button>
+
             {#if people.length > 0}
               <div class="chat-filter-caption pad-top">People</div>
               <div class="chat-people-list">
@@ -2285,7 +2477,51 @@
     </div>
   </header>
 
-  <div class="chat-scroll" data-testid="chat-conversation-list" aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}>
+  {#if selectionMode}
+    <div
+      class="chat-selection-bar"
+      data-testid="chat-selection-bar"
+      role="toolbar"
+      aria-label="Selected conversations"
+    >
+      <span class="chat-selection-count" data-testid="chat-selection-count">
+        {selectionCount} selected
+      </span>
+      <button
+        type="button"
+        class="chat-selection-action"
+        data-testid="chat-selection-all"
+        onclick={selectAllVisible}
+      >
+        Select all
+      </button>
+      <button
+        type="button"
+        class="chat-selection-action primary"
+        data-testid="chat-selection-archive"
+        disabled={selectionCount === 0}
+        onclick={archiveSelection}
+      >
+        {selectionAllArchived ? "Unarchive" : "Archive"}
+      </button>
+      <button
+        type="button"
+        class="chat-selection-action"
+        data-testid="chat-selection-done"
+        onclick={exitSelectionMode}
+      >
+        Done
+      </button>
+    </div>
+  {/if}
+
+  <div
+    class="chat-scroll"
+    data-testid="chat-conversation-list"
+    data-selection-mode={selectionMode ? "on" : undefined}
+    aria-multiselectable={selectionMode ? true : undefined}
+    aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}
+  >
     {#if allRows.length === 0 && (!firstRefreshSettled || loading)}
       <div class="sidebar-skeleton" role="status" aria-label="Loading conversations" data-testid="sidebar-loading">
         <span class="sr-only">Loading conversations…</span>
@@ -2325,7 +2561,12 @@
         </span>
         PINNED
       </div>
-      <div class="chat-list" role="list" aria-labelledby="chat-pinned-label">
+      <div
+        class="chat-list"
+        role={selectionMode ? "listbox" : "list"}
+        aria-multiselectable={selectionMode ? true : undefined}
+        aria-labelledby="chat-pinned-label"
+      >
         {#each grouped.pinned as row (row.id)}
           {@render conversationRow(row)}
         {/each}
@@ -2345,7 +2586,8 @@
       </div>
       <div
         class="chat-list"
-        role="list"
+        role={selectionMode ? "listbox" : "list"}
+        aria-multiselectable={selectionMode ? true : undefined}
         aria-labelledby={`chat-sec-${section.key}`}
       >
         {#each section.rows as row (row.id)}
@@ -2377,7 +2619,12 @@
         {/if}
       </button>
       {#if lastWeekExpanded}
-        <div class="chat-list" role="list" aria-label="Last week">
+        <div
+          class="chat-list"
+          role={selectionMode ? "listbox" : "list"}
+          aria-multiselectable={selectionMode ? true : undefined}
+          aria-label="Last week"
+        >
           {#each grouped.lastWeek as row (row.id)}
             {@render conversationRow(row)}
           {/each}
@@ -2485,6 +2732,26 @@
         {pinsWithSetup.includes(contextMenu.row.id)
           ? "Unpin conversation"
           : "Pin conversation"}
+      </button>
+      <button
+        type="button"
+        class="chat-popover-row"
+        role="menuitem"
+        data-testid="chat-context-archive"
+        onclick={archiveFromMenu}
+      >
+        {archivedSet.has(contextMenu.row.id)
+          ? "Unarchive conversation"
+          : "Archive conversation"}
+      </button>
+      <button
+        type="button"
+        class="chat-popover-row"
+        role="menuitem"
+        data-testid="chat-context-select"
+        onclick={selectFromMenu}
+      >
+        Select conversations
       </button>
       {#each rowExtras?.(contextMenu.row)?.actions ?? [] as action (action.id)}
         <button
@@ -2857,7 +3124,7 @@
   <div class="chat-row-group" data-testid="chat-row-group">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      role="listitem"
+      role={selectionMode ? "presentation" : "listitem"}
       class="chat-li"
       onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
       onmouseleave={scheduleHoverCardHide}
@@ -2886,7 +3153,17 @@
         data-kind={row.kind}
         data-conversation-id={row.id}
         title={scopeLabel?.text}
-        onclick={() => void openRow(row)}
+        class:selected={selectionMode && selection.selected.includes(row.id)}
+        class:archived={archivedSet.has(row.id)}
+        role={selectionMode ? "option" : undefined}
+        aria-selected={selectionMode
+          ? selection.selected.includes(row.id)
+          : undefined}
+        onkeydown={selectionKeydown}
+        data-selected={selectionMode && selection.selected.includes(row.id)
+          ? "true"
+          : undefined}
+        onclick={(e) => handleRowClick(row, e)}
         oncontextmenu={(e) => openContextMenu(row, e)}
       >
         {#if row.kind === "channel"}
@@ -2952,6 +3229,11 @@
                 runtime={localBotForRow(localBots ?? [], row)?.runtime ?? null}
               />
             {/if}
+          {/if}
+          {#if archivedSet.has(row.id)}
+            <span class="chat-row-archived-pill" data-testid="chat-row-archived-pill">
+              Archived
+            </span>
           {/if}
           {#if extras?.badge}
             <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
@@ -3979,6 +4261,75 @@
     color: var(--v4-text-3, var(--text-3));
     background: transparent;
     white-space: nowrap;
+  }
+
+  /* Muted marker on an archived row; only visible under "Show archived". */
+  .chat-row-archived-pill {
+    flex: none;
+    margin-left: 2px;
+    padding: 1px 5px;
+    border-radius: 6px;
+    font-size: 10px;
+    line-height: 1.3;
+    color: var(--v4-text-3, var(--text-3));
+    background: var(--hover);
+    white-space: nowrap;
+  }
+
+  .chat-row.archived .chat-row-title {
+    opacity: 0.7;
+  }
+
+  /* Selection is a state, not an event — no transition on the toggle. */
+  .chat-row.selected {
+    background: var(--hover);
+    box-shadow: inset 2px 0 0 var(--accent, currentColor);
+  }
+
+  .chat-selection-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line, var(--hover));
+  }
+
+  .chat-selection-count {
+    flex: 1 1 auto;
+    font-size: var(--type-metadata, 13px);
+    color: var(--t2, var(--text-2));
+    white-space: nowrap;
+  }
+
+  .chat-selection-action {
+    flex: none;
+    padding: 3px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: var(--type-metadata, 13px);
+    cursor: pointer;
+  }
+
+  .chat-selection-action:hover:not(:disabled) {
+    background: var(--hover);
+  }
+
+  .chat-selection-action.primary {
+    background: var(--hover);
+  }
+
+  .chat-selection-action:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .chat-filter-meta {
+    flex: none;
+    font-size: 11px;
+    color: var(--v4-text-3, var(--text-3));
   }
 
   .chat-row-hover-card {

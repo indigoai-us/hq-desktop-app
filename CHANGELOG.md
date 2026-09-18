@@ -12,6 +12,15 @@ The release moves it under the version it ships in.
 - Setup can no longer be skipped by accident. The welcome film teaches the Option+Shift+O shortcut, and pressing it during setup used to close the setup card and open the full HQ window with nothing installed underneath. Until setup finishes, that shortcut — and every other way of opening the HQ window — now brings the setup card back instead.
 - The small menu-bar panel has been removed for good. It stopped opening for signed-in people in the previous release, and the code behind it is now gone. Everything it used to show lives in the main HQ window. Setting up HQ for the first time and signing back in still happen in the small window as before, and the menu-bar icon, its unread count and its right-click menu are unchanged.
 - Unread dots in the small shared-file window now come from HQ's servers rather than a mark that only the menu-bar panel could update. They would otherwise have stopped changing once that panel was removed.
+- You can now archive conversations in the left sidebar to get them out of the
+  way. Right-click one and choose "Archive conversation", or pick several at
+  once: hold cmd (or ctrl) and click to add rows, hold shift and click to take a
+  whole run of them, then hit Archive in the bar at the top of the list. Press
+  Esc to drop the selection. Archiving only hides a conversation — nothing is
+  deleted, and anything unread stays unread.
+- The filter menu has a new "Show archived" switch. Turn it on and archived
+  conversations come back into the list with a small "Archived" label, so you
+  can read them or unarchive them, on their own or several at a time.
 
 ## [0.10.291] — 2026-09-18
 
