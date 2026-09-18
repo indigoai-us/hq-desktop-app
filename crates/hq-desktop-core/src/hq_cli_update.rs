@@ -271,10 +271,17 @@ impl Drop for VersionProbeContainment {
     }
 }
 
-/// True when creating a tempfile or spawning the version-probe child failed
-/// from resource exhaustion the next attempt can recover from. Mirrors the
-/// daemon's spawn-failure policy (Linux EAGAIN/ENOMEM/ENFILE/EMFILE, macOS
-/// EAGAIN/ENOMEM/ENFILE/EMFILE). `Interrupted` is deliberately excluded:
+/// True when creating a tempfile or spawning the version-probe child failed for
+/// a reason the next attempt can recover from. Two families qualify:
+///
+/// - Resource exhaustion, mirroring the daemon's spawn-failure policy (Linux
+///   EAGAIN/ENOMEM/ENFILE/EMFILE, macOS EAGAIN/ENOMEM/ENFILE/EMFILE).
+/// - `ETXTBSY`, where the program file is momentarily held open for writing by
+///   another process (see [`paths::is_text_file_busy`]).
+///
+/// Neither family is evidence about the child, and both clear on their own, so
+/// letting either one through would report `ProcessSpawnFailed` for a program
+/// that is perfectly runnable. `Interrupted` is deliberately excluded:
 /// `try_wait` can surface EINTR after the child is already running, and
 /// retrying the whole probe would leak that process group.
 fn is_transient_probe_io_error(error: &std::io::Error) -> bool {
@@ -282,6 +289,9 @@ fn is_transient_probe_io_error(error: &std::io::Error) -> bool {
         error.kind(),
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::OutOfMemory
     ) {
+        return true;
+    }
+    if paths::is_text_file_busy(error) {
         return true;
     }
     match error.raw_os_error() {
@@ -14304,13 +14314,32 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// Materialise an executable fixture with no write handle left open.
+    ///
+    /// The body is written to a sibling staging file inside a scope that drops
+    /// the `File` before the mode is set and before the path is renamed into
+    /// place, so the fixture only becomes visible at `path` after this process
+    /// has closed its writer. This narrows -- it cannot close -- the window in
+    /// which a sibling test's `Command::spawn` forks while the write fd is open
+    /// and the inherited fd makes Linux refuse the exec with `ETXTBSY`; the
+    /// probe's own `ETXTBSY` retry is what actually removes the failure.
     fn write_executable(path: &Path, contents: &str) {
+        use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
-        std::fs::write(path, contents).unwrap();
-        let mut permissions = std::fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).unwrap();
+        let parent = path.parent().expect("executable parent");
+        let staging = parent.join(format!(
+            ".{}.fixture-{}",
+            path.file_name().expect("file name").to_string_lossy(),
+            std::process::id()
+        ));
+        {
+            let mut file = std::fs::File::create(&staging).unwrap();
+            file.write_all(contents.as_bytes()).unwrap();
+            file.sync_all().unwrap();
+        }
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::rename(&staging, path).unwrap();
     }
 
     /// What spawning an exec-bit file whose content is not a valid executable
@@ -14475,6 +14504,138 @@ mod tests {
     }
 
     // ── HQ-DESKTOP-3P: a Windows resolution that exists but cannot be spawned ──
+
+    /// `ETXTBSY` is a statement about a WRITER, so the probe must retry it.
+    ///
+    /// The kernel refuses to exec a file that any process holds open for
+    /// writing. That is never evidence about the program -- the same file runs
+    /// the moment the handle closes -- so it belongs with the resource
+    /// transients the probe retries past, not in the `ProcessSpawnFailed`
+    /// residual that a caller reads as a verdict. Before this, a parallel test
+    /// binary (or a concurrent installer) that forked while a fixture's write
+    /// fd was open turned the classification tests red on Linux.
+    ///
+    /// Windows spells the same condition `ERROR_SHARING_VIOLATION` (os error
+    /// 32) rather than `ETXTBSY`, so each platform is asserted with its own
+    /// errno here instead of the test being skipped off Unix.
+    #[test]
+    fn a_text_file_busy_spawn_is_a_retryable_transient_not_a_verdict() {
+        use std::io::{Error, ErrorKind};
+
+        // The portable kind is the one every platform must accept.
+        let busy = Error::from(ErrorKind::ExecutableFileBusy);
+        assert!(
+            is_transient_probe_io_error(&busy),
+            "a busy binary must be retried, not reported as a spawn verdict: {busy}"
+        );
+
+        // Each platform's own "the binary is still being written" errno, asserted
+        // as that platform's real answer rather than skipped: ETXTBSY (26) on
+        // Unix, ERROR_SHARING_VIOLATION (32) on Windows. The other platform's
+        // number must NOT be honoured — os error 26 on Windows is
+        // ERROR_NOT_DOS_DISK, an unrelated disk failure.
+        #[cfg(any(unix, windows))]
+        {
+            #[cfg(unix)]
+            let busy_errno = 26;
+            #[cfg(windows)]
+            let busy_errno = 32;
+            let native = Error::from_raw_os_error(busy_errno);
+            assert!(
+                is_transient_probe_io_error(&native),
+                "the platform busy errno must be retried: {native}"
+            );
+            #[cfg(windows)]
+            assert!(
+                !is_transient_probe_io_error(&Error::from_raw_os_error(26)),
+                "os error 26 on Windows is ERROR_NOT_DOS_DISK, never a busy binary"
+            );
+        }
+
+        // The retry must actually recover, and must still be bounded: a file
+        // that stays busy forever reports the residual rather than hanging.
+        let mut attempts = 0u32;
+        let recovered = retry_transient_io(|| {
+            attempts += 1;
+            if attempts < 3 {
+                return Err(Error::from(ErrorKind::ExecutableFileBusy));
+            }
+            Ok(attempts)
+        })
+        .expect("a transiently busy program is retried");
+        assert_eq!(recovered, 3);
+
+        let mut forever = 0u32;
+        let error = retry_transient_io(|| {
+            forever += 1;
+            Err::<(), _>(Error::from(ErrorKind::ExecutableFileBusy))
+        })
+        .expect_err("a permanently busy program still fails");
+        assert_eq!(
+            classify_spawn_error(&error),
+            VersionProbeOutcome::ProcessSpawnFailed
+        );
+        assert_eq!(forever, 4, "the ETXTBSY retry must stay bounded");
+
+        // A genuine spawn verdict is never swallowed by the new branch.
+        assert!(!is_transient_probe_io_error(&Error::from(
+            ErrorKind::NotFound
+        )));
+        assert!(!is_transient_probe_io_error(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        #[cfg(unix)]
+        assert!(
+            !is_transient_probe_io_error(&Error::from_raw_os_error(8)),
+            "ENOEXEC is a verdict about the program, never a retry"
+        );
+        #[cfg(windows)]
+        assert!(
+            !is_transient_probe_io_error(&Error::from_raw_os_error(193)),
+            "ERROR_BAD_EXE_FORMAT is a verdict about the program, never a retry"
+        );
+    }
+
+    /// End-to-end proof on the platform that enforces `ETXTBSY`.
+    ///
+    /// A real write handle is held on the `npm` fixture across the start of the
+    /// probe and released shortly after, which is the exact field shape: the
+    /// program is fine, something else was mid-write. Without the retry the
+    /// probe reports `ProcessSpawnFailed`; with it, it reports the fixture's
+    /// real answer.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_momentarily_busy_npm_still_reports_its_real_outcome() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flat_bin = tmp.path().join("Library/pnpm");
+        let npm_root = tmp.path().join("empty-npm-root");
+        let hq = flat_bin.join("hq");
+        let npm = flat_bin.join("npm");
+        std::fs::create_dir_all(&flat_bin).unwrap();
+        std::fs::create_dir_all(&npm_root).unwrap();
+        write_executable(&hq, "#!/bin/sh\nexit 7\n");
+        write_executable(
+            &npm,
+            &format!("#!/bin/sh\nprintf '{}\\n'\n", npm_root.display()),
+        );
+
+        // Hold the exec target open for writing, then release it well inside
+        // the retry budget (20ms + 40ms + 60ms of backoff).
+        let writer = std::fs::OpenOptions::new().write(true).open(&npm).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            drop(writer);
+        });
+
+        let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
+        releaser.join().unwrap();
+
+        assert_eq!(
+            result.probes.npm_root,
+            VersionProbeOutcome::PackageNotFound,
+            "a momentarily busy npm must not be reported as a spawn failure"
+        );
+    }
 
     /// Every spawn failure used to collapse into `ProcessSpawnFailed`, so the
     /// field event could not say whether the program was absent, present but

@@ -2,15 +2,15 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, cli_install_needed, decide_post_install, non_convergent_episode_key,
-    report_install_failure, report_non_convergent_install, report_unreadable_version,
-    should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, DeliveredPrefixShim,
-    ExecutedCopyAim, HqBacking, InstallExecutor, InterpreterRecovery, LocalVersionProbeDiagnostics,
-    LocalVersionProbeResult, ManagedBinInSettingsPath, ManagedRuntimeState,
-    ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
-    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
-    ResolutionSource, ResolvedProgramKind, SettingsPathRepair, SettingsPathTelemetry,
-    VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
+    apply_post_install_effects, cli_install_needed, decide_post_install,
+    non_convergent_episode_key, report_install_failure, report_non_convergent_install,
+    report_unreadable_version, should_report_unreadable_version, BinaryAnchorShape,
+    ConvergenceVerdict, DeliveredPrefixShim, ExecutedCopyAim, HqBacking, InstallExecutor,
+    InterpreterRecovery, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
+    ManagedBinInSettingsPath, ManagedRuntimeState, ManagedShadowRepairOutcome, NonConvergenceKind,
+    NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects, ResolutionSource, ResolvedProgramKind, SettingsPathRepair,
+    SettingsPathTelemetry, VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -372,7 +372,10 @@ fn a_foreign_managed_run_not_yet_aimed_emits_one_event_and_no_marker() {
     assert_eq!(record_failures, 0);
     assert_eq!(events.len(), 1);
     assert_eq!(
-        events[0].tags.get("non_convergence_kind").map(String::as_str),
+        events[0]
+            .tags
+            .get("non_convergence_kind")
+            .map(String::as_str),
         Some("foreign-managed")
     );
     let serialized = serde_json::to_string(&events[0]).expect("serialize event");
@@ -482,7 +485,10 @@ fn a_settings_path_shadow_repaired_in_run_emits_no_envelope_and_no_marker() {
         managed_bin: ManagedBinInSettingsPath::Absent,
     });
     let (base_events, base_records, base_captures, _) = composed_non_convergent_events(&base, true);
-    assert_eq!(base_records, 1, "the pre-repair shadow writes the wedging marker");
+    assert_eq!(
+        base_records, 1,
+        "the pre-repair shadow writes the wedging marker"
+    );
     assert_eq!(base_captures, 1);
     assert_eq!(base_events.len(), 1);
 
@@ -536,9 +542,20 @@ fn a_settings_path_shadow_repaired_in_run_emits_no_envelope_and_no_marker() {
             },
         );
     });
-    assert_eq!(records.get(), 0, "a repaired+converged run writes no marker");
-    assert_eq!(captures.get(), 0, "a repaired+converged run captures nothing");
-    assert!(events.is_empty(), "a repaired+converged run emits no envelope");
+    assert_eq!(
+        records.get(),
+        0,
+        "a repaired+converged run writes no marker"
+    );
+    assert_eq!(
+        captures.get(),
+        0,
+        "a repaired+converged run captures nothing"
+    );
+    assert!(
+        events.is_empty(),
+        "a repaired+converged run emits no envelope"
+    );
 }
 
 /// HQ-DESKTOP-46: a settings-PATH shadow HQ could NOT repair (the rewrite was
@@ -595,11 +612,18 @@ fn an_unrepairable_settings_path_shadow_emits_one_self_diagnosing_envelope_per_e
             "unexpected {tag} tag"
         );
     }
-    assert_eq!(fingerprint(event), ["hq-cli-update", "install-non-convergent"]);
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
     let serialized = serde_json::to_string(event).expect("serialize event");
     assert!(!serialized.contains(&home_text));
     // The three tokens are drawn from closed vocabularies, never a path.
-    for token in ["settings_path_file", "managed_bin_in_settings_path", "settings_path_repair"] {
+    for token in [
+        "settings_path_file",
+        "managed_bin_in_settings_path",
+        "settings_path_repair",
+    ] {
         let value = event.tags.get(token).map(String::as_str).unwrap();
         assert!(!value.contains('/'), "{token} must be path-free");
     }
@@ -622,8 +646,14 @@ fn an_unrepairable_settings_path_shadow_emits_one_self_diagnosing_envelope_per_e
     .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
     .with_settings_path(telemetry);
     let (repeat_events, _r, repeat_captures, _f) = composed_non_convergent_events(&repeat, true);
-    assert_eq!(repeat_captures, 0, "an already-blocked episode is not re-captured");
-    assert!(repeat_events.is_empty(), "no second envelope for the same episode");
+    assert_eq!(
+        repeat_captures, 0,
+        "an already-blocked episode is not re-captured"
+    );
+    assert!(
+        repeat_events.is_empty(),
+        "no second envelope for the same episode"
+    );
 }
 
 /// The per-episode bound holds ACROSS runs for the not-yet-aimed foreign shape:
@@ -705,7 +735,10 @@ fn an_unresolved_hq_captures_installer_unaimed_with_no_raw_home_path() {
         None,
     );
     let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
-    assert_eq!(records, 0, "an unaimed first install writes no durable marker");
+    assert_eq!(
+        records, 0,
+        "an unaimed first install writes no durable marker"
+    );
     assert_eq!(captures, 1);
     assert_eq!(record_failures, 0);
     assert_eq!(events.len(), 1);

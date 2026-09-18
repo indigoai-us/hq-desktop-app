@@ -119,7 +119,10 @@ fn the_reported_exit2_manifest_missing_is_a_collapsed_warning() {
 
     // Per-slug proliferation collapses into one issue per subclass.
     let fingerprint: Vec<&str> = event.fingerprint.iter().map(|c| c.as_ref()).collect();
-    assert_eq!(fingerprint, ["provision-cli", "validation", "manifest-missing"]);
+    assert_eq!(
+        fingerprint,
+        ["provision-cli", "validation", "manifest-missing"]
+    );
 
     // The IPC message text is unchanged (present on base too), so the frontend
     // contract does not drift — only the level and grouping changed.
@@ -196,7 +199,10 @@ fn each_setup_subclass_is_a_warning_with_its_own_fingerprint() {
         });
         assert_eq!(events.len(), 1, "kind {expected_kind}");
         let event = &events[0];
-        assert_eq!(event.tags["provision_kind"], "validation", "{expected_kind}");
+        assert_eq!(
+            event.tags["provision_kind"], "validation",
+            "{expected_kind}"
+        );
         assert_eq!(event.tags["validation_kind"], expected_kind);
         assert_eq!(event.level, sentry::Level::Warning, "{expected_kind}");
         let fingerprint: Vec<&str> = event.fingerprint.iter().map(|c| c.as_ref()).collect();

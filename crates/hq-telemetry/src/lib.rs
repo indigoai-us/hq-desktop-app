@@ -356,7 +356,9 @@ fn is_sensitive_key(k: &str) -> bool {
 const FILTERED: &str = "[Filtered]";
 
 fn has_ascii_case_insensitive_prefix_at(value: &str, start: usize, prefix: &str) -> bool {
-    value.as_bytes().get(start..start.saturating_add(prefix.len()))
+    value
+        .as_bytes()
+        .get(start..start.saturating_add(prefix.len()))
         .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix.as_bytes()))
 }
 
@@ -406,7 +408,9 @@ fn redact_url_credentials(value: &str) -> String {
     while let Some(scheme_offset) = value[offset..].find("://") {
         let authority_start = offset + scheme_offset + 3;
         let authority_end = value[authority_start..]
-            .find(|character: char| character.is_whitespace() || matches!(character, '/' | '?' | '#'))
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '/' | '?' | '#')
+            })
             .map(|relative| authority_start + relative)
             .unwrap_or(value.len());
         if let Some(at_relative) = value[authority_start..authority_end].rfind('@') {
@@ -482,7 +486,11 @@ fn redact_email_addresses(value: &str) -> String {
 }
 
 fn is_path_byte(byte: u8) -> bool {
-    !byte.is_ascii_whitespace() && !matches!(byte, b'\'' | b'"' | b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';')
+    !byte.is_ascii_whitespace()
+        && !matches!(
+            byte,
+            b'\'' | b'"' | b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';'
+        )
 }
 
 fn redact_unc_path_literals(value: &str) -> String {
@@ -513,8 +521,8 @@ fn redact_absolute_path_literals(value: &str) -> String {
     let mut ranges = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
-        let unix_path = bytes[index] == b'/'
-            && (index == 0 || !bytes[index - 1].is_ascii_alphanumeric());
+        let unix_path =
+            bytes[index] == b'/' && (index == 0 || !bytes[index - 1].is_ascii_alphanumeric());
         let windows_path = bytes[index].is_ascii_alphabetic()
             && bytes.get(index + 1) == Some(&b':')
             && matches!(bytes.get(index + 2), Some(b'/' | b'\\'));
@@ -538,11 +546,17 @@ fn redact_labeled_host_values(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut ranges = Vec::new();
     for index in 0..bytes.len() {
-        let Some(label) = LABELS.iter().find(|label| has_ascii_case_insensitive_prefix_at(value, index, label)) else {
+        let Some(label) = LABELS
+            .iter()
+            .find(|label| has_ascii_case_insensitive_prefix_at(value, index, label))
+        else {
             continue;
         };
         let mut start = index + label.len();
-        while bytes.get(start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+        while bytes
+            .get(start)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
             start += 1;
         }
         let end = value[start..]
@@ -578,7 +592,9 @@ fn redact_hostname_literals(value: &str) -> String {
         let candidate = &value[start..index];
         if candidate.contains('.')
             && candidate.bytes().any(|byte| byte.is_ascii_alphabetic())
-            && candidate.split('.').all(|part| !part.is_empty() && part.bytes().all(is_hostname_byte))
+            && candidate
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(is_hostname_byte))
         {
             ranges.push((start, index));
         }
@@ -593,7 +609,11 @@ fn is_repository_byte(byte: u8) -> bool {
 fn redact_repository_literals(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut ranges = Vec::new();
-    for slash in bytes.iter().enumerate().filter_map(|(index, byte)| (*byte == b'/').then_some(index)) {
+    for slash in bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, byte)| (*byte == b'/').then_some(index))
+    {
         let mut start = slash;
         while start > 0 && is_repository_byte(bytes[start - 1]) {
             start -= 1;
@@ -634,18 +654,25 @@ fn redact_labeled_secret_values(value: &str) -> String {
     for index in 0..bytes.len() {
         for label in LABELS {
             if !has_ascii_case_insensitive_prefix_at(value, index, label)
-                || (index > 0 && bytes[index - 1].is_ascii_alphanumeric()) {
+                || (index > 0 && bytes[index - 1].is_ascii_alphanumeric())
+            {
                 continue;
             }
             let mut value_start = index + label.len();
-            while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            while bytes
+                .get(value_start)
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            {
                 value_start += 1;
             }
             // JSON and shell-style quoted keys put a closing quote between the
             // label and separator: `"password":"value"` / `PASSWORD="value"`.
             if matches!(bytes.get(value_start), Some(b'\'') | Some(b'"')) {
                 value_start += 1;
-                while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                while bytes
+                    .get(value_start)
+                    .is_some_and(|byte| byte.is_ascii_whitespace())
+                {
                     value_start += 1;
                 }
             }
@@ -653,7 +680,10 @@ fn redact_labeled_secret_values(value: &str) -> String {
                 continue;
             }
             value_start += 1;
-            while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            while bytes
+                .get(value_start)
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            {
                 value_start += 1;
             }
             let value_end = match bytes.get(value_start) {
@@ -678,9 +708,13 @@ fn redact_labeled_secret_values(value: &str) -> String {
                     && has_ascii_case_insensitive_prefix_at(value, value_start, "basic")
                     && bytes
                         .get(value_start + "basic".len())
-                        .is_some_and(|byte| byte.is_ascii_whitespace()) => {
+                        .is_some_and(|byte| byte.is_ascii_whitespace()) =>
+                {
                     let mut token_start = value_start + "basic".len();
-                    while bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                    while bytes
+                        .get(token_start)
+                        .is_some_and(|byte| byte.is_ascii_whitespace())
+                    {
                         token_start += 1;
                     }
                     value[token_start..]
@@ -716,15 +750,23 @@ fn redact_bearer_tokens(value: &str) -> String {
             continue;
         }
         let mut token_start = index + "bearer".len();
-        if !bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+        if !bytes
+            .get(token_start)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
             index += 1;
             continue;
         }
-        while bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+        while bytes
+            .get(token_start)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
             token_start += 1;
         }
         let token_end = value[token_start..]
-            .find(|character: char| character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"'))
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"')
+            })
             .map(|relative| token_start + relative)
             .unwrap_or(value.len());
         if token_start < token_end {
@@ -738,7 +780,16 @@ fn redact_bearer_tokens(value: &str) -> String {
 }
 
 fn redact_prefixed_api_keys(value: &str) -> String {
-    const PREFIXES: &[&str] = &["sk-", "sk_", "AKIA", "AIza", "ghp_", "github_pat_", "xoxb-", "xoxp-"];
+    const PREFIXES: &[&str] = &[
+        "sk-",
+        "sk_",
+        "AKIA",
+        "AIza",
+        "ghp_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+    ];
     let mut ranges = Vec::new();
     for index in 0..value.len() {
         for prefix in PREFIXES {
@@ -746,7 +797,9 @@ fn redact_prefixed_api_keys(value: &str) -> String {
                 continue;
             }
             let end = value[index..]
-                .find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+                .find(|character: char| {
+                    !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+                })
                 .map(|relative| index + relative)
                 .unwrap_or(value.len());
             if end.saturating_sub(index) >= prefix.len() + 12 {
@@ -765,7 +818,9 @@ fn redact_npm_prefixed_tokens(value: &str) -> String {
             continue;
         }
         let end = value[index..]
-            .find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+            .find(|character: char| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+            })
             .map(|relative| index + relative)
             .unwrap_or(value.len());
         if end.saturating_sub(index) >= "npm_".len() + 12 {
@@ -907,9 +962,7 @@ fn is_bounded_decimal(value: &str, max_len: usize) -> bool {
 /// check so a producer bug that shipped a path or raw process name degrades to
 /// `[Filtered]`. Bounded well under Sentry's tag limit.
 fn is_watcher_fault_binary_token_set(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value.split(',').all(is_watcher_fault_binary_token)
+    !value.is_empty() && value.len() <= 128 && value.split(',').all(is_watcher_fault_binary_token)
 }
 
 /// The bounded read-counters rollup (`seen:N,parsed:N,stale:N,rej_win:N,
@@ -967,8 +1020,20 @@ fn is_unmatched_stderr_shape_rollup(value: &str) -> bool {
 // `#[cfg(test)]` drift check drives every producer variant through these lists
 // so a producer that adds a token without updating the mirror fails CI.
 const RUNNER_ERROR_HTTP_TOKENS: &[&str] = &[
-    "http_400", "http_401", "http_403", "http_404", "http_409", "http_412", "http_429", "http_4xx",
-    "http_500", "http_502", "http_503", "http_504", "http_5xx", "http_other",
+    "http_400",
+    "http_401",
+    "http_403",
+    "http_404",
+    "http_409",
+    "http_412",
+    "http_429",
+    "http_4xx",
+    "http_500",
+    "http_502",
+    "http_503",
+    "http_504",
+    "http_5xx",
+    "http_other",
 ];
 const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "entity_not_found",
@@ -1091,8 +1156,21 @@ const RUNNER_ERROR_SHAPE_TOKENS: &[&str] = &[
     "unknown",
 ];
 const RUNNER_ERROR_PATH_ROOT_TOKENS: &[&str] = &[
-    "knowledge", "projects", "repos", "sources", "signals", "data", "settings", "workers",
-    "registry", "clients", "core", "companies", "personal", "workspace", "other",
+    "knowledge",
+    "projects",
+    "repos",
+    "sources",
+    "signals",
+    "data",
+    "settings",
+    "workers",
+    "registry",
+    "clients",
+    "core",
+    "companies",
+    "personal",
+    "workspace",
+    "other",
 ];
 // The runner-error SITE vocabulary (HQ-DESKTOP-5M): every non-file sentinel plus
 // `file`. Kept local like the other rollup mirrors so the egress guard stays
@@ -1260,7 +1338,10 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "unknown"
         )),
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
-        "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "launcher" | "direct_executable")),
+        "watcher_child_kind" => Some(matches!(
+            value,
+            "cmd_shim" | "launcher" | "direct_executable"
+        )),
         // Shim-vs-runner discriminator (HQ-DESKTOP-66): the images of the watcher Job
         // Object's processes STILL LIVE at the exit boundary, plus their count. The
         // producer renders a closed vocabulary that reuses the watcher-fault image
@@ -1365,9 +1446,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "watcher_js_heap_total_mb"
         | "watcher_js_heap_used_mb"
         | "watcher_inferred_non_heap_mb"
-        | "watcher_libuv_active_handles" => {
-            Some(value.is_empty() || value.parse::<u64>().is_ok())
-        }
+        | "watcher_libuv_active_handles" => Some(value.is_empty() || value.parse::<u64>().is_ok()),
         // Why the memory-class decomposition is or is not present, so an absent report
         // degrades honestly to a queryable token instead of a guess (mirrors
         // `WatcherMemoryClassSource::as_str`). The POSIX report path yields
@@ -1440,17 +1519,30 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // any egress guard — the same rollup family from the same seam, so closing
         // that hole here costs four arms and stops a future producer bug in any of
         // them from shipping a raw path or message fragment.
-        "runner_error_http" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_HTTP_TOKENS)),
-        "runner_error_causes" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_CAUSE_TOKENS)),
-        "runner_error_shapes" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_SHAPE_TOKENS)),
-        "runner_error_path_roots" => {
-            Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_PATH_ROOT_TOKENS))
-        }
+        "runner_error_http" => Some(is_closed_vocab_count_rollup(
+            value,
+            RUNNER_ERROR_HTTP_TOKENS,
+        )),
+        "runner_error_causes" => Some(is_closed_vocab_count_rollup(
+            value,
+            RUNNER_ERROR_CAUSE_TOKENS,
+        )),
+        "runner_error_shapes" => Some(is_closed_vocab_count_rollup(
+            value,
+            RUNNER_ERROR_SHAPE_TOKENS,
+        )),
+        "runner_error_path_roots" => Some(is_closed_vocab_count_rollup(
+            value,
+            RUNNER_ERROR_PATH_ROOT_TOKENS,
+        )),
         // The runner-error SITE axis (HQ-DESKTOP-5M): a `token:count` rollup over the
         // closed `RunnerErrorSite` vocabulary. Same egress discipline as the axes
         // above — an off-vocabulary token or non-digit count degrades to `[Filtered]`
         // rather than shipping the runner's raw `path` sentinel or a file fragment.
-        "runner_error_sites" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_SITE_TOKENS)),
+        "runner_error_sites" => Some(is_closed_vocab_count_rollup(
+            value,
+            RUNNER_ERROR_SITE_TOKENS,
+        )),
         // The PRE-RUNNER (first-push phase) attribution axes (HQ-DESKTOP-64): a
         // fault the desktop observed before the runner spawned. Same egress
         // discipline as the runner-error rollups — an off-vocabulary token or
@@ -1459,12 +1551,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // below and would pass egress UNTOUCHED, so a future producer bug shipping an
         // out-of-vocabulary value (a raw vault body, a path) could leak. With these
         // arms, that value degrades to `[Filtered]` instead.
-        "pre_runner_failures" => {
-            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_SITE_TOKENS))
-        }
-        "pre_runner_causes" => {
-            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_CAUSE_TOKENS))
-        }
+        "pre_runner_failures" => Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_SITE_TOKENS)),
+        "pre_runner_causes" => Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_CAUSE_TOKENS)),
         // The first-push CAPTURE's two tags (HQ-DESKTOP-64) — a separate event from the
         // exit, carrying a SINGLE typed cause token and status, not a count rollup.
         // Unregistered they fell through `_ => None` and passed egress verbatim, so a
@@ -2267,17 +2355,39 @@ mod tests {
     #[test]
     fn setup_diagnostic_secret_shapes_are_scrubbed_at_egress() {
         let mut event = Event::default();
-        event.extra.insert("setup_environment".into(), Value::String("API_KEY=sk_live_abcdefghijklmnopqrstuv npm_abcdefghijklmnopqrstuvwxyz".into()));
+        event.extra.insert(
+            "setup_environment".into(),
+            Value::String(
+                "API_KEY=sk_live_abcdefghijklmnopqrstuv npm_abcdefghijklmnopqrstuvwxyz".into(),
+            ),
+        );
         event.extra.insert("setup_command".into(), Value::String(r#"npm --token=Bearer-token-value-123456 PASSWORD="quoted-password-value" {"token":"json-token-value"}"#.into()));
         event.extra.insert("setup_stderr".into(), Value::String("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\nAuthorization: Basic YWRhOnNlY3JldA==\nhttps://ada:hunter2@registry.example/private".into()));
 
         let result = before_send(event).expect("event remains sendable");
-        let sent = result.extra.values().map(|value| match value {
-            Value::String(text) => text.as_str(),
-            _ => "",
-        }).collect::<Vec<_>>().join("\n");
-        for secret in ["sk_live_abcdefghijklmnopqrstuv", "npm_abcdefghijklmnopqrstuvwxyz", "Bearer-token-value-123456", "quoted-password-value", "json-token-value", "eyJhbGciOiJIUzI1NiJ9.payload.signature", "YWRhOnNlY3JldA==", "ada:hunter2"] {
-            assert!(!sent.contains(secret), "credential-shaped text {secret:?} must not leave the process");
+        let sent = result
+            .extra
+            .values()
+            .map(|value| match value {
+                Value::String(text) => text.as_str(),
+                _ => "",
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for secret in [
+            "sk_live_abcdefghijklmnopqrstuv",
+            "npm_abcdefghijklmnopqrstuvwxyz",
+            "Bearer-token-value-123456",
+            "quoted-password-value",
+            "json-token-value",
+            "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+            "YWRhOnNlY3JldA==",
+            "ada:hunter2",
+        ] {
+            assert!(
+                !sent.contains(secret),
+                "credential-shaped text {secret:?} must not leave the process"
+            );
         }
     }
 
@@ -2286,7 +2396,12 @@ mod tests {
     #[test]
     fn setup_diagnostic_paths_are_anonymized_and_streams_keep_the_16kib_tail() {
         let mut event = Event::default();
-        event.extra.insert("setup_stderr".into(), Value::String(r"C:\Users\Ada\AppData\Local\HQ\error.log /Users/ada/.npm/_logs/error.log".into()));
+        event.extra.insert(
+            "setup_stderr".into(),
+            Value::String(
+                r"C:\Users\Ada\AppData\Local\HQ\error.log /Users/ada/.npm/_logs/error.log".into(),
+            ),
+        );
         let result = before_send(event).expect("event remains sendable");
         let Value::String(paths) = &result.extra["setup_stderr"] else {
             panic!("setup stderr remains text");
@@ -2296,11 +2411,17 @@ mod tests {
         assert!(!paths.contains("Ada"));
         assert!(!paths.contains("/Users/ada"));
 
-        let input = format!("discard-me-{}diagnostic-tail", "x".repeat(SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES));
+        let input = format!(
+            "discard-me-{}diagnostic-tail",
+            "x".repeat(SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES)
+        );
         let tail = setup_diagnostic_tail(&input);
         assert_eq!(tail.len(), SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
         assert!(tail.ends_with("diagnostic-tail"));
-        assert!(!tail.contains("discard-me-"), "the leading output is discarded");
+        assert!(
+            !tail.contains("discard-me-"),
+            "the leading output is discarded"
+        );
     }
 
     #[test]
@@ -2358,9 +2479,8 @@ mod tests {
     #[test]
     fn core_update_diagnostic_tail_stays_within_the_documented_limit_after_redaction() {
         let short_redactable_token = "x/y ";
-        let input = short_redactable_token.repeat(
-            SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES / short_redactable_token.len(),
-        );
+        let input = short_redactable_token
+            .repeat(SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES / short_redactable_token.len());
         assert_eq!(input.len(), SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
 
         let diagnostic = redact_core_update_diagnostic_tail(&input);
@@ -2962,7 +3082,10 @@ mod tests {
         // independent egress checks can never fall behind a newly-added token and
         // blank a real attribution tag.
         for binary in WatcherFaultBinary::ALL {
-            for key in ["watcher_fault_faulting_image", "watcher_fault_faulting_module"] {
+            for key in [
+                "watcher_fault_faulting_image",
+                "watcher_fault_faulting_module",
+            ] {
                 assert_eq!(
                     valid_runner_diagnostic_field(key, binary.as_str()),
                     Some(true),
@@ -2971,7 +3094,10 @@ mod tests {
                 );
             }
         }
-        for key in ["watcher_fault_faulting_image", "watcher_fault_faulting_module"] {
+        for key in [
+            "watcher_fault_faulting_image",
+            "watcher_fault_faulting_module",
+        ] {
             assert_eq!(
                 valid_runner_diagnostic_field(key, WATCHER_FAULT_UNAVAILABLE),
                 Some(true)
@@ -3080,12 +3206,18 @@ mod tests {
             ("watcher_fault_exception_code", "0xC0000409"),
             ("watcher_fault_exception_code", "-5"),
             ("watcher_fault_offset", "2a1b3"),
-            ("runner_unmatched_stderr_shapes", "ndjson_record:6,/Users/Ada:1"),
+            (
+                "runner_unmatched_stderr_shapes",
+                "ndjson_record:6,/Users/Ada:1",
+            ),
             ("runner_unmatched_stderr_shapes", "not_a_shape:1"),
             ("watcher_fault_read", "seen:0,parsed:0"), // truncated rollup
             // The pre-fix six-key format no longer validates — the `stale` key is
             // required, so an old client's counters tag fails closed (never ships).
-            ("watcher_fault_read", "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0"),
+            (
+                "watcher_fault_read",
+                "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0",
+            ),
             (
                 "watcher_fault_read",
                 "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0xff",
@@ -3109,13 +3241,17 @@ mod tests {
     #[test]
     fn every_runner_error_rollup_token_survives_and_lookalikes_fail_closed() {
         use hq_desktop_core::runner_error_shape::{
-            RunnerErrorCause, RunnerErrorHttpStatus, RunnerErrorShape, RunnerErrorSite, RunnerPathRoot,
+            RunnerErrorCause, RunnerErrorHttpStatus, RunnerErrorShape, RunnerErrorSite,
+            RunnerPathRoot,
         };
         // Cross-crate anti-drift: enumerate each producer's OWN token set and
         // assert every rendered `token:count` survives the independent egress
         // check. A producer that adds a variant without updating the mirrored
         // vocabulary here fails CI instead of silently blanking a live tag.
-        let http: Vec<&str> = RunnerErrorHttpStatus::ALL.iter().map(|s| s.as_str()).collect();
+        let http: Vec<&str> = RunnerErrorHttpStatus::ALL
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
         let causes: Vec<&str> = RunnerErrorCause::ALL.iter().map(|c| c.as_str()).collect();
         let shapes: Vec<&str> = RunnerErrorShape::ALL.iter().map(|s| s.as_str()).collect();
         let path_roots: Vec<&str> = RunnerPathRoot::ALL.iter().map(|p| p.as_str()).collect();
@@ -3155,7 +3291,10 @@ mod tests {
             ("runner_error_http", "http_403:x"),
             ("runner_error_causes", "access_denied:1,/Users/Ada/secret:1"),
             ("runner_error_causes", "unknown:1"), // the retired flat residual is no longer emitted
-            ("runner_error_shapes", "presigned_get_failed:9,knowledge/a.md:1"),
+            (
+                "runner_error_shapes",
+                "presigned_get_failed:9,knowledge/a.md:1",
+            ),
             ("runner_error_path_roots", "companies:1,cognito-abc:1"),
             // The site axis: the raw producer `path` sentinel (parens, hyphen) is
             // NOT an as_str token, so it must fail closed rather than ship a byte.
@@ -3208,7 +3347,10 @@ mod tests {
         rollup.record("VaultPermissionDeniedError permission denied for the company prefix");
         assert_eq!(rollup.fingerprint_token(), "vault_permission_denied");
         assert!(allowed.contains(rollup.fingerprint_token()));
-        assert_eq!(RunnerErrorCauseRollup::default().fingerprint_token(), "none");
+        assert_eq!(
+            RunnerErrorCauseRollup::default().fingerprint_token(),
+            "none"
+        );
     }
 
     #[test]
@@ -3252,19 +3394,31 @@ mod tests {
         let per_key: [(&str, Vec<String>); 4] = [
             (
                 "runner_error_http",
-                RunnerErrorHttpStatus::ALL.iter().map(|s| format!("{}:3", s.as_str())).collect(),
+                RunnerErrorHttpStatus::ALL
+                    .iter()
+                    .map(|s| format!("{}:3", s.as_str()))
+                    .collect(),
             ),
             (
                 "runner_error_causes",
-                RunnerErrorCause::ALL.iter().map(|c| format!("{}:3", c.as_str())).collect(),
+                RunnerErrorCause::ALL
+                    .iter()
+                    .map(|c| format!("{}:3", c.as_str()))
+                    .collect(),
             ),
             (
                 "runner_error_shapes",
-                RunnerErrorShape::ALL.iter().map(|s| format!("{}:3", s.as_str())).collect(),
+                RunnerErrorShape::ALL
+                    .iter()
+                    .map(|s| format!("{}:3", s.as_str()))
+                    .collect(),
             ),
             (
                 "runner_error_path_roots",
-                RunnerPathRoot::ALL.iter().map(|p| format!("{}:3", p.as_str())).collect(),
+                RunnerPathRoot::ALL
+                    .iter()
+                    .map(|p| format!("{}:3", p.as_str()))
+                    .collect(),
             ),
         ];
         for (key, values) in &per_key {
@@ -3282,20 +3436,39 @@ mod tests {
         // A realistic multi-token value on each axis survives together — including
         // the completed cause vocabulary's residual tokens and the signature axis.
         let mut event = Event::default();
-        event.tags.insert("runner_error_http".into(), "http_500:40,http_403:8".into());
         event
             .tags
-            .insert("runner_error_causes".into(), "unknown_unnamed:160,vault_not_found:8".into());
-        event.tags.insert("runner_error_shapes".into(), "containment_escape:120,unknown:8".into());
-        event.tags.insert("runner_error_path_roots".into(), "knowledge:120,repos:40".into());
-        event
-            .tags
-            .insert("runner_error_cause_signature".into(), "1a2b3c4d5e6f:9,00ff11ee22dd:2".into());
+            .insert("runner_error_http".into(), "http_500:40,http_403:8".into());
+        event.tags.insert(
+            "runner_error_causes".into(),
+            "unknown_unnamed:160,vault_not_found:8".into(),
+        );
+        event.tags.insert(
+            "runner_error_shapes".into(),
+            "containment_escape:120,unknown:8".into(),
+        );
+        event.tags.insert(
+            "runner_error_path_roots".into(),
+            "knowledge:120,repos:40".into(),
+        );
+        event.tags.insert(
+            "runner_error_cause_signature".into(),
+            "1a2b3c4d5e6f:9,00ff11ee22dd:2".into(),
+        );
         let survived = before_send(event).expect("event remains sendable");
         assert_eq!(survived.tags["runner_error_http"], "http_500:40,http_403:8");
-        assert_eq!(survived.tags["runner_error_causes"], "unknown_unnamed:160,vault_not_found:8");
-        assert_eq!(survived.tags["runner_error_shapes"], "containment_escape:120,unknown:8");
-        assert_eq!(survived.tags["runner_error_path_roots"], "knowledge:120,repos:40");
+        assert_eq!(
+            survived.tags["runner_error_causes"],
+            "unknown_unnamed:160,vault_not_found:8"
+        );
+        assert_eq!(
+            survived.tags["runner_error_shapes"],
+            "containment_escape:120,unknown:8"
+        );
+        assert_eq!(
+            survived.tags["runner_error_path_roots"],
+            "knowledge:120,repos:40"
+        );
         assert_eq!(
             survived.tags["runner_error_cause_signature"],
             "1a2b3c4d5e6f:9,00ff11ee22dd:2"
@@ -3304,10 +3477,13 @@ mod tests {
         // An off-vocabulary value degrades to [Filtered] instead of shipping, on
         // both the cause axis and the signature axis.
         let mut leaky = Event::default();
-        leaky.tags.insert("runner_error_causes".into(), "not_a_cause:1".into());
         leaky
             .tags
-            .insert("runner_error_cause_signature".into(), "VaultNotFoundError:1".into());
+            .insert("runner_error_causes".into(), "not_a_cause:1".into());
+        leaky.tags.insert(
+            "runner_error_cause_signature".into(),
+            "VaultNotFoundError:1".into(),
+        );
         let filtered = before_send(leaky).expect("event remains sendable");
         assert_eq!(filtered.tags["runner_error_causes"], "[Filtered]");
         assert_eq!(filtered.tags["runner_error_cause_signature"], "[Filtered]");
@@ -3418,8 +3594,10 @@ mod tests {
         // emit domain is exactly RunnerErrorUnknownProfile::ALL's as_str set — every
         // one of which the independent egress mirror must accept. Pinning it fails a
         // future profile token that slips the mirror instead of shipping a raw byte.
-        let allowed: std::collections::HashSet<&str> =
-            RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS.iter().copied().collect();
+        let allowed: std::collections::HashSet<&str> = RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS
+            .iter()
+            .copied()
+            .collect();
         for profile in RunnerErrorUnknownProfile::ALL {
             let token = profile.as_str();
             assert!(
@@ -3466,7 +3644,9 @@ mod tests {
         event
             .tags
             .insert("pre_runner_cause".into(), "scope_exceeds_parent".into());
-        event.tags.insert("pre_runner_status".into(), "http_403".into());
+        event
+            .tags
+            .insert("pre_runner_status".into(), "http_403".into());
         let survived = before_send(event).expect("event remains sendable");
         assert_eq!(
             survived.tags["runner_error_unknown_profiles"],
@@ -3544,7 +3724,10 @@ mod tests {
             "pre_runner_cause",
             "pre_runner_status",
         ];
-        for token in RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS.iter().chain(keys.iter()) {
+        for token in RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS
+            .iter()
+            .chain(keys.iter())
+        {
             for denied in DENYLIST {
                 assert!(
                     !token.contains(denied),
@@ -3577,9 +3760,10 @@ mod tests {
             Value::String("172467".to_string()),
         );
         // A watcher-route line count as a bare number is content-safe by type.
-        event
-            .extra
-            .insert("runner_stderr_line_count".to_string(), Value::Number(8.into()));
+        event.extra.insert(
+            "runner_stderr_line_count".to_string(),
+            Value::Number(8.into()),
+        );
 
         let result = before_send(event).expect("event remains sendable");
         assert_eq!(result.tags["watcher_fault_provenance"], "pid_matched");
@@ -3637,7 +3821,10 @@ mod tests {
         ] {
             event.tags.insert(key.to_string(), value.to_string());
         }
-        assert!(event.culprit.is_none(), "the capture ships without a culprit");
+        assert!(
+            event.culprit.is_none(),
+            "the capture ships without a culprit"
+        );
         let result = before_send(event).expect("event remains sendable");
         assert_eq!(
             result.culprit.as_deref(),
@@ -3728,7 +3915,10 @@ mod tests {
         }
         let culprit = before_send(event).unwrap().culprit.expect("seam is named");
         assert_eq!(culprit, "sync/watcher: windows fault 0xC0000409");
-        assert!(!culprit.contains("node_exe"), "a bound-but-unnamed image was replaced by a candidate");
+        assert!(
+            !culprit.contains("node_exe"),
+            "a bound-but-unnamed image was replaced by a candidate"
+        );
     }
 
     #[test]
@@ -3763,7 +3953,9 @@ mod tests {
         // An event that already names its own culprit is never overwritten.
         let mut preset = Event::default();
         preset.tags.insert("sync_route".into(), "watcher".into());
-        preset.tags.insert("windows_exit_class".into(), "fault".into());
+        preset
+            .tags
+            .insert("windows_exit_class".into(), "fault".into());
         preset.culprit = Some("existing::culprit".into());
         assert_eq!(
             before_send(preset).unwrap().culprit.as_deref(),
@@ -3789,7 +3981,10 @@ mod tests {
         ] {
             event.tags.insert(key.to_string(), value.to_string());
         }
-        let culprit = before_send(event).unwrap().culprit.expect("seam is still named");
+        let culprit = before_send(event)
+            .unwrap()
+            .culprit
+            .expect("seam is still named");
         assert_eq!(culprit, "sync/watcher: windows fault 0xC0000409");
         for poison in [r"C:\Users\Ada", "DESKTOP-53H1N93"] {
             assert!(
@@ -3828,7 +4023,10 @@ mod tests {
         ] {
             junk_fatal.tags.insert(key.to_string(), value.to_string());
         }
-        let culprit = before_send(junk_fatal).unwrap().culprit.expect("seam is named");
+        let culprit = before_send(junk_fatal)
+            .unwrap()
+            .culprit
+            .expect("seam is named");
         assert_eq!(culprit, "sync/runner push");
         assert!(!culprit.contains("secret"));
     }
@@ -3938,7 +4136,13 @@ mod tests {
                 "valid read {value:?} must pass egress"
             );
         }
-        for bad in ["node_reporte", "", "/var/report.json", "[Filtered]", "heap_oom"] {
+        for bad in [
+            "node_reporte",
+            "",
+            "/var/report.json",
+            "[Filtered]",
+            "heap_oom",
+        ] {
             assert_eq!(
                 valid_runner_diagnostic_field("runner_fatal_source", bad),
                 Some(false),
@@ -4081,7 +4285,11 @@ mod tests {
                 NativePanicSeam::WindowCloseRequestedHide,
                 "window.close-requested-hide",
             ),
-            (6, NativePanicSeam::WindowThemeChanged, "window.theme-changed"),
+            (
+                6,
+                NativePanicSeam::WindowThemeChanged,
+                "window.theme-changed",
+            ),
             (
                 7,
                 NativePanicSeam::WindowForceForeground,
@@ -4093,7 +4301,11 @@ mod tests {
                 "single-instance.surface-existing",
             ),
             (9, NativePanicSeam::AppExitRequested, "app.exit-requested"),
-            (10, NativePanicSeam::AppSessionEndExit, "app.session-end-exit"),
+            (
+                10,
+                NativePanicSeam::AppSessionEndExit,
+                "app.session-end-exit",
+            ),
             (
                 11,
                 NativePanicSeam::AppSessionEndObserved,
@@ -4107,7 +4319,11 @@ mod tests {
         ];
 
         for (id, seam, message) in seams {
-            assert_eq!(NativePanicSeam::from_id(id), Some(seam), "id {id} round-trip");
+            assert_eq!(
+                NativePanicSeam::from_id(id),
+                Some(seam),
+                "id {id} round-trip"
+            );
             assert_eq!(seam as u8, id, "variant {seam:?} keeps its stable id");
             assert_eq!(seam.message(), message, "id {id} message is stable");
         }
@@ -4469,7 +4685,10 @@ mod tests {
             ("runner_phase", "push:/secret"),
             // A producer bug that shipped a raw word, a path, or a non-integer in
             // any of the new libuv/job channels must degrade to `[Filtered]`.
-            ("runner_fatal_syscall", "ReadDirectoryChangesW /Users/Ada/secret.md"),
+            (
+                "runner_fatal_syscall",
+                "ReadDirectoryChangesW /Users/Ada/secret.md",
+            ),
             ("runner_fatal_errno", "5; rm -rf"),
             ("watcher_job_peak_commit_bucket", "512mb_to_1gb:/Users/Ada"),
             ("watcher_job_process_count", "2 processes /Users/Ada"),
@@ -4607,7 +4826,10 @@ mod tests {
                 .extra
                 .insert(key.to_string(), Value::String(value.to_string()));
             let result = before_send(event).expect("event remains sendable");
-            assert_eq!(result.tags[key], "[Filtered]", "tag key={key} value={value}");
+            assert_eq!(
+                result.tags[key], "[Filtered]",
+                "tag key={key} value={value}"
+            );
             assert_eq!(
                 result.extra[key],
                 Value::String("[Filtered]".to_string()),
@@ -4660,7 +4882,10 @@ mod tests {
                 .extra
                 .insert(key.to_string(), Value::String(value.to_string()));
             let result = before_send(event).expect("event remains sendable");
-            assert_eq!(result.tags[key], "[Filtered]", "tag key={key} value={value}");
+            assert_eq!(
+                result.tags[key], "[Filtered]",
+                "tag key={key} value={value}"
+            );
             assert_eq!(
                 result.extra[key],
                 Value::String("[Filtered]".to_string()),
@@ -4793,9 +5018,10 @@ mod tests {
             "runner_exec_target_exists".to_string(),
             Value::String("true".to_string()),
         );
-        event
-            .extra
-            .insert("runner_target_repair_attempted".to_string(), Value::Bool(true));
+        event.extra.insert(
+            "runner_target_repair_attempted".to_string(),
+            Value::Bool(true),
+        );
         event.extra.insert(
             "exec_not_runnable_streak".to_string(),
             Value::Number(4u32.into()),
@@ -4906,7 +5132,12 @@ mod tests {
                 Some(true)
             );
         }
-        for bad_banner in ["Reached heap limit Allocation failed", "oom", "", "heap_limit"] {
+        for bad_banner in [
+            "Reached heap limit Allocation failed",
+            "oom",
+            "",
+            "heap_limit",
+        ] {
             assert_eq!(
                 valid_runner_diagnostic_field("runner_oom_banner", bad_banner),
                 Some(false),
@@ -4915,7 +5146,11 @@ mod tests {
         }
         // Numeric extras: `""` (a non-string Value) and a decimal string pass; a
         // symbol, a path, or a signed/oversized value is rejected.
-        for field in ["runner_heap_used_mb", "runner_heap_total_mb", "runner_oom_frame_count"] {
+        for field in [
+            "runner_heap_used_mb",
+            "runner_heap_total_mb",
+            "runner_oom_frame_count",
+        ] {
             assert_eq!(valid_runner_diagnostic_field(field, ""), Some(true));
             assert_eq!(valid_runner_diagnostic_field(field, "48"), Some(true));
             for bad in ["v8::internal::Runtime_NewArray", "/Users/x", "-1", "12.5"] {
@@ -4949,7 +5184,10 @@ mod tests {
         // The honest tree scope passes; the pre-existing scopes still pass; a new
         // unknown scope string is rejected.
         for scope in ["tree", "shim", "launcher", "runner"] {
-            assert_eq!(valid_runner_diagnostic_field("rss_scope", scope), Some(true));
+            assert_eq!(
+                valid_runner_diagnostic_field("rss_scope", scope),
+                Some(true)
+            );
         }
         assert_eq!(
             valid_runner_diagnostic_field("rss_scope", "unattributed:launcher"),
@@ -4969,9 +5207,10 @@ mod tests {
              v8_heap_allocator>v8_heap_allocator>v8_factory"
                 .to_string(),
         );
-        event
-            .tags
-            .insert("runner_stack_signature".to_string(), "0123456789abcdef".to_string());
+        event.tags.insert(
+            "runner_stack_signature".to_string(),
+            "0123456789abcdef".to_string(),
+        );
         let result = before_send(event).expect("event remains sendable");
         assert_eq!(
             result.tags["runner_stack_shape"],
@@ -4985,9 +5224,10 @@ mod tests {
             "runner_stack_shape".to_string(),
             "v8::internal::Runtime_NewArray(int, unsigned long*)".to_string(),
         );
-        hostile
-            .tags
-            .insert("runner_stack_signature".to_string(), "0123456789abcdef".to_string());
+        hostile.tags.insert(
+            "runner_stack_signature".to_string(),
+            "0123456789abcdef".to_string(),
+        );
         let filtered = before_send(hostile).expect("event remains sendable");
         assert_eq!(filtered.tags["runner_stack_shape"], "[Filtered]");
     }
@@ -4995,7 +5235,12 @@ mod tests {
     #[test]
     fn runner_assertion_and_node_provenance_fields_validate_or_filter() {
         // Assert source: allow-listed tokens pass, a path-like value is rejected.
-        for good in ["libuv_win_async", "libuv_unix_core", "libuv_handle", "other"] {
+        for good in [
+            "libuv_win_async",
+            "libuv_unix_core",
+            "libuv_handle",
+            "other",
+        ] {
             assert_eq!(
                 valid_runner_diagnostic_field("runner_assert_source", good),
                 Some(true)
@@ -5046,9 +5291,10 @@ mod tests {
             "runner_assert_source".to_string(),
             r"C:\Users\ada\companies\personal".to_string(),
         );
-        event
-            .tags
-            .insert("runner_assert_signature".to_string(), "0123456789abcdef".to_string());
+        event.tags.insert(
+            "runner_assert_signature".to_string(),
+            "0123456789abcdef".to_string(),
+        );
         let result = before_send(event).expect("event remains sendable");
         // The unregistered path value is filtered; the valid digest survives.
         assert_eq!(result.tags["runner_assert_source"], "[Filtered]");

@@ -589,8 +589,9 @@ mod tests {
     fn the_rollout_bucket_spreads_across_the_range() {
         // Not a statistics test — just proof that the bucket is not constant,
         // which a broken hash would make it.
-        let buckets: std::collections::HashSet<u64> =
-            (0..200).map(|n| rollout_bucket(&format!("install-{n}"))).collect();
+        let buckets: std::collections::HashSet<u64> = (0..200)
+            .map(|n| rollout_bucket(&format!("install-{n}")))
+            .collect();
         assert!(buckets.len() > 50, "buckets collapsed to {}", buckets.len());
     }
 

@@ -7348,7 +7348,11 @@ mod tests {
         let hooks = home.path().join("hooks");
         fs::create_dir_all(&hooks).unwrap();
         let pre_commit = hooks.join("pre-commit");
-        fs::write(&pre_commit, "#!/bin/sh\necho 'scanner unavailable' >&2\nexit 1\n").unwrap();
+        fs::write(
+            &pre_commit,
+            "#!/bin/sh\necho 'scanner unavailable' >&2\nexit 1\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

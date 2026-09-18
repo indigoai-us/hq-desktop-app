@@ -110,7 +110,10 @@ fn run(diagnosis: RuntimeDiagnosisInput) -> (Vec<sentry::protocol::Event<'static
             diagnosis,
         ));
     });
-    (events, error.expect("the seam always returns an error").to_string())
+    (
+        events,
+        error.expect("the seam always returns an error").to_string(),
+    )
 }
 
 /// Guard on the guard: if the invocation label ever drifts, the "reported
@@ -124,9 +127,8 @@ fn the_reported_title_is_still_what_this_code_would_compose() {
         HqInvocation::Npx.sentry_label(),
         "npx:@indigoai-us/hq-cli@^5.10.0"
     );
-    assert!(expected_title().starts_with(
-        "[provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.10.0: "
-    ));
+    assert!(expected_title()
+        .starts_with("[provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.10.0: "));
     assert!(expected_title().ends_with("(os error 2)"));
 
     // On the platform the event actually came from, pin it byte-for-byte.
@@ -246,7 +248,11 @@ fn every_unproven_runtime_state_still_captures_exactly_one_error() {
         assert_eq!(events.len(), 1, "{why}");
         let event = &events[0];
         assert_eq!(event.level, sentry::Level::Error, "{why}");
-        assert_eq!(event.message.as_deref(), Some(expected_title().as_str()), "{why}");
+        assert_eq!(
+            event.message.as_deref(),
+            Some(expected_title().as_str()),
+            "{why}"
+        );
         assert_eq!(message, expected_error_display(), "{why}");
         assert_eq!(event.tags["provision_kind"], "spawn", "{why}");
         assert_eq!(event.tags["cli_invocation"], "npx", "{why}");
@@ -346,7 +352,9 @@ fn identifier_occurrence(haystack: &str, needle: &str) -> Option<String> {
             let to = (start + needle.len() + 60).min(haystack.len());
             // Snap to char boundaries so a multi-byte envelope cannot panic the
             // slice while we are building a diagnostic for a different failure.
-            let from = (from..=start).find(|i| haystack.is_char_boundary(*i)).unwrap_or(start);
+            let from = (from..=start)
+                .find(|i| haystack.is_char_boundary(*i))
+                .unwrap_or(start);
             let to = (to..haystack.len())
                 .find(|i| haystack.is_char_boundary(*i))
                 .unwrap_or(haystack.len());

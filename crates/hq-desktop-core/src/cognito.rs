@@ -1003,10 +1003,7 @@ mod tests {
             entity_type: Some("agent".into()),
             ..Default::default()
         };
-        assert_eq!(
-            agent.non_human_principal(),
-            Some(NonHumanPrincipal::Agent)
-        );
+        assert_eq!(agent.non_human_principal(), Some(NonHumanPrincipal::Agent));
 
         let outpost = IdTokenClaims {
             entity_type: Some("OUTPOST".into()),
@@ -1026,17 +1023,17 @@ mod tests {
             entity_type: Some("some-future-machine-kind".into()),
             ..Default::default()
         };
-        assert_eq!(
-            claims.non_human_principal(),
-            Some(NonHumanPrincipal::Agent)
-        );
+        assert_eq!(claims.non_human_principal(), Some(NonHumanPrincipal::Agent));
     }
 
     /// Canonical uids use `agt_`; the derived Cognito username uses `agt-`.
     /// Both must be caught — this is the exact pair that produced the incident.
     #[test]
     fn both_underscore_and_dash_uid_forms_are_caught() {
-        for uid in ["agt_01M2JYGTFSSYG85057NWVSKTH6", "agt-01m2jygtfssyg85057nwvskth6"] {
+        for uid in [
+            "agt_01M2JYGTFSSYG85057NWVSKTH6",
+            "agt-01m2jygtfssyg85057nwvskth6",
+        ] {
             let claims = IdTokenClaims {
                 entity_uid: Some(uid.into()),
                 ..Default::default()
@@ -1058,10 +1055,7 @@ mod tests {
             email: Some("agt-01m2jygtfssyg85057nwvskth6@agents.getindigo.ai".into()),
             ..Default::default()
         };
-        assert_eq!(
-            claims.non_human_principal(),
-            Some(NonHumanPrincipal::Agent)
-        );
+        assert_eq!(claims.non_human_principal(), Some(NonHumanPrincipal::Agent));
     }
 
     #[test]
@@ -1070,10 +1064,7 @@ mod tests {
             email: Some("conn-7f3a@agents.getindigo.ai".into()),
             ..Default::default()
         };
-        assert_eq!(
-            claims.non_human_principal(),
-            Some(NonHumanPrincipal::Agent)
-        );
+        assert_eq!(claims.non_human_principal(), Some(NonHumanPrincipal::Agent));
     }
 
     /// A human whose address merely *contains* an agent-ish substring is still
