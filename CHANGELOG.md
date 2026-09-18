@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.288] — 2026-09-18
+
 - After an app update, HQ no longer re-opens the Welcome / sign-in card when HQ is already set up on this computer. A new app version can arrive before the `hq` command is upgraded; that mismatch is no longer treated as "not installed".
 
 ## [0.10.287] — 2026-09-18
