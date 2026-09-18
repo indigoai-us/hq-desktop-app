@@ -31,6 +31,10 @@ The release moves it under the version it ships in.
   conversations come back into the list with a small "Archived" label, so you
   can read them or unarchive them, on their own or several at a time.
 
+### Release process
+
+- The release check that launches the built app as a signed-in test user now gives that user a finished HQ install: an HQ folder and the `hq` command-line tool. Since setup can no longer be skipped, a sign-in alone is treated as an unfinished setup and the app correctly shows setup, which failed the v0.10.292 release. If the check sees that again, it now says so directly.
+
 ## [0.10.291] — 2026-09-18
 
 - Messages in a channel now have a Copy button next to Reply. Hover a message and click Copy to put its text on your clipboard; the button reads "Copied" for a moment to confirm (#922).

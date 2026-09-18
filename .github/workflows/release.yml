@@ -904,7 +904,9 @@ jobs:
       # have stopped v0.10.178 — every prior test ran as an Indigo user
       # with conversations.
       - name: Non-Indigo artifact smoke
-        timeout-minutes: 5
+        # 8, not 5: the smoke now installs the real hq CLI into its sandbox
+        # HOME (up to 3 min on a slow registry) before the 30s launch.
+        timeout-minutes: 8
         env:
           HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO: ${{ secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
