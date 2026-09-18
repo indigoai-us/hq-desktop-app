@@ -11,6 +11,11 @@ The release moves it under the version it ships in.
 - HQ will no longer open as one of your automated agents. If the HQ credentials saved on this computer belong to a fleet agent rather than to a person, HQ now stops and asks you to sign in as yourself, instead of opening with the agent's name and address shown as your account. Signed in that way, HQ could not save your profile and showed none of your companies. Signing in normally is unaffected.
 - HQ search no longer dies right after launch when the search tool was built for a different Node.js than the one HQ is running. HQ now notices the mismatch, rebuilds the search tool against its own Node, and does that on its own the next time the app opens.
 
+### Documentation
+
+- Company switching has integration coverage for the selected company context
+  (#909).
+
 ## [0.10.289] — 2026-09-18
 
 - The main HQ window no longer shrinks to a tiny thumbnail when the display it was on goes to sleep or is unplugged. When macOS moves the window to another screen it can leave it far smaller than the window's minimum size, and clicking the menu-bar icon brought it back at that size every time. HQ now checks the window each time it opens, and when the screen it is on changes: it is pulled fully onto the screen you are using, and a window that came back too small is restored to its normal size, centred.
