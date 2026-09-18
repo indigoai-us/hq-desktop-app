@@ -89,7 +89,8 @@
     | 'active'
     | 'credentials_absent'
     | 'credentials_invalid'
-    | 'refresh_temporarily_unavailable';
+    | 'refresh_temporarily_unavailable'
+    | 'non_human_principal';
   interface AuthSessionEnvelope {
     accountId: string | null;
     generation: number;
@@ -97,7 +98,9 @@
     reason: string | null;
   }
   let lifecycle = $state<Lifecycle>('loading');
-  let signedOutReason = $state<'signed-out' | 'expired' | 'invalid'>('signed-out');
+  let signedOutReason = $state<'signed-out' | 'expired' | 'invalid' | 'non-human'>(
+    'signed-out',
+  );
   let identityError = $state<string | null>(null);
   let workspaceError = $state<string | null>(null);
   let signOutError = $state<string | null>(null);
@@ -165,7 +168,8 @@
       value === 'active' ||
       value === 'credentials_absent' ||
       value === 'credentials_invalid' ||
-      value === 'refresh_temporarily_unavailable'
+      value === 'refresh_temporarily_unavailable' ||
+      value === 'non_human_principal'
     );
   }
 
@@ -199,6 +203,16 @@
     }
     if (next.status === 'credentials_invalid') {
       signedOutReason = 'invalid';
+      lifecycle = 'signed-out';
+      flushSync();
+      return;
+    }
+    // Usable credentials that are not a person's. Kept distinct from
+    // 'invalid' so the screen can explain the actual situation — retrying or
+    // signing out will not change anything while the machine credential is
+    // still the one on disk.
+    if (next.status === 'non_human_principal') {
+      signedOutReason = 'non-human';
       lifecycle = 'signed-out';
       flushSync();
       return;
@@ -718,15 +732,27 @@
     </section>
   {:else if lifecycle === 'signed-out'}
     <section class="lifecycle-state" data-testid="hq-work-signed-out" role="status">
-      <h1>{signedOutReason === 'expired' ? 'Your session expired' : signedOutReason === 'invalid' ? 'Your sign-in is no longer valid' : 'You are signed out'}</h1>
+      <h1>
+        {signedOutReason === 'expired'
+          ? 'Your session expired'
+          : signedOutReason === 'invalid'
+            ? 'Your sign-in is no longer valid'
+            : signedOutReason === 'non-human'
+              ? 'These credentials belong to an agent'
+              : 'You are signed out'}
+      </h1>
       <p>
         {signedOutReason === 'expired'
           ? 'Sign in again to continue using HQ Work.'
-          : 'This device no longer has an active HQ Work session.'}
+          : signedOutReason === 'non-human'
+            ? 'The HQ credentials saved on this device belong to a fleet agent, not to a person, so HQ Work will not open as that identity. Sign in with your own HQ account to continue.'
+            : 'This device no longer has an active HQ Work session.'}
       </p>
       <div class="workspace-signin">
         <SignInPrompt
-          reauth={signedOutReason === 'expired' || signedOutReason === 'invalid'}
+          reauth={signedOutReason === 'expired' ||
+            signedOutReason === 'invalid' ||
+            signedOutReason === 'non-human'}
           bringMainToFront={false}
           onsuccess={handleWorkspaceSignInSuccess}
         />

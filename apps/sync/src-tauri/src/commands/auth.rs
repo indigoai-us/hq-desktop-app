@@ -29,6 +29,11 @@ pub enum AuthSessionStatus {
     CredentialsAbsent,
     CredentialsInvalid,
     RefreshTemporarilyUnavailable,
+    /// Valid credentials that belong to a fleet agent or outpost rather than a
+    /// person. Distinct from `CredentialsInvalid` because nothing is wrong with
+    /// the token — it is simply not a human's, and the remedy is to sign in
+    /// rather than to retry.
+    NonHumanPrincipal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -225,6 +230,17 @@ pub(crate) async fn complete_auth_session(
     app: &AppHandle,
     tokens: &CognitoTokens,
 ) -> Result<AuthState, String> {
+    // Rejected before step 1, so a machine credential is never persisted by a
+    // sign-in. `resolve_authoritative_auth_session` still re-checks on every
+    // read, because the file can also be written by processes that never come
+    // through here.
+    if let Some(principal) = cognito::non_human_principal_from_tokens(tokens) {
+        return Err(format!(
+            "This sign-in belongs to an HQ {}, not to a person. Sign in with your own HQ account.",
+            principal.as_str()
+        ));
+    }
+
     crate::commands::dm_notify::replace_notification_credentials(app, tokens).await?;
 
     let state = authenticated_state_from_tokens(tokens);
@@ -264,6 +280,17 @@ pub async fn whoami(app: AppHandle) -> Result<WhoAmIIdentity, String> {
     let (tokens, _) = crate::commands::dm_notify::resolve_notification_credentials(&app)
         .await
         .map_err(|_| "Not signed in".to_string())?;
+    // Same gate as `resolve_authoritative_auth_session`, repeated because this
+    // command is reachable on its own from the renderer. Without it the person
+    // lookup below fails with "no person entity for this account", which reads
+    // as a broken account rather than as the wrong principal — and callers that
+    // tolerate a whoami failure would carry on rendering the agent as the user.
+    if let Some(principal) = cognito::non_human_principal_from_tokens(&tokens) {
+        return Err(format!(
+            "the credentials saved on this device belong to an HQ {}, not to a person — sign in with your own HQ account",
+            principal.as_str()
+        ));
+    }
     let auth = authenticated_state_from_tokens(&tokens);
 
     let vault_url = crate::commands::sync::resolve_vault_api_url()
@@ -316,16 +343,41 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
     let before = cognito::get_tokens().await.ok().flatten();
     let outcome = crate::commands::dm_notify::resolve_notification_credentials(app).await;
     let (state, status, account_id, reason) = match outcome {
-        Ok((tokens, _)) => {
-            set_sentry_user_from_tokens(&tokens);
-            let state = authenticated_state_from_tokens(&tokens);
-            (
-                state,
-                AuthSessionStatus::Active,
+        // Refuse to adopt a machine identity as the signed-in person. The
+        // credential file is shared with the `hq` CLI and with fleet-agent
+        // machine credentials, so usable tokens are not evidence of a human
+        // sign-in. Checked here rather than only at first sign-in because
+        // `get_tokens` re-reads the file on every mtime change: a session that
+        // began as a person can be replaced mid-flight by another process.
+        //
+        // The tokens are deliberately left on disk. They may belong to an agent
+        // that is legitimately running on this machine, and deleting another
+        // process's credentials to fix our own display is not ours to do.
+        Ok((tokens, _)) => match cognito::non_human_principal_from_tokens(&tokens) {
+            Some(principal) => (
+                signed_out_state(),
+                AuthSessionStatus::NonHumanPrincipal,
                 Some(notification_identity_from_tokens(&tokens)),
-                None,
-            )
-        }
+                Some(match principal {
+                    cognito::NonHumanPrincipal::Outpost => {
+                        "The HQ credentials saved on this device belong to an outpost, not to a person."
+                    }
+                    cognito::NonHumanPrincipal::Agent => {
+                        "The HQ credentials saved on this device belong to a fleet agent, not to a person."
+                    }
+                }),
+            ),
+            None => {
+                set_sentry_user_from_tokens(&tokens);
+                let state = authenticated_state_from_tokens(&tokens);
+                (
+                    state,
+                    AuthSessionStatus::Active,
+                    Some(notification_identity_from_tokens(&tokens)),
+                    None,
+                )
+            }
+        },
         Err(_) if before.is_none() => (
             signed_out_state(),
             AuthSessionStatus::CredentialsAbsent,
@@ -483,6 +535,51 @@ mod tests {
             refresh_token: refresh_token.to_string(),
             expires_at: i64::MAX,
         }
+    }
+
+    fn jwt_with_claims(payload: serde_json::Value) -> String {
+        let encoded =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("claims serialize"));
+        format!("header.{encoded}.signature")
+    }
+
+    /// The reported incident, reduced: an agent's token in the shared
+    /// credential file must not produce a signed-in human session.
+    #[test]
+    fn agent_credentials_do_not_authenticate_a_person() {
+        let tokens = tokens(
+            Some(jwt_with_claims(serde_json::json!({
+                "sub": "cognito-sub",
+                "email": "agt-01m2jygtfssyg85057nwvskth6@agents.getindigo.ai",
+                "custom:entityType": "agent",
+                "custom:entityUid": "agt_01M2JYGTFSSYG85057NWVSKTH6",
+            }))),
+            jwt_with_sub("access-subject"),
+            "refresh-a",
+        );
+
+        assert_eq!(
+            cognito::non_human_principal_from_tokens(&tokens),
+            Some(cognito::NonHumanPrincipal::Agent)
+        );
+    }
+
+    #[test]
+    fn person_credentials_still_authenticate() {
+        let tokens = tokens(
+            Some(jwt_with_profile(
+                "cognito-sub-ben",
+                "ben@yoprettyboy.com",
+                "Ben",
+            )),
+            jwt_with_sub("access-subject"),
+            "refresh-a",
+        );
+
+        assert_eq!(cognito::non_human_principal_from_tokens(&tokens), None);
+        let state = authenticated_state_from_tokens(&tokens);
+        assert!(state.authenticated);
+        assert_eq!(state.email.as_deref(), Some("ben@yoprettyboy.com"));
     }
 
     #[test]
