@@ -369,6 +369,24 @@ export function mentionSpansForBody(
   return spans;
 }
 
+/**
+ * Keep only the mentions whose `@Name` text is still present in the body.
+ * The composer remembers every target the user picked, but a pick the user
+ * later deleted from the draft must not ride along on send — the server
+ * invites every mentioned person to the channel, so a stale pick would
+ * invite someone the sender deliberately removed.
+ */
+export function mentionsPresentInBody(
+  body: string,
+  mentions: readonly MentionTarget[],
+): MentionTarget[] {
+  const spans = mentionSpansForBody(body, mentions);
+  const present = new Set(spans.map((span) => body.slice(span.start, span.end)));
+  return mentions.filter((mention) =>
+    present.has(mentionTextForTarget(mention)),
+  );
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

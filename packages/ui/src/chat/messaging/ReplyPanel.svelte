@@ -38,6 +38,7 @@
     applyMentionMarkup,
     filterMentionCandidates,
     mentionPayloadTargets,
+    mentionsPresentInBody,
     mentionTextForTarget,
     mergeMentionTargets,
     replaceActiveMention,
@@ -659,7 +660,9 @@
         return;
       }
     }
-    const mentions = mentionPayloadTargets(selectedMentions);
+    const mentions = mentionPayloadTargets(
+      mentionsPresentInBody(text, selectedMentions),
+    );
     const localId = `local-${rootEventId}-${++localSeq}`;
     const optimistic: LocalReply = {
       eventId: localId,
