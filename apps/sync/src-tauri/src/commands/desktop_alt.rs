@@ -805,6 +805,15 @@ pub async fn open_desktop_alt_window_inner(
         return Ok(());
     }
 
+    // Setup cannot be skipped: while HQ is not installed on this computer,
+    // every route here (global shortcut, tray menu, notification click, IPC)
+    // brings the installer card back instead of a workspace with nothing
+    // underneath it. The wizard's own handoff runs after
+    // `mark_first_run_complete` has advanced the lifecycle, so it passes.
+    if crate::tray::redirect_to_setup_if_unfinished(&app) {
+        return Ok(());
+    }
+
     // One HQ window at a time: opening the desktop view hides the classic
     // popover (whether summoned via shortcut, menu, or the popover's own
     // "Open desktop view" button).
