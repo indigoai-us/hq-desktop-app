@@ -8,6 +8,10 @@
   import { invoke } from '@tauri-apps/api/core';
   import CinematicIntro from '../../sync/src/components/onboarding/CinematicIntro.svelte';
 
+  // Design seam, dev server only: ?beat=N opens on one scene.
+  const beatParam = new URLSearchParams(window.location.search).get('beat');
+  const startAtBeat = beatParam === null ? null : Number.parseInt(beatParam, 10);
+
   async function finish() {
     try {
       await invoke('intro_finished');
@@ -19,4 +23,4 @@
   }
 </script>
 
-<CinematicIntro onfinish={finish} />
+<CinematicIntro onfinish={finish} {startAtBeat} />
