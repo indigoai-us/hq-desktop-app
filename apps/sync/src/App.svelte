@@ -201,13 +201,13 @@
   );
   let showConflictModal = $state(false);
   let conflicts = $state<ConflictFile[]>([]);
-  // Conflict-aborted accounting (the actionable path). The runner no longer
-  // emits per-file `sync:conflict` events — it signals conflicts only via the
-  // aggregate `sync:complete {conflicts, aborted}`. So the per-file ConflictModal
-  // can never populate from a live sync; instead we surface an actionable
-  // conflict banner driven by this count + company. Reset at every sync start so
-  // a resolved conflict doesn't linger. `syncConflictCompany` is '' when more
-  // than one company aborted (no single slug to name in the prompt).
+  // Conflict-aborted accounting (the actionable path). This window reads the
+  // aggregate `sync:complete {conflicts, aborted}` only — it does not subscribe
+  // to the per-file `sync:conflict` stream (the desktop shell does), so the
+  // ConflictModal never populates from a live sync here and the actionable
+  // surface is the banner driven by this count + company. Reset at every sync
+  // start so a resolved conflict doesn't linger. `syncConflictCompany` is ''
+  // when more than one company aborted (no single slug to name in the prompt).
   let syncConflictCount = $state(0);
   let syncConflictCompany = $state('');
   let syncStatsRefresh = $state<(() => void) | null>(null);

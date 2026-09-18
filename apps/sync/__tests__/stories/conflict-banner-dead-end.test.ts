@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-// Conflict dead-end fix: when a sync is conflict-aborted, the runner reports
-// conflicts only in aggregate (`sync:complete {conflicts, aborted}`) — it no
-// longer emits per-file `sync:conflict` events, so the per-file ConflictModal
-// can never populate. Previously the conflict state was a silent dead-end: the
+// Conflict dead-end fix: when a sync is conflict-aborted, this window reads
+// conflicts in aggregate only (`sync:complete {conflicts, aborted}`) — it does
+// not subscribe to the runner's per-file `sync:conflict` stream, so the
+// per-file ConflictModal never populates here. Previously the conflict state was a silent dead-end: the
 // tray went red and the popover body showed NOTHING actionable. This wires an
 // honest, actionable conflict banner (resolve-in-Claude-Code + Copy prompt, with
 // the header Sync button as retry), driven by an aggregate count that is reset
