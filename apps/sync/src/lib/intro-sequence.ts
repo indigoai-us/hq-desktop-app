@@ -143,9 +143,9 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
     kind: 'folder',
     title: "It's a folder",
     body: 'HQ lives on your machine as plain files. Your work, your rules, your team\u2019s memory \u2014 and any AI sits on top of it.',
-    // The folder holds alone for ~2s, travels left, then the tree writes in.
-    // Long enough to read the last row before the next beat.
-    holdMs: 12_000,
+    // The folder holds alone for ~2s, travels left, then the tree writes in
+    // by ~3.5s. Four more seconds is enough to read five short rows.
+    holdMs: 8000,
     hue: 0.1,
     surfaces: [
       { name: 'companies/', meaning: 'A wall per client. One company\u2019s context can never reach another\u2019s.' },
