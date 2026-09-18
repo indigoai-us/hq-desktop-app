@@ -216,9 +216,9 @@
             </div>
 
             <svg class="wire" viewBox="0 0 1100 420" fill="none" preserveAspectRatio="none">
-              <path class="w draw" d="M 310 215 H 380 V 54 H 470" pathLength="1" />
-              <circle class="wn pop-in" cx="310" cy="215" r="4" style="--d:2.5s" />
-              <circle class="wn pop-in" cx="470" cy="54" r="4" style="--d:3.05s" />
+              <path class="w draw" d="M 282 210 H 400 V 40 H 470" pathLength="1" />
+              <circle class="wn pop-in" cx="282" cy="210" r="4" style="--d:2.5s" />
+              <circle class="wn pop-in" cx="470" cy="40" r="4" style="--d:3.05s" />
             </svg>
 
             <div class="tree">
@@ -261,49 +261,57 @@
         {/if}
 
         {#if beat.kind === 'network' && beat.surfaces}
+          <!-- Everything is positioned in one 1100x460 coordinate space so the
+               wires meet the nodes exactly: you (x=110,y=190), hub ring
+               (centre 550,190 r=70), five teammates (x=880, y=70..310),
+               three agents (y=340), rail at y=420. -->
           <div class="nstage" aria-hidden="true">
-            <svg class="nwire" viewBox="0 0 1100 400" fill="none" preserveAspectRatio="xMidYMid meet">
-              <!-- you → hub -->
-              <path class="w hot draw" d="M 150 200 H 300 V 200 H 470" pathLength="1" style="--d:1.15s" />
-              <!-- hub → team (five drops) -->
+            <svg class="nwire" viewBox="0 0 1100 460" fill="none" preserveAspectRatio="xMidYMid meet">
+              <!-- you → hub: from the avatar's edge to the ring's edge -->
+              <path class="w hot draw" d="M 154 190 H 478" pathLength="1" style="--d:1.15s" />
+              <!-- hub → team: trunk out of the ring, bus, five drops -->
+              <path class="w draw" d="M 622 190 H 760" pathLength="1" style="--d:1.85s" />
+              <path class="w draw" d="M 760 70 V 310" pathLength="1" style="--d:1.95s" />
               {#each [0, 1, 2, 3, 4] as i (i)}
-                <path class="w draw" d={`M 640 200 H 700 V ${92 + i * 54} H 760`} pathLength="1" style={`--d:${(1.9 + i * 0.07).toFixed(2)}s`} />
-                <circle class="wn pop-in" cx="760" cy={92 + i * 54} r="4" style={`--d:${(1.9 + i * 0.07).toFixed(2)}s`} />
+                <path class="w draw" d={`M 760 ${70 + i * 60} H 866`} pathLength="1" style={`--d:${(2.05 + i * 0.07).toFixed(2)}s`} />
               {/each}
-              <!-- hub → bots -->
-              <path class="w hot draw" d="M 555 265 V 320" pathLength="1" style="--d:2.3s" />
-              <!-- capability rail -->
-              <path class="w draw" d="M 60 372 H 1040" pathLength="1" style="--d:3.05s" />
+              <!-- hub → agents: down out of the ring to just above the squares -->
+              <path class="w hot draw" d="M 550 262 V 316" pathLength="1" style="--d:2.4s" />
+              <path class="w hot draw" d="M 470 316 H 630" pathLength="1" style="--d:2.55s" />
+              {#each [0, 1, 2] as i (i)}
+                <path class="w hot draw" d={`M ${470 + i * 80} 316 V 326`} pathLength="1" style={`--d:${(2.62 + i * 0.07).toFixed(2)}s`} />
+              {/each}
+              <!-- capability rail with five stubs -->
+              <path class="w draw" d="M 60 420 H 1040" pathLength="1" style="--d:3.05s" />
               {#each beat.surfaces as cap, i (cap.name)}
-                <path class="w draw" d={`M ${160 + i * 200} 372 V 350`} pathLength="1" style={`--d:${(3.22 + i * 0.07).toFixed(2)}s`} />
+                <path class="w draw" d={`M ${160 + i * 195} 420 V 404`} pathLength="1" style={`--d:${(3.22 + i * 0.07).toFixed(2)}s`} />
               {/each}
             </svg>
 
-            <div class="you pop-in" style="--d:.95s"><span class="avatar">you</span></div>
-            <div class="hub pop-in" style="--d:.8s">
+            <div class="nnode you pop-in" style="--d:.95s; --x:110; --y:190"><span class="avatar">you</span></div>
+
+            <div class="nnode hub pop-in" style="--d:.8s; --x:550; --y:190">
               <span class="hub-ring"></span>
+              <span class="hub-core"></span>
               <span class="hub-label">company cloud</span>
             </div>
-            <div class="team">
-              <span class="nlabel r" style="--d:1.3s">team</span>
-              {#each [0, 1, 2, 3, 4] as i (i)}
-                <span class="tdot pop-in" style={`--d:${(1.35 + i * 0.1).toFixed(2)}s; top:${92 + i * 54 - 14}px`}></span>
-              {/each}
-            </div>
-            <div class="bots">
-              <span class="nlabel r" style="--d:2.6s">agents</span>
-              {#each [0, 1, 2] as i (i)}
-                <span class="bot pop-in" style={`--d:${(2.72 + i * 0.07).toFixed(2)}s`}></span>
-              {/each}
-            </div>
-            <div class="caps">
-              {#each beat.surfaces as cap, i (cap.name)}
-                <span class="cap-item r" style={`--d:${(3.35 + i * 0.07).toFixed(2)}s`}>
-                  <span class="cap-name">{cap.name}</span>
-                  <span class="cap-meaning">{cap.meaning}</span>
-                </span>
-              {/each}
-            </div>
+
+            <span class="nnode nlabel r" style="--d:1.3s; --x:880; --y:34">team</span>
+            {#each [0, 1, 2, 3, 4] as i (i)}
+              <span class="nnode tdot pop-in" style={`--d:${(2.1 + i * 0.07).toFixed(2)}s; --x:880; --y:${70 + i * 60}`}></span>
+            {/each}
+
+            <span class="nnode nlabel r" style="--d:2.6s; --x:396; --y:346">agents</span>
+            {#each [0, 1, 2] as i (i)}
+              <span class="nnode bot pop-in" style={`--d:${(2.72 + i * 0.07).toFixed(2)}s; --x:${470 + i * 80}; --y:346`}></span>
+            {/each}
+
+            {#each beat.surfaces as cap, i (cap.name)}
+              <span class="nnode cap-item r" style={`--d:${(3.35 + i * 0.07).toFixed(2)}s; --x:${160 + i * 195}; --y:440`}>
+                <span class="cap-name">{cap.name}</span>
+                <span class="cap-meaning">{cap.meaning}</span>
+              </span>
+            {/each}
           </div>
         {/if}
 
@@ -427,7 +435,7 @@
   .stage {
     position: relative;
     z-index: 2;
-    width: min(860px, calc(100vw - 96px));
+    width: min(1100px, calc(100vw - 96px));
     /* Fixed height so cross-fading beats of different lengths do not shift the
        layout under each other — every beat is absolutely positioned inside it
        and centres itself. */
@@ -648,30 +656,31 @@
 
   .tree {
     position: absolute;
-    left: 42.7%;
+    left: calc(42.7% + 10px);
     right: 0;
-    top: 30px;
+    top: 22px;
     text-align: left;
   }
 
   .troot {
     font-family: ui-monospace, 'SF Mono', Menlo, monospace;
     font-size: 15px;
+    line-height: 20px;
     color: #fff;
-    margin-bottom: 14px;
+    margin-bottom: 10px;
   }
 
   .tspine {
     position: absolute;
-    left: 6px;
-    top: 32px;
+    left: 0;
+    top: 28px;
     width: 1px;
     height: 0;
     background: rgba(255, 255, 255, 0.35);
   }
 
   .beat.active .tspine.grow { animation: grow 1s var(--ease) var(--d, 2.7s) forwards; }
-  @keyframes grow { to { height: 250px; } }
+  @keyframes grow { to { height: 186px; } }
 
   .trow {
     position: relative;
@@ -679,13 +688,13 @@
     grid-template-columns: 120px 1fr;
     gap: 14px;
     align-items: baseline;
-    padding: 9px 0 9px 26px;
+    padding: 8px 0 8px 22px;
   }
 
   .trow::before {
     content: '';
     position: absolute;
-    left: 6px;
+    left: 0;
     top: 50%;
     width: 14px;
     height: 1px;
@@ -695,7 +704,7 @@
   .trow::after {
     content: '';
     position: absolute;
-    left: 18px;
+    left: 12px;
     top: calc(50% - 2.5px);
     width: 5px;
     height: 5px;
@@ -723,7 +732,7 @@
     opacity: 1;
     transform: translateX(calc(var(--fw) * -0.36));
     stroke-dashoffset: 0;
-    height: 250px;
+    height: 186px;
   }
   .beat.still .w, .beat.still .wn, .beat.still .tspine { transform: none; }
 
@@ -829,64 +838,79 @@
   /* ---- network (local folder, cloud team) --------------------------- */
 
   .nstage {
+    --nw: min(1100px, calc(100vw - 140px));
+    --u: calc(var(--nw) / 1100);
     position: relative;
-    width: min(1100px, calc(100vw - 120px));
-    aspect-ratio: 1100 / 400;
-    margin-top: 6px;
-    font-size: calc(min(1100px, 100vw - 120px) / 1100 * 16);
+    width: var(--nw);
+    height: calc(460 * var(--u));
+    margin-top: 4px;
+    font-size: calc(16 * var(--u));
   }
 
   .nwire { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-  .nwire .w { stroke: rgba(255, 255, 255, 0.45); stroke-width: 2; }
-  .nwire .w.hot { stroke: #e56ab3; stroke-width: 2.4; }
-  .beat.active .nwire .w.draw { animation: draw 0.9s var(--ease) var(--d, 1s) forwards; }
-  .beat.active .nwire .wn.pop-in { animation: pop 0.5s var(--ease) var(--d, 2s) forwards; }
+  .nwire .w { stroke: rgba(255, 255, 255, 0.5); stroke-width: 2; stroke-linecap: round; }
+  .nwire .w.hot { stroke: #e56ab3; stroke-width: 2.4; filter: drop-shadow(0 0 6px rgba(229, 106, 179, 0.7)); }
+  .beat.active .nwire .w.draw { animation: draw 0.7s var(--ease) var(--d, 1s) forwards; }
+
+  /* Every node is centred on its (--x, --y) in the 1100x460 space. */
+  .nnode {
+    position: absolute;
+    left: calc(var(--x) * var(--u));
+    top: calc(var(--y) * var(--u));
+    transform: translate(-50%, -50%);
+  }
 
   .pop-in { opacity: 0; }
   .beat.active .pop-in { animation: pop 0.6s var(--ease) var(--d, 0.5s) forwards; }
-  .beat.still .pop-in, .beat.still .nwire .w, .beat.still .nwire .wn { animation: none; opacity: 1; stroke-dashoffset: 0; }
+  .beat.still .pop-in, .beat.still .nwire .w { animation: none; opacity: 1; stroke-dashoffset: 0; }
 
-  .you { position: absolute; left: 6%; top: 50%; transform: translate(-50%, -50%); }
   .avatar {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 5.4em; height: 5.4em; border-radius: 50%;
+    width: 5.5em; height: 5.5em; border-radius: 50%;
     background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.4);
-    box-shadow: 0 0 0 2px #e56ab3, 0 0 0 7px rgba(229, 106, 179, 0.18);
-    font-size: 0.85em; color: #fff; backdrop-filter: blur(14px);
+    box-shadow: 0 0 0 2px #e56ab3, 0 0 0 8px rgba(229, 106, 179, 0.16), 0 0 30px rgba(229, 106, 179, 0.4);
+    font-size: 0.9em; color: #fff; backdrop-filter: blur(14px);
   }
 
-  .hub { position: absolute; left: 50.5%; top: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 0.6em; }
+  .hub { display: grid; place-items: center; }
+  .hub-ring, .hub-core { grid-area: 1 / 1; }
   .hub-ring {
-    width: 8.6em; height: 8.6em; border-radius: 50%;
-    border: 2px solid transparent;
-    background:
-      radial-gradient(closest-side, rgba(139, 109, 240, 0.35), rgba(229, 106, 179, 0.12) 60%, transparent 72%) padding-box,
-      linear-gradient(96deg, #7de3f4, #8b6df0 35%, #e56ab3 70%, #f28a4b) border-box;
-    box-shadow: 0 0 40px rgba(139, 109, 240, 0.35);
-    animation: hubpulse 3.2s ease-in-out infinite;
+    width: 8.75em; height: 8.75em; border-radius: 50%;
+    border: 2.5px solid transparent;
+    background: linear-gradient(96deg, #7de3f4, #8b6df0 35%, #e56ab3 70%, #f28a4b) border-box;
+    -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: hubspin 14s linear infinite;
+    filter: drop-shadow(0 0 18px rgba(139, 109, 240, 0.6));
   }
-  @keyframes hubpulse { 50% { box-shadow: 0 0 64px rgba(229, 106, 179, 0.5); } }
-  .hub-label { font-size: 0.8em; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255, 255, 255, 0.75); }
+  @keyframes hubspin { to { transform: rotate(360deg); } }
+  .hub-core {
+    width: 7.2em; height: 7.2em; border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(255, 255, 255, 0.22), rgba(139, 109, 240, 0.28) 55%, rgba(229, 106, 179, 0.08) 80%, transparent);
+    backdrop-filter: blur(10px);
+    animation: hubbreathe 3.4s ease-in-out infinite;
+  }
+  @keyframes hubbreathe { 50% { transform: scale(1.06); } }
+  .hub-label {
+    grid-area: 2 / 1; margin-top: 0.7em;
+    font-size: 0.74em; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255, 255, 255, 0.78); white-space: nowrap;
+  }
 
-  .team { position: absolute; left: 69%; top: 0; height: 100%; }
-  .tdot { position: absolute; left: 0; width: 1.75em; height: 1.75em; border-radius: 50%; background: #fff; box-shadow: 0 0 14px rgba(255, 255, 255, 0.5); }
-  .nlabel { position: absolute; left: 0; top: 1.2em; font-size: 0.72em; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255, 255, 255, 0.6); }
-  .team .nlabel { top: 2.2em; }
+  .tdot { width: 1.9em; height: 1.9em; border-radius: 50%; background: #fff; box-shadow: 0 0 16px rgba(255, 255, 255, 0.6); }
+  .nlabel { font-size: 0.72em; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255, 255, 255, 0.62); white-space: nowrap; }
 
-  .bots { position: absolute; left: 50.5%; top: 80%; transform: translateX(-50%); display: flex; gap: 0.8em; align-items: center; }
-  .bots .nlabel { position: static; margin-right: 0.4em; }
   .bot {
-    width: 2.6em; height: 2.6em; border-radius: 0.7em;
-    border: 1.6px solid rgba(229, 106, 179, 0.85);
-    background: linear-gradient(145deg, rgba(229, 106, 179, 0.28), rgba(139, 109, 240, 0.14));
-    position: relative;
+    width: 2.8em; height: 2.8em; border-radius: 0.75em;
+    border: 1.6px solid rgba(229, 106, 179, 0.9);
+    background: linear-gradient(145deg, rgba(229, 106, 179, 0.3), rgba(139, 109, 240, 0.14));
+    box-shadow: 0 0 18px rgba(229, 106, 179, 0.35);
   }
   .bot::after { content: ''; position: absolute; inset: 33%; border-radius: 3px; background: #e56ab3; }
 
-  .caps { position: absolute; left: 0; right: 0; top: 96%; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1em; padding: 0 3.5%; text-align: center; }
-  .cap-item { display: flex; flex-direction: column; gap: 0.15em; }
-  .cap-name { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.85em; color: #fff; }
-  .cap-meaning { font-size: 0.72em; color: rgba(255, 255, 255, 0.68); }
+  .cap-item { display: flex; flex-direction: column; align-items: center; gap: 0.15em; transform: translate(-50%, 0); width: 11em; }
+  .cap-name { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.9em; color: #fff; }
+  .cap-meaning { font-size: 0.72em; color: rgba(255, 255, 255, 0.7); white-space: nowrap; }
 
   /* ---- keyboard ---------------------------------------------------- */
 

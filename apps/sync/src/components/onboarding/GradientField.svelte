@@ -39,6 +39,7 @@
   uniform vec2 u_res;
   uniform float u_time;
   uniform float u_intensity;
+  uniform vec2 u_mouse;   // -1..1, eased; the whole field leans toward it
   uniform vec3 u_c0;
   uniform vec3 u_c1;
   uniform vec3 u_c2;
@@ -63,6 +64,10 @@
     vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
 
     float t = u_time;
+    // Mouse gravity: the colour bodies lean a little toward the cursor, the
+    // light leans a little more. Enough to feel alive, never enough to steer.
+    vec2 lean = u_mouse * vec2(0.06, 0.045);
+    p -= lean;
 
     // Four bodies on slow, mutually-prime orbits so the field never visibly
     // loops back to a pose the viewer has already seen.
@@ -83,20 +88,35 @@
     col += u_c3 * b3;
     col *= u_intensity;
 
-    // God rays: a light just above the top edge throws soft shafts down the
-    // field. Two interfering angular waves give shafts that drift and breathe
-    // instead of rotating like a fan; the pow() sharpens them into rays.
-    vec2 lp = vec2(sin(t * 0.05) * 0.25, 0.92);
+    // God rays: a light above the top edge throws soft shafts down the
+    // field. Three angular samples are averaged so the shafts are blurred
+    // rather than crisp, and the light itself leaks as a wide warm glow.
+    vec2 lp = vec2(sin(t * 0.05) * 0.22 + u_mouse.x * 0.18, 0.95 - u_mouse.y * 0.04);
     vec2 ld = p - lp;
     float ang = atan(ld.y, ld.x);
     float dist = length(ld);
-    float shaft = (sin(ang * 22.0 + t * 0.16) * 0.5 + 0.5)
-                * (sin(ang * 9.0 - t * 0.11 + 1.7) * 0.5 + 0.5)
-                * (sin(ang * 3.5 + t * 0.07) * 0.35 + 0.65);
-    shaft = pow(shaft, 2.6);
-    float reach = smoothstep(1.7, 0.05, dist) * smoothstep(-0.6, 0.35, -ld.y + 0.9);
-    vec3 rayTint = mix(u_c0, vec3(1.0), 0.55);
-    col += rayTint * shaft * reach * 0.42 * u_intensity;
+    float shaft = 0.0;
+    for (int i = -1; i <= 1; i++) {
+      float a = ang + float(i) * 0.035;
+      float s1 = sin(a * 14.0 + t * 0.13) * 0.5 + 0.5;
+      float s2 = sin(a * 5.0 - t * 0.09 + 1.7) * 0.5 + 0.5;
+      float s3 = sin(a * 2.3 + t * 0.06) * 0.35 + 0.65;
+      shaft += pow(s1 * s2 * s3, 1.9);
+    }
+    shaft /= 3.0;
+    // Shafts fade with distance and breathe slowly in overall strength.
+    float reach = smoothstep(1.9, 0.0, dist) * (0.75 + 0.25 * sin(t * 0.21));
+    vec3 rayTint = mix(u_c0, vec3(1.0), 0.6);
+    col += rayTint * shaft * reach * 0.55 * u_intensity;
+
+    // Light leak: a broad soft bloom at the source, plus two ghost blobs
+    // along the axis toward the centre, the way a lens flares.
+    float leak = exp(-dist * dist * 2.6);
+    col += mix(vec3(1.0), u_c1, 0.35) * leak * 0.42 * u_intensity;
+    vec2 axis = normalize(vec2(0.0, -0.35) - lp);
+    float g1 = exp(-pow(length(p - (lp + axis * 0.55)) * 4.5, 2.0));
+    float g2 = exp(-pow(length(p - (lp + axis * 1.05)) * 7.0, 2.0));
+    col += u_c2 * g1 * 0.10 * u_intensity + u_c3 * g2 * 0.07 * u_intensity;
 
     // A slow aurora band drifting across the upper third, in the current hue.
     float band = exp(-pow((p.y - 0.18 - sin(p.x * 1.3 + t * 0.12) * 0.09) * 5.5, 2.0));
@@ -141,6 +161,16 @@
   let frozenTime = 0;
   let uniforms: Record<string, WebGLUniformLocation | null> = {};
   let resizeObserver: ResizeObserver | null = null;
+  const mouse = { x: 0, y: 0 };
+  const mouseTarget = { x: 0, y: 0 };
+
+  function onPointer(event: PointerEvent) {
+    const w = window.innerWidth || 1;
+    const h = window.innerHeight || 1;
+    mouseTarget.x = (event.clientX / w) * 2 - 1;
+    // Flip so +y is up, matching the shader's coordinate frame.
+    mouseTarget.y = -((event.clientY / h) * 2 - 1);
+  }
 
   function compile(context: WebGL2RenderingContext, type: number, source: string) {
     const shader = context.createShader(type);
@@ -179,6 +209,10 @@
     gl.uniform2f(uniforms.u_res, canvas?.width ?? 1, canvas?.height ?? 1);
     gl.uniform1f(uniforms.u_time, elapsed);
     gl.uniform1f(uniforms.u_intensity, intensity);
+    // Ease toward the cursor so the field drifts rather than snaps.
+    mouse.x += (mouseTarget.x - mouse.x) * 0.035;
+    mouse.y += (mouseTarget.y - mouse.y) * 0.035;
+    gl.uniform2f(uniforms.u_mouse, mouse.x, mouse.y);
 
     // Four samples spread across the spectrum, offset from the current hue so
     // the bodies are related but never identical.
@@ -233,6 +267,7 @@
         'u_res',
         'u_time',
         'u_intensity',
+        'u_mouse',
         'u_c0',
         'u_c1',
         'u_c2',
@@ -258,6 +293,7 @@
     }
 
     canvas.addEventListener('webglcontextlost', handleContextLost);
+    window.addEventListener('pointermove', onPointer, { passive: true });
   });
 
   function handleContextLost(event: Event) {
@@ -276,6 +312,7 @@
     if (raf) cancelAnimationFrame(raf);
     resizeObserver?.disconnect();
     canvas?.removeEventListener('webglcontextlost', handleContextLost);
+    window.removeEventListener('pointermove', onPointer);
     gl = null;
     program = null;
   });
