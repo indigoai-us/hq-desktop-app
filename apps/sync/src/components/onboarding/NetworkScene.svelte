@@ -18,12 +18,12 @@
   let startedAt = 0;
 
   // ---- geometry (design units) -------------------------------------------
-  const W = 1100, H = 460;
+  const W = 1100, H = 530;
   const YOU = { x: 110, y: 190, r: 44 };
   const HUB = { x: 550, y: 190, r: 70 };
   const TEAM_X = 880, BUS_X = 760, TEAM_Y0 = 70, TEAM_DY = 60, TEAM_N = 5, TEAM_R = 15;
   const BOT_Y = 346, BOT_X0 = 470, BOT_DX = 80, BOT_N = 3, BOT_S = 44;
-  const RAIL_Y = 420, RAIL_X0 = 60, RAIL_X1 = 1040, CAP_X0 = 160, CAP_DX = 195;
+  const RAIL_Y = 446, RAIL_X0 = 60, RAIL_X1 = 1040, CAP_X0 = 160, CAP_DX = 195;
 
   const PINK = '#e56ab3', VIOLET = '#8b6df0', CYAN = '#7de3f4', ORANGE = '#f28a4b';
 
@@ -132,6 +132,29 @@
 
     const t = still ? 99 : (now - startedAt) / 1000; // seconds since active
     const live = still ? 99 : t;
+
+    // ---- field: a warm pool of light and a dot grid, masked to the centre --
+    {
+      const a = prog(t, 0.45, 0.8);
+      if (a > 0) {
+        ctx.save(); ctx.globalAlpha = a;
+        const fg = ctx.createRadialGradient(HUB.x, 230, 0, HUB.x, 230, 620);
+        fg.addColorStop(0, 'rgba(139,109,240,0.16)');
+        fg.addColorStop(0.5, 'rgba(229,106,179,0.06)');
+        fg.addColorStop(1, 'rgba(229,106,179,0)');
+        ctx.fillStyle = fg; ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        for (let gx = 30; gx < W; gx += 22) {
+          for (let gy = 20; gy < RAIL_Y - 20; gy += 22) {
+            const d = Math.hypot(gx - HUB.x, gy - 230) / 560;
+            if (d > 1) continue;
+            ctx.globalAlpha = a * (1 - d) * (1 - d);
+            ctx.beginPath(); ctx.arc(gx, gy, 1.2, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
+    }
 
     // ---- wires ----------------------------------------------------------
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -244,8 +267,8 @@
     caps.forEach((cap, i) => {
       const a = prog(t, 3.35 + i * 0.07, 0.6);
       const x = CAP_X0 + i * CAP_DX;
-      label(ctx, cap.name, x, RAIL_Y + 22, 14.5, a, { mono: true });
-      label(ctx, cap.meaning, x, RAIL_Y + 42, 12, a * 0.72);
+      label(ctx, cap.name, x, RAIL_Y + 26, 15, a, { mono: true });
+      label(ctx, cap.meaning, x, RAIL_Y + 48, 12.5, a * 0.75);
     });
 
     raf = requestAnimationFrame(draw);
@@ -270,8 +293,8 @@
   .net {
     display: block;
     flex: 0 0 auto;
-    width: min(1100px, calc(100vw - 140px));
-    aspect-ratio: 1100 / 460;
+    width: min(1000px, calc(100vw - 160px));
+    aspect-ratio: 1100 / 530;
     margin-top: 4px;
   }
 </style>
