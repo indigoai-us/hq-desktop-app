@@ -12,6 +12,7 @@
 
 import { dayKey, dayLabel } from "./notification-groups";
 import { bundleFileNotifications } from "./file-bundles";
+import { bundleAgentJoinNotifications } from "./agent-join-bundles";
 
 // ── Display taxonomy ─────────────────────────────────────────────────────────
 
@@ -700,6 +701,12 @@ export function buildNotificationsView(
    * Dismissing is "not now", not "I read this".
    */
   dismissed: ReadonlySet<string> = EMPTY_DISMISSED,
+  /**
+   * True when this viewer runs the company's agent fleet. Agent-join
+   * announcements go out to every member, so they are hidden by default and
+   * bundled per company per 10 minutes for whoever does run the fleet.
+   */
+  viewerOwnsAgents: boolean = false,
 ): {
   groups: NotificationsDayGroup[];
   headerTitle: string;
@@ -714,8 +721,16 @@ export function buildNotificationsView(
   const filtered = filterNotifications(kept, state.filter);
   // A folder sync emits one row per file. Bundling them per person keeps the
   // feed readable and keeps the bell counting the bundle once, not per file.
-  const { items: visible, collapsedUnread } = bundleFileNotifications(filtered);
-  const unreadCount = Math.max(0, state.unreadCount - collapsedUnread);
+  const { items: bundledFiles, collapsedUnread } =
+    bundleFileNotifications(filtered);
+  // Agent-join announcements are company-wide broadcasts, not messages for
+  // this person. Suppressed for everyone but the fleet owner, bundled for them.
+  const { items: visible, collapsedUnread: collapsedJoins } =
+    bundleAgentJoinNotifications(bundledFiles, { viewerOwnsAgents });
+  const unreadCount = Math.max(
+    0,
+    state.unreadCount - collapsedUnread - collapsedJoins,
+  );
   return {
     groups: groupNotificationsByDay(visible, now),
     headerTitle: "Notifications",

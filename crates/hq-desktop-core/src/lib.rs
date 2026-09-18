@@ -39,6 +39,7 @@ macro_rules! print {
 
 pub mod activity;
 pub mod agency;
+pub mod agent_join;
 pub mod bandwidth;
 pub mod banner;
 pub mod claude_launch;

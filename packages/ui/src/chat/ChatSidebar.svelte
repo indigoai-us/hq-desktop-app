@@ -63,6 +63,13 @@
     adminCompanyUids,
     browseOnlyCompanyProjectChannels,
   } from "./channel-admin";
+  import { isAgentUid } from "./agent-thinking";
+  import {
+    loadEngagedAgents,
+    rememberEngagedAgent,
+    saveEngagedAgents,
+    threadHasRealMessage,
+  } from "./agent-stubs";
   import { isSelf, selfIsAdmin, type SelfIdentity } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
   import {
@@ -115,6 +122,7 @@
     loadSetupPinDismissed,
     loadShowFilter,
     mergeContactActivity,
+    isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
     normalizeChannel,
     normalizeConversations,
@@ -270,6 +278,14 @@
      * four of their own bots the moment the account listing was unavailable.
      */
     ownedLocalBotUids?: readonly string[] | null;
+    /**
+     * Agents this user has a real conversation with, seeded by the host.
+     * Creating an agent announces it to the whole company, so an `agt_*` row
+     * stays off the rail until it messages the user (or the user opens/pins
+     * it). The sidebar also persists its own evidence; this prop lets a host
+     * with its own store — or a test — seed it.
+     */
+    engagedAgentUids?: readonly string[] | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -364,6 +380,7 @@
     loadAvatarPacks = null,
     localBots = null,
     ownedLocalBotUids = null,
+    engagedAgentUids = null,
     onrows,
     ondisplayrows,
     onactions,
@@ -446,6 +463,62 @@
   }
   let dmDots = $state<string[]>(loadDmDots(storage));
   let recentDms = $state<string[]>(loadRecentDms(storage));
+  /**
+   * Agents with a proven real conversation. Creating an agent DMs the whole
+   * company, so an `agt_*` row stays off the rail until it actually talks to
+   * this user (or the user opens/pins it) — see `agent-stubs.ts`.
+   */
+  let engagedAgents = $state<string[]>([
+    ...new Set([...loadEngagedAgents(storage), ...(engagedAgentUids ?? [])]),
+  ]);
+  /** Agent uids whose thread we already probed for real-message evidence. */
+  const agentEngagementProbed = new Set<string>();
+
+  function markAgentEngaged(personUid: string | null | undefined): void {
+    const next = rememberEngagedAgent(engagedAgents, personUid);
+    if (next.size === engagedAgents.length) return;
+    engagedAgents = [...next];
+    saveEngagedAgents(next, storage);
+  }
+
+  /**
+   * A `dm:new-message` wake carries no body, and the membership announcement
+   * arrives on the same wake — so the wake alone can never prove engagement.
+   * Read the newest page of the agent's thread once and promote it only when
+   * something other than the announcement is in there.
+   */
+  async function resolveAgentEngagement(personUid: string): Promise<void> {
+    const uid = personUid.trim();
+    if (!uid || !isAgentUid(uid)) return;
+    if (engagedAgents.includes(uid) || agentEngagementProbed.has(uid)) return;
+    const fetchThread = api.fetchDmThread;
+    if (typeof fetchThread !== "function") {
+      // No thread seam on this host: fall back to trusting the wake rather
+      // than silently dropping a live agent conversation.
+      markAgentEngaged(uid);
+      return;
+    }
+    agentEngagementProbed.add(uid);
+    try {
+      const page = await fetchThread.call(api, { withPersonUid: uid, limit: 20 });
+      const messages = Array.isArray(page?.messages) ? page.messages : [];
+      const real = threadHasRealMessage(messages, uid, (message) =>
+        isAgentJoinNoticeEvent({
+          fromPersonUid: message.fromPersonUid,
+          fromEmail: message.fromEmail,
+          fromDisplayName: message.fromDisplayName,
+          body: message.body,
+          details: message.details,
+          prompt: message.prompt,
+        }),
+      );
+      if (real) markAgentEngaged(uid);
+      else agentEngagementProbed.delete(uid);
+    } catch {
+      // Best effort — retry on the agent's next message.
+      agentEngagementProbed.delete(uid);
+    }
+  }
   /** personUid → unreadCount from inbox `pairUnreads` (absent-safe). */
   let pairUnreads = $state<Map<string, number>>(new Map());
   /** Pending incoming connection requests (same source as MessagesShell). */
@@ -608,6 +681,12 @@
   let activeId = $state<string | null>(null);
   $effect(() => {
     activeId = selectedId;
+    // An open conversation is a conversation. A deep link, the DM widget, or
+    // a header click can select an agent thread the rail is still hiding —
+    // selecting it is the user saying it is real, so promote it.
+    if (selectedId?.startsWith("dm:")) {
+      markAgentEngaged(selectedId.slice(3));
+    }
   });
 
   // History searches are debounced; conversation completion stays synchronous
@@ -707,6 +786,17 @@
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
+  /**
+   * The user's own agents: local bots this machine runs, plus their own bots
+   * this machine cannot run right now. They are never the company-wide
+   * broadcast clutter the agent-stub rule exists to remove, so they stay on
+   * the rail whether or not they have messaged.
+   */
+  const ownAgentUids = $derived([
+    ...(localBots ?? []).map((bot) => bot.agentUid),
+    ...(ownedLocalBotUids ?? []),
+  ]);
+
   // Synthetic #setup support channel (deduped against a real server `setup`
   // channel) — pinned by default; once unpinned it lists under TODAY (bottom)
   // instead of sinking into LAST WEEK with zero activity.
@@ -747,6 +837,8 @@
       pinnedIds: pinsWithSetup,
       dmDots,
       recentDms,
+      engagedAgentUids: engagedAgents,
+      ownAgentUids,
     }),
   );
 
@@ -1805,6 +1897,22 @@
             contacts = mergeContactsWithInbox(contacts, [
               { fromPersonUid, createdAt: stamp },
             ]);
+            if (isAgentUid(fromPersonUid)) {
+              const body = payload.body ?? null;
+              if (body == null) {
+                // MQTT delivery carries no body — read the thread once.
+                void resolveAgentEngagement(fromPersonUid);
+              } else if (
+                !isAgentJoinNoticeEvent({
+                  fromPersonUid,
+                  body,
+                  details: payload.details,
+                  prompt: payload.prompt,
+                })
+              ) {
+                markAgentEngaged(fromPersonUid);
+              }
+            }
           }
           if (
             !shouldBumpDmUnread({
@@ -1974,6 +2082,7 @@
       });
       recentDms = rememberRecentDm(recentDms, row.personUid);
       saveRecentDms(recentDms, storage);
+      markAgentEngaged(row.personUid);
       // Optimistic clear (local dot + numeric pair unread), then server mark-read.
       dmDots = clearDmDot(dmDots, row.personUid);
       saveDmDots(dmDots, storage);

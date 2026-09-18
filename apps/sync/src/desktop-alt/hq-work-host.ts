@@ -292,6 +292,15 @@ export async function subscribeHqWorkNativeWakes(
           ...(nativeString(row.createdAt ?? row.created_at)
             ? { createdAt: nativeString(row.createdAt ?? row.created_at) }
             : {}),
+          // The body rides along so the rail can tell an agent membership
+          // announcement from a message the agent actually sent.
+          ...(nativeString(row.body) ? { body: nativeString(row.body) } : {}),
+          ...(nativeString(row.details)
+            ? { details: nativeString(row.details) }
+            : {}),
+          ...(nativeString(row.prompt)
+            ? { prompt: nativeString(row.prompt) }
+            : {}),
           direction: 'in',
           // Rust emits the exact per-pair counts before these fresh rows. Keep
           // this event as a timeline/contact wake, never a second badge delta.
