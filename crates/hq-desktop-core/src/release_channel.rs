@@ -275,11 +275,7 @@ impl UpdateFeedPolicy {
         if self.bad_versions.iter().any(|version| version == current) {
             return true;
         }
-        if self
-            .min_supported
-            .as_ref()
-            .is_some_and(|min| current < min)
-        {
+        if self.min_supported.as_ref().is_some_and(|min| current < min) {
             return true;
         }
         if self.rollback {
@@ -351,10 +347,7 @@ pub fn should_offer_update(
 /// Recovery "Reinstall latest": always install the feed target, including
 /// when it matches the running version, so a wedged same-version install
 /// can still be replaced. Signature verification still applies.
-pub fn should_reinstall_feed_target(
-    current: &semver::Version,
-    offered: &semver::Version,
-) -> bool {
+pub fn should_reinstall_feed_target(current: &semver::Version, offered: &semver::Version) -> bool {
     let _ = (current, offered);
     true
 }
@@ -939,8 +932,16 @@ mod tests {
     fn newer_offer_is_always_an_update_without_markers() {
         let policy = UpdateFeedPolicy::default();
         assert!(should_offer_update(&v("0.10.177"), &v("0.10.179"), &policy));
-        assert!(!should_offer_update(&v("0.10.177"), &v("0.10.177"), &policy));
-        assert!(!should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
+        assert!(!should_offer_update(
+            &v("0.10.177"),
+            &v("0.10.177"),
+            &policy
+        ));
+        assert!(!should_offer_update(
+            &v("0.10.178"),
+            &v("0.10.177"),
+            &policy
+        ));
     }
 
     #[test]
@@ -955,7 +956,11 @@ mod tests {
         assert!(policy.marks_running_version_bad(&v("0.10.178")));
         // A healthy neighbor on 0.10.179 is not listed as bad — no silent
         // downgrade just because the feed is older.
-        assert!(!should_offer_update(&v("0.10.179"), &v("0.10.177"), &policy));
+        assert!(!should_offer_update(
+            &v("0.10.179"),
+            &v("0.10.177"),
+            &policy
+        ));
         assert!(!policy.marks_running_version_bad(&v("0.10.177")));
     }
 
@@ -968,7 +973,11 @@ mod tests {
             min_supported: None,
         };
         assert!(should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
-        assert!(!should_offer_update(&v("0.10.177"), &v("0.10.177"), &policy));
+        assert!(!should_offer_update(
+            &v("0.10.177"),
+            &v("0.10.177"),
+            &policy
+        ));
         assert!(should_offer_update(&v("0.10.176"), &v("0.10.177"), &policy));
     }
 
@@ -998,7 +1007,10 @@ mod tests {
         let policy = parse_update_feed_policy(&value);
         assert_eq!(policy.version, Some(v("0.10.177")));
         assert!(policy.rollback);
-        assert_eq!(policy.bad_versions, vec![v("0.10.178"), v("0.10.178-beta.1")]);
+        assert_eq!(
+            policy.bad_versions,
+            vec![v("0.10.178"), v("0.10.178-beta.1")]
+        );
         assert_eq!(policy.min_supported, Some(v("0.10.177")));
         assert!(should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
     }
@@ -1009,13 +1021,20 @@ mod tests {
             "version": "0.10.177",
             "platforms": {}
         }));
-        assert_eq!(policy, UpdateFeedPolicy {
-            version: Some(v("0.10.177")),
-            rollback: false,
-            bad_versions: vec![],
-            min_supported: None,
-        });
-        assert!(!should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
+        assert_eq!(
+            policy,
+            UpdateFeedPolicy {
+                version: Some(v("0.10.177")),
+                rollback: false,
+                bad_versions: vec![],
+                min_supported: None,
+            }
+        );
+        assert!(!should_offer_update(
+            &v("0.10.178"),
+            &v("0.10.177"),
+            &policy
+        ));
     }
 
     #[test]

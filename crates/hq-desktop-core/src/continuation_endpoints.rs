@@ -180,7 +180,11 @@ mod tests {
             " /v1/desktop/onboarding/launch",
             "",
         ] {
-            assert_eq!(e.receipt_url(path), None, "path should be refused: {path:?}");
+            assert_eq!(
+                e.receipt_url(path),
+                None,
+                "path should be refused: {path:?}"
+            );
         }
     }
 

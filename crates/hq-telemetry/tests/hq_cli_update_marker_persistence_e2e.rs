@@ -9,8 +9,8 @@ use hq_desktop_core::hq_cli_update::{
     PostInstallCoreEffects, ResolutionSource, SettingsPathRepair, SettingsPathTelemetry,
     NON_CONVERGENT_ERROR_PREFIX,
 };
-use std::path::PathBuf;
 use sentry::test::with_captured_events_options;
+use std::path::PathBuf;
 
 fn captured_events(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
     with_captured_events_options(
@@ -162,7 +162,10 @@ fn an_unaimed_pnpm_run_persists_no_marker() {
         Some(NonConvergenceKind::InstallerUnaimed)
     );
     let (records, captures) = drive_success_path(&ctx);
-    assert_eq!(records, 0, "an unaimed pnpm run must write no durable marker");
+    assert_eq!(
+        records, 0,
+        "an unaimed pnpm run must write no durable marker"
+    );
     assert_eq!(captures, 1, "it stays observable once");
 }
 
@@ -471,7 +474,10 @@ fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
     assert_eq!(captures, 1);
     // Undelivered entirely (pnpm's own answer returned nothing): still no marker.
     let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(false), None));
-    assert_eq!(records, 0, "no delivery evidence must write no durable marker");
+    assert_eq!(
+        records, 0,
+        "no delivery evidence must write no durable marker"
+    );
     assert_eq!(captures, 1);
 
     // Genuine shadowing (delivered == target) writes the durable block — and the

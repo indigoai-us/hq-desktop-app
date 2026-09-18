@@ -26,9 +26,7 @@ pub struct MarketplaceListingAuthor {
     pub avatar_url: Option<String>,
 }
 
-fn deserialize_listing_author<'de, D>(
-    deserializer: D,
-) -> Result<MarketplaceListingAuthor, D::Error>
+fn deserialize_listing_author<'de, D>(deserializer: D) -> Result<MarketplaceListingAuthor, D::Error>
 where
     D: Deserializer<'de>,
 {

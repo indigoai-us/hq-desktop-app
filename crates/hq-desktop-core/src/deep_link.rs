@@ -116,7 +116,6 @@ pub fn is_valid_company_uid(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-
 /// First `hq-desktop://` argument the OS handed this process, if valid.
 pub fn hq_desktop_url_from_argv(argv: &[String]) -> Option<String> {
     argv.iter()
@@ -132,19 +131,16 @@ mod tests {
 
     #[test]
     fn parse_setup_checkout_done() {
-        let parsed = parse_hq_desktop_url(
-            "hq-desktop://setup?checkout=done&company=cmp_acme",
-        )
-        .expect("valid setup url");
+        let parsed = parse_hq_desktop_url("hq-desktop://setup?checkout=done&company=cmp_acme")
+            .expect("valid setup url");
         assert_eq!(parsed.checkout, "done");
         assert_eq!(parsed.company_uid, "cmp_acme");
     }
 
     #[test]
     fn parse_setup_with_path_slash() {
-        let parsed =
-            parse_hq_desktop_url("hq-desktop://setup/?checkout=done&company=cmp_x")
-                .expect("path slash is accepted");
+        let parsed = parse_hq_desktop_url("hq-desktop://setup/?checkout=done&company=cmp_x")
+            .expect("path slash is accepted");
         assert_eq!(parsed.company_uid, "cmp_x");
     }
 
@@ -180,10 +176,10 @@ mod tests {
             );
         }
         // Percent-encoded separators decode to invalid characters too.
-        assert!(parse_hq_desktop_url(
-            "hq-desktop://setup?checkout=done&company=cmp_acme%2F..%2Fx"
-        )
-        .is_none());
+        assert!(
+            parse_hq_desktop_url("hq-desktop://setup?checkout=done&company=cmp_acme%2F..%2Fx")
+                .is_none()
+        );
 
         for good in ["cmp_acme", "cmp_Acme-1_B", "cmp_0"] {
             let url = format!("hq-desktop://setup?checkout=done&company={good}");
@@ -280,6 +276,9 @@ mod tests {
             hq_desktop_url_from_argv(&argv).as_deref(),
             Some("hq-desktop://setup?checkout=done&company=cmp_acme")
         );
-        assert!(hq_desktop_url_from_argv(&["HQ".into(), "hqwork://open?channel=setup".into()]).is_none());
+        assert!(
+            hq_desktop_url_from_argv(&["HQ".into(), "hqwork://open?channel=setup".into()])
+                .is_none()
+        );
     }
 }

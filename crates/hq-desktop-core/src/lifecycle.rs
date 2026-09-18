@@ -105,7 +105,12 @@ pub fn tools_present_for_lifecycle_gate(hq_resolved: bool, node_resolved: bool) 
 /// Desktop activation may not bypass the install wizard. This is distinct
 /// from the retired notification popover: completed installs open desktop.
 pub fn installation_required(state: LifecycleState) -> bool {
-    matches!(state, LifecycleState::NeedsInstall | LifecycleState::InstallResume | LifecycleState::NeedsAuthForInstall)
+    matches!(
+        state,
+        LifecycleState::NeedsInstall
+            | LifecycleState::InstallResume
+            | LifecycleState::NeedsAuthForInstall
+    )
 }
 
 /// Pure helper: extract LifecycleInputs' menubar-derived flags from a parsed
@@ -351,7 +356,10 @@ mod tests {
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
-        assert!(verdict.needs_first_run_backfill, "the missing marker is written back");
+        assert!(
+            verdict.needs_first_run_backfill,
+            "the missing marker is written back"
+        );
     }
 
     #[test]
@@ -390,7 +398,10 @@ mod tests {
         assert_eq!(unanswered.state, LifecycleState::InstalledFirstRun);
         assert!(!not_installed.needs_first_run_backfill);
         assert_eq!(resuming.state, LifecycleState::InstallResume);
-        assert!(resuming.needs_first_run_backfill, "resume finishes into a set-up machine");
+        assert!(
+            resuming.needs_first_run_backfill,
+            "resume finishes into a set-up machine"
+        );
     }
 
     #[test]
@@ -590,7 +601,8 @@ mod tests {
     fn welcome_setup_is_not_owed_to_an_existing_set_up_user() {
         // An older build (or the disk backfill) wrote firstRunCompleted and never
         // knew about the welcome channel: this person already ran setup.
-        let legacy = map(json!({ "machineId": "abc", "installCompleted": true, "firstRunCompleted": true }));
+        let legacy =
+            map(json!({ "machineId": "abc", "installCompleted": true, "firstRunCompleted": true }));
         assert!(!welcome_setup_owed(&legacy, true));
         // Finished the guided run: done for good, whatever else is on disk.
         let finished = map(json!({ "welcomeSetupPending": false }));
@@ -687,10 +699,19 @@ mod toolchain_readiness_tests {
     use super::*;
     #[test]
     fn synced_workspace_without_local_tools_must_install_without_backfill() {
-        for state in [LifecycleState::NeedsInstall, LifecycleState::InstallResume,
-            LifecycleState::NeedsAuthForInstall, LifecycleState::InstalledFirstRun,
-            LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
-            let original = LifecycleVerdict { state, needs_install_backfill: true, needs_first_run_backfill: true };
+        for state in [
+            LifecycleState::NeedsInstall,
+            LifecycleState::InstallResume,
+            LifecycleState::NeedsAuthForInstall,
+            LifecycleState::InstalledFirstRun,
+            LifecycleState::InstalledLegacyUpdate,
+            LifecycleState::SteadyState,
+        ] {
+            let original = LifecycleVerdict {
+                state,
+                needs_install_backfill: true,
+                needs_first_run_backfill: true,
+            };
             assert_eq!(require_local_toolchain(original, true), original);
             let missing = require_local_toolchain(original, false);
             assert_eq!(missing.state, LifecycleState::NeedsInstall);
@@ -703,15 +724,26 @@ mod toolchain_readiness_tests {
         // Completion markers and a synced HQ folder (the 2026-09-14 fresh-VM
         // case) do not make HQ installed when hq or node is missing here.
         let inputs = LifecycleInputs {
-            install_completed: true, first_run_completed: true, had_machine_id: true,
-            config_valid: true, hq_root_valid: true, has_auth: true,
-            install_in_progress: false, consent_answered: true,
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: true,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
         };
-        assert_eq!(classify_lifecycle(inputs).state, LifecycleState::SteadyState);
+        assert_eq!(
+            classify_lifecycle(inputs).state,
+            LifecycleState::SteadyState
+        );
         let verdict = require_local_toolchain(classify_lifecycle(inputs), false);
         assert_eq!(verdict.state, LifecycleState::NeedsInstall);
         assert!(installation_required(verdict.state));
-        assert_eq!(require_local_toolchain(classify_lifecycle(inputs), true).state, LifecycleState::SteadyState);
+        assert_eq!(
+            require_local_toolchain(classify_lifecycle(inputs), true).state,
+            LifecycleState::SteadyState
+        );
     }
 
     #[test]
@@ -748,10 +780,18 @@ mod toolchain_readiness_tests {
     }
     #[test]
     fn completed_install_opens_desktop_and_incomplete_install_resumes_wizard() {
-        for state in [LifecycleState::NeedsInstall, LifecycleState::InstallResume, LifecycleState::NeedsAuthForInstall] {
+        for state in [
+            LifecycleState::NeedsInstall,
+            LifecycleState::InstallResume,
+            LifecycleState::NeedsAuthForInstall,
+        ] {
             assert!(installation_required(state));
         }
-        for state in [LifecycleState::InstalledFirstRun, LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
+        for state in [
+            LifecycleState::InstalledFirstRun,
+            LifecycleState::InstalledLegacyUpdate,
+            LifecycleState::SteadyState,
+        ] {
             assert!(!installation_required(state));
         }
     }

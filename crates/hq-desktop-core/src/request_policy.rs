@@ -77,7 +77,9 @@ fn unit_random() -> f64 {
         .unwrap_or(0);
     // xorshift the nanosecond counter so successive calls inside one
     // millisecond do not draw near-identical values.
-    let mut x = nanos.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+    let mut x = nanos
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1);
     x ^= x >> 33;
     x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
     x ^= x >> 33;
@@ -226,7 +228,10 @@ mod tests {
             let ceiling = RETRY_CAP_MS.min(RETRY_BASE_MS << attempt);
             let low = retry_delay_ms(429, None, attempt, 8, 0.0, 0).unwrap();
             let high = retry_delay_ms(429, None, attempt, 8, 0.999_999, 0).unwrap();
-            assert!(low <= high && high < ceiling + 1, "{attempt}: {low}..{high}");
+            assert!(
+                low <= high && high < ceiling + 1,
+                "{attempt}: {low}..{high}"
+            );
             assert!(high > ceiling / 2, "{attempt}: jitter should reach the top");
         }
     }

@@ -275,12 +275,23 @@ code: 'ERR_DLOPEN_FAILED'";
     fn stub_node_abi_error_is_classified_as_mismatch() {
         let tmp = tempfile::tempdir().unwrap();
         let node = tmp.path().join("node");
-        fs::write(
-            &node,
-            "#!/bin/sh\necho \"compiled against a different Node.js version using NODE_MODULE_VERSION 141. This version of Node.js requires NODE_MODULE_VERSION 127\" >&2\nexit 1\n",
-        )
-        .unwrap();
-        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        // Write through a staged sibling so this process holds no write handle
+        // on `node` when it is exec'd; an inherited write fd makes Linux fail
+        // the exec with ETXTBSY.
+        {
+            use std::io::Write;
+            let staging = tmp.path().join(".node.staging");
+            {
+                let mut file = fs::File::create(&staging).unwrap();
+                file.write_all(
+                    b"#!/bin/sh\necho \"compiled against a different Node.js version using NODE_MODULE_VERSION 141. This version of Node.js requires NODE_MODULE_VERSION 127\" >&2\nexit 1\n",
+                )
+                .unwrap();
+                file.sync_all().unwrap();
+            }
+            fs::set_permissions(&staging, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::rename(&staging, &node).unwrap();
+        }
         let addon = tmp.path().join("better_sqlite3.node");
         fs::write(&addon, b"fake").unwrap();
         let path = format!("{}:/usr/bin:/bin", tmp.path().display());

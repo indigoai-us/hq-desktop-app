@@ -4,12 +4,11 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
-    classify_runner_error_cause, classify_runner_error_site, PreRunnerCause,
-    PreRunnerCauseRollup, PreRunnerSite, PreRunnerSiteRollup, RunnerErrorCause,
-    RunnerErrorCauseRollup, RunnerErrorCauseSignatureRollup, RunnerErrorHttpRollup,
-    RunnerErrorHttpStatus, RunnerErrorPathRootRollup, RunnerErrorResidualSignatureRollup,
-    RunnerErrorShapeRollup, RunnerErrorSite, RunnerErrorSiteRollup,
-    RunnerErrorUnknownProfileRollup,
+    classify_runner_error_cause, classify_runner_error_site, PreRunnerCause, PreRunnerCauseRollup,
+    PreRunnerSite, PreRunnerSiteRollup, RunnerErrorCause, RunnerErrorCauseRollup,
+    RunnerErrorCauseSignatureRollup, RunnerErrorHttpRollup, RunnerErrorHttpStatus,
+    RunnerErrorPathRootRollup, RunnerErrorResidualSignatureRollup, RunnerErrorShapeRollup,
+    RunnerErrorSite, RunnerErrorSiteRollup, RunnerErrorUnknownProfileRollup,
 };
 use sha2::{Digest, Sha256};
 
@@ -1024,7 +1023,11 @@ pub fn runner_stack_shape_from_native_symbols(symbols: &[String]) -> RunnerStack
         };
     }
     let shape = heap_oom_stack_shape(symbols);
-    if shape.shape.split('>').all(|token| token == HEAP_OOM_ANON_FRAME) {
+    if shape
+        .shape
+        .split('>')
+        .all(|token| token == HEAP_OOM_ANON_FRAME)
+    {
         return RunnerStackShape {
             shape: "all_redacted".to_string(),
             depth: shape.depth,
@@ -4697,7 +4700,11 @@ mod tests {
             (None, Some(SIGHUP_SIGNAL), "signal:1"),
             (None, Some(SIGKILL_SIGNAL), "signal:9"),
             (Some(221), None, "exit:221"),
-            (Some(0xC000_0409u32 as i32), None, "windows:fault:0xC0000409"),
+            (
+                Some(0xC000_0409u32 as i32),
+                None,
+                "windows:fault:0xC0000409",
+            ),
             (Some(3), Some(9), "invalid:exit:3+signal:9"),
             (None, None, "unknown"),
         ];
@@ -4705,19 +4712,18 @@ mod tests {
             assert_eq!(termination_fingerprint_token(code, signal), token);
             // With no memory evidence the watcher token is exactly the host token.
             assert_eq!(
-                watcher_termination_fingerprint_token(
-                    code,
-                    signal,
-                    TerminationHost::Posix,
-                    none
-                ),
+                watcher_termination_fingerprint_token(code, signal, TerminationHost::Posix, none),
                 termination_fingerprint_token_for_host(code, signal, TerminationHost::Posix)
             );
         }
         // SIGABRT is the one shape normalized away from its raw signal token, on
         // BOTH hosts — pinned so the fix does not disturb that convergence.
         assert_eq!(
-            termination_fingerprint_token_for_host(None, Some(SIGABRT_SIGNAL), TerminationHost::Posix),
+            termination_fingerprint_token_for_host(
+                None,
+                Some(SIGABRT_SIGNAL),
+                TerminationHost::Posix
+            ),
             "abort:sigabrt"
         );
         assert_eq!(
@@ -4730,7 +4736,11 @@ mod tests {
         );
         // SIGHUP is NOT normalized: its host token is its raw signal token.
         assert_eq!(
-            termination_fingerprint_token_for_host(None, Some(SIGHUP_SIGNAL), TerminationHost::Posix),
+            termination_fingerprint_token_for_host(
+                None,
+                Some(SIGHUP_SIGNAL),
+                TerminationHost::Posix
+            ),
             "signal:1"
         );
     }
@@ -6411,7 +6421,13 @@ mod tests {
         // Gate 1 — no recorded cause (a natural code-1 exit with no app cancel).
         assert_eq!(
             classify_runner_exit_disposition_with_cancellation(
-                Some(1), None, None, true, false, false, false,
+                Some(1),
+                None,
+                None,
+                true,
+                false,
+                false,
+                false,
             ),
             RunnerExitDisposition::Alert,
         );
@@ -7262,7 +7278,10 @@ mod tests {
         // An absent or unavailable latch is not evidence: with an Unknown probe
         // and no message, a REPEAT observer-fault reading still SENDS (the first
         // per run is the benign sign-out shape and drops; a second escalates).
-        for latch in [SessionEndLatchReading::Absent, SessionEndLatchReading::Unavailable] {
+        for latch in [
+            SessionEndLatchReading::Absent,
+            SessionEndLatchReading::Unavailable,
+        ] {
             assert_eq!(
                 deferred_session_end_outcome(
                     WindowsTerminatorAttribution::ObserverFailed,
@@ -7351,7 +7370,10 @@ mod tests {
                 DeferredSessionEndOutcome::Drop,
                 "{attribution:?} + a confirmed teardown must suppress even on a repeat"
             );
-            for verdict in [WindowsTeardownVerdict::Absent, WindowsTeardownVerdict::Unknown] {
+            for verdict in [
+                WindowsTeardownVerdict::Absent,
+                WindowsTeardownVerdict::Unknown,
+            ] {
                 // The first unconfirmed exit per run is silent; a repeat fails
                 // closed to a send.
                 assert_eq!(
@@ -9613,13 +9635,19 @@ mod tests {
         );
 
         // The two DEDICATED axes carry the evidence...
-        assert_eq!(totals.pre_runner_failures.tag_value().as_deref(), Some("first_push:1"));
+        assert_eq!(
+            totals.pre_runner_failures.tag_value().as_deref(),
+            Some("first_push:1")
+        );
         assert_eq!(
             totals.pre_runner_causes.tag_value().as_deref(),
             Some("scope_exceeds_parent:1")
         );
         // ...and the typed status folds into the shared, fingerprint-SAFE http axis.
-        assert_eq!(totals.runner_error_http.tag_value().as_deref(), Some("http_403:1"));
+        assert_eq!(
+            totals.runner_error_http.tag_value().as_deref(),
+            Some("http_403:1")
+        );
 
         // It must NOT flip any disposition flag (so the exit disposition is unchanged).
         assert!(!totals.saw_error);
@@ -9717,7 +9745,10 @@ mod tests {
                             with_pre.saw_alertable_error,
                             with_pre.saw_node_too_old,
                         );
-                        assert_eq!(base_c, pre_c, "cancellation verdict changed at {code:?}/{signal:?}");
+                        assert_eq!(
+                            base_c, pre_c,
+                            "cancellation verdict changed at {code:?}/{signal:?}"
+                        );
 
                         let base_f = classify_runner_exit_disposition_with_fault(
                             code,
@@ -9741,7 +9772,10 @@ mod tests {
                             with_pre.saw_genuine_crash_fatal,
                             &with_pre.runner_error_rollup,
                         );
-                        assert_eq!(base_f, pre_f, "fault verdict changed at {code:?}/{signal:?}");
+                        assert_eq!(
+                            base_f, pre_f,
+                            "fault verdict changed at {code:?}/{signal:?}"
+                        );
                     }
                 }
             }
@@ -9753,7 +9787,11 @@ mod tests {
         // A typed 403 recorded through record_status(from_status(..)) renders the SAME
         // token and count as the prose classifier parsing a `describeError` ` http=403`.
         let mut typed = RunTotals::default();
-        typed.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(403), PreRunnerCause::VendHttp);
+        typed.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::VendHttp,
+        );
 
         let mut prose = RunTotals::default();
         prose.record_error(&SyncErrorEvent {
@@ -9762,8 +9800,14 @@ mod tests {
             message: "SomeError code=Foo http=403 denied".to_string(),
         });
 
-        assert_eq!(typed.runner_error_http.tag_value(), prose.runner_error_http.tag_value());
-        assert_eq!(typed.runner_error_http.tag_value().as_deref(), Some("http_403:1"));
+        assert_eq!(
+            typed.runner_error_http.tag_value(),
+            prose.runner_error_http.tag_value()
+        );
+        assert_eq!(
+            typed.runner_error_http.tag_value().as_deref(),
+            Some("http_403:1")
+        );
 
         // A None status records nothing on the http axis (absent axis stays absent).
         let mut no_status = RunTotals::default();
@@ -9777,23 +9821,46 @@ mod tests {
             no_status.pre_runner_failures.tag_value().as_deref(),
             Some("first_push_personal:1")
         );
-        assert_eq!(no_status.pre_runner_causes.tag_value().as_deref(), Some("unknown:1"));
+        assert_eq!(
+            no_status.pre_runner_causes.tag_value().as_deref(),
+            Some("unknown:1")
+        );
     }
 
     #[test]
     fn pre_runner_rollups_render_bounded_and_ordered() {
         let mut totals = RunTotals::default();
         // Two first_push failures, one personal — dominant-by-count ordering, `token:count`.
-        totals.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(403), PreRunnerCause::ScopeExceedsParent);
-        totals.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(500), PreRunnerCause::VendHttp);
-        totals.record_pre_runner_failure(PreRunnerSite::FirstPushPersonal, None, PreRunnerCause::Unknown);
+        totals.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+        totals.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(500),
+            PreRunnerCause::VendHttp,
+        );
+        totals.record_pre_runner_failure(
+            PreRunnerSite::FirstPushPersonal,
+            None,
+            PreRunnerCause::Unknown,
+        );
 
         assert_eq!(
             totals.pre_runner_failures.tag_value().as_deref(),
             Some("first_push:2,first_push_personal:1")
         );
-        assert_eq!(totals.pre_runner_failures.count(PreRunnerSite::FirstPush), 2);
-        assert_eq!(totals.pre_runner_causes.count(PreRunnerCause::ScopeExceedsParent), 1);
+        assert_eq!(
+            totals.pre_runner_failures.count(PreRunnerSite::FirstPush),
+            2
+        );
+        assert_eq!(
+            totals
+                .pre_runner_causes
+                .count(PreRunnerCause::ScopeExceedsParent),
+            1
+        );
         // Empty rollups render nothing, so a clean run stays byte-identical.
         assert_eq!(PreRunnerSiteRollup::default().tag_value(), None);
         assert_eq!(PreRunnerCauseRollup::default().tag_value(), None);
@@ -9816,7 +9883,10 @@ mod tests {
             Some("key_value_led:1")
         );
         assert_eq!(
-            unnamed.runner_error_residual_signature.tag_value().as_deref(),
+            unnamed
+                .runner_error_residual_signature
+                .tag_value()
+                .as_deref(),
             Some("ea4e65576be5:1")
         );
         // The residual feed did NOT perturb the cause axis: it still reads
@@ -9830,7 +9900,7 @@ mod tests {
         // A vocabulary-MATCHED cause and an UnknownNamed residual feed NEITHER new axis.
         for message in [
             "AccessDenied code=AccessDenied http=403 denied", // matched cause
-            "MysteryFleetError boom on the company leg",       // unknown_NAMED (has identity)
+            "MysteryFleetError boom on the company leg",      // unknown_NAMED (has identity)
         ] {
             let mut other = RunTotals::default();
             other.record_error(&SyncErrorEvent {
@@ -9896,7 +9966,10 @@ mod tests {
             with_residual.saw_alertable_error,
             without_residual.saw_alertable_error
         );
-        assert_eq!(with_residual.saw_node_too_old, without_residual.saw_node_too_old);
+        assert_eq!(
+            with_residual.saw_node_too_old,
+            without_residual.saw_node_too_old
+        );
         assert_eq!(
             with_residual.saw_genuine_crash_fatal,
             without_residual.saw_genuine_crash_fatal
@@ -9930,7 +10003,10 @@ mod tests {
                             with_residual.saw_alertable_error,
                             with_residual.saw_node_too_old,
                         );
-                        assert_eq!(base_c, res_c, "cancellation verdict changed at {code:?}/{signal:?}");
+                        assert_eq!(
+                            base_c, res_c,
+                            "cancellation verdict changed at {code:?}/{signal:?}"
+                        );
 
                         let base_f = classify_runner_exit_disposition_with_fault(
                             code,
@@ -9954,7 +10030,10 @@ mod tests {
                             with_residual.saw_genuine_crash_fatal,
                             &with_residual.runner_error_rollup,
                         );
-                        assert_eq!(base_f, res_f, "fault verdict changed at {code:?}/{signal:?}");
+                        assert_eq!(
+                            base_f, res_f,
+                            "fault verdict changed at {code:?}/{signal:?}"
+                        );
                     }
                 }
             }

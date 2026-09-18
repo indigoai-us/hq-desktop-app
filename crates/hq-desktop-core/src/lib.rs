@@ -40,6 +40,7 @@ macro_rules! print {
 pub mod activity;
 pub mod agency;
 pub mod agent_join;
+pub mod agent_usage_scan;
 pub mod bandwidth;
 pub mod banner;
 pub mod claude_launch;
@@ -84,9 +85,9 @@ pub mod oauth;
 pub mod paths;
 pub mod prewarm;
 pub mod process_stdio;
-pub mod qmd_abi;
 pub mod process_types;
 pub mod projects_local;
+pub mod qmd_abi;
 pub mod recall_sdk;
 pub mod recordings_ledger;
 pub mod release_channel;
@@ -97,14 +98,13 @@ pub mod runner_error_shape;
 pub mod runner_target;
 pub mod runtime_diagnosis;
 pub mod scope_gate;
+pub mod session_continuation;
 pub mod settings;
 pub mod share_notify;
 pub mod skill_catalog;
 pub mod staging;
 pub mod status;
 pub mod stdio;
-pub mod agent_usage_scan;
-pub mod session_continuation;
 pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
@@ -114,4 +114,3 @@ pub mod workspaces;
 
 #[cfg(test)]
 pub(crate) mod test_support;
-

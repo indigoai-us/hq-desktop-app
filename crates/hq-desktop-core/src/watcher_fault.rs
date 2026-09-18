@@ -1709,7 +1709,10 @@ mod tests {
         let rejected =
             attribute_watcher_fault(&[near_miss], &[6700], window.0, window.1, Some(0xC000_0409));
         assert_eq!(zero.provenance, WatcherFaultProvenance::NoRecords);
-        assert_eq!(rejected.provenance, WatcherFaultProvenance::RejectedOutOfWindow);
+        assert_eq!(
+            rejected.provenance,
+            WatcherFaultProvenance::RejectedOutOfWindow
+        );
         assert_eq!(rejected.counters.rejected_out_of_window, 1);
         assert_eq!(rejected.counters.rejected_stale, 0);
         assert_ne!(zero.provenance_token(), rejected.provenance_token());
@@ -1798,9 +1801,18 @@ mod tests {
             faulting_pid: Some(6700),
             event_time_unix_ms: Some(1_000_500),
         };
-        let stale = WerApplicationError { event_time_unix_ms: Some(400_000), ..base };
-        let no_time = WerApplicationError { event_time_unix_ms: None, ..base };
-        let near_miss = WerApplicationError { event_time_unix_ms: Some(2_000_000), ..base };
+        let stale = WerApplicationError {
+            event_time_unix_ms: Some(400_000),
+            ..base
+        };
+        let no_time = WerApplicationError {
+            event_time_unix_ms: None,
+            ..base
+        };
+        let near_miss = WerApplicationError {
+            event_time_unix_ms: Some(2_000_000),
+            ..base
+        };
         let mismatch = WerApplicationError {
             exception_code: Some(0xC000_0005),
             event_time_unix_ms: Some(1_000_400),
@@ -1809,18 +1821,34 @@ mod tests {
 
         // Stale only: every record predates the window start (or is untimebindable).
         // WER never published OUR record → deadline_expired, counted as `stale`.
-        let stale_only =
-            attribute_watcher_fault(&[stale, no_time], &[6700], window.0, window.1, Some(0xC000_0409));
-        assert_eq!(stale_only.provenance, WatcherFaultProvenance::DeadlineExpired);
+        let stale_only = attribute_watcher_fault(
+            &[stale, no_time],
+            &[6700],
+            window.0,
+            window.1,
+            Some(0xC000_0409),
+        );
+        assert_eq!(
+            stale_only.provenance,
+            WatcherFaultProvenance::DeadlineExpired
+        );
         assert_eq!(stale_only.counters.rejected_stale, 2);
         assert_eq!(stale_only.counters.rejected_out_of_window, 0);
         assert_eq!(stale_only.counters.rejected_code_mismatch, 0);
 
         // A near-miss (past the upper bound) wins the headline over a stale record,
         // but the stale count is still reported separately — no information lost.
-        let mixed =
-            attribute_watcher_fault(&[near_miss, stale], &[6700], window.0, window.1, Some(0xC000_0409));
-        assert_eq!(mixed.provenance, WatcherFaultProvenance::RejectedOutOfWindow);
+        let mixed = attribute_watcher_fault(
+            &[near_miss, stale],
+            &[6700],
+            window.0,
+            window.1,
+            Some(0xC000_0409),
+        );
+        assert_eq!(
+            mixed.provenance,
+            WatcherFaultProvenance::RejectedOutOfWindow
+        );
         assert_eq!(mixed.counters.rejected_out_of_window, 1);
         assert_eq!(mixed.counters.rejected_stale, 1);
 
@@ -1832,15 +1860,23 @@ mod tests {
             window.1,
             Some(0xC000_0409),
         );
-        assert_eq!(ranked.provenance, WatcherFaultProvenance::RejectedCodeMismatch);
+        assert_eq!(
+            ranked.provenance,
+            WatcherFaultProvenance::RejectedCodeMismatch
+        );
         assert_eq!(ranked.counters.rejected_code_mismatch, 1);
         assert_eq!(ranked.counters.rejected_out_of_window, 1);
         assert_eq!(ranked.counters.rejected_stale, 1);
 
         // A genuine binding still wins over every rejection class: a bound record
         // is never downgraded by the presence of stale or near-miss neighbours.
-        let bound =
-            attribute_watcher_fault(&[base, stale, near_miss], &[6700], window.0, window.1, Some(0xC000_0409));
+        let bound = attribute_watcher_fault(
+            &[base, stale, near_miss],
+            &[6700],
+            window.0,
+            window.1,
+            Some(0xC000_0409),
+        );
         assert_eq!(bound.provenance, WatcherFaultProvenance::PidMatched);
         assert!(bound.provenance.is_bound());
         assert_eq!(bound.image_token(), "node_exe");
@@ -2165,11 +2201,17 @@ mod tests {
                 ..Default::default()
             });
         assert_eq!(
-            stale_sparse.stronger_rejection(stale_rich).counters.rejected_stale,
+            stale_sparse
+                .stronger_rejection(stale_rich)
+                .counters
+                .rejected_stale,
             12
         );
         assert_eq!(
-            stale_rich.stronger_rejection(stale_sparse).counters.rejected_stale,
+            stale_rich
+                .stronger_rejection(stale_sparse)
+                .counters
+                .rejected_stale,
             12
         );
     }

@@ -639,10 +639,19 @@ mod tests {
         };
         let wire = serde_json::to_string(&result).unwrap();
 
-        assert!(!wire.contains("/Users/jane"), "leaked a customer path: {wire}");
-        assert!(!wire.contains("sk-liveSECRETVALUE1234"), "leaked a secret-shaped value: {wire}");
+        assert!(
+            !wire.contains("/Users/jane"),
+            "leaked a customer path: {wire}"
+        );
+        assert!(
+            !wire.contains("sk-liveSECRETVALUE1234"),
+            "leaked a secret-shaped value: {wire}"
+        );
         assert!(!wire.contains("vault.json"), "leaked a filename: {wire}");
-        assert_eq!(wire, r#"{"check":"storage","status":"fail","reason":"PERMISSION_DENIED"}"#);
+        assert_eq!(
+            wire,
+            r#"{"check":"storage","status":"fail","reason":"PERMISSION_DENIED"}"#
+        );
     }
 
     #[test]

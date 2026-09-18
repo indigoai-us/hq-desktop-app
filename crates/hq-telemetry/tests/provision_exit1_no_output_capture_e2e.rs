@@ -274,7 +274,10 @@ fn exit2_still_reports_as_validation() {
             None,
         ));
     });
-    assert!(matches!(err, Some(Err(CliProvisionError::Validation { .. }))));
+    assert!(matches!(
+        err,
+        Some(Err(CliProvisionError::Validation { .. }))
+    ));
     assert_eq!(events.len(), 1);
     let event = &events[0];
     assert_eq!(event.tags["provision_kind"], "validation");
