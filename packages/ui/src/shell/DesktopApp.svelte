@@ -284,8 +284,10 @@
   } from "../common/external-links.js";
   import {
     disambiguateMentionTargets,
+    mentionAllowedUids,
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
+    restrictMentionTargetsToChannel,
     mergeMentionRosters,
     stampMentionCompany,
     type MentionTarget,
@@ -5934,6 +5936,60 @@
     configureMeetingsApi(null);
   });
 
+  /** Everyone already IN the open channel. A teammate's personal bot is not on
+   * the company contacts roster (it has no membership), so without this a
+   * channel member could never @mention it — the picker said "No one matches"
+   * while the bot sat on the roster. */
+  const openChannelMentionTargets = $derived(
+    mentionTargetsFromContacts(
+      (selectedRow?.channelId
+        ? (channelRosterById[selectedRow.channelId.trim()] ?? [])
+        : []
+      ).map((member) => ({
+        personUid: member.personUid,
+        displayName: member.displayName,
+      })),
+    ),
+  );
+
+  /** The user's own local bots: never on the contacts roster, but @mentionable
+   * anywhere the user can add them. */
+  const localBotMentionTargets = $derived(
+    mentionTargetsFromContacts(
+      localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
+    ),
+  );
+
+  /**
+   * The display-name map spans every company and DM peer the app has seen, so
+   * on its own it offers people the open channel's server will always refuse
+   * with MENTION_PARTICIPANT_NOT_VISIBLE — including a SECOND entity for the
+   * same human, rendered identically to the one that works. Keep only rows the
+   * channel can actually accept (tenant roster ∪ channel members ∪ local bots);
+   * outside a company-scoped channel nothing is dropped.
+   */
+  const identityMentionTargets = $derived(
+    restrictMentionTargetsToChannel(
+      mentionTargetsFromContacts(
+        Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
+          personUid,
+          displayName,
+        })),
+      ),
+      {
+        channelCompanyUid: selectedRow?.channelId
+          ? mentionRosterCompanyUid
+          : null,
+        allowedUids: mentionAllowedUids(
+          mentionCandidates,
+          liveMentionTargets,
+          openChannelMentionTargets,
+          localBotMentionTargets,
+        ),
+      },
+    ),
+  );
+
   const mentionRoster = $derived(
     // Resolve companyUid → company label, then re-run disambiguation so two
     // survivors that share a display name render "Izzy (LiveRecover)" vs
@@ -5942,30 +5998,9 @@
       mergeMentionRosters(
         mentionCandidates,
         liveMentionTargets,
-        mentionTargetsFromContacts(
-          Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
-            personUid,
-            displayName,
-          })),
-        ),
-        // Everyone already IN the open channel. A teammate's personal bot is
-        // not on the company contacts roster (it has no membership), so
-        // without this a channel member could never @mention it — the picker
-        // said "No one matches" while the bot sat on the roster.
-        mentionTargetsFromContacts(
-          (selectedRow?.channelId
-            ? (channelRosterById[selectedRow.channelId.trim()] ?? [])
-            : []
-          ).map((member) => ({
-            personUid: member.personUid,
-            displayName: member.displayName,
-          })),
-        ),
-        // The user's own local bots: never on the contacts roster, but
-        // @mentionable anywhere the user can add them.
-        mentionTargetsFromContacts(
-          localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
-        ),
+        identityMentionTargets,
+        openChannelMentionTargets,
+        localBotMentionTargets,
       ).map((target) => {
         if (!target.companyUid || target.companyName) return target;
         const name = companyDisplayName(target.companyUid, companyNames);

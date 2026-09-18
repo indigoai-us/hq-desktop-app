@@ -1194,7 +1194,13 @@
       forgetLocalSends(localSends.filter((row) => row.eventId === eventId));
       localSends = localSends.filter((row) => row.eventId !== eventId);
       const raw = err instanceof Error ? err.message.trim() : "";
-      attachError = formatComposerSendError(raw, files.length > 0);
+      // The mention names go in so a denial can name who could not be tagged;
+      // the server answers with a code and a sentence, never the offending uid.
+      attachError = formatComposerSendError(
+        raw,
+        files.length > 0,
+        mentions.map((mention) => mention.displayName),
+      );
       restoreDraftAfterFailedSend(body);
     }
   }
