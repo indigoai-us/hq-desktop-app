@@ -18,6 +18,7 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -55,6 +56,7 @@ use crate::commands::install_stages::{
     clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
     OnboardingFailureScope,
 };
+use crate::util::logfile::log;
 
 tokio::task_local! {
     static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
@@ -3407,19 +3409,36 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
     if clear_unusable_npm_bin(std::path::Path::new(&prefix), "qmd") {
         emit_preflight_line(&app, "[qmd] removed an unusable leftover bin entry before reinstalling");
     }
-    let npm = match which::which_in(
-        "npm",
-        Some(extended_search_path()),
-        std::env::current_dir().unwrap_or_default(),
-    ) {
+    // Same-version npm install is a no-op and would leave a better-sqlite3
+    // binary compiled for a previous Node ABI in place. Wipe the package
+    // first so the install actually rebuilds native addons.
+    remove_managed_qmd_package(std::path::Path::new(&prefix));
+    let npm = match preferred_npm_binary() {
         Ok(p) => p,
-        Err(_) => {
-            let msg = "npm is not installed. Install Node.js first.";
-            emit_preflight_line(&app, msg);
-            return Err(msg.to_string());
+        Err(msg) => {
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
         }
     };
     npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"), "qmd").await
+}
+
+/// Prefer HQ's managed npm so qmd's native addons compile against the same
+/// Node ABI the desktop app puts first on PATH — not a newer nvm Node.
+#[cfg(not(windows))]
+fn preferred_npm_binary() -> Result<PathBuf, String> {
+    if let Some(home) = dirs::home_dir() {
+        let managed = managed_node_bin_in(&home).join("npm");
+        if managed.is_file() {
+            return Ok(managed);
+        }
+    }
+    which::which_in(
+        "npm",
+        Some(extended_search_path()),
+        std::env::current_dir().unwrap_or_default(),
+    )
+    .map_err(|_| "npm is not installed. Install Node.js first.".to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5364,6 +5383,7 @@ async fn install_claude_code_windows(app: AppHandle) -> Result<String, String> {
 #[cfg(windows)]
 async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
     emit_progress(&app, "Installing qmd via npm (@tobilu/qmd)...");
+    remove_managed_qmd_package(&managed_npm_prefix());
     let result = run_streaming(
         &app,
         "npm",
@@ -6856,7 +6876,66 @@ pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
 fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
     #[cfg(not(windows))]
     if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
-    dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
+    let status = check_dep_impl(dep.binary, None);
+    if !dep_status_satisfies(dep, &status) {
+        return false;
+    }
+    if dep.id == "qmd" {
+        return !qmd_native_needs_rebuild(&status);
+    }
+    true
+}
+
+fn remove_managed_qmd_package(prefix: &Path) {
+    for dir in hq_desktop_core::qmd_abi::managed_qmd_package_dirs(prefix) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+fn qmd_native_needs_rebuild(status: &DepStatus) -> bool {
+    use hq_desktop_core::qmd_abi::{probe_qmd_bin, qmd_needs_rebuild, QmdAddonProbe};
+    let version_ok = qmd_version_matches_pin(status.version.as_deref());
+    let probe = match status.path.as_deref() {
+        Some(path) => probe_qmd_bin(path, &extended_search_path()),
+        None => QmdAddonProbe::MissingAddon,
+    };
+    qmd_needs_rebuild(version_ok, probe)
+}
+
+static QMD_ABI_REPAIR_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Launch-time repair for a desktop-installed qmd whose sqlite addon was built
+/// for a different Node ABI than HQ's managed Node. Runs once per process.
+pub fn setup_qmd_abi_repair(app: &AppHandle) {
+    if QMD_ABI_REPAIR_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        let _ = repair_qmd_native_abi_if_needed(&handle).await;
+    });
+}
+
+pub(crate) async fn repair_qmd_native_abi_if_needed(app: &AppHandle) -> bool {
+    let status = check_dep_impl("qmd", None);
+    if !qmd_native_needs_rebuild(&status) {
+        return false;
+    }
+    log(
+        "qmd-abi",
+        "desktop-installed qmd sqlite addon does not load under the current Node — rebuilding",
+    );
+    match install_qmd(app.clone()).await {
+        Ok(_) => {
+            log("qmd-abi", "qmd rebuild finished");
+            true
+        }
+        Err(err) => {
+            log("qmd-abi", &format!("qmd rebuild failed: {err}"));
+            false
+        }
+    }
 }
 
 const HQ_CLI_ALREADY_INSTALLED_BY_CONCURRENT_UPDATER: &str =
@@ -9529,6 +9608,14 @@ mod dep_health_tests {
         let gh = dependency_defs().iter().find(|d| d.id == "gh").unwrap();
         let opt_no_version = DepStatus { installed: true, version: None, path: Some(PathBuf::from("/x/gh")) };
         assert!(dep_status_satisfies(gh, &opt_no_version));
+    }
+
+    #[test]
+    fn pinned_qmd_with_abi_mismatch_is_scheduled_for_rebuild() {
+        use hq_desktop_core::qmd_abi::{qmd_needs_rebuild, QmdAddonProbe};
+        assert!(qmd_needs_rebuild(true, QmdAddonProbe::AbiMismatch));
+        assert!(qmd_needs_rebuild(true, QmdAddonProbe::MissingAddon));
+        assert!(!qmd_needs_rebuild(true, QmdAddonProbe::Loads));
     }
 }
 

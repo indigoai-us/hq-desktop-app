@@ -83,6 +83,7 @@ pub mod oauth;
 pub mod paths;
 pub mod prewarm;
 pub mod process_stdio;
+pub mod qmd_abi;
 pub mod process_types;
 pub mod projects_local;
 pub mod recall_sdk;
