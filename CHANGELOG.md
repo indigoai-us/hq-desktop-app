@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.287] — 2026-09-18
+
 - When a file changes in two places at once, HQ now names the file. The app used to be told only how many files clashed, so the Core panel could say "2 files need you" without ever listing them, and the Keep local / Keep cloud buttons had nothing to act on. Each clashing file now arrives with its path, from both a sync you start and the automatic background sync, so the list of files to sort out is the real one.
 - Text you type in a message box is now the same size and spacing as the messages above it. The message box, the thread reply box and the messages themselves all read one shared setting, so typing no longer looks smaller than what you just sent.
 - Notifications about channel messages now say who sent the message ("Jacob Posel sent a message"), with the channel underneath as context and the sender's initials on the avatar. They used to name the channel as the sender, hash suffix and all ("#project-fleet-bots-ga-sprint-a61db44b sent a message").
