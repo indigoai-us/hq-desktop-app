@@ -166,7 +166,10 @@ describe('desktop-alt live pre-auth smoke (Windows)', () => {
     // state; see `setup_blocks_desktop_window` tests in tray.rs.
     expect(await app.invokeCommand<boolean>('desktop_alt_enabled')).toBe(false);
     await expect(app.invokeCommand('open_desktop_alt_window')).resolves.toBeUndefined();
-    expect(await app.hasDesktopAltWindow()).toBe(false);
+    // The refusal is synchronous in the open command, so a short settle is
+    // enough to prove no window appeared. Polling every WebView2 handle for the
+    // full 8s default only loads the runner before the quit test that follows.
+    expect(await app.hasDesktopAltWindow(2_000)).toBe(false);
   });
 
   it('runs the real quit path and exits the Windows process within its bound', async () => {
