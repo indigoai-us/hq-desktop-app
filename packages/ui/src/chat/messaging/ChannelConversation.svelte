@@ -102,6 +102,7 @@
   } from "./composer-drafts";
   import type { ConversationMessageWire } from "../chat-api";
   import { isReplyMessage } from "../live-messages";
+  import { copyableText } from "./conversation-copy";
   import {
     activeMentionQuery,
     applyMentionMarkup,
@@ -523,6 +524,26 @@
   let composerEmojiOpen = $state(false);
   /** eventId whose full emoji picker is open (message-row "+" trigger). */
   let reactPickerFor = $state<string | null>(null);
+  /** eventId whose "Copy" just succeeded — flips the label to "Copied". */
+  let copiedEventId = $state<string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Copy the visible message text (body + details) to the clipboard. */
+  async function copyMessage(msg: ConversationMessageWire): Promise<void> {
+    const text = copyableText(msg, "body");
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    copiedEventId = msg.eventId;
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedEventId = null;
+      copiedTimer = null;
+    }, 1500);
+  }
   let dragActive = $state(false);
   let dragDepth = 0;
   let pasteCounter = 0;
@@ -739,6 +760,7 @@
   onDestroy(() => {
     threadScroll.cancel();
     flushDraft();
+    if (copiedTimer) clearTimeout(copiedTimer);
   });
 
   const canSend = $derived(
@@ -1647,6 +1669,18 @@
                   >
                     Reply
                   </button>
+                  {#if copyableText(msg, "body")}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn dm-quick-copy"
+                      data-testid="message-copy"
+                      aria-label="Copy message text"
+                      title="Copy message"
+                      onclick={() => copyMessage(msg)}
+                    >
+                      {copiedEventId === msg.eventId ? "Copied" : "Copy"}
+                    </button>
+                  {/if}
                   {#if onstartsession}
                     <button
                       type="button"
@@ -2667,7 +2701,8 @@
     background: var(--c-field-bg);
   }
 
-  .dm-quick-reply {
+  .dm-quick-reply,
+  .dm-quick-copy {
     padding: 0 8px;
     color: var(--t1);
     font: 500 11px/1 var(--font-ui);
