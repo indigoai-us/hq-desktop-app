@@ -10,6 +10,7 @@
    */
   import { onDestroy, onMount } from 'svelte';
   import GradientField from './GradientField.svelte';
+  import DustField from './DustField.svelte';
   import '../../styles/design-system.css';
   import {
     BEAT_FADE_MS,
@@ -152,6 +153,7 @@
        irises open over it: HQ arrives in the room they are already in. -->
   <div class="field-mask" aria-hidden="true">
     <GradientField {hue} {intensity} still={reduced} />
+    <DustField still={reduced} />
   </div>
 
   <div class="drag-strip" data-tauri-drag-region></div>
@@ -256,6 +258,53 @@
               </li>
             {/each}
           </ul>
+        {/if}
+
+        {#if beat.kind === 'network' && beat.surfaces}
+          <div class="nstage" aria-hidden="true">
+            <svg class="nwire" viewBox="0 0 1100 400" fill="none" preserveAspectRatio="xMidYMid meet">
+              <!-- you → hub -->
+              <path class="w hot draw" d="M 150 200 H 300 V 200 H 470" pathLength="1" style="--d:1.15s" />
+              <!-- hub → team (five drops) -->
+              {#each [0, 1, 2, 3, 4] as i (i)}
+                <path class="w draw" d={`M 640 200 H 700 V ${92 + i * 54} H 760`} pathLength="1" style={`--d:${(1.9 + i * 0.07).toFixed(2)}s`} />
+                <circle class="wn pop-in" cx="760" cy={92 + i * 54} r="4" style={`--d:${(1.9 + i * 0.07).toFixed(2)}s`} />
+              {/each}
+              <!-- hub → bots -->
+              <path class="w hot draw" d="M 555 265 V 320" pathLength="1" style="--d:2.3s" />
+              <!-- capability rail -->
+              <path class="w draw" d="M 60 372 H 1040" pathLength="1" style="--d:3.05s" />
+              {#each beat.surfaces as cap, i (cap.name)}
+                <path class="w draw" d={`M ${160 + i * 200} 372 V 350`} pathLength="1" style={`--d:${(3.22 + i * 0.07).toFixed(2)}s`} />
+              {/each}
+            </svg>
+
+            <div class="you pop-in" style="--d:.95s"><span class="avatar">you</span></div>
+            <div class="hub pop-in" style="--d:.8s">
+              <span class="hub-ring"></span>
+              <span class="hub-label">company cloud</span>
+            </div>
+            <div class="team">
+              <span class="nlabel r" style="--d:1.3s">team</span>
+              {#each [0, 1, 2, 3, 4] as i (i)}
+                <span class="tdot pop-in" style={`--d:${(1.35 + i * 0.1).toFixed(2)}s; top:${92 + i * 54 - 14}px`}></span>
+              {/each}
+            </div>
+            <div class="bots">
+              <span class="nlabel r" style="--d:2.6s">agents</span>
+              {#each [0, 1, 2] as i (i)}
+                <span class="bot pop-in" style={`--d:${(2.72 + i * 0.07).toFixed(2)}s`}></span>
+              {/each}
+            </div>
+            <div class="caps">
+              {#each beat.surfaces as cap, i (cap.name)}
+                <span class="cap-item r" style={`--d:${(3.35 + i * 0.07).toFixed(2)}s`}>
+                  <span class="cap-name">{cap.name}</span>
+                  <span class="cap-meaning">{cap.meaning}</span>
+                </span>
+              {/each}
+            </div>
+          </div>
         {/if}
 
         {#if beat.kind === 'keyboard' && beat.highlightKeys}
@@ -479,8 +528,15 @@
     gap: 14px;
     text-align: center;
     padding: 0 8px;
-    transition: opacity 0.25s linear;
-    will-change: opacity;
+    transition: opacity 0.25s linear, filter 0.7s var(--ease), transform 0.9s var(--ease);
+    will-change: opacity, filter, transform;
+    filter: blur(6px);
+    transform: scale(1.02);
+  }
+
+  .beat.active {
+    filter: blur(0);
+    transform: scale(1);
   }
 
   .beat.still {
@@ -770,6 +826,68 @@
     text-overflow: ellipsis;
   }
 
+  /* ---- network (local folder, cloud team) --------------------------- */
+
+  .nstage {
+    position: relative;
+    width: min(1100px, calc(100vw - 120px));
+    aspect-ratio: 1100 / 400;
+    margin-top: 6px;
+    font-size: calc(min(1100px, 100vw - 120px) / 1100 * 16);
+  }
+
+  .nwire { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .nwire .w { stroke: rgba(255, 255, 255, 0.45); stroke-width: 2; }
+  .nwire .w.hot { stroke: #e56ab3; stroke-width: 2.4; }
+  .beat.active .nwire .w.draw { animation: draw 0.9s var(--ease) var(--d, 1s) forwards; }
+  .beat.active .nwire .wn.pop-in { animation: pop 0.5s var(--ease) var(--d, 2s) forwards; }
+
+  .pop-in { opacity: 0; }
+  .beat.active .pop-in { animation: pop 0.6s var(--ease) var(--d, 0.5s) forwards; }
+  .beat.still .pop-in, .beat.still .nwire .w, .beat.still .nwire .wn { animation: none; opacity: 1; stroke-dashoffset: 0; }
+
+  .you { position: absolute; left: 6%; top: 50%; transform: translate(-50%, -50%); }
+  .avatar {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 5.4em; height: 5.4em; border-radius: 50%;
+    background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.4);
+    box-shadow: 0 0 0 2px #e56ab3, 0 0 0 7px rgba(229, 106, 179, 0.18);
+    font-size: 0.85em; color: #fff; backdrop-filter: blur(14px);
+  }
+
+  .hub { position: absolute; left: 50.5%; top: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 0.6em; }
+  .hub-ring {
+    width: 8.6em; height: 8.6em; border-radius: 50%;
+    border: 2px solid transparent;
+    background:
+      radial-gradient(closest-side, rgba(139, 109, 240, 0.35), rgba(229, 106, 179, 0.12) 60%, transparent 72%) padding-box,
+      linear-gradient(96deg, #7de3f4, #8b6df0 35%, #e56ab3 70%, #f28a4b) border-box;
+    box-shadow: 0 0 40px rgba(139, 109, 240, 0.35);
+    animation: hubpulse 3.2s ease-in-out infinite;
+  }
+  @keyframes hubpulse { 50% { box-shadow: 0 0 64px rgba(229, 106, 179, 0.5); } }
+  .hub-label { font-size: 0.8em; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255, 255, 255, 0.75); }
+
+  .team { position: absolute; left: 69%; top: 0; height: 100%; }
+  .tdot { position: absolute; left: 0; width: 1.75em; height: 1.75em; border-radius: 50%; background: #fff; box-shadow: 0 0 14px rgba(255, 255, 255, 0.5); }
+  .nlabel { position: absolute; left: 0; top: 1.2em; font-size: 0.72em; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255, 255, 255, 0.6); }
+  .team .nlabel { top: 2.2em; }
+
+  .bots { position: absolute; left: 50.5%; top: 80%; transform: translateX(-50%); display: flex; gap: 0.8em; align-items: center; }
+  .bots .nlabel { position: static; margin-right: 0.4em; }
+  .bot {
+    width: 2.6em; height: 2.6em; border-radius: 0.7em;
+    border: 1.6px solid rgba(229, 106, 179, 0.85);
+    background: linear-gradient(145deg, rgba(229, 106, 179, 0.28), rgba(139, 109, 240, 0.14));
+    position: relative;
+  }
+  .bot::after { content: ''; position: absolute; inset: 33%; border-radius: 3px; background: #e56ab3; }
+
+  .caps { position: absolute; left: 0; right: 0; top: 96%; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1em; padding: 0 3.5%; text-align: center; }
+  .cap-item { display: flex; flex-direction: column; gap: 0.15em; }
+  .cap-name { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.85em; color: #fff; }
+  .cap-meaning { font-size: 0.72em; color: rgba(255, 255, 255, 0.68); }
+
   /* ---- keyboard ---------------------------------------------------- */
 
   .keyboard {
@@ -838,7 +956,11 @@
   .beat.active .key.lit {
     animation:
       rise 0.6s var(--ease) var(--kd, 0.7s) forwards,
-      keylight 0.9s var(--ease) 1.6s forwards;
+      keylight 0.9s var(--ease) 1.6s forwards,
+      keypulse 2.6s ease-in-out 2.5s infinite;
+  }
+  @keyframes keypulse {
+    50% { box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18), 0 0 0 5px rgba(229, 106, 179, 0.22), 0 14px 46px rgba(229, 106, 179, 0.7); }
   }
 
   @keyframes keylight {
@@ -881,6 +1003,7 @@
   /* ---- steps ------------------------------------------------------- */
 
   .steps {
+    position: relative;
     margin: 16px 0 0;
     padding: 0;
     list-style: none;
@@ -900,7 +1023,23 @@
     align-items: start;
   }
 
+  .steps::before {
+    content: '';
+    position: absolute;
+    left: 11.5px;
+    top: 24px;
+    bottom: 24px;
+    width: 1px;
+    background: linear-gradient(to bottom, #8b6df0, #e56ab3, #f28a4b);
+    transform: scaleY(0);
+    transform-origin: top;
+  }
+  .beat.active .steps::before { animation: growy 1.4s var(--ease) 0.9s forwards; }
+  @keyframes growy { to { transform: scaleY(1); } }
+
   .step-num {
+    position: relative;
+    z-index: 1;
     width: 24px;
     height: 24px;
     display: inline-flex;
@@ -963,7 +1102,7 @@
     display: block;
     width: 100%;
     height: 100%;
-    background: #fff;
+    background: linear-gradient(90deg, #7de3f4, #e56ab3);
     transform-origin: left center;
     transform: scaleX(0);
   }

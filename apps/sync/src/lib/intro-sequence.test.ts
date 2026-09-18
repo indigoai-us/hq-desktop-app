@@ -300,7 +300,7 @@ describe('beat content', () => {
 
   it('carries the payload its kind claims, and no other', () => {
     BEATS.forEach((beat) => {
-      expect(beat.surfaces !== undefined).toBe(beat.kind === 'surfaces' || beat.kind === 'folder');
+      expect(beat.surfaces !== undefined).toBe(['surfaces', 'folder', 'network'].includes(beat.kind));
       expect(beat.shortcuts !== undefined).toBe(beat.kind === 'shortcuts' || beat.kind === 'keyboard');
       expect(beat.highlightKeys !== undefined).toBe(beat.kind === 'keyboard');
       expect(beat.steps !== undefined).toBe(beat.kind === 'steps');

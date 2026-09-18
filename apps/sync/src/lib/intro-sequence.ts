@@ -23,7 +23,7 @@ export interface IntroBeat {
    * background tells the same story as the copy.
    */
   hue: number;
-  /** Present on `kind: 'surfaces'` and `kind: 'folder'`. */
+  /** Present on `kind: 'surfaces'`, `'folder'`, and `'network'` (the capability rail). */
   surfaces?: readonly SurfaceRow[];
   /** Present on `kind: 'shortcuts'` and `kind: 'keyboard'`. */
   shortcuts?: readonly ShortcutRow[];
@@ -135,7 +135,7 @@ export interface StepRow {
  * card; the others carry structured content that the intro renders as its own
  * layout. A beat's `holdMs` should scale with how much there is to read.
  */
-export type BeatKind = 'statement' | 'surfaces' | 'folder' | 'shortcuts' | 'keyboard' | 'steps';
+export type BeatKind = 'statement' | 'surfaces' | 'folder' | 'network' | 'shortcuts' | 'keyboard' | 'steps';
 
 export const INTRO_BEATS: readonly IntroBeat[] = [
   {
@@ -157,11 +157,18 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
   },
   {
     id: 'cloud',
-    kind: 'statement',
+    kind: 'network',
     title: 'Your folder is local. Your team is not.',
-    body: 'Sync keeps every machine the same. Secrets are injected at run time, never written to a file. Permissions decide who — and which agent — sees what.',
-    holdMs: 6500,
+    body: 'Every machine syncs to the same company cloud. People and agents share one context.',
+    holdMs: 11_000,
     hue: 0.42,
+    surfaces: [
+      { name: 'sync', meaning: 'Same on every machine' },
+      { name: 'secrets', meaning: 'Injected at run time' },
+      { name: 'permissions', meaning: 'Who sees which folder' },
+      { name: 'deploys', meaning: 'Anything becomes a link' },
+      { name: 'messages', meaning: 'People and agents, one thread' },
+    ],
   },
   {
     id: 'shortcuts',
