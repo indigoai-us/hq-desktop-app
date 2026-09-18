@@ -11,6 +11,7 @@
   import { onDestroy, onMount } from 'svelte';
   import GradientField from './GradientField.svelte';
   import DustField from './DustField.svelte';
+  import NetworkScene from './NetworkScene.svelte';
   import '../../styles/design-system.css';
   import {
     BEAT_FADE_MS,
@@ -200,23 +201,26 @@
           <div class="fstage" aria-hidden="true">
             <div class="fmove">
               <div class="fglow"></div>
-              <svg class="folder" viewBox="0 0 260 200" fill="none">
+              <svg class="folder" viewBox="0 0 240 176" fill="none">
                 <defs>
-                  <linearGradient id="fback" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0" stop-color="#8b6df0" /><stop offset="1" stop-color="#6b4fd6" />
-                  </linearGradient>
-                  <linearGradient id="ftab" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0" stop-color="#b79cff" /><stop offset="1" stop-color="#9b82f4" />
+                  <linearGradient id="fback" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#8f74f5" /><stop offset="1" stop-color="#6a4fd8" />
                   </linearGradient>
                   <linearGradient id="ffront" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0" stop-color="#7de3f4" /><stop offset="0.5" stop-color="#8b6df0" /><stop offset="1" stop-color="#e56ab3" />
+                    <stop offset="0" stop-color="#8ee6f6" /><stop offset="0.48" stop-color="#8b6df0" /><stop offset="1" stop-color="#e56ab3" />
+                  </linearGradient>
+                  <linearGradient id="fsheen" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#fff" stop-opacity=".28" /><stop offset="1" stop-color="#fff" stop-opacity="0" />
                   </linearGradient>
                 </defs>
-                <path d="M18 44 h74 l18 18 h132 a14 14 0 0 1 14 14 v100 a14 14 0 0 1 -14 14 H18 a14 14 0 0 1 -14 -14 V58 a14 14 0 0 1 14 -14z" fill="url(#fback)" />
-                <rect x="14" y="60" width="232" height="14" rx="6" fill="url(#ftab)" />
-                <rect class="sheet" x="52" y="66" width="150" height="110" rx="6" fill="#fff" transform="rotate(-4 127 121)" opacity=".9" />
-                <rect class="sheet" x="60" y="70" width="150" height="110" rx="6" fill="#fff" transform="rotate(3 135 125)" opacity=".95" />
-                <path d="M6 92 h248 a10 10 0 0 1 10 10 l-8 78 a14 14 0 0 1 -14 12 H22 a14 14 0 0 1 -14 -12 L0 102 a10 10 0 0 1 6 -10z" fill="url(#ffront)" />
+                <!-- back panel with tab -->
+                <path d="M14 30 a10 10 0 0 1 10 -10 h60 a10 10 0 0 1 7.5 3.4 L100 34 h116 a10 10 0 0 1 10 10 v108 a12 12 0 0 1 -12 12 H26 a12 12 0 0 1 -12 -12 z" fill="url(#fback)" />
+                <!-- sheets peeking out -->
+                <rect class="sheet" x="46" y="44" width="150" height="100" rx="6" fill="#fff" opacity=".92" transform="rotate(-3 121 94)" />
+                <rect class="sheet" x="52" y="48" width="150" height="100" rx="6" fill="#fff" transform="rotate(2.5 127 98)" />
+                <!-- front pocket, slightly shorter than the back -->
+                <path d="M8 74 a10 10 0 0 1 10 -10 h204 a10 10 0 0 1 10 10 v78 a12 12 0 0 1 -12 12 H20 a12 12 0 0 1 -12 -12 z" fill="url(#ffront)" />
+                <path d="M8 74 a10 10 0 0 1 10 -10 h204 a10 10 0 0 1 10 10 v22 H8 z" fill="url(#fsheen)" />
               </svg>
             </div>
 
@@ -266,58 +270,7 @@
         {/if}
 
         {#if beat.kind === 'network' && beat.surfaces}
-          <!-- Everything is positioned in one 1100x460 coordinate space so the
-               wires meet the nodes exactly: you (x=110,y=190), hub ring
-               (centre 550,190 r=70), five teammates (x=880, y=70..310),
-               three agents (y=340), rail at y=420. -->
-          <div class="nstage" aria-hidden="true">
-            <svg class="nwire" viewBox="0 0 1100 460" fill="none" preserveAspectRatio="none">
-              <!-- you → hub: from the avatar's edge to the ring's edge -->
-              <path class="w hot draw" d="M 154 190 H 478" pathLength="1" style="--d:1.15s" />
-              <!-- hub → team: trunk out of the ring, bus, five drops -->
-              <path class="w draw" d="M 622 190 H 760" pathLength="1" style="--d:1.85s" />
-              <path class="w draw" d="M 760 70 V 310" pathLength="1" style="--d:1.95s" />
-              {#each [0, 1, 2, 3, 4] as i (i)}
-                <path class="w draw" d={`M 760 ${70 + i * 60} H 866`} pathLength="1" style={`--d:${(2.05 + i * 0.07).toFixed(2)}s`} />
-              {/each}
-              <!-- hub → agents: down out of the ring to just above the squares -->
-              <path class="w hot draw" d="M 550 262 V 316" pathLength="1" style="--d:2.4s" />
-              <path class="w hot draw" d="M 470 316 H 630" pathLength="1" style="--d:2.55s" />
-              {#each [0, 1, 2] as i (i)}
-                <path class="w hot draw" d={`M ${470 + i * 80} 316 V 326`} pathLength="1" style={`--d:${(2.62 + i * 0.07).toFixed(2)}s`} />
-              {/each}
-              <!-- capability rail with five stubs -->
-              <path class="w draw" d="M 60 420 H 1040" pathLength="1" style="--d:3.05s" />
-              {#each beat.surfaces as cap, i (cap.name)}
-                <path class="w draw" d={`M ${160 + i * 195} 420 V 404`} pathLength="1" style={`--d:${(3.22 + i * 0.07).toFixed(2)}s`} />
-              {/each}
-            </svg>
-
-            <div class="nnode you pop-in" style="--d:.95s; --x:110; --y:190"><span class="avatar">you</span></div>
-
-            <div class="nnode hub pop-in" style="--d:.8s; --x:550; --y:190">
-              <span class="hub-ring"></span>
-              <span class="hub-core"></span>
-              <span class="hub-label">company cloud</span>
-            </div>
-
-            <span class="nnode nlabel r" style="--d:1.3s; --x:880; --y:34">team</span>
-            {#each [0, 1, 2, 3, 4] as i (i)}
-              <span class="nnode tdot pop-in" style={`--d:${(2.1 + i * 0.07).toFixed(2)}s; --x:880; --y:${70 + i * 60}`}></span>
-            {/each}
-
-            <span class="nnode nlabel r" style="--d:2.6s; --x:396; --y:346">agents</span>
-            {#each [0, 1, 2] as i (i)}
-              <span class="nnode bot pop-in" style={`--d:${(2.72 + i * 0.07).toFixed(2)}s; --x:${470 + i * 80}; --y:346`}></span>
-            {/each}
-
-            {#each beat.surfaces as cap, i (cap.name)}
-              <span class="nnode cap-item r" style={`--d:${(3.35 + i * 0.07).toFixed(2)}s; --x:${160 + i * 195}; --y:440`}>
-                <span class="cap-name">{cap.name}</span>
-                <span class="cap-meaning">{cap.meaning}</span>
-              </span>
-            {/each}
-          </div>
+          <NetworkScene active={position.index === index} still={reduced} caps={beat.surfaces} />
         {/if}
 
         {#if beat.kind === 'keyboard' && beat.highlightKeys}
@@ -610,8 +563,8 @@
     left: 50%;
     top: 50%;
     width: 240px;
-    height: 190px;
-    margin: -95px 0 0 -120px;
+    height: 176px;
+    margin: -88px 0 0 -120px;
     opacity: 0;
   }
 
@@ -840,83 +793,11 @@
     text-overflow: ellipsis;
   }
 
-  /* ---- network (local folder, cloud team) --------------------------- */
-
-  .nstage {
-    --nw: min(1100px, calc(100vw - 140px));
-    --u: calc(var(--nw) / 1100);
-    position: relative;
-    flex: 0 0 auto;
-    width: var(--nw);
-    height: calc(460 * var(--u));
-    margin-top: 4px;
-    font-size: calc(16 * var(--u));
-  }
-
-  .nwire { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-  .nwire .w { stroke: rgba(255, 255, 255, 0.5); stroke-width: 2; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-  .nwire .w.hot { stroke: #e56ab3; stroke-width: 2.4; filter: drop-shadow(0 0 6px rgba(229, 106, 179, 0.7)); }
-  .beat.active .nwire .w.draw { animation: draw 0.7s var(--ease) var(--d, 1s) forwards; }
-
-  /* Every node is centred on its (--x, --y) in the 1100x460 space. */
-  .nnode {
-    position: absolute;
-    left: calc(var(--x) * var(--u));
-    top: calc(var(--y) * var(--u));
-    transform: translate(-50%, -50%);
-  }
+  /* ---- network: drawn by NetworkScene.svelte ------------------------ */
 
   .pop-in { opacity: 0; }
   .beat.active .pop-in { animation: pop 0.6s var(--ease) var(--d, 0.5s) forwards; }
-  .beat.still .pop-in, .beat.still .nwire .w { animation: none; opacity: 1; stroke-dashoffset: 0; }
-
-  .avatar {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 5.5em; height: 5.5em; border-radius: 50%;
-    background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.4);
-    box-shadow: 0 0 0 2px #e56ab3, 0 0 0 8px rgba(229, 106, 179, 0.16), 0 0 30px rgba(229, 106, 179, 0.4);
-    font-size: 0.9em; color: #fff; backdrop-filter: blur(14px);
-  }
-
-  .hub { display: grid; place-items: center; }
-  .hub-ring, .hub-core { grid-area: 1 / 1; }
-  .hub-ring {
-    width: 8.75em; height: 8.75em; border-radius: 50%;
-    border: 2.5px solid transparent;
-    background: linear-gradient(96deg, #7de3f4, #8b6df0 35%, #e56ab3 70%, #f28a4b) border-box;
-    -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    animation: hubspin 14s linear infinite;
-    filter: drop-shadow(0 0 18px rgba(139, 109, 240, 0.6));
-  }
-  @keyframes hubspin { to { transform: rotate(360deg); } }
-  .hub-core {
-    width: 7.2em; height: 7.2em; border-radius: 50%;
-    background: radial-gradient(closest-side, rgba(255, 255, 255, 0.22), rgba(139, 109, 240, 0.28) 55%, rgba(229, 106, 179, 0.08) 80%, transparent);
-    backdrop-filter: blur(10px);
-    animation: hubbreathe 3.4s ease-in-out infinite;
-  }
-  @keyframes hubbreathe { 50% { transform: scale(1.06); } }
-  .hub-label {
-    grid-area: 1 / 1; align-self: start; margin-top: -1.9em;
-    font-size: 0.74em; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255, 255, 255, 0.78); white-space: nowrap;
-  }
-
-  .tdot { width: 1.9em; height: 1.9em; border-radius: 50%; background: #fff; box-shadow: 0 0 16px rgba(255, 255, 255, 0.6); }
-  .nlabel { font-size: 0.72em; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255, 255, 255, 0.62); white-space: nowrap; }
-
-  .bot {
-    width: 2.8em; height: 2.8em; border-radius: 0.75em;
-    border: 1.6px solid rgba(229, 106, 179, 0.9);
-    background: linear-gradient(145deg, rgba(229, 106, 179, 0.3), rgba(139, 109, 240, 0.14));
-    box-shadow: 0 0 18px rgba(229, 106, 179, 0.35);
-  }
-  .bot::after { content: ''; position: absolute; inset: 33%; border-radius: 3px; background: #e56ab3; }
-
-  .cap-item { display: flex; flex-direction: column; align-items: center; gap: 0.15em; transform: translate(-50%, 0); width: 11em; }
-  .cap-name { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.9em; color: #fff; }
-  .cap-meaning { font-size: 0.72em; color: rgba(255, 255, 255, 0.7); white-space: nowrap; }
+  .beat.still .pop-in { animation: none; opacity: 1; }
 
   /* ---- keyboard ---------------------------------------------------- */
 
