@@ -154,15 +154,15 @@
   data-testid="cinematic-intro"
   style={`--iris:${(irisRadius * 100).toFixed(2)}%; --field-opacity:${fieldOpacity.toFixed(3)};`}
 >
-  <!-- The window itself carries native frosted material, so what sits behind
-       this element is the person's own blurred desktop. The colour field
-       irises open over it: HQ arrives in the room they are already in. -->
+  <!-- The window is full screen and carries the native full-screen material,
+       so what sits behind this element is the person's own blurred desktop,
+       edge to edge. The colour field irises open over it: HQ arrives in the
+       room they are already in. There is no drag region — the film is not a
+       window the person should be able to shove off the screen mid-play. -->
   <div class="field-mask" aria-hidden="true">
     <GradientField {hue} {intensity} still={reduced} />
     <DustField still={reduced} />
   </div>
-
-  <div class="drag-strip" data-tauri-drag-region></div>
 
   <!-- One live region carries the whole film for screen readers: the visual
        cross-fade is decoration, the copy is the content. -->
@@ -360,7 +360,9 @@
     color: #fff;
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
-    border-radius: var(--radius-card);
+    /* Square corners: the film covers the entire display, and a rounded corner
+       on a full-screen sheet shows four notches of unblurred desktop. */
+    border-radius: 0;
   }
 
   .field-mask {
@@ -371,15 +373,6 @@
        runs past 100% so the circle clears the corners of a wide display. */
     clip-path: circle(var(--iris, 140%) at 50% 42%);
     will-change: clip-path, opacity;
-  }
-
-  .drag-strip {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 32px;
-    z-index: 5;
   }
 
   .sr-only {
