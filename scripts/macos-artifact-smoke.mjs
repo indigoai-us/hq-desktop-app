@@ -9,6 +9,13 @@
  * is no skip path. That is the hole that shipped v0.10.178: every check ran
  * as an Indigo user with conversations.
  *
+ * The isolated HOME is a machine that has FINISHED setup: a valid HQ folder
+ * (`core/core.yaml`), completed install/first-run markers, and the real `hq`
+ * CLI installed into the sandbox. The app refuses to open the desktop window
+ * while setup is unfinished (v0.10.292, #921), so a sign-in with no HQ folder
+ * or no `hq` on disk is classified `NeedsInstall` and never paints the shell.
+ * A signed-in person in the wild has both; the smoke must too.
+ *
  *   node scripts/macos-artifact-smoke.mjs --app path/to/HQ.app --version 0.10.179 --launch
  *   node scripts/macos-artifact-smoke.mjs --latest-json path/or/url --version 0.10.179
  *
@@ -28,6 +35,9 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEEP_LINK = "hqwork://open?channel=setup";
 export const SMOKE_TEMP_PREFIX = "hq-release-smoke-";
 export const CHILD_STOP_WAIT_MS = 1_000;
+/** npm spec for the CLI the app looks for; the same spec the app installs. */
+export const SMOKE_HQ_CLI_SPEC = "@indigoai-us/hq-cli";
+export const HQ_CLI_INSTALL_TIMEOUT_MS = 180_000;
 export const LATEST_JSON_FETCH_TIMEOUT_MS = 30_000;
 
 export function smokeError(message) {
@@ -124,6 +134,8 @@ export function parseBootLog(text) {
   return {
     shellReady: /shell_ready from UI/.test(source),
     windowCreated: /desktop-alt window created/.test(source),
+    setupRefused: /desktop window open refused: setup not finished/.test(source),
+    lifecycleState: /setup_lifecycle: state=([A-Za-z]+)/.exec(source)?.[1] ?? null,
     recoveryOpened: /recovery window opened/.test(source),
     watchdogTimeout: /watchdog timeout/.test(source),
   };
@@ -150,6 +162,11 @@ export function evaluateSmokeResult({
   if (log.watchdogTimeout) {
     throw smokeError(
       "boot watchdog timed out — conversation area never left the skeleton",
+    );
+  }
+  if (log.setupRefused) {
+    throw smokeError(
+      `the app classified the smoke machine as not set up (state=${log.lifecycleState ?? "unknown"}) and showed setup instead of the desktop window — the smoke HOME is missing an HQ folder or the hq CLI`,
     );
   }
   if (timedOut || !log.shellReady) {
@@ -219,6 +236,14 @@ export async function writeSmokeHome({ home, refreshToken }) {
   const hqDir = join(home, ".hq");
   const logsDir = join(hqDir, "logs");
   await mkdir(logsDir, { recursive: true });
+  // An installed HQ folder: `hq_root_valid` in the app's lifecycle is exactly
+  // "`core/core.yaml` exists under the resolved HQ path".
+  const hqRoot = join(home, "hq");
+  await mkdir(join(hqRoot, "core"), { recursive: true });
+  await writeFile(
+    join(hqRoot, "core", "core.yaml"),
+    'version: 1\nhqVersion: "12.0.0"\n',
+  );
   const tokens = {
     accessToken: "expired-smoke-access-token",
     idToken: null,
@@ -235,8 +260,14 @@ export async function writeSmokeHome({ home, refreshToken }) {
     `${JSON.stringify(
       {
         firstRunCompleted: true,
+        installCompleted: true,
         autoSyncNoticeShown: true,
         machineId: "release-smoke",
+        hqPath: hqRoot,
+        // A real token for a real account: never push the sandbox folder to
+        // its vault. The smoke is about the shell painting, not sync.
+        syncOnLaunch: false,
+        personalSyncEnabled: false,
         startAtLogin: false,
         widgetEnabled: false,
         autoUpdate: false,
@@ -250,7 +281,39 @@ export async function writeSmokeHome({ home, refreshToken }) {
   );
   const logPath = join(logsDir, "hq-sync.log");
   await writeFile(logPath, "", { mode: 0o600 });
-  return { hqDir, logPath };
+  return { hqDir, hqRoot, logPath };
+}
+
+/**
+ * Install the real `hq` CLI into the sandbox HOME at `~/.npm-global`, one of
+ * the directories the app searches for `hq`. The app's install gate only
+ * needs `hq` and `node` to resolve; `node` comes from the runner's PATH.
+ * Fails closed: without it the app shows setup and the smoke would fail
+ * later with a less direct message.
+ */
+export function installSmokeHqCli({
+  home,
+  spawnSyncImpl = spawnSync,
+  spec = SMOKE_HQ_CLI_SPEC,
+}) {
+  const prefix = join(home, ".npm-global");
+  const result = spawnSyncImpl(
+    "npm",
+    ["install", "--global", "--prefix", prefix, spec, "--no-audit", "--no-fund"],
+    {
+      env: { ...process.env, HOME: home, npm_config_cache: join(home, ".npm") },
+      encoding: "utf8",
+      timeout: HQ_CLI_INSTALL_TIMEOUT_MS,
+    },
+  );
+  const bin = join(prefix, "bin", "hq");
+  if (result.error || result.status !== 0 || !existsSync(bin)) {
+    const detail = String(result.error?.message ?? result.stderr ?? "").trim().slice(-400);
+    throw smokeError(
+      `could not install ${spec} into the smoke HOME (status=${result.status ?? "none"}): ${detail}`,
+    );
+  }
+  return { bin };
 }
 
 function bundleExecutableName(appPath) {
@@ -433,6 +496,7 @@ export async function runArtifactSmoke({
   sleep,
   mkdtempImpl = mkdtemp,
   removeHomeImpl = removeSmokeHome,
+  installHqCliImpl = installSmokeHqCli,
   warn = defaultWarn,
 }) {
   const refreshToken = requireNonIndigoRefreshToken(env);
@@ -457,6 +521,7 @@ export async function runArtifactSmoke({
   const home = await mkdtempImpl(join(tmpdir(), SMOKE_TEMP_PREFIX));
   try {
     const { logPath } = await writeSmokeHome({ home, refreshToken });
+    installHqCliImpl({ home });
     const { log, timedOut } = await launchAndWait({
       appPath: resolvedApp,
       home,
