@@ -1,5 +1,7 @@
 use chrono::Utc;
 use hq_desktop_core::first_run::{read_menubar, MenubarRead};
+#[cfg(not(windows))]
+use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
 use hq_desktop_core::lifecycle::{
     classify_lifecycle, hq_root_valid, menubar_flags, LifecycleInputs, LifecycleState,
 };
@@ -141,22 +143,33 @@ pub fn setup_lifecycle(app: &AppHandle) {
         install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
         consent_answered,
     };
-    // macOS only: HQ is installed only when hq and node are on this computer
-    // (and the CLI matches a bundled one, when the app carries one). Otherwise
-    // this launch is NeedsInstall and startup shows the installer. Not applied
-    // on Windows, where this readiness check is not certified.
+    // macOS only: HQ is installed only when hq and node are on this computer.
+    // A bundled CLI version mismatch is not "missing tools": auto-update
+    // restarts ship a new expected version before the existing CLI is
+    // upgraded, and treating that as NeedsInstall re-opens the Welcome card
+    // (feedback #2290). Not applied on Windows, where this readiness check
+    // is not certified.
     #[cfg(not(windows))]
-    let verdict = {
-        let tools_present = ["hq", "node"].iter().all(|name| {
-            paths::resolve_bin_with_kind(name).kind != paths::ResolvedProgramKind::NotResolved
-        }) && crate::commands::install_deps::bundled_hq_cli_ready(app);
-        hq_desktop_core::lifecycle::require_local_toolchain(
-            classify_lifecycle(inputs),
+    let (verdict, tools_present, bundled_cli_ready) = {
+        let hq_resolved =
+            paths::resolve_bin_with_kind("hq").kind != paths::ResolvedProgramKind::NotResolved;
+        let node_resolved =
+            paths::resolve_bin_with_kind("node").kind != paths::ResolvedProgramKind::NotResolved;
+        let tools_present = tools_present_for_lifecycle_gate(hq_resolved, node_resolved);
+        let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
+        (
+            hq_desktop_core::lifecycle::require_local_toolchain(
+                classify_lifecycle(inputs),
+                tools_present,
+            ),
             tools_present,
+            bundled_cli_ready,
         )
     };
     #[cfg(windows)]
     let verdict = classify_lifecycle(inputs);
+    #[cfg(windows)]
+    let (tools_present, bundled_cli_ready) = (true, true);
 
     if verdict.needs_install_backfill {
         match menubar_path.as_ref() {
@@ -215,7 +228,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     log(
         "lifecycle",
         &format!(
-            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} backfill={} first_run_backfill={}",
+            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={}",
             lifecycle_state_str(verdict.state),
             install_completed,
             first_run_completed,
@@ -225,6 +238,8 @@ pub fn setup_lifecycle(app: &AppHandle) {
             has_auth,
             inputs.install_in_progress,
             consent_answered,
+            tools_present,
+            bundled_cli_ready,
             verdict.needs_install_backfill,
             verdict.needs_first_run_backfill,
         ),

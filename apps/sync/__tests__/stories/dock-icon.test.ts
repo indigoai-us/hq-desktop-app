@@ -130,6 +130,19 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       expect(lifecycle).toMatch(/first_run \|\| state\.is_some_and\(lifecycle_keeps_main_window_visible\)/);
     });
 
+    it('does not treat a bundled CLI version mismatch as missing tools at launch', () => {
+      // Feedback #2290: v0.10.260 ANDed bundled_hq_cli_ready into tools_present,
+      // so every auto-update restart re-opened Welcome while hq and node were
+      // already on disk. The version check stays for dependency install.
+      const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
+      const setup = lifecycle.slice(lifecycle.indexOf('pub fn setup_lifecycle'));
+      const body = setup.slice(0, setup.indexOf('\n}\n'));
+      expect(body).toMatch(/tools_present_for_lifecycle_gate\(hq_resolved, node_resolved\)/);
+      expect(body).not.toMatch(
+        /tools_present[^\n]*=[^\n]*bundled_hq_cli_ready|&& crate::commands::install_deps::bundled_hq_cli_ready/,
+      );
+    });
+
     it('advances the cached lifecycle verdict when setup finishes so the same launch routes to the desktop', () => {
       const firstRun = readRepo('src-tauri/src/commands/first_run.rs');
       expect(firstRun).toMatch(/pub fn mark_first_run_complete\(app: AppHandle\)/);

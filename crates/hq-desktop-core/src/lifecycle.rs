@@ -74,6 +74,10 @@ pub struct LifecycleVerdict {
 /// workspace or a completion marker is not proof that this computer has the
 /// executables setup needs: missing tools return to installation, without
 /// backfilling completion markers. The installer then puts back what is missing.
+///
+/// "Tools present" means `hq` and `node` resolve on this computer. A bundled
+/// CLI *version* mismatch is not absence — see
+/// [`tools_present_for_lifecycle_gate`].
 pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -> LifecycleVerdict {
     if tools_present {
         verdict
@@ -84,6 +88,18 @@ pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -
             needs_first_run_backfill: false,
         }
     }
+}
+
+/// Whether the launch install-gate should treat local tools as present.
+///
+/// Only unresolved `hq` or `node` counts as missing. A release bundle can
+/// also require a matching CLI version (`bundled_hq_cli_ready`); that check
+/// belongs to dependency install, not launch. After an auto-update the new
+/// bundle's `version.txt` disagrees with the still-installed CLI until the
+/// updater runs, and treating that as `NeedsInstall` re-opens the Welcome
+/// card on every restart (feedback #2290 / v0.10.260).
+pub fn tools_present_for_lifecycle_gate(hq_resolved: bool, node_resolved: bool) -> bool {
+    hq_resolved && node_resolved
 }
 
 /// Desktop activation may not bypass the install wizard. This is distinct
@@ -133,6 +149,22 @@ pub fn welcome_setup_owed(menubar: &Map<String, Value>, hq_root_valid: bool) -> 
             !hq_root_valid || !first_run_completed
         }
     }
+}
+
+/// Should finishing the installer (re)arm `welcomeSetupPending`?
+///
+/// A brand-new install owes the welcome channel's guided run. Re-running the
+/// installer because launch misclassified the machine must not reset a
+/// finished welcome — otherwise `welcomeSetupCompletedAt` never sticks and
+/// the next restart looks like first-run again.
+pub fn should_arm_welcome_setup_pending(menubar: &Map<String, Value>) -> bool {
+    if menubar.get("welcomeSetupPending").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+    !menubar
+        .get("welcomeSetupCompletedAt")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
 }
 
 /// True when `root` exists and contains the installed hq-core template shape
@@ -566,6 +598,18 @@ mod tests {
     }
 
     #[test]
+    fn finishing_the_installer_does_not_rearm_a_completed_welcome() {
+        let brand_new = map(json!({}));
+        assert!(should_arm_welcome_setup_pending(&brand_new));
+        let still_owed = map(json!({ "welcomeSetupPending": true }));
+        assert!(should_arm_welcome_setup_pending(&still_owed));
+        let finished = map(json!({ "welcomeSetupPending": false }));
+        assert!(!should_arm_welcome_setup_pending(&finished));
+        let stamped = map(json!({ "welcomeSetupCompletedAt": "2026-09-16T13:13:12Z" }));
+        assert!(!should_arm_welcome_setup_pending(&stamped));
+    }
+
+    #[test]
     fn menubar_flags_defaults_absent_values_to_false() {
         assert_eq!(menubar_flags(&Map::new()), (false, false, false));
     }
@@ -668,6 +712,39 @@ mod toolchain_readiness_tests {
         assert_eq!(verdict.state, LifecycleState::NeedsInstall);
         assert!(installation_required(verdict.state));
         assert_eq!(require_local_toolchain(classify_lifecycle(inputs), true).state, LifecycleState::SteadyState);
+    }
+
+    #[test]
+    fn tools_present_for_lifecycle_gate_ignores_cli_version_mismatch() {
+        assert!(tools_present_for_lifecycle_gate(true, true));
+        assert!(!tools_present_for_lifecycle_gate(false, true));
+        assert!(!tools_present_for_lifecycle_gate(true, false));
+        assert!(!tools_present_for_lifecycle_gate(false, false));
+    }
+
+    #[test]
+    fn auto_update_restart_with_hq_and_node_does_not_reopen_installer() {
+        // Feedback #2290: v0.10.260 ANDed bundled CLI version match into
+        // tools_present. After an auto-update the new bundle's version.txt
+        // disagrees with the still-installed CLI, so the Welcome card came
+        // back even though hq, node, auth, and the HQ folder were healthy.
+        // config.json is often missing too; that must not change the result.
+        let inputs = LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
+        };
+        let classified = classify_lifecycle(inputs);
+        assert_eq!(classified.state, LifecycleState::SteadyState);
+        let tools = tools_present_for_lifecycle_gate(true, true);
+        let verdict = require_local_toolchain(classified, tools);
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
+        assert!(!installation_required(verdict.state));
     }
     #[test]
     fn completed_install_opens_desktop_and_incomplete_install_resumes_wizard() {
