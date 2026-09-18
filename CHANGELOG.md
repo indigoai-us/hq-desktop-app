@@ -9,6 +9,11 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Setup can no longer be skipped by accident. The welcome film teaches the Option+Shift+O shortcut, and pressing it during setup used to close the setup card and open the full HQ window with nothing installed underneath. Until setup finishes, that shortcut — and every other way of opening the HQ window — now brings the setup card back instead.
+- The small menu-bar panel has been removed for good. It stopped opening for signed-in people in the previous release, and the code behind it is now gone. Everything it used to show lives in the main HQ window. Setting up HQ for the first time and signing back in still happen in the small window as before, and the menu-bar icon, its unread count and its right-click menu are unchanged.
+- Unread dots in the small shared-file window now come from HQ's servers rather than a mark that only the menu-bar panel could update. They would otherwise have stopped changing once that panel was removed.
+
+## [0.10.291] — 2026-09-18
+
 - Messages in a channel now have a Copy button next to Reply. Hover a message and click Copy to put its text on your clipboard; the button reads "Copied" for a moment to confirm (#922).
 - "Replay welcome intro" now actually plays the welcome film. Choosing it from
   the menu-bar icon did nothing at all while you were signed in: the film plays
@@ -18,8 +23,6 @@ The release moves it under the version it ships in.
 - "Replay welcome intro" is also in the HQ menu at the top of the screen, right
   under "Recovery…", so you no longer have to find the menu-bar icon to watch it
   again.
-- The small menu-bar panel has been removed for good. It stopped opening for signed-in people in the previous release, and the code behind it is now gone. Everything it used to show lives in the main HQ window. Setting up HQ for the first time and signing back in still happen in the small window as before, and the menu-bar icon, its unread count and its right-click menu are unchanged.
-- Unread dots in the small shared-file window now come from HQ's servers rather than a mark that only the menu-bar panel could update. They would otherwise have stopped changing once that panel was removed.
 
 ### Documentation
 
