@@ -83,6 +83,25 @@
     col += u_c3 * b3;
     col *= u_intensity;
 
+    // God rays: a light just above the top edge throws soft shafts down the
+    // field. Two interfering angular waves give shafts that drift and breathe
+    // instead of rotating like a fan; the pow() sharpens them into rays.
+    vec2 lp = vec2(sin(t * 0.05) * 0.25, 0.92);
+    vec2 ld = p - lp;
+    float ang = atan(ld.y, ld.x);
+    float dist = length(ld);
+    float shaft = (sin(ang * 22.0 + t * 0.16) * 0.5 + 0.5)
+                * (sin(ang * 9.0 - t * 0.11 + 1.7) * 0.5 + 0.5)
+                * (sin(ang * 3.5 + t * 0.07) * 0.35 + 0.65);
+    shaft = pow(shaft, 2.6);
+    float reach = smoothstep(1.7, 0.05, dist) * smoothstep(-0.6, 0.35, -ld.y + 0.9);
+    vec3 rayTint = mix(u_c0, vec3(1.0), 0.55);
+    col += rayTint * shaft * reach * 0.42 * u_intensity;
+
+    // A slow aurora band drifting across the upper third, in the current hue.
+    float band = exp(-pow((p.y - 0.18 - sin(p.x * 1.3 + t * 0.12) * 0.09) * 5.5, 2.0));
+    col += mix(u_c1, u_c2, sin(t * 0.08) * 0.5 + 0.5) * band * 0.16 * u_intensity;
+
     // Dark base so white type stays legible over every part of the field.
     vec3 base = vec3(0.032, 0.032, 0.044);
     col = base + col * 1.15;
