@@ -149,6 +149,26 @@
     void sizeForOnboarding(showIntro ? INTRO_SIZE : ONBOARDING_SIZE, showIntro);
   });
 
+  /**
+   * The film is decoration in front of setup, so it must never be able to
+   * block setup. If `CinematicIntro` throws while mounting or rendering — a
+   * driver that cannot give a canvas at all, a shader that will not compile
+   * on this GPU — the sheet would otherwise sit there as a black rectangle
+   * with no way forward. Drop straight to the wizard instead, and treat the
+   * intro as seen so a deterministic failure on this machine cannot re-trap
+   * the person on every launch.
+   */
+  function handleIntroError(error: unknown) {
+    console.error('onboarding: cinematic intro failed, falling through', error);
+    if (mode === 'replay') {
+      void onfinish?.();
+      return;
+    }
+    markIntroSeen();
+    showIntro = false;
+    void sizeForOnboarding(ONBOARDING_SIZE);
+  }
+
   async function handleIntroFinish() {
     if (mode === 'replay') {
       // Nothing follows a replay. Unmounting restores the popover material
@@ -201,7 +221,13 @@
 </script>
 
 {#if showIntro}
-  <CinematicIntro onfinish={handleIntroFinish} />
+  <svelte:boundary onerror={handleIntroError}>
+    <CinematicIntro onfinish={handleIntroFinish} />
+    {#snippet failed()}
+      <!-- `handleIntroError` has already swapped in the wizard; render nothing
+           for the frame in between rather than a broken half-film. -->
+    {/snippet}
+  </svelte:boundary>
 {:else}
   <OnboardingWizard
     {initialStep}
