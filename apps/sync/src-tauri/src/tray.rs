@@ -391,7 +391,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         MenuItemBuilder::with_id(MENU_CHECK_UPDATES, "Check for updates…").build(app)?;
     let recovery = MenuItemBuilder::with_id(MENU_RECOVERY, "Recovery…").build(app)?;
     let replay_intro =
-        MenuItemBuilder::with_id(MENU_REPLAY_INTRO, "Replay welcome intro").build(app)?;
+        MenuItemBuilder::with_id(MENU_REPLAY_INTRO, REPLAY_INTRO_LABEL).build(app)?;
     let settings = MenuItemBuilder::with_id(MENU_SETTINGS, "Settings").build(app)?;
     let sign_out = MenuItemBuilder::with_id(MENU_SIGN_OUT, "Sign Out").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit HQ").build(app)?;
@@ -452,7 +452,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                         let _ = app_handle.emit("tray:sign-out", ());
                     }
                     id if id == MENU_REPLAY_INTRO => {
-                        let _ = app_handle.emit("tray:replay-intro", ());
+                        begin_replay_intro(&app_handle);
                     }
                     id if id == MENU_SETTINGS => {
                         let _ = app_handle.emit("tray:open-settings", ());
@@ -942,6 +942,60 @@ pub fn show_desktop_window_at(app: &AppHandle, route: Option<&str>) {
             crate::util::logfile::log("tray", &format!("desktop activation failed: {e}"));
         }
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Replay welcome intro
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Was the desktop window on screen when the replay started? The film plays on
+/// `main`, which means the desktop window is hidden for its duration; when the
+/// film ends the person must land back where they were, not on an empty
+/// popover.
+static REPLAY_RESTORE_DESKTOP: AtomicBool = AtomicBool::new(false);
+
+/// Menu-item label shared by every "Replay welcome intro" entry point (native
+/// helper menu, in-process tray menu, macOS application menu).
+pub const REPLAY_INTRO_LABEL: &str = "Replay welcome intro";
+
+/// Start the welcome film. The single code path behind every trigger.
+///
+/// Only `main` renders the film, and since PL-06 `main` is a hidden controller
+/// for a signed-in person — so emitting the event alone changes nothing
+/// visible. Bring `main` forward first (which also hides the desktop window),
+/// then tell it to play. `Onboarding.svelte` owns the sizing from there.
+pub fn begin_replay_intro(app: &AppHandle) {
+    let handle = app.clone();
+    // AppKit window ops must run on the main thread; callers reach this from
+    // the tray-helper poll thread and from menu-event callbacks.
+    let _ = app.run_on_main_thread(move || {
+        let desktop_visible = handle
+            .get_webview_window("desktop-alt")
+            .and_then(|win| win.is_visible().ok())
+            .unwrap_or(false);
+        REPLAY_RESTORE_DESKTOP.store(desktop_visible, Ordering::SeqCst);
+        show_popover_window(&handle);
+        let _ = handle.emit_to("main", "tray:replay-intro", ());
+    });
+}
+
+/// Put the surfaces back the way the replay found them.
+///
+/// Called by the frontend when the film finishes (or fails). If the desktop
+/// window was open when the replay started, it comes back and `main` hides;
+/// otherwise the popover simply stays where it was.
+pub fn end_replay_intro(app: &AppHandle) {
+    if !REPLAY_RESTORE_DESKTOP.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    hide_popover_window(app);
+    show_desktop_window(app);
+}
+
+/// Tauri command: the film ended — restore the pre-replay window arrangement.
+#[tauri::command]
+pub fn finish_replay_intro(app: AppHandle) {
+    end_replay_intro(&app);
 }
 
 /// Hide the `main` window and record the dismissal.
@@ -1521,6 +1575,7 @@ mod tests {
         assert_eq!(MENU_CHECK_UPDATES, "check-for-updates");
         assert_eq!(MENU_RECOVERY, "recovery");
         assert_eq!(MENU_REPLAY_INTRO, "replay-intro");
+        assert_eq!(REPLAY_INTRO_LABEL, "Replay welcome intro");
         assert_eq!(MENU_SIGN_OUT, "sign-out");
         assert_eq!(MENU_SETTINGS, "settings");
         assert_eq!(MENU_QUIT, "quit");

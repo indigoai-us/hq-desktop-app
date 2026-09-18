@@ -9,6 +9,14 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Messages in a channel now have a Copy button next to Reply. Hover a message and click Copy to put its text on your clipboard; the button reads "Copied" for a moment to confirm (#922).
+- "Replay welcome intro" now actually plays the welcome film. Choosing it from
+  the menu-bar icon did nothing at all while you were signed in: the film plays
+  in HQ's compact window, and that window stays hidden behind the main HQ
+  workspace, so nothing came to the front. HQ now brings the film forward, plays
+  it, and puts you back in the window you were in when it ends.
+- "Replay welcome intro" is also in the HQ menu at the top of the screen, right
+  under "Recovery…", so you no longer have to find the menu-bar icon to watch it
+  again.
 
 ### Documentation
 

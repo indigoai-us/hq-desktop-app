@@ -1312,10 +1312,11 @@
 
     unlisteners.push(
       await listen('tray:replay-intro', () => {
+        // The backend already brought `main` forward (and hid the desktop
+        // window) before emitting — `show_main_window` opens the DESKTOP
+        // window despite its name, so invoking it here is what used to send
+        // the film to a window nobody could see.
         replayIntro = true;
-        // The film lives on `main`; bring it forward so the sheet is visible
-        // even if the popover was closed.
-        void invoke('show_main_window').catch(console.error);
       })
     );
 
@@ -2435,6 +2436,8 @@
       mode="replay"
       onfinish={() => {
         replayIntro = false;
+        // Hand the person back to whatever was on screen before the film.
+        void invoke('finish_replay_intro').catch(console.error);
       }}
     />
   {:else if isOnboardingState(lifecycleState)}

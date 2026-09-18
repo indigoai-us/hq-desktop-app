@@ -761,6 +761,7 @@ fn main() {
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
             tray::set_tray_state,
+            tray::finish_replay_intro,
             updater::check_for_updates,
             updater::reinstall_latest_release,
             crate::recovery::shell_ready,

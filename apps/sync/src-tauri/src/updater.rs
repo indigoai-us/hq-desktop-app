@@ -1457,6 +1457,11 @@ pub async fn is_indigo_user() -> bool {
 pub const MENU_CHECK_FOR_UPDATES_ID: &str = "app-menu:check-for-updates";
 #[cfg(target_os = "macos")]
 pub const MENU_RECOVERY_ID: &str = "app-menu:recovery";
+/// Menu-item id for the macOS app-menu "Replay welcome intro" entry. Shares
+/// `crate::tray::begin_replay_intro` with the menu-bar item — one code path,
+/// two entry points.
+#[cfg(target_os = "macos")]
+pub const MENU_REPLAY_INTRO_ID: &str = "app-menu:replay-intro";
 
 /// Build the macOS application menu with a "Check for Updates…" item under
 /// About, keeping the standard app/Edit/Window entries (the app previously
@@ -1472,11 +1477,15 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
     let check_item =
         MenuItemBuilder::with_id(MENU_CHECK_FOR_UPDATES_ID, "Check for Updates…").build(app)?;
     let recovery_item = MenuItemBuilder::with_id(MENU_RECOVERY_ID, "Recovery…").build(app)?;
+    let replay_intro_item =
+        MenuItemBuilder::with_id(MENU_REPLAY_INTRO_ID, crate::tray::REPLAY_INTRO_LABEL)
+            .build(app)?;
     let app_menu = SubmenuBuilder::new(app, "HQ")
         .about(Some(AboutMetadata::default()))
         .separator()
         .item(&check_item)
         .item(&recovery_item)
+        .item(&replay_intro_item)
         .separator()
         .services()
         .separator()
@@ -1541,6 +1550,10 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         let id = event.id().as_ref();
         if id == MENU_RECOVERY_ID {
             crate::recovery::spawn_tray_open_recovery(handle.clone());
+            return;
+        }
+        if id == MENU_REPLAY_INTRO_ID {
+            crate::tray::begin_replay_intro(handle);
             return;
         }
         if let Some(shortcut_id) = shortcut_id_for_menu_item(id) {
@@ -1900,6 +1913,18 @@ pub fn setup_update_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The app-menu ids are the contract between the menu builder and its
+    /// event handler — a typo in either silently turns the item into a no-op.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_app_menu_id_constants() {
+        assert_eq!(MENU_CHECK_FOR_UPDATES_ID, "app-menu:check-for-updates");
+        assert_eq!(MENU_RECOVERY_ID, "app-menu:recovery");
+        assert_eq!(MENU_REPLAY_INTRO_ID, "app-menu:replay-intro");
+        // The menu-bar item and the app-menu item read the same to the user.
+        assert_eq!(crate::tray::REPLAY_INTRO_LABEL, "Replay welcome intro");
+    }
 
     fn update(version: &str, body: &str, detected_at: &str) -> UpdateInfo {
         UpdateInfo {
