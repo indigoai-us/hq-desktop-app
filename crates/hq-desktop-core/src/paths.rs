@@ -1019,10 +1019,28 @@ pub(crate) fn is_text_file_busy(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(ETXTBSY) || error.kind() == std::io::ErrorKind::ExecutableFileBusy
 }
 
-/// Windows has no `ETXTBSY`; only the portable kind can ever appear.
+/// Windows `ERROR_SHARING_VIOLATION` — the loader refused the image because
+/// another handle still holds it open without sharing.
+#[cfg(windows)]
+const ERROR_SHARING_VIOLATION: i32 = 32;
+
+/// Windows has no `ETXTBSY`, but it has the same real-world condition under a
+/// different number: while an installer is still writing the binary it holds an
+/// exclusive handle, and `CreateProcessW` fails with `ERROR_SHARING_VIOLATION`
+/// (os error 32) until that handle closes. Like `ETXTBSY` this is a statement
+/// about a WRITER, not about the program, so it is retryable for exactly the
+/// same reason. Os error 26 is NOT this condition on Windows — there it means
+/// `ERROR_NOT_DOS_DISK` — so the Unix errno is deliberately not honoured here.
 #[cfg(not(unix))]
 pub(crate) fn is_text_file_busy(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::ExecutableFileBusy
+    if error.kind() == std::io::ErrorKind::ExecutableFileBusy {
+        return true;
+    }
+    #[cfg(windows)]
+    if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION) {
+        return true;
+    }
+    false
 }
 
 /// Spawn with a bounded retry while the target binary is still `ETXTBSY`.

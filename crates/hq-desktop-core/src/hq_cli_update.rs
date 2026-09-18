@@ -14514,17 +14514,41 @@ mod tests {
     /// residual that a caller reads as a verdict. Before this, a parallel test
     /// binary (or a concurrent installer) that forked while a fixture's write
     /// fd was open turned the classification tests red on Linux.
+    ///
+    /// Windows spells the same condition `ERROR_SHARING_VIOLATION` (os error
+    /// 32) rather than `ETXTBSY`, so each platform is asserted with its own
+    /// errno here instead of the test being skipped off Unix.
     #[test]
     fn a_text_file_busy_spawn_is_a_retryable_transient_not_a_verdict() {
         use std::io::{Error, ErrorKind};
 
-        for busy in [
-            Error::from_raw_os_error(26),
-            Error::from(ErrorKind::ExecutableFileBusy),
-        ] {
+        // The portable kind is the one every platform must accept.
+        let busy = Error::from(ErrorKind::ExecutableFileBusy);
+        assert!(
+            is_transient_probe_io_error(&busy),
+            "a busy binary must be retried, not reported as a spawn verdict: {busy}"
+        );
+
+        // Each platform's own "the binary is still being written" errno, asserted
+        // as that platform's real answer rather than skipped: ETXTBSY (26) on
+        // Unix, ERROR_SHARING_VIOLATION (32) on Windows. The other platform's
+        // number must NOT be honoured — os error 26 on Windows is
+        // ERROR_NOT_DOS_DISK, an unrelated disk failure.
+        #[cfg(any(unix, windows))]
+        {
+            #[cfg(unix)]
+            let busy_errno = 26;
+            #[cfg(windows)]
+            let busy_errno = 32;
+            let native = Error::from_raw_os_error(busy_errno);
             assert!(
-                is_transient_probe_io_error(&busy),
-                "ETXTBSY must be retried, not reported as a spawn verdict: {busy}"
+                is_transient_probe_io_error(&native),
+                "the platform busy errno must be retried: {native}"
+            );
+            #[cfg(windows)]
+            assert!(
+                !is_transient_probe_io_error(&Error::from_raw_os_error(26)),
+                "os error 26 on Windows is ERROR_NOT_DOS_DISK, never a busy binary"
             );
         }
 
@@ -14534,7 +14558,7 @@ mod tests {
         let recovered = retry_transient_io(|| {
             attempts += 1;
             if attempts < 3 {
-                return Err(Error::from_raw_os_error(26));
+                return Err(Error::from(ErrorKind::ExecutableFileBusy));
             }
             Ok(attempts)
         })
@@ -14544,7 +14568,7 @@ mod tests {
         let mut forever = 0u32;
         let error = retry_transient_io(|| {
             forever += 1;
-            Err::<(), _>(Error::from_raw_os_error(26))
+            Err::<(), _>(Error::from(ErrorKind::ExecutableFileBusy))
         })
         .expect_err("a permanently busy program still fails");
         assert_eq!(
@@ -14560,7 +14584,16 @@ mod tests {
         assert!(!is_transient_probe_io_error(&Error::from(
             ErrorKind::PermissionDenied
         )));
-        assert!(!is_transient_probe_io_error(&Error::from_raw_os_error(8)));
+        #[cfg(unix)]
+        assert!(
+            !is_transient_probe_io_error(&Error::from_raw_os_error(8)),
+            "ENOEXEC is a verdict about the program, never a retry"
+        );
+        #[cfg(windows)]
+        assert!(
+            !is_transient_probe_io_error(&Error::from_raw_os_error(193)),
+            "ERROR_BAD_EXE_FORMAT is a verdict about the program, never a retry"
+        );
     }
 
     /// End-to-end proof on the platform that enforces `ETXTBSY`.
