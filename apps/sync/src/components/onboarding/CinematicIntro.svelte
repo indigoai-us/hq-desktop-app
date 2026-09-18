@@ -685,7 +685,7 @@
   }
 
   .beat.active .tspine.grow { animation: grow 1s var(--ease) var(--d, 2.7s) forwards; }
-  @keyframes grow { to { height: 186px; } }
+  @keyframes grow { to { height: 158px; } }
 
   .trow {
     position: relative;
@@ -737,7 +737,7 @@
     opacity: 1;
     transform: translateX(calc(var(--fw) * -0.36));
     stroke-dashoffset: 0;
-    height: 186px;
+    height: 158px;
   }
   .beat.still .w, .beat.still .wn, .beat.still .tspine { transform: none; }
 
