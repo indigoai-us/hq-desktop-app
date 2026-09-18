@@ -759,6 +759,25 @@ pub async fn start_recording(
         ),
     );
 
+    // Idempotent per window: a notification click is handled by every
+    // webview that listens for `notification:meeting-action` (the hidden
+    // controller and, when open, the desktop window), so the same click can
+    // arrive here twice. A second start would mint a second upload token and
+    // a second Recall recording of the same call.
+    if let Some(existing) = recordings_ledger::read_ledger()
+        .ok()
+        .and_then(|ledger| ledger.get(&window_id).cloned())
+    {
+        log(
+            LOG_TAG,
+            &format!(
+                "start_recording: already recording windowId={window_id} (recordingId={}) — no-op",
+                existing.recording_id
+            ),
+        );
+        return Ok(existing.recording_id);
+    }
+
     let (recording_id, upload_token) = match fetch_sdk_upload_token(company_uid.as_deref()).await {
         Ok(v) => v,
         Err(e) => {

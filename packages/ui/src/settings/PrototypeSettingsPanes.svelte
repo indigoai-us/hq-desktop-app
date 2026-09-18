@@ -27,7 +27,10 @@
    * claims to affect the native host is read from and written through it.
    */
   import { onMount } from "svelte";
-  import { startJitteredPoll } from "@hq/platform";
+  import {
+    startJitteredPoll,
+    type MeetingPermissionsSnapshot,
+  } from "@hq/platform";
   import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
@@ -68,6 +71,7 @@
   } from "../meetings/meetings-store.svelte";
   import { isRecordingWorkspace } from "../meetings/recording-membership.js";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
+  import { missingMeetingPermissions } from "../meetings/meeting-permissions";
 
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
@@ -133,6 +137,42 @@
   let calendarConnectMessage = $state<string | null>(null);
   let calendarConnectWarn = $state(false);
   let calendarDisconnectingId = $state<string | null>(null);
+
+  // Native meeting-detector permissions (macOS Accessibility, Screen
+  // Recording, Microphone). The detector never starts until all three are
+  // granted, and nothing else in the app asks for them — this row is the
+  // only way in (a fresh install with no row here has detection silently
+  // off). `null` = host cannot detect meetings, or not loaded yet.
+  let meetingPerms = $state<MeetingPermissionsSnapshot | null>(null);
+  let meetingPermsOpening = $state(false);
+  let meetingPermsError = $state<string | null>(null);
+  const meetingPermsMissing = $derived(
+    meetingPerms
+      ? missingMeetingPermissions(meetingPerms)
+      : [],
+  );
+
+  async function refreshMeetingPermissions(): Promise<void> {
+    if (!adapter || !canWatchMeetings) return;
+    const permissionsState = adapter.meetings.permissionsState;
+    if (typeof permissionsState !== "function") return;
+    const res = await permissionsState();
+    meetingPerms = res.ok ? res.value : null;
+  }
+
+  async function openMeetingPermissionsSetup(): Promise<void> {
+    if (!adapter || meetingPermsOpening) return;
+    meetingPermsOpening = true;
+    meetingPermsError = null;
+    try {
+      const res = await adapter.meetings.openPermissionsSetup();
+      if (!res.ok) {
+        meetingPermsError = "Couldn’t open the meeting permissions setup. Try again.";
+      }
+    } finally {
+      meetingPermsOpening = false;
+    }
+  }
   let appVersion = $state(version);
   const coreVersion = $derived(updateStore.coreVersion);
   const cliVersion = $derived(updateStore.cliVersion);
@@ -1002,6 +1042,7 @@
     // Re-read after returning from System Settings (v1 SettingsPage pattern).
     const onFocus = () => {
       void refreshNotifPermission();
+      void refreshMeetingPermissions();
       void refreshNativeSettings();
       void refreshVersions();
       if (section === "sync") void refreshLiveSync();
@@ -1019,6 +1060,7 @@
     void refreshVersions();
     void loadReleaseChannel();
     void refreshNativeSettings();
+    void refreshMeetingPermissions();
     if (adapter.isAvailable("canSync")) {
       void adapter.settings.getConfig().then((res) => {
         if (res.ok && !customHqRoot) {
@@ -1218,6 +1260,37 @@
       <span class="mono">{lists.active.length} ACTIVE</span>
     </div>
   {:else if section === "meetings"}
+    {#if canWatchMeetings && meetingPerms}
+      <div class="set-row" data-testid="settings-meeting-permissions">
+        <div>
+          <div class="sn">Meeting detection</div>
+          <div class="sd">
+            {#if meetingPerms.allRequiredGranted}
+              HQ can spot Zoom, Teams, and Meet calls on this Mac
+            {:else}
+              Off — HQ needs {meetingPermsMissing.join(", ")} to spot meetings on this Mac
+            {/if}
+            {#if meetingPermsError}
+              <div class="sd" role="alert" data-testid="settings-meeting-permissions-error">{meetingPermsError}</div>
+            {/if}
+          </div>
+        </div>
+        {#if meetingPerms.allRequiredGranted}
+          <span class="mono ok" data-testid="settings-meeting-permissions-ready">Ready</span>
+        {:else}
+          <button
+            type="button"
+            class="chip"
+            data-testid="settings-meeting-permissions-setup"
+            onclick={() => void openMeetingPermissionsSetup()}
+            disabled={meetingPermsOpening}
+            aria-busy={meetingPermsOpening}
+          >
+            {meetingPermsOpening ? "Opening…" : "Set up"}
+          </button>
+        {/if}
+      </div>
+    {/if}
     {#if canWatchMeetings}
       <div class="set-row">
         <div>

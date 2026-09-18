@@ -32,3 +32,7 @@ export {
 export { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
 export { isAlreadyScheduledError, isPlanRequiredError } from "./invite-errors";
 export { loadMeetingsCache, saveMeetingsCache } from "./meetings-cache";
+export {
+  meetingDetectionNeedsSetup,
+  missingMeetingPermissions,
+} from "./meeting-permissions";

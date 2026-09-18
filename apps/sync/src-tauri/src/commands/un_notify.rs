@@ -155,8 +155,11 @@ define_class!(
             completion: &Block<dyn Fn()>,
         ) {
             let kind = unsafe { response_kind(response) };
+            let window_id = unsafe { response_user_info_string(response, "windowId") };
+            let platform = unsafe { response_user_info_string(response, "platform") };
             if let Some(app) = DELEGATE_APP.get() {
                 let route = click_route_for_kind(&kind);
+                let action = click_action_for_kind(&kind, &window_id);
                 // Only meeting prompts carry a tray prompt badge to clear; DM /
                 // share notifications do not touch it.
                 if route == Some("meetings") {
@@ -170,6 +173,31 @@ define_class!(
                     // user-visible destination until bundled frontend cache
                     // eviction/reload has reached a terminal ready state.
                     crate::webview_asset_cache::wait_until_ready().await;
+
+                    // Start recording the meeting the banner named. The hidden
+                    // controller window's listener runs `start_recording`; the
+                    // Meetings screen (opened below) then shows it live.
+                    if let Some(action) = action {
+                        use tauri::Emitter;
+                        let payload = crate::events::NotificationMeetingActionEvent {
+                            action: action.to_string(),
+                            window_id: window_id.clone(),
+                            platform: platform.clone(),
+                            meeting_id: None,
+                        };
+                        crate::util::logfile::log(
+                            "notify",
+                            &format!("UN didReceive: meeting click → {action} windowId={window_id}"),
+                        );
+                        if let Err(e) =
+                            app.emit(crate::events::EVENT_NOTIFICATION_MEETING_ACTION, &payload)
+                        {
+                            crate::util::logfile::log(
+                                "notify",
+                                &format!("UN didReceive: emit notification:meeting-action failed: {e}"),
+                            );
+                        }
+                    }
 
                     if let Err(e) = crate::commands::desktop_alt::open_desktop_alt_window_inner(
                         app,
@@ -211,6 +239,12 @@ unsafe fn ns_string(s: &str) -> *mut AnyObject {
 /// notification (delivered before this key existed) reads as `""`, which the
 /// delegate treats as the meeting route.
 unsafe fn response_kind(response: *mut AnyObject) -> String {
+    unsafe { response_user_info_string(response, "kind") }
+}
+
+/// Read one string value out of a `UNNotificationResponse`'s `userInfo` by
+/// key. Empty when any hop is nil or the key is absent.
+unsafe fn response_user_info_string(response: *mut AnyObject, key: &str) -> String {
     if response.is_null() {
         return String::new();
     }
@@ -230,7 +264,7 @@ unsafe fn response_kind(response: *mut AnyObject) -> String {
     if user_info.is_null() {
         return String::new();
     }
-    let value: *mut AnyObject = msg_send![user_info, objectForKey: ns_string("kind")];
+    let value: *mut AnyObject = msg_send![user_info, objectForKey: ns_string(key)];
     if value.is_null() {
         return String::new();
     }
@@ -253,6 +287,25 @@ fn click_route_for_kind(kind: &str) -> Option<&'static str> {
     match kind {
         "dm" | "share" => None,
         _ => Some("meetings"),
+    }
+}
+
+/// What a body-click should *do* beyond navigating, keyed by `kind`.
+///
+/// A "Meeting detected" banner is the prompt to record that meeting, so
+/// clicking it must start the recording for the meeting it names — landing
+/// on the Meetings screen with a Record button still to press is a dead
+/// end (field report 2026-09-18: "the link just went to the HQ Desktop
+/// meetings — it should join the actual meeting"). The renderer's
+/// `notification:meeting-action` listener runs `start_recording(windowId)`
+/// for `"record"`. DM / share clicks carry no action.
+///
+/// Requires a window id: a legacy banner with no `windowId` in `userInfo`
+/// has nothing to record and just navigates.
+fn click_action_for_kind(kind: &str, window_id: &str) -> Option<&'static str> {
+    match (click_route_for_kind(kind), window_id.is_empty()) {
+        (Some("meetings"), false) => Some("record"),
+        _ => None,
     }
 }
 
@@ -479,7 +532,27 @@ fn deliver_osascript(title: &str, body: &str, kind: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{click_route_for_kind, osascript_notification_script};
+    use super::{click_action_for_kind, click_route_for_kind, osascript_notification_script};
+
+    #[test]
+    fn meeting_click_records_the_named_meeting() {
+        // A "Meeting detected" banner is the record prompt: clicking it must
+        // start recording that window, not just land on the Meetings screen.
+        assert_eq!(click_action_for_kind("meeting", "WIN-1"), Some("record"));
+        // Legacy banners delivered before `kind` existed carried a windowId too.
+        assert_eq!(click_action_for_kind("", "WIN-1"), Some("record"));
+    }
+
+    #[test]
+    fn meeting_click_without_a_window_only_navigates() {
+        assert_eq!(click_action_for_kind("meeting", ""), None);
+    }
+
+    #[test]
+    fn dm_and_share_clicks_carry_no_action() {
+        assert_eq!(click_action_for_kind("dm", "WIN-1"), None);
+        assert_eq!(click_action_for_kind("share", "WIN-1"), None);
+    }
 
     #[test]
     fn dm_and_share_clicks_open_the_default_inbox_view() {
