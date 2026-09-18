@@ -9,7 +9,7 @@
    * gradient that uses the same colours, so the surface is never blank.
    */
   import { onDestroy, onMount } from 'svelte';
-  import { sampleSpectrum, FIELD_SPECTRUM } from '../../lib/intro-sequence';
+  import { sampleSpectrum, reflect01, FIELD_SPECTRUM } from '../../lib/intro-sequence';
 
   interface Props {
     /** 0..1 along the brand spectrum. Drives the colour of the field. */
@@ -217,7 +217,7 @@
     // Four samples spread across the spectrum, offset from the current hue so
     // the bodies are related but never identical.
     const stops: Array<[number, number, number]> = [0, 0.18, 0.4, 0.62].map((offset) =>
-      sampleSpectrum((hue + offset) % 1, FIELD_SPECTRUM),
+      sampleSpectrum(reflect01(hue + offset), FIELD_SPECTRUM),
     ) as Array<[number, number, number]>;
     gl.uniform3f(uniforms.u_c0, ...stops[0]);
     gl.uniform3f(uniforms.u_c1, ...stops[1]);
@@ -320,7 +320,7 @@
   // Fallback colours track the same spectrum position as the shader would.
   const css = $derived.by(() => {
     const toCss = (t: number) => {
-      const [r, g, b] = sampleSpectrum(t % 1, FIELD_SPECTRUM);
+      const [r, g, b] = sampleSpectrum(reflect01(t), FIELD_SPECTRUM);
       return `rgb(${Math.round(r * 255)} ${Math.round(g * 255)} ${Math.round(b * 255)})`;
     };
     return {

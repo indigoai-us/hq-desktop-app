@@ -18,19 +18,19 @@
   const mouseEased = { x: 0.5, y: 0.5 };
 
   function seed(w: number, h: number) {
-    const bokeh: Mote[] = Array.from({ length: 26 }, () => ({
+    const bokeh: Mote[] = Array.from({ length: 14 }, () => ({
       x: Math.random() * w, y: Math.random() * h,
-      r: 10 + Math.random() * 34,
+      r: 5 + Math.random() * 13,
       vx: (Math.random() - 0.5) * 0.06, vy: -(0.02 + Math.random() * 0.06),
       ph: Math.random() * Math.PI * 2, sp: 0.3 + Math.random() * 0.5,
-      a: 0.035 + Math.random() * 0.07, big: true,
+      a: 0.025 + Math.random() * 0.045, big: true,
     }));
-    const fine: Mote[] = Array.from({ length: 160 }, () => ({
+    const fine: Mote[] = Array.from({ length: 520 }, () => ({
       x: Math.random() * w, y: Math.random() * h,
-      r: 0.9 + Math.random() * 2.4,
+      r: 0.35 + Math.random() * 1.1,
       vx: (Math.random() - 0.5) * 0.14, vy: -(0.05 + Math.random() * 0.2),
       ph: Math.random() * Math.PI * 2, sp: 0.5 + Math.random() * 1.1,
-      a: 0.12 + Math.random() * 0.4, big: false,
+      a: 0.08 + Math.random() * 0.34, big: false,
     }));
     motes = [...bokeh, ...fine];
   }
@@ -93,7 +93,7 @@
       }
       const tw = 0.55 + 0.45 * Math.sin(m.ph + now * 0.0011 * m.sp);
       ctx.globalAlpha = m.a * tw;
-      const d = m.r * 2 * (m.big ? 1.9 : 3.2);
+      const d = m.r * 2 * (m.big ? 2.0 : 2.6);
       ctx.drawImage(sprite, m.x - d / 2, m.y - d / 2, d, d);
     }
     ctx.globalAlpha = 1;
