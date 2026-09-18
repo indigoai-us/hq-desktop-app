@@ -359,6 +359,8 @@
   let listEl = $state<HTMLDivElement | null>(null);
   let suggestionsEl = $state<HTMLDivElement | null>(null);
   let confirmEl = $state<HTMLDivElement | null>(null);
+  /** The `Message … directly` button, so the confirm's tab ring can include it. */
+  let directEl = $state<HTMLButtonElement | null>(null);
   let slugInputEl = $state<HTMLInputElement | null>(null);
   let pickerInputEl = $state<HTMLInputElement | null>(null);
 
@@ -763,7 +765,7 @@
       // Same split as the click handler: a channel is a destination, a person
       // is the first member of something being composed.
       if (row.kind === "channel") onpick(row.row);
-      else enterCreateWithPerson(row);
+      else openPersonDirectly(row);
       return;
     }
     // Only the trailing create row may fall through here — a stale index into
@@ -814,49 +816,17 @@
   }
 
   /**
-   * Picking a PERSON from the find list starts a group, it does not navigate.
+   * Picking a PERSON from the find list opens the 1:1 DM with them.
    *
-   * Clicking the first name used to call `onpick` straight through, which
-   * opened that DM and tore the modal down — so a second person could never be
-   * added and a group was unreachable from here. Land in the create step with
-   * them already added instead: the "With" picker takes more people, the name
-   * field is required before Create, and the first message is optional.
-   * A one-to-one DM is still one click away (`Message … directly`).
+   * Selecting one person used to land in the create step with them staged as
+   * the first member of a channel, which put the New-channel form — and, for
+   * anyone outside the active workspace, a cross-company confirm — between the
+   * user and a plain DM. A DM needs no channel, so it does not ask for one.
+   * Groups are still reachable: the "Create channel #…" row and the lifecycle
+   * entry points open the create step, and its "With" picker takes people.
    */
-  function enterCreateWithPerson(row: FindRow): void {
-    const uid = row.row.personUid?.trim() ?? "";
-    // Staging a group is only worth it when this host can actually finish one.
-    // Without create/add-member seams the create step is a dead end — a
-    // disabled Create button and no way to add anybody — so opening the DM is
-    // strictly better than stranding the user there.
-    if (!uid || !canCreate || !canAddMembers) {
-      onpick(row.row);
-      return;
-    }
-    channelName = "";
-    slugOverride = null;
-    companyUid = defaultCompanyUid(activeScope, targetCompanies);
-    members = [
-      chipFor(
-        {
-          key: `${row.kind === "agent" ? "agent" : "person"}:${uid}`,
-          type: row.kind === "agent" ? "agent" : "person",
-          personUid: uid,
-          email: null,
-          label: row.label,
-          sublabel: row.sublabel,
-          companyUid: row.row.companyUid ?? null,
-        },
-        null,
-      ),
-    ];
-    syncScope();
-    firstMessage = "";
-    createError = null;
-    createUnconfirmed = false;
-    pickerQuery = "";
-    confirmPick = null;
-    step = "create";
+  function openPersonDirectly(row: FindRow): void {
+    onpick(row.row);
   }
 
   /**
@@ -1041,7 +1011,7 @@
       // here too rather than letting Tab escape to the page behind the overlay.
       if (event.key === "Tab") {
         const active = document.activeElement as HTMLElement | null;
-        if (active && trapRoot()?.contains(active)) return;
+        if (active && trapContains(active)) return;
         onDialogKey(event);
         return;
       }
@@ -1081,8 +1051,18 @@
    * itself — otherwise Tab walked straight out of the alertdialog into the
    * live form and let the user edit the very workspace being confirmed.
    */
-  function trapRoot(): HTMLElement | null {
-    return confirmSubject ? confirmEl : dialogEl;
+  function trapRoots(): HTMLElement[] {
+    if (!confirmSubject) return dialogEl ? [dialogEl] : [];
+    // `Message … directly` stays in the ring: it is the one control the
+    // question does not gate.
+    const roots: HTMLElement[] = [];
+    if (confirmEl) roots.push(confirmEl);
+    if (soleHumanMember && directEl) roots.push(directEl);
+    return roots;
+  }
+
+  function trapContains(node: HTMLElement): boolean {
+    return trapRoots().some((root) => root.contains(node));
   }
 
   function onDialogKey(event: KeyboardEvent): void {
@@ -1098,9 +1078,10 @@
       return;
     }
     if (event.key !== "Tab") return;
-    const items = [
-      ...(trapRoot()?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []),
-    ];
+    const items = trapRoots().flatMap((root) => [
+      ...root.querySelectorAll<HTMLElement>(FOCUSABLE),
+      ...(root.matches(FOCUSABLE) ? [root] : []),
+    ]);
     if (items.length === 0) return;
     event.preventDefault();
     const current = document.activeElement as HTMLElement | null;
@@ -1810,7 +1791,7 @@
                 onclick={() =>
                   item.row.kind === "channel"
                     ? onpick(item.row.row)
-                    : enterCreateWithPerson(item.row)}
+                    : openPersonDirectly(item.row)}
               >
                 {#if item.row.kind === "channel"}
                   <span class="create-glyph" aria-hidden="true">#</span>
@@ -2350,11 +2331,17 @@
         </p>
       {/if}
 
-      <div class="create-footer" inert={confirmSubject !== null}>
+      <!-- The confirm inerts the footer EXCEPT the direct-DM action: answering a
+           cross-company question is not a precondition for a 1:1 DM. -->
+      <div
+        class="create-footer"
+        inert={confirmSubject !== null && soleHumanMember === null}
+      >
         {#if soleHumanMember}
           <!-- Still one unnamed person: a plain DM needs no channel at all. -->
           <button
             type="button"
+            bind:this={directEl}
             class="create-direct"
             data-testid="chat-channel-message-directly"
             disabled={creating}
@@ -2374,7 +2361,7 @@
           type="button"
           class="create-submit"
           data-testid="chat-channel-create"
-          disabled={submitDisabled}
+          disabled={submitDisabled || confirmSubject !== null}
           aria-busy={creating}
           aria-describedby={blockReason ? "create-submit-reason" : undefined}
           onclick={() => void submitCreate()}
@@ -2462,8 +2449,9 @@
         </p>
         <p class="create-confirm-body">
           {confirmSubject.label} isn't listed in {workspaceLabel}. They'll be able
-          to read and post in #{slugCanonical} — nothing else. This does not give
-          them workspace membership or access to any files.
+          to read and post in {slugCanonical ? `#${slugCanonical}` : "this channel"}
+          — nothing else. This does not give them workspace membership or access
+          to any files.
         </p>
         <p class="create-confirm-body">
           People often belong to several workspaces, so they may already have
