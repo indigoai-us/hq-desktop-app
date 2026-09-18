@@ -82,7 +82,7 @@ describe('OAuth return focus (macOS + Windows)', () => {
     // the window is visible but buried behind the browser.
     const tray = readRepo('src-tauri/src/tray.rs');
     expect(tray).not.toContain('pub fn toggle_popover_window');
-    const idx = tray.indexOf('pub fn show_popover_window');
+    const idx = tray.indexOf('pub fn show_onboarding_window');
     expect(idx).toBeGreaterThan(-1);
     const body = tray.slice(idx, idx + 4200);
     expect(body).toContain('bring_webview_to_front');

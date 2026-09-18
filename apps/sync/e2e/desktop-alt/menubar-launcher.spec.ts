@@ -7,13 +7,14 @@ import { readRepoFile } from './harness';
  * Source-contract coverage for the menubar-click → desktop window path:
  *  1. tray_helper "show" command marshals to activate_primary_surface.
  *  2. activate_primary_surface opens desktop-alt (onboarding still uses main).
- *  3. Popover no longer carries the desktop-alt toggle chrome.
+ *
+ * The third leg — "the popover no longer carries desktop-alt chrome" — went
+ * away with the popover itself in PL-07.
  */
 
 describe('US-006: menubar launcher opens desktop view', () => {
   const trayHelper = readRepoFile('src-tauri/src/tray_helper.rs');
   const tray = readRepoFile('src-tauri/src/tray.rs');
-  const popover = readRepoFile('src/components/Popover.svelte');
   const compat = readRepoFile('src-tauri/src/commands/compat.rs');
   const banner = readRepoFile('src-tauri/src/commands/banner.rs');
   const history = readRepoFile('src-tauri/src/commands/notification_history.rs');
@@ -62,17 +63,5 @@ describe('US-006: menubar launcher opens desktop view', () => {
     );
     // Settings no longer round-trips through the hidden `main` controller.
     expect(appCmds).not.toContain("emit_to(\"main\", \"tray:open-settings\"");
-  });
-
-  it('popover no longer carries the desktop-alt toggle chrome', () => {
-    expect(popover).not.toContain('data-testid="desktop-alt-toggle"');
-  });
-
-  it('keeps compact sync status without a live progress bar', () => {
-    expect(popover).toContain('data-testid="popover-status-row"');
-    expect(popover).toContain('data-testid="popover-sync-sublabel"');
-    expect(popover).not.toContain('mbp-progress-track');
-    expect(popover).not.toContain('const barPct');
-    expect(popover).not.toContain('role="progressbar"');
   });
 });

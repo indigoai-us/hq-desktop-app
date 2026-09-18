@@ -121,13 +121,9 @@ describe('HQ-DESKTOP-39: framework composite listener handles', () => {
     // explicitly so dropping one back to the composite — or deleting its
     // subscription outright — fails here rather than silently reopening the
     // Sentry lane. The runtime proof for the shared mechanism is
-    // `e2e/desktop-alt/popover-listener-teardown.spec.ts` (real Popover) and
-    // against a faithful @tauri-apps/api double.
-    const migrated = [
-      'App.svelte',
-      'components/Popover.svelte',
-      'components/MeetingsWindow.svelte',
-    ];
+    // `e2e/desktop-alt/main-window-listener-teardown.spec.ts`, run against a
+    // faithful @tauri-apps/api double.
+    const migrated = ['App.svelte', 'components/MeetingsWindow.svelte'];
 
     for (const rel of migrated) {
       const source = stripComments(readFileSync(join(srcRoot, rel), 'utf8'));

@@ -206,7 +206,7 @@ pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
 #[tauri::command]
 pub async fn show_main_window_at_tray(app: AppHandle) -> Result<(), String> {
     crate::commands::desktop_alt::open_desktop_alt_window_inner(app.clone(), None).await?;
-    crate::tray::hide_popover_window(&app);
+    crate::tray::hide_onboarding_window(&app);
     Ok(())
 }
 

@@ -171,7 +171,7 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       const src = readRepo('src-tauri/src/tray.rs');
       const body = src.slice(src.indexOf('pub fn show_desktop_window_at'));
       const show = body.slice(0, body.indexOf('\n}\n'));
-      expect(show).not.toMatch(/show_popover_window/);
+      expect(show).not.toMatch(/show_onboarding_window/);
       expect(show).toContain('desktop activation failed: {e}');
     });
 

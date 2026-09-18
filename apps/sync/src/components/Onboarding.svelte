@@ -39,7 +39,7 @@
   // OFF (below), so this margin shows only the desktop + the card's soft CSS
   // shadow — no hard rectangular outline.
   const ONBOARDING_SIZE = new LogicalSize(780, 620);
-  const POPOVER_SIZE = new LogicalSize(288, 360);
+  const COMPACT_WINDOW_SIZE = new LogicalSize(288, 360);
   // The intro takes the whole screen. `responsiveOnboardingSize` clamps to the
   // monitor's work area, so an absurd request resolves to "as big as this
   // display allows" without this file having to know the display size.
@@ -134,7 +134,7 @@
     try {
       const win = getCurrentWindow();
       await win.setShadow(true).catch(() => {});
-      await win.setSize(POPOVER_SIZE);
+      await win.setSize(COMPACT_WINDOW_SIZE);
     } catch {
       // Non-Tauri / test environment.
     }

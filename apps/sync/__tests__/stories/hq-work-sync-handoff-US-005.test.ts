@@ -22,8 +22,6 @@ describe('US-005 reroute desktop-alt opens to HQ Work', () => {
   const dm = readRepo('src-tauri/src/commands/dm_notify.rs');
   const messages = readRepo('src-tauri/src/commands/messages.rs');
   const app = readRepo('src/App.svelte');
-  const popover = readRepo('src/components/Popover.svelte');
-  const feed = readRepo('src/components/NotificationFeed.svelte');
 
   describe('one seam', () => {
     it('adds LaunchHqWork to DesktopAltHandoffPlan', () => {
@@ -144,12 +142,13 @@ describe('US-005 reroute desktop-alt opens to HQ Work', () => {
   });
 
   describe('call sites stay on existing Tauri commands', () => {
-    it('Svelte still invokes open_desktop_alt_window / communications / dm_detail', () => {
+    it('Svelte still invokes open_desktop_alt_window / dm_detail', () => {
+      // PL-07 deleted Popover.svelte and NotificationFeed.svelte, which held
+      // the other call sites (`open_desktop_alt_window` with a route, and
+      // `open_communications_window`). The commands themselves stay — the
+      // Rust seam assertions above are what guard them.
       expect(app).toContain("invoke('open_desktop_alt_window')");
-      expect(popover).toContain("invoke('open_desktop_alt_window'");
-      expect(feed).toContain("invoke('open_desktop_alt_window'");
-      expect(feed).toContain("invoke('open_dm_detail'");
-      expect(popover).toContain("invoke('open_communications_window'");
+      expect(app).toContain("invoke('open_dm_detail'");
     });
 
     it('retains desktop-alt window code for flag-off rollback', () => {

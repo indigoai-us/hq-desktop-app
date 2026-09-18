@@ -18,7 +18,6 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { flushSync, mount, unmount } from 'svelte';
-import NotificationFeed from '../../src/components/NotificationFeed.svelte';
 import NotificationRow from '../../src/components/NotificationRow.svelte';
 
 const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
@@ -270,105 +269,21 @@ describe('visual hierarchy polish: shared notification row', () => {
   });
 });
 
-describe('visual hierarchy polish: bounded Inbox chronology', () => {
-  it('renders 60 of 224 rows initially, keeps full counts, and reveals the next page', async () => {
-    const onitemschange = vi.fn();
-    const onunreadchange = vi.fn();
-    component = mount(NotificationFeed, {
-      target: host,
-      props: {
-        density: 'comfortable',
-        onitemschange,
-        onunreadchange,
-      },
-    });
-    flushSync();
-
-    await vi.waitFor(() => {
-      flushSync();
-      expect(host.querySelectorAll('[data-testid="notification-row"]')).toHaveLength(60);
-    });
-
-    expect(onitemschange).toHaveBeenLastCalledWith(224);
-    expect(onunreadchange).toHaveBeenLastCalledWith(224);
-    const showMore = host.querySelector<HTMLButtonElement>(
-      '[data-testid="notification-show-more"]',
-    )!;
-    expect(showMore.textContent?.trim()).toBe('Show 60 more');
-
-    showMore.click();
-    flushSync();
-    expect(host.querySelectorAll('[data-testid="notification-row"]')).toHaveLength(120);
-    expect(onitemschange).toHaveBeenLastCalledWith(224);
-    expect(onunreadchange).toHaveBeenLastCalledWith(224);
-  });
-
-  it('forms complete file clusters before paginating rows and replaces dismissed slots', async () => {
-    const now = Date.now();
-    historyPayload = {
-      dms: Array.from({ length: 70 }, (_, index) => ({
-        eventId: `dm-${index}`,
-        fromPersonUid: `person-${index}`,
-        fromEmail: `person-${index}@example.com`,
-        fromDisplayName: `Person ${index}`,
-        body: `Notification ${index}`,
-        createdAt: new Date(now - 10_000 - index * 1_000).toISOString(),
-      })),
-      shares: [],
-      files: Array.from({ length: 100 }, (_, index) => ({
-        eventId: `file-${index}`,
-        path: `notes/file-${index}.md`,
-        addedBy: 'HQ Sync',
-        companySlug: 'indigo',
-        createdAt: new Date(now - index).toISOString(),
-      })),
-    };
-
-    component = mount(NotificationFeed, {
-      target: host,
-      props: { density: 'comfortable' },
-    });
-    flushSync();
-
-    await vi.waitFor(() => {
-      flushSync();
-      expect(host.querySelectorAll('[data-testid="notification-row"]')).toHaveLength(60);
-    });
-
-    const cluster = [...host.querySelectorAll<HTMLElement>('[data-testid="notification-row"]')]
-      .find((row) => row.textContent?.includes('100 new files in indigo'));
-    expect(cluster).toBeTruthy();
-    expect(
-      host.querySelector('[data-testid="notification-show-more"]')?.textContent,
-    ).toContain('Show 11 more');
-
-    cluster!.querySelector<HTMLButtonElement>('.nr-dismiss')!.click();
-    flushSync();
-
-    expect(host.querySelectorAll('[data-testid="notification-row"]')).toHaveLength(60);
-    expect(host.textContent).not.toContain('100 new files in indigo');
-    expect(
-      host.querySelector('[data-testid="notification-show-more"]')?.textContent,
-    ).toContain('Show 10 more');
-  });
-});
+// The "bounded Inbox chronology" cases that sat here mounted the tray
+// popover's NotificationFeed, deleted in PL-07. The desktop Inbox owns the
+// equivalent behaviour and covers it in
+// packages/ui/src/inbox/NotificationsView.test.ts (load-more paging, page
+// failure + retry, dismiss-without-marking-read) and
+// packages/ui/src/inbox/notifications-model.test.ts (day grouping, badge caps).
 
 describe('visual hierarchy polish: scoped surface contracts', () => {
   const row = read('src/components/NotificationRow.svelte');
-  const feed = read('src/components/NotificationFeed.svelte');
   const quickPane = read('src/components/QuickWindowSidePane.svelte');
-  const harness = read('dev-harness/mocks/core.ts');
 
-  it('caps initial chronology rendering without changing total or unread semantics', () => {
-    expect(feed).toContain("const INITIAL_RENDER_LIMIT = { compact: 32, comfortable: 60 } as const");
-    expect(feed).toContain('buildNotificationGroups(undismissedItems, Date.now()');
-    expect(feed).toContain('aggregateRepeatedMessagesAcrossDays: !showDayLabels');
-    expect(feed).toContain('group.rows.slice(0, rowsLeft)');
-    expect(feed).toContain('countUnread(visibleItems, lastReadTs)');
-    expect(feed).toContain('onitemschange?.(visibleItems.length)');
-    expect(feed).toContain('data-testid="notification-show-more"');
-    expect(feed).toContain(
-      'Show {Math.min(INITIAL_RENDER_LIMIT[density], remainingCount)} more',
-    );
+  it('caps the quick-window side pane without changing its unread semantics', () => {
+    // The pane caps rendered conversations; the attention badge counts the
+    // complete input so a capped rail cannot hide attention.
+    expect(quickPane).toContain('countUnreadConversations(items, unreadIds, viewedIds)');
+    expect(quickPane).toContain('conversationRows(items, unreadIds, viewedIds)');
   });
 });

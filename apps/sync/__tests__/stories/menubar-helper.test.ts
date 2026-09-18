@@ -162,7 +162,7 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     // `main` is repositioned on-screen (the off-screen tao rect dragged it
     // off the right edge) and the spurious auto-hide is suppressed. PL-05: the
     // only remaining caller is the onboarding / sign-in branch.
-    expect(tray).toContain('pub fn show_popover_window');
+    expect(tray).toContain('pub fn show_onboarding_window');
     expect(tray).toContain('suppress_blur_hide_briefly');
     expect(tray).toContain('set_position');
     // The user-summoned toggle is retired (decision D3).

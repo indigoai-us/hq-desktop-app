@@ -1,6 +1,5 @@
 <script lang="ts">
   import SettingsPage from '../src/desktop-alt/pages/SettingsPage.svelte';
-  import Popover from '../src/components/Popover.svelte';
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
@@ -24,7 +23,7 @@
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
-  import { popoverProps, bannerFixtures, workspaces } from './fixtures';
+  import { bannerFixtures, workspaces } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
@@ -153,14 +152,14 @@
   ];
 
   // View + theme driven by URL query so screenshots target a known state:
-  //   ?view=settings|popover|signin|banner|shell   ?theme=light|dark
+  //   ?view=settings|signin|banner|shell   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
   //   lifecycle view (channel-native company lifecycle, stateful mock) takes
   //     ?role=member (viewer.canAct=false everywhere) and ?state=blocked
-  // For the popover view, size the browser viewport to ~320x440 (the real
-  // window size) — the popover root fills 100vw/100vh. For settings, any
-  // viewport works; it renders centered on a desktop-ish backdrop.
+  // For the signin view, size the browser viewport to ~320x440 (the real
+  // `main` window size) — the sign-in root fills 100vw/100vh. For settings,
+  // any viewport works; it renders centered on a desktop-ish backdrop.
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'settings';
   const theme = params.get('theme') ?? 'dark';
@@ -183,24 +182,12 @@
     requestedOnboardingStep <= LAST_ONBOARDING_STEP
       ? requestedOnboardingStep
       : 0;
-  // ?state=error renders the "Sync initialized" notice banner.
-  // ?state=auth-error renders the calm reconnect state without red styling.
-  // Otherwise the popover mounts in its idle fixture state.
-  // (CLI-update overflow preview retired with US-001 chrome strip.)
+  // ?state=auth-error renders the calm reconnect state without red styling
+  // on the surfaces that still take it (the shell, the sign-in card).
   const stateOverride = params.get('state');
   // The routed session for ?view=sessions, owned here so the harness performs
   // the same navigate-and-remount the real shells do.
   let harnessSessionId = $state(params.get('session'));
-  const previewPopoverProps =
-    stateOverride === 'error'
-      ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
-      : stateOverride === 'auth-error'
-        ? {
-            ...popoverProps,
-            syncState: 'auth-error' as const,
-            errorMessage: 'Sign in once and HQ will resume automatically.',
-          }
-      : popoverProps;
 
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
   // and renders only after a `banner:event`. Set the attr + emit the fixture
@@ -325,10 +312,8 @@
   <!-- The banner fills 100vw/100vh (tight native window). Resize the preview
        viewport to ~366x104 to see it at real proportions. -->
   <BannerNotification />
-{:else if view === 'popover'}
-  <Popover {...previewPopoverProps} />
 {:else if view === 'signin'}
-  <!-- Auth-expiry recovery at the native 320x440 popover size. -->
+  <!-- Auth-expiry recovery at the native 320x440 `main` window size. -->
   <SignInPrompt reauth={true} />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
@@ -400,7 +385,7 @@
   </div>
 {:else}
   <!-- Settings now live in the desktop-alt window (US-005). Preview the V4
-       SettingsPage rather than the retired popover Settings.svelte. -->
+       SettingsPage rather than the retired Settings.svelte. -->
   <div class="desktop-stage" class:light={theme === 'light'}>
     <SettingsPage activeTab="sync" />
   </div>

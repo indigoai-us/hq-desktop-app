@@ -139,24 +139,25 @@ fn blur_hide_suppressed() -> bool {
     now_ms() < SUPPRESS_BLUR_UNTIL_MS.load(Ordering::SeqCst)
 }
 
-/// Set the first time the user explicitly dismisses the popover — Esc, the
-/// header close button, a tray toggle that hid it, or Cmd-W.
+/// Set the first time the user explicitly dismisses the `main` window — Esc, a
+/// tray toggle that hid it, or Cmd-W. Since PL-07 the only thing that window
+/// ever paints is the onboarding / consent / sign-in card.
 ///
-/// Read by [`should_hide_popover_on_blur`]. The onboarding blur-hide pin below
-/// is a *launch-time* verdict that never clears, so on a first-run / installer
-/// launch the popover kept ignoring click-away for the whole process lifetime,
-/// long after onboarding was done — the "I can't get rid of it" bug. An
-/// explicit dismissal proves the user is driving the window deliberately, so
+/// Read by [`should_hide_onboarding_card_on_blur`]. The onboarding blur-hide
+/// pin below is a *launch-time* verdict that never clears, so on a first-run /
+/// installer launch the window kept ignoring click-away for the whole process
+/// lifetime, long after onboarding was done — the "I can't get rid of it" bug.
+/// An explicit dismissal proves the user is driving the window deliberately, so
 /// from then on normal click-away dismissal is restored.
-static USER_DISMISSED_POPOVER: AtomicBool = AtomicBool::new(false);
+static USER_DISMISSED_ONBOARDING_CARD: AtomicBool = AtomicBool::new(false);
 
-/// Record an explicit user dismissal of the popover (see `USER_DISMISSED_POPOVER`).
-pub fn note_popover_dismissed() {
-    USER_DISMISSED_POPOVER.store(true, Ordering::SeqCst);
+/// Record an explicit user dismissal of the onboarding card (see `USER_DISMISSED_ONBOARDING_CARD`).
+pub fn note_onboarding_card_dismissed() {
+    USER_DISMISSED_ONBOARDING_CARD.store(true, Ordering::SeqCst);
 }
 
-fn popover_dismissed_by_user() -> bool {
-    USER_DISMISSED_POPOVER.load(Ordering::SeqCst)
+fn onboarding_card_dismissed_by_user() -> bool {
+    USER_DISMISSED_ONBOARDING_CARD.load(Ordering::SeqCst)
 }
 
 fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool {
@@ -532,13 +533,13 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     Ok(tray)
 }
 
-/// Inputs to [`should_hide_popover_on_blur`]. Grouped in a struct so the
-/// decision stays a pure function that can be unit-tested without a running
+/// Inputs to [`should_hide_onboarding_card_on_blur`]. Grouped in a struct so
+/// the decision stays a pure function that can be unit-tested without a running
 /// Tauri app or a real window.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlurHideInputs {
     /// A native modal (folder picker, save panel) is open. It steals key-window
-    /// status from the popover; hiding would unparent and dismiss the modal.
+    /// status from the card; hiding would unparent and dismiss the modal.
     pub modal_open: bool,
     /// One of OUR OWN secondary windows (drift / DM / share detail) is visible,
     /// i.e. focus moved within HQ rather than away from it.
@@ -551,18 +552,21 @@ pub(crate) struct BlurHideInputs {
     /// Onboarding / installer / OAuth is in flight, so a blur must not dismiss
     /// the surface the user is working through.
     pub onboarding_pin: bool,
-    /// The user has explicitly dismissed the popover at least once this
+    /// The user has explicitly dismissed the onboarding card at least once this
     /// process. Releases the onboarding pin, which is otherwise permanent.
     pub user_dismissed_once: bool,
 }
 
-/// Decide whether a `Focused(false)` on the popover should hide it.
+/// Decide whether a `Focused(false)` on the `main` window should hide it.
+///
+/// Named for what that window now shows: the onboarding / consent / sign-in
+/// card. The tray popover this protected was deleted in PL-07.
 ///
 /// Everything except `onboarding_pin` is an unconditional veto. The onboarding
 /// pin is a *soft* veto: it protects the installer from spurious blur until the
 /// user shows they can close the window on their own, after which click-away
 /// works normally again.
-pub(crate) fn should_hide_popover_on_blur(inputs: BlurHideInputs) -> bool {
+pub(crate) fn should_hide_onboarding_card_on_blur(inputs: BlurHideInputs) -> bool {
     if inputs.modal_open
         || inputs.secondary_window_open
         || inputs.env_disabled
@@ -612,7 +616,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         "macOS: menu-bar item provided by native helper (tao tray skipped)",
     );
 
-    // Hide the popover when the user clicks away. `window.hide()` preserves
+    // Hide the `main` window when the user clicks away. `window.hide()` preserves
     // the renderer state (DOM, Svelte stores, listeners), so re-showing is
     // instant. Only wired on macOS where the menubar popover pattern
     // expects click-off-to-dismiss.
@@ -641,7 +645,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     .webview_windows()
                     .iter()
                     .any(|(label, w)| label != "main" && w.is_visible().unwrap_or(false));
-                let should_hide = should_hide_popover_on_blur(BlurHideInputs {
+                let should_hide = should_hide_onboarding_card_on_blur(BlurHideInputs {
                     modal_open: is_modal_open(),
                     secondary_window_open: secondary_open,
                     env_disabled: disable_blur_hide,
@@ -649,7 +653,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     onboarding_pin: onboarding_window_requires_blur_suppression(
                         win_clone.app_handle(),
                     ),
-                    user_dismissed_once: popover_dismissed_by_user(),
+                    user_dismissed_once: onboarding_card_dismissed_by_user(),
                 });
                 handle_tray_blur_hide(should_hide, || {
                     let _ = win_clone.hide();
@@ -868,11 +872,12 @@ pub fn show_window_centered(app: &AppHandle) {
 // desktop workspace. One name, one handler.
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Popover ↔ desktop window management (toggle + single-window-at-a-time)
+// `main` ↔ desktop window management (toggle + single-window-at-a-time)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Only one primary HQ surface is ever on-screen at a time: the classic popover
-// (`main`) OR the desktop window (`desktop-alt`). Showing one hides the other.
+// Only one primary HQ surface is ever on-screen at a time: the onboarding /
+// sign-in card (`main`) OR the desktop window (`desktop-alt`). Showing one
+// hides the other.
 //
 // WindowRouter activation policy:
 //   Tray left-click / taskbar second-process / Dock → desktop workspace
@@ -880,7 +885,7 @@ pub fn show_window_centered(app: &AppHandle) {
 // Press again with the target open and it hides (toggle sources only).
 
 /// Hide the desktop window if it's open — enforces "only one HQ window at a
-/// time" whenever the popover is summoned.
+/// time" whenever the onboarding card is summoned.
 pub fn hide_desktop_alt(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("desktop-alt") {
         let _ = win.hide();
@@ -912,7 +917,7 @@ pub fn toggle_desktop_window(app: &AppHandle) {
             // on `main` — but only if `main` has anything to render. Since
             // PL-06 a signed-in person gets an empty `main`, so falling back to
             // it would put a blank transparent window on screen instead of an
-            // error. show_popover_window does AppKit window ops and must run on
+            // error. show_onboarding_window does AppKit window ops and must run on
             // the main thread.
             let authenticated = crate::commands::auth::get_auth_state(app_clone.clone())
                 .await
@@ -932,7 +937,7 @@ pub fn toggle_desktop_window(app: &AppHandle) {
             }
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
-                show_popover_window(&app_main);
+                show_onboarding_window(&app_main);
             });
         }
     });
@@ -991,7 +996,7 @@ pub fn show_desktop_window_at(app: &AppHandle, route: Option<&str>) {
 /// Was the desktop window on screen when the replay started? The film plays on
 /// `main`, which means the desktop window is hidden for its duration; when the
 /// film ends the person must land back where they were, not on an empty
-/// popover.
+/// onboarding card.
 static REPLAY_RESTORE_DESKTOP: AtomicBool = AtomicBool::new(false);
 
 /// Menu-item label shared by every "Replay welcome intro" entry point (native
@@ -1014,7 +1019,7 @@ pub fn begin_replay_intro(app: &AppHandle) {
             .and_then(|win| win.is_visible().ok())
             .unwrap_or(false);
         REPLAY_RESTORE_DESKTOP.store(desktop_visible, Ordering::SeqCst);
-        show_popover_window(&handle);
+        show_onboarding_window(&handle);
         let _ = handle.emit_to("main", "tray:replay-intro", ());
     });
 }
@@ -1023,12 +1028,12 @@ pub fn begin_replay_intro(app: &AppHandle) {
 ///
 /// Called by the frontend when the film finishes (or fails). If the desktop
 /// window was open when the replay started, it comes back and `main` hides;
-/// otherwise the popover simply stays where it was.
+/// otherwise the onboarding card simply stays where it was.
 pub fn end_replay_intro(app: &AppHandle) {
     if !REPLAY_RESTORE_DESKTOP.swap(false, Ordering::SeqCst) {
         return;
     }
-    hide_popover_window(app);
+    hide_onboarding_window(app);
     show_desktop_window(app);
 }
 
@@ -1043,8 +1048,8 @@ pub fn finish_replay_intro(app: AppHandle) {
 /// The onboarding → desktop handoff hands the user off to the desktop window,
 /// so the installer card must go away and the launch-time onboarding pin must
 /// stop suppressing click-away for the rest of the process.
-pub fn hide_popover_window(app: &AppHandle) {
-    note_popover_dismissed();
+pub fn hide_onboarding_window(app: &AppHandle) {
+    note_onboarding_card_dismissed();
     // Window ops must run on the main thread — this is called from an async
     // command body, which runs on a tokio worker.
     let handle = app.clone();
@@ -1061,20 +1066,22 @@ pub fn hide_popover_window(app: &AppHandle) {
 /// installer card instead of a workspace with nothing installed underneath.
 pub fn activate_primary_surface(app: &AppHandle) {
     if onboarding_window_requires_blur_suppression(app) {
-        show_popover_window(app);
+        show_onboarding_window(app);
         return;
     }
     show_desktop_window(app);
 }
 
-/// Show the popover (`main`) on-screen, hiding the desktop window first.
+/// Show the `main` window on-screen, hiding the desktop window first. Since
+/// PL-07 the only thing it ever paints is the onboarding / consent / sign-in
+/// card.
 ///
 /// Positions it top-right just under the menu bar — on macOS Tahoe the tao
 /// tray rect lives off-screen, so we place the window ourselves rather than
 /// anchoring to the (absent/parked) tray icon. Suppresses the spurious
 /// click-away hide that fires because the helper process, not HQ, is frontmost
 /// when this is invoked.
-pub fn show_popover_window(app: &AppHandle) {
+pub fn show_onboarding_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     suppress_blur_hide_briefly();
     hide_desktop_alt(app);
@@ -1091,7 +1098,7 @@ pub fn show_popover_window(app: &AppHandle) {
     if let Ok(size) = window.outer_size() {
         let win_w = size.width as f64;
 
-        // Preferred: anchor the popover under the menu-bar icon, on the SAME
+        // Preferred: anchor the card under the menu-bar icon, on the SAME
         // monitor the icon was clicked on. The native helper reports the icon's
         // horizontal centre in Cocoa screen POINTS, which span every display, so
         // a click on a secondary monitor carries an anchor inside that monitor's
@@ -1129,7 +1136,6 @@ pub fn show_popover_window(app: &AppHandle) {
         }
     }
     crate::util::window_focus::bring_webview_to_front(&window);
-    let _ = window.emit("popover:opened", ());
 }
 
 #[cfg(target_os = "windows")]
@@ -1465,7 +1471,7 @@ mod tests {
 
     #[test]
     fn blur_hides_the_popover_on_a_plain_click_away() {
-        assert!(should_hide_popover_on_blur(plain_blur()));
+        assert!(should_hide_onboarding_card_on_blur(plain_blur()));
     }
 
     #[test]
@@ -1501,7 +1507,7 @@ mod tests {
             ),
         ] {
             assert!(
-                !should_hide_popover_on_blur(inputs),
+                !should_hide_onboarding_card_on_blur(inputs),
                 "expected no hide while {label}"
             );
         }
@@ -1514,11 +1520,11 @@ mod tests {
             ..plain_blur()
         };
         assert!(
-            !should_hide_popover_on_blur(pinned),
+            !should_hide_onboarding_card_on_blur(pinned),
             "installer / first-run surface must survive a spurious blur"
         );
         assert!(
-            should_hide_popover_on_blur(BlurHideInputs {
+            should_hide_onboarding_card_on_blur(BlurHideInputs {
                 user_dismissed_once: true,
                 ..pinned
             }),
@@ -1530,13 +1536,13 @@ mod tests {
     fn an_explicit_dismissal_does_not_override_a_hard_veto() {
         // Esc / close-button history must not make a native picker or one of
         // our own detail windows dismiss the popover out from under the user.
-        assert!(!should_hide_popover_on_blur(BlurHideInputs {
+        assert!(!should_hide_onboarding_card_on_blur(BlurHideInputs {
             modal_open: true,
             onboarding_pin: true,
             user_dismissed_once: true,
             ..plain_blur()
         }));
-        assert!(!should_hide_popover_on_blur(BlurHideInputs {
+        assert!(!should_hide_onboarding_card_on_blur(BlurHideInputs {
             secondary_window_open: true,
             user_dismissed_once: true,
             ..plain_blur()
@@ -1544,11 +1550,11 @@ mod tests {
     }
 
     #[test]
-    fn note_popover_dismissed_latches_the_dismissal_flag() {
+    fn note_onboarding_card_dismissed_latches_the_dismissal_flag() {
         // Process-global latch: assert the transition, not the initial value —
         // other tests in this binary may have flipped it already.
-        note_popover_dismissed();
-        assert!(popover_dismissed_by_user());
+        note_onboarding_card_dismissed();
+        assert!(onboarding_card_dismissed_by_user());
     }
 
     #[test]

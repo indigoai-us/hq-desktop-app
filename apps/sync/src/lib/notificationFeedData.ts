@@ -1,17 +1,19 @@
 /**
- * Shared notification-feed data layer — used by both the menubar popover feed
- * (`components/NotificationFeed.svelte`) and the desktop combined Inbox page
- * (`desktop-alt/pages/InboxPage.svelte`, US-008).
+ * Shared notification-feed data layer. Its original consumers — the tray
+ * popover's feed and the desktop-alt Inbox page — are both gone; what reads it
+ * now is the share-detail quick window (`components/QuickWindowSidePane.svelte`
+ * and `components/NotificationRow.svelte`).
  *
  * Owns:
  *   - loading + merging the server notification history with the current
- *     session's activity log (moved verbatim from NotificationFeed.svelte),
- *   - the local "read" watermark (a persisted last-read timestamp) that drives
- *     unread dots, the tab badge, and Mark-all-read,
+ *     session's activity log,
+ *   - the server unread set (`fetchServerUnreadIds`) that drives unread dots,
  *   - small display helpers (relative timestamps, avatar initials).
  *
- * The read state is machine-local by design: the backend has no read-receipt
- * API, so a monotonic watermark in localStorage is the honest source of truth.
+ * The local read watermark this module used to own was deleted in PL-07: the
+ * popover's "Mark all read" was its only writer, so with the popover gone it
+ * could never advance and every dot would have frozen. Read state is the
+ * server's.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -352,48 +354,6 @@ export async function fetchServerUnreadIds(): Promise<ReadonlySet<string>> {
   }
   return ids;
 }
-
-// ── Read watermark ────────────────────────────────────────────────────────────
-
-const LAST_READ_KEY = 'hq-sync:notifications-last-read';
-
-export function getLastReadTs(): number {
-  try {
-    const raw = localStorage.getItem(LAST_READ_KEY);
-    const n = raw == null ? 0 : Number(raw);
-    return Number.isFinite(n) ? n : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Advance the watermark to now (Mark all read). Returns the new watermark.
- *  Broadcasts `hq:notifications-read` so in-window badge consumers (e.g. the
- *  V4 sidebar) recompute without a data refetch. */
-export function markAllNotificationsRead(now: number = Date.now()): number {
-  try {
-    localStorage.setItem(LAST_READ_KEY, String(now));
-  } catch {
-    // localStorage unavailable — unread dots just persist for the session.
-  }
-  try {
-    window.dispatchEvent(new CustomEvent('hq:notifications-read', { detail: { at: now } }));
-  } catch {
-    // Non-browser context (unit tests) — nothing to notify.
-  }
-  return now;
-}
-
-/** True when the item is newer than the read watermark. */
-export function isUnread(item: Item, lastReadTs: number): boolean {
-  return item.ts > lastReadTs;
-}
-
-export function countUnread(items: Item[], lastReadTs: number): number {
-  return items.reduce((n, it) => n + (isUnread(it, lastReadTs) ? 1 : 0), 0);
-}
-
-// ── Display helpers ───────────────────────────────────────────────────────────
 
 /** Compact relative timestamp for feed rows: "now", "2m", "3h", "5d", else "Jun 10". */
 export function relativeTime(ms: number, now: number = Date.now()): string {

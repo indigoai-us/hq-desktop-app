@@ -70,7 +70,7 @@ describe('US-005 acceptance: menubar icon click opens the desktop workspace', ()
     expect(trayRs).toContain('pub fn toggle_desktop_window');
     const fnIdx = trayRs.indexOf('pub fn toggle_desktop_window');
     expect(fnIdx).toBeGreaterThan(-1);
-    // Slice the function body (through show_popover_window fallback).
+    // Slice the function body (through show_onboarding_window fallback).
     const body = trayRs.slice(fnIdx, fnIdx + 1200);
     // Hide when already visible.
     expect(body).toMatch(/get_webview_window\("desktop-alt"\)/);
@@ -79,7 +79,7 @@ describe('US-005 acceptance: menubar icon click opens the desktop workspace', ()
     // Open via open_desktop_alt_window_inner when not visible.
     expect(body).toContain('open_desktop_alt_window_inner');
     // Signed-out / GA-gate Err → classic popover so SignInPrompt remains reachable.
-    expect(body).toMatch(/if let Err[\s\S]*?show_popover_window/);
+    expect(body).toMatch(/if let Err[\s\S]*?show_onboarding_window/);
   });
 
   it('non-macOS on_tray_icon_event left-click opens the desktop workspace', () => {

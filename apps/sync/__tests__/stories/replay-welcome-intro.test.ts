@@ -30,9 +30,9 @@ describe('replay welcome intro: the film reaches a window the user can see', () 
     const body = trayRs.slice(start, trayRs.indexOf('pub fn end_replay_intro'));
     // AppKit window ops from the helper poll thread / menu callbacks.
     expect(body).toContain('run_on_main_thread');
-    // Front the popover FIRST; the emit is useless on a hidden window.
-    expect(body.indexOf('show_popover_window')).toBeGreaterThan(-1);
-    expect(body.indexOf('show_popover_window')).toBeLessThan(
+    // Front the onboarding window FIRST; the emit is useless on a hidden window.
+    expect(body.indexOf('show_onboarding_window')).toBeGreaterThan(-1);
+    expect(body.indexOf('show_onboarding_window')).toBeLessThan(
       body.indexOf('emit_to("main", "tray:replay-intro"'),
     );
     // Remember the surface to hand back to when the film ends.
@@ -44,7 +44,7 @@ describe('replay welcome intro: the film reaches a window the user can see', () 
     const start = trayRs.indexOf('pub fn end_replay_intro');
     const body = trayRs.slice(start, start + 600);
     expect(body).toContain('REPLAY_RESTORE_DESKTOP.swap');
-    expect(body).toContain('hide_popover_window');
+    expect(body).toContain('hide_onboarding_window');
     expect(body).toContain('show_desktop_window');
     expect(trayRs).toContain('pub fn finish_replay_intro(app: AppHandle)');
     expect(mainRs).toContain('tray::finish_replay_intro');

@@ -28,14 +28,14 @@ pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
 /// The popover window is `decorations: false`, so it has no traffic-light close
 /// control, and `CloseRequested` only reaches it via Cmd-W. This is the
 /// explicit "make it go away" path. Besides hiding, it records the dismissal
-/// with `tray::note_popover_dismissed` so the launch-time onboarding pin stops
+/// with `tray::note_onboarding_card_dismissed` so the launch-time onboarding pin stops
 /// suppressing click-away for the rest of the process.
 #[tauri::command]
 pub fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "Main window is not available.".to_string())?;
-    crate::tray::note_popover_dismissed();
+    crate::tray::note_onboarding_card_dismissed();
     window.hide().map_err(|e| e.to_string())
 }
 
