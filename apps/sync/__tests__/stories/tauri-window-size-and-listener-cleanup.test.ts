@@ -33,7 +33,10 @@ describe('HQ-DESKTOP-38: main-window resize ACL', () => {
 
   it('keeps the permission paired with the legitimate resize callers', () => {
     expect(popover).toContain('getCurrentWindow().setSize');
-    expect(onboarding).toContain('win.setSize(await responsiveOnboardingSize())');
+    // The cinematic intro made the size a parameter (card vs. full-screen
+    // film), so the call passes `target` — but every resize still routes
+    // through the work-area clamp, which is what this pins.
+    expect(onboarding).toContain('win.setSize(await responsiveOnboardingSize(target))');
     expect(onboarding).toContain('win.setSize(POPOVER_SIZE)');
   });
 

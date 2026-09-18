@@ -168,6 +168,15 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     "signout" => {
                         let _ = app.emit("tray:sign-out", ());
                     }
+                    // Re-run the first-run welcome film on demand. The
+                    // frontend owns the sizing dance (full-screen frosted
+                    // sheet, then back to whatever was showing). Targeted at
+                    // `main`: that is the only window that renders the film,
+                    // so a broadcast would wake every other webview for an
+                    // event none of them listen for.
+                    "replay-intro" => {
+                        let _ = app.emit_to("main", "tray:replay-intro", ());
+                    }
                     "quit" => app.exit(0),
                     other => log("tray", &format!("native helper: unknown cmd '{other}'")),
                 }

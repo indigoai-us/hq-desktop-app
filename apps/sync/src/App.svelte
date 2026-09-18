@@ -103,6 +103,10 @@
   // carries the `prs_*` the "shown once" guard is keyed to. Server-authoritative
   // and fail-quiet: an unreachable server leaves this null and never blocks.
   let consentReprompt = $state<{ personUid: string } | null>(null);
+  // "Replay welcome intro" from the menu-bar menu. Re-runs the first-run film
+  // on the main window without touching the first-run flags; clears when the
+  // film ends or is skipped.
+  let replayIntro = $state(false);
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
   // True while a manual "Sync Now" owns the progress UI — its richer
   // stdout-driven stream (fanout-aware) drives the card. Gates out the
@@ -1307,6 +1311,15 @@
     );
 
     unlisteners.push(
+      await listen('tray:replay-intro', () => {
+        replayIntro = true;
+        // The film lives on `main`; bring it forward so the sheet is visible
+        // even if the popover was closed.
+        void invoke('show_main_window').catch(console.error);
+      })
+    );
+
+    unlisteners.push(
       await listen('tray:open-settings', () => {
         void invoke('open_desktop_alt_window', { route: 'settings' }).catch((e) => {
           console.error('tray open_desktop_alt_window (settings) failed:', e);
@@ -2416,6 +2429,14 @@
     <div class="loading">
       <span class="dot-spinner"></span>
     </div>
+  {:else if replayIntro}
+    <Onboarding
+      state="SteadyState"
+      mode="replay"
+      onfinish={() => {
+        replayIntro = false;
+      }}
+    />
   {:else if isOnboardingState(lifecycleState)}
     <Onboarding
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
