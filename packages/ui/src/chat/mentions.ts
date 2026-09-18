@@ -503,3 +503,50 @@ export function applyMentionMarkup(
   }
   return out;
 }
+
+/**
+ * Drop mention rows the open channel's server will always refuse.
+ *
+ * A company- or project-scoped channel accepts a mention only when the target
+ * is already on the channel roster, or is an active member of the channel's
+ * company (hq-pro-core notify-dm `resolveChannelMentions` →
+ * MENTION_PARTICIPANT_NOT_VISIBLE, 403, which rejects the WHOLE message).
+ * The desktop picker also merges a display-name map that spans every company
+ * and DM peer the app has ever seen, so it offered people who could never be
+ * tagged here — including a second entity for the SAME person (two
+ * "Jacob Posel" rows, one of them not an Indigo member). Picking the wrong one
+ * failed the send with no way for the user to tell the rows apart.
+ *
+ * `allowedUids` is the set the channel will accept: the tenant-scoped contacts
+ * roster, the channel's own members, and the user's local bots (a personal bot
+ * has no company membership by design and is evaluated as its owner).
+ *
+ * With no channel company (a DM, or a scope that never resolved) nothing is
+ * dropped — the visibility gate does not apply there.
+ */
+export function restrictMentionTargetsToChannel(
+  targets: readonly MentionTarget[],
+  args: {
+    channelCompanyUid?: string | null;
+    allowedUids: ReadonlySet<string>;
+  },
+): MentionTarget[] {
+  if (!args.channelCompanyUid?.trim()) return [...targets];
+  return targets.filter((target) =>
+    args.allowedUids.has(target.participantUid.trim()),
+  );
+}
+
+/** The uid set for {@link restrictMentionTargetsToChannel}. */
+export function mentionAllowedUids(
+  ...lists: Array<readonly MentionTarget[] | null | undefined>
+): Set<string> {
+  const uids = new Set<string>();
+  for (const list of lists) {
+    for (const row of list ?? []) {
+      const uid = row.participantUid.trim();
+      if (uid) uids.add(uid);
+    }
+  }
+  return uids;
+}

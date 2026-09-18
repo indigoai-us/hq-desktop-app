@@ -56,7 +56,10 @@
     type ChatAttachmentValidator,
     type ChatAttachmentWire,
   } from "./chat-attachments";
-  import { formatComposerSendError } from "./composer-send-error";
+  import {
+    formatComposerSendError,
+    isTerminalSendError,
+  } from "./composer-send-error";
   import AgentTaskStrip from "../tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../tasks/agent-tasks";
   import {
@@ -103,6 +106,14 @@
 
   interface LocalReply extends ConversationMessageWire {
     sendStatus?: "sending" | "failed";
+    /** Human reason a failed reply did not land — shown beside the row. */
+    sendError?: string;
+    /**
+     * The server refused the request itself (a mention it will never accept, a
+     * list over the cap). Retrying the identical payload always fails, so the
+     * row shows the reason WITHOUT a retry affordance.
+     */
+    sendFatal?: boolean;
   }
 
   interface Props {
@@ -690,9 +701,12 @@
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(mentions);
       startThinkingForThreadAgent(mentions);
-    } catch {
+    } catch (err) {
+      const failure = describeSendFailure(err, mentions);
       replies = replies.map((row) =>
-        row.eventId === localId ? { ...row, sendStatus: "failed" } : row,
+        row.eventId === localId
+          ? { ...row, sendStatus: "failed", ...failure }
+          : row,
       );
       agentThinking = [];
     } finally {
@@ -700,14 +714,42 @@
     }
   }
 
+  /**
+   * Turn a thrown send error into the row's human reason plus whether a retry
+   * could ever work. The adapter throws `[CODE] message`, so the code survives
+   * all the way here — dropping it (the old bare `catch {}`) left the user with
+   * "Failed — tap to retry" on a 4xx that no retry can fix.
+   */
+  function describeSendFailure(
+    err: unknown,
+    mentions: readonly MentionTarget[],
+  ): { sendError: string; sendFatal: boolean } {
+    const raw = err instanceof Error ? err.message.trim() : "";
+    return {
+      sendError: formatComposerSendError(
+        raw,
+        false,
+        mentions.map((mention) => mention.displayName),
+      ),
+      sendFatal: isTerminalSendError(raw),
+    };
+  }
+
   async function retrySend(eventId: string): Promise<void> {
     const failed = replies.find(
       (row) => row.eventId === eventId && row.sendStatus === "failed",
     );
-    if (!failed || sending) return;
+    if (!failed || failed.sendFatal || sending) return;
     sending = true;
     replies = replies.map((row) =>
-      row.eventId === eventId ? { ...row, sendStatus: "sending" } : row,
+      row.eventId === eventId
+        ? {
+            ...row,
+            sendStatus: "sending",
+            sendError: undefined,
+            sendFatal: undefined,
+          }
+        : row,
     );
     const retryMentions = mentionPayloadTargets(
       (failed.mentions ?? []).map((row) => ({
@@ -723,13 +765,23 @@
         retryMentions,
       );
       replies = replies.map((row) =>
-        row.eventId === eventId ? { ...row, sendStatus: undefined } : row,
+        row.eventId === eventId
+          ? {
+              ...row,
+              sendStatus: undefined,
+              sendError: undefined,
+              sendFatal: undefined,
+            }
+          : row,
       );
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(retryMentions);
-    } catch {
+    } catch (err) {
+      const failure = describeSendFailure(err, retryMentions);
       replies = replies.map((row) =>
-        row.eventId === eventId ? { ...row, sendStatus: "failed" } : row,
+        row.eventId === eventId
+          ? { ...row, sendStatus: "failed", ...failure }
+          : row,
       );
       agentThinking = [];
     } finally {
@@ -1153,6 +1205,14 @@
               {/if}
               {#if msg.sendStatus === "sending"}
                 <span class="reply-send-state" role="status">Sending…</span>
+              {:else if msg.sendStatus === "failed" && msg.sendFatal}
+                <span
+                  class="reply-send-state failed"
+                  data-testid="reply-panel-send-error"
+                  role="status"
+                >
+                  {msg.sendError ?? "Couldn't send this reply."}
+                </span>
               {:else if msg.sendStatus === "failed"}
                 <button
                   type="button"
@@ -1160,7 +1220,9 @@
                   data-testid="reply-panel-retry"
                   onclick={() => void retrySend(msg.eventId)}
                 >
-                  Failed — tap to retry
+                  {msg.sendError
+                    ? `${msg.sendError} Tap to retry.`
+                    : "Failed — tap to retry"}
                 </button>
               {/if}
             </div>

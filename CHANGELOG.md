@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - A test or development build of HQ running alongside your installed copy no longer shuts the installed copy down when it starts. Each build now only manages the startup entry and processes that belong to its own install.
+- When a reply in a thread fails to send, it now says why instead of just "Failed — tap to retry". If the message tagged someone the channel will not accept, it names the @mentions and tells you to remove the name, and it no longer offers a retry that could never work. A genuine connection problem still offers the retry.
+- The @mention list in a company channel no longer offers people that channel will always refuse. Tagging someone who is not in the company rejected the whole message, and when the same person had two entries the picker showed two identical names with no way to tell which one worked.
 
 ## [0.10.294] — 2026-09-18
 
