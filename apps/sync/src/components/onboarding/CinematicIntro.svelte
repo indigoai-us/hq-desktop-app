@@ -14,6 +14,7 @@
   import {
     BEAT_FADE_MS,
     INTRO_BEATS,
+    KEYBOARD_ROWS,
     OVERTURE_MS,
     beatAt,
     beatOpacity,
@@ -161,11 +162,6 @@
     {inOverture ? 'Welcome to HQ' : beats[position.index]?.title}
   </div>
 
-  <!-- A soft dark scrim sized to the copy block. The shader's own centre
-       scrim handles the general case, but the colour bodies drift, and a beat
-       that fills the stage with a table needs a guarantee, not a tendency. -->
-  <div class="stage-scrim" aria-hidden="true"></div>
-
   <div class="stage" aria-hidden="true">
     <div
       class="overture"
@@ -173,6 +169,7 @@
       style={`--p:${overtureProgress};`}
     >
       <div class="mark"><svg viewBox="0 0 280 161" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M85.7251 3.66162H118.034V154.434H85.7251V89.8175H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z" fill="currentColor"/><path d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0638C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z" fill="currentColor"/></svg></div>
+      <span class="grule" aria-hidden="true"></span>
       <p class="welcome">Welcome to HQ</p>
     </div>
 
@@ -180,18 +177,19 @@
       <div
         class="beat"
         class:still={reduced}
+        class:active={position.index === index}
         class:wide={beat.kind !== 'statement'}
         style={`opacity:${reduced ? (position.index === index ? 1 : 0) : beatOpacity(index, elapsed, beats)};`}
         data-beat={beat.id}
       >
-        <span class="ordinal">{String(index + 1).padStart(2, '0')}</span>
-        <h2 class="title" class:small={beat.kind !== 'statement'}>{beat.title}</h2>
-        <p class="body">{beat.body}</p>
+        <span class="ordinal r" style="--d:.1s">{String(index + 1).padStart(2, '0')}</span>
+        <h2 class="title r" class:small={beat.kind !== 'statement'} style="--d:.25s">{beat.title}</h2>
+        <p class="body r" style="--d:.4s">{beat.body}</p>
 
         {#if beat.kind === 'surfaces' && beat.surfaces}
           <dl class="surfaces">
-            {#each beat.surfaces as row (row.name)}
-              <div class="surface-row">
+            {#each beat.surfaces as row, i (row.name)}
+              <div class="surface-row r" style={`--d:${(0.55 + i * 0.15).toFixed(2)}s`}>
                 <dt class="surface-name">{row.name}</dt>
                 <dd class="surface-meaning">{row.meaning}</dd>
               </div>
@@ -201,8 +199,8 @@
 
         {#if beat.kind === 'shortcuts' && beat.shortcuts}
           <ul class="shortcuts">
-            {#each beat.shortcuts as row (row.does)}
-              <li class="shortcut-row">
+            {#each beat.shortcuts as row, i (row.does)}
+              <li class="shortcut-row r" style={`--d:${(0.55 + i * 0.1).toFixed(2)}s`}>
                 <span class="caps">
                   {#each row.keys as cap (cap)}
                     <kbd class="cap">{cap}</kbd>
@@ -214,10 +212,38 @@
           </ul>
         {/if}
 
+        {#if beat.kind === 'keyboard' && beat.highlightKeys}
+          <!-- A drawn keyboard. Every key rises in with a tiny stagger so the
+               board assembles itself, then the chord lights up last. -->
+          <div class="keyboard r" style="--d:.55s">
+            {#each KEYBOARD_ROWS as row, ri (ri)}
+              <div class="krow">
+                {#each row as key, ki (key.id)}
+                  <span
+                    class="key"
+                    class:lit={beat.highlightKeys.includes(key.id)}
+                    class:mod={key.glyph !== undefined}
+                    style={`--w:${key.w ?? 1}; --kd:${(0.7 + ri * 0.07 + ki * 0.018).toFixed(3)}s`}
+                  >
+                    {#if key.glyph}<span class="kglyph">{key.glyph}</span>{/if}
+                    <span class="klabel">{key.label}</span>
+                  </span>
+                {/each}
+              </div>
+            {/each}
+          </div>
+          {#if beat.shortcuts}
+            <p class="chord r" style="--d:1.9s">
+              {#each beat.shortcuts[0].keys as cap (cap)}<kbd class="cap big">{cap}</kbd>{/each}
+              <span class="chord-does">{beat.shortcuts[0].does}</span>
+            </p>
+          {/if}
+        {/if}
+
         {#if beat.kind === 'steps' && beat.steps}
           <ol class="steps">
             {#each beat.steps as step, stepIndex (step.title)}
-              <li class="step-row">
+              <li class="step-row r" style={`--d:${(0.55 + stepIndex * 0.13).toFixed(2)}s`}>
                 <span class="step-num">{stepIndex + 1}</span>
                 <span class="step-copy">
                   <span class="step-title">{step.title}</span>
@@ -303,24 +329,6 @@
     clip: rect(0 0 0 0);
   }
 
-  .stage-scrim {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: min(1500px, 150vw);
-    height: min(1000px, 150vh);
-    transform: translate(-50%, -50%);
-    z-index: 1;
-    pointer-events: none;
-    background: radial-gradient(
-      closest-side,
-      rgba(8, 8, 14, 0.62),
-      rgba(8, 8, 14, 0.34) 52%,
-      transparent 78%
-    );
-    opacity: var(--field-opacity, 1);
-  }
-
   .stage {
     position: relative;
     z-index: 2;
@@ -328,10 +336,13 @@
     /* Fixed height so cross-fading beats of different lengths do not shift the
        layout under each other — every beat is absolutely positioned inside it
        and centres itself. */
-    height: min(470px, calc(100dvh - 190px));
+    height: min(560px, calc(100dvh - 190px));
     display: grid;
     place-items: center;
   }
+
+  /* The house easing from the roundtable deck: fast out, long settle. */
+  .intro { --ease: cubic-bezier(0.2, 0.7, 0.2, 1); }
 
   .overture {
     position: absolute;
@@ -340,22 +351,61 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 22px;
-    opacity: calc(var(--p) * 1.6);
-    transform: scale(calc(0.94 + var(--p) * 0.06));
-    transition: opacity 0.7s ease, transform 0.9s var(--ease-out);
+    gap: 0;
+    transition: opacity 0.7s ease;
   }
 
   .overture.gone {
     opacity: 0;
-    transform: scale(1.06);
     pointer-events: none;
+  }
+
+  /* Logo: a long, transform-free fade over the field's slower bloom. */
+
+  /* A hairline in the brand spectrum that widens from the centre. */
+  .grule {
+    display: block;
+    height: 3px;
+    width: 0;
+    margin: 40px auto 0;
+    border-radius: 999px;
+    background: linear-gradient(96deg, #7de3f4 0%, #8b6df0 30%, #e56ab3 62%, #f28a4b 100%);
+    animation: widen 1.1s var(--ease) 1s forwards;
+  }
+
+  .welcome {
+    opacity: 0;
+    animation: pop 0.8s var(--ease) 1.4s forwards;
+  }
+
+  @keyframes pop { to { opacity: 1; } }
+  @keyframes widen { to { width: min(420px, 60vw); } }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+
+  /* Entrance primitive for everything inside an active beat: 14px rise over
+     0.8s, delayed per element via --d. Replays each time a beat goes active. */
+  .beat .r {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  .beat.active .r {
+    animation: rise 0.8s var(--ease) var(--d, 0s) forwards;
+  }
+
+  .beat.still .r,
+  .beat.still.active .r {
+    animation: none;
+    opacity: 1;
+    transform: none;
   }
 
   .mark {
     width: 132px;
     color: #fff;
-    filter: drop-shadow(0 6px 30px rgba(0, 0, 0, 0.35));
+    filter: drop-shadow(0 20px 46px rgba(0, 0, 0, 0.55));
+    opacity: 0;
+    animation: pop 1.2s var(--ease) 0.35s forwards;
   }
 
   .mark :global(svg) {
@@ -365,7 +415,7 @@
   }
 
   .welcome {
-    margin: 0;
+    margin: 22px 0 0;
     font-size: 15px;
     font-weight: 400;
     letter-spacing: 0.32em;
@@ -416,7 +466,7 @@
     letter-spacing: -0.03em;
     max-width: 14ch;
     text-wrap: balance;
-    text-shadow: 0 2px 40px rgba(0, 0, 0, 0.35);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 32px rgba(0, 0, 0, 0.45);
   }
 
   .body {
@@ -424,7 +474,8 @@
     font-size: 16px;
     line-height: 26px;
     font-weight: 400;
-    color: rgba(255, 255, 255, 0.78);
+    color: rgba(255, 255, 255, 0.86);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 3px 20px rgba(0, 0, 0, 0.4);
     max-width: 52ch;
     text-wrap: pretty;
   }
@@ -451,8 +502,8 @@
     gap: 16px;
     align-items: baseline;
     padding: 11px 16px;
-    background: rgba(10, 10, 16, 0.46);
-    backdrop-filter: blur(14px);
+    background: rgba(10, 10, 16, 0.32);
+    backdrop-filter: blur(18px);
   }
 
   .surface-name {
@@ -526,6 +577,114 @@
     color: rgba(255, 255, 255, 0.8);
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* ---- keyboard ---------------------------------------------------- */
+
+  .keyboard {
+    --unit: min(52px, calc((100vw - 160px) / 15.5));
+    margin: 18px 0 0;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    backdrop-filter: blur(18px);
+  }
+
+  .krow {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+  }
+
+  .key {
+    position: relative;
+    width: calc(var(--unit) * var(--w, 1) + 6px * (var(--w, 1) - 1));
+    height: calc(var(--unit) * 0.82);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.22);
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: background 0.4s var(--ease), box-shadow 0.4s var(--ease), color 0.4s var(--ease);
+  }
+
+  .beat.active .key {
+    animation: rise 0.6s var(--ease) var(--kd, 0.7s) forwards;
+  }
+
+  .beat.still .key {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .key.mod {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.58);
+  }
+
+  .kglyph {
+    font-size: 13px;
+    margin-bottom: 3px;
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  /* The chord: lit keys glow in the brand spectrum, 1.6s after the board
+     has assembled, so the eye lands on them last. */
+  .beat.active .key.lit {
+    animation:
+      rise 0.6s var(--ease) var(--kd, 0.7s) forwards,
+      keylight 0.9s var(--ease) 1.6s forwards;
+  }
+
+  @keyframes keylight {
+    to {
+      background: linear-gradient(150deg, #8b6df0, #e56ab3 55%, #f28a4b);
+      border-color: rgba(255, 255, 255, 0.55);
+      box-shadow:
+        inset 0 -2px 0 rgba(0, 0, 0, 0.18),
+        0 0 0 3px rgba(229, 106, 179, 0.28),
+        0 10px 34px rgba(229, 106, 179, 0.45);
+      color: #fff;
+      transform: translateY(-2px);
+    }
+  }
+
+  .beat.still .key.lit {
+    background: linear-gradient(150deg, #8b6df0, #e56ab3 55%, #f28a4b);
+    color: #fff;
+  }
+
+  .chord {
+    margin: 18px 0 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 15px;
+    color: rgba(255, 255, 255, 0.86);
+  }
+
+  .cap.big {
+    min-width: 34px;
+    height: 34px;
+    font-size: 15px;
+  }
+
+  .chord-does {
+    margin-left: 8px;
   }
 
   /* ---- steps ------------------------------------------------------- */

@@ -25,8 +25,13 @@ export interface IntroBeat {
   hue: number;
   /** Present only on `kind: 'surfaces'`. */
   surfaces?: readonly SurfaceRow[];
-  /** Present only on `kind: 'shortcuts'`. */
+  /** Present on `kind: 'shortcuts'` and `kind: 'keyboard'`. */
   shortcuts?: readonly ShortcutRow[];
+  /**
+   * Present only on `kind: 'keyboard'`: the key ids (see `KEYBOARD_ROWS`) that
+   * light up on the drawn keyboard.
+   */
+  highlightKeys?: readonly string[];
   /** Present only on `kind: 'steps'`. */
   steps?: readonly StepRow[];
   /**
@@ -130,7 +135,7 @@ export interface StepRow {
  * card; the others carry structured content that the intro renders as its own
  * layout. A beat's `holdMs` should scale with how much there is to read.
  */
-export type BeatKind = 'statement' | 'surfaces' | 'shortcuts' | 'steps';
+export type BeatKind = 'statement' | 'surfaces' | 'shortcuts' | 'keyboard' | 'steps';
 
 export const INTRO_BEATS: readonly IntroBeat[] = [
   {
@@ -166,23 +171,16 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
   },
   {
     id: 'shortcuts',
-    kind: 'shortcuts',
-    title: 'Getting around',
-    body: 'Everything here has a key. These are the ones worth keeping.',
-    holdMs: 10_000,
+    kind: 'keyboard',
+    title: 'One shortcut to remember',
+    body: 'From anywhere on your Mac, this opens the HQ desktop view.',
+    holdMs: 9000,
     hue: 0.6,
     selfPaced: true,
     shortcuts: [
-      { keys: ['\u2318', 'K'], does: 'Command palette — go anywhere, do anything' },
-      { keys: ['\u2318', '1'], does: 'Inbox' },
-      { keys: ['\u2318', '2'], does: 'Meetings' },
-      { keys: ['\u2318', '3'], does: 'Marketplace' },
-      { keys: ['\u2318', '4'], does: 'Library — skills and workers' },
-      { keys: ['\u2318', '5\u20139'], does: 'Jump straight to a company' },
-      { keys: ['\u2318', 'F'], does: 'Find in the current view' },
-      { keys: ['\u2318', '\u21A9'], does: 'Send a message' },
-      { keys: ['\u2318', ','], does: 'Settings' },
+      { keys: ['\u2325', '\u21E7', 'O'], does: 'Open the HQ desktop view' },
     ],
+    highlightKeys: ['alt', 'shift', 'o'],
   },
   {
     id: 'first-agent',
@@ -380,3 +378,69 @@ export function sampleSpectrum(
     a[2] + (b[2] - a[2]) * mix,
   ];
 }
+
+/** One keycap on the drawn keyboard. `w` is width in key units (1 = a letter key). */
+export interface KeyCap {
+  id: string;
+  label: string;
+  w?: number;
+  /** Secondary glyph rendered above the label (⌥ over "option"). */
+  glyph?: string;
+}
+
+/**
+ * A compact ANSI Mac layout, enough to draw a recognisable keyboard and light
+ * a chord on it. Widths follow the physical board so the rows line up.
+ */
+export const KEYBOARD_ROWS: readonly (readonly KeyCap[])[] = [
+  [
+    { id: 'esc', label: 'esc', w: 1.5 },
+    ...['F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'].map((f) => ({ id: f.toLowerCase(), label: f, w: 1 })),
+  ],
+  [
+    { id: 'grave', label: '`' },
+    ...'1234567890'.split('').map((k) => ({ id: k, label: k })),
+    { id: 'minus', label: '-' },
+    { id: 'equal', label: '=' },
+    { id: 'backspace', label: 'delete', w: 1.5 },
+  ],
+  [
+    { id: 'tab', label: 'tab', w: 1.5 },
+    ...'QWERTYUIOP'.split('').map((k) => ({ id: k.toLowerCase(), label: k })),
+    { id: 'lbracket', label: '[' },
+    { id: 'rbracket', label: ']' },
+    { id: 'backslash', label: '\\' },
+  ],
+  [
+    { id: 'caps', label: 'caps lock', w: 1.85 },
+    ...'ASDFGHJKL'.split('').map((k) => ({ id: k.toLowerCase(), label: k })),
+    { id: 'semicolon', label: ';' },
+    { id: 'quote', label: "'" },
+    { id: 'return', label: 'return', w: 1.65 },
+  ],
+  [
+    { id: 'shift', label: 'shift', w: 2.35, glyph: '\u21E7' },
+    ...'ZXCVBNM'.split('').map((k) => ({ id: k.toLowerCase(), label: k })),
+    { id: 'comma', label: ',' },
+    { id: 'period', label: '.' },
+    { id: 'slash', label: '/' },
+    { id: 'rshift', label: 'shift', w: 2.15, glyph: '\u21E7' },
+  ],
+  [
+    { id: 'fn', label: 'fn' },
+    { id: 'ctrl', label: 'control', glyph: '\u2303' },
+    { id: 'alt', label: 'option', glyph: '\u2325' },
+    { id: 'cmd', label: 'command', w: 1.25, glyph: '\u2318' },
+    { id: 'space', label: '', w: 5.5 },
+    { id: 'rcmd', label: 'command', w: 1.25, glyph: '\u2318' },
+    { id: 'ralt', label: 'option', glyph: '\u2325' },
+    { id: 'left', label: '\u25C2' },
+    { id: 'updown', label: '\u25B4\u25BE' },
+    { id: 'right', label: '\u25B8' },
+  ],
+];
+
+/** Every key id on the board, for validating a beat's `highlightKeys`. */
+export const KEYBOARD_KEY_IDS: ReadonlySet<string> = new Set(
+  KEYBOARD_ROWS.flatMap((row) => row.map((key) => key.id)),
+);
