@@ -188,6 +188,46 @@ pub(crate) fn setup_owns_main_window(
     first_run_pending || setup_lifecycle.unwrap_or(false) || oauth_in_flight
 }
 
+/// Whether setup blocks the desktop workspace from opening at all.
+///
+/// Narrower than [`setup_owns_main_window`] on purpose: an OAuth flow in
+/// flight does not count, because a signed-out person signs in from inside
+/// the workspace and must be able to get back to it. Only "HQ is not set up
+/// on this computer yet" blocks the open.
+pub(crate) fn setup_blocks_desktop_window(
+    first_run_launch: bool,
+    lifecycle: Option<hq_desktop_core::lifecycle::LifecycleState>,
+) -> bool {
+    setup_owns_main_window(first_run_launch, lifecycle, false)
+}
+
+/// If setup is still running, bring the installer card back and report `true`
+/// so the caller does not open the desktop workspace.
+///
+/// This is the guard every desktop-window open goes through. The global
+/// Opt+Shift+O shortcut used to open the workspace directly, which let a
+/// person leave setup with nothing installed — and the first-run intro
+/// teaches that exact shortcut before setup has started.
+pub fn redirect_to_setup_if_unfinished(app: &AppHandle) -> bool {
+    let first_run_launch = app
+        .try_state::<crate::commands::first_run::LaunchKindState>()
+        .map(|state| crate::commands::first_run::should_autoshow_on_launch(state.0))
+        .unwrap_or(false);
+    let lifecycle = crate::commands::lifecycle::current_lifecycle_state(app);
+    if !setup_blocks_desktop_window(first_run_launch, lifecycle) {
+        return false;
+    }
+    crate::util::logfile::log(
+        "ui",
+        "desktop window open refused: setup not finished, showing setup card",
+    );
+    // Window ops must run on the main thread — callers include async command
+    // bodies, which run on a tokio worker.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || show_popover_window(&handle));
+    true
+}
+
 /// Last-known horizontal centre of the native "HQ" menu-bar icon, in Cocoa
 /// screen POINTS (not physical pixels), as reported by the helper on each
 /// click. `i64::MIN` = unknown (helper hasn't reported, or couldn't resolve the
@@ -1730,6 +1770,34 @@ mod tests {
             assert!(setup_owns_main_window(false, Some(LifecycleState::InstalledFirstRun), false));
             assert!(setup_owns_main_window(false, Some(LifecycleState::SteadyState), true));
             assert!(!setup_owns_main_window(false, Some(LifecycleState::SteadyState), false));
+        }
+
+        /// Regression: the Opt+Shift+O shortcut opened the desktop workspace
+        /// while HQ was not installed, so a person could leave setup with
+        /// nothing on disk. Every unfinished-setup state must block the open.
+        #[test]
+        fn unfinished_setup_blocks_the_desktop_window() {
+            use super::super::setup_blocks_desktop_window;
+            for state in [
+                LifecycleState::NeedsInstall,
+                LifecycleState::InstallResume,
+                LifecycleState::NeedsAuthForInstall,
+                LifecycleState::InstalledFirstRun,
+            ] {
+                assert!(setup_blocks_desktop_window(false, Some(state)));
+                assert!(setup_blocks_desktop_window(true, Some(state)));
+            }
+            assert!(setup_blocks_desktop_window(true, None));
+        }
+
+        /// Finished setup opens normally, and sign-in inside the workspace
+        /// (OAuth in flight) is not something this guard looks at.
+        #[test]
+        fn finished_setup_does_not_block_the_desktop_window() {
+            use super::super::setup_blocks_desktop_window;
+            assert!(!setup_blocks_desktop_window(true, Some(LifecycleState::SteadyState)));
+            assert!(!setup_blocks_desktop_window(false, Some(LifecycleState::SteadyState)));
+            assert!(!setup_blocks_desktop_window(false, None));
         }
     }
 }

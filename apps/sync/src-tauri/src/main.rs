@@ -486,9 +486,10 @@ fn main() {
                             if desktop_visible {
                                 tray::hide_desktop_alt(&app_main);
                             } else {
-                                if let Some(main) = app_main.get_webview_window("main") {
-                                    let _ = main.hide();
-                                }
+                                // `open_desktop_alt_window_inner` hides `main`
+                                // itself — but only once it knows setup is
+                                // finished. Hiding it here first would blank
+                                // the installer card mid-setup.
                                 let app_handle = app_main.clone();
                                 tauri::async_runtime::spawn(async move {
                                     if let Err(e) =
