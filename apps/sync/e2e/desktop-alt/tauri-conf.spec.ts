@@ -23,6 +23,10 @@ const externalLinksRs = readFileSync(
   fileURLToPath(new URL('../../src-tauri/src/util/external_links.rs', import.meta.url)),
   'utf8',
 );
+const windowRestoreSource = readFileSync(
+  fileURLToPath(new URL('../../src-tauri/src/window_restore.rs', import.meta.url)),
+  'utf8',
+);
 const glassSource = readFileSync(
   fileURLToPath(new URL('../../src-tauri/src/glass.rs', import.meta.url)),
   'utf8',
@@ -61,6 +65,32 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     expect(desktopAlt.decorations).toBe(true);
     expect(desktopAlt.width).toBe(1400);
     expect(desktopAlt.height).toBe(920);
+  });
+
+  it('keeps the minimum size in lockstep between the config, the builder, and the recovery module', () => {
+    expect(desktopAlt.minWidth).toBe(960);
+    expect(desktopAlt.minHeight).toBe(600);
+    expect(desktopCommandSource).toContain('.min_inner_size(960.0, 600.0)');
+    expect(windowRestoreSource).toContain('DESKTOP_MIN_WIDTH: f64 = 960.0');
+    expect(windowRestoreSource).toContain('DESKTOP_MIN_HEIGHT: f64 = 600.0');
+    expect(windowRestoreSource).toContain('DESKTOP_DEFAULT_WIDTH: f64 = 1400.0');
+    expect(windowRestoreSource).toContain('DESKTOP_DEFAULT_HEIGHT: f64 = 920.0');
+  });
+
+  // F1 (QA 0.10.288): after its display slept, the window came back at 133x164
+  // and the tray toggle restored it at that size every time, because the open
+  // path revealed the existing window without re-checking its frame.
+  it('recovers the window frame on every reveal and on a monitor/scale change', () => {
+    const revealIndex = desktopCommandSource.indexOf('reveal_desktop_alt_window(&window);');
+    const recoverIndex = desktopCommandSource.indexOf('enforce_desktop_alt_frame(&window);');
+
+    expect(recoverIndex).toBeGreaterThan(-1);
+    expect(revealIndex).toBeGreaterThan(-1);
+    expect(recoverIndex).toBeLessThan(revealIndex);
+
+    expect(desktopCommandSource).toContain('tauri::WindowEvent::ScaleFactorChanged');
+    expect(desktopCommandSource).toContain('window.set_min_size(Some(tauri::LogicalSize::new(');
+    expect(desktopCommandSource).toContain('resolve_desktop_frame(current, work_area)');
   });
 
   it('keeps both declared and lazily built desktop windows transparent over native material', () => {

@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The main HQ window no longer shrinks to a tiny thumbnail when the display it was on goes to sleep or is unplugged. When macOS moves the window to another screen it can leave it far smaller than the window's minimum size, and clicking the menu-bar icon brought it back at that size every time. HQ now checks the window each time it opens, and when the screen it is on changes: it is pulled fully onto the screen you are using, and a window that came back too small is restored to its normal size, centred.
+
 ## [0.10.288] — 2026-09-18
 
 - After an app update, HQ no longer re-opens the Welcome / sign-in card when HQ is already set up on this computer. A new app version can arrive before the `hq` command is upgraded; that mismatch is no longer treated as "not installed".

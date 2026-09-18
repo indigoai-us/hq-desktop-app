@@ -57,6 +57,7 @@ mod updater;
 mod util;
 #[cfg(target_os = "macos")]
 mod webview_asset_cache;
+mod window_restore;
 #[cfg(target_os = "windows")]
 mod windows_update;
 
