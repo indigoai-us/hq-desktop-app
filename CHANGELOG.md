@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - HQ search no longer dies right after launch when the search tool was built for a different Node.js than the one HQ is running. HQ now notices the mismatch, rebuilds the search tool against its own Node, and does that on its own the next time the app opens.
+
+## [0.10.289] — 2026-09-18
+
 - The main HQ window no longer shrinks to a tiny thumbnail when the display it was on goes to sleep or is unplugged. When macOS moves the window to another screen it can leave it far smaller than the window's minimum size, and clicking the menu-bar icon brought it back at that size every time. HQ now checks the window each time it opens, and when the screen it is on changes: it is pulled fully onto the screen you are using, and a window that came back too small is restored to its normal size, centred.
 - The first time you open HQ on a new computer, a short welcome film now plays before setup: four beats that say what HQ is, with a Skip button on screen the whole time. It plays once per computer — finishing it, skipping it or pressing Escape all drop you straight into the setup card, and it never comes back on an update, a relaunch or a resumed setup. If you want to watch it again, right-click the HQ icon in the menu bar and choose "Replay welcome intro". On a machine whose graphics cannot run it, HQ goes to the setup card instead of showing you a blank screen.
 
