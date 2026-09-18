@@ -6,6 +6,7 @@
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
   import CinematicIntro from './onboarding/CinematicIntro.svelte';
+  import { enterIntroFullscreen, exitIntroFullscreen } from '../lib/intro-window';
 
   interface Props {
     state: string;
@@ -40,10 +41,6 @@
   // shadow — no hard rectangular outline.
   const ONBOARDING_SIZE = new LogicalSize(780, 620);
   const COMPACT_WINDOW_SIZE = new LogicalSize(288, 360);
-  // The intro takes the whole screen. `responsiveOnboardingSize` clamps to the
-  // monitor's work area, so an absurd request resolves to "as big as this
-  // display allows" without this file having to know the display size.
-  const INTRO_SIZE = new LogicalSize(100_000, 100_000);
 
   /**
    * The film plays once per install. A person who quits partway through setup
@@ -104,19 +101,14 @@
   }
 
   /**
-   * @param frosted - whether the native window material stays ON. The wizard
-   *   card wants it off (the frosted popover panel would show through the
-   *   transparent webview as a rectangle around the card). The intro wants it
-   *   ON: it is a full-screen sheet, and the material is what actually blurs
-   *   the person's real desktop behind it. CSS `backdrop-filter` cannot do
-   *   this — a transparent webview never receives the desktop behind it, so
-   *   the native `NSVisualEffectView` is the only thing that reads the desktop.
+   * Size the window to the floating setup card. The native material stays OFF
+   * here: the frosted popover panel would show through the transparent webview
+   * as a rectangle around the card. The intro does not come through this path
+   * at all — it takes the whole screen through `set_intro_fullscreen`, which
+   * owns its own material, level and frame.
    */
-  async function sizeForOnboarding(
-    target: LogicalSize = ONBOARDING_SIZE,
-    frosted = false,
-  ) {
-    await setWindowVibrancy(frosted);
+  async function sizeForOnboarding(target: LogicalSize = ONBOARDING_SIZE) {
+    await setWindowVibrancy(false);
     try {
       const win = getCurrentWindow();
       // Drop the native window shadow so only the card's own CSS shadow shows —
@@ -140,13 +132,35 @@
     }
   }
 
+  /** True while the window is the full-screen film rather than the card. */
+  let introOwnsWindow = false;
+
+  async function enterIntroWindow() {
+    introOwnsWindow = true;
+    await enterIntroFullscreen(introInvoke);
+  }
+
+  /**
+   * Hand the screen back. Resolves only once the window is its old size, level
+   * and decorations again, so everything after this line acts on the card
+   * window rather than on a full-screen one.
+   */
+  async function exitIntroWindow() {
+    if (!introOwnsWindow) return;
+    introOwnsWindow = false;
+    await exitIntroFullscreen(introInvoke);
+  }
+
+  const introInvoke = (command: string, args?: Record<string, unknown>) =>
+    typeof invoke === 'function' ? invoke(command, args) : Promise.resolve(undefined);
+
   onMount(() => {
     showIntro =
       mode === 'replay' ||
       (mode === 'onboarding' &&
         lifecycleStateProp === 'NeedsInstall' &&
         !introAlreadySeen());
-    void sizeForOnboarding(showIntro ? INTRO_SIZE : ONBOARDING_SIZE, showIntro);
+    void (showIntro ? enterIntroWindow() : sizeForOnboarding(ONBOARDING_SIZE));
   });
 
   /**
@@ -161,15 +175,20 @@
   function handleIntroError(error: unknown) {
     console.error('onboarding: cinematic intro failed, falling through', error);
     if (mode === 'replay') {
-      void onfinish?.();
+      void exitIntroWindow().then(() => onfinish?.());
       return;
     }
     markIntroSeen();
     showIntro = false;
-    void sizeForOnboarding(ONBOARDING_SIZE);
+    // Give the screen back BEFORE sizing the card — otherwise the card is set
+    // on a window that is still full screen and still above the menu bar.
+    void exitIntroWindow().then(() => sizeForOnboarding(ONBOARDING_SIZE));
   }
 
   async function handleIntroFinish() {
+    // Fade the film (and the desktop blur) out first, then let the window go
+    // back to whatever comes next.
+    await exitIntroWindow();
     if (mode === 'replay') {
       // Nothing follows a replay. Unmounting restores the popover material
       // and size (onDestroy), then the parent hides the sheet.
@@ -183,7 +202,9 @@
   }
 
   onDestroy(() => {
-    void restorePopoverSize();
+    // An unmount mid-film (the sheet torn down under us) still has to hand the
+    // screen back before the window becomes the compact popover again.
+    void exitIntroWindow().then(() => restorePopoverSize());
   });
 
   $effect(() => {

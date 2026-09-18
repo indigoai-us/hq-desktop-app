@@ -49,6 +49,7 @@ mod events;
 mod fd_limit;
 #[cfg(target_os = "macos")]
 mod glass;
+mod intro_window;
 mod recovery;
 mod titlebar_layout;
 mod tray;
@@ -668,6 +669,7 @@ fn main() {
             commands::setup_secret::setup_store_secret,
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_main_window_vibrancy,
+            intro_window::set_intro_fullscreen,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_setup_status,

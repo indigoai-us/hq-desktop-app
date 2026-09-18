@@ -1014,6 +1014,14 @@ pub fn enforce_desktop_alt_frame(window: &tauri::WebviewWindow) {
         resolve_desktop_frame, Rect, DESKTOP_MIN_HEIGHT, DESKTOP_MIN_WIDTH,
     };
 
+    // The welcome film owns the whole screen frame while it plays, including
+    // the menu-bar band this clamp exists to keep windows out of. Clamping
+    // anything to the work area mid-film fights the intro's own geometry, so
+    // stand down until it hands the screen back.
+    if !crate::intro_window::should_recover_frame(crate::intro_window::intro_fullscreen_active()) {
+        return;
+    }
+
     // The declared minimum can be lost when the window is rebuilt or moved
     // between displays, so re-assert it before measuring.
     let _ = window.set_min_size(Some(tauri::LogicalSize::new(

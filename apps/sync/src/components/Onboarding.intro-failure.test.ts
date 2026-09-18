@@ -88,6 +88,10 @@ describe('Onboarding: the cinematic intro can never block setup', () => {
     });
     flushSync();
     await tick();
+    // The failure path now hands the full screen back (`set_intro_fullscreen`,
+    // a Tauri round trip) BEFORE it calls `onfinish`, so the callback lands one
+    // microtask later than it used to.
+    await tick();
 
     expect(onfinish).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem(INTRO_SEEN_KEY)).toBeNull();
