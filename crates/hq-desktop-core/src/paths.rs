@@ -994,16 +994,35 @@ fn managed_git_shim_script() -> String {
 #[cfg(not(target_os = "windows"))]
 const TEXT_FILE_BUSY_ATTEMPTS: u32 = 5;
 
+/// POSIX `ETXTBSY`. Same value on Linux and macOS.
+#[cfg(unix)]
+const ETXTBSY: i32 = 26;
+
 /// True when a spawn failed because the binary is still open for writing.
 ///
 /// Linux refuses to `exec` a file that any process holds open for writing
-/// (`ETXTBSY`, os error 26). The toolchain installer writes the managed Git and
-/// the resolver probes it moments later, so an installer thread — or a child it
-/// forked while the write fd was open — can still be holding that handle. macOS
-/// does not enforce this, which is why it only ever shows up on Linux.
-#[cfg(not(target_os = "windows"))]
-fn is_text_file_busy(error: &std::io::Error) -> bool {
-    error.raw_os_error() == Some(26) || error.kind() == std::io::ErrorKind::ExecutableFileBusy
+/// (`ETXTBSY`, os error 26). This is a statement about a WRITER somewhere on the
+/// host, never about the program: the identical file execs fine once that handle
+/// closes. The toolchain installer writes the managed Git and the resolver
+/// probes it moments later, so an installer thread — or a child it forked while
+/// the write fd was open — can still be holding that handle. The writer is often
+/// not even ours: `std::fs::write` closes its own handle before the spawn, but
+/// any thread that forks during that open window hands the inherited fd to its
+/// child, and the exec stays refused for as long as that child sits between
+/// `fork` and `exec`. macOS does not enforce this, which is why it only ever
+/// shows up on Linux.
+///
+/// Every caller that execs a file another process may be writing should route
+/// its spawn through this, because the condition clears on its own.
+#[cfg(unix)]
+pub(crate) fn is_text_file_busy(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(ETXTBSY) || error.kind() == std::io::ErrorKind::ExecutableFileBusy
+}
+
+/// Windows has no `ETXTBSY`; only the portable kind can ever appear.
+#[cfg(not(unix))]
+pub(crate) fn is_text_file_busy(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::ExecutableFileBusy
 }
 
 /// Spawn with a bounded retry while the target binary is still `ETXTBSY`.
