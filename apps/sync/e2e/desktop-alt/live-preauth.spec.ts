@@ -12,8 +12,9 @@ import { createLivePreAuthProbe, type LiveDesktopAltProbe } from './live-driver'
  * signed-out state is not a limitation worked around here, it is the subject:
  * this file asserts that the shipped binary boots and paints its sign-in
  * surface cleanly. The desktop workspace window is allowed while signed out
- * so onboarding/reauth can happen there; `desktop_alt_enabled` still reports
- * whether a Cognito email is present.
+ * so re-auth can happen there once HQ is set up, but a runner has never set
+ * HQ up, so here the open is refused in favour of the setup card;
+ * `desktop_alt_enabled` still reports whether a Cognito email is present.
  *
  * The signed-in desktop-alt surfaces (Home / Meetings / Company) stay covered
  * by `smoke-pages.spec.ts` in the scripted `Desktop-alt E2E` job — this file
@@ -155,10 +156,17 @@ describe('desktop-alt live pre-auth smoke (Windows)', () => {
     expect(status, `latch reported ${status} without a session end`).not.toBe('latched');
   });
 
-  it('lets a signed-out user open the desktop workspace for sign-in', async () => {
+  it('keeps a machine with no HQ installed on setup instead of the desktop workspace', async () => {
+    // A CI runner has never installed HQ, so its lifecycle is NeedsInstall.
+    // Opening the workspace there used to succeed and let a person leave
+    // setup with nothing installed (the Opt+Shift+O shortcut the first-run
+    // intro teaches). The open now resolves without building the window and
+    // brings the setup card back instead. Signed-out re-auth on a machine
+    // that HAS finished setup is still allowed — the guard ignores sign-in
+    // state; see `setup_blocks_desktop_window` tests in tray.rs.
     expect(await app.invokeCommand<boolean>('desktop_alt_enabled')).toBe(false);
     await expect(app.invokeCommand('open_desktop_alt_window')).resolves.toBeUndefined();
-    expect(await app.hasDesktopAltWindow()).toBe(true);
+    expect(await app.hasDesktopAltWindow()).toBe(false);
   });
 
   it('runs the real quit path and exits the Windows process within its bound', async () => {
