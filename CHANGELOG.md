@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.294] — 2026-09-18
+
 - Picking one person in search now opens the direct message right away, including people outside your company. The prompt about messaging someone outside the company no longer stands in the way of writing to them directly.
 
 ## [0.10.293] — 2026-09-18
