@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Deleting an @mention from your draft before you send now really removes it. Previously a person you had picked from the mention list and then deleted was still mentioned when you hit send, which also invited them to the channel. Only the people still @mentioned in the message you send are mentioned and invited.
+
 - Fixed a build break that stopped the macOS app from compiling at all. Removing the menu-bar panel renamed the internal helper that brings the setup card to the front, and the setup-skip guard added in the same release was still calling it by its old name.
 - Setup can no longer be skipped by accident. The welcome film teaches the Option+Shift+O shortcut, and pressing it during setup used to close the setup card and open the full HQ window with nothing installed underneath. Until setup finishes, that shortcut — and every other way of opening the HQ window — now brings the setup card back instead.
 - The small menu-bar panel has been removed for good. It stopped opening for signed-in people in the previous release, and the code behind it is now gone. Everything it used to show lives in the main HQ window. Setting up HQ for the first time and signing back in still happen in the small window as before, and the menu-bar icon, its unread count and its right-click menu are unchanged.

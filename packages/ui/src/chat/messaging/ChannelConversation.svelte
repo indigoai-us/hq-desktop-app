@@ -109,6 +109,7 @@
     filterMentionCandidates,
     mentionPayloadTargets,
     mentionSegments,
+    mentionsPresentInBody,
     mentionTextForTarget,
     mergeMentionTargets,
     replaceActiveMention,
@@ -1137,7 +1138,9 @@
     const body = replyText.trim();
     if (body === "/") return;
     if (!body && pendingFiles.length === 0) return;
-    const mentions = mentionPayloadTargets(selectedMentions);
+    const mentions = mentionPayloadTargets(
+      mentionsPresentInBody(body, selectedMentions),
+    );
     const files = [...pendingFiles];
     const eventId = `local-send-${sendSeq++}`;
     sendMeta.set(eventId, {

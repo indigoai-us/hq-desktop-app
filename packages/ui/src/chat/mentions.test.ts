@@ -6,6 +6,7 @@ import {
   filterMentionCandidates,
   mergeMentionTargets,
   mentionSpansForBody,
+  mentionsPresentInBody,
   mentionRowPill,
   mentionRowSubtitle,
   mentionTargetLabel,
@@ -529,5 +530,36 @@ describe("applyMentionMarkup markup safety", () => {
     expect(
       stampMentionCompany(rows, "  ").map((row) => row.companyUid),
     ).toEqual(["cmp_indigo", "cmp_liverecover"]);
+  });
+});
+
+describe("mentionsPresentInBody", () => {
+  const ada = {
+    participantUid: "prs_ada",
+    participantType: "human" as const,
+    displayName: "Ada Lovelace",
+  };
+  const bob = {
+    participantUid: "prs_bob",
+    participantType: "human" as const,
+    displayName: "Bob",
+  };
+
+  it("drops a picked mention the user deleted from the draft", () => {
+    expect(mentionsPresentInBody("hey @Bob can you look?", [ada, bob])).toEqual([
+      bob,
+    ]);
+  });
+
+  it("keeps every mention still in the body, and none when all are gone", () => {
+    expect(
+      mentionsPresentInBody("@Ada Lovelace and @Bob", [ada, bob]),
+    ).toEqual([ada, bob]);
+    expect(mentionsPresentInBody("nobody here", [ada, bob])).toEqual([]);
+  });
+
+  it("does not treat a longer name as a match for its prefix", () => {
+    const bobby = { ...bob, participantUid: "prs_bobby", displayName: "Bobby" };
+    expect(mentionsPresentInBody("ping @Bobby", [bob, bobby])).toEqual([bobby]);
   });
 });
