@@ -23,7 +23,7 @@ export interface IntroBeat {
    * background tells the same story as the copy.
    */
   hue: number;
-  /** Present only on `kind: 'surfaces'`. */
+  /** Present on `kind: 'surfaces'` and `kind: 'folder'`. */
   surfaces?: readonly SurfaceRow[];
   /** Present on `kind: 'shortcuts'` and `kind: 'keyboard'`. */
   shortcuts?: readonly ShortcutRow[];
@@ -135,29 +135,23 @@ export interface StepRow {
  * card; the others carry structured content that the intro renders as its own
  * layout. A beat's `holdMs` should scale with how much there is to read.
  */
-export type BeatKind = 'statement' | 'surfaces' | 'shortcuts' | 'keyboard' | 'steps';
+export type BeatKind = 'statement' | 'surfaces' | 'folder' | 'shortcuts' | 'keyboard' | 'steps';
 
 export const INTRO_BEATS: readonly IntroBeat[] = [
   {
     id: 'folder',
-    kind: 'statement',
+    kind: 'folder',
     title: "It's a folder",
-    body: 'HQ lives on your machine as plain files. Your work, your rules, your team\u2019s memory — and any AI sits on top of it.',
-    holdMs: 5000,
-    hue: 0.06,
-  },
-  {
-    id: 'surfaces',
-    kind: 'surfaces',
-    title: 'What is in it',
-    body: 'Five folders. That is the whole system.',
-    holdMs: 9000,
-    hue: 0.2,
+    body: 'HQ lives on your machine as plain files. Your work, your rules, your team\u2019s memory \u2014 and any AI sits on top of it.',
+    // The folder holds alone for ~2s, travels left, then the tree writes in.
+    // Long enough to read the last row before the next beat.
+    holdMs: 12_000,
+    hue: 0.1,
     surfaces: [
       { name: 'companies/', meaning: 'A wall per client. One company\u2019s context can never reach another\u2019s.' },
       { name: 'personal/', meaning: 'You. Your preferences and the rules you teach HQ, in every company.' },
       { name: 'repos/', meaning: 'Your actual code. Nothing wrapped, nothing hidden.' },
-      { name: 'workspace/', meaning: 'Sessions, drafts, and handoffs — the memory between chats.' },
+      { name: 'workspace/', meaning: 'Sessions, drafts, and handoffs \u2014 the memory between chats.' },
       { name: 'core/', meaning: 'HQ\u2019s own machinery. An update replaces this and never your work.' },
     ],
   },

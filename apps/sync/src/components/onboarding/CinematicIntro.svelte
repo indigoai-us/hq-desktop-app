@@ -186,6 +186,52 @@
         <h2 class="title r" class:small={beat.kind !== 'statement'} style="--d:.25s">{beat.title}</h2>
         <p class="body r" style="--d:.4s">{beat.body}</p>
 
+        {#if beat.kind === 'folder' && beat.surfaces}
+          <!-- Caitlin's slide-18 choreography: the folder holds alone, travels
+               left, and a wire draws across to a tree that writes in row by
+               row. Every timing below is hers, in seconds from beat start. -->
+          <div class="fstage" aria-hidden="true">
+            <div class="fmove">
+              <div class="fglow"></div>
+              <svg class="folder" viewBox="0 0 260 200" fill="none">
+                <defs>
+                  <linearGradient id="fback" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#8b6df0" /><stop offset="1" stop-color="#6b4fd6" />
+                  </linearGradient>
+                  <linearGradient id="ftab" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#b79cff" /><stop offset="1" stop-color="#9b82f4" />
+                  </linearGradient>
+                  <linearGradient id="ffront" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#7de3f4" /><stop offset="0.5" stop-color="#8b6df0" /><stop offset="1" stop-color="#e56ab3" />
+                  </linearGradient>
+                </defs>
+                <path d="M18 44 h74 l18 18 h132 a14 14 0 0 1 14 14 v100 a14 14 0 0 1 -14 14 H18 a14 14 0 0 1 -14 -14 V58 a14 14 0 0 1 14 -14z" fill="url(#fback)" />
+                <rect x="14" y="60" width="232" height="14" rx="6" fill="url(#ftab)" />
+                <rect class="sheet" x="52" y="66" width="150" height="110" rx="6" fill="#fff" transform="rotate(-4 127 121)" opacity=".9" />
+                <rect class="sheet" x="60" y="70" width="150" height="110" rx="6" fill="#fff" transform="rotate(3 135 125)" opacity=".95" />
+                <path d="M6 92 h248 a10 10 0 0 1 10 10 l-8 78 a14 14 0 0 1 -14 12 H22 a14 14 0 0 1 -14 -12 L0 102 a10 10 0 0 1 6 -10z" fill="url(#ffront)" />
+              </svg>
+            </div>
+
+            <svg class="wire" viewBox="0 0 1100 420" fill="none" preserveAspectRatio="none">
+              <path class="w draw" d="M 310 215 H 380 V 54 H 470" pathLength="1" />
+              <circle class="wn pop-in" cx="310" cy="215" r="4" style="--d:2.5s" />
+              <circle class="wn pop-in" cx="470" cy="54" r="4" style="--d:3.05s" />
+            </svg>
+
+            <div class="tree">
+              <div class="troot r" style="--d:2.6s">HQ/</div>
+              <div class="tspine grow" style="--d:2.7s"></div>
+              {#each beat.surfaces as row, i (row.name)}
+                <div class="trow r" style={`--d:${(2.85 + i * 0.13).toFixed(2)}s`}>
+                  <span class="tname">{row.name}</span>
+                  <span class="tmeaning">{row.meaning}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         {#if beat.kind === 'surfaces' && beat.surfaces}
           <dl class="surfaces">
             {#each beat.surfaces as row, i (row.name)}
@@ -479,6 +525,151 @@
     max-width: 52ch;
     text-wrap: pretty;
   }
+
+  /* ---- folder → tree ----------------------------------------------- */
+
+  .fstage {
+    --fw: min(1100px, calc(100vw - 120px));
+    position: relative;
+    width: var(--fw);
+    height: 380px;
+    margin-top: 10px;
+  }
+
+  .fmove {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 240px;
+    height: 190px;
+    margin: -95px 0 0 -120px;
+    opacity: 0;
+  }
+
+  .beat.active .fmove {
+    animation:
+      pop 0.65s var(--ease) 0.65s forwards,
+      ftravel 0.95s var(--ease) 2.05s forwards;
+  }
+
+  @keyframes ftravel { to { transform: translateX(calc(var(--fw) * -0.36)); } }
+
+  .fglow {
+    position: absolute;
+    inset: -90px;
+    border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(139, 109, 240, 0.42), rgba(229, 106, 179, 0.16) 46%, transparent 72%);
+  }
+
+  .folder {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.45));
+  }
+
+  .wire {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+
+  .w {
+    stroke: #e56ab3;
+    stroke-width: 2.4;
+    vector-effect: non-scaling-stroke;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+  }
+
+  .beat.active .w.draw { animation: draw 0.9s var(--ease) 2.55s forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+
+  .wn { fill: #fff; opacity: 0; }
+  .beat.active .wn.pop-in { animation: pop 0.5s var(--ease) var(--d, 2.5s) forwards; }
+
+  .tree {
+    position: absolute;
+    left: 42.7%;
+    right: 0;
+    top: 30px;
+    text-align: left;
+  }
+
+  .troot {
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 15px;
+    color: #fff;
+    margin-bottom: 14px;
+  }
+
+  .tspine {
+    position: absolute;
+    left: 6px;
+    top: 32px;
+    width: 1px;
+    height: 0;
+    background: rgba(255, 255, 255, 0.35);
+  }
+
+  .beat.active .tspine.grow { animation: grow 1s var(--ease) var(--d, 2.7s) forwards; }
+  @keyframes grow { to { height: 250px; } }
+
+  .trow {
+    position: relative;
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 14px;
+    align-items: baseline;
+    padding: 9px 0 9px 26px;
+  }
+
+  .trow::before {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    width: 14px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.35);
+  }
+
+  .trow::after {
+    content: '';
+    position: absolute;
+    left: 18px;
+    top: calc(50% - 2.5px);
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #e56ab3;
+  }
+
+  .tname {
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 14px;
+    color: #fff;
+  }
+
+  .tmeaning {
+    font-size: 13.5px;
+    line-height: 19px;
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .beat.still .fmove,
+  .beat.still .w,
+  .beat.still .wn,
+  .beat.still .tspine {
+    animation: none;
+    opacity: 1;
+    transform: translateX(calc(var(--fw) * -0.36));
+    stroke-dashoffset: 0;
+    height: 250px;
+  }
+  .beat.still .w, .beat.still .wn, .beat.still .tspine { transform: none; }
 
   /* ---- surfaces ---------------------------------------------------- */
 
