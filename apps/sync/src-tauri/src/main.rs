@@ -1359,6 +1359,7 @@ fn main() {
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
+            commands::install_deps::setup_qmd_abi_repair(app.handle());
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 
