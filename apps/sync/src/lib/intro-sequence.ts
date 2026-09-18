@@ -360,6 +360,16 @@ export function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
+/**
+ * Fold any offset back into 0..1 by reflecting instead of wrapping. A wrap
+ * (`% 1`) jumps from the last stop straight to the first — on screen that is
+ * a colour snapping from orange to cyan. Reflection turns around instead.
+ */
+export function reflect01(t: number): number {
+  const m = ((t % 2) + 2) % 2;
+  return m <= 1 ? m : 2 - m;
+}
+
 /** Sample the spectrum at `t` (0..1) with linear interpolation between stops. */
 export function sampleSpectrum(
   t: number,

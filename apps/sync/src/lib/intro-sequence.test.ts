@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  reflect01,
   KEYBOARD_KEY_IDS,
   KEYBOARD_ROWS,
   BEAT_FADE_MS,
@@ -351,5 +352,24 @@ describe('keyboard scene', () => {
   it('draws a board with unique key ids', () => {
     const ids = KEYBOARD_ROWS.flatMap((r) => r.map((k) => k.id));
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('reflect01', () => {
+  it('is identity inside 0..1 and turns around past 1', () => {
+    expect(reflect01(0.3)).toBeCloseTo(0.3, 9);
+    expect(reflect01(1.0)).toBeCloseTo(1.0, 9);
+    expect(reflect01(1.2)).toBeCloseTo(0.8, 9);
+    expect(reflect01(2.1)).toBeCloseTo(0.1, 9);
+    expect(reflect01(-0.2)).toBeCloseTo(0.2, 9);
+  });
+
+  it('never jumps: neighbouring inputs map to neighbouring outputs', () => {
+    let prev = reflect01(0);
+    for (let x = 0.001; x < 3; x += 0.001) {
+      const cur = reflect01(x);
+      expect(Math.abs(cur - prev)).toBeLessThan(0.002);
+      prev = cur;
+    }
   });
 });

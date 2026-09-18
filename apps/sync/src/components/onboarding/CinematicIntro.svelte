@@ -61,7 +61,11 @@
   const MAX_FRAME_MS = 100;
 
   const position = $derived(beatAt(elapsed, beats));
-  const hue = $derived(hueAt(elapsed, beats));
+  // Target hue follows the clock; the hue the field actually shows chases it
+  // per frame, so a jump in the clock (Continue on a self-paced beat) is a
+  // glide on screen, never a snap.
+  const hueTarget = $derived(hueAt(elapsed, beats));
+  let hue = $state(hueAt(0, INTRO_BEATS));
   // The field starts near-black and blooms up through the overture, so the
   // logo arrives out of darkness rather than on top of a busy background.
   const intensity = $derived(
@@ -84,6 +88,7 @@
     // field keeps breathing on its own rAF, so the screen stays alive while
     // the person reads.
     if (!isWaitingForViewer(elapsed, beats)) elapsed += delta;
+    hue += (hueTarget - hue) * Math.min(1, delta / 900);
     if (beatAt(elapsed, beats).complete) {
       void complete();
       return;
@@ -266,7 +271,7 @@
                (centre 550,190 r=70), five teammates (x=880, y=70..310),
                three agents (y=340), rail at y=420. -->
           <div class="nstage" aria-hidden="true">
-            <svg class="nwire" viewBox="0 0 1100 460" fill="none" preserveAspectRatio="xMidYMid meet">
+            <svg class="nwire" viewBox="0 0 1100 460" fill="none" preserveAspectRatio="none">
               <!-- you → hub: from the avatar's edge to the ring's edge -->
               <path class="w hot draw" d="M 154 190 H 478" pathLength="1" style="--d:1.15s" />
               <!-- hub → team: trunk out of the ring, bus, five drops -->
@@ -439,7 +444,7 @@
     /* Fixed height so cross-fading beats of different lengths do not shift the
        layout under each other — every beat is absolutely positioned inside it
        and centres itself. */
-    height: min(560px, calc(100dvh - 190px));
+    height: min(600px, calc(100dvh - 170px));
     display: grid;
     place-items: center;
   }
@@ -841,6 +846,7 @@
     --nw: min(1100px, calc(100vw - 140px));
     --u: calc(var(--nw) / 1100);
     position: relative;
+    flex: 0 0 auto;
     width: var(--nw);
     height: calc(460 * var(--u));
     margin-top: 4px;
@@ -848,7 +854,7 @@
   }
 
   .nwire { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-  .nwire .w { stroke: rgba(255, 255, 255, 0.5); stroke-width: 2; stroke-linecap: round; }
+  .nwire .w { stroke: rgba(255, 255, 255, 0.5); stroke-width: 2; stroke-linecap: round; vector-effect: non-scaling-stroke; }
   .nwire .w.hot { stroke: #e56ab3; stroke-width: 2.4; filter: drop-shadow(0 0 6px rgba(229, 106, 179, 0.7)); }
   .beat.active .nwire .w.draw { animation: draw 0.7s var(--ease) var(--d, 1s) forwards; }
 
@@ -893,7 +899,7 @@
   }
   @keyframes hubbreathe { 50% { transform: scale(1.06); } }
   .hub-label {
-    grid-area: 2 / 1; margin-top: 0.7em;
+    grid-area: 1 / 1; align-self: start; margin-top: -1.9em;
     font-size: 0.74em; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255, 255, 255, 0.78); white-space: nowrap;
   }
 
