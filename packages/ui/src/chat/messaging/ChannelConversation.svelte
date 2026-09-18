@@ -2267,12 +2267,13 @@
     min-width: 0;
     max-width: 100%;
     margin: 0;
-    font-family: var(--font-ui);
     /* Reading size for the timeline (two steps over the 13px UI base); the
        author line sits one step under it so weight, not size, carries the
-       hierarchy. 1.7 leading: this is long-form reading, not a form field. */
-    font-size: 15px;
-    line-height: 1.7;
+       hierarchy. 1.7 leading: this is long-form reading, not a form field.
+       Values live in message-row.css so the composer reads the same ones. */
+    font-family: var(--msg-body-font-family, var(--font-ui));
+    font-size: var(--msg-body-font-size, 15px);
+    line-height: var(--msg-body-line-height, 1.7);
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
@@ -2720,7 +2721,7 @@
     /* Must stay byte-identical to `.dm-reply-input` — this is an absolutely
        positioned mirror of it, and any difference in metrics slides the
        mention highlights off the words they belong to. */
-    font: 400 13px/1.46 var(--font-ui);
+    font: var(--msg-body-font, 400 15px / 1.7 var(--font-ui));
   }
 
   .composer-mention {
@@ -2739,10 +2740,10 @@
     border: none;
     background: none;
     color: var(--t1, var(--pop-text));
-    /* The chat body's size. What you type and what you have typed are the
-       same copy, so the composer setting its own larger size made the
-       message shrink the moment it was sent. */
-    font: 400 13px/1.46 var(--font-ui);
+    /* The chat body's font, from the shared token in message-row.css. What
+       you type and what you have typed are the same copy, so the composer
+       owning its own size made the message resize the moment it was sent. */
+    font: var(--msg-body-font, 400 15px / 1.7 var(--font-ui));
     caret-color: var(--t1, #f4f4f5);
   }
 
