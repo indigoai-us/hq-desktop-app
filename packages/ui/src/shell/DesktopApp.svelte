@@ -284,10 +284,8 @@
   } from "../common/external-links.js";
   import {
     disambiguateMentionTargets,
-    mentionAllowedUids,
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
-    restrictMentionTargetsToChannel,
     mergeMentionRosters,
     stampMentionCompany,
     type MentionTarget,
@@ -5981,31 +5979,24 @@
 
   /**
    * The display-name map spans every company and DM peer the app has seen, so
-   * on its own it offers people the open channel's server will always refuse
-   * with MENTION_PARTICIPANT_NOT_VISIBLE — including a SECOND entity for the
-   * same human, rendered identically to the one that works. Keep only rows the
-   * channel can actually accept (tenant roster ∪ channel members ∪ local bots);
-   * outside a company-scoped channel nothing is dropped.
+   * it offers people who are not in the open channel's company. That is now
+   * correct: the server adds such a person to THAT ONE CHANNEL as a guest and
+   * delivers the mention, so filtering these rows out (which this did while the
+   * server still answered 403 MENTION_PARTICIPANT_NOT_VISIBLE) would hide
+   * people the user can legitimately tag.
+   *
+   * What these rows must not do is render as a SECOND, identical-looking entry
+   * for the same human — two bare "Jacob Posel" rows, one of them a different
+   * person entirely. A map row carries a name and nothing else, so
+   * disambiguateMentionTargets gives any colliding name a company, an email,
+   * or (failing both) a uid tag before the picker shows it.
    */
   const identityMentionTargets = $derived(
-    restrictMentionTargetsToChannel(
-      mentionTargetsFromContacts(
-        Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
-          personUid,
-          displayName,
-        })),
-      ),
-      {
-        channelCompanyUid: selectedRow?.channelId
-          ? mentionRosterCompanyUid
-          : null,
-        allowedUids: mentionAllowedUids(
-          mentionCandidates,
-          liveMentionTargets,
-          openChannelMentionTargets,
-          localBotMentionTargets,
-        ),
-      },
+    mentionTargetsFromContacts(
+      Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
+        personUid,
+        displayName,
+      })),
     ),
   );
 

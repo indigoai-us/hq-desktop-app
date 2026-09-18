@@ -2,9 +2,11 @@
  * Structured channel mentions — same contract as hq-mobile / hq-pro.
  *
  * A mention is an entity (person prs_* or agent agt_*), not a work-mesh
- * thread. POST /v1/notify/channels/{id}/messages { mentions } adds a
- * non-member when the caller is the channel owner. Do not create a parallel
- * work-mesh thread for @-mentions.
+ * thread. POST /v1/notify/channels/{id}/messages { mentions } adds anyone who
+ * is not already on the channel roster to THAT ONE CHANNEL — including a
+ * person from outside the channel's company, who joins as a channel guest with
+ * read + post there and nothing else. Do not create a parallel work-mesh
+ * thread for @-mentions.
  */
 
 export type MentionParticipantType = "human" | "agent";
@@ -180,7 +182,25 @@ export function mentionDisambiguatorFor(target: MentionTarget): string | null {
   if (companyName) return companyName;
   const email = target.email?.trim();
   if (email) return email;
-  return null;
+  // Last resort, and ONLY reachable for a row whose display name collides with
+  // another survivor (disambiguateMentionTargets is the sole caller, and only
+  // on the collision branch). Two identical, unpickable "Jacob Posel" rows is
+  // the bug this exists to prevent: a person the app knows only from a
+  // display-name map carries no email and no company, and now that the server
+  // accepts outside people such a row is offered rather than filtered away.
+  // A uid tag is a poor label, but it is the only thing that tells the user
+  // these are two different people.
+  const uid = target.participantUid.trim();
+  return uid ? mentionUidTag(uid) : null;
+}
+
+/** A short, stable tail of a uid — a disambiguator of last resort, never a name. */
+export function mentionUidTag(uid: string): string {
+  const bare = uid
+    .trim()
+    .replace(/^agent:/i, "")
+    .replace(/^(agt_|prs_)/i, "");
+  return `id …${bare.slice(-6)}`;
 }
 
 /**
@@ -504,49 +524,3 @@ export function applyMentionMarkup(
   return out;
 }
 
-/**
- * Drop mention rows the open channel's server will always refuse.
- *
- * A company- or project-scoped channel accepts a mention only when the target
- * is already on the channel roster, or is an active member of the channel's
- * company (hq-pro-core notify-dm `resolveChannelMentions` →
- * MENTION_PARTICIPANT_NOT_VISIBLE, 403, which rejects the WHOLE message).
- * The desktop picker also merges a display-name map that spans every company
- * and DM peer the app has ever seen, so it offered people who could never be
- * tagged here — including a second entity for the SAME person (two
- * "Jacob Posel" rows, one of them not an Indigo member). Picking the wrong one
- * failed the send with no way for the user to tell the rows apart.
- *
- * `allowedUids` is the set the channel will accept: the tenant-scoped contacts
- * roster, the channel's own members, and the user's local bots (a personal bot
- * has no company membership by design and is evaluated as its owner).
- *
- * With no channel company (a DM, or a scope that never resolved) nothing is
- * dropped — the visibility gate does not apply there.
- */
-export function restrictMentionTargetsToChannel(
-  targets: readonly MentionTarget[],
-  args: {
-    channelCompanyUid?: string | null;
-    allowedUids: ReadonlySet<string>;
-  },
-): MentionTarget[] {
-  if (!args.channelCompanyUid?.trim()) return [...targets];
-  return targets.filter((target) =>
-    args.allowedUids.has(target.participantUid.trim()),
-  );
-}
-
-/** The uid set for {@link restrictMentionTargetsToChannel}. */
-export function mentionAllowedUids(
-  ...lists: Array<readonly MentionTarget[] | null | undefined>
-): Set<string> {
-  const uids = new Set<string>();
-  for (const list of lists) {
-    for (const row of list ?? []) {
-      const uid = row.participantUid.trim();
-      if (uid) uids.add(uid);
-    }
-  }
-  return uids;
-}

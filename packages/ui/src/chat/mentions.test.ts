@@ -12,6 +12,7 @@ import {
   mentionTargetLabel,
   mentionTargetsFromContacts,
   mentionTargetsFromContactsPayload,
+  mentionUidTag,
   mentionTypeForUid,
   replaceActiveMention,
   stampMentionCompany,
@@ -95,7 +96,7 @@ describe("channel mentions", () => {
     ]);
   });
 
-  it("keeps both nameless-company dupes but never labels them with a uid", () => {
+  it("labels nameless-company dupes with a uid tag rather than leaving them identical", () => {
     const rows = collapseDuplicateMentionTargets([
       {
         participantUid: "agt_aaaaaaaaaaaa111111",
@@ -109,12 +110,23 @@ describe("channel mentions", () => {
       },
     ]);
     expect(rows).toHaveLength(2);
+    // No company and no email leaves nothing human to label these rows with,
+    // and they are two DIFFERENT principals. This used to render as two
+    // identical "Izzy" rows on the theory that a uid tail reads as a bug — but
+    // the picker can no longer hide the duplicate (the server accepts people
+    // from outside the channel's company now, so those rows are offered), and
+    // two unpickable identical rows is how the wrong tenant's agent gets
+    // mentioned. A uid tag is the label of LAST resort, used only on a name
+    // collision; the pill stays company-only and stays null here.
+    const tags = rows.map((row) => row.disambiguator);
+    expect(tags).toEqual([
+      mentionUidTag("agt_aaaaaaaaaaaa111111"),
+      mentionUidTag("agt_bbbbbbbbbbbb222222"),
+    ]);
+    expect(new Set(rows.map(mentionTargetLabel)).size).toBe(2);
     for (const row of rows) {
-      // No company, no email → no label at all. A uid tail like "…906VYS" is
-      // never shown to the user.
-      expect(row.disambiguator).toBeUndefined();
       expect(mentionRowPill(row)).toBeNull();
-      expect(mentionTargetLabel(row)).toBe("Izzy");
+      expect(mentionTargetLabel(row)).toContain("Izzy (");
     }
   });
 
