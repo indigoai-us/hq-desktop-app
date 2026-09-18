@@ -305,8 +305,13 @@
   let claudeWatchExpired = $state(false);
   let launchEscape = $state<OnboardingEscape | null>(null);
   let showManualTools = $state(false);
-  /** The ready screen's Advanced disclosure (own-tool launchers); opens itself when a launch needs a next step. */
-  let advancedOpen = $state(false);
+  /**
+   * The ready screen's Advanced disclosure (own-tool launchers). Open by
+   * default: people who already use Claude Code or Codex should see that path
+   * without hunting for it. It still collapses if they close it, and reopens
+   * itself when a launch needs a next step.
+   */
+  let advancedOpen = $state(true);
   $effect(() => {
     if (launchEscape || finishError || claudeWatchExpired || detectionFailed) advancedOpen = true;
   });
@@ -2592,7 +2597,7 @@
                folder's /setup, exactly as the wizard always did. -->
           <details class="advanced" data-testid="onboarding-advanced" bind:open={advancedOpen}>
             <summary>Advanced</summary>
-            <p class="inline-note">Prefer your own AI tool? Open the HQ folder in it and run /setup there.</p>
+            <p class="inline-note">Recommended if you already use Claude Code or Codex: open the HQ folder in it and run /setup there.</p>
             {#if detectionFailed && !launchEscape}
               <p class="inline-note" role="status">
                 Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.
