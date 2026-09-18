@@ -1443,9 +1443,10 @@
     --message-markdown-muted: var(--t3, #a0a0a0);
     min-width: 0;
     margin: 0;
-    /* Match the timeline reading size. */
-    font-size: 15px;
-    line-height: 1.7;
+    /* Match the timeline reading size (shared token, message-row.css). */
+    font-family: var(--msg-body-font-family, var(--font-ui));
+    font-size: var(--msg-body-font-size, 15px);
+    line-height: var(--msg-body-line-height, 1.7);
     color: var(--t1, var(--message-markdown-text));
     overflow-wrap: anywhere;
   }
@@ -1701,7 +1702,8 @@
     border-radius: 0;
     background: transparent;
     color: var(--t1, var(--pop-text));
-    font: 400 13px/1.5 var(--font-ui, inherit);
+    /* Same token as the thread body above — typed text and sent text match. */
+    font: var(--msg-body-font, 400 15px / 1.7 var(--font-ui));
     caret-color: var(--t1, #f4f4f5);
     box-sizing: border-box;
   }
