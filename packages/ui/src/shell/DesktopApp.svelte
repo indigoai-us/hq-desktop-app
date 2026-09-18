@@ -2605,14 +2605,14 @@
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
   /**
-   * Per-file conflicts the Core popover lists. The runner reports conflicts as
-   * a `sync:complete` aggregate and only the (deprecated) per-file
-   * `sync:conflict` event carries a path, so this list is often empty — the
-   * aggregate count still drives the notice and the recovery card. What this
-   * state exists for is that when a row IS shown, its Keep local / Keep cloud
-   * buttons reach `resolve_conflict` instead of doing nothing, which is what
-   * they did in the desktop window before (the handlers had stayed behind in
-   * the menubar popover).
+   * Per-file conflicts the Core popover lists. Since #913 the runner's
+   * per-file `sync:conflict` event is forwarded from both manual Sync Now and
+   * the watch daemon, carrying the conflicted path, so these rows reflect the
+   * real conflict set; the `sync:complete` aggregate still drives the notice
+   * count and the recovery card. This state exists so a row's Keep local /
+   * Keep cloud buttons reach `resolve_conflict` instead of doing nothing,
+   * which is what they did in the desktop window before (the handlers had
+   * stayed behind in the menubar popover).
    */
   let conflictFiles = $state<HomeConflict[]>([]);
 
