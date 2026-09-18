@@ -52,6 +52,6 @@ describe('setup cannot be skipped by opening the desktop window', () => {
       tray.indexOf('/// Last-known horizontal centre'),
     );
     expect(guard).toContain('setup_blocks_desktop_window(first_run_launch, lifecycle)');
-    expect(guard).toContain('show_popover_window(&handle)');
+    expect(guard).toContain('show_onboarding_window(&handle)');
   });
 });

@@ -2,7 +2,7 @@
 id: hq-sync-popover-anchor-monitor-not-primary
 title: Anchor the macOS popover on the monitor the menu-bar icon was clicked, never primary_monitor()
 scope: repo
-trigger: positioning the menu-bar popover on macOS (show_popover_window / tray anchor / multi-monitor placement)
+trigger: positioning the menu-bar popover on macOS (show_onboarding_window / tray anchor / multi-monitor placement)
 when: show_popover || primary_monitor || available_monitors || tray_anchor || set_position || popover || monitor || multi-monitor || menu bar
 on: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: hard
