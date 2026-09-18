@@ -94,12 +94,12 @@
     col = max(col, vec3(0.0));
 
     // Vignette pulls the eye to the centred copy.
-    // Centre scrim, not an edge vignette: the copy sits dead centre, so the
-    // field is pulled DOWN where the type lands and left burning at the
-    // edges. This is what keeps white text legible on a colour field without
-    // putting a visible box behind it.
-    float centre = smoothstep(0.82, 0.02, length(p * vec2(0.46, 1.0)));
-    col *= mix(1.0, 0.60, centre);
+    // Keep the colour bodies away from burning out under the type: a very
+    // wide, very gentle dip toward the centre. Wide enough that it never reads
+    // as a shape — a visible dark oval behind the copy is exactly what this
+    // must not become.
+    float centre = smoothstep(1.6, 0.0, length(p * vec2(0.5, 1.0)));
+    col *= mix(1.0, 0.86, centre);
 
     // A light touch of edge falloff keeps the frame from looking like a
     // rectangle of colour pasted onto the window.

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  KEYBOARD_KEY_IDS,
+  KEYBOARD_ROWS,
   BEAT_FADE_MS,
   TAKEOVER_MS,
   beatStartMs,
@@ -299,14 +301,15 @@ describe('beat content', () => {
   it('carries the payload its kind claims, and no other', () => {
     BEATS.forEach((beat) => {
       expect(beat.surfaces !== undefined).toBe(beat.kind === 'surfaces');
-      expect(beat.shortcuts !== undefined).toBe(beat.kind === 'shortcuts');
+      expect(beat.shortcuts !== undefined).toBe(beat.kind === 'shortcuts' || beat.kind === 'keyboard');
+      expect(beat.highlightKeys !== undefined).toBe(beat.kind === 'keyboard');
       expect(beat.steps !== undefined).toBe(beat.kind === 'steps');
     });
   });
 
   it('holds the reference scenes for the person to advance', () => {
     BEATS.forEach((beat) => {
-      if (beat.kind === 'shortcuts' || beat.kind === 'steps') {
+      if (beat.kind === 'shortcuts' || beat.kind === 'keyboard' || beat.kind === 'steps') {
         expect(beat.selfPaced).toBe(true);
       }
     });
@@ -328,5 +331,25 @@ describe('beat content', () => {
       expect(hue).toBeGreaterThanOrEqual(0);
       expect(hue).toBeLessThanOrEqual(1);
     });
+  });
+});
+
+describe('keyboard scene', () => {
+  it('lights only keys that exist on the drawn board', () => {
+    BEATS.filter((b) => b.kind === 'keyboard').forEach((beat) => {
+      expect(beat.highlightKeys?.length).toBeGreaterThan(0);
+      beat.highlightKeys?.forEach((id) => expect(KEYBOARD_KEY_IDS.has(id)).toBe(true));
+    });
+  });
+
+  it('teaches exactly the desktop-view chord and nothing else', () => {
+    const beat = BEATS.find((b) => b.kind === 'keyboard');
+    expect(beat?.shortcuts).toHaveLength(1);
+    expect(beat?.highlightKeys).toEqual(['alt', 'shift', 'o']);
+  });
+
+  it('draws a board with unique key ids', () => {
+    const ids = KEYBOARD_ROWS.flatMap((r) => r.map((k) => k.id));
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });
