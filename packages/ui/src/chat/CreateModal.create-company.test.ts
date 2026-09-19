@@ -20,6 +20,15 @@ import type {
   CreateCompanyResult,
 } from "./create-company/create-company-flow.js";
 
+/** The rule the server publishes on the card's slug field. */
+const COMPANY_SLUG_CONSTRAINTS = {
+  pattern: "^[a-z][a-z0-9-]{0,29}$",
+  minLength: 1,
+  maxLength: 30,
+  description:
+    "Slug must start with a letter and use only lowercase letters, numbers, and hyphens (max 30 characters)",
+};
+
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -66,6 +75,7 @@ function form(overrides: Partial<CompanyDraftForm> = {}): CompanyDraftForm {
         error: null,
         hint: "Shown in the sidebar and on invites.",
         description: null,
+        constraints: null,
       },
       {
         id: "slug",
@@ -77,6 +87,7 @@ function form(overrides: Partial<CompanyDraftForm> = {}): CompanyDraftForm {
         error: null,
         hint: null,
         description: null,
+        constraints: COMPANY_SLUG_CONSTRAINTS,
       },
     ],
     ...overrides,

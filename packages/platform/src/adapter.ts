@@ -623,6 +623,12 @@ export interface MessagingApi {
     values: Record<string, string>;
     idempotencyKey?: string;
   }): AdapterPromise<Json>;
+  /**
+   * GET /v1/companies/slug-available?slug={value} — advisory company-handle
+   * check for the create-company step. Optional: a host without the route
+   * omits it and the step falls back to submit-time validation.
+   */
+  checkCompanySlug?(slug: string): AdapterPromise<Json>;
   /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
   getCompanyTab?(companyUid: string, tab: string): AdapterPromise<Json>;
   /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
