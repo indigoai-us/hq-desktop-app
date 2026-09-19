@@ -2470,6 +2470,11 @@
       --raised,
       var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06)))
     );
+    /* Links read as links. The muted body token (--t3) lands at ~2.9:1 on the
+       dark timeline, under AA, so a bare URL looked like dimmed prose. Reuse
+       the violet interactive ink the rest of the shell already uses for
+       actionable text instead of minting a new hex. */
+    --message-markdown-link: var(--vio-ink, var(--accent, #e0c4fe));
     min-width: 0;
     max-width: 100%;
     margin: 0;
@@ -2578,14 +2583,17 @@
     min-width: 0;
   }
 
-  .dm-bubble-body :global(a) {
-    color: var(--message-markdown-muted);
+  .dm-bubble-body :global(a),
+  .dm-bubble-body :global(a:visited) {
+    color: var(--message-markdown-link);
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;
   }
 
   .dm-bubble-body :global(a:hover) {
+    /* Toward the primary text token: brighter on dark, deeper on light. */
+    color: color-mix(in srgb, var(--message-markdown-link) 88%, var(--t1));
     text-decoration-color: currentColor;
   }
 

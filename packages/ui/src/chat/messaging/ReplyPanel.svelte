@@ -1497,14 +1497,16 @@
     text-decoration: underline;
   }
 
-  .reply-md :global(a) {
-    color: var(--message-markdown-muted);
+  .reply-md :global(a),
+  .reply-md :global(a:visited) {
+    color: var(--message-markdown-link);
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;
   }
 
   .reply-md :global(a:hover) {
+    color: color-mix(in srgb, var(--message-markdown-link) 88%, var(--t1));
     text-decoration-color: currentColor;
   }
 
@@ -1518,6 +1520,7 @@
   .reply-md {
     --message-markdown-text: var(--t2, var(--fg, #e8e8e8));
     --message-markdown-muted: var(--t3, #a0a0a0);
+    --message-markdown-link: var(--vio-ink, var(--accent, #e0c4fe));
     min-width: 0;
     margin: 0;
     /* Match the timeline reading size (shared token, message-row.css). */

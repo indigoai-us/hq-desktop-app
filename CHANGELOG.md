@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Links in channel and thread messages are easier to see. A pasted URL used to render in the same dim grey as the surrounding text, so it barely read as something you could click. It now uses the violet the app already uses for other clickable text, still underlined, and brightens when you hover it.
 - Meeting detection can be switched on again. HQ can only spot Zoom, Teams, and Meet calls on your Mac once you allow it Accessibility, Screen Recording, and Microphone, and the screen that asks for those had no way in since the Sessions cleanup — so on a fresh install detection was quietly off and nothing said so. Settings → Meetings now has a "Meeting detection" row that shows what is missing and a Set up button that asks for each permission and starts detection as soon as everything is allowed. The Meetings screen shows the same "Meeting detection is off" note with a Set up button.
 - Clicking a "Meeting detected" alert now starts recording that meeting, and opens the Meetings screen so you can see it running. It used to open the Meetings screen and stop there.
 
