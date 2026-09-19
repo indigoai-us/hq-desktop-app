@@ -40,7 +40,7 @@ export type CreateCompanyApi = Pick<
   ConversationApi,
   "runCardAction" | "fetchChannel"
 > &
-  Partial<Pick<ConversationApi, "runCompanyTabAction">>;
+  Partial<Pick<ConversationApi, "runCompanyTabAction" | "checkCompanySlug">>;
 
 /** The form step 2 renders: the card, as the server declared it. */
 export interface CompanyDraftForm {
@@ -341,6 +341,13 @@ export async function sendCompanyInvites(
   return failures;
 }
 
+/**
+ * Advisory handle check for the handle field, when the host has the route.
+ * Resolves with the server's raw answer; the caller parses it. Rejections are
+ * the caller's to report — this seam never turns a failure into a verdict.
+ */
+export type CheckCompanySlug = (slug: string) => Promise<unknown>;
+
 /** What the modal needs wired to create a company without leaving it. */
 export interface CompanyCreateSeam {
   open: () => Promise<CompanyDraftResult>;
@@ -349,4 +356,22 @@ export interface CompanyCreateSeam {
     values: Record<string, string>,
     invites: readonly CompanyInvite[],
   ) => Promise<CreateCompanyResult>;
+  /** Absent on a host whose server has no availability route. */
+  checkSlug?: CheckCompanySlug | null;
+}
+
+/**
+ * The field the live handle check watches: the card's own `slug` field when it
+ * has one, else the first text field that publishes a format rule. A card with
+ * neither gets no live check rather than a guessed one.
+ */
+export function slugFieldOf(
+  fields: readonly LifecycleCardField[],
+): string | null {
+  const bySlug = fields.find((field) => field.id === "slug");
+  if (bySlug) return bySlug.id;
+  const constrained = fields.find(
+    (field) => field.control === "text" && field.constraints !== null,
+  );
+  return constrained?.id ?? null;
 }

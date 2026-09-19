@@ -963,6 +963,7 @@ fn main() {
             commands::messages::invite_to_channel,
             commands::messages::send_channel_message,
             commands::messages::run_card_action,
+            commands::messages::check_company_slug,
             commands::messages::get_company_tab,
             commands::messages::run_company_tab_action,
             crate::deep_link::take_pending_setup_target,
