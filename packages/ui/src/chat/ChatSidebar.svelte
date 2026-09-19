@@ -165,6 +165,7 @@
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
+  import { titleWhenTruncated } from "../common/truncation-title";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { focusOnMount, menuPortal, portal } from "./portal.js";
   import {
@@ -3261,7 +3262,6 @@
         class:has-badge={hasBadge}
         data-kind={row.kind}
         data-conversation-id={row.id}
-        title={scopeLabel?.text}
         class:selected={selectionMode && selection.selected.includes(row.id)}
         class:archived={archivedSet.has(row.id)}
         role={selectionMode ? "option" : undefined}
@@ -3354,7 +3354,7 @@
               class="chat-row-scope"
               data-testid="chat-row-scope"
               data-kind={scopeLabel.kind}
-              title={scopeLabel.text}>{scopeLabel.text}</span
+              use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
             >
           {/if}
         </span>
@@ -3362,7 +3362,8 @@
           <span
             class="chat-row-reveal"
             data-testid="chat-row-reveal"
-            aria-hidden="true">{scopeLabel.text}</span
+            aria-hidden="true"
+            use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
           >
         {/if}
         {#if row.unreadCount != null && row.unreadCount > 0}
@@ -3416,7 +3417,6 @@
             class:action={child.kind === "action"}
             class:selected={child.selected === true}
             aria-current={child.selected ? "page" : undefined}
-            title={child.meta ? `${child.label} · ${child.meta}` : child.label}
             data-testid="chat-row-child"
             data-child-id={child.id}
             onclick={child.onselect}
@@ -3437,9 +3437,13 @@
                 </svg>
               {/if}
             </span>
-            <span class="chat-row-child-label">{child.label}</span>
+            <span class="chat-row-child-label" use:titleWhenTruncated={child.label}
+              >{child.label}</span
+            >
             {#if child.meta}
-              <span class="chat-row-child-meta">{child.meta}</span>
+              <span class="chat-row-child-meta" use:titleWhenTruncated={child.meta}
+                >{child.meta}</span
+              >
             {/if}
           </button>
         {/each}

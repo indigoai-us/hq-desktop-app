@@ -39,3 +39,4 @@ export { default as OverviewActivityDigest } from "./OverviewActivityDigest.svel
 export type { CompanyActivityStore } from "./OverviewActivityDigest.svelte";
 export { default as UnavailableNote } from "./UnavailableNote.svelte";
 export { default as EmptyState } from "./EmptyState.svelte";
+export * from "./truncation-title";

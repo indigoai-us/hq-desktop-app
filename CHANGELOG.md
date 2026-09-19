@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Hovering the grey email under a name in the sidebar no longer pops a tooltip repeating the same email. Sidebar sub-labels now show a tooltip only when the text is too wide for the rail and gets cut off, and the tooltip then shows the full value.
 - Switching between channels and direct messages no longer shifts the page as it loads, and no longer scrolls down a little at the end. The newest message is against the composer from the moment the conversation appears, and it stays there while avatars, images and reactions finish loading. A conversation you have already opened comes straight back with a short fade instead of a blank pane, and one you have not opened yet shows placeholder rows the same size as real messages. If you have scrolled up to read older messages, late-arriving content no longer drags you back down.
 - A test or development build of HQ running alongside your installed copy no longer shuts the installed copy down when it starts. Each build now only manages the startup entry and processes that belong to its own install.
 - When a reply in a thread fails to send, it now says why instead of just "Failed — tap to retry". If the message tagged someone the channel will not accept, it names the @mentions and tells you to remove the name, and it no longer offers a retry that could never work. A genuine connection problem still offers the retry.
