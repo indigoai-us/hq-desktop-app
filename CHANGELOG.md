@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- You can create a company straight from search. Type a name and pick "Create company <name>": the same window shows a second step with the company details and a list of people to invite by email, and "Create company" makes it. The app then switches to the new company and opens its channel. "New company" in the sidebar and the company switcher goes to that step too, instead of sending you to the setup channel. Back returns to search with what you typed still there, and if the server refuses — a name already taken, an invite it will not send — it says so in the window in its own words.
+
 ## [0.10.295] — 2026-09-19
 
 - Hovering the grey email under a name in the sidebar no longer pops a tooltip repeating the same email. Sidebar sub-labels now show a tooltip only when the text is too wide for the rail and gets cut off, and the tooltip then shows the full value.

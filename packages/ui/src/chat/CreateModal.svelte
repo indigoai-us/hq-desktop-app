@@ -23,6 +23,12 @@
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
+  import type {
+    CompanyCreateSeam,
+    CompanyDraftForm,
+    CompanyInvite,
+    InviteFailure,
+  } from "./create-company/create-company-flow.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
     initialsFor,
@@ -105,6 +111,13 @@
      * navigates; the modal only closes on success or shows the reason inline.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    /**
+     * Create a company without leaving the modal: `open` posts the server's
+     * `create_company` card and hands back the fields IT declares, `submit`
+     * runs that card's action and sends the invites. When the host wires this,
+     * every "Create company" affordance uses it and nothing jumps to #setup.
+     */
+    companyCreate?: CompanyCreateSeam | null;
     oncreateagent?:
       | ((
           companyUid: string,
@@ -143,6 +156,11 @@
      * channel" opens the modal in project mode.
      */
     initialKind?: "channel" | "project";
+    /**
+     * Which step to open on. "company" is the New company entry: the modal
+     * opens straight on its second step, with no name typed yet.
+     */
+    initialStep?: "find" | "company";
   }
 
   let {
@@ -157,6 +175,7 @@
     onpick,
     oncreated,
     oncreatecompany = null,
+    companyCreate = null,
     oncreateagent = null,
     agentCompanies = null,
     oncreatebot = null,
@@ -169,6 +188,7 @@
     avatarPacks = null,
     loadAvatarPacks = null,
     initialKind = "channel",
+    initialStep = "find",
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -182,8 +202,10 @@
   const canCreateCloudBot = $derived(!!oncreateagent && agentTargets.length > 0);
   /** A Local bot can be created on this Mac. */
   const canCreateLocalBot = $derived(!!oncreatebot);
+  /** A company can be made from here — in-modal when the host wired it. */
+  const canCreateCompany = $derived(!!companyCreate || !!oncreatecompany);
   const showEntryPoints = $derived(
-    !!oncreatecompany || canCreateCloudBot || canCreateLocalBot,
+    canCreateCompany || canCreateCloudBot || canCreateLocalBot,
   );
   let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
@@ -209,9 +231,157 @@
     }
   }
 
-  function newCompany(): void {
+  /**
+   * "New company" / "Create company <Name>". The in-modal flow owns this when
+   * the host wired it; the older host callback (which lands in #setup) is the
+   * fallback, so a build without the flow is not left without the row.
+   */
+  function newCompany(name = ""): void {
+    if (companyCreate) {
+      void enterCompanyStep(name);
+      return;
+    }
     if (!oncreatecompany) return;
     void runEntry("company", oncreatecompany);
+  }
+
+  // ── New company: the second step, inside this same modal ──
+  /** The server's own form, once its card has been posted and read back. */
+  let companyForm = $state<CompanyDraftForm | null>(null);
+  /** Field id → what the person typed. Seeded from the card's own values. */
+  let companyValues = $state<Record<string, string>>({});
+  let companyInvites = $state<CompanyInvite[]>([]);
+  let companyInviteInput = $state("");
+  let companyRole = $state("member");
+  /** The card is being fetched (opening) or submitted (creating). */
+  let companyOpening = $state(false);
+  let companyCreating = $state(false);
+  let companyError = $state<string | null>(null);
+  /** Invites the server refused after the company was made. */
+  let companyInviteFailures = $state<InviteFailure[]>([]);
+  /** The name typed in the palette, kept so Back can restore the query. */
+  let companyName = $state("");
+
+  const companyBusy = $derived(companyOpening || companyCreating);
+
+  /** Required fields the person has not filled in yet. */
+  const companyMissing = $derived(
+    (companyForm?.fields ?? []).filter(
+      (field) => field.required && !(companyValues[field.id] ?? "").trim(),
+    ),
+  );
+  const companySubmitDisabled = $derived(
+    companyBusy || !companyForm || companyMissing.length > 0,
+  );
+
+  async function enterCompanyStep(name: string): Promise<void> {
+    if (!companyCreate) return;
+    companyName = name.trim();
+    companyError = null;
+    companyForm = null;
+    companyValues = {};
+    companyInvites = [];
+    companyInviteInput = "";
+    companyInviteFailures = [];
+    companyRole = "member";
+    step = "company";
+    companyOpening = true;
+    try {
+      const result = await companyCreate.open();
+      if (!result.ok) {
+        companyError = result.reason;
+        return;
+      }
+      companyForm = result.form;
+      const seeded: Record<string, string> = {};
+      for (const field of result.form.fields) seeded[field.id] = field.value;
+      if (result.form.nameFieldId && companyName) {
+        seeded[result.form.nameFieldId] = companyName;
+      }
+      companyValues = seeded;
+    } catch (err) {
+      companyError = err instanceof Error ? err.message : String(err);
+    } finally {
+      companyOpening = false;
+    }
+  }
+
+  function setCompanyValue(id: string, value: string): void {
+    companyValues = { ...companyValues, [id]: value };
+  }
+
+  function addCompanyInvite(): void {
+    const email = companyInviteInput.trim();
+    if (!email) return;
+    if (!isValidEmail(email)) {
+      companyError = `${email} doesn't look like an email address.`;
+      return;
+    }
+    const key = email.toLowerCase();
+    if (companyInvites.some((invite) => invite.email.toLowerCase() === key)) {
+      companyInviteInput = "";
+      return;
+    }
+    companyInvites = [...companyInvites, { email, role: companyRole }];
+    companyInviteInput = "";
+    companyError = null;
+  }
+
+  function removeCompanyInvite(email: string): void {
+    companyInvites = companyInvites.filter((invite) => invite.email !== email);
+  }
+
+  function onCompanyInviteKey(event: KeyboardEvent): void {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      addCompanyInvite();
+    }
+  }
+
+  /**
+   * Create the company. The host switches the app into it and opens its
+   * channel; this closes on the way out. A refused INVITE does not close —
+   * the company exists, and the person is told which addresses to fix.
+   */
+  async function submitCompany(): Promise<void> {
+    if (!companyCreate || !companyForm || companySubmitDisabled) return;
+    // A typed-but-not-added address is what the person meant to invite.
+    if (companyInviteInput.trim()) addCompanyInvite();
+    companyCreating = true;
+    companyError = null;
+    companyInviteFailures = [];
+    try {
+      const values: Record<string, string> = {};
+      for (const field of companyForm.fields) {
+        values[field.id] = (companyValues[field.id] ?? "").trim();
+      }
+      const result = await companyCreate.submit(companyForm, values, companyInvites);
+      if (!result.ok) {
+        companyError = result.reason;
+        return;
+      }
+      if (result.company.inviteFailures.length > 0) {
+        companyInviteFailures = result.company.inviteFailures;
+        companyInvites = [];
+        return;
+      }
+      onclose();
+    } catch (err) {
+      companyError = err instanceof Error ? err.message : String(err);
+    } finally {
+      companyCreating = false;
+    }
+  }
+
+  /** Back to the search step with the typed name still in the box. */
+  function backFromCompany(): void {
+    if (companyBusy) return;
+    const restore = companyName || query;
+    query = restore;
+    queryDebounced = restore;
+    companyError = null;
+    activeIndex = 0;
+    step = "find";
   }
 
   /**
@@ -258,7 +428,7 @@
   }
 
   /** `email` — compose a first message to an address the picker cannot match. */
-  type Step = "find" | "create" | "summary" | "bot" | "email";
+  type Step = "find" | "create" | "summary" | "bot" | "email" | "company";
 
   interface MemberChip {
     key: string;
@@ -306,6 +476,15 @@
   }
 
   let step = $state<Step>("find");
+  // Opened as "New company" (sidebar switcher): go straight to the second
+  // step. Read once, at mount — a later prop change must not yank the person
+  // out of the step they are on.
+  let initialStepApplied = false;
+  $effect(() => {
+    if (initialStepApplied) return;
+    initialStepApplied = true;
+    if (initialStep === "company" && companyCreate) void enterCompanyStep("");
+  });
   let query = $state("");
   let queryDebounced = $state("");
   let activeIndex = $state(0);
@@ -457,16 +636,28 @@
       ? classifyFindQuery(queryDebounced).email
       : null,
   );
+  /**
+   * The exact name typed, offered as a company. A company name is not a slug
+   * — it is shown as written — so this is the raw query, not `createSlug`,
+   * and it stands even when a channel of that name already exists.
+   */
+  const companyOffer = $derived(
+    canCreateCompany && findKind !== "email" && queryDebounced.trim()
+      ? queryDebounced.trim()
+      : null,
+  );
   const flatCount = $derived(
     findResults.rows.length +
       (findResults.createSlug ? 1 : 0) +
+      (companyOffer ? 1 : 0) +
       (emailOffer ? 1 : 0),
   );
 
   type RenderItem =
     | { kind: "heading"; label: string }
     | { kind: "row"; row: FindRow; index: number }
-    | { kind: "create"; index: number };
+    | { kind: "create"; index: number }
+    | { kind: "company"; index: number; name: string };
 
   const renderItems = $derived.by<RenderItem[]>(() => {
     const items: RenderItem[] = [];
@@ -494,6 +685,10 @@
     }
     if (findResults.createSlug) {
       items.push({ kind: "create", index });
+      index += 1;
+    }
+    if (companyOffer) {
+      items.push({ kind: "company", index, name: companyOffer });
     }
     return items;
   });
@@ -775,7 +970,12 @@
       enterEmailCompose(emailOffer);
       return;
     }
-    if (findResults.createSlug) enterCreate(query);
+    const createIndex = findResults.createSlug ? findResults.rows.length : -1;
+    if (index === createIndex) {
+      enterCreate(query);
+      return;
+    }
+    if (companyOffer) newCompany(companyOffer);
   }
 
   function onFindKey(event: KeyboardEvent): void {
@@ -812,6 +1012,7 @@
         selfPersonUid: selfUid,
       });
       if (raw.createSlug) enterCreate(query);
+      else if (canCreateCompany && query.trim()) newCompany(query.trim());
     }
   }
 
@@ -970,7 +1171,7 @@
    * the backdrop must refuse too.
    */
   function closeAll(): void {
-    if (creating || emailSending) return;
+    if (creating || emailSending || companyCreating) return;
     if (step === "email" && emailOutcome) {
       finishEmail();
       return;
@@ -1033,6 +1234,13 @@
         step = "find";
         return;
       }
+      if (step === "company") {
+        // Escape closes the whole modal from here, like every other step: the
+        // back arrow is what returns to the search list.
+        if (companyBusy) return;
+        closeAll();
+        return;
+      }
       if (step === "email" && !emailOutcome) {
         backFromEmail();
         return;
@@ -1074,6 +1282,10 @@
         event.preventDefault();
         void sendEmailMessage();
       }
+      else if (step === "company" && !companySubmitDisabled) {
+        event.preventDefault();
+        void submitCompany();
+      }
       // The bot flow handles its own ⌘↵ (it knows when the draft is complete).
       return;
     }
@@ -1110,6 +1322,12 @@
       });
     }
     return handle;
+  }
+
+  /** Focus the FIRST field of a server-declared form, and nothing after it. */
+  function focusFirstField(node: HTMLInputElement, first: boolean) {
+    if (!first) return;
+    return focusEndOnMount(node);
   }
 
   // ── Create-step fields ─────────────────────────────────────────────────────
@@ -1720,18 +1938,19 @@
           onkeydown={onFindKey}
         />
       {:else}
-        {#if step === "create" || step === "bot" || (step === "email" && !emailOutcome)}
+        {#if step === "create" || step === "bot" || step === "company" || (step === "email" && !emailOutcome)}
           <button
             type="button"
             class="create-back"
             data-testid="chat-create-back"
             aria-label="Back to search"
-            disabled={creating || emailSending || entryBusy !== null}
+            disabled={creating || emailSending || entryBusy !== null || companyBusy}
             onclick={() => {
               if (step === "bot") {
                 entryError = null;
                 step = "find";
-              } else if (step === "email") backFromEmail();
+              } else if (step === "company") backFromCompany();
+              else if (step === "email") backFromEmail();
               else backToFind();
             }}
           >
@@ -1741,15 +1960,17 @@
         <h2 id="create-modal-title" class="create-title">
           {step === "create"
             ? "New channel"
-            : step === "bot"
-              ? "New bot"
-              : step === "email"
-                ? emailOutcome
-                  ? emailOutcome.state === "delivered"
-                    ? "Message sent"
-                    : "Request sent"
-                  : `Message ${emailTarget}`
-                : "Channel created"}
+            : step === "company"
+              ? "New company"
+              : step === "bot"
+                ? "New bot"
+                : step === "email"
+                  ? emailOutcome
+                    ? emailOutcome.state === "delivered"
+                      ? "Message sent"
+                      : "Request sent"
+                    : `Message ${emailTarget}`
+                  : "Channel created"}
         </h2>
         <span class="create-spacer"></span>
       {/if}
@@ -1775,7 +1996,7 @@
         <!-- Only options and presentational headings may live inside the
              listbox; the empty/no-match notes render after it. -->
         {#if findKind !== "email"}
-          {#each renderItems as item (item.kind === "heading" ? `h:${item.label}` : item.kind === "create" ? "create-row" : item.row.key)}
+          {#each renderItems as item (item.kind === "heading" ? `h:${item.label}` : item.kind === "create" ? "create-row" : item.kind === "company" ? "create-company-row" : item.row.key)}
             {#if item.kind === "heading"}
               <div class="create-group" role="presentation">{item.label}</div>
             {:else if item.kind === "row"}
@@ -1810,7 +2031,7 @@
                   >
                 {/if}
               </button>
-            {:else}
+            {:else if item.kind === "create"}
               <button
                 type="button"
                 class="create-row create-row-action"
@@ -1826,6 +2047,22 @@
                 <span class="create-row-name"
                   >Create channel #{findResults.createSlug}</span
                 >
+              </button>
+            {:else}
+              <!-- The typed name as a COMPANY, spelled exactly as written. -->
+              <button
+                type="button"
+                class="create-row create-row-action"
+                id={`create-opt-${item.index}`}
+                role="option"
+                tabindex="-1"
+                data-testid="chat-create-company-row"
+                aria-selected={highlightIndex === item.index}
+                onmouseenter={() => (activeIndex = item.index)}
+                onclick={() => newCompany(item.name)}
+              >
+                <span class="create-glyph" aria-hidden="true">+</span>
+                <span class="create-row-name">Create company {item.name}</span>
               </button>
             {/if}
           {/each}
@@ -1876,14 +2113,14 @@
           inert={confirmSubject !== null}
         >
           <div class="create-group" role="presentation">Create</div>
-          {#if oncreatecompany}
+          {#if canCreateCompany}
             <button
               type="button"
               class="create-row create-entry-row"
               data-testid="chat-create-new-company"
               aria-busy={entryBusy === "company" ? "true" : undefined}
               disabled={entryBusy !== null}
-              onclick={newCompany}
+              onclick={() => newCompany(queryDebounced.trim())}
             >
               <span class="create-entry-ic" aria-hidden="true">
                 <svg viewBox="0 0 16 16" fill="none">
@@ -1896,7 +2133,11 @@
                 </svg>
               </span>
               <span class="create-entry-label">New company</span>
-              <span class="create-entry-hint">Opens the setup step in #setup</span>
+              <span class="create-entry-hint">
+                {companyCreate
+                  ? "Name it, invite people, done"
+                  : "Opens the setup step in #setup"}
+              </span>
             </button>
           {/if}
           {#if canCreateLocalBot || canCreateCloudBot}
@@ -1950,6 +2191,158 @@
           {/if}
         </div>
       {/if}
+    {:else if step === "company"}
+      <div class="create-body" data-testid="chat-create-company-step">
+        {#if companyOpening}
+          <p class="create-note" role="status" data-testid="chat-create-company-loading">
+            Getting the company form…
+          </p>
+        {:else if companyForm}
+          {#if companyForm.summary}
+            <p class="create-help">{companyForm.summary}</p>
+          {/if}
+          {#each companyForm.fields as field, i (field.id)}
+            <div class="create-field">
+              <span class="create-label" id={`create-company-${field.id}-label`}
+                >{field.label}</span
+              >
+              {#if field.control === "select"}
+                <select
+                  class="create-select"
+                  data-testid={`chat-create-company-field-${field.id}`}
+                  aria-labelledby={`create-company-${field.id}-label`}
+                  disabled={companyBusy}
+                  value={companyValues[field.id] ?? ""}
+                  onchange={(event) =>
+                    setCompanyValue(field.id, event.currentTarget.value)}
+                >
+                  {#each field.options as option (option.id)}
+                    <option value={option.id}>{option.label}</option>
+                  {/each}
+                </select>
+              {:else}
+                <input
+                  class="create-input"
+                  type="text"
+                  maxlength="200"
+                  data-testid={`chat-create-company-field-${field.id}`}
+                  aria-labelledby={`create-company-${field.id}-label`}
+                  disabled={companyBusy}
+                  value={companyValues[field.id] ?? ""}
+                  oninput={(event) =>
+                    setCompanyValue(field.id, event.currentTarget.value)}
+                  use:focusFirstField={i === 0}
+                />
+              {/if}
+            </div>
+            {#if field.hint}
+              <p class="create-help">{field.hint}</p>
+            {/if}
+            {#if field.error}
+              <p class="create-help" role="alert">{field.error}</p>
+            {/if}
+          {/each}
+
+          <div class="create-members">
+            <div class="create-cell">
+              <div class="create-field create-field-wrap create-field-flush">
+                <span class="create-label" id="create-company-invite-label">Invite</span>
+                <div class="create-chips">
+                  {#each companyInvites as invite (invite.email)}
+                    <span class="create-chip" data-testid="chat-create-company-invite">
+                      <span class="create-chip-name">{invite.email}</span>
+                      <span class="create-tag">{invite.role}</span>
+                      <button
+                        type="button"
+                        class="create-chip-x"
+                        aria-label={`Remove ${invite.email}`}
+                        disabled={companyBusy}
+                        onclick={() => removeCompanyInvite(invite.email)}
+                      >
+                        <span aria-hidden="true">×</span>
+                      </button>
+                    </span>
+                  {/each}
+                  <input
+                    class="create-input create-picker"
+                    type="text"
+                    data-testid="chat-create-company-invite-input"
+                    placeholder={companyInvites.length === 0
+                      ? "Email addresses, one at a time…"
+                      : ""}
+                    aria-labelledby="create-company-invite-label"
+                    disabled={companyBusy}
+                    bind:value={companyInviteInput}
+                    onkeydown={onCompanyInviteKey}
+                  />
+                </div>
+              </div>
+            </div>
+            <div class="create-field">
+              <span class="create-label" id="create-company-role-label">Role</span>
+              <select
+                class="create-select"
+                data-testid="chat-create-company-role"
+                aria-labelledby="create-company-role-label"
+                disabled={companyBusy}
+                bind:value={companyRole}
+              >
+                <option value="member">Member</option>
+                <option value="owner">Owner</option>
+              </select>
+            </div>
+            <p class="create-help">
+              Each address gets an invite once the company exists. Nobody is
+              invited if you leave this empty.
+            </p>
+          </div>
+        {/if}
+
+        {#if companyInviteFailures.length > 0}
+          <p class="create-note" role="alert" data-testid="chat-create-company-invite-error">
+            {companyInviteFailures[0].email} wasn't invited: {companyInviteFailures[0]
+              .reason}
+            {#if companyInviteFailures.length > 1}
+              ({companyInviteFailures.length - 1} more)
+            {/if}
+          </p>
+        {/if}
+        {#if companyError}
+          <p class="create-note" role="alert" data-testid="chat-create-company-error">
+            {companyError}
+          </p>
+        {/if}
+      </div>
+      <div class="create-footer" data-testid="chat-create-company-foot">
+        {#if companyInviteFailures.length > 0}
+          <!-- The company is made; only the invites failed. The one thing left
+               to do here is leave. -->
+          <button type="button" class="create-submit" onclick={() => onclose()}>
+            Done
+          </button>
+        {:else if companyForm}
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-company-submit"
+            disabled={companySubmitDisabled}
+            onclick={submitCompany}
+          >
+            {companyCreating ? "Creating…" : "Create company"}
+          </button>
+        {:else if !companyOpening}
+          <!-- The form never opened. Nothing to submit; the only move is to go
+               back and try again, so say so rather than offering a dead button. -->
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-company-retry"
+            onclick={() => void enterCompanyStep(companyName)}
+          >
+            Try again
+          </button>
+        {/if}
+      </div>
     {:else if step === "bot"}
       <CreateBotFlow
         {botRuntimeReady}
