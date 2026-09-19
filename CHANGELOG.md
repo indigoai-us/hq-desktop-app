@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Dragging the divider on the thread panel now actually resizes it. The handle was there and responded, but a later style rule snapped the panel back to half the conversation width on every drag, so it looked stuck. The channel sidebar divider was never affected.
+
 - Meeting detection can be switched on again. HQ can only spot Zoom, Teams, and Meet calls on your Mac once you allow it Accessibility, Screen Recording, and Microphone, and the screen that asks for those had no way in since the Sessions cleanup — so on a fresh install detection was quietly off and nothing said so. Settings → Meetings now has a "Meeting detection" row that shows what is missing and a Set up button that asks for each permission and starts detection as soon as everything is allowed. The Meetings screen shows the same "Meeting detection is off" note with a Set up button.
 - Clicking a "Meeting detected" alert now starts recording that meeting, and opens the Meetings screen so you can see it running. It used to open the Meetings screen and stop there.
 

@@ -7,6 +7,8 @@
  * than the narrow overlay. Assertions stay on classes/attributes — not
  * computed styles.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { failure, ok, type PlatformAdapter } from "@hq/platform";
@@ -231,5 +233,37 @@ describe("DesktopApp reply-column layout", () => {
       ).toBe("false");
       expect(host.querySelector("[data-testid=reply-column]")).toBeNull();
     });
+  });
+});
+
+describe("DesktopApp reply-column cascade", () => {
+  // The handle above sets --thread-width correctly, yet the pane still did
+  // not move: the "open at half width" rule is more specific than the
+  // resizable rule and set flex back to 1 1 0 on every drag. jsdom cannot
+  // compute flex layout, so pin the cascade at the source: the half-width
+  // rule must exclude .resizable-thread, and the resizable rule must read
+  // --thread-width.
+  // happy-dom rewrites import.meta.url to an http origin, so resolve from
+  // the package root (vitest runs with cwd = packages/ui).
+  const source = readFileSync(
+    resolve(process.cwd(), "src/shell/DesktopApp.svelte"),
+    "utf8",
+  );
+
+  it("keeps the half-width rule off the resizable thread pane", () => {
+    // Anchor on the rule at line start so the :has() selector on the stage
+    // (which legitimately matches any side-by-side thread) is not picked up.
+    const halfWidth = source.match(
+      /^\s*\.reply-column:not\(\.profile-column\):not\(\.overlay\)([^{\n]*)\{/m,
+    );
+    expect(halfWidth).not.toBeNull();
+    expect(halfWidth![1]).toContain(":not(.resizable-thread)");
+  });
+
+  it("sizes the resizable thread pane from --thread-width", () => {
+    const resizable = source.match(/\.reply-column\.resizable-thread \{([^}]*)\}/);
+    expect(resizable).not.toBeNull();
+    expect(resizable![1]).toContain("var(--thread-width");
+    expect(resizable![1]).toMatch(/flex:\s*0 0/);
   });
 });
