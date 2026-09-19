@@ -731,9 +731,13 @@ describe("CreateModal submit", () => {
     });
     await tick();
     await gotoCreate("Growth");
-    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
-      "",
-    );
+    // Personal scope: the toggle is on Personal and no company dropdown shows.
+    expect(
+      $('[data-testid="chat-channel-scope-personal"]')?.getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+    expect($('[data-testid="chat-channel-scope"]')).toBeNull();
 
     $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
     await vi.waitFor(() => {
@@ -890,6 +894,134 @@ describe("CreateModal member picker", () => {
   });
 });
 
+describe("CreateModal Company/Personal scope", () => {
+  const TWO = [
+    { companyUid: "cmp_amass", label: "Amass" },
+    { companyUid: "cmp_indigo", label: "Indigo" },
+  ];
+  /** Kristina is in none of the caller's companies. */
+  const kristinaRow = () =>
+    personRow({
+      id: "dm:prs_kristina",
+      title: "Kristina Cheraneva",
+      personUid: "prs_kristina",
+    });
+  const emptyRosters = () => vi.fn(async () => ({ contacts: [] }));
+
+  // Regression (#hq-desktop): picking a person while "In" was Personal flipped
+  // the scope back to the first company and raised "Add … from outside Amass?".
+  it("keeps Personal, and asks nothing, when a person is added", async () => {
+    const createChannel = vi.fn(
+      async (_args: { name: string; scope: string; companyUid?: string }) => ({
+        channelId: "chn_new",
+      }),
+    );
+    open({
+      api: stubApi({ createChannel, listCompanyMembers: emptyRosters() }),
+      rows: [kristinaRow()],
+      scopeCompanies: TWO,
+      activeScope: "personal",
+    });
+    await tick();
+    await gotoCreate("family therapy");
+    expect(
+      $('[data-testid="chat-channel-scope-personal"]')?.getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+
+    await pickMember("Kristina Cheraneva");
+    expect($('[data-testid="chat-create-confirm-external"]')).toBeNull();
+    expect(
+      $('[data-testid="chat-channel-scope-personal"]')?.getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+    expect($('[data-testid="chat-channel-scope"]')).toBeNull();
+    expect($('[data-testid="chat-channel-validation"]')).toBeNull();
+
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect(createChannel).toHaveBeenCalledTimes(1);
+    });
+    const args = createChannel.mock.calls[0][0];
+    expect(args).toMatchObject({ name: "family therapy", scope: "personal" });
+    expect(args).not.toHaveProperty("companyUid");
+  });
+
+  it("shows the company dropdown only while Company is chosen", async () => {
+    open({ scopeCompanies: TWO, activeScope: "cmp_amass" });
+    await tick();
+    await gotoCreate("Growth");
+    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+      "cmp_amass",
+    );
+
+    $<HTMLButtonElement>('[data-testid="chat-channel-scope-personal"]')?.click();
+    await tick();
+    expect($('[data-testid="chat-channel-scope"]')).toBeNull();
+
+    // Back to Company restores the company that was chosen before.
+    $<HTMLButtonElement>('[data-testid="chat-channel-scope-company"]')?.click();
+    await tick();
+    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+      "cmp_amass",
+    );
+  });
+
+  it("keeps the external prompt for a company channel, and drops it on Personal", async () => {
+    open({
+      api: stubApi({
+        listCompanyMembers: vi.fn(async () => ({
+          contacts: [{ personUid: "prs_ada", displayName: "Ada" }],
+        })),
+      }),
+      rows: [kristinaRow()],
+      scopeCompanies: TWO,
+      activeScope: "cmp_amass",
+    });
+    await tick();
+    await gotoCreate("Growth");
+    await pickMember("Kristina Cheraneva");
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-confirm-external"]')).toBeTruthy();
+    });
+    expect(
+      $('[data-testid="chat-create-confirm-external"]')?.textContent?.replace(
+        /\s+/g,
+        " ",
+      ),
+    ).toContain("Add Kristina Cheraneva from outside Amass?");
+
+    // Personal has no company to be outside of, so the question goes away.
+    $<HTMLButtonElement>(
+      '[data-testid="chat-create-confirm-external-add"]',
+    )?.click();
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-channel-scope-personal"]')?.click();
+    await tick();
+    expect($('[data-testid="chat-create-confirm-external"]')).toBeNull();
+    expect(
+      $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.disabled,
+    ).toBe(false);
+  });
+
+  it("holds Personal when the caller has no companies", async () => {
+    open({ scopeCompanies: [], activeScope: "personal" });
+    await tick();
+    await gotoCreate("Notes");
+    expect(
+      $<HTMLButtonElement>('[data-testid="chat-channel-scope-company"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(
+      $('[data-testid="chat-channel-scope-personal"]')?.getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+  });
+});
+
 describe("CreateModal cross-company confirmation (D7)", () => {
   const TWO_COMPANIES = [
     { companyUid: "cmp_indigo", label: "Indigo" },
@@ -927,8 +1059,8 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     expect(
       document.querySelectorAll('[data-testid="chat-channel-chip"]'),
     ).toHaveLength(1);
-    // Indigo is the only company on offer and Kai is not in it, so the shared
-    // rules fall back to Personal — which a teammate cannot be in either.
+    // Indigo is the only company on offer and Kai is not in it. The company
+    // choice stays put so the inline message can name the company at fault.
     expect(
       $('[data-testid="chat-channel-validation"]')?.textContent,
     ).toMatch(/Kai isn't a member of/);

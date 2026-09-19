@@ -209,11 +209,16 @@ describe("ChatSidebar new-channel scope", () => {
     ) as HTMLSelectElement;
     expect(select).toBeTruthy();
     expect(select.value).toBe("cmp_indigo");
+    // Personal is its own toggle now, so the dropdown is companies only.
     expect([...select.options].map((option) => option.value)).toEqual([
       "cmp_indigo",
       "cmp_lr",
-      "",
     ]);
+    expect(
+      document
+        .querySelector('[data-testid="chat-channel-scope-personal"]')
+        ?.getAttribute("aria-checked"),
+    ).toBe("false");
     expect(select.textContent).not.toContain("Corey Epstein");
   });
 
@@ -232,10 +237,6 @@ describe("ChatSidebar new-channel scope", () => {
       '[data-testid="chat-channel-scope"]',
     ) as HTMLSelectElement;
     expect(select.value).toBe("cmp_indigo");
-    expect(
-      [...select.options].find((option) => option.value === "")?.disabled ??
-        true,
-    ).toBe(true);
     expect(
       [...select.options].find((option) => option.value === "cmp_lr")?.disabled,
     ).toBe(true);
@@ -266,11 +267,30 @@ describe("ChatSidebar new-channel scope", () => {
     expect(
       document.querySelector('[data-testid="chat-channel-validation"]')
         ?.textContent,
-    ).toMatch(/isn't a member of Personal/i);
+    ).toMatch(/isn't a member of Indigo/i);
     expect(create.disabled).toBe(true);
     create.click();
     await tick();
     expect(createChannel).not.toHaveBeenCalled();
+
+    // Personal takes any roster — the server's add-member gate has no company
+    // requirement for a personal channel — so the same pair is creatable there.
+    (
+      document.querySelector(
+        '[data-testid="chat-channel-scope-personal"]',
+      ) as HTMLButtonElement
+    ).click();
+    await tick();
+    expect(
+      document.querySelector('[data-testid="chat-channel-validation"]'),
+    ).toBeNull();
+    expect(
+      (
+        document.querySelector(
+          '[data-testid="chat-channel-create"]',
+        ) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
   });
 
   it("re-enables retry after a server error when no channel with that name exists", async () => {
