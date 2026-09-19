@@ -731,6 +731,38 @@ async fn fetch_sdk_upload_token(company_uid: Option<&str>) -> Result<(String, St
 ///
 /// Returns the Recall.ai `recordingId` so the caller can stash it
 /// alongside the windowId for later transcript fetch.
+/// Window ids with a `start_recording` in flight. Claimed atomically before
+/// the upload-token mint, released when the start finishes or fails, so two
+/// simultaneous starts for one window cannot both pass the ledger check.
+static START_IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// RAII claim on a window id in [`START_IN_FLIGHT`]. Dropping it (on any
+/// return path, including `?` and early errors) releases the id.
+struct StartClaim(String);
+
+impl StartClaim {
+    /// Claim `window_id`; `None` when another start already holds it.
+    fn take(window_id: &str) -> Option<Self> {
+        let set = START_IN_FLIGHT.get_or_init(Default::default);
+        let mut guard = set.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.insert(window_id.to_string()) {
+            Some(Self(window_id.to_string()))
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for StartClaim {
+    fn drop(&mut self) {
+        if let Some(set) = START_IN_FLIGHT.get() {
+            let mut guard = set.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.remove(&self.0);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn start_recording(
     window_id: String,
@@ -758,6 +790,40 @@ pub async fn start_recording(
             company_uid.as_deref().unwrap_or("(personal)"),
         ),
     );
+
+    // Idempotent per window: a notification click is handled by every
+    // webview that listens for `notification:meeting-action` (the hidden
+    // controller and, when open, the desktop window), so the same click can
+    // arrive here twice — and concurrently. A second start would mint a
+    // second upload token and a second Recall recording of the same call.
+    //
+    // Two layers, because the ledger alone is read-then-write across a
+    // network round-trip: (1) an atomic in-process claim on the window id
+    // that the loser of a simultaneous pair sees immediately; (2) the
+    // durable ledger, for a click that lands after the first start finished.
+    let _claim = match StartClaim::take(&window_id) {
+        Some(claim) => claim,
+        None => {
+            log(
+                LOG_TAG,
+                &format!("start_recording: start already in flight for windowId={window_id} — no-op"),
+            );
+            return Err(format!("recording already starting for window {window_id}"));
+        }
+    };
+    if let Some(existing) = recordings_ledger::read_ledger()
+        .ok()
+        .and_then(|ledger| ledger.get(&window_id).cloned())
+    {
+        log(
+            LOG_TAG,
+            &format!(
+                "start_recording: already recording windowId={window_id} (recordingId={}) — no-op",
+                existing.recording_id
+            ),
+        );
+        return Ok(existing.recording_id);
+    }
 
     let (recording_id, upload_token) = match fetch_sdk_upload_token(company_uid.as_deref()).await {
         Ok(v) => v,
@@ -988,5 +1054,24 @@ pub async fn reconcile_recordings_on_launch(app: AppHandle) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod start_claim_tests {
+    use super::StartClaim;
+
+    #[test]
+    fn start_claim_is_exclusive_per_window_until_dropped() {
+        // Two simultaneous starts for one window: only the first gets the
+        // claim; the second sees it immediately, before any network call.
+        let first = StartClaim::take("claim-win-1");
+        assert!(first.is_some());
+        assert!(StartClaim::take("claim-win-1").is_none());
+        // A different window is unaffected.
+        assert!(StartClaim::take("claim-win-2").is_some());
+        // Releasing (any return path drops the guard) lets a later start in.
+        drop(first);
+        assert!(StartClaim::take("claim-win-1").is_some());
     }
 }

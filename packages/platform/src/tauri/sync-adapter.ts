@@ -770,6 +770,10 @@ export function createSyncPlatformAdapter(
       connectCalendar: () => hqProJson('POST', WEB_PATHS.googleConnect),
       disconnectCalendar: (accountId) =>
         hqProJson('DELETE', WEB_PATHS.googleAccount(accountId)),
+      // Native meeting-detector permissions. The Rust side reads TCC without
+      // prompting; the setup window is the only surface that prompts.
+      permissionsState: () => call('meetings_permissions_state'),
+      openPermissionsSetup: () => call('open_meeting_permissions_window'),
     },
 
     marketplace: {

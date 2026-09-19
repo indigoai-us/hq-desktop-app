@@ -742,6 +742,22 @@ export interface CalendarConnectResult {
   url: string;
 }
 
+/**
+ * macOS privacy (TCC) snapshot for the desktop meeting detector, as returned
+ * by the native `meetings_permissions_state` command. Each status is one of
+ * `"granted" | "denied" | "not-determined" | "unknown"`. `allRequiredGranted`
+ * is true only when accessibility, screen capture, and microphone are all
+ * granted — the detector never starts without it.
+ */
+export interface MeetingPermissionsSnapshot {
+  accessibility: string;
+  screenCapture: string;
+  microphone: string;
+  systemAudio: string;
+  fullDiskAccess: string;
+  allRequiredGranted: boolean;
+}
+
 export interface MeetingsApi {
   listMemberships(): AdapterPromise<Json[]>;
   listUpcoming(): AdapterPromise<Json[]>;
@@ -757,6 +773,18 @@ export interface MeetingsApi {
   connectCalendar(): AdapterPromise<CalendarConnectResult>;
   /** `DELETE /v1/google/accounts/{accountId}` — revoke + remove one account. */
   disconnectCalendar(accountId: string): AdapterPromise<Json>;
+  /**
+   * Prompt-less read of the native meeting-detector permissions
+   * (`meetings_permissions_state`). Unavailable on hosts without a native
+   * detector (web, HQ Work desktop); callers hide their UI on `!ok`.
+   */
+  permissionsState(): AdapterPromise<MeetingPermissionsSnapshot>;
+  /**
+   * Open (or focus) the native "Meeting Permissions" setup window
+   * (`open_meeting_permissions_window`). It requests each missing macOS
+   * permission and starts the detector as soon as everything is granted.
+   */
+  openPermissionsSetup(): AdapterPromise<void>;
 }
 
 export interface MarketplaceApi {

@@ -886,6 +886,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     connectCalendar: () => this.post(WEB_PATHS.googleConnect),
     disconnectCalendar: (accountId) =>
       this.request("DELETE", WEB_PATHS.googleAccount(accountId)),
+    // Only the native menubar app can watch for meetings on this machine.
+    permissionsState: async () => DESKTOP_ONLY,
+    openPermissionsSetup: async () => DESKTOP_ONLY,
   };
 
   readonly marketplace: PlatformAdapter["marketplace"] = {

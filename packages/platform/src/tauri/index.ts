@@ -425,6 +425,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     listCalendars: async () => MEETINGS_USE_CLOUD,
     connectCalendar: async () => MEETINGS_USE_CLOUD,
     disconnectCalendar: async () => MEETINGS_USE_CLOUD,
+    permissionsState: async () => MEETINGS_USE_CLOUD,
+    openPermissionsSetup: async () => MEETINGS_USE_CLOUD,
   };
 
   readonly marketplace: PlatformAdapter["marketplace"] = {
