@@ -98,6 +98,10 @@ async fn command(program: &str, args: &[&str]) -> Result<tokio::process::Command
                 .env("PATH", paths::child_path())
                 .stdin(Stdio::null())
                 .kill_on_drop(true);
+            apply_account_env(
+                &mut command,
+                account_name(std::env::var("USER").ok(), passwd_login_name).as_deref(),
+            );
             #[cfg(unix)]
             command.process_group(0);
             command
@@ -107,6 +111,76 @@ async fn command(program: &str, args: &[&str]) -> Result<tokio::process::Command
     .map_err(|_| ())?
     .map_err(|_| ())
 }
+/// The login account name the agent CLIs must see as `$USER`.
+///
+/// The Claude Code CLI resolves its macOS Keychain credentials under an
+/// account name taken from `$USER`, falling back to the literal `"unknown"`
+/// when the variable is absent — so a probe spawned from a process whose
+/// environment carries no `USER` reads a DIFFERENT keychain item than the
+/// user's terminal and reports a signed-in CLI as signed out. Codex and Grok
+/// read a file under `$HOME` instead, which is why only Claude Code showed as
+/// "not signed in on this Mac" while Codex was detected correctly.
+///
+/// An explicit `USER` in the app's own environment always wins; the passwd
+/// database is consulted only when it is missing or blank, and a lookup that
+/// finds nothing leaves the child's environment untouched rather than
+/// inventing a name.
+fn account_name(
+    env_user: Option<String>,
+    lookup: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let trimmed = |value: String| {
+        let value = value.trim().to_owned();
+        (!value.is_empty()).then_some(value)
+    };
+    match env_user.and_then(trimmed) {
+        Some(user) => Some(user),
+        None => lookup().and_then(trimmed),
+    }
+}
+
+/// Set `USER`/`LOGNAME` on a child when an account name is known. Separate
+/// from [`account_name`] so the spawned-child behaviour is testable without
+/// mutating the process environment (racy under a parallel test harness).
+fn apply_account_env(command: &mut tokio::process::Command, name: Option<&str>) {
+    if let Some(name) = name {
+        command.env("USER", name).env("LOGNAME", name);
+    }
+}
+
+/// This process's login name from the passwd database. `getpwuid_r` (not
+/// `getpwuid`) because the provider probes run concurrently on the blocking
+/// pool and the non-reentrant form shares one static buffer between them.
+#[cfg(unix)]
+fn passwd_login_name() -> Option<String> {
+    let mut buffer = vec![0 as libc::c_char; 1024];
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: `getpwuid_r` writes only into caller-owned storage (`entry` and
+    // `buffer`), and sets `found` non-null only when `entry` was populated —
+    // `pw_name` then points into `buffer`, which outlives the read below.
+    let code = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    if code != 0 || found.is_null() || entry.pw_name.is_null() {
+        return None;
+    }
+    // SAFETY: `pw_name` is a NUL-terminated string inside `buffer`.
+    let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+    name.to_str().ok().map(str::to_owned)
+}
+
+#[cfg(not(unix))]
+fn passwd_login_name() -> Option<String> {
+    None
+}
+
 async fn stop(child: &mut Child) {
     #[cfg(unix)]
     if let Some(id) = child.id() {
@@ -529,6 +603,86 @@ mod tests {
             finished(&attempts, SessionTool::Claude).await.state,
             "error"
         );
+    }
+
+    /// HQ-DESKTOP: the New bot wizard said "Claude Code is not signed in on
+    /// this Mac" on a Mac whose CLI was signed in. The Claude Code CLI keys its
+    /// macOS Keychain credentials by `$USER`, so a probe spawned without that
+    /// variable read a different (empty) keychain account and reported the user
+    /// as signed out. Codex reads a file under $HOME, which is why only Claude
+    /// was affected.
+    #[tokio::test]
+    async fn probe_child_is_given_the_login_account_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provider");
+        // Signed-in only when the child can see an account name, exactly as the
+        // real CLI's keychain lookup behaves.
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$USER\" > '{dir}/seen-user'\nprintf '%s' \"$LOGNAME\" > '{dir}/seen-logname'\nif [ -n \"$USER\" ]; then printf '{{\"loggedIn\":true}}'; else printf '{{\"loggedIn\":false}}'; exit 1; fi\n",
+                dir = dir.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let program = path.to_string_lossy().into_owned();
+
+        assert!(probe(SessionTool::Claude, &program).await.unwrap());
+        let seen = std::fs::read_to_string(dir.path().join("seen-user")).unwrap();
+        assert!(!seen.trim().is_empty(), "child saw no USER");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("seen-logname")).unwrap(),
+            seen
+        );
+    }
+
+    #[tokio::test]
+    async fn account_env_is_set_from_the_resolved_name_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provider");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$USER\" > '{}/seen-user'\n",
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let mut cmd = tokio::process::Command::new(&path);
+        apply_account_env(&mut cmd, Some("fixture-user"));
+        cmd.status().await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("seen-user")).unwrap(),
+            "fixture-user"
+        );
+    }
+
+    #[test]
+    fn an_explicit_user_wins_and_a_blank_one_falls_back() {
+        assert_eq!(
+            account_name(Some("corey".into()), || panic!("passwd must not be read")),
+            Some("corey".to_owned())
+        );
+        assert_eq!(
+            account_name(Some("  ".into()), || Some("from-passwd".into())),
+            Some("from-passwd".to_owned())
+        );
+        assert_eq!(account_name(None, || Some("from-passwd".into())), Some("from-passwd".to_owned()));
+        // Nothing known: leave the child's environment alone rather than
+        // inventing an account name that would read the wrong keychain item.
+        assert_eq!(account_name(None, || None), None);
+        assert_eq!(account_name(None, || Some("  ".into())), None);
+    }
+
+    /// A signed-out CLI must still read as signed out — the fix must not turn
+    /// "could not tell" into "connected".
+    #[tokio::test]
+    async fn a_truly_signed_out_cli_is_still_reported_signed_out() {
+        let (_dir, program) = fake(SessionTool::Claude, "exit 0");
+        assert!(!probe(SessionTool::Claude, &program).await.unwrap());
     }
 
     #[tokio::test]
