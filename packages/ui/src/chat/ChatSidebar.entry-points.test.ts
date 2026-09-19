@@ -426,7 +426,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
   });
 
-  it("blocks a bad or taken name, gates on a signed-in runtime, and never caps the bot count", async () => {
+  it("takes a free-form name, blocks a taken handle, gates on a signed-in runtime, and never caps the bot count", async () => {
     const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "x" }));
     // No per-person limit: the row stays enabled no matter how many bots exist.
     mountSidebar({ companies: [INDIGO], oncreatebot });
@@ -459,16 +459,31 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     click('[data-testid="create-bot-next"]');
     await settle();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
-    name.value = "Bad Name";
+    // Spaces and capitals are a display name now, not an error.
+    name.value = "Dr Love";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe("@dr-love");
+    // An emoji-only name has nothing to slugify: the handle is what blocks.
+    name.value = "🚀";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("Lowercase letters");
-    name.value = "scout";
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("no letters or digits");
+    // The handle field opens on its own so the block is fixable in place.
+    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
+    handle.value = "rocket";
+    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    handle.value = "";
+    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    name.value = "Scout";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("already have a bot named scout");
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("handle @scout");
     // A free name clears the block.
     name.value = "assistant";
     name.dispatchEvent(new Event("input", { bubbles: true }));

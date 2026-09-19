@@ -1104,7 +1104,14 @@ export interface LocalBotRuntimeSignIn {
 export interface LocalBotRow {
   /** Absent on older CLI versions; cloud only after verified activation. */
   hosting?: "local" | "cloud";
+  /** The handle: the bot's folder name and what every mention resolves to. */
   name: string;
+  /**
+   * Free-form label ("Dr Love") when the bot has one. Absent on every CLI
+   * that reports only the handle, which is why the app also keeps its own
+   * copy (`chat/bot-display-names.ts`); readers fall back to `name`.
+   */
+  displayName?: string;
   agentUid: string;
   ownerUid: string;
   runtime: "claude" | "codex" | "grok";

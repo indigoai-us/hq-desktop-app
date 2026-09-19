@@ -9,6 +9,7 @@
  */
 
 import type { LocalBotRow } from "@hq/platform";
+import { botRowDisplayName, type BotDisplayNames } from "./bot-display-names.js";
 import type { ConversationRow } from "./sidebar-model.js";
 
 export const LOCAL_BOTS_POLL_MS = 30_000;
@@ -36,6 +37,7 @@ export function localBotRuntimeLabel(id: string): string {
 export function localBotsAsContacts<T extends { personUid: string }>(
   contacts: readonly T[],
   bots: readonly LocalBotRow[] | null | undefined,
+  displayNames?: BotDisplayNames | null,
 ): Array<T | { personUid: string; displayName: string; companyUid: null }> {
   if (!bots || bots.length === 0) return [...contacts];
   const seen = new Set(contacts.map((c) => c.personUid.trim()));
@@ -44,7 +46,7 @@ export function localBotsAsContacts<T extends { personUid: string }>(
     const uid = bot.agentUid.trim();
     if (!uid || seen.has(uid)) continue;
     seen.add(uid);
-    extra.push({ personUid: uid, displayName: bot.name, companyUid: null });
+    extra.push({ personUid: uid, displayName: botRowDisplayName(bot, displayNames), companyUid: null });
   }
   return [...contacts, ...extra];
 }

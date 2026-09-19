@@ -29,6 +29,7 @@
   import type { RuntimeStatus } from "./runtime-status.js";
   import {
     STEP_TITLES,
+    botDisplayName,
     botHandle,
     canAdvance,
     canCreate,
@@ -57,6 +58,12 @@
     avatar?: AvatarSelection;
     /** Job title for the agent profile ("Ad account analyst"). */
     title?: string;
+    /**
+     * Free-form display name ("Dr Love") when it differs from the handle the
+     * bot was created under. `hq bot create` only takes the handle, so the
+     * label is PATCHed onto the agent profile the same way the title is.
+     */
+    displayName?: string;
   }
 
   interface Props {
@@ -223,6 +230,7 @@
       return;
     }
     const title = draft.title.trim();
+    const displayName = botDisplayName(draft);
     if (draft.home === "cloud") {
       if (draft.companyUid) {
         await onCloudCreate?.(draft.companyUid, {
@@ -236,6 +244,7 @@
     await oncreate?.(toCreateInput(draft), {
       ...(draft.avatar ? { avatar: draft.avatar } : {}),
       ...(title ? { title } : {}),
+      ...(displayName ? { displayName } : {}),
     });
   }
 
@@ -312,7 +321,7 @@
       <BotPreviewCard
         placement="top"
         name={draft.name}
-        handle={draft.home === "cloud" ? botHandle(draft) : ""}
+        handle={botHandle(draft)}
         home={draft.home}
         runtime={draft.runtime}
         thinksWith={thinksWithLine(draft, ctx)}
@@ -392,7 +401,7 @@
       <BotPreviewCard
         placement="rail"
         name={draft.name}
-        handle={draft.home === "cloud" ? botHandle(draft) : ""}
+        handle={botHandle(draft)}
         home={draft.home}
         runtime={draft.runtime}
         thinksWith={thinksWithLine(draft, ctx)}

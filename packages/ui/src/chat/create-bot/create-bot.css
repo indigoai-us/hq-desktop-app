@@ -383,3 +383,20 @@
   outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
   outline-offset: 1px;
 }
+
+/* An inline "Edit handle" affordance inside a help line. */
+.cb-linkish {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-left: 6px;
+  font: inherit;
+  color: var(--v4-accent, #4f7cff);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.cb-linkish:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -28,6 +28,7 @@
   import type { Workspace } from "../chat/workspaces.js";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { LOCAL_BOT_RUNTIMES, localBotCompanies, localBotKindLabel } from "../chat/local-bots.js";
+  import { botRowDisplayName, loadBotDisplayNames, rememberBotDisplayName } from "../chat/bot-display-names.js";
   import {
     BOT_RESTORE_FAILED,
     BOT_RESTORE_FROM_SETTINGS,
@@ -269,8 +270,11 @@
     createError = null;
   }
 
+  /** agentUid → display name, for bots whose label differs from their handle. */
+  let botDisplayNames = $state(loadBotDisplayNames());
+
   /** The flow hands us the CLI input; the same `hq bot create` the sidebar runs. */
-  async function create(input: LocalBotCreateInput, _extras: CreateBotExtras): Promise<void> {
+  async function create(input: LocalBotCreateInput, extras: CreateBotExtras): Promise<void> {
     const api = adapter?.bots;
     if (!api || createBusy) return;
     createBusy = "bot";
@@ -283,9 +287,31 @@
     }
     createBusy = null;
     createOpen = false;
-    line = `${input.name} is set up. It will send you a hello in Messages once it comes online.`;
+    const displayName = extras.displayName?.trim() ?? "";
+    if (displayName) await saveDisplayName(result.value, displayName);
+    line = `${displayName || input.name} is set up. It will send you a hello in Messages once it comes online.`;
     lineIsError = false;
     await load(true);
+  }
+
+  /**
+   * `hq bot create` takes only the handle, so a bot named "Dr Love" is
+   * created as `dr-love` and labelled on its agent profile afterwards. The
+   * local copy is written first: the label must survive a failed PATCH.
+   */
+  async function saveDisplayName(value: unknown, displayName: string): Promise<void> {
+    const uid =
+      value && typeof value === "object" && typeof (value as { agentUid?: unknown }).agentUid === "string"
+        ? (value as { agentUid: string }).agentUid.trim()
+        : "";
+    if (!uid) return;
+    botDisplayNames = rememberBotDisplayName(botDisplayNames, uid, displayName);
+    try {
+      await adapter?.identity?.updateAgentProfile(uid, { displayName });
+    } catch (err) {
+      // The bot exists and works; only its label is missing in the cloud.
+      console.warn("[hq-desktop] bot display name save failed:", err);
+    }
   }
 
   async function loadRemote(): Promise<void> {
@@ -498,7 +524,7 @@
             <div class="bot-main">
               <strong>
                 <span class="dot" class:online={bot.online === true} aria-hidden="true"></span>
-                {bot.name}
+                <span data-testid={`settings-bot-${bot.name}-label`}>{botRowDisplayName(bot, botDisplayNames)}</span>
                 <BotKindChip kind="local" runtime={bot.runtime} variant="label" />
               </strong>
               <small>

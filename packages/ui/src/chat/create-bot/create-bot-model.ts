@@ -45,7 +45,12 @@ export interface CreateBotDraft {
    * same way the avatar pick is.
    */
   title: string;
-  /** Cloud only: the @handle. Empty means "follow the name". */
+  /**
+   * The @handle the bot is created under. Empty means "follow the name" —
+   * the slug of the display name. Both homes use it: a Local bot's handle is
+   * its folder name and what the CLI knows it as, so it is derived, shown,
+   * and only edited by hand when the derived one collides or is empty.
+   */
   handle: string;
   intro: string;
   avatar?: AvatarSelection;
@@ -68,7 +73,7 @@ export interface CreateBotContext {
    * say which. Absent → fall back to the boolean.
    */
   runtimeStatus?: Record<string, RuntimeStatus> | null;
-  /** Names already taken by the user's local bots. */
+  /** Handles already taken by the user's local bots. */
   existingNames: readonly string[];
   companies: ReadonlyArray<{ companyUid: string; label: string }>;
   /** The owner's companies a Local company bot can belong to (slugs). */
@@ -89,6 +94,8 @@ export const BOT_SCOPE_COPY: Record<BotScope, { title: string; sub: string }> = 
 };
 
 export const INTRO_MAX = 500;
+/** Display names are a label, not a description. */
+export const NAME_MAX = 60;
 /** Agent-profile titles are a one-line label, not a description. */
 export const TITLE_MAX = 60;
 
@@ -160,14 +167,40 @@ function taken(name: string, existing: readonly string[]): boolean {
   return existing.some((e) => normalizeBotName(e) === n);
 }
 
-/** Validation message for the name field; null when the name is fine. */
-export function nameIssue(name: string, existing: readonly string[]): string | null {
-  const n = normalizeBotName(name);
+/**
+ * Validation for a bot's DISPLAY name — the free-form label a person types
+ * ("Dr Love"). Spaces and capitals are fine here; the handle rules live in
+ * `handleIssue`/`localHandleIssue`, which judge the derived slug instead.
+ */
+export function displayNameIssue(name: string): string | null {
+  const n = name.trim();
   if (!n) return "Give your bot a name.";
-  if (!isValidLocalBotName(n)) {
-    return "Lowercase letters, digits, and single hyphens — for example “scout-2”.";
+  if (n.length > NAME_MAX) return `Keep the name under ${NAME_MAX} characters.`;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(name)) {
+    return "The name can\u2019t contain control characters.";
   }
-  if (taken(n, existing)) return `You already have a bot named ${n}.`;
+  return null;
+}
+
+/**
+ * Validation for the handle a LOCAL bot is created under: the slug derived
+ * from its display name, or the one the person typed into "edit handle".
+ * This is the field that must stay unique and CLI-safe, so a collision or an
+ * unslugifiable name is reported here rather than against the display name.
+ */
+export function localHandleIssue(
+  draft: Pick<CreateBotDraft, "name" | "handle">,
+  existing: readonly string[],
+): string | null {
+  const handle = botHandle(draft);
+  if (!handle) {
+    return "That name has no letters or digits \u2014 give the bot a handle, for example \u201cscout-2\u201d.";
+  }
+  if (!isValidLocalBotName(handle)) {
+    return "Handles are lowercase letters, digits, and single hyphens \u2014 for example \u201cscout-2\u201d.";
+  }
+  if (taken(handle, existing)) return `You already have a bot with the handle @${handle}.`;
   return null;
 }
 
@@ -180,13 +213,10 @@ export function botHandle(draft: Pick<CreateBotDraft, "name" | "handle">): strin
 /**
  * Validation for a Cloud bot's display name. A cloud bot's name is a label the
  * company sees ("Polar"), not the @handle, so it is not held to the handle's
- * character rules — `handleIssue` covers those.
+ * character rules \u2014 `handleIssue` covers those.
  */
 export function cloudNameIssue(name: string): string | null {
-  const n = name.trim();
-  if (!n) return "Give your bot a name.";
-  if (n.length > 60) return "Keep the name under 60 characters.";
-  return null;
+  return displayNameIssue(name);
 }
 
 /** Validation for the @handle a Cloud bot is created under; null when fine. */
@@ -407,7 +437,8 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
       }
       // "Who is it for?" is answered here now, so its rule is checked here.
       return (
-        nameIssue(draft.name, ctx.existingNames) ??
+        displayNameIssue(draft.name) ??
+        localHandleIssue(draft, ctx.existingNames) ??
         titleIssue(draft.title) ??
         introIssue(draft.intro) ??
         scopeIssue(draft, ctx)
@@ -453,7 +484,7 @@ export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
   const worker = draft.kind === "template" ? (draft.templateId ?? "").trim() : "";
   const companies = draft.scope === "company" ? [...new Set(draft.companySlugs.map((c) => c.trim()).filter(Boolean))] : [];
   return {
-    name: normalizeBotName(draft.name),
+    name: botHandle(draft),
     runtime: draft.runtime,
     autoApprove: draft.autoApprove,
     ...(model ? { model } : {}),
@@ -464,6 +495,18 @@ export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
     // against an hq that predates `--kind` keeps creating personal/setup bots.
     ...(draft.scope === "company" ? { kind: "company" as const, companies } : {}),
   };
+}
+
+/**
+ * The display name to store for this draft, or "" when there is nothing to
+ * store. A name that is already its own slug ("scout") needs no display name:
+ * the handle is the label, and bots made before display names existed read
+ * the same way.
+ */
+export function botDisplayName(draft: Pick<CreateBotDraft, "name" | "handle">): string {
+  const display = draft.name.trim();
+  if (!display || display === botHandle(draft)) return "";
+  return display;
 }
 
 /** "acts as you" / "for Indigo and Ridge" for the preview card. */
