@@ -15,6 +15,7 @@
    * is hidden entirely when the host cannot send one.
    */
   import type { Channel } from "./channels.js";
+  import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
   import type { LocalBotEntryResult } from "./local-bots.js";
@@ -144,6 +145,10 @@
       | null;
     /** `{ claude: true, codex: false, … }` — which runtimes are signed in here. */
     botRuntimeReady?: Record<string, boolean> | null;
+    /** Per-runtime state (not-installed / couldn't-check / signed-out). */
+    botRuntimeStatus?: Record<string, RuntimeStatus> | null;
+    /** Re-read runtime readiness from the host. */
+    onrecheckruntimes?: (() => void | Promise<void>) | null;
     /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** Names the user's local bots already use (availability check). */
@@ -188,6 +193,8 @@
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
+    botRuntimeStatus = null,
+    onrecheckruntimes = null,
     botWorkers = null,
     existingBotNames = null,
     botCompanies = null,
@@ -2440,6 +2447,8 @@
     {:else if step === "bot"}
       <CreateBotFlow
         {botRuntimeReady}
+        {botRuntimeStatus}
+        {onrecheckruntimes}
         {botWorkers}
         existingNames={existingBotNames}
         {botCompanies}

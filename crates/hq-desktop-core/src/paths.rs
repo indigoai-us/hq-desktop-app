@@ -1237,6 +1237,39 @@ pub fn managed_git_rescue_path_for_home(
 
 #[cfg(not(target_os = "windows"))]
 fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
+    for dir in unix_bin_search_dirs(home) {
+        let candidate = dir.join(name);
+        if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+/// Every directory the deterministic (non-`hq`, non-login-shell) lookup walks,
+/// in precedence order.
+///
+/// Split out of [`resolve_bin_in_dirs`] so callers that must EXPLAIN a failed
+/// lookup — "Claude Code is not installed, here is where HQ looked" — can name
+/// the same directories the resolver actually walked, instead of a second,
+/// drifting list.
+///
+/// The trailing block is the late-install lane: directories that only some
+/// machines have, appended AFTER the system prefixes so nothing they contain
+/// can outrank a Homebrew or `/usr/local` install that resolves today.
+///
+/// * `~/.claude/local` and `~/.claude/bin` — where Claude Code's own installer
+///   puts `claude` when it is not installed through a package manager. Without
+///   these the CLI resolves only through the login-shell lane, and a launch
+///   context with no usable login shell reports an installed CLI as absent.
+/// * `~/.asdf/shims`, `~/.local/share/mise/shims`, `~/.volta/bin` — version
+///   managers whose shims are the only copy of a globally installed CLI.
+///
+/// The npm/pnpm/bun global prefixes (including an explicit `PNPM_HOME`) come in
+/// through [`user_cli_dirs`] above, per `hq-cli-resolve-pnpm-home-bin`.
+#[cfg(not(target_os = "windows"))]
+fn unix_bin_search_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(home) = home {
         // Managed HQ toolchain (installed by hq-installer). Match
         // `child_path()` and hq-installer's login PATH order so a stale
@@ -1244,34 +1277,42 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
         // app's runtime PATH would execute.
         let toolchain = managed_toolchain_dir(home);
         for subdir in MANAGED_TOOLCHAIN_BIN_SUBDIRS {
-            let candidate = toolchain.join(subdir).join(name);
-            if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
-                return Some(candidate.to_string_lossy().to_string());
-            }
+            dirs.push(toolchain.join(subdir));
         }
-
         // User-level npm/pnpm prefixes after the managed toolchain, then
         // ~/.local/bin (where the installer's direct-binary yq/jq land).
-        for dir in user_cli_dirs(home)
-            .into_iter()
-            .chain(std::iter::once(home.join(".local").join("bin")))
-        {
-            let candidate = dir.join(name);
-            if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
-                return Some(candidate.to_string_lossy().to_string());
-            }
-        }
+        dirs.extend(user_cli_dirs(home));
+        dirs.push(home.join(".local").join("bin"));
     }
-
     // Standard install locations.
-    for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
-        let candidate = Path::new(prefix).join(name);
-        if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
-            return Some(candidate.to_string_lossy().to_string());
-        }
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    if let Some(home) = home {
+        dirs.push(home.join(".claude").join("local"));
+        dirs.push(home.join(".claude").join("bin"));
+        dirs.push(home.join(".asdf").join("shims"));
+        dirs.push(home.join(".local").join("share").join("mise").join("shims"));
+        dirs.push(home.join(".volta").join("bin"));
     }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|dir| seen.insert(dir.clone()));
+    dirs
+}
 
-    None
+/// The directories a program lookup walks on this machine, for diagnostics.
+///
+/// The UI shows these verbatim when a runtime CLI cannot be found, so a person
+/// who installed it somewhere unusual can see WHY HQ missed it rather than
+/// being told the CLI is not signed in.
+pub fn program_search_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        extended_search_dirs()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        unix_bin_search_dirs(home_dir().as_deref())
+    }
 }
 
 /// The `hq` cross-lane search directories on Unix, in EXACTLY today's
@@ -3322,6 +3363,76 @@ mod tests {
             resolve_bin_in_dirs(Some(tmp.path()), name),
             Some(expected.to_string_lossy().to_string())
         );
+    }
+
+    /// Claude Code's own installer writes `claude` to `~/.claude/local`, which
+    /// is on no package manager's prefix. Missing it left the CLI resolvable
+    /// only through the login shell, and a launch context without one reported
+    /// an installed, signed-in CLI as not signed in.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_a_claude_local_install() {
+        // A fixture-only name, because this machine may have a real
+        // `/opt/homebrew/bin/claude` that legitimately outranks the home dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let expected = tmp.path().join(".claude/local/hq-test-bin");
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), "hq-test-bin"),
+            Some(expected.to_string_lossy().to_string())
+        );
+        assert!(unix_bin_search_dirs(Some(tmp.path()))
+            .iter()
+            .any(|dir| dir.ends_with(".claude/local")));
+    }
+
+    /// Version-manager shims are the only copy of a globally installed CLI on
+    /// some machines.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_version_manager_shims() {
+        for relative in [".asdf/shims", ".local/share/mise/shims", ".volta/bin"] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let expected = tmp.path().join(relative).join("hq-test-bin");
+            std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+            std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+            assert_eq!(
+                resolve_bin_in_dirs(Some(tmp.path()), "hq-test-bin"),
+                Some(expected.to_string_lossy().to_string()),
+                "{relative} must be searched"
+            );
+        }
+    }
+
+    /// The late-install lane is additive: it may never outrank a directory
+    /// that already resolves today, or a bump could silently re-point every
+    /// spawn at a different binary.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_late_install_dirs_never_outrank_the_existing_precedence() {
+        let dirs = unix_bin_search_dirs(Some(Path::new("/home/x")));
+        let at = |suffix: &str| {
+            dirs.iter()
+                .position(|dir| dir.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} must be searched"))
+        };
+        assert!(at(".npm-global/bin") < at(".claude/local"));
+        assert!(at(".local/bin") < at(".claude/local"));
+        assert!(at("/opt/homebrew/bin") < at(".claude/local"));
+        assert!(at("/usr/local/bin") < at(".asdf/shims"));
+    }
+
+    /// The UI prints these to explain a failed lookup, so the list must be
+    /// non-empty and hold no duplicates.
+    #[test]
+    fn test_program_search_dirs_are_reportable() {
+        let dirs = program_search_dirs();
+        assert!(!dirs.is_empty());
+        let unique: std::collections::HashSet<_> = dirs.iter().collect();
+        assert_eq!(unique.len(), dirs.len(), "a repeated directory reads as a bug");
     }
 
     #[cfg(not(target_os = "windows"))]

@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The New bot wizard now tells apart the three reasons a coding tool can't be used, instead of calling all of them “not signed in”. A tool that isn't installed says so and points at where to get it; a check that couldn't finish says so and offers to try again; only a tool that really is signed out offers Sign in. Sign in is no longer offered for a tool the app can't find, and a sign-in that doesn't open now says what went wrong instead of sitting on “Opening…”. The app also looks in more places for the tools, including Claude Code's own install folder and version-manager shims.
 - The New bot wizard no longer says Claude Code is not signed in when it is. On some Macs the check ran without the account name macOS needs to find your Claude Code sign-in, so it read an empty one and reported you as signed out — which also left Next greyed out and the Sign in button unable to fix it. It now looks under your own account, so a signed-in Claude Code is recognised. A Claude Code that really is signed out still shows as signed out.
 - Channel notifications now look up who sent the message and avoid repeated anonymous entries. If the sender cannot be retrieved, the feed shows one “New messages” summary for that channel. Existing anonymous summaries are consolidated, and files without a recorded author show “File added” instead of “Someone added a file”.
 

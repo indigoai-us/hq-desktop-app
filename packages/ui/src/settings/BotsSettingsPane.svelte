@@ -53,6 +53,7 @@
   } from "../chat/bot-restore.js";
   import { botNeedsSignIn, expiredRuntimeOf } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
@@ -85,6 +86,8 @@
   let line = $state("");
   let lineIsError = $state(false);
   let flags = $state<Record<string, boolean> | null>(null);
+  /** Per-runtime state, so the flow can tell WHICH problem a runtime has. */
+  let runtimeStatuses = $state<Record<string, RuntimeStatus> | null>(null);
   /** The New bot flow, hosted in a lightweight dialog over the pane. */
   let createOpen = $state(false);
   let createBusy = $state<"bot" | null>(null);
@@ -359,11 +362,28 @@
     if (!result.ok) return;
     const rec = result.value as Record<string, unknown>;
     const next: Record<string, boolean> = {};
+    const statuses: Record<string, RuntimeStatus> = {};
     for (const id of ["claude", "codex", "grok"]) {
       next[`${id}Available`] = rec[`${id}Available`] === true;
       next[`${id}LoggedIn`] = rec[`${id}LoggedIn`] === true;
+      const status = parseRuntimeStatus(rec[`${id}Status`]);
+      if (status) statuses[id] = status;
     }
     flags = next;
+    // Only when the host actually reported them: an empty map would read as
+    // "every runtime unknown" and hide the states this exists to show.
+    runtimeStatuses = Object.keys(statuses).length > 0 ? statuses : null;
+  }
+
+  /**
+   * Re-run the preflight on demand (Check again / Try again in the flow).
+   *
+   * The old readings are kept while it runs: clearing them first would read as
+   * "unknown", which the flow treats as ready, and Next would blink enabled on
+   * a runtime that still cannot host a bot.
+   */
+  async function recheckRuntimes(): Promise<void> {
+    await loadPreflight();
   }
 
   async function loadCloud(quiet = false): Promise<void> {
@@ -750,6 +770,8 @@
       </div>
       <CreateBotFlow
         botRuntimeReady={runtimeReadyById}
+        botRuntimeStatus={runtimeStatuses}
+        onrecheckruntimes={recheckRuntimes}
         botWorkers={workers}
         existingNames={bots.map((b) => b.name)}
         botCompanies={localBotCompanies(companies)}
