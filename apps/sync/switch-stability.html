@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Conversation switch stability</title>
+  </head>
+  <body>
+    <!--
+      Standalone stage for e2e/browser/conversation-switch-stability.spec.ts.
+      Its own entry point, not a /dev-harness/index.html view: that harness
+      still imports desktop-alt pages that were deleted, so it does not build.
+    -->
+    <div id="switch-stability"></div>
+    <script type="module" src="/dev-harness/switch-stability-main.ts"></script>
+  </body>
+</html>

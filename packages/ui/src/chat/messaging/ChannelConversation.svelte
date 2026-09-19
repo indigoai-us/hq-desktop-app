@@ -548,7 +548,20 @@
   let dragActive = $state(false);
   let dragDepth = 0;
   let pasteCounter = 0;
+  /**
+   * Placeholder rows for a cold open. Widths are irregular on purpose — five
+   * identical bars read as a progress bar, not as a conversation.
+   */
+  const THREAD_SKELETON_ROWS = [
+    { name: 84, lines: [220, 320] },
+    { name: 64, lines: [280] },
+    { name: 96, lines: [180, 340, 240] },
+    { name: 72, lines: [260] },
+    { name: 88, lines: [300, 200] },
+  ];
   let scroller = $state<HTMLDivElement | null>(null);
+  /** The single box holding everything that scrolls — see the template note. */
+  let threadContent = $state<HTMLDivElement | null>(null);
   /**
    * Scroll ownership: the user wins. `stickToBottom` is the SINGLE gate for all
    * programmatic scrolling. It starts true (land on the newest message at mount
@@ -1272,6 +1285,38 @@
     });
   });
 
+  /**
+   * Hold the bottom while the content grows under it.
+   *
+   * The effect above only reacts to the timeline ARRAY changing. Most of what
+   * makes a freshly opened conversation settle is not a new row: an avatar
+   * decodes, a reaction bar appears when reactions resolve, a reply-count chip
+   * arrives, a code block finishes laying out, work-mesh activity merges into
+   * rows already on screen. Each of those makes the scroller taller after the
+   * pin ran, and the newest message walks off the bottom edge — the "have to
+   * scroll down a bit at the end" this fixes.
+   *
+   * Re-pinning is gated on `stickToBottom`, so a reader who has scrolled up is
+   * never yanked, and skipped during a history prepend, which anchors its own
+   * offset from `prependAnchorHeight`.
+   */
+  $effect(() => {
+    const el = scroller;
+    const content = threadContent;
+    if (!el || !content || typeof ResizeObserver === "undefined") return;
+    let lastHeight = content.offsetHeight;
+    const observer = new ResizeObserver(() => {
+      const height = content.offsetHeight;
+      if (height === lastHeight) return;
+      lastHeight = height;
+      if (!stickToBottom || loadingEarlier || prependAnchorHeight > 0) return;
+      if (restoreScrollPending) return;
+      el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  });
+
   $effect(() => {
     const target = restoreScroll;
     const el = scroller;
@@ -1329,6 +1374,23 @@
         onscroll={onThreadScroll}
         data-testid="conversation-thread"
       >
+      <!--
+        Everything that scrolls lives in ONE content box, for two reasons.
+
+        Anchoring: `flex: 1 0 auto` makes this box at least as tall as the
+        scroller, and `justify-content: flex-end` then parks short threads
+        against the composer. A conversation therefore starts at the bottom
+        structurally, on the first painted frame, with no scroll write and no
+        settle animation. A tall thread overflows normally because the box
+        never shrinks below its content.
+
+        Measurement: a ResizeObserver on the scroller cannot see its own
+        content grow. One wrapper gives `pinBottom` a single element whose
+        height changes when an avatar decodes, a reaction lands, a code block
+        lays out, or work-mesh activity merges in -- the late growth that used
+        to leave the reader a scroll short of the newest message.
+      -->
+      <div class="dm-thread-content" class:land-top={landAt === "top"} bind:this={threadContent}>
         {#if header}{@render header()}{/if}
         {#if headerOnly}
           <!-- header-only pane: nothing below the header -->
@@ -1340,6 +1402,29 @@
             role="status"
           >
             {emptyLabel}
+          </div>
+        {/if}
+        {#if timeline.length === 0 && loading}
+          <!--
+            Cold open: this conversation has nothing cached, so the pane would
+            otherwise be blank until the fetch lands. These placeholder rows
+            carry the real row geometry (32px avatar, name line, body lines) and
+            sit at the bottom like real messages, so the switch from placeholder
+            to message moves nothing. Aria-hidden: a reader is told the state by
+            the thread's own busy flag, not by five empty rows.
+          -->
+          <div class="thread-skeleton" data-testid="conversation-skeleton" aria-hidden="true">
+            {#each THREAD_SKELETON_ROWS as row, i (i)}
+              <div class="thread-skeleton-row">
+                <span class="thread-skeleton-avatar"></span>
+                <span class="thread-skeleton-column">
+                  <span class="thread-skeleton-name" style={`width:${row.name}px`}></span>
+                  {#each row.lines as width, j (j)}
+                    <span class="thread-skeleton-line" style={`width:${width}px`}></span>
+                  {/each}
+                </span>
+              </div>
+            {/each}
           </div>
         {/if}
         {#if loadingEarlier}
@@ -1719,6 +1804,7 @@
         {#if belowMessages}{@render belowMessages()}{/if}
         {/if}
       </div>
+      </div>
       {#if !stickToBottom && (landAt !== "top" || hasUnseenBelow)}
         <button
           type="button"
@@ -2046,8 +2132,73 @@
     gap: 0;
   }
 
+  /* Structural bottom anchoring. `flex: 1 0 auto` keeps this box at least as
+     tall as the scroller and never lets it shrink below its content, so a
+     short thread is pushed down by `justify-content: flex-end` and a long one
+     overflows exactly as before. The newest message is therefore against the
+     composer on the first painted frame, with no scroll write to see. */
+  .dm-thread-content {
+    display: flex;
+    flex: 1 0 auto;
+    flex-direction: column;
+    justify-content: flex-end;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  /* #welcome and friends land at the top and read downward. */
+  .dm-thread-content.land-top {
+    justify-content: flex-start;
+  }
+
   .dm-thread::-webkit-scrollbar {
     width: 4px;
+  }
+
+  /* ── Cold-open placeholder ───────────────────────────────────────────────
+     Geometry mirrors a real message row so replacing one with the other is a
+     paint, not a relayout: 32px avatar, 12px gutter, name line then body
+     lines on the same rhythm as `.dm-msg`. */
+  .thread-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    padding: 8px 0 4px;
+  }
+
+  .thread-skeleton-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .thread-skeleton-avatar,
+  .thread-skeleton-name,
+  .thread-skeleton-line {
+    display: inline-block;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--t1, #fff) 6%, transparent);
+  }
+
+  .thread-skeleton-avatar {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+  }
+
+  .thread-skeleton-column {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding-top: 2px;
+  }
+
+  .thread-skeleton-name {
+    height: 11px;
+  }
+
+  .thread-skeleton-line {
+    height: 10px;
   }
   .dm-thread::-webkit-scrollbar-thumb {
     background: var(--line);
