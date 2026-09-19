@@ -154,4 +154,65 @@ describe("MemberProfilePanel", () => {
     ) as HTMLImageElement | null;
     expect(img?.getAttribute("src")).toBe(MARCUS_PHOTO);
   });
+  it("shows a Message button for another person and reports the pick", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const picked: StatusPersonRow[] = [];
+    let closed = 0;
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: {
+        member: row(),
+        self: { uid: "prs_viewer" },
+        onmessage: (member: StatusPersonRow) => picked.push(member),
+        onclose: () => (closed += 1),
+      },
+    });
+    const btn = host.querySelector(
+      '[data-testid="member-profile-message"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    expect(btn?.textContent?.trim()).toBe("Message");
+    // Focusable, and Enter/Space activate it: a real <button>, not a div.
+    expect(btn?.tagName).toBe("BUTTON");
+    expect(btn?.getAttribute("type")).toBe("button");
+    expect(btn?.hasAttribute("disabled")).toBe(false);
+    btn?.click();
+    expect(picked.map((p) => p.personUid)).toEqual(["prs_marcus"]);
+    // The panel closes once the DM is open.
+    expect(closed).toBe(1);
+  });
+
+  it("hides the Message button on your own profile but keeps its row", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: {
+        member: row({ personUid: "prs_viewer", displayName: "You" }),
+        self: { uid: "prs_viewer" },
+        onmessage: () => {},
+      },
+    });
+    expect(host.querySelector('[data-testid="member-profile-message"]')).toBeNull();
+    // The row still occupies the panel, so opening your own profile does not
+    // shift everything below it up.
+    expect(host.querySelector(".pp-action")).not.toBeNull();
+  });
+
+  it("keeps the Message button for an agent profile", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: {
+        member: row({ personUid: "agt_scout", displayName: "Scout", role: "agent" }),
+        self: { uid: "prs_viewer" },
+        onmessage: () => {},
+      },
+    });
+    expect(
+      host.querySelector('[data-testid="member-profile-message"]'),
+    ).not.toBeNull();
+  });
 });

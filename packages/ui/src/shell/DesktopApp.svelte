@@ -3923,6 +3923,32 @@
     agentAvatarSaveError = null;
   }
 
+  /**
+   * Profile panel "Message": open (or create) the 1:1 DM with this person and
+   * close the panel. Same path the search palette's one-person pick takes —
+   * the existing DM row when the rail already has one, else a synthesized row
+   * handed to the normal select. Someone outside the viewer's company is DM'd
+   * directly; no "add them to the company" question stands in the way.
+   */
+  function messageMemberDirectly(member: StatusPersonRow): void {
+    const uid = member.personUid?.trim();
+    if (!uid) return;
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === uid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${uid}`,
+        kind: "dm",
+        title: member.displayName?.trim() || uid,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: uid,
+        email: member.email?.trim() || undefined,
+      },
+    );
+  }
+
   function openAgentProfileFromHeader(): void {
     const uid = selectedRow?.personUid?.trim();
     if (!uid) return;
@@ -8512,6 +8538,7 @@
                     saving={agentAvatarSaving}
                     saveError={agentAvatarSaveError}
                     onsaveavatar={saveOpenAgentAvatar}
+                    onmessage={messageMemberDirectly}
                     onclose={closeMemberProfile}
                   />
                 </div>
