@@ -36,6 +36,18 @@
   const FETCH_MS = number('fetchMs', 120);
   /** How long after the rows land the late content shows up. */
   const GROWTH_MS = number('growthMs', 250);
+  /**
+   * `?growth=manual` holds the late content back until the spec asks for it.
+   *
+   * On a timer, the growth and the frame the rows first paint are two
+   * independent clocks, and on a slow runner they can land in the same
+   * animation frame. A spec that wants to measure the freshly mounted thread
+   * BEFORE anything grows under it cannot do that against a timer without
+   * guessing how slow the machine is. In manual mode the spec clicks
+   * `switch-trigger-growth` once it has the measurement it came for, so the
+   * two phases are ordered by the test rather than by wall-clock luck.
+   */
+  const MANUAL_GROWTH = params.get('growth') === 'manual';
   const MESSAGE_COUNT = number('messages', 40);
 
   type Wire = {
@@ -106,6 +118,7 @@
   }
 
   function scheduleGrowth(id: ConversationId): void {
+    if (MANUAL_GROWTH) return;
     growthTimer = setTimeout(() => {
       if (active !== id) return;
       grownFor = id;
@@ -147,6 +160,18 @@
         {id}
       </button>
     {/each}
+    {#if MANUAL_GROWTH}
+      <!-- Only in manual mode, and outside the pane under test, so it can add
+           nothing to the geometry the spec samples. -->
+      <button
+        type="button"
+        class="switch-row"
+        data-testid="switch-trigger-growth"
+        onclick={() => { grownFor = active; }}
+      >
+        grow
+      </button>
+    {/if}
   </nav>
   <div class="switch-pane">
     <!-- Fixed-height header, matching the shell's 52px channel header: it

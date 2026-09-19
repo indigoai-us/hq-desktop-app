@@ -129,22 +129,52 @@ function distinct<T>(samples: Sample[], pick: (s: Sample) => T): string[] {
   return [...seen];
 }
 
-async function openStage(page: Page): Promise<void> {
-  await page.goto(stage);
+async function openStage(page: Page, query = ''): Promise<void> {
+  await page.goto(`${stage}${query}`);
   await expect(page.getByTestId('switch-stage')).toBeVisible();
   // Alpha opens on mount and answers after the fetch delay.
   await expect.poll(() => page.locator('[data-testid="conversation-thread"] .dm-msg').count())
     .toBeGreaterThan(0);
-  await page.waitForTimeout(GROWTH_MS + 250);
+  // In manual-growth mode there is no late content to wait for; alpha is
+  // settled as soon as its rows are up.
+  if (!query.includes('growth=manual')) await page.waitForTimeout(GROWTH_MS + 250);
+}
+
+/** Resolve once the sampler has recorded at least `count` more frames. */
+async function sampleFrames(page: Page, count: number): Promise<void> {
+  const from = await page.evaluate(() => window.__samples?.length ?? 0);
+  await expect.poll(() => page.evaluate(() => window.__samples?.length ?? 0))
+    .toBeGreaterThanOrEqual(from + count);
 }
 
 test('a conversation switch lands anchored, and nothing moves while late content resolves', async ({ page }) => {
-  await openStage(page);
+  // Manual growth, because this test measures two phases that must not be
+  // allowed to collide: the freshly mounted thread, and then the same thread
+  // with late content added under it. On a timer those are two independent
+  // clocks, and on a loaded CI runner the growth can land inside the very
+  // frame the rows first paint -- the sampler reads that frame before the
+  // component's ResizeObserver re-pins it (see `unanchoredFrames`), so the
+  // "first frame" measurement below becomes a measurement of the growth
+  // instead. Ordering the phases from the test removes the race rather than
+  // tolerating it; both properties are still asserted in full.
+  await openStage(page, '?growth=manual');
+  const thread = page.getByTestId('conversation-thread');
 
   await startSampling(page);
   await page.getByTestId('switch-to-bravo').click();
-  // Past the fetch AND past the late growth, so the whole settle is sampled.
-  await page.waitForTimeout(GROWTH_MS + 600);
+  // Phase one: bravo's rows are up and nothing has grown under them yet.
+  await expect.poll(() => thread.locator('.dm-msg').count()).toBeGreaterThan(0);
+  await sampleFrames(page, 5);
+
+  // Phase two: the late content lands. Wait on the scroller actually getting
+  // taller, not on a clock.
+  const heightBeforeGrowth = await thread.evaluate(el => el.scrollHeight);
+  await page.getByTestId('switch-trigger-growth').click();
+  await expect.poll(() => thread.evaluate(el => el.scrollHeight))
+    .toBeGreaterThan(heightBeforeGrowth);
+  // Frames after the growth, which is where an unpinned thread shows the jump.
+  await sampleFrames(page, 5);
+
   const { samples, first } = await stopSampling(page);
 
   expect(samples.length).toBeGreaterThan(5);
@@ -170,18 +200,29 @@ test('a conversation switch lands anchored, and nothing moves while late content
 });
 
 test('reopening a conversation paints its rows already anchored', async ({ page }) => {
-  await openStage(page);
+  // Manual growth for the same reason as the test above: this one also reads
+  // the first frame the rows exist, so the late content must not be able to
+  // land in it.
+  await openStage(page, '?growth=manual');
+  const thread = page.getByTestId('conversation-thread');
   await page.getByTestId('switch-to-bravo').click();
-  await expect.poll(() => page.locator('[data-testid="conversation-thread"] .dm-msg').count())
-    .toBeGreaterThan(0);
-  await page.waitForTimeout(GROWTH_MS + 250);
+  await expect.poll(() => thread.locator('.dm-msg').count()).toBeGreaterThan(0);
 
   // Back to alpha, which the harness now serves from its cache with no delay —
   // the shell's cached-switch path. The first frame with rows must already be
   // the finished frame.
   await startSampling(page);
   await page.getByTestId('switch-to-alpha').click();
-  await page.waitForTimeout(GROWTH_MS + 600);
+  await expect.poll(() => thread.locator('.dm-msg').first().textContent())
+    .toContain('alpha message');
+  await sampleFrames(page, 5);
+
+  const heightBeforeGrowth = await thread.evaluate(el => el.scrollHeight);
+  await page.getByTestId('switch-trigger-growth').click();
+  await expect.poll(() => thread.evaluate(el => el.scrollHeight))
+    .toBeGreaterThan(heightBeforeGrowth);
+  await sampleFrames(page, 5);
+
   const { samples, first } = await stopSampling(page);
 
   expect(first).not.toBeNull();
