@@ -285,6 +285,26 @@ pub struct ChannelDetail {
 /// server-issued slugs (URL-safe), but a defensive minimal escape avoids a
 /// malformed URL if a future id carries a reserved char. Keeps the dep surface
 /// at zero (no `urlencoding` crate) — only `/`, `?`, `#`, and space are escaped.
+/// Percent-encode a QUERY VALUE. `esc_seg` is for path segments and leaves
+/// `&` and `=` alone, which would let a typed handle add its own parameters —
+/// so the query path gets its own encoder rather than reusing that one.
+pub fn esc_query(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            other => {
+                let mut buf = [0u8; 4];
+                other
+                    .encode_utf8(&mut buf)
+                    .as_bytes()
+                    .iter()
+                    .map(|b| format!("%{b:02X}"))
+                    .collect::<String>()
+            }
+        })
+        .collect()
+}
+
 pub fn esc_seg(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -1013,5 +1033,27 @@ mod tests {
         let r: EnsureProjectChannelResponse = serde_json::from_str(json).expect("response parses");
         assert!(r.created);
         assert_eq!(r.channel.as_ref().unwrap().channel_id, "chn_1");
+    }
+}
+
+#[cfg(test)]
+mod esc_query_tests {
+    use super::esc_query;
+
+    #[test]
+    fn leaves_handle_characters_alone() {
+        assert_eq!(esc_query("acme-co-1"), "acme-co-1");
+    }
+
+    #[test]
+    fn encodes_query_delimiters_so_a_typed_value_cannot_add_parameters() {
+        assert_eq!(esc_query("a&b=c"), "a%26b%3Dc");
+        assert_eq!(esc_query("a b"), "a%20b");
+        assert_eq!(esc_query("a/b?c#d"), "a%2Fb%3Fc%23d");
+    }
+
+    #[test]
+    fn encodes_non_ascii_as_utf8_bytes() {
+        assert_eq!(esc_query("é"), "%C3%A9");
     }
 }

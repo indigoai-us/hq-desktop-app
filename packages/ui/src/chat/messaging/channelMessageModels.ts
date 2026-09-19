@@ -162,6 +162,18 @@ export interface LifecycleCardFieldOption {
   price: string | null;
 }
 
+/**
+ * A validation rule the SERVER published for this field, so the client checks
+ * the server's own rule instead of carrying a copied regex that drifts.
+ * `pattern` is a RegExp source string. Null on a card that declares no rule.
+ */
+export interface LifecycleCardFieldConstraints {
+  pattern: string;
+  minLength: number;
+  maxLength: number;
+  description: string;
+}
+
 export interface LifecycleCardField {
   id: string;
   label: string;
@@ -172,6 +184,7 @@ export interface LifecycleCardField {
   error: string | null;
   hint: string | null;
   description: string | null;
+  constraints: LifecycleCardFieldConstraints | null;
 }
 
 export interface LifecycleCardAction {
@@ -307,6 +320,24 @@ function parseLifecycleField(raw: unknown): LifecycleCardField | null {
     error: asOptionalString(raw.error),
     hint: asOptionalString(raw.hint),
     description: asOptionalString(raw.description),
+    constraints: parseLifecycleFieldConstraints(raw.constraints),
+  };
+}
+
+function parseLifecycleFieldConstraints(
+  raw: unknown,
+): LifecycleCardFieldConstraints | null {
+  if (!isRecord(raw)) return null;
+  const pattern = asOptionalString(raw.pattern);
+  if (!pattern) return null;
+  if (typeof raw.minLength !== "number" || typeof raw.maxLength !== "number") {
+    return null;
+  }
+  return {
+    pattern,
+    minLength: raw.minLength,
+    maxLength: raw.maxLength,
+    description: asOptionalString(raw.description) ?? "",
   };
 }
 

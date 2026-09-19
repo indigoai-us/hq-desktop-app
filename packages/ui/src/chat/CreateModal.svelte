@@ -29,6 +29,14 @@
     CompanyInvite,
     InviteFailure,
   } from "./create-company/create-company-flow.js";
+  import { slugFieldOf } from "./create-company/create-company-flow.js";
+  import {
+    createSlugWatcher,
+    slugBlocksSubmit,
+    SLUG_IDLE,
+    type SlugState,
+    type SlugWatcher,
+  } from "./create-company/slug-availability.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
     initialsFor,
@@ -264,6 +272,57 @@
 
   const companyBusy = $derived(companyOpening || companyCreating);
 
+  // ── Live handle check ──────────────────────────────────────────────────
+  /** The field the check watches, once the card says which one it is. */
+  let companySlugFieldId = $state<string | null>(null);
+  let companySlugState = $state<SlugState>(SLUG_IDLE);
+  let companySlugWatcher: SlugWatcher | null = null;
+
+  function stopCompanySlugWatch(): void {
+    companySlugWatcher?.cancel();
+    companySlugWatcher = null;
+    companySlugFieldId = null;
+    companySlugState = SLUG_IDLE;
+  }
+
+  /**
+   * Start watching the card's handle field. Needs both a check seam and a
+   * field to watch — without either, the step behaves exactly as it did
+   * before and the submit answer is still the authority.
+   */
+  function startCompanySlugWatch(
+    form: CompanyDraftForm,
+    seeded: Record<string, string>,
+  ): void {
+    stopCompanySlugWatch();
+    const check = companyCreate?.checkSlug;
+    if (!check) return;
+    const fieldId = slugFieldOf(form.fields);
+    if (!fieldId) return;
+    companySlugFieldId = fieldId;
+    companySlugWatcher = createSlugWatcher({
+      check,
+      constraints:
+        form.fields.find((field) => field.id === fieldId)?.constraints ?? null,
+      onstate: (next) => {
+        companySlugState = next;
+      },
+    });
+    const initial = seeded[fieldId] ?? "";
+    if (initial.trim()) companySlugWatcher.input(initial);
+  }
+
+  // A pending check must not outlive the modal: a timer that fires after the
+  // card is gone would call the route for a handle nobody is typing anymore.
+  $effect(() => () => companySlugWatcher?.cancel());
+
+  /** Take the server's suggested handle. */
+  function acceptCompanySlugSuggestion(): void {
+    const suggestion = companySlugState.suggestion;
+    if (!suggestion || !companySlugFieldId) return;
+    setCompanyValue(companySlugFieldId, suggestion);
+  }
+
   /** Required fields the person has not filled in yet. */
   const companyMissing = $derived(
     (companyForm?.fields ?? []).filter(
@@ -271,7 +330,12 @@
     ),
   );
   const companySubmitDisabled = $derived(
-    companyBusy || !companyForm || companyMissing.length > 0,
+    companyBusy ||
+      !companyForm ||
+      companyMissing.length > 0 ||
+      // Checking, taken, or malformed. "Couldn't check" deliberately does NOT
+      // block: the server still decides on submit.
+      slugBlocksSubmit(companySlugState),
   );
 
   async function enterCompanyStep(name: string): Promise<void> {
@@ -284,6 +348,7 @@
     companyInviteInput = "";
     companyInviteFailures = [];
     companyRole = "member";
+    stopCompanySlugWatch();
     step = "company";
     companyOpening = true;
     try {
@@ -299,6 +364,7 @@
         seeded[result.form.nameFieldId] = companyName;
       }
       companyValues = seeded;
+      startCompanySlugWatch(result.form, seeded);
     } catch (err) {
       companyError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -308,6 +374,7 @@
 
   function setCompanyValue(id: string, value: string): void {
     companyValues = { ...companyValues, [id]: value };
+    if (id === companySlugFieldId) companySlugWatcher?.input(value);
   }
 
   function addCompanyInvite(): void {
@@ -376,6 +443,7 @@
   /** Back to the search step with the typed name still in the box. */
   function backFromCompany(): void {
     if (companyBusy) return;
+    stopCompanySlugWatch();
     const restore = companyName || query;
     query = restore;
     queryDebounced = restore;
@@ -2235,6 +2303,32 @@
                 />
               {/if}
             </div>
+            {#if field.id === companySlugFieldId}
+              <!-- Reserved height: the row is always in the layout, so the
+                   fields below never jump as the verdict changes. -->
+              <p
+                class="create-slug-status"
+                data-testid="chat-create-company-slug-status"
+                data-status={companySlugState.status}
+                role="status"
+                aria-live="polite"
+              >
+                {#if companySlugState.message}
+                  <span>{companySlugState.message}</span>
+                {/if}
+                {#if companySlugState.suggestion}
+                  <button
+                    type="button"
+                    class="create-slug-suggestion"
+                    data-testid="chat-create-company-slug-suggestion"
+                    disabled={companyBusy}
+                    onclick={acceptCompanySlugSuggestion}
+                  >
+                    Use {companySlugState.suggestion}
+                  </button>
+                {/if}
+              </p>
+            {/if}
             {#if field.hint}
               <p class="create-help">{field.hint}</p>
             {/if}
@@ -3261,6 +3355,45 @@
   .create-slug-echo {
     color: var(--t3);
     font-family: var(--font-mono);
+  }
+
+  /*
+   * The live handle verdict. min-height keeps the row in the layout even when
+   * it says nothing, so the invite list below never jumps while someone types.
+   */
+  .create-slug-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 20px;
+    margin: 0;
+    padding: 0 16px 8px 96px;
+    color: var(--t2);
+    font-size: 12px;
+  }
+
+  .create-slug-status[data-status="available"] {
+    color: var(--ok, #3fb950);
+  }
+
+  .create-slug-status[data-status="taken"],
+  .create-slug-status[data-status="invalid"] {
+    color: var(--warn, #d29922);
+  }
+
+  .create-slug-suggestion {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent, inherit);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .create-slug-suggestion:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .create-select {

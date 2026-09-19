@@ -4481,6 +4481,10 @@
         url: typeof raw?.url === "string" ? raw.url : undefined,
       };
     },
+    checkCompanySlug: adapter.messaging.checkCompanySlug
+      ? async (slug: string) =>
+          unwrapAdapter(await adapter.messaging.checkCompanySlug!(slug))
+      : undefined,
     getCompanyTab: adapter.messaging.getCompanyTab
       ? async (companyUid, tabId) =>
           unwrapAdapter(await adapter.messaging.getCompanyTab!(companyUid, tabId))
@@ -4713,6 +4717,9 @@
     canRunEntryPoints
       ? {
           open: () => openCreateCompanyDraft(conversationApi),
+          checkSlug: conversationApi.checkCompanySlug
+            ? (slug: string) => conversationApi.checkCompanySlug!(slug)
+            : null,
           submit: async (form, values, invites) => {
             const result = await submitCreateCompany(
               conversationApi,

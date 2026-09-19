@@ -53,7 +53,7 @@ use crate::util::logfile::log;
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
     build_create_payload, build_create_payload_with_project, build_ensure_project_channel_payload,
-    build_group_payload, build_reaction_payload, build_reactions_url, esc_seg,
+    build_group_payload, build_reaction_payload, build_reactions_url, esc_query, esc_seg,
     invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
     ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     EnsureProjectChannelResponse, MessageReactions, ReactionAggregate, RequestsResponse,
@@ -1115,6 +1115,27 @@ async fn reconcile_after_card_action(base: &str, token: &str) {
         }
         Err(e) => log(LOG_TAG, &format!("MESSAGES_ACTIVATE_RECONCILE_ERR {e}")),
     }
+}
+
+/// GET `/v1/companies/slug-available?slug={value}` — advisory company-handle
+/// availability for the create-company step.
+///
+/// Read-only and advisory: the server still enforces on create, so a failure
+/// here is surfaced to the caller (never swallowed into a fake verdict) and
+/// the UI treats it as "couldn't check" rather than blocking creation.
+#[tauri::command]
+pub async fn check_company_slug(slug: String) -> Result<serde_json::Value, String> {
+    let value = slug.trim();
+    if value.is_empty() {
+        return Err("slug must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_COMPANY_SLUG_AVAILABLE").await?;
+    let url = format!(
+        "{}/v1/companies/slug-available?slug={}",
+        base.trim_end_matches('/'),
+        esc_query(value)
+    );
+    get_json(&url, &token, "MESSAGES_COMPANY_SLUG_AVAILABLE").await
 }
 
 /// GET `/v1/companies/{uid}/tabs/{tab}` (US-015).
