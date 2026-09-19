@@ -493,3 +493,55 @@ describe("ChatSidebar offers the user's local bots in the '+' modal", () => {
     await vi.waitFor(() => expect(q('[data-testid="chat-create-modal"]')?.textContent).toContain("scout"));
   });
 });
+
+describe("ChatSidebar company switcher — in-modal company creation", () => {
+  const companyCreate = {
+    open: async () => ({
+      ok: true as const,
+      form: {
+        channelId: "setup",
+        cardId: "card_create_company_2",
+        title: "Name your company",
+        summary: null,
+        actionId: "submit",
+        nameFieldId: "name",
+        fields: [
+          {
+            id: "name",
+            label: "Company name",
+            control: "text" as const,
+            options: [],
+            value: "",
+            required: true,
+            error: null,
+            hint: null,
+            description: null,
+          },
+        ],
+      },
+    }),
+    submit: async () => ({
+      ok: true as const,
+      company: {
+        companyUid: "cmp_new",
+        companyChannelId: "chn_new",
+        inviteFailures: [],
+      },
+    }),
+  };
+
+  it("opens the create modal on its company step instead of #setup", async () => {
+    const oncreatecompany = vi.fn(async () => okTarget);
+    mountSidebar({ companies: [INDIGO, ACME], oncreatecompany, companyCreate });
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    await settle();
+    click('[data-testid="chat-scope-new-company"]');
+    await settle(10);
+    expect(q('[data-testid="chat-create-company-step"]')).toBeTruthy();
+    expect(
+      q<HTMLInputElement>('[data-testid="chat-create-company-field-name"]')?.value,
+    ).toBe("");
+    expect(oncreatecompany).not.toHaveBeenCalled();
+  });
+});

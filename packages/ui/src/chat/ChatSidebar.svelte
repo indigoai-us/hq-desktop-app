@@ -164,6 +164,7 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
   import { titleWhenTruncated } from "../common/truncation-title";
   import CompanyIcon from "../company/CompanyIcon.svelte";
@@ -248,6 +249,8 @@
      * card seams leave these unset and the rows are hidden.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    /** In-modal company creation (name → details + invites → create). */
+    companyCreate?: CompanyCreateSeam | null;
     oncreateagent?:
       | ((
           companyUid: string,
@@ -370,6 +373,7 @@
     oncompanyscopechange,
     onsignout,
     oncreatecompany = null,
+    companyCreate = null,
     oncreateagent = null,
     oncreatebot = null,
     botRuntimeReady = null,
@@ -1253,15 +1257,19 @@
   /** The "+" button: a plain channel; the host resets the kind on its own opens. */
   function openCreateFromButton(): void {
     createKind = "channel";
+    createStep = "find";
     openCreate();
   }
 
   /** What the create modal makes inside a company when opened by the host. */
   let createKind = $state<"channel" | "project">("channel");
+  /** Which step the create modal opens on — "company" for New company. */
+  let createStep = $state<"find" | "company">("find");
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
   export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
     createKind = options.kind ?? "channel";
+    createStep = "find";
     openCreate();
   }
 
@@ -1334,6 +1342,16 @@
   let scopeEntryBusy = $state(false);
 
   async function newCompanyFromSwitcher(): Promise<void> {
+    // The in-modal flow owns this when the host wired it: the switcher opens
+    // the create modal on its company step instead of jumping to #setup.
+    if (companyCreate) {
+      scopeMenuOpen = false;
+      scopeEntryError = null;
+      createKind = "channel";
+      createStep = "company";
+      openCreate();
+      return;
+    }
     if (!oncreatecompany || scopeEntryBusy) return;
     scopeEntryBusy = true;
     scopeEntryError = null;
@@ -2301,7 +2319,7 @@
               {/if}
             </button>
           {/each}
-          {#if oncreatecompany}
+          {#if oncreatecompany || companyCreate}
             <div class="chat-scope-sep" role="separator"></div>
             <button
               type="button"
@@ -3165,6 +3183,7 @@
       }}
       oncreated={onChannelCreated}
       {oncreatecompany}
+      {companyCreate}
       {oncreateagent}
       {agentCompanies}
       {oncreatebot}
@@ -3177,6 +3196,7 @@
       {avatarPacks}
       {loadAvatarPacks}
       initialKind={createKind}
+      initialStep={createStep}
     />
   {/if}
 </aside>

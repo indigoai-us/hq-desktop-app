@@ -104,6 +104,11 @@
     type EntryPointTarget,
   } from "../chat/lifecycle-entry-points.js";
   import {
+    openCreateCompanyDraft,
+    submitCreateCompany,
+    type CompanyCreateSeam,
+  } from "../chat/create-company/create-company-flow.js";
+  import {
     patchLifecycleCardState,
     submitLifecycleCardAction,
     type CardActionIdempotencyStore,
@@ -4699,6 +4704,42 @@
   }
 
   /**
+   * The create-modal's own company flow: the server's `create_company` card,
+   * rendered as step 2 of the modal instead of a jump to #setup. Creating the
+   * company mints its channel server-side; this switches the app into the new
+   * company and opens that channel.
+   */
+  const companyCreateSeam = $derived<CompanyCreateSeam | null>(
+    canRunEntryPoints
+      ? {
+          open: () => openCreateCompanyDraft(conversationApi),
+          submit: async (form, values, invites) => {
+            const result = await submitCreateCompany(
+              conversationApi,
+              form,
+              values,
+              invites,
+            );
+            if (result.ok) {
+              createCompanyRequested = true;
+              const uid = result.company.companyUid;
+              const channelId = result.company.companyChannelId;
+              if (uid) changeTenantCompany(uid);
+              if (channelId) {
+                requestChannelOpen(channelId, {
+                  companyUid: uid,
+                  focusCardId: null,
+                  focusCardKind: null,
+                });
+              }
+            }
+            return result;
+          },
+        }
+      : null,
+  );
+
+  /**
    * #welcome "Open <Company>" / "Continue setup for <Company>": select the
    * company's own channel when the rail already has it, otherwise switch the
    * sidebar into that company's scope so its rows hydrate and auto-open.
@@ -7516,6 +7557,7 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+          companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
