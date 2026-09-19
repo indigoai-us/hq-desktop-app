@@ -13,12 +13,17 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  applyResolvedMentionEmails,
   disambiguateMentionTargets,
   filterMentionCandidates,
+  mentionRowPill,
+  mentionRowSubtitle,
   mentionTargetLabel,
   mentionTargetsFromContacts,
   mentionUidTag,
+  mentionUidsNeedingEmail,
   mergeMentionRosters,
+  outsideCompanyLabel,
   type MentionTarget,
 } from "./mentions.js";
 
@@ -58,41 +63,93 @@ describe("people outside the channel's company are offered again", () => {
 });
 
 describe("two people who share a display name are told apart", () => {
+  const outside = { outsideLabel: outsideCompanyLabel("Indigo") };
+
   it("never renders two identical rows for different uids", () => {
-    const roster = mergeMentionRosters([indigoJacob], outsideJacobRows);
+    const roster = disambiguateMentionTargets(
+      mergeMentionRosters([indigoJacob], outsideJacobRows),
+      outside,
+    );
     const labels = roster.map((row) => mentionTargetLabel(row));
     expect(new Set(labels).size).toBe(labels.length);
     expect(labels).toHaveLength(2);
   });
 
-  it("labels the known row by its company and the bare row by a uid tag", () => {
-    const roster = mergeMentionRosters([indigoJacob], outsideJacobRows);
+  it("labels the known row by its company and the bare row 'outside Indigo'", () => {
+    const roster = disambiguateMentionTargets(
+      mergeMentionRosters([indigoJacob], outsideJacobRows),
+      outside,
+    );
     const known = roster.find((row) => row.participantUid === INDIGO_JACOB);
-    const outside = roster.find((row) => row.participantUid === OUTSIDE_JACOB);
+    const other = roster.find((row) => row.participantUid === OUTSIDE_JACOB);
     expect(known?.disambiguator).toBe("Indigo");
-    expect(outside?.disambiguator).toBe(mentionUidTag(OUTSIDE_JACOB));
-    expect(mentionTargetLabel(outside!)).toBe(
-      `Jacob Posel (${mentionUidTag(OUTSIDE_JACOB)})`,
+    expect(other?.disambiguator).toBe("outside Indigo");
+    expect(mentionTargetLabel(other!)).toBe("Jacob Posel (outside Indigo)");
+    expect(mentionRowPill(other!)).toBe("outside Indigo");
+  });
+
+  it("never shows a person a uid fragment, even with no label to fall back on", () => {
+    const roster = disambiguateMentionTargets(
+      mergeMentionRosters([indigoJacob], outsideJacobRows),
+      // No active company resolved → still no uid tail for a human.
+      { outsideLabel: outsideCompanyLabel(null) },
+    );
+    const other = roster.find((row) => row.participantUid === OUTSIDE_JACOB);
+    expect(other?.disambiguator).toBeUndefined();
+    expect(mentionTargetLabel(other!)).toBe("Jacob Posel");
+    expect(mentionTargetLabel(other!)).not.toContain(
+      mentionUidTag(OUTSIDE_JACOB),
     );
   });
 
-  it("prefers an email over a uid tag when the row has one", () => {
-    const [withEmail, bare] = disambiguateMentionTargets([
-      {
-        participantUid: OUTSIDE_JACOB,
-        participantType: "human",
-        displayName: "Jacob Posel",
-        email: "jacob@getenabled.ai",
-      },
-      indigoJacob,
-    ]).sort((a, b) => a.participantUid.localeCompare(b.participantUid));
-    expect([withEmail?.disambiguator, bare?.disambiguator]).toContain(
-      "jacob@getenabled.ai",
+  it("keeps the uid tag for two same-named AGENTS, which have no email", () => {
+    const agents = disambiguateMentionTargets(
+      [
+        {
+          participantUid: "agt_01AAAAAAAAAAAAAAAAAAAAAAAA",
+          participantType: "agent",
+          displayName: "Izzy",
+        },
+        {
+          participantUid: "agt_01BBBBBBBBBBBBBBBBBBBBBBBB",
+          participantType: "agent",
+          displayName: "Izzy",
+        },
+      ],
+      outside,
     );
+    expect(agents.map((row) => row.disambiguator)).toEqual([
+      mentionUidTag("agt_01AAAAAAAAAAAAAAAAAAAAAAAA"),
+      mentionUidTag("agt_01BBBBBBBBBBBBBBBBBBBBBBBB"),
+    ]);
+    // "outside Indigo" is a human placeholder waiting on an email lookup.
+    // An agent's lookup would never resolve, so it does not get that label.
+    for (const row of agents)
+      expect(row.disambiguator).not.toBe("outside Indigo");
+  });
+
+  it("prefers an email over the outside label when the row has one", () => {
+    const roster = disambiguateMentionTargets(
+      [
+        {
+          participantUid: OUTSIDE_JACOB,
+          participantType: "human",
+          displayName: "Jacob Posel",
+          email: "jacob@getenabled.ai",
+        },
+        indigoJacob,
+      ],
+      outside,
+    );
+    const other = roster.find((row) => row.participantUid === OUTSIDE_JACOB);
+    expect(other?.disambiguator).toBe("jacob@getenabled.ai");
+    // The email is already the row's subtitle — it is not duplicated as a pill.
+    expect(mentionRowSubtitle(other!)).toBe("jacob@getenabled.ai");
+    expect(mentionRowPill(other!)).toBeNull();
   });
 
   it("adds no label at all when the name does not collide", () => {
-    const [only] = disambiguateMentionTargets(outsideJacobRows);
+    const [only] = disambiguateMentionTargets(outsideJacobRows, outside);
     expect(only?.disambiguator).toBeUndefined();
     expect(mentionTargetLabel(only!)).toBe("Jacob Posel");
   });
@@ -102,5 +159,88 @@ describe("two people who share a display name are told apart", () => {
     expect(tag).toBe("id …DWS1NJ");
     expect(tag).not.toContain("prs_");
     expect(OUTSIDE_JACOB).toContain(tag.slice(-6));
+  });
+});
+
+describe("resolving an outside person's email, then relabelling", () => {
+  const outside = { outsideLabel: outsideCompanyLabel("Indigo") };
+
+  /** The shell's flow: merge → ask about the uids that need an email →
+   *  fold the answer in → disambiguate again. */
+  function label(emailByUid: Record<string, string>): {
+    asked: string[];
+    other: MentionTarget | undefined;
+  } {
+    const merged = mergeMentionRosters([indigoJacob], outsideJacobRows);
+    const asked = mentionUidsNeedingEmail(merged);
+    const roster = disambiguateMentionTargets(
+      applyResolvedMentionEmails(merged, emailByUid),
+      outside,
+    );
+    return {
+      asked,
+      other: roster.find((row) => row.participantUid === OUTSIDE_JACOB),
+    };
+  }
+
+  it("asks only about colliding humans with no company and no email", () => {
+    const { asked } = label({});
+    expect(asked).toEqual([OUTSIDE_JACOB]);
+  });
+
+  it("asks about nothing when the name does not collide", () => {
+    expect(mentionUidsNeedingEmail(outsideJacobRows)).toEqual([]);
+  });
+
+  it("never asks about an agent — an agent has no email to resolve", () => {
+    const agents = disambiguateMentionTargets([
+      {
+        participantUid: "agt_01AAAAAAAAAAAAAAAAAAAAAAAA",
+        participantType: "agent",
+        displayName: "Izzy",
+      },
+      {
+        participantUid: "agt_01BBBBBBBBBBBBBBBBBBBBBBBB",
+        participantType: "agent",
+        displayName: "Izzy",
+      },
+    ]);
+    expect(mentionUidsNeedingEmail(agents)).toEqual([]);
+  });
+
+  it("reads 'outside Indigo' until the lookup answers", () => {
+    const { other } = label({});
+    expect(other?.disambiguator).toBe("outside Indigo");
+  });
+
+  it("relabels with the email once the lookup answers", () => {
+    const { other } = label({ [OUTSIDE_JACOB]: "jacob@getenabled.ai" });
+    expect(other?.email).toBe("jacob@getenabled.ai");
+    expect(other?.disambiguator).toBe("jacob@getenabled.ai");
+    expect(mentionTargetLabel(other!)).toBe(
+      "Jacob Posel (jacob@getenabled.ai)",
+    );
+  });
+
+  it("keeps 'outside Indigo' when the lookup fails or finds nothing", () => {
+    const { other } = label({});
+    expect(other?.disambiguator).toBe("outside Indigo");
+    expect(mentionTargetLabel(other!)).not.toContain("prs_");
+    expect(mentionTargetLabel(other!)).not.toContain(
+      mentionUidTag(OUTSIDE_JACOB),
+    );
+  });
+
+  it("never overwrites an email the row already carried", () => {
+    const withEmail: MentionTarget = {
+      participantUid: OUTSIDE_JACOB,
+      participantType: "human",
+      displayName: "Jacob Posel",
+      email: "real@getenabled.ai",
+    };
+    const [row] = applyResolvedMentionEmails([withEmail], {
+      [OUTSIDE_JACOB]: "stale@example.com",
+    });
+    expect(row?.email).toBe("real@getenabled.ai");
   });
 });
