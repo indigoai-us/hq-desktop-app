@@ -3454,22 +3454,41 @@
       liveTimelineId = null;
       return;
     }
-    // Do not mount the cached thread inside the click flush — a 20-bubble
-    // remount on Deacon froze the next hop. Clear now, paint on the next frame.
-    // Keep hydrating=true so "No messages yet" does not flash (US-018).
+    const cached = untrack(() => timelineCache.get(row.id) ?? []);
+    const token = row.id;
+    if (cached.length > 0) {
+      // Paint the cached thread in THIS tick. The old code cleared the rows
+      // and waited a frame, which put a guaranteed empty frame between the
+      // two conversations: the pane blanked, then filled, then the list
+      // settled against the bottom. Handing the mount its final rows means
+      // the first painted frame of the new conversation is already complete
+      // and already anchored, and nothing moves afterwards.
+      //
+      // The frame this used to spend was there to keep a 20-bubble remount
+      // out of the click flush. Mounting the same rows one frame later cost
+      // the same work and bought a flash, so the cost stays and the flash
+      // goes; the cross-fade in `.conversation-layer` covers the swap.
+      liveTimeline = cached;
+      liveTimelineId = row.id;
+      timelineHydrating = false;
+      // `catchUpTimeline` reads the timeline state synchronously before its
+      // first await. Called bare from an effect body those reads become
+      // dependencies of THIS effect, and since it also writes the timeline the
+      // effect re-arms itself forever. `untrack` keeps the read out of the
+      // dependency set — the frame this used to sit behind hid the problem.
+      untrack(() => {
+        void catchUpTimeline(row);
+      });
+      return;
+    }
+    // Nothing cached: there is no content to hold, so the deferral is free.
+    // Keep hydrating=true so "No messages yet" does not flash (US-018) — the
+    // conversation shows its bottom-anchored placeholder rows instead.
     liveTimeline = [];
     liveTimelineId = row.id;
-    const cached = untrack(() => timelineCache.get(row.id) ?? []);
     timelineHydrating = true;
-    const token = row.id;
     const frame = requestAnimationFrame(() => {
       if (selectedRow?.id !== token) return;
-      if (cached.length > 0) {
-        liveTimeline = cached;
-        timelineHydrating = false;
-        void catchUpTimeline(row);
-        return;
-      }
       void fetchTimelineRaw(row)
         .then((raw) => applyFetchedTimeline(row, raw))
         .finally(() => {
@@ -8226,6 +8245,18 @@
                     </div>
                   {/if}
                 {/snippet}
+                <!--
+                  One layer per conversation. `{#key}` remounts it on every
+                  switch, which restarts `conversation-enter` — an opacity-only
+                  ease-out that softens the swap. It starts part-visible rather
+                  than at zero so the incoming conversation is legible on its
+                  first painted frame and the pane never flashes empty.
+
+                  Opacity only, and nothing here animates height, top or
+                  margin: the box is identical before and after, so the fade
+                  cannot move a single row. `prefers-reduced-motion` drops it.
+                -->
+                <div class="conversation-layer">
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
                   {localBots}
@@ -8283,6 +8314,7 @@
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />
+                </div>
               {/key}
               {#if openArtifactView}
                 <div
@@ -8643,13 +8675,41 @@
     flex-direction: column;
   }
 
-  .chat-stage :global(.conversation) {
+  /* The layer carries the column sizing the conversation used to own, so the
+     wrapper is invisible to layout — same box, same flex behaviour. */
+  .conversation-layer {
+    display: flex;
     flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    animation: conversation-enter 140ms ease-out both;
+  }
+
+  .conversation-layer > :global(.conversation) {
+    flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
   }
 
-  .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
+  /* Starts at 0.55, not 0: the new conversation is readable immediately and
+     only the last of the fade is in motion. A fade from zero would replace
+     the old "blank then fill" flash with a slower one. */
+  @keyframes conversation-enter {
+    from {
+      opacity: 0.55;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .conversation-layer {
+      animation: none;
+    }
+  }
+
+  .chat-stage:has(.reply-column:not(.overlay)) .conversation-layer {
     min-width: min(320px, 50%);
   }
 
@@ -8657,7 +8717,7 @@
      between the main channel column and the thread panel. Profile panels
      keep their narrower fixed column (see .reply-column below). */
   .chat-stage:has(.reply-column:not(.profile-column):not(.overlay))
-    :global(.conversation) {
+    .conversation-layer {
     flex: 1 1 0;
     min-width: min(360px, 50%);
   }

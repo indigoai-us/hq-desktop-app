@@ -32,6 +32,45 @@ function harnessPersona(): ShellPersona | null {
   return resolveHarnessPersona(window.location.search);
 }
 
+/**
+ * Layout-shift harness — `?shiftTest=1`.
+ *
+ * The normal fixtures are two to four short messages, so the thread never
+ * overflows its pane. A thread that cannot scroll cannot show the settling
+ * this mode exists to catch. With the flag on, a channel returns a thread
+ * taller than the pane, served behind a delay so the switch has a real
+ * loading window, and reactions arrive later still — that last part is the
+ * interesting one, because it grows a row that has already painted.
+ */
+function shiftTestEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).has('shiftTest');
+}
+
+/** Long enough to be a loading window, short enough to keep the suite quick. */
+export const SHIFT_TEST_MESSAGE_DELAY_MS = 120;
+/** Lands well after the rows, so reactions grow a row the reader can see. */
+export const SHIFT_TEST_REACTION_DELAY_MS = 350;
+const SHIFT_TEST_MESSAGE_COUNT = 40;
+
+function shiftTestChannelMessages(channelId: string): unknown[] {
+  const names = channelId === 'ch_release'
+    ? ['Jacob Patel', 'Alan Turing']
+    : ['Grace Hopper', 'Ada Lovelace'];
+  return Array.from({ length: SHIFT_TEST_MESSAGE_COUNT }, (_, index) => ({
+    eventId: `${channelId}-shift-${index + 1}`,
+    fromPersonUid: `prs_${(index % 2) + 1}`,
+    fromDisplayName: names[index % names.length],
+    fromEmail: `${names[index % names.length]!.split(' ')[0]!.toLocaleLowerCase()}@getindigo.ai`,
+    // Varied lengths so row heights differ, the way a real thread's do.
+    body: index % 3 === 0
+      ? `Message ${index + 1} on ${channelId}. Long enough to wrap onto a second line in the thread pane so the rows are not all one height.`
+      : `Message ${index + 1} on ${channelId}.`,
+    createdAt: new Date(Date.now() - (SHIFT_TEST_MESSAGE_COUNT - index) * 60 * 1000).toISOString(),
+    direction: 'in',
+  }));
+}
+
 function harnessScenario(): string | null {
   const params = new URLSearchParams(window.location.search);
   const explicitScenario = params.get('scenario');
@@ -1399,6 +1438,9 @@ This final paragraph verifies spacing after a thematic break.
   shell_ready: () => null,
   fetch_channel: (args) => {
     const channelId = String(args?.channelId ?? 'ch_core');
+    if (shiftTestEnabled()) {
+      return { messages: shiftTestChannelMessages(channelId), nextCursor: null };
+    }
     const names = channelId === 'ch_release'
       ? ['Jacob Patel', 'Alan Turing']
       : ['Grace Hopper', 'Ada Lovelace'];
@@ -1490,6 +1532,13 @@ This final paragraph verifies spacing after a thematic break.
   // Reactions (US-025 + share reactions) — canned aggregates so pills render.
   fetch_reactions: (args) => {
     const id = String(args?.messageId ?? '');
+    if (shiftTestEnabled()) {
+      // Only the newest row reacts. That is the row against the composer, so
+      // an unpinned thread pushes it out of sight the moment this lands.
+      return id.endsWith(`-shift-${SHIFT_TEST_MESSAGE_COUNT}`)
+        ? [{ emoji: '🎉', count: 2, reactedByMe: false }]
+        : [];
+    }
     if (id === 'share-2') {
       return [
         { emoji: '🎉', count: 2, reactedByMe: true },
@@ -1644,6 +1693,14 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       state.profileReads = (state.profileReads ?? 0) + 1;
       await new Promise(resolve => setTimeout(resolve, 500));
       return { status: 200, body: JSON.stringify({ profile: { displayName: 'Preview Person', avatarUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6uT8AAAAASUVORK5CYII=' } }) } as T;
+    }
+  }
+  if (shiftTestEnabled()) {
+    if (cmd === 'fetch_channel' || cmd === 'fetch_dm_thread') {
+      await new Promise(resolve => setTimeout(resolve, SHIFT_TEST_MESSAGE_DELAY_MS));
+    }
+    if (cmd === 'fetch_reactions') {
+      await new Promise(resolve => setTimeout(resolve, SHIFT_TEST_REACTION_DELAY_MS));
     }
   }
   const handler = handlers[cmd];
