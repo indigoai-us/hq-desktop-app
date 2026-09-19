@@ -82,8 +82,8 @@ describe("channel message actor", () => {
       channelWire({ actorName: "#project-fleet-bots-ga-sprint-a61db44b" }),
       NOW,
     )!;
-    expect(row.actorName).toBe("Someone");
-    expect(row.verbText).toBe("Someone sent a message");
+    expect(row.actorName).toBe("");
+    expect(row.verbText).toBe("New messages");
     expect(row.contextLine).toBe("#project-fleet-bots-ga-sprint");
   });
 
@@ -231,3 +231,10 @@ describe("file bundles", () => {
     expect(view.headerUnread).toBe("1 unread");
   });
 });
+
+ it('describes unattributed file additions without inventing an actor', () => {
+   const a = fileItem('f1','Someone','2026-09-17T14:00:00Z','indigo · docs/a.md');
+   const b = fileItem('f2','Someone','2026-09-17T14:00:01Z','indigo · docs/b.md');
+   expect(a.verbText).toBe('File added');
+   expect(bundleFileNotifications([a,b]).items[0].verbText).toBe('2 files added');
+ });

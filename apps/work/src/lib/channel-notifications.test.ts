@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createTenantStorage } from '@hq/ui';
-import { addChannelNotification, readChannelNotifications, resolveWakeAuthorName, saveChannelNotifications } from './channel-notifications';
+import { addChannelNotification, readChannelNotifications, resolveWakeAuthorName, saveChannelNotifications, hydrateChannelWake } from './channel-notifications';
 
 describe('channel notification history', () => {
   const wake = {channelId:'chan',eventId:'event',createdAt:'2026-09-08T12:00:00Z',absoluteUnread:true,unread:2};
@@ -21,7 +21,7 @@ describe('channel notification history', () => {
   });
   it('accepts the production native payload containing only channelId and unread', () => {
     const rows = addChannelNotification([], {channelId:'chan',unread:3,absoluteUnread:true}, 'self', 'dev', 1000);
-    expect(rows[0]).toMatchObject({id:'local:channel:chan:1000',createdAt:'1970-01-01T00:00:01.000Z',status:'unread'});
+    expect(rows[0]).toMatchObject({id:'local:channel:chan:summary',createdAt:'1970-01-01T00:00:01.000Z',status:'unread'});
   });
   it('keeps persisted notifications isolated between signed-in accounts', () => {
     const data = new Map<string,string>();
@@ -42,9 +42,9 @@ describe('channel notification history', () => {
     expect(resolveWakeAuthorName({fromPersonUid:'prs_kai'},[{personUid:'prs_kai',email:'kai@x.test'}])).toBe('kai@x.test');
     expect(resolveWakeAuthorName({fromPersonUid:'prs_unknown'},[{personUid:'prs_kai',displayName:'Kai'}])).toBe('');
   });
-  it('falls back to Someone when the sender cannot be resolved', () => {
+  it('uses neutral copy when the sender cannot be resolved', () => {
     const rows = addChannelNotification([], wake, 'self', 'dev', 1000);
-    expect(rows[0]).toMatchObject({actorName:'Someone',channelName:'#dev'});
+    expect(rows[0]).toMatchObject({actorName:'',channelName:'#dev'});
   });
   it('bounds history and tolerates unavailable storage', () => {
     const rows = Array.from({length:60},(_,n)=>({id:`local:channel:${n}`}));
@@ -52,5 +52,55 @@ describe('channel notification history', () => {
     const storage = {getItem:()=>{throw Error('denied');},setItem:()=>{throw Error('denied');}};
     expect(readChannelNotifications(storage)).toEqual([]);
     expect(()=>saveChannelNotifications(storage,rows)).not.toThrow();
+  });
+});
+
+ describe('native count-only notification reconciliation', () => {
+  it('fetches real event identity and sender instead of inventing them from a count', async () => {
+    const wake = {channelId:'chan',unread:3,absoluteUnread:true};
+    const hydrated = await hydrateChannelWake(wake, async () => ({messages:[{eventId:'real',fromPersonUid:'prs_ada',fromDisplayName:'Ada',createdAt:'2026-09-19T12:00:00Z'}]}));
+    expect(hydrated).toMatchObject({...wake,eventId:'real',fromDisplayName:'Ada',fromPersonUid:'prs_ada'});
+    const once = addChannelNotification([],hydrated,'self','dev');
+    expect(addChannelNotification(once,hydrated,'self','dev')).toBe(once);
+  });
+  it('keeps an honest count summary on fetch failure and replaces it on subsequent wakes', async () => {
+    const wake = {channelId:'chan',unread:3,absoluteUnread:true};
+    expect(await hydrateChannelWake(wake,async()=>{throw Error('offline')})).toBe(wake);
+    const first = addChannelNotification([],wake,'self','dev',1000);
+    const second = addChannelNotification(first,{...wake,unread:4},'self','dev',2000);
+    expect(second).toHaveLength(1);
+    expect(second[0].actorName).toBe('');
+    expect(second[0].createdAt).toBe('1970-01-01T00:00:02.000Z');
+  });
+  it('never attaches the latest sender to a different explicit event', async () => {
+    const wake = {channelId:'chan',eventId:'old',absoluteUnread:true,unread:1};
+    expect(await hydrateChannelWake(wake,async()=>({messages:[{eventId:'new',fromDisplayName:'Ada'}]}))).toBe(wake);
+  });
+  it('collapses old anonymous count-only cache rows per channel without losing unread state', () => {
+    const rows = [{id:'local:channel:chan:1000',type:'channel_message',actorName:'Someone',targetRef:'/channels/chan',status:'read',createdAt:'2026-09-19T12:00:00Z'},
+      {id:'local:channel:chan:900',type:'channel_message',actorName:'Someone',targetRef:'/channels/chan',status:'unread',createdAt:'2026-09-19T11:00:00Z'}];
+    const restored = readChannelNotifications({getItem:()=>JSON.stringify(rows),setItem:()=>{}});
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({id:'local:channel:chan:summary',status:'unread',actorName:''});
+  });
+});
+
+ describe('moving channel history', () => {
+  it.each([
+    {fromPersonUid:'self'},
+    {direction:'out'},
+    {messageKind:'system'},
+    {systemEvent:{type:'run_complete'}},
+    {rootEventId:'thread-root'},
+  ])('preserves an unread summary when latest is ineligible: %j', async (latest) => {
+    const wake = {channelId:'chan',unread:1,absoluteUnread:true};
+    const hydrated = await hydrateChannelWake(wake, async()=>({messages:[
+      {eventId:'latest',createdAt:'2026-09-19T12:00:00Z',...latest},
+      {eventId:'already-read',createdAt:'2026-09-19T11:00:00Z',fromPersonUid:'other',fromDisplayName:'Old sender'},
+    ]}), 'self');
+    expect(hydrated).toBe(wake);
+    expect(addChannelNotification([],hydrated,'self','dev')[0]).toMatchObject({
+      id:'local:channel:chan:summary',status:'unread',actorName:'',
+    });
   });
 });
