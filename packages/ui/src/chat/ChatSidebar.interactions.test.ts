@@ -99,7 +99,15 @@ describe("ChatSidebar right-click context menu", () => {
     await vi.waitFor(() => expect(host.querySelector('[aria-current="page"]')).toBeTruthy());
     const child = host.querySelector<HTMLButtonElement>('[data-child-id="session:one"]')!;
     expect(child.classList.contains('selected')).toBe(true);
-    expect(child.title).toBe(child.textContent?.trim());
+    // A session label only earns a tooltip when the rail clips it, and the
+    // tooltip then carries the full label.
+    const childLabel = child.querySelector<HTMLElement>('.chat-row-child-label')!;
+    expect(child.hasAttribute('title')).toBe(false);
+    expect(childLabel.hasAttribute('title')).toBe(false);
+    Object.defineProperty(childLabel, 'scrollWidth', { configurable: true, value: 320 });
+    Object.defineProperty(childLabel, 'clientWidth', { configurable: true, value: 90 });
+    childLabel.dispatchEvent(new Event('mouseenter'));
+    expect(childLabel.title).toBe('A long saved session title that should remain readable on hover');
     expect(child.querySelector('svg')).toBeTruthy();
     expect(host.querySelector('[data-conversation-id="ch:chn_proj"]')?.classList.contains('active')).toBe(false);
     child.click();
