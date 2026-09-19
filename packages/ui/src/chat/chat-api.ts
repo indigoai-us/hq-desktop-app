@@ -350,6 +350,12 @@ export interface ConversationApi {
     values: Record<string, string>;
     idempotencyKey?: string;
   }): Promise<CardActionResult>;
+  /**
+   * GET /v1/companies/slug-available?slug={value} — advisory company-handle
+   * check. Optional: a host without the route omits it, and the create step
+   * falls back to the submit-time answer.
+   */
+  checkCompanySlug?(slug: string): Promise<unknown>;
   /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
   getCompanyTab?(companyUid: string, tab: string): Promise<unknown>;
   /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */

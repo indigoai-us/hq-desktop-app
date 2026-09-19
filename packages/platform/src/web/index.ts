@@ -719,6 +719,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
             ? crypto.randomUUID()
             : `card-${Date.now()}`),
       }),
+    checkCompanySlug: (slug) =>
+      this.get(
+        `/v1/companies/slug-available?slug=${encodeURIComponent(slug)}`,
+      ),
     getCompanyTab: (companyUid, tab) =>
       this.get(WEB_PATHS.companyTab(companyUid, tab)),
     runCompanyTabAction: (args) =>

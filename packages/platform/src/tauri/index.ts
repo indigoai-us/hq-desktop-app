@@ -319,6 +319,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         values: args.values,
         idempotencyKey: args.idempotencyKey ?? null,
       }),
+    checkCompanySlug: (slug) => this.call("check_company_slug", { slug }),
     getCompanyTab: (companyUid, tab) =>
       this.call("get_company_tab", { companyUid, tab }),
     runCompanyTabAction: (args) =>

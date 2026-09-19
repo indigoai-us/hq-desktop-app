@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Creating a company now checks the handle while you type it. A moment after you stop typing it says whether that handle is free, and if it is taken it offers one that is not — click it to fill it in. A handle with the wrong shape says what to change before it asks the server at all. "Create company" stays off while it is checking and while the handle is taken or malformed. If the check itself cannot run, it says so and lets you create anyway; the server still decides. The line sits in the same place whether it has something to say or not, so nothing on the form jumps around. Needs the matching server change to be live first.
 - You can create a company straight from search. Type a name and pick "Create company <name>": the same window shows a second step with the company details and a list of people to invite by email, and "Create company" makes it. The app then switches to the new company and opens its channel. "New company" in the sidebar and the company switcher goes to that step too, instead of sending you to the setup channel. Back returns to search with what you typed still there, and if the server refuses — a name already taken, an invite it will not send — it says so in the window in its own words.
 
 ## [0.10.295] — 2026-09-19
