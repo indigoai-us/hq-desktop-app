@@ -84,6 +84,7 @@ export function addChannelNotification(
 export async function hydrateChannelWake(
   wake: ChatWakeEvents['channel:new-message'],
   fetchChannel: () => Promise<unknown>,
+  selfUid?: string,
 ): Promise<ChatWakeEvents['channel:new-message']> {
   if (!wake.absoluteUnread || !(Number(wake.unread) > 0)) return wake;
   if (wake.eventId && resolveWakeAuthorName(wake)) return wake;
@@ -95,6 +96,11 @@ export async function hydrateChannelWake(
       ? messages.find(row => row.eventId === wake.eventId)
       : messages.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))[0];
     if (!message) return wake;
+    // A count has no event boundary. The latest row can have moved to our own
+    // reply or a system/thread event since polling. Keep the unread summary;
+    // searching older rows could instead name an already-read message.
+    if (!wake.eventId && ((selfUid && message.fromPersonUid === selfUid) || message.direction === 'out'
+      || message.messageKind === 'system' || message.systemEvent || message.rootEventId)) return wake;
     const text = (key: string) => typeof message[key] === 'string' ? message[key] as string : undefined;
     return {...wake, eventId: text('eventId'), createdAt: text('createdAt') ?? wake.createdAt,
       fromPersonUid: text('fromPersonUid') ?? wake.fromPersonUid,

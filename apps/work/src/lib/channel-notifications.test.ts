@@ -42,7 +42,7 @@ describe('channel notification history', () => {
     expect(resolveWakeAuthorName({fromPersonUid:'prs_kai'},[{personUid:'prs_kai',email:'kai@x.test'}])).toBe('kai@x.test');
     expect(resolveWakeAuthorName({fromPersonUid:'prs_unknown'},[{personUid:'prs_kai',displayName:'Kai'}])).toBe('');
   });
-  it('falls back to Someone when the sender cannot be resolved', () => {
+  it('uses neutral copy when the sender cannot be resolved', () => {
     const rows = addChannelNotification([], wake, 'self', 'dev', 1000);
     expect(rows[0]).toMatchObject({actorName:'',channelName:'#dev'});
   });
@@ -82,5 +82,25 @@ describe('channel notification history', () => {
     const restored = readChannelNotifications({getItem:()=>JSON.stringify(rows),setItem:()=>{}});
     expect(restored).toHaveLength(1);
     expect(restored[0]).toMatchObject({id:'local:channel:chan:summary',status:'unread',actorName:''});
+  });
+});
+
+ describe('moving channel history', () => {
+  it.each([
+    {fromPersonUid:'self'},
+    {direction:'out'},
+    {messageKind:'system'},
+    {systemEvent:{type:'run_complete'}},
+    {rootEventId:'thread-root'},
+  ])('preserves an unread summary when latest is ineligible: %j', async (latest) => {
+    const wake = {channelId:'chan',unread:1,absoluteUnread:true};
+    const hydrated = await hydrateChannelWake(wake, async()=>({messages:[
+      {eventId:'latest',createdAt:'2026-09-19T12:00:00Z',...latest},
+      {eventId:'already-read',createdAt:'2026-09-19T11:00:00Z',fromPersonUid:'other',fromDisplayName:'Old sender'},
+    ]}), 'self');
+    expect(hydrated).toBe(wake);
+    expect(addChannelNotification([],hydrated,'self','dev')[0]).toMatchObject({
+      id:'local:channel:chan:summary',status:'unread',actorName:'',
+    });
   });
 });

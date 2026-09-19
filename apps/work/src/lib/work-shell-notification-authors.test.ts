@@ -108,8 +108,7 @@ describe('WorkShell native notification authors', () => {
       : original(command));
     const wakes = createChatWakeBus();
     component = mount(Page,{target:host,props:{data:{user:null},runtimeKind:'desktop',invoke:native.invoke as never,listen:native.listen as never,wakes,rosterRetryDelaysMs:[5]}});
-    await vi.waitFor(()=>expect(native.whoamiCalls.count).toBeGreaterThan(0));
-    await new Promise(resolve=>setTimeout(resolve,20));
+    await vi.waitFor(()=>expect(desktopAppProps.current?.self).toMatchObject({uid:'prs_ada'}));
     wakes.emit('channel:new-message',{channelId:'chan',unread:2,absoluteUnread:true});
     await vi.waitFor(()=>{
       const cache = Array.from({length:localStorage.length},(_,i)=>localStorage.key(i)!).filter(key=>key.includes('channel-notifications')).map(key=>localStorage.getItem(key)).join('');
@@ -118,5 +117,123 @@ describe('WorkShell native notification authors', () => {
       expect(cache).not.toContain('Someone');
     });
     expect(native.invoke).toHaveBeenCalledWith('fetch_channel',{channelId:'chan',limit:1,cursor:null});
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+function cachedRows(): Array<Record<string, unknown>> {
+  return Array.from({length:localStorage.length},(_,i)=>localStorage.key(i)!)
+    .filter(key=>key.includes('channel-notifications'))
+    .flatMap(key=>JSON.parse(localStorage.getItem(key) || '[]'));
+}
+
+async function setupPendingLookup() {
+  const native = makeHost([()=>({workspaces:[]})]);
+  const original = native.invoke.getMockImplementation()!;
+  const lookup = deferred<unknown>();
+  const readAll = deferred<unknown>();
+  native.invoke.mockImplementation(async(command:string) => {
+    if (command === 'fetch_channel') return lookup.promise;
+    if (command === 'read_all_notifications') return readAll.promise;
+    return original(command);
+  });
+  const wakes = createChatWakeBus();
+  component = mount(Page,{target:host,props:{data:{user:null},runtimeKind:'desktop',invoke:native.invoke as never,listen:native.listen as never,wakes,rosterRetryDelaysMs:[5]}});
+  await vi.waitFor(()=>expect(desktopAppProps.current?.self).toMatchObject({uid:'prs_ada'}));
+  const api = desktopAppProps.current!.notificationsApi as {
+    readAllNotifications(): Promise<void>;
+    ackNotification(id:string): Promise<void>;
+  };
+  const emit = (channelId='chan') => wakes.emit('channel:new-message',{channelId,unread:1,absoluteUnread:true});
+  emit();
+  await vi.waitFor(()=>expect(native.invoke).toHaveBeenCalledWith('fetch_channel',{channelId:'chan',limit:1,cursor:null}));
+  return {native, lookup, readAll, api, emit};
+}
+
+const incomingMessage = {messages:[{eventId:'incoming',fromPersonUid:'prs_kai',fromDisplayName:'Kai',createdAt:'2026-09-19T12:00:00Z'}]};
+
+describe('notification acknowledgment during sender lookup', () => {
+  it('keeps pending activity read when mark-all succeeds before lookup resolves, with no feed rows yet', async () => {
+    const {lookup,readAll,api} = await setupPendingLookup();
+    const reading = api.readAllNotifications();
+    readAll.resolve(null);
+    await reading;
+    lookup.resolve(incomingMessage);
+    await vi.waitFor(()=>expect(cachedRows()).toMatchObject([{actorName:'Kai',status:'read'}]));
+  });
+
+  it('marks the resolved row read if lookup completes while mark-all is pending', async () => {
+    const {lookup,readAll,api} = await setupPendingLookup();
+    const reading = api.readAllNotifications();
+    lookup.resolve(incomingMessage);
+    await vi.waitFor(()=>expect(cachedRows()).toMatchObject([{status:'unread'}]));
+    readAll.resolve(null);
+    await reading;
+    expect(cachedRows()).toMatchObject([{actorName:'Kai',status:'read'}]);
+  });
+
+  it('preserves an individual summary acknowledgment across enrichment', async () => {
+    const {lookup,api} = await setupPendingLookup();
+    await api.ackNotification('local:channel:chan:summary');
+    lookup.resolve(incomingMessage);
+    await vi.waitFor(()=>expect(cachedRows()).toMatchObject([{actorName:'Kai',status:'read'}]));
+  });
+
+  it('leaves arrivals after mark-all starts unread', async () => {
+    const {lookup,readAll,api,emit} = await setupPendingLookup();
+    const reading = api.readAllNotifications();
+    emit('later');
+    lookup.resolve(incomingMessage);
+    await vi.waitFor(()=>expect(cachedRows()).toHaveLength(2));
+    readAll.resolve(null);
+    await reading;
+    expect(cachedRows().find(row=>row.targetRef==='/channels/chan')?.status).toBe('read');
+    expect(cachedRows().find(row=>row.targetRef==='/channels/later')?.status).toBe('unread');
+  });
+
+  it('does not mark a newer summary for the same channel read', async () => {
+    const {lookup,readAll,api,emit} = await setupPendingLookup();
+    const reading = api.readAllNotifications();
+    emit();
+    lookup.resolve({messages:[]});
+    await vi.waitFor(()=>expect(cachedRows()).toMatchObject([{status:'unread'}]));
+    readAll.resolve(null);
+    await reading;
+    expect(cachedRows()).toMatchObject([{id:'local:channel:chan:summary',status:'unread'}]);
+  });
+
+  it('does not apply a read-all snapshot to a replacement summary with the same id', async () => {
+    const {lookup,readAll,api,emit} = await setupPendingLookup();
+    lookup.resolve({messages:[]});
+    await vi.waitFor(()=>expect(cachedRows()).toHaveLength(1));
+    const reading = api.readAllNotifications();
+    const sequence = Number(desktopAppProps.current!.notificationWakeSeq);
+    emit();
+    await vi.waitFor(()=>expect(Number(desktopAppProps.current!.notificationWakeSeq)).toBeGreaterThan(sequence));
+    readAll.resolve(null);
+    await reading;
+    expect(cachedRows()).toMatchObject([{id:'local:channel:chan:summary',status:'unread'}]);
+  });
+
+  it('keeps activity unread if mark-all fails', async () => {
+    const {lookup,readAll,api} = await setupPendingLookup();
+    const reading = api.readAllNotifications();
+    const failed = expect(reading).rejects.toThrow();
+    readAll.reject(new Error('offline'));
+    await failed;
+    lookup.resolve(incomingMessage);
+    await vi.waitFor(()=>expect(cachedRows()).toMatchObject([{actorName:'Kai',status:'unread'}]));
+  });
+
+  it('does not lose the unread rollup when our reply becomes the latest message', async () => {
+    const {lookup} = await setupPendingLookup();
+    lookup.resolve({messages:[{eventId:'my-reply',fromPersonUid:'prs_ada',fromDisplayName:'Ada'}]});
+    await vi.waitFor(()=>expect(cachedRows()).toMatchObject([{id:'local:channel:chan:summary',status:'unread',actorName:''}]));
   });
 });
