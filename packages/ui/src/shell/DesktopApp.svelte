@@ -8861,14 +8861,21 @@
   /* Thread pane (not the profile panel): open at half the conversation
      width. flex: 1 1 0 pairs with the sibling .conversation (also
      flex: 1 1 0) for a 50/50 split; the min-width keeps the composer usable
-     on narrow windows. The border-left above keeps the hairline divider. */
-  .reply-column:not(.profile-column):not(.overlay) {
+     on narrow windows. The border-left above keeps the hairline divider.
+     Excludes .resizable-thread: this selector is more specific than the
+     resizable rule below, so without the exclusion it won the cascade and
+     the drag handle's --thread-width never applied (the pane snapped back
+     to the 50/50 split on every drag). */
+  .reply-column:not(.profile-column):not(.overlay):not(.resizable-thread) {
     width: auto;
     flex: 1 1 0;
     min-width: min(360px, 50%);
   }
 
+  /* Resizable thread pane: the handle sets --thread-width; 50% until then
+     matches the split above. */
   .reply-column.resizable-thread {
+    width: auto;
     flex: 0 0 clamp(280px, var(--thread-width, 50%), calc(100% - 360px));
     min-width: min(280px, 50%);
   }
