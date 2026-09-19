@@ -539,7 +539,8 @@ mod tests {
         // A "Meeting detected" banner is the record prompt: clicking it must
         // start recording that window, not just land on the Meetings screen.
         assert_eq!(click_action_for_kind("meeting", "WIN-1"), Some("record"));
-        // Legacy banners delivered before `kind` existed carried a windowId too.
+        // An empty kind still routes to Meetings, so with a window id present
+        // it records too — the action follows the route, not the tag.
         assert_eq!(click_action_for_kind("", "WIN-1"), Some("record"));
     }
 

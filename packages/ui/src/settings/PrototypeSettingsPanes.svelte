@@ -154,9 +154,7 @@
 
   async function refreshMeetingPermissions(): Promise<void> {
     if (!adapter || !canWatchMeetings) return;
-    const permissionsState = adapter.meetings.permissionsState;
-    if (typeof permissionsState !== "function") return;
-    const res = await permissionsState();
+    const res = await adapter.meetings.permissionsState();
     meetingPerms = res.ok ? res.value : null;
   }
 
