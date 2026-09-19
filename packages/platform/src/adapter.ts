@@ -382,7 +382,9 @@ export interface SendReplyArgs {
   channelId?: string;
   mentions?: Array<{
     participantUid: string;
-    participantType: "human" | "agent";
+    // "broadcast" is the @here token — participantUid is "here" and the
+    // server expands it against the channel's current members.
+    participantType: "human" | "agent" | "broadcast";
     displayName: string;
     email?: string;
   }>;
@@ -638,7 +640,8 @@ export interface MessagingApi {
     extras?: {
       mentions?: Array<{
         participantUid: string;
-        participantType: "human" | "agent";
+        // "broadcast" is the @here token (participantUid "here").
+        participantType: "human" | "agent" | "broadcast";
         displayName: string;
       }>;
       attachments?: Array<{

@@ -43,6 +43,7 @@
     mergeMentionTargets,
     replaceActiveMention,
     storedMentionType,
+    withHereMention,
     type MentionTarget,
   } from "../mentions.js";
   import { parseMessageAttachments } from "./channelMessageModels";
@@ -185,6 +186,12 @@
     }) => void;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    /**
+     * Offer `@here` in the mention picker. True for a channel and for a group
+     * DM; false for a 1:1 DM, where there is one other person and they are
+     * already notified.
+     */
+    allowHereMention?: boolean;
     selfPersonUid?: string | null;
     /** Platform seam for opening an external URL from a message-body link. */
     onopenurl?: (url: string) => void;
@@ -220,6 +227,7 @@
     attachmentValidator = validateChatAttachment,
     onopenprofile,
     mentionCandidates = [],
+    allowHereMention = false,
     onopenurl,
     tasks = [],
     localBots = null,
@@ -390,7 +398,11 @@
 
   const mentionQuery = $derived(activeMentionQuery(draft));
   const mentionHits = $derived(
-    filterMentionCandidates(mentionCandidates, mentionQuery, selectedMentions),
+    filterMentionCandidates(
+      withHereMention(mentionCandidates, allowHereMention),
+      mentionQuery,
+      selectedMentions,
+    ),
   );
   const showMentionPicker = $derived(mentionQuery !== null);
 

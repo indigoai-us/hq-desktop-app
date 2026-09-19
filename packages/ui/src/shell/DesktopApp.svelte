@@ -8287,6 +8287,7 @@
                   previewCache={imagePreviewCache}
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
+                  allowHereMention={Boolean(selectedRow?.channelId)}
                   onreply={openReply}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
@@ -8456,6 +8457,7 @@
                     {displayNameByUid}
                     onopenprofile={openProfileForAuthor}
                     mentionCandidates={mentionRoster}
+                    allowHereMention={Boolean(selectedRow?.channelId)}
                     {onopenurl}
                   />
                 </div>
