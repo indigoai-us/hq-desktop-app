@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@recallai/desktop-sdk':
-        specifier: 2.0.15
-        version: 2.0.15
+        specifier: 2.0.32
+        version: 2.0.32
     devDependencies:
       postject:
         specifier: ^1.0.0-alpha.6
@@ -22,8 +22,8 @@ packages:
     resolution: {integrity: sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==}
     engines: {node: '>=18.0.0'}
 
-  '@recallai/desktop-sdk@2.0.15':
-    resolution: {integrity: sha512-nW/G3cZ6Y2HfBfoVm9z1wgPTMrdQRXfi0CT4fEWni+Qq/C7ribzlnHN5SaM+C6xUKIgQw8xgd2wwV32IoSZ4Mw==}
+  '@recallai/desktop-sdk@2.0.32':
+    resolution: {integrity: sha512-lfBaZdJizhHcVfS07HmSKg1Flj7ljSmA1DzP0NjTzAeiSzNFhqYs9w0pQ9Ic9zQioZGwLrKcxZPqIlIzNwGczA==}
     engines: {node: '>=18.0.0'}
 
   chownr@3.0.0:
@@ -65,7 +65,7 @@ snapshots:
     dependencies:
       minipass: 7.1.3
 
-  '@recallai/desktop-sdk@2.0.15':
+  '@recallai/desktop-sdk@2.0.32':
     dependencies:
       tar: 7.5.15
       uuid: 11.1.1

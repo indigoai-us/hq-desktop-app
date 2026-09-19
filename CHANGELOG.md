@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Meeting detection now runs on the newest Recall recording engine, which officially supports Zoom and Teams meetings joined from Chrome, not only from the Zoom and Teams apps. Google Meet in a browser was already supported. Safari, Edge, and Firefox are still not supported for Zoom or Teams, so join from Chrome (or a Chromium browser like Arc or Brave) if you want HQ to notice the meeting.
+
 ## [0.10.297] — 2026-09-19
 
 - Links in channel and thread messages are easier to see. A pasted URL used to render in the same dim grey as the surrounding text, so it barely read as something you could click. It now uses the violet the app already uses for other clickable text, still underlined, and brightens when you hover it.
