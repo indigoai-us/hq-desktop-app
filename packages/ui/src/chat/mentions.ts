@@ -2,9 +2,11 @@
  * Structured channel mentions — same contract as hq-mobile / hq-pro.
  *
  * A mention is an entity (person prs_* or agent agt_*), not a work-mesh
- * thread. POST /v1/notify/channels/{id}/messages { mentions } adds a
- * non-member when the caller is the channel owner. Do not create a parallel
- * work-mesh thread for @-mentions.
+ * thread. POST /v1/notify/channels/{id}/messages { mentions } adds anyone who
+ * is not already on the channel roster to THAT ONE CHANNEL — including a
+ * person from outside the channel's company, who joins as a channel guest with
+ * read + post there and nothing else. Do not create a parallel work-mesh
+ * thread for @-mentions.
  */
 
 export type MentionParticipantType = "human" | "agent";
@@ -118,6 +120,7 @@ export function agentFallbackLabel(uid: string): string {
  */
 export function collapseDuplicateMentionTargets(
   targets: readonly MentionTarget[],
+  options: MentionDisambiguationOptions = {},
 ): MentionTarget[] {
   const byUid = new Map<string, MentionTarget>();
   for (const target of targets) {
@@ -131,7 +134,7 @@ export function collapseDuplicateMentionTargets(
     const prev = byUid.get(uid);
     byUid.set(uid, prev ? mergeSameIdentity(prev, target) : target);
   }
-  return disambiguateMentionTargets([...byUid.values()]);
+  return disambiguateMentionTargets([...byUid.values()], options);
 }
 
 /** Merge two rows already known to be the SAME participantUid. */
@@ -164,32 +167,115 @@ function displayNameKey(target: MentionTarget): string {
   return target.displayName.trim().toLowerCase();
 }
 
+/** Options that control how a display-name collision is labelled. */
+export interface MentionDisambiguationOptions {
+  /**
+   * What to show on a colliding HUMAN row that has neither a company nor an
+   * email yet — "outside Indigo". The shell supplies it from the active
+   * company, because this module has no view of the tenant.
+   */
+  outsideLabel?: string | null;
+}
+
+/** "outside Indigo" — the placeholder label for an unresolved outside person. */
+export function outsideCompanyLabel(
+  companyName: string | null | undefined,
+): string | null {
+  const name = companyName?.trim();
+  return name ? `outside ${name}` : null;
+}
+
 /**
- * The label that tells two same-named targets apart, and the pill the picker
- * renders. COMPANY NAME first, then an email for humans.
+ * The label that tells two same-named targets apart. COMPANY NAME first, then
+ * an email.
  *
- * A raw uid is never a label. The picker used to fall back to a `…906VYS`
- * suffix of the agent uid, which read as a bug ("why does this agent have that
- * weird id?") and told the user nothing. When nothing human resolves we return
- * null and the row simply renders without a pill; the uid stays a hidden match
- * keyword (see {@link filterMentionCandidates}) so typing part of it still
- * finds the row.
+ * A PERSON NEVER SEES A UID FRAGMENT. A human whose row came from the app-wide
+ * display-name map carries only a uid and a name; the shell resolves that
+ * person's email from the connections roster and the row relabels itself once
+ * it arrives. Until then — and if the lookup fails — the row reads
+ * `outsideLabel` ("outside Indigo"), which is true of every such row and tells
+ * the user which of the two entries is the teammate they meant.
+ *
+ * The uid tag survives for AGENTS only. An agent has no email and often no
+ * company, so on a collision there is genuinely nothing else to print, and two
+ * identical unpickable agent rows is how the wrong tenant's agent gets
+ * mentioned.
  */
-export function mentionDisambiguatorFor(target: MentionTarget): string | null {
+export function mentionDisambiguatorFor(
+  target: MentionTarget,
+  options: MentionDisambiguationOptions = {},
+): string | null {
   const companyName = target.companyName?.trim();
   if (companyName) return companyName;
   const email = target.email?.trim();
   if (email) return email;
-  return null;
+  if (target.participantType === "agent") {
+    const uid = target.participantUid.trim();
+    return uid ? mentionUidTag(uid) : null;
+  }
+  return options.outsideLabel?.trim() || null;
 }
 
 /**
- * The pill beside the display name: the owning COMPANY, for agents and for
- * humans when known. Never an id, never an email (the email is already the
- * human row's subtitle). Unresolved company → no pill.
+ * The uids whose email the shell still needs to fetch: colliding HUMAN rows
+ * with no company and no email. Exported so the resolve-then-relabel flow is
+ * testable without a component, and so the shell asks the server only about
+ * rows a label would actually change.
+ */
+export function mentionUidsNeedingEmail(
+  targets: readonly MentionTarget[],
+): string[] {
+  const counts = new Map<string, number>();
+  for (const target of targets) {
+    const key = displayNameKey(target);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const uids: string[] = [];
+  for (const target of targets) {
+    if (target.participantType !== "human") continue;
+    if (target.companyName?.trim() || target.email?.trim()) continue;
+    if ((counts.get(displayNameKey(target)) ?? 0) < 2) continue;
+    const uid = target.participantUid.trim();
+    if (uid) uids.push(uid);
+  }
+  return uids;
+}
+
+/** Fill in emails resolved from the connections roster, keyed by uid. */
+export function applyResolvedMentionEmails(
+  targets: readonly MentionTarget[],
+  emailByUid: Readonly<Record<string, string>>,
+): MentionTarget[] {
+  return targets.map((target) => {
+    if (target.email?.trim()) return target;
+    const resolved = emailByUid[target.participantUid.trim()]?.trim();
+    return resolved ? { ...target, email: resolved } : target;
+  });
+}
+
+/** A short, stable tail of a uid — a disambiguator of last resort, never a name. */
+export function mentionUidTag(uid: string): string {
+  const bare = uid
+    .trim()
+    .replace(/^agent:/i, "")
+    .replace(/^(agt_|prs_)/i, "");
+  return `id …${bare.slice(-6)}`;
+}
+
+/**
+ * The pill beside the display name: the owning COMPANY when it is known, and
+ * otherwise whatever label disambiguation settled on for a colliding row —
+ * "outside Indigo" for an unresolved person, a uid tag for a same-named agent.
+ * A row whose name does not collide carries no disambiguator and so shows no
+ * pill. An email is never duplicated into the pill; it is already the human
+ * row's subtitle.
  */
 export function mentionRowPill(target: MentionTarget): string | null {
-  return target.companyName?.trim() || null;
+  const companyName = target.companyName?.trim();
+  if (companyName) return companyName;
+  const label = target.disambiguator?.trim();
+  if (!label) return null;
+  return label === target.email?.trim() ? null : label;
 }
 
 /** The row's subtitle: what kind of participant it is, or the human's email. */
@@ -224,6 +310,7 @@ export function stampMentionCompany(
  */
 export function disambiguateMentionTargets(
   targets: readonly MentionTarget[],
+  options: MentionDisambiguationOptions = {},
 ): MentionTarget[] {
   const sorted = [...targets].sort(
     (a, b) =>
@@ -245,7 +332,7 @@ export function disambiguateMentionTargets(
       const { disambiguator: _drop, ...rest } = target;
       return rest;
     }
-    const label = mentionDisambiguatorFor(target);
+    const label = mentionDisambiguatorFor(target, options);
     if (!label) {
       if (target.disambiguator === undefined) return target;
       const { disambiguator: _stale, ...rest } = target;
@@ -504,49 +591,3 @@ export function applyMentionMarkup(
   return out;
 }
 
-/**
- * Drop mention rows the open channel's server will always refuse.
- *
- * A company- or project-scoped channel accepts a mention only when the target
- * is already on the channel roster, or is an active member of the channel's
- * company (hq-pro-core notify-dm `resolveChannelMentions` →
- * MENTION_PARTICIPANT_NOT_VISIBLE, 403, which rejects the WHOLE message).
- * The desktop picker also merges a display-name map that spans every company
- * and DM peer the app has ever seen, so it offered people who could never be
- * tagged here — including a second entity for the SAME person (two
- * "Jacob Posel" rows, one of them not an Indigo member). Picking the wrong one
- * failed the send with no way for the user to tell the rows apart.
- *
- * `allowedUids` is the set the channel will accept: the tenant-scoped contacts
- * roster, the channel's own members, and the user's local bots (a personal bot
- * has no company membership by design and is evaluated as its owner).
- *
- * With no channel company (a DM, or a scope that never resolved) nothing is
- * dropped — the visibility gate does not apply there.
- */
-export function restrictMentionTargetsToChannel(
-  targets: readonly MentionTarget[],
-  args: {
-    channelCompanyUid?: string | null;
-    allowedUids: ReadonlySet<string>;
-  },
-): MentionTarget[] {
-  if (!args.channelCompanyUid?.trim()) return [...targets];
-  return targets.filter((target) =>
-    args.allowedUids.has(target.participantUid.trim()),
-  );
-}
-
-/** The uid set for {@link restrictMentionTargetsToChannel}. */
-export function mentionAllowedUids(
-  ...lists: Array<readonly MentionTarget[] | null | undefined>
-): Set<string> {
-  const uids = new Set<string>();
-  for (const list of lists) {
-    for (const row of list ?? []) {
-      const uid = row.participantUid.trim();
-      if (uid) uids.add(uid);
-    }
-  }
-  return uids;
-}

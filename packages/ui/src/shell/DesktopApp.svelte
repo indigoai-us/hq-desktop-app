@@ -283,11 +283,12 @@
     type LinkMenuAnchor,
   } from "../common/external-links.js";
   import {
+    applyResolvedMentionEmails,
     disambiguateMentionTargets,
-    mentionAllowedUids,
+    mentionUidsNeedingEmail,
+    outsideCompanyLabel,
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
-    restrictMentionTargetsToChannel,
     mergeMentionRosters,
     stampMentionCompany,
     type MentionTarget,
@@ -5981,39 +5982,52 @@
 
   /**
    * The display-name map spans every company and DM peer the app has seen, so
-   * on its own it offers people the open channel's server will always refuse
-   * with MENTION_PARTICIPANT_NOT_VISIBLE — including a SECOND entity for the
-   * same human, rendered identically to the one that works. Keep only rows the
-   * channel can actually accept (tenant roster ∪ channel members ∪ local bots);
-   * outside a company-scoped channel nothing is dropped.
+   * it offers people who are not in the open channel's company. That is now
+   * correct: the server adds such a person to THAT ONE CHANNEL as a guest and
+   * delivers the mention, so filtering these rows out (which this did while the
+   * server still answered 403 MENTION_PARTICIPANT_NOT_VISIBLE) would hide
+   * people the user can legitimately tag.
+   *
+   * What these rows must not do is render as a SECOND, identical-looking entry
+   * for the same human — two bare "Jacob Posel" rows, one of them a different
+   * person entirely. A map row carries a name and nothing else, so a colliding
+   * row is labelled "outside <company>" immediately and relabelled with the
+   * person's email as soon as the connections roster answers
+   * (see mentionEmailByUid). A person is never shown a uid fragment.
    */
   const identityMentionTargets = $derived(
-    restrictMentionTargetsToChannel(
-      mentionTargetsFromContacts(
-        Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
-          personUid,
-          displayName,
-        })),
-      ),
-      {
-        channelCompanyUid: selectedRow?.channelId
-          ? mentionRosterCompanyUid
-          : null,
-        allowedUids: mentionAllowedUids(
-          mentionCandidates,
-          liveMentionTargets,
-          openChannelMentionTargets,
-          localBotMentionTargets,
-        ),
-      },
+    mentionTargetsFromContacts(
+      Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
+        personUid,
+        displayName,
+      })),
     ),
   );
 
-  const mentionRoster = $derived(
-    // Resolve companyUid → company label, then re-run disambiguation so two
-    // survivors that share a display name render "Izzy (LiveRecover)" vs
-    // "Izzy (Indigo)" instead of two identical, unpickable rows.
-    disambiguateMentionTargets(
+  /**
+   * The company a row is "outside" of, from the user's point of view: the open
+   * channel's workspace, else the selected one.
+   */
+  const mentionOutsideLabel = $derived(
+    outsideCompanyLabel(
+      companyDisplayName(mentionRosterCompanyUid, companyNames),
+    ),
+  );
+
+  /**
+   * Emails resolved from the connections roster for people the app knows only
+   * from the app-wide display-name map (uid + name). A person must never be
+   * labelled with a uid fragment, so when two such rows collide the email is
+   * what finally tells them apart.
+   */
+  let mentionEmailByUid = $state<Record<string, string>>({});
+  // Plain, non-reactive: uids already asked about. Writing it inside the
+  // lookup effect must not re-trigger that effect.
+  const mentionEmailAsked = new Set<string>();
+
+  /** Rows merged and company-labelled, before disambiguation. */
+  const mentionRosterRows = $derived(
+    applyResolvedMentionEmails(
       mergeMentionRosters(
         mentionCandidates,
         liveMentionTargets,
@@ -6025,7 +6039,66 @@
         const name = companyDisplayName(target.companyUid, companyNames);
         return name ? { ...target, companyName: name } : target;
       }),
+      mentionEmailByUid,
     ),
+  );
+
+  /**
+   * Resolve the email for a duplicate-name person we know only by uid, using
+   * the same connections roster the DM recipient picker reads. Unscoped on
+   * purpose: the whole point is that this person is outside the open channel's
+   * company, so the tenant-scoped roster cannot answer. Each uid is asked about
+   * once; a failure leaves the row reading "outside <company>" and is logged,
+   * never swallowed.
+   */
+  $effect(() => {
+    const wanted = mentionUidsNeedingEmail(mentionRosterRows).filter(
+      (uid) => !mentionEmailAsked.has(uid),
+    );
+    if (wanted.length === 0) return;
+    for (const uid of wanted) mentionEmailAsked.add(uid);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await adapter.messaging.listContacts();
+        if (cancelled) return;
+        if (!res.ok) {
+          console.warn(
+            "[hq-desktop] could not resolve mention emails from the connections roster:",
+            res.code ?? res.reason,
+            res.message ?? "",
+          );
+          return;
+        }
+        const found: Record<string, string> = {};
+        for (const row of mentionTargetsFromContactsPayload(res.value)) {
+          const email = row.email?.trim();
+          if (email && wanted.includes(row.participantUid))
+            found[row.participantUid] = email;
+        }
+        if (Object.keys(found).length === 0) return;
+        mentionEmailByUid = { ...mentionEmailByUid, ...found };
+      } catch (err) {
+        if (cancelled) return;
+        console.warn(
+          "[hq-desktop] mention email lookup failed; duplicate names stay labelled by company:",
+          err,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const mentionRoster = $derived(
+    // Re-run disambiguation after company labels and resolved emails are in,
+    // so two survivors sharing a display name render "Jacob Posel (Indigo)" vs
+    // "Jacob Posel (jacob@…)" — or "(outside Indigo)" until the email lands —
+    // instead of two identical, unpickable rows.
+    disambiguateMentionTargets(mentionRosterRows, {
+      outsideLabel: mentionOutsideLabel,
+    }),
   );
 
   async function applyChannelWake(wake: {
