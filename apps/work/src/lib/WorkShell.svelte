@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { addChannelNotification, readChannelNotifications, resolveWakeAuthorName, saveChannelNotifications } from "./channel-notifications";
+  import { hydrateChannelWake, addChannelNotification, readChannelNotifications, resolveWakeAuthorName, saveChannelNotifications } from "./channel-notifications";
   /**
    * ROOT = the full V2 desktop shell (the sidebar-first windowed app), filling
    * 100vw/100vh. The channel rail + title bar ARE the navigation.
@@ -635,30 +635,45 @@
 
   // Channel unread deltas arrive through the desktop poller independently of
   // the NOTIF store. Bridge that wake into the visible feed immediately.
-  onMount(() =>
-    wakes.on("channel:new-message", (wake) => {
-      if (!personUid) return;
-      const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
-      // The wake carries ids, not names. Resolve the sender from what this
-      // client already knows so the row names a person, not the channel.
-      const authorName = resolveWakeAuthorName(wake, [
-        ...(channel?.members ?? []),
-        ...shallow.contacts,
-      ]);
-      const next = addChannelNotification(
-        localNotificationRows,
-        wake,
-        personUid,
-        channel?.name?.trim() || "",
-        Date.now(),
-        authorName,
-      );
-      if (next === localNotificationRows) return;
-      localNotificationRows = next;
-      saveChannelNotifications(conversationCacheStorage, next);
-      localNotificationWakeSeq += 1;
-    }),
-  );
+  onMount(() => {
+    let active = true;
+    const pending = new Map<string, number>();
+    const unsubscribe = wakes.on("channel:new-message", (incoming) => {
+      if (!personUid || !incoming.absoluteUnread || !(Number(incoming.unread) > 0)) return;
+      const account = effectiveTenantAccountId;
+      const generation = effectiveTenantGeneration;
+      const selfUid = personUid;
+      const sequence = (pending.get(incoming.channelId) ?? 0) + 1;
+      pending.set(incoming.channelId, sequence);
+      void (async () => {
+        const wake = await hydrateChannelWake(incoming, async () => {
+          const result = await adapter.messaging.fetchChannel({channelId: incoming.channelId, limit: 1});
+          return result.ok ? result.value : null;
+        });
+        if (!active || pending.get(incoming.channelId) !== sequence || account !== effectiveTenantAccountId || generation !== effectiveTenantGeneration || selfUid !== personUid) return;
+        const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
+        // The wake carries ids, not names. Resolve the sender from what this
+        // client already knows so the row names a person, not the channel.
+        const authorName = resolveWakeAuthorName(wake, [
+          ...(channel?.members ?? []),
+          ...shallow.contacts,
+        ]);
+        const next = addChannelNotification(
+          localNotificationRows,
+          wake,
+          personUid,
+          channel?.name?.trim() || "",
+          Date.now(),
+          authorName,
+        );
+        if (next === localNotificationRows) return;
+        localNotificationRows = next;
+        saveChannelNotifications(conversationCacheStorage, next);
+        localNotificationWakeSeq += 1;
+      })();
+    });
+    return () => { active = false; unsubscribe(); };
+  });
 
   $effect(() => {
     if (!self) return;

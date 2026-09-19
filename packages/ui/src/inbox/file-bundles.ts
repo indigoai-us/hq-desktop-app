@@ -115,7 +115,7 @@ export function bundleFileNotifications(
       );
       bundleByAnchor.set(anchor.id, {
         ...anchor,
-        verbText: `${anchor.actorName} added ${run.length} files`,
+        verbText: anchor.actorName ? `${anchor.actorName} added ${run.length} files` : `${run.length} files added`,
         contextLine: bundleContext(run),
         status: run.some((item) => item.status === "unread")
           ? "unread"
