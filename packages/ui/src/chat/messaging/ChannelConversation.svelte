@@ -109,6 +109,7 @@
     filterMentionCandidates,
     mentionPayloadTargets,
     mentionSegments,
+    withHereMention,
     mentionsPresentInBody,
     mentionTextForTarget,
     mergeMentionTargets,
@@ -153,6 +154,12 @@
     ) => Promise<string | null>;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    /**
+     * Offer `@here` in the mention picker. True for a channel and for a group
+     * DM; false for a 1:1 DM, where there is one other person and they are
+     * already notified.
+     */
+    allowHereMention?: boolean;
     /** Open ReplyPanel for this root eventId. */
     onreply?: (rootEventId: string) => void;
     /** Start an in-channel session from this message. */
@@ -277,6 +284,7 @@
     previewCache,
     onpresign,
     mentionCandidates = [],
+    allowHereMention = false,
     onreply,
     onstartsession,
     onopensession,
@@ -785,7 +793,11 @@
   const showAgentMenu = $derived(replyText.trimStart().startsWith("/"));
   const mentionQuery = $derived(activeMentionQuery(replyText));
   const mentionHits = $derived(
-    filterMentionCandidates(mentionCandidates, mentionQuery, selectedMentions),
+    filterMentionCandidates(
+      withHereMention(mentionCandidates, allowHereMention),
+      mentionQuery,
+      selectedMentions,
+    ),
   );
   const showMentionPicker = $derived(mentionQuery !== null);
   const composerSegments = $derived(

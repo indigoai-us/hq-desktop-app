@@ -9,7 +9,40 @@
  * thread for @-mentions.
  */
 
-export type MentionParticipantType = "human" | "agent";
+export type MentionParticipantType = "human" | "agent" | "broadcast";
+
+/**
+ * `@here` — one token that notifies everybody currently in this conversation.
+ *
+ * It travels as a single entry in the same `mentions[]` array as people:
+ * `{ participantUid: "here", participantType: "broadcast" }`. The SERVER
+ * expands it against the channel's live member set (hq-pro-core
+ * `resolveChannelMentions` -> `expandHereMention`), so the app never sends a
+ * list of uids for it and the roster can never go stale between compose and
+ * send. It is exempt from the 25-mention cap, reaches people only (a bot still
+ * needs its name typed), and is not offered in a 1:1 DM.
+ */
+export const HERE_MENTION_UID = "here";
+export const HERE_MENTION_NAME = "here";
+
+/** The picker row / draft target for `@here`. */
+export function hereMentionTarget(): MentionTarget {
+  return {
+    participantUid: HERE_MENTION_UID,
+    participantType: "broadcast",
+    displayName: HERE_MENTION_NAME,
+  };
+}
+
+export function isHereMention(target: {
+  participantUid: string;
+  participantType?: string | null;
+}): boolean {
+  return (
+    target.participantType === "broadcast" &&
+    target.participantUid.trim().toLowerCase() === HERE_MENTION_UID
+  );
+}
 
 export interface MentionTarget {
   participantUid: string;
@@ -38,12 +71,37 @@ export function mentionTypeForUid(uid: string): MentionParticipantType {
 export function mentionPayloadTargets(
   mentions: readonly MentionTarget[],
 ): MentionTarget[] {
-  return mentions.map((mention) => ({
-    participantUid: mention.participantUid,
-    participantType: mention.participantType,
-    displayName: mention.displayName,
-    ...(mention.email ? { email: mention.email } : {}),
-  }));
+  return mentions.map((mention) =>
+    // `@here` is a token, not an identity: it carries no display name and no
+    // email, and the server reads only the two fields below.
+    isHereMention(mention)
+      ? {
+          participantUid: HERE_MENTION_UID,
+          participantType: "broadcast" as const,
+          displayName: "",
+        }
+      : {
+          participantUid: mention.participantUid,
+          participantType: mention.participantType,
+          displayName: mention.displayName,
+          ...(mention.email ? { email: mention.email } : {}),
+        },
+  );
+}
+
+/**
+ * Prepend the `@here` row to the picker's candidates when this conversation
+ * supports it — every channel and group DM, never a 1:1 DM (there is one other
+ * person and they are already notified). It sorts first so `@h` + Enter is the
+ * fast path, and it is matched by the ordinary filter on its "here" name.
+ */
+export function withHereMention(
+  candidates: readonly MentionTarget[],
+  allowHere: boolean,
+): MentionTarget[] {
+  if (!allowHere) return [...candidates];
+  const rest = candidates.filter((row) => !isHereMention(row));
+  return [hereMentionTarget(), ...rest];
 }
 
 export function mentionTargetsFromContacts(
@@ -280,6 +338,7 @@ export function mentionRowPill(target: MentionTarget): string | null {
 
 /** The row's subtitle: what kind of participant it is, or the human's email. */
 export function mentionRowSubtitle(target: MentionTarget): string {
+  if (isHereMention(target)) return "Notify everyone in this conversation";
   if (target.participantType === "agent") return "Bot";
   return target.email?.trim() || "Teammate";
 }
@@ -433,6 +492,46 @@ export function mergeMentionTargets(
   return [...byId.values()];
 }
 
+/**
+ * The stretches of a plain-text body that are CODE: fenced blocks (```…```)
+ * and inline spans (`…`). An `@name` inside one of them is literal text, so it
+ * is never chipped in the composer and never rides along on send.
+ */
+export function codeRegionsInBody(
+  body: string,
+): Array<{ start: number; end: number }> {
+  const regions: Array<{ start: number; end: number }> = [];
+  const fence = /```[\s\S]*?(?:```|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = fence.exec(body)) !== null) {
+    regions.push({ start: match.index, end: match.index + match[0].length });
+  }
+  const inFence = (index: number) =>
+    regions.some((r) => index >= r.start && index < r.end);
+  const inline = /`[^`\n]*`/g;
+  while ((match = inline.exec(body)) !== null) {
+    if (inFence(match.index)) continue;
+    regions.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return regions;
+}
+
+/**
+ * A mention token only counts on a WORD BOUNDARY.
+ *
+ * Without this, "@here" matched inside "@heretic" and inside "nowhere@here",
+ * chipping text the user never meant as a mention (and, for `@here`, sending a
+ * broadcast they never asked for). The rule: nothing word-like or a second "@"
+ * immediately before the token, nothing word-like immediately after it.
+ */
+function isMentionBoundary(body: string, start: number, end: number): boolean {
+  const before = start > 0 ? body[start - 1]! : "";
+  const after = end < body.length ? body[end]! : "";
+  if (before && /[\w@]/.test(before)) return false;
+  if (after && /\w/.test(after)) return false;
+  return true;
+}
+
 export function mentionSpansForBody(
   body: string,
   mentions: readonly MentionTarget[],
@@ -442,10 +541,19 @@ export function mentionSpansForBody(
   ]
     .filter((text) => text.length > 1)
     .sort((a, b) => b.length - a.length);
+  const code = codeRegionsInBody(body);
+  const inCode = (index: number) =>
+    code.some((r) => index >= r.start && index < r.end);
   const spans: Array<{ start: number; end: number }> = [];
   let index = 0;
   while (index < body.length) {
-    const match = mentionTexts.find((text) => body.startsWith(text, index));
+    const match = inCode(index)
+      ? undefined
+      : mentionTexts.find(
+          (text) =>
+            body.startsWith(text, index) &&
+            isMentionBoundary(body, index, index + text.length),
+        );
     if (!match) {
       index += 1;
       continue;
@@ -532,7 +640,11 @@ function decorateMentionText(
   let cursor = 0;
   while (cursor < text.length) {
     if (text[cursor] === "@") {
-      const hit = tokens.find(({ token }) => text.startsWith(token, cursor));
+      const hit = tokens.find(
+        ({ token }) =>
+          text.startsWith(token, cursor) &&
+          isMentionBoundary(text, cursor, cursor + token.length),
+      );
       if (hit) {
         const attrs =
           hit.target.participantType === "human" && hit.target.participantUid
@@ -575,17 +687,25 @@ export function applyMentionMarkup(
 
   let out = "";
   let cursor = 0;
+  // Markdown has already turned fences and inline spans into <pre>/<code>.
+  // Text inside them is code the user typed literally, so it is copied through
+  // untouched — "`@here`" renders as code, never as a mention chip.
+  let codeDepth = 0;
   while (cursor < html.length) {
     const tagStart = html.indexOf("<", cursor);
     const textEnd = tagStart === -1 ? html.length : tagStart;
-    out += decorateMentionText(html.slice(cursor, textEnd), tokens);
+    const run = html.slice(cursor, textEnd);
+    out += codeDepth > 0 ? run : decorateMentionText(run, tokens);
     if (tagStart === -1) break;
     const tagEnd = html.indexOf(">", tagStart);
     if (tagEnd === -1) {
       out += html.slice(tagStart);
       break;
     }
-    out += html.slice(tagStart, tagEnd + 1);
+    const tag = html.slice(tagStart, tagEnd + 1);
+    const name = /^<\s*(\/?)\s*(code|pre)\b/i.exec(tag);
+    if (name) codeDepth = name[1] ? Math.max(0, codeDepth - 1) : codeDepth + 1;
+    out += tag;
     cursor = tagEnd + 1;
   }
   return out;
