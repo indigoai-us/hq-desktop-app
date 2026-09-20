@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Developer tooling: the browser preview harness works again. It had kept pointing at five pages that were removed in an earlier cleanup, which left the preview blank; those entries are gone and a check now fails if a preview import ever stops resolving. No change for people using the app.
+
 ## [0.10.298] — 2026-09-19
 
 - The New bot wizard now tells apart the three reasons a coding tool can't be used, instead of calling all of them “not signed in”. A tool that isn't installed says so and points at where to get it; a check that couldn't finish says so and offers to try again; only a tool that really is signed out offers Sign in. Sign in is no longer offered for a tool the app can't find, and a sign-in that doesn't open now says what went wrong instead of sitting on “Opening…”. The app also looks in more places for the tools, including Claude Code's own install folder and version-manager shims.
