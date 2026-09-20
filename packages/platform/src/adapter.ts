@@ -1130,6 +1130,16 @@ export interface LocalBotRow {
   /** Server-side liveness (heartbeat < 90 s); null when hq-pro was unreachable. */
   online: boolean | null;
   lastHeartbeatAt: string | null;
+  /**
+   * The bot is mid-turn right now: it took a message and has not finished
+   * answering. The CLI reads this from the bot's own in-flight marker on this
+   * machine, so it is true while the model is still thinking and nothing has
+   * been posted yet, and stays true across an interim progress post. Absent on
+   * older CLI versions — treat as unknown, not idle.
+   */
+  busy?: boolean;
+  /** When the oldest turn still in flight started (ISO); null when idle. */
+  busySince?: string | null;
   daemonInstalled: boolean;
   daemonLoaded: boolean;
   dir: string;
