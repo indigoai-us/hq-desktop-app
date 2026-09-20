@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Picking several conversations at once in the sidebar now shows a checkbox next to each one, instead of the curved purple stroke down the left edge of the row. Hold Shift with the pointer over the sidebar and an empty box appears on every row so you can see what you can pick; click a box to pick that row. Shift-click to pick a range, Cmd-click to add or remove one, and Escape to clear, all as before. The boxes take up no space until you have something picked or are holding Shift, so the rows do not shift around as you move down the list.
+
 ## [0.10.298] — 2026-09-19
 
 - The New bot wizard now tells apart the three reasons a coding tool can't be used, instead of calling all of them “not signed in”. A tool that isn't installed says so and points at where to get it; a check that couldn't finish says so and offers to try again; only a tool that really is signed out offers Sign in. Sign in is no longer offered for a tool the app can't find, and a sign-in that doesn't open now says what went wrong instead of sitting on “Opening…”. The app also looks in more places for the tools, including Claude Code's own install folder and version-manager shims.
