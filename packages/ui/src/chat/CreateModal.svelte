@@ -525,6 +525,7 @@
     | "invite-failed"
     | "member-unreachable"
     | "member-agent-scope"
+    | "member-personal-bot"
     | "member-not-owner"
     | "member-other"
     | "first-message-failed";
@@ -1625,6 +1626,9 @@
     if (reason === "member-agent-scope") {
       return "bots can only join channels in a workspace they belong to.";
     }
+    if (reason === "member-personal-bot") {
+      return "only this bot's owner can add it to a channel.";
+    }
     return "couldn't add them.";
   }
 
@@ -1635,9 +1639,11 @@
         ? "member-unreachable"
         : reason === "agent-scope"
           ? "member-agent-scope"
-          : reason === "not-owner"
-            ? "member-not-owner"
-            : "member-other";
+          : reason === "personal-bot"
+            ? "member-personal-bot"
+            : reason === "not-owner"
+              ? "member-not-owner"
+              : "member-other";
     return issueFrom({
       key: chip.key,
       label: chip.label,
@@ -1985,6 +1991,9 @@
     if (issue.reason === "first-message-failed") return true;
     // The server refused on ROLE — a retry from the same account is a dead end.
     if (issue.reason === "member-not-owner") return false;
+    // Same for somebody else's personal bot: only its owner can add it, so a
+    // retry from this account fails identically every time.
+    if (issue.reason === "member-personal-bot") return false;
     if (issue.reason === "member-other") return true;
     return issue.reason === "member-unreachable" && !offersEmailFallback(issue);
   }
