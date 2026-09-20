@@ -557,6 +557,39 @@
   let selectionMode = $state(false);
   let selection = $state<SelectionState>(EMPTY_SELECTION);
   let focusedRowId = $state<string | null>(null);
+  /**
+   * Shift-hover affordance: empty checkboxes preview which rows can be picked.
+   * Tracked at the document level because the modifier can be pressed before
+   * the pointer reaches the rail, and cleared on blur/visibility change so a
+   * modifier released outside the window cannot strand the boxes on screen.
+   */
+  let shiftHeld = $state(false);
+  let sidebarHovered = $state(false);
+  const showSelectGutter = $derived(
+    selectionMode || (shiftHeld && sidebarHovered),
+  );
+
+  $effect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Shift") shiftHeld = true;
+    }
+    function onKeyUp(event: KeyboardEvent) {
+      if (event.key === "Shift") shiftHeld = false;
+    }
+    function clearShift() {
+      shiftHeld = false;
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", clearShift);
+    document.addEventListener("visibilitychange", clearShift);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", clearShift);
+      document.removeEventListener("visibilitychange", clearShift);
+    };
+  });
   let personFilter = $state<string | null>(null);
   // People aren't company-scoped — switching company scope clears a stale
   // person filter so it can't silently empty the newly scoped list.
@@ -1101,6 +1134,23 @@
       ctrlKey: event.ctrlKey,
     });
     focusedRowId = row.id;
+  }
+
+  /**
+   * Checkbox toggle. Always additive/subtractive (never a replace), so ticking
+   * a box can build a selection one row at a time without a modifier key.
+   */
+  function toggleRowSelection(row: ConversationRow, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectionMode) selectionMode = true;
+    selection = applySelectionClick(selection, orderedRowIds, row.id, {
+      shiftKey: false,
+      metaKey: true,
+      ctrlKey: false,
+    });
+    focusedRowId = row.id;
+    if (selection.selected.length === 0) exitSelectionMode();
   }
 
   function selectionKeydown(event: KeyboardEvent): void {
@@ -2654,10 +2704,14 @@
     </div>
   {/if}
 
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="chat-scroll"
     data-testid="chat-conversation-list"
+    onmouseenter={() => (sidebarHovered = true)}
+    onmouseleave={() => (sidebarHovered = false)}
     data-selection-mode={selectionMode ? "on" : undefined}
+    data-select-gutter={showSelectGutter ? "on" : undefined}
     aria-multiselectable={selectionMode ? true : undefined}
     aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}
   >
@@ -3269,9 +3323,22 @@
     <div
       role={selectionMode ? "presentation" : "listitem"}
       class="chat-li"
+      class:gutter-open={showSelectGutter}
       onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
       onmouseleave={scheduleHoverCardHide}
     >
+      <span class="chat-select-gutter" aria-hidden={!showSelectGutter}>
+        <input
+          type="checkbox"
+          class="chat-select-check"
+          data-testid="chat-row-checkbox"
+          data-checkbox-for={row.id}
+          tabindex={showSelectGutter ? 0 : -1}
+          checked={selectionMode && selection.selected.includes(row.id)}
+          aria-label={`Select ${row.title}`}
+          onclick={(e) => toggleRowSelection(row, e)}
+        />
+      </span>
       {#if hasChildren}
         <button
           type="button"
@@ -4426,10 +4493,82 @@
     opacity: 0.7;
   }
 
-  /* Selection is a state, not an event — no transition on the toggle. */
+  /* Selection is a state, not an event — no transition on the toggle.
+     Banned: the curved left-edge stroke that used to mark selected rows
+     (an inset accent box-shadow on the left edge, curved by the 8px radius).
+     Selection is carried by the checkbox in .chat-select-gutter. */
   .chat-row.selected {
     background: var(--hover);
-    box-shadow: inset 2px 0 0 var(--accent, currentColor);
+  }
+
+  /* Checkbox gutter. Zero-width until a selection exists or Shift is held, so
+     resting rows keep their original geometry and nothing jumps on hover. */
+  .chat-select-gutter {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 0;
+    height: 24px;
+    overflow: hidden;
+    opacity: 0;
+    transition:
+      width 120ms ease,
+      opacity 120ms ease;
+  }
+
+  .chat-li.gutter-open .chat-select-gutter {
+    width: 22px;
+    opacity: 1;
+  }
+
+  .chat-li.gutter-open .chat-row-children-toggle {
+    left: 30px;
+  }
+
+  .chat-select-check {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: none;
+    box-sizing: border-box;
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--line, var(--t3));
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .chat-select-check:checked {
+    position: relative;
+    border-color: var(--accent, var(--t1));
+    background: var(--accent, var(--t1));
+  }
+
+  /* The glyph is masked, not painted, so its colour is the accent's contrast
+     pair. The popover accent is white in dark mode — a white-stroked check
+     would vanish into the fill. */
+  .chat-select-check:checked::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--popover-primary-text, var(--c-bg, var(--bg, #111113)));
+    mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Cpath d='M3 6.7 5.4 9.1 10 4.2' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 13px 13px no-repeat;
+    -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Cpath d='M3 6.7 5.4 9.1 10 4.2' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 13px 13px no-repeat;
+  }
+
+  .chat-select-check:focus-visible {
+    outline: 2px solid var(--accent, var(--t1));
+    outline-offset: 1px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chat-select-gutter {
+      transition: none;
+    }
   }
 
   .chat-selection-bar {
