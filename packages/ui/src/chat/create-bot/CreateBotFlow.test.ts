@@ -520,7 +520,7 @@ describe("CreateBotFlow", () => {
     expect(q('[data-testid="chat-bot-where-cloud"]')).toBeNull();
   });
 
-  it("the details step validates the name against the bots already here", async () => {
+  it("the details step validates the derived handle against the bots already here", async () => {
     const oncreate = vi.fn(async () => undefined);
     render({ oncreate, existingNames: ["assistant"] });
     await settle();
@@ -534,14 +534,62 @@ describe("CreateBotFlow", () => {
     name.value = "assistant";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("already have a bot named");
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("handle @assistant");
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
 
-    name.value = "Scout!";
+    // Two display names that slugify the same collide on the handle too.
+    name.value = "Assistant!";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("Lowercase letters");
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("handle @assistant");
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
+    // The handle field opens itself so the collision is fixed without
+    // renaming the bot.
+    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
+    handle.value = "assistant-2";
+    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(false);
     expect(oncreate).not.toHaveBeenCalled();
+  });
+
+  it("creates a Local bot under a derived handle and keeps the display name beside it", async () => {
+    const oncreate = vi.fn(async () => undefined);
+    render({ oncreate });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    type(name, "Dr Love");
+    await settle();
+    // The preview shows the display name; the handle is what to type to
+    // mention it.
+    expect(q('[data-testid="bot-preview-name"]')?.textContent).toBe("Dr Love");
+    expect(q('[data-testid="bot-preview-handle"]')?.textContent).toBe("@dr-love");
+    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe("@dr-love");
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith(
+      { name: "dr-love", runtime: "claude", autoApprove: true },
+      { displayName: "Dr Love" },
+    );
+  });
+
+  it("stores no display name when the name is already its own handle", async () => {
+    const oncreate = vi.fn(async () => undefined);
+    render({ oncreate });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    type(q<HTMLInputElement>('[data-testid="chat-bot-name"]')!, "scout");
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true }, {});
   });
 
   it("carries the advanced settings into the CLI input", async () => {

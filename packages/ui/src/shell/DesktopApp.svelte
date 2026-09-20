@@ -344,6 +344,11 @@
     promotedBotCompany,
   } from "../chat/local-bots.js";
   import {
+    loadBotDisplayNames,
+    rememberBotDisplayName,
+    type BotDisplayNames,
+  } from "../chat/bot-display-names.js";
+  import {
     adoptFallbackNotice,
     BOT_RESTORE_ALL,
     BOT_RESTORE_ALL_BUSY,
@@ -1433,6 +1438,12 @@
   // thread notice track the bot without any CLI on the user's side.
   let localBotRecords = $state<LocalBotRow[]>([]);
   const localBots = $derived(locallyHostedBots(localBotRecords));
+  /**
+   * agentUid → display name for bots whose label differs from their handle.
+   * `hq bot list` reports the handle only, so the app keeps this copy of what
+   * it PATCHed onto the agent profile; every reader falls back to the handle.
+   */
+  let botDisplayNames = $state<BotDisplayNames>(loadBotDisplayNames());
   let localBotBusy = $state<string | null>(null);
   let localBotActionError = $state<string | null>(null);
   /**
@@ -1853,19 +1864,25 @@
     const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
     await refreshLocalBots();
     if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    // The label is remembered before the PATCH so the sidebar shows the name
+    // the person typed even if the profile write fails or the app is offline.
+    const label = extras.displayName?.trim() || input.name;
+    if (extras.displayName?.trim()) {
+      botDisplayNames = rememberBotDisplayName(botDisplayNames, agentUid, extras.displayName);
+    }
     // A kickoff turn starts with no message from the person, so nothing else
     // would show "is thinking…" while the bot works on it.
     if (input.kickoff?.trim()) kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: input.name };
     // Identity exists (the CLI returned a uid); the launch agent is installing.
     botProgressByUid = {
       ...botProgressByUid,
-      [agentUid]: { name: input.name, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
+      [agentUid]: { name: label, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
     };
     const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
     const row: ConversationRow = existing ?? {
       id: `dm:${agentUid}`,
       kind: "dm",
-      title: input.name,
+      title: label,
       companyUid: null,
       unreadDot: false,
       lastActivityAt: Date.now(),
@@ -1877,19 +1894,24 @@
     return { ok: true, agentUid, name: input.name };
   }
   /**
-   * The parts of the create flow neither create path has a field for — the job
-   * title and the avatar pick — written onto the agent profile now that the
-   * bot has a uid. Sequential: both land on the same profile document. Local
-   * bots bring both; a cloud bot brings the title.
+   * The parts of the create flow neither create path has a field for — the
+   * display name, the job title and the avatar pick — written onto the agent
+   * profile now that the bot has a uid. Sequential: all three land on the
+   * same profile document. `hq bot create` takes only the handle, so a bot
+   * named "Dr Love" is created as `dr-love` and labelled here.
    */
   async function saveNewBotProfile(agentUid: string, extras: CreateBotExtras): Promise<void> {
     const title = extras.title?.trim() ?? "";
-    if (title) {
+    const displayName = extras.displayName?.trim() ?? "";
+    if (title || displayName) {
       try {
-        await adapter.identity.updateAgentProfile(agentUid, { title });
+        await adapter.identity.updateAgentProfile(agentUid, {
+          ...(title ? { title } : {}),
+          ...(displayName ? { displayName } : {}),
+        });
       } catch (err) {
-        // The bot exists and works; only its subtitle is missing.
-        console.warn("[hq-desktop] bot title save failed:", err);
+        // The bot exists and works; only its label/subtitle is missing.
+        console.warn("[hq-desktop] bot profile save failed:", err);
       }
     }
     if (extras.avatar) await saveNewBotAvatar(agentUid, extras.avatar);
@@ -6066,7 +6088,12 @@
   );
 
   /** The user's own local bots: never on the contacts roster, but @mentionable
-   * anywhere the user can add them. */
+   * anywhere the user can add them.
+   *
+   * Deliberately the HANDLE, not the display name: the picker matches on the
+   * label it inserts, so a bot labelled "Dr Love" would not be found by
+   * typing the `@dr-love` the create flow told the person to type. Showing
+   * the display name here needs the picker to match on both. */
   const localBotMentionTargets = $derived(
     mentionTargetsFromContacts(
       localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
@@ -7621,6 +7648,7 @@
           onbotsignedin={onBotRuntimeSignedIn}
           loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
+          {botDisplayNames}
           {ownedLocalBotUids}
           onrows={(rows) => {
             railRows = rows;

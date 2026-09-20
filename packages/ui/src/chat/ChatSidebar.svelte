@@ -48,6 +48,7 @@
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
+  import type { BotDisplayNames } from "./bot-display-names.js";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
@@ -280,6 +281,8 @@
      * from — otherwise a bot could not be added to a channel or group chat.
      */
     localBots?: readonly LocalBotRow[] | null;
+    /** agentUid → display name for local bots that have one. */
+    botDisplayNames?: BotDisplayNames | null;
     /**
      * The user's own local bots that this computer cannot run right now — a
      * wiped config, a reinstall, a second Mac. They are not on `localBots`,
@@ -391,6 +394,7 @@
     avatarPacks = null,
     loadAvatarPacks = null,
     localBots = null,
+    botDisplayNames = null,
     ownedLocalBotUids = null,
     engagedAgentUids = null,
     onrows,
@@ -868,7 +872,7 @@
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
   // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
-    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots), {
+    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
@@ -3177,7 +3181,7 @@
     <CreateModal
       {api}
       rows={[...directoryRows, ...browseRows]}
-      contacts={localBotsAsContacts(contacts, localBots)}
+      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
       {scopeCompanies}
       createCompanies={createScopeCompanies}
       activeScope={scope}

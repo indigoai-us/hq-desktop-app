@@ -188,6 +188,24 @@ describe("Settings → Bots (Work shell)", () => {
     expect(host.querySelector('[data-testid="settings-bots-status"]')?.textContent).toContain("scout");
   });
 
+  it("labels a local bot with its display name, falling back to the handle", async () => {
+    window.localStorage.setItem(
+      "hq.bot-display-names.v1",
+      JSON.stringify({ [LOCAL_BOT.agentUid]: "Dr Love" }),
+    );
+    try {
+      const adapter = fakeAdapter({});
+      await mountPane(adapter);
+      await vi.waitFor(() => {
+        expect(host.querySelector('[data-testid="settings-bot-assistant-label"]')).not.toBeNull();
+      });
+      // The row is still keyed by the handle; only the label changes.
+      expect(host.querySelector('[data-testid="settings-bot-assistant-label"]')?.textContent).toBe("Dr Love");
+    } finally {
+      window.localStorage.removeItem("hq.bot-display-names.v1");
+    }
+  });
+
   it("renders the Local group from adapter.bots and the Cloud group from adapter.agents", async () => {
     const adapter = fakeAdapter({});
     await mountPane(adapter);
@@ -198,6 +216,8 @@ describe("Settings → Bots (Work shell)", () => {
     expect(adapter.agents.listMobileRoster).toHaveBeenCalledWith(null);
 
     const local = host.querySelector('[data-testid="settings-bots-local"]')!;
+    // No display name stored → the row reads as its handle, as it always did.
+    expect(local.querySelector('[data-testid="settings-bot-assistant-label"]')?.textContent).toBe("assistant");
     expect(local.textContent).toContain("assistant");
     expect(local.textContent).toContain("Claude Code");
     expect(local.querySelector('[data-testid="settings-bots-create"]')).not.toBeNull();
