@@ -19,6 +19,7 @@
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
   import { onMount, untrack } from "svelte";
+  import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import {
     COMPOSER_DRAFT_CHANGED_EVENT,
     listDraftRowIds,
@@ -262,6 +263,10 @@
       | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
       | null;
     botRuntimeReady?: Record<string, boolean> | null;
+    /** Per-runtime state (not-installed / couldn't-check / signed-out). */
+    botRuntimeStatus?: Record<string, RuntimeStatus> | null;
+    /** Re-read runtime readiness from the host. */
+    onrecheckruntimes?: (() => void | Promise<void>) | null;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
@@ -377,6 +382,8 @@
     oncreateagent = null,
     oncreatebot = null,
     botRuntimeReady = null,
+    botRuntimeStatus = null,
+    onrecheckruntimes = null,
     botWorkers = null,
     existingBotNames = null,
     botSignIn = null,
@@ -3188,6 +3195,8 @@
       {agentCompanies}
       {oncreatebot}
       {botRuntimeReady}
+      {botRuntimeStatus}
+      {onrecheckruntimes}
       {botWorkers}
       {existingBotNames}
       {botCompanies}

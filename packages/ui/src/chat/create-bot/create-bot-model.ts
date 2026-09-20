@@ -16,6 +16,7 @@
 import type { LocalBotCreateInput, LocalBotKind, LocalBotWorkerOption } from "@hq/platform";
 import type { AvatarSelection } from "../../avatars/types.js";
 import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../local-bots.js";
+import { runtimeBlocksNext, runtimeStatusOf, runtimeStepIssue, type RuntimeStatus } from "./runtime-status.js";
 
 export type CreateBotStep = "kind" | "home" | "details";
 export type BotKindChoice = "blank" | "template";
@@ -61,6 +62,12 @@ export interface CreateBotContext {
   canCloud: boolean;
   /** `{ claude: true, codex: false }`; null → unknown, treated as ready. */
   runtimeReady: Record<string, boolean> | null;
+  /**
+   * The state behind that boolean, per runtime. `runtimeReady` cannot tell
+   * not-installed from couldn't-check from signed-out, and the wizard has to
+   * say which. Absent → fall back to the boolean.
+   */
+  runtimeStatus?: Record<string, RuntimeStatus> | null;
   /** Names already taken by the user's local bots. */
   existingNames: readonly string[];
   companies: ReadonlyArray<{ companyUid: string; label: string }>;
@@ -376,9 +383,16 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
     case "home":
       if (draft.home === "local") {
         if (!ctx.canLocal) return "Bots can’t run on this computer.";
-        if (!runtimeIsReady(ctx.runtimeReady, draft.runtime)) {
+        {
           const label = LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime;
-          return `${label} is not signed in on this Mac.`;
+          const status = runtimeStatusOf(ctx.runtimeStatus, draft.runtime);
+          // The status is the authority when the host has one: it names WHICH
+          // problem, so the person is not told to sign in to a CLI that is not
+          // installed. The boolean is the fallback for hosts without it.
+          if (status) return runtimeBlocksNext(status) ? runtimeStepIssue(status, label) : null;
+          if (!runtimeIsReady(ctx.runtimeReady, draft.runtime)) {
+            return `${label} is not signed in on this Mac.`;
+          }
         }
         return null;
       }

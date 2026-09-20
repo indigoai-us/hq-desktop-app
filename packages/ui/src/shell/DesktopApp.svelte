@@ -410,6 +410,7 @@
   } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
     ChatSidebarApi,
@@ -1752,19 +1753,37 @@
   });
   /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
   let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
+  /** The state behind that boolean, per runtime; null when the host has none. */
+  let localBotRuntimeStatus = $state<Record<string, RuntimeStatus> | null>(null);
   /** Company/core workers a bot can be created from; loaded once on demand. */
   let localBotWorkers = $state<LocalBotWorkerOption[] | null>(null);
-  async function loadLocalBotRuntimeReady(): Promise<void> {
+  async function loadLocalBotRuntimeReady(force = false): Promise<void> {
     const preflight = adapter.sessions?.preflight;
-    if (!preflight || localBotRuntimeReady) return;
+    if (!preflight) return;
+    // A cached reading is enough unless the person asked to check again.
+    if (localBotRuntimeReady && !force) return;
     const result = await preflight();
     if (!result.ok) return;
     const rec = result.value as Record<string, unknown>;
     const next: Record<string, boolean> = {};
+    const statuses: Record<string, RuntimeStatus> = {};
     for (const id of ["claude", "codex", "grok"]) {
       next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
+      const status = parseRuntimeStatus(rec[`${id}Status`]);
+      if (status) statuses[id] = status;
     }
     localBotRuntimeReady = next;
+    // Only when the host reported them — an empty map reads as "unknown".
+    localBotRuntimeStatus = Object.keys(statuses).length > 0 ? statuses : null;
+  }
+
+  /**
+   * Ask again (Check again in the flow). The old reading stays on screen while
+   * it runs: clearing it would read as "unknown", which the flow treats as
+   * ready, and Next would blink enabled on a runtime that cannot host a bot.
+   */
+  async function recheckLocalBotRuntimes(): Promise<void> {
+    await loadLocalBotRuntimeReady(true);
   }
   async function loadLocalBotWorkers(): Promise<void> {
     const workers = adapter.bots?.workers;
@@ -7594,6 +7613,8 @@
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
+          botRuntimeStatus={localBotRuntimeStatus}
+          onrecheckruntimes={recheckLocalBotRuntimes}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}

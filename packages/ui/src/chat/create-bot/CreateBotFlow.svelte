@@ -26,6 +26,7 @@
   import HomeStep from "./HomeStep.svelte";
   import KindStep from "./KindStep.svelte";
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
+  import type { RuntimeStatus } from "./runtime-status.js";
   import {
     STEP_TITLES,
     botHandle,
@@ -60,6 +61,12 @@
 
   interface Props {
     botRuntimeReady?: Record<string, boolean> | null;
+    /**
+     * Per-runtime state (not-installed / couldn't-check / signed-out /
+     * signed-in). Optional: a host that has not been updated keeps the
+     * boolean-only behaviour.
+     */
+    botRuntimeStatus?: Record<string, RuntimeStatus> | null;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     existingNames?: readonly string[] | null;
     /** Companies a Cloud bot can be added to; empty hides Cloud. */
@@ -83,6 +90,8 @@
     signInApi?: RuntimeSignInApi | null;
     onsignin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    /** Re-read runtime readiness from the host (Check again / Try again). */
+    onrecheckruntimes?: (() => void | Promise<void>) | null;
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /** Sign-in poll interval; tests shorten it. */
@@ -93,6 +102,7 @@
 
   let {
     botRuntimeReady = null,
+    botRuntimeStatus = null,
     botWorkers = null,
     existingNames = null,
     agentTargets = null,
@@ -105,6 +115,7 @@
     signInApi = null,
     onsignin = null,
     onsignedin = null,
+    onrecheckruntimes = null,
     avatarPacks = null,
     loadAvatarPacks = null,
     pollMs = 1500,
@@ -122,6 +133,7 @@
     canLocal,
     canCloud,
     runtimeReady: botRuntimeReady,
+    runtimeStatus: botRuntimeStatus,
     existingNames: names,
     companies,
     ownerCompanies,
@@ -319,12 +331,14 @@
           {canLocal}
           {canCloud}
           runtimeReady={botRuntimeReady}
+          runtimeStatus={botRuntimeStatus}
           {companies}
           disabled={busy}
           onpatch={patch}
           {signInApi}
           onsignin={onsignin ?? undefined}
           onsignedin={onsignedin ?? undefined}
+          onrecheck={onrecheckruntimes ?? undefined}
           {pollMs}
         />
       {:else if draft.home === "cloud"}
