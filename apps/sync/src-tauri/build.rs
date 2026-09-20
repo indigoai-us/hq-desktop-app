@@ -62,7 +62,23 @@ fn main() {
         .unwrap_or_else(|error| panic!("build.rs: failed to build hq-tray-helper: {error}"));
     }
 
-    tauri_build::build()
+    // Windows only: give the app binary an explicit `asInvoker` execution
+    // level. Without it, Windows' UAC "installer detection" heuristic
+    // misidentifies an unmanifested exe whose name contains "update" (the
+    // staged auto-update helper copy) as a legacy installer and refuses a
+    // non-elevated launch with ERROR_ELEVATION_REQUIRED (os error 740). See
+    // windows-app-manifest.xml for the full rationale and HQ US-001. This is
+    // a no-op on macOS/Linux — `tauri_build::build()` runs unchanged there.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let windows_attributes = tauri_build::WindowsAttributes::new()
+            .app_manifest(include_str!("windows-app-manifest.xml"));
+        tauri_build::try_build(
+            tauri_build::Attributes::new().windows_attributes(windows_attributes),
+        )
+        .unwrap_or_else(|error| panic!("build.rs: failed to run tauri_build: {error}"));
+    } else {
+        tauri_build::build()
+    }
 }
 
 /// The nearest `Cargo.lock` at or above this crate's manifest directory.
