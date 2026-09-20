@@ -184,7 +184,10 @@ if ($Action -eq "upgrade") {
 
   $stageDir = Join-Path $env:RUNNER_TEMP "hq-update-helper-e2e-$([Guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $stageDir | Out-Null
-  $stagedHelper = Join-Path $stageDir "hq-update-helper.exe"
+  # Helper file name must match production (windows_update.rs HELPER_FILE_NAME):
+  # no "update"/"install"/"setup"/"patch" substring, or Windows' UAC
+  # installer-detection heuristic can refuse a non-elevated launch (HQ US-001).
+  $stagedHelper = Join-Path $stageDir "hq-sync-helper.exe"
   $stagedInstaller = Join-Path $stageDir "hq-update-installer.exe"
   $installBackup = Join-Path $stageDir "prior-install"
   $installManifest = Join-Path $stageDir "prior-install-manifest.json"
@@ -289,7 +292,8 @@ if ($Action -eq "rollback") {
   $beforeShortcuts = ConvertTo-Json -InputObject (Get-ShortcutManifest -InstalledApp $installedApp) -Compress -Depth 4 -AsArray
   $stageDir = Join-Path $env:RUNNER_TEMP "hq-update-rollback-e2e-$([Guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $stageDir | Out-Null
-  $stagedHelper = Join-Path $stageDir "hq-update-helper.exe"
+  # See the "upgrade" branch above: helper file name must match production.
+  $stagedHelper = Join-Path $stageDir "hq-sync-helper.exe"
   $failingInstaller = Join-Path $stageDir "hq-update-installer.exe"
   $installBackup = Join-Path $stageDir "prior-install"
   $installManifest = Join-Path $stageDir "prior-install-manifest.json"
