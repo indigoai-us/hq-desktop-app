@@ -77,7 +77,6 @@
     companyUidsByPerson,
     defaultChannelCompanyUid,
     directoryRowsFromFeed,
-    personalScopeAllowed,
     pickChannelCompanyUid,
     unavailableChannelScopes,
     unconfirmedCreateMessage,
@@ -841,8 +840,41 @@
         companyUids: memberCompanies.get(chip.personUid as string) ?? [],
       })),
   );
-  /** Personal is only for the owner and their own agents. */
-  const personalAllowed = $derived(personalScopeAllowed(scopeMembers, selfUid));
+  /** Company vs Personal is an explicit two-way choice; Personal is the
+   *  owner's own scope and stays put when the roster changes. */
+  const scopeMode = $derived<"company" | "personal">(
+    companyUid ? "company" : "personal",
+  );
+  const canScopeCompany = $derived(targetCompanies.length > 0);
+  /** The company to restore when the user toggles back to Company. */
+  let lastCompanyUid = $state("");
+  $effect(() => {
+    if (companyUid) lastCompanyUid = companyUid;
+  });
+
+  function setScopeMode(next: "company" | "personal"): void {
+    if (next === "personal") {
+      companyUid = "";
+      return;
+    }
+    if (!canScopeCompany) return;
+    // Restore the company the user had before switching to Personal; if there
+    // is none, fall back to the shared create-scope default.
+    if (
+      lastCompanyUid &&
+      targetCompanies.some((c) => c.companyUid === lastCompanyUid)
+    ) {
+      companyUid = lastCompanyUid;
+      return;
+    }
+    companyUid =
+      defaultChannelCompanyUid({
+        activeScope,
+        companies: targetCompanies,
+        members: scopeMembers,
+        selfUid,
+      }) || (targetCompanies[0]?.companyUid ?? "");
+  }
   const scopeUnavailable = $derived(
     unavailableChannelScopes(targetCompanies, scopeMembers, selfUid),
   );
@@ -933,6 +965,12 @@
    */
   function isExternal(chip: MemberChip): boolean {
     if (chip.type !== "person" || !chip.personUid || !companyUid) return false;
+    // Positively placed in another company: the shared scope rules own this
+    // case (the "In" option is marked unavailable and Create is blocked
+    // inline), same as `pickCandidate`. Asking "add anyway?" on top of a block
+    // that Create will refuse would be two answers to one question.
+    const known = memberCompanies.get(chip.personUid) ?? [];
+    if (known.length > 0 && !known.includes(companyUid)) return false;
     return (
       companyRelation(chip.personUid, companyUid, contacts, roster) === "outside"
     );
@@ -2625,28 +2663,62 @@
 
         <div class="create-field">
           <span class="create-label" id="create-scope-label">In</span>
-          <select
-            class="create-select"
-            data-testid="chat-channel-scope"
+          <div
+            class="create-kind"
+            role="radiogroup"
             aria-labelledby="create-scope-label"
-            disabled={creating}
-            bind:value={companyUid}
+            data-testid="chat-channel-scope-mode"
           >
-            {#each targetCompanies as company (company.companyUid)}
-              {@const blocked = scopeUnavailable.find(
-                (row) => row.company.companyUid === company.companyUid,
-              )}
-              <option value={company.companyUid} disabled={Boolean(blocked)}>
-                {blocked ? `${company.label} — ${blocked.reason}` : company.label}
-              </option>
-            {/each}
-            <!-- Personal is the owner's own scope: only they and their agents
-                 can be in it, so it is held (not hidden) once a teammate is
-                 picked — the value stays legible instead of a blank select. -->
-            <option value="" disabled={!personalAllowed}>Personal</option>
-          </select>
+            <button
+              type="button"
+              role="radio"
+              class="create-kind-option"
+              class:selected={scopeMode === "company"}
+              aria-checked={scopeMode === "company"}
+              data-testid="chat-channel-scope-company"
+              disabled={creating || !canScopeCompany}
+              onclick={() => setScopeMode("company")}
+            >
+              Company
+            </button>
+            <button
+              type="button"
+              role="radio"
+              class="create-kind-option"
+              class:selected={scopeMode === "personal"}
+              aria-checked={scopeMode === "personal"}
+              data-testid="chat-channel-scope-personal"
+              disabled={creating}
+              onclick={() => setScopeMode("personal")}
+            >
+              Personal
+            </button>
+          </div>
         </div>
-        {#if scopeUnavailable.length > 0}
+        {#if scopeMode === "company"}
+          <div class="create-field">
+            <span class="create-label" id="create-company-label">Company</span>
+            <select
+              class="create-select"
+              data-testid="chat-channel-scope"
+              aria-labelledby="create-company-label"
+              disabled={creating}
+              bind:value={companyUid}
+            >
+              {#each targetCompanies as company (company.companyUid)}
+                {@const blocked = scopeUnavailable.find(
+                  (row) => row.company.companyUid === company.companyUid,
+                )}
+                <option value={company.companyUid} disabled={Boolean(blocked)}>
+                  {blocked
+                    ? `${company.label} — ${blocked.reason}`
+                    : company.label}
+                </option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+        {#if scopeMode === "company" && scopeUnavailable.length > 0}
           <p class="create-help" data-testid="chat-channel-scope-unavailable">
             {scopeUnavailable[0].reason}
           </p>

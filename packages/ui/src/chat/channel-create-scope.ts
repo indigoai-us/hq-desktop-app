@@ -4,7 +4,10 @@
  *
  * Personal HQ companies (kind/slug/state `personal`, or a membership named
  * after the owner) are not company scopes for channel create. Personal
- * (`companyUid === ""`) is only for the owner and their own agents.
+ * (`companyUid === ""`) is the owner's own scope and takes any roster: the
+ * server's add-member gate is "the caller is a joined member" with no company
+ * requirement for a personal channel, so a personal channel with another
+ * person is a legal create.
  */
 
 import { isAgentUid } from "./agent-thinking.js";
@@ -106,13 +109,6 @@ export function isPersonalOnlyParticipant(
   return isAgentUid(uid);
 }
 
-export function personalScopeAllowed(
-  members: readonly Pick<ChannelCreateMember, "personUid">[],
-  selfUid?: string | null,
-): boolean {
-  return members.every((member) => isPersonalOnlyParticipant(member, selfUid));
-}
-
 export function companyUidsByPerson(
   rows: ReadonlyArray<
     Pick<ConversationRow, "kind" | "personUid" | "companyUid">
@@ -195,17 +191,6 @@ function labelFor(
   );
 }
 
-function firstRestrictingMember(
-  members: readonly ChannelCreateMember[],
-  selfUid?: string | null,
-): ChannelCreateMember | null {
-  return (
-    members.find((member) => knownCompaniesOf(member, selfUid) != null) ??
-    members.find((member) => !isPersonalOnlyParticipant(member, selfUid)) ??
-    null
-  );
-}
-
 function activeLooksPersonal(
   active: string,
   companies: readonly ScopeCompany[],
@@ -223,23 +208,23 @@ export function defaultChannelCompanyUid(
     input.members,
     input.selfUid,
   );
-  const personalOk = personalScopeAllowed(input.members, input.selfUid);
   const active = trimmed(input.activeScope);
 
   if (active && available.includes(active)) return active;
 
-  if (input.members.length > 0 && available.length === 1) return available[0];
-
-  if (activeLooksPersonal(active, input.companies) && personalOk) {
+  // An active personal scope wins over "they share exactly one company":
+  // Personal is a real destination for any roster, not a fallback.
+  if (activeLooksPersonal(active, input.companies)) {
     return PERSONAL_CHANNEL_SCOPE;
   }
+
+  if (input.members.length > 0 && available.length === 1) return available[0];
 
   if (input.members.length === 0) {
     return input.companies[0]?.companyUid ?? PERSONAL_CHANNEL_SCOPE;
   }
 
   if (available.length > 1) return available[0];
-  if (personalOk) return PERSONAL_CHANNEL_SCOPE;
   return available[0] ?? PERSONAL_CHANNEL_SCOPE;
 }
 
@@ -251,12 +236,16 @@ export function pickChannelCompanyUid(
     input.members,
     input.selfUid,
   );
-  const personalOk = personalScopeAllowed(input.members, input.selfUid);
   const current = trimmed(input.currentUid);
+  const active = trimmed(input.activeScope);
 
-  if (current && available.includes(current)) return current;
-  if (!current && personalOk) return PERSONAL_CHANNEL_SCOPE;
-  return defaultChannelCompanyUid(input);
+  // Company vs Personal is the user's explicit choice, so a roster change
+  // never moves between the two. Personal stays Personal; a company that no
+  // longer works stays selected so the inline message can name it.
+  if (!current) return PERSONAL_CHANNEL_SCOPE;
+  if (available.includes(current)) return current;
+  if (available.length === 0) return current;
+  return available.includes(active) ? active : available[0];
 }
 
 export function channelCreateValidationMessage(
@@ -265,6 +254,10 @@ export function channelCreateValidationMessage(
   if (input.members.length === 0) return null;
 
   const companyUid = trimmed(input.companyUid);
+  // Personal has no membership to check — anyone the picker can offer can be
+  // added to the owner's own channel.
+  if (!companyUid) return null;
+
   const available = availableCompanyUids(
     input.companies,
     input.members,
@@ -276,14 +269,6 @@ export function channelCreateValidationMessage(
       : available.length > 1
         ? " — pick a company they all belong to"
         : "";
-
-  if (!companyUid) {
-    if (personalScopeAllowed(input.members, input.selfUid)) return null;
-    const outsider = firstRestrictingMember(input.members, input.selfUid);
-    const scopeLabel = "Personal";
-    if (!outsider) return `Pick a company${pickHint}`;
-    return `${outsider.label} isn't a member of ${scopeLabel}${pickHint}`;
-  }
 
   const companyLabel = labelFor(input.companies, companyUid);
   const missing = input.members.find((member) => {
