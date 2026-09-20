@@ -50,6 +50,17 @@ pub struct LifecycleInputs {
     /// consent is UNANSWERED must be routed back through onboarding rather than
     /// classified as an already-set-up machine that skips it.
     pub consent_answered: bool,
+    /// At least one piece of install evidence could not be READ this launch —
+    /// the HQ folder was unreachable (permission denied, an unmounted volume,
+    /// an I/O error) or the token store could not be read — as opposed to
+    /// being confirmed absent.
+    ///
+    /// "Could not tell" is not "not installed". A machine that already
+    /// finished first run keeps its steady-state surface when the evidence is
+    /// unreadable; the alternative is dropping a long-set-up person onto the
+    /// fresh-install Welcome card after an auto-update relaunch briefly makes
+    /// the read fail (customer report 2026-09-19, v0.10.296 -> v0.10.297).
+    pub evidence_unreadable: bool,
 }
 
 /// Classifier verdict: the state plus whether the caller should backfill
@@ -179,6 +190,41 @@ pub fn hq_root_valid(root: &Path) -> bool {
         && (root.join("core").join("core.yaml").is_file() || root.join("core.yaml").is_file())
 }
 
+/// Outcome of probing the HQ folder on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HqRootProbe {
+    /// The folder exists and carries the installed hq-core shape.
+    Valid,
+    /// The folder was read and is not an installed HQ root.
+    Missing,
+    /// The folder could not be read: permission denied (macOS TCC on
+    /// `~/Documents`, for example), an unmounted volume, or an I/O error.
+    Unreadable,
+}
+
+/// Probe `root`, distinguishing "not an HQ folder" from "could not look".
+///
+/// `hq_root_valid` answers false for both, which is what sent an installed
+/// machine to the Welcome card when the folder was momentarily unreachable.
+pub fn probe_hq_root(root: &Path) -> HqRootProbe {
+    match std::fs::metadata(root) {
+        Ok(meta) if !meta.is_dir() => HqRootProbe::Missing,
+        Ok(_) => {
+            if hq_root_valid(root) {
+                return HqRootProbe::Valid;
+            }
+            // The directory is there but the marker read failed for a reason
+            // other than absence — treat that as "could not look".
+            match std::fs::read_dir(root) {
+                Ok(_) => HqRootProbe::Missing,
+                Err(_) => HqRootProbe::Unreadable,
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HqRootProbe::Missing,
+        Err(_) => HqRootProbe::Unreadable,
+    }
+}
+
 /// The pure classifier.
 pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     // An install is recognized from what is actually on disk: a valid HQ root
@@ -205,6 +251,19 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     // through sign-in, folder choice and install.
     let needs_first_run_backfill =
         is_installed && inputs.consent_answered && !inputs.first_run_completed;
+
+    // "Could not read the evidence" must never demote a machine that already
+    // completed first run. `first_run_completed` is only ever written after
+    // setup (and consent) finished on this computer, so preserving
+    // steady-state here cannot wave anyone past onboarding or consent — it
+    // only refuses to conclude "brand new machine" from a failed read.
+    if inputs.evidence_unreadable && inputs.first_run_completed && !inputs.install_in_progress {
+        return LifecycleVerdict {
+            state: LifecycleState::SteadyState,
+            needs_install_backfill: false,
+            needs_first_run_backfill: false,
+        };
+    }
 
     let state = if inputs.install_in_progress {
         LifecycleState::InstallResume
@@ -255,11 +314,126 @@ mod tests {
             has_auth: false,
             install_in_progress: false,
             consent_answered: false,
+            evidence_unreadable: false,
         }
     }
 
     fn map(v: Value) -> Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn unreadable_evidence_preserves_steady_state_for_a_set_up_machine() {
+        // The v0.10.297 report: an auto-update relaunch could not read the HQ
+        // folder, and a long-installed machine was shown the Welcome card.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            consent_answered: true,
+            hq_root_valid: false,
+            has_auth: false,
+            evidence_unreadable: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
+        assert!(!verdict.needs_install_backfill);
+        assert!(!verdict.needs_first_run_backfill);
+    }
+
+    #[test]
+    fn unreadable_evidence_does_not_wave_a_new_machine_through() {
+        let verdict = classify_lifecycle(LifecycleInputs {
+            evidence_unreadable: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
+    }
+
+    #[test]
+    fn unreadable_evidence_does_not_bypass_an_unanswered_consent() {
+        // machineId written, first run never finished: consent is still owed.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            had_machine_id: true,
+            hq_root_valid: true,
+            evidence_unreadable: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
+    }
+
+    #[test]
+    fn unreadable_evidence_yields_to_an_in_progress_install() {
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            install_in_progress: true,
+            evidence_unreadable: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::InstallResume);
+    }
+
+    #[test]
+    fn real_session_loss_still_reaches_the_setup_card() {
+        // Nothing unreadable: the HQ folder is genuinely gone and there is no
+        // auth. The install card is the correct surface.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            hq_root_valid: false,
+            has_auth: false,
+            evidence_unreadable: false,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
+    }
+
+    #[test]
+    fn probe_hq_root_reports_valid_missing_and_unreadable() {
+        let dir = tempdir().unwrap();
+
+        let missing = dir.path().join("nope");
+        assert_eq!(probe_hq_root(&missing), HqRootProbe::Missing);
+
+        let root = dir.path().join("HQ");
+        std::fs::create_dir_all(root.join("core")).unwrap();
+        assert_eq!(probe_hq_root(&root), HqRootProbe::Missing);
+        std::fs::write(root.join("core").join("core.yaml"), "version: 1\n").unwrap();
+        assert_eq!(probe_hq_root(&root), HqRootProbe::Valid);
+
+        // A path that exists but is not a directory is not an HQ root.
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, "x").unwrap();
+        assert_eq!(probe_hq_root(&file), HqRootProbe::Missing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_hq_root_reports_unreadable_for_a_permission_denied_folder() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("HQ");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let probe = probe_hq_root(&root);
+
+        // Restore before asserting so the tempdir can always clean itself up.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if unsafe { libc::geteuid() } == 0 {
+            // root ignores the mode bits; nothing to assert.
+            return;
+        }
+        assert_eq!(probe, HqRootProbe::Unreadable);
     }
 
     #[test]
@@ -284,6 +458,7 @@ mod tests {
             has_auth: true,
             install_in_progress: true,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstallResume);
@@ -312,6 +487,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: false,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
@@ -332,6 +508,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledLegacyUpdate);
@@ -353,6 +530,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -419,6 +597,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: false,
+            evidence_unreadable: false,
         });
 
         assert_eq!(
@@ -439,6 +618,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -502,6 +682,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -569,6 +750,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: false,
+            evidence_unreadable: false,
         });
         let steady_state = classify_lifecycle(LifecycleInputs {
             install_completed: true,
@@ -579,6 +761,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(first_run.state, LifecycleState::InstalledFirstRun);
@@ -732,6 +915,7 @@ mod toolchain_readiness_tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         };
         assert_eq!(
             classify_lifecycle(inputs).state,
@@ -770,6 +954,7 @@ mod toolchain_readiness_tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         };
         let classified = classify_lifecycle(inputs);
         assert_eq!(classified.state, LifecycleState::SteadyState);

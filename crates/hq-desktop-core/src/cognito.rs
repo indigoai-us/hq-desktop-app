@@ -321,6 +321,53 @@ pub fn has_non_empty_token_at(path: &Path) -> Result<bool, String> {
     }
 }
 
+/// Whether the raw token store could be read, and whether it held a token.
+///
+/// `has_non_empty_stored_token` collapses an unreadable store to "absent",
+/// which is right for choosing reauth copy and wrong for the launch install
+/// gate: "could not read" is not "never signed in". The lifecycle classifier
+/// uses this variant so an unreadable store is carried as unknown evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredTokenPresence {
+    /// A non-empty access token is on disk.
+    Present,
+    /// The store was read and holds no usable token (absent, empty, malformed).
+    Absent,
+    /// The store could not be read at all (permission denied, I/O error).
+    Unreadable,
+}
+
+/// Read the raw token store, distinguishing "no token" from "could not read".
+pub fn stored_token_presence_at(path: &Path) -> StoredTokenPresence {
+    match read_tokens_from_path_raw(path) {
+        Ok(Some(tokens)) if !tokens.access_token.is_empty() => StoredTokenPresence::Present,
+        Ok(_) => StoredTokenPresence::Absent,
+        // A half-written file is a real (recoverable) "no usable token".
+        Err(TokenReadError::Parse(e)) => {
+            eprintln!("[cognito] stored_token_presence: malformed token file: {e}");
+            StoredTokenPresence::Absent
+        }
+        Err(TokenReadError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            StoredTokenPresence::Absent
+        }
+        Err(TokenReadError::Io(e)) => {
+            eprintln!("[cognito] stored_token_presence: token store unreadable: {e}");
+            StoredTokenPresence::Unreadable
+        }
+    }
+}
+
+/// Production variant of [`stored_token_presence_at`] over `~/.hq`.
+pub async fn stored_token_presence() -> StoredTokenPresence {
+    match tokens_file_path() {
+        Ok(path) => stored_token_presence_at(&path),
+        Err(e) => {
+            eprintln!("[cognito] stored_token_presence: token path unavailable: {e}");
+            StoredTokenPresence::Unreadable
+        }
+    }
+}
+
 /// Async production variant of the raw-storage presence hint. Any upstream
 /// failure is logged and collapsed to `Ok(false)` for this UX signal only.
 pub async fn has_non_empty_stored_token() -> Result<bool, String> {
@@ -983,6 +1030,53 @@ mod tests {
             id_token: Some(claims_jwt(payload)),
             refresh_token: "refresh".to_string(),
             expires_at: i64::MAX,
+        }
+    }
+
+    #[test]
+    fn stored_token_presence_separates_absent_from_unreadable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let missing = dir.path().join("cognito-tokens.json");
+        assert_eq!(
+            stored_token_presence_at(&missing),
+            StoredTokenPresence::Absent
+        );
+
+        let malformed = dir.path().join("malformed.json");
+        std::fs::write(&malformed, "{ not json").expect("write");
+        assert_eq!(
+            stored_token_presence_at(&malformed),
+            StoredTokenPresence::Absent
+        );
+
+        let good = dir.path().join("good.json");
+        std::fs::write(
+            &good,
+            serde_json::to_string(&CognitoTokens {
+                access_token: "at".into(),
+                id_token: None,
+                refresh_token: "rt".into(),
+                expires_at: i64::MAX,
+            })
+            .expect("serialize"),
+        )
+        .expect("write");
+        assert_eq!(stored_token_presence_at(&good), StoredTokenPresence::Present);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let denied = dir.path().join("denied.json");
+            std::fs::write(&denied, "{}").expect("write");
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000))
+                .expect("chmod");
+            let presence = stored_token_presence_at(&denied);
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod back");
+            if unsafe { libc::geteuid() } != 0 {
+                assert_eq!(presence, StoredTokenPresence::Unreadable);
+            }
         }
     }
 

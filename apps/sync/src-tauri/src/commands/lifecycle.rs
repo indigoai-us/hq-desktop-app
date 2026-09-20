@@ -1,9 +1,11 @@
 use chrono::Utc;
+use hq_desktop_core::cognito::StoredTokenPresence;
 use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 #[cfg(not(windows))]
 use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
 use hq_desktop_core::lifecycle::{
-    classify_lifecycle, hq_root_valid, menubar_flags, LifecycleInputs, LifecycleState,
+    classify_lifecycle, hq_root_valid, menubar_flags, probe_hq_root, HqRootProbe, LifecycleInputs,
+    LifecycleState,
 };
 use serde_json::{Map, Value};
 use std::sync::RwLock;
@@ -118,20 +120,38 @@ pub fn setup_lifecycle(app: &AppHandle) {
         config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
         menubar.get("hqPath").and_then(Value::as_str),
     );
-    let hq_root_valid = hq_root_valid(&hq_root);
+    // Probe twice when the first look fails: an auto-update relaunch can race
+    // a still-settling filesystem (a rewritten settings tree, a volume that
+    // has not remounted). Two unreadable looks is evidence we cannot tell,
+    // not evidence the machine is new.
+    let mut root_probe = probe_hq_root(&hq_root);
+    if root_probe == HqRootProbe::Unreadable {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        root_probe = probe_hq_root(&hq_root);
+    }
+    let hq_root_valid = root_probe == HqRootProbe::Valid;
+    let hq_root_unreadable = root_probe == HqRootProbe::Unreadable;
+    if hq_root_unreadable {
+        log(
+            "lifecycle",
+            &format!(
+                "setup_lifecycle: HQ folder unreadable at {} - treating install evidence as unknown",
+                hq_root.display()
+            ),
+        );
+    }
 
-    let has_auth = match tauri::async_runtime::block_on(
-        crate::commands::cognito::has_non_empty_stored_token(),
-    ) {
-        Ok(has_auth) => has_auth,
-        Err(e) => {
-            log(
-                "lifecycle",
-                &format!("setup_lifecycle: auth presence check failed: {e}"),
-            );
-            false
-        }
-    };
+    let token_presence =
+        tauri::async_runtime::block_on(hq_desktop_core::cognito::stored_token_presence());
+    let has_auth = token_presence == StoredTokenPresence::Present;
+    let token_unreadable = token_presence == StoredTokenPresence::Unreadable;
+    if token_unreadable {
+        log(
+            "lifecycle",
+            "setup_lifecycle: token store unreadable - treating auth evidence as unknown",
+        );
+    }
+    let evidence_unreadable = hq_root_unreadable || token_unreadable;
 
     let inputs = LifecycleInputs {
         install_completed,
@@ -142,6 +162,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         has_auth,
         install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
         consent_answered,
+        evidence_unreadable,
     };
     // macOS only: HQ is installed only when hq and node are on this computer.
     // A bundled CLI version mismatch is not "missing tools": auto-update
@@ -157,14 +178,16 @@ pub fn setup_lifecycle(app: &AppHandle) {
             paths::resolve_bin_with_kind("node").kind != paths::ResolvedProgramKind::NotResolved;
         let tools_present = tools_present_for_lifecycle_gate(hq_resolved, node_resolved);
         let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
-        (
-            hq_desktop_core::lifecycle::require_local_toolchain(
-                classify_lifecycle(inputs),
-                tools_present,
-            ),
-            tools_present,
-            bundled_cli_ready,
-        )
+        // When the install evidence itself could not be read, a "tools are
+        // missing" reading of the same filesystem is not trustworthy either,
+        // so it must not demote a set-up machine to NeedsInstall.
+        let classified = classify_lifecycle(inputs);
+        let verdict = if evidence_unreadable {
+            classified
+        } else {
+            hq_desktop_core::lifecycle::require_local_toolchain(classified, tools_present)
+        };
+        (verdict, tools_present, bundled_cli_ready)
     };
     #[cfg(windows)]
     let verdict = classify_lifecycle(inputs);
@@ -228,7 +251,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     log(
         "lifecycle",
         &format!(
-            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={}",
+            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} evidence_unreadable={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={}",
             lifecycle_state_str(verdict.state),
             install_completed,
             first_run_completed,
@@ -238,6 +261,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
             has_auth,
             inputs.install_in_progress,
             consent_answered,
+            evidence_unreadable,
             tools_present,
             bundled_cli_ready,
             verdict.needs_install_backfill,

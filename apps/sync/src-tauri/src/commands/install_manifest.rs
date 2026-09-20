@@ -520,6 +520,7 @@ mod tests {
             has_auth: true,
             install_in_progress: manifest_indicates_install_in_progress(&manifest),
             consent_answered: false,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstallResume);
