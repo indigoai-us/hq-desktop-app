@@ -1,11 +1,6 @@
 <script lang="ts">
-  import SettingsPage from '../src/desktop-alt/pages/SettingsPage.svelte';
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
-  import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
-  import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
-  import SessionsPage from '../src/desktop-alt/pages/SessionsPage.svelte';
-  import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
   import { createLifecycleInvoke, resolveLifecycleOptions } from './lifecycle-scenario';
   import ActivityLog from '../src/components/ActivityLog.svelte';
@@ -23,7 +18,7 @@
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
-  import { bannerFixtures, workspaces } from './fixtures';
+  import { bannerFixtures } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
@@ -58,30 +53,6 @@
       direction: 'in',
     },
   ];
-
-  // The Indigo workspace fixture drives the ?view=company desktop board preview.
-  const indigoWorkspace = workspaces.find((w) => w.slug === 'indigo') ?? workspaces[0];
-
-  // ?view=home — the merged Home in isolation (DesktopApp is auth-gated). Real
-  // local-data sections only: portfolio stat strip + company table + today's
-  // meetings + the activity digest. Projects/meetings are inline fixtures.
-  const homeProjects = [
-    { id: 'p1', title: 'Native CRM', name: 'Native CRM', description: '', company: 'indigo', status: 'in-progress', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 8, storiesComplete: 3 },
-    { id: 'p2', title: 'Docs site refresh', name: 'Docs site refresh', description: '', company: 'indigo', status: 'done', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 5, storiesComplete: 5 },
-    { id: 'p3', title: 'Recovery flows', name: 'Recovery flows', description: '', company: 'liverecover', status: 'in-progress', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 6, storiesComplete: 1 },
-    { id: 'p4', title: 'Field sync', name: 'Field sync', description: '', company: 'moonflow', status: 'planning', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 0, storiesComplete: 0 },
-  ];
-  const todayISO = (h: number, m: number) => {
-    const d = new Date();
-    d.setHours(h, m, 0, 0);
-    return d.toISOString();
-  };
-  const homeMeetings = [
-    { id: 'mtg1', summary: 'Creative Ops kickoff', start: { dateTime: todayISO(10, 0) }, end: { dateTime: todayISO(10, 30) }, status: 'confirmed', sourceCompanyUid: 'cmp_indigo' },
-    { id: 'mtg2', summary: 'Indigo standup', start: { dateTime: todayISO(11, 30) }, end: { dateTime: todayISO(11, 45) }, status: 'confirmed', sourceCompanyUid: 'cmp_indigo' },
-    { id: 'mtg3', summary: 'Field sync', start: { dateTime: todayISO(16, 0) }, end: { dateTime: todayISO(16, 30) }, status: 'confirmed' },
-  ];
-  const homeCompanyNames = new Map([['cmp_indigo', 'Indigo']]);
 
   const driftPreviewReport = {
     count: 3,
@@ -152,19 +123,18 @@
   ];
 
   // View + theme driven by URL query so screenshots target a known state:
-  //   ?view=settings|signin|banner|shell   ?theme=light|dark
+  //   ?view=shell|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
   //   lifecycle view (channel-native company lifecycle, stateful mock) takes
   //     ?role=member (viewer.canAct=false everywhere) and ?state=blocked
   // For the signin view, size the browser viewport to ~320x440 (the real
-  // `main` window size) — the sign-in root fills 100vw/100vh. For settings,
-  // any viewport works; it renders centered on a desktop-ish backdrop.
+  // `main` window size) — the sign-in root fills 100vw/100vh. The default
+  // view is the production HQ Work shell; size that one to ~1180x760.
   const params = new URLSearchParams(window.location.search);
-  const view = params.get('view') ?? 'settings';
+  const view = params.get('view') ?? 'shell';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
-  const scenario = params.get('scenario');
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
   // Bound by the wizard's real step count rather than a hand-written ceiling.
   // The literal `3` this replaced predated every step added after Consent, so
@@ -182,13 +152,6 @@
     requestedOnboardingStep <= LAST_ONBOARDING_STEP
       ? requestedOnboardingStep
       : 0;
-  // ?state=auth-error renders the calm reconnect state without red styling
-  // on the surfaces that still take it (the shell, the sign-in card).
-  const stateOverride = params.get('state');
-  // The routed session for ?view=sessions, owned here so the harness performs
-  // the same navigate-and-remount the real shells do.
-  let harnessSessionId = $state(params.get('session'));
-
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
   // and renders only after a `banner:event`. Set the attr + emit the fixture
   // once the component's listener has mounted (next tick).
@@ -196,7 +159,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'home' || view === 'sessions' || view === 'shell' || view === 'lifecycle'
+      : view === 'shell' || view === 'lifecycle'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -233,27 +196,6 @@
     setTimeout(() => void emit('new-files:list', newFilesPreview), 75);
   } else if (view === 'share-detail') {
     setTimeout(() => void emit('share:events-list', sharePreviewEvents), 75);
-  }
-
-  // Deterministic safety-state previews for the full desktop shell. The delay
-  // lets DesktopApp register native-event listeners before the fixture fires.
-  if (view === 'desktop') {
-    setTimeout(() => {
-      if (scenario === 'conflict') {
-        void emit('sync:conflict', {
-          path: 'companies/indigo/projects/hq-desktop-app/prd.json',
-          localHash: 'local-preview',
-          remoteHash: 'remote-preview',
-          canAutoResolve: false,
-        });
-      } else if (scenario === 'sync-error') {
-        void emit('sync:error', {
-          company: 'indigo',
-          path: 'companies/indigo/projects/hq-desktop-app/prd.json',
-          message: 'The cloud connection closed before the desktop audit could finish.',
-        });
-      }
-    }, 250);
   }
 </script>
 
@@ -293,10 +235,6 @@
   <!-- Deterministic render failure for visually verifying the production
        Svelte error boundary without breaking any other harness route. -->
   <GlobalErrorBoundary component={GlobalErrorPreview} windowLabel="preview" />
-{:else if view === 'desktop'}
-  <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
-       live strip). Resize the preview viewport to ~1180x720. -->
-  <DesktopApp />
 {:else if view === 'shell'}
   <!-- Production HQ Work shell (HqWorkWorkShell). Pair with
        ?persona=empty-inbox|personal-only|multi-company|indigo so the mocked
@@ -327,68 +265,10 @@
       ontogglereaction={() => {}}
     />
   </div>
-{:else if view === 'sessions'}
-  <!-- The in-app Sessions chat. `?session=` mounts a live transcript (folded
-       tool row, inline permission card, usage footer); omit it for the
-       chat-first empty state that starts a session on the first message.
-       Resize the viewport to ~1180x760. -->
-  <div class="sessions-stage">
-    <!-- `{#key}` mirrors the real shells, which remount the page on every
-         route change. That is what makes the first-send path testable here:
-         the message must survive the remount it triggers. -->
-    {#key harnessSessionId}
-      <SessionsPage
-        sessionId={harnessSessionId ?? undefined}
-        onopensession={(id) => {
-          harnessSessionId = id || null;
-          const next = new URL(window.location.href);
-          if (id) next.searchParams.set('session', id);
-          else next.searchParams.delete('session');
-          window.history.replaceState(null, '', next);
-        }}
-      />
-    {/key}
-  </div>
-{:else if view === 'company'}
-  <!-- The desktop window's company page (default Board tab). Sized to the
-       real desktop content area; data-window='desktop-alt' activates the
-       desktop token aliases. -->
-  <div class="desktop-stage">
-    <CompanyPage company={indigoWorkspace} />
-  </div>
-{:else if view === 'home'}
-  <!-- The merged Home in isolation. Resize the viewport to ~1180x760. -->
-  <div class="desktop-stage">
-    <HomePage
-      syncState={stateOverride === 'auth-error' ? 'auth-error' : 'idle'}
-      ready={true}
-      {workspaces}
-      progress={null}
-      companies={[]}
-      statsBySlug={{}}
-      status={null}
-      daemon={null}
-      activity={[]}
-      syncErrorMessage={stateOverride === 'auth-error' ? 'Sign in once and HQ will resume automatically.' : ''}
-      syncFilesProgressed={0}
-      syncTotalFiles={0}
-      transferredBytes={0}
-      autoSyncOn={true}
-      hqVersion="15.0.16"
-      conflicts={[]}
-      coreState={null}
-      projects={homeProjects}
-      meetingEvents={homeMeetings}
-      companyNamesByUid={homeCompanyNames}
-      onopencompany={() => {}}
-    />
-  </div>
 {:else}
-  <!-- Settings now live in the desktop-alt window (US-005). Preview the V4
-       SettingsPage rather than the retired Settings.svelte. -->
-  <div class="desktop-stage" class:light={theme === 'light'}>
-    <SettingsPage activeTab="sync" />
-  </div>
+  <!-- Production HQ Work shell (HqWorkWorkShell) — the harness default. Pair
+       with ?persona=empty-inbox|personal-only|multi-company|indigo. -->
+  <HqWorkWorkShell />
 {/if}
 
 <style>
@@ -437,24 +317,6 @@
   .window {
     border-radius: var(--radius-popover, 8px);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
-  /* Sessions is a full-bleed page in the real shell: it owns its own height
-     and its own scroll, so the stage gives it the viewport and nothing else. */
-  .sessions-stage {
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-  }
-
-  /* Desktop window content area (company page). desktop-alt.css paints the
-     body background under html[data-window='desktop-alt']; this just insets
-     the page like the real window's main pane. */
-  .desktop-stage {
-    box-sizing: border-box;
-    min-height: 100vh;
-    padding: 28px 32px;
   }
 
   /* Conversation preview: a fixed-width column with the messages-window
