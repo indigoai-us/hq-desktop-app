@@ -494,8 +494,21 @@ export async function seedActiveMeetingsFromBackend(): Promise<void> {
   }
   if (epoch !== sessionEpoch) return;
   for (const r of recordings ?? []) {
-    if (!r.windowId || (windowRevisions.get(r.windowId) ?? 0) > revision) continue;
+    if (!r.windowId) continue;
     const existing = get(activeMeetings).find((meeting) => meeting.windowId === r.windowId);
+    if ((windowRevisions.get(r.windowId) ?? 0) > revision) {
+      // Started events carry no recording id or attribution. Reconcile those
+      // fields while preserving newer state, including a stop in progress.
+      // Never resurrect a removed row or mix two known recording identities.
+      if (existing && (existing.state === 'recording' || existing.state === 'stopping') &&
+          (!existing.recordingId || existing.recordingId === r.recordingId)) {
+        updateActiveMeeting(r.windowId, {
+          recordingId: r.recordingId,
+          companyUid: r.companyUid ?? null,
+        });
+      }
+      continue;
+    }
     if (existing) {
       // Only lift a still-pending row (detected/starting) to recording; never
       // clobber a state the live listener already advanced (stopping/error).

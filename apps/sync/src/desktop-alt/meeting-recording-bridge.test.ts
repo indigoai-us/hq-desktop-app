@@ -178,6 +178,40 @@ describe('desktop recording bridge to the shared Meetings page', () => {
     expect(get(meetings.activeMeetings)[0]).toMatchObject({ windowId: 'window-1', state: 'recording' });
   });
 
+  it.each(['detection', 'ledger'])('hydrates attribution after a started event during the %s snapshot', async (phase) => {
+    const pending = deferred<unknown[]>();
+    const originalInvoke = mocks.invoke.getMockImplementation()!;
+    recordings = [{ windowId: 'window-1', recordingId: 'existing', companyUid: 'cmp_original' }];
+    mocks.invoke.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === (phase === 'detection' ? 'meetings_list_active_detections' : 'meetings_list_active_recordings')) return pending.promise;
+      return originalInvoke(command, ...args);
+    });
+    stop = startMeetingRecordingBridge();
+    await settle();
+    emit('recording:started', { windowId: 'window-1', platform: 'zoom' });
+    pending.resolve(phase === 'detection' ? [detection] : recordings);
+    await settle();
+    expect(get(meetings.activeMeetings)[0]).toMatchObject({ state: 'recording', recordingId: 'existing', companyUid: 'cmp_original' });
+  });
+
+  it.each(['stopping', 'ended'])('preserves %s while a recording snapshot resolves', async (state) => {
+    const pending = deferred<unknown[]>();
+    const originalInvoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === 'meetings_list_active_recordings') return pending.promise;
+      return originalInvoke(command, ...args);
+    });
+    stop = startMeetingRecordingBridge();
+    await settle();
+    emit('recording:started', { windowId: 'window-1', platform: 'zoom' });
+    if (state === 'stopping') await meetings.stopRecording('window-1');
+    else emit('recording:ended', { windowId: 'window-1' });
+    pending.resolve([{ windowId: 'window-1', recordingId: 'existing', companyUid: 'cmp_original' }]);
+    await settle();
+    if (state === 'ended') expect(get(meetings.activeMeetings)).toEqual([]);
+    else expect(get(meetings.activeMeetings)[0]).toMatchObject({ state: 'stopping', recordingId: 'existing', companyUid: 'cmp_original' });
+  });
+
   it('disposes registrations that resolve after the host closes', async () => {
     stop = startMeetingRecordingBridge();
     stop();
