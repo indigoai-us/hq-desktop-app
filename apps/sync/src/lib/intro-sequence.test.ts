@@ -22,6 +22,13 @@ import {
   introDurationMs,
   reducedMotionBeats,
   sampleSpectrum,
+  MESH_ANCHORS,
+  MESH_BLEND,
+  FIELD_BODY_OFFSETS,
+  VEIL_DEFAULT,
+  VEIL_OVERTURE,
+  meshStops,
+  veilAt,
 } from './intro-sequence';
 
 const BEATS = INTRO_BEATS;
@@ -370,6 +377,81 @@ describe('reflect01', () => {
       const cur = reflect01(x);
       expect(Math.abs(cur - prev)).toBeLessThan(0.002);
       prev = cur;
+    }
+  });
+});
+
+describe('meshStops', () => {
+  it('returns one colour per body', () => {
+    expect(meshStops(0)).toHaveLength(FIELD_BODY_OFFSETS.length);
+  });
+
+  it('blends each brand sample toward its own mesh anchor', () => {
+    const stops = meshStops(0.3);
+    stops.forEach((stop, index) => {
+      const brand = sampleSpectrum(reflect01(0.3 + FIELD_BODY_OFFSETS[index]), FIELD_SPECTRUM);
+      const anchor = hexToRgb(MESH_ANCHORS[index]);
+      for (let channel = 0; channel < 3; channel += 1) {
+        const expected = brand[channel] + (anchor[channel] - brand[channel]) * MESH_BLEND;
+        expect(stop[channel]).toBeCloseTo(expected, 6);
+      }
+    });
+  });
+
+  it('stays inside 0..1 across the whole hue range', () => {
+    for (let hue = 0; hue <= 1; hue += 0.05) {
+      for (const stop of meshStops(hue)) {
+        for (const channel of stop) {
+          expect(channel).toBeGreaterThanOrEqual(0);
+          expect(channel).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
+  it('moves continuously with the hue, so the field never snaps', () => {
+    const a = meshStops(0.5);
+    const b = meshStops(0.51);
+    a.forEach((stop, index) => {
+      for (let channel = 0; channel < 3; channel += 1) {
+        expect(Math.abs(stop[channel] - b[index][channel])).toBeLessThan(0.05);
+      }
+    });
+  });
+});
+
+describe('veilAt', () => {
+  it('starts the overture at the deeper overture veil', () => {
+    expect(veilAt(0)).toBeCloseTo(VEIL_OVERTURE, 6);
+  });
+
+  it('has reached the first beat\'s veil by the end of the overture', () => {
+    expect(veilAt(OVERTURE_MS - 1)).toBeCloseTo(BEATS[0].veil ?? VEIL_DEFAULT, 2);
+  });
+
+  it('eases between neighbouring beats instead of stepping', () => {
+    const start = beatStartMs(1);
+    const mid = start + BEATS[1].holdMs / 2;
+    const low = Math.min(BEATS[1].veil ?? VEIL_DEFAULT, BEATS[2].veil ?? VEIL_DEFAULT);
+    const high = Math.max(BEATS[1].veil ?? VEIL_DEFAULT, BEATS[2].veil ?? VEIL_DEFAULT);
+    expect(veilAt(mid)).toBeGreaterThanOrEqual(low);
+    expect(veilAt(mid)).toBeLessThanOrEqual(high);
+  });
+
+  it('holds the last beat\'s veil at the end of the film', () => {
+    const last = BEATS.length - 1;
+    expect(veilAt(introDurationMs() - 1)).toBeCloseTo(BEATS[last].veil ?? VEIL_DEFAULT, 6);
+  });
+
+  it('falls back to the default when a beat names no veil', () => {
+    const beats = BEATS.map((beat) => ({ ...beat, veil: undefined }));
+    expect(veilAt(beatStartMs(1, beats) + 10, beats)).toBeCloseTo(VEIL_DEFAULT, 6);
+  });
+
+  it('stays inside 0..1 for every moment of the film', () => {
+    for (let t = 0; t <= introDurationMs(); t += 250) {
+      expect(veilAt(t)).toBeGreaterThanOrEqual(0);
+      expect(veilAt(t)).toBeLessThanOrEqual(1);
     }
   });
 });

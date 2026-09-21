@@ -23,6 +23,12 @@ export interface IntroBeat {
    * background tells the same story as the copy.
    */
   hue: number;
+  /**
+   * How dark the veil over the mesh sits while this beat is on screen, 0..1.
+   * Scenes with dense copy ask for more; the overture and the open statements
+   * ask for less. Defaults to `VEIL_DEFAULT`.
+   */
+  veil?: number;
   /** Present on `kind: 'surfaces'`, `'folder'`, and `'network'` (the capability rail). */
   surfaces?: readonly SurfaceRow[];
   /** Present on `kind: 'shortcuts'` and `kind: 'keyboard'`. */
@@ -110,6 +116,67 @@ export const FIELD_SPECTRUM: readonly string[] = [
 ];
 
 /**
+ * The mesh anchors, read off the blurred brand wallpaper in the welcome
+ * concepts: a cobalt mass, a slate-teal band, a warm amber glow, and a deep
+ * cobalt shadow. The field's colour bodies sit on these, and the hue drift
+ * moves *within* that cast rather than replacing it — so the surface keeps the
+ * softness of an out-of-focus photograph while still shifting colour.
+ */
+export const MESH_ANCHORS: readonly string[] = [
+  '#2e4ea6',
+  '#3c6a76',
+  '#a8762f',
+  '#243c6b',
+];
+
+/** How far each body is pulled from the brand spectrum toward its anchor. */
+export const MESH_BLEND = 0.58;
+
+/** Where each body samples the brand spectrum, offset from the current hue. */
+export const FIELD_BODY_OFFSETS: readonly number[] = [0, 0.18, 0.4, 0.62];
+
+/**
+ * The four body colours for a hue position: the brand spectrum sampled at
+ * mutually offset points, each blended toward its mesh anchor. Pure so the
+ * shader uniforms and the CSS fallback cannot drift apart.
+ */
+export function meshStops(hue: number): Array<[number, number, number]> {
+  return FIELD_BODY_OFFSETS.map((offset, index) => {
+    const brand = sampleSpectrum(reflect01(hue + offset), FIELD_SPECTRUM);
+    const anchor = hexToRgb(MESH_ANCHORS[index % MESH_ANCHORS.length]);
+    return [
+      brand[0] + (anchor[0] - brand[0]) * MESH_BLEND,
+      brand[1] + (anchor[1] - brand[1]) * MESH_BLEND,
+      brand[2] + (anchor[2] - brand[2]) * MESH_BLEND,
+    ] as [number, number, number];
+  });
+}
+
+/** Veil strength used when a beat does not name its own. */
+export const VEIL_DEFAULT = 0.58;
+
+/** Veil strength during the overture, before the first beat's value takes over. */
+export const VEIL_OVERTURE = 0.66;
+
+/**
+ * How dark the veil over the mesh is at `elapsed`, 0..1. Eases between
+ * neighbouring beats exactly the way the hue does, so a scene that needs more
+ * darkness under dense copy gets it without the surface ever stepping.
+ */
+export function veilAt(
+  elapsed: number,
+  beats: readonly IntroBeat[] = INTRO_BEATS,
+): number {
+  if (beats.length === 0) return VEIL_DEFAULT;
+  const { index, progress } = beatAt(elapsed, beats);
+  const first = beats[0].veil ?? VEIL_DEFAULT;
+  if (index < 0) return VEIL_OVERTURE + (first - VEIL_OVERTURE) * easeInOut(progress);
+  const current = beats[index].veil ?? VEIL_DEFAULT;
+  const next = beats[index + 1]?.veil ?? current;
+  return current + (next - current) * easeInOut(progress);
+}
+
+/**
  * A row in a `surfaces` scene — one named part of HQ and what it is.
  * Mirrors the folder tour's grammar: the name in mono, the meaning in prose.
  */
@@ -147,6 +214,7 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
     // by ~3.5s. Four more seconds is enough to read five short rows.
     holdMs: 8000,
     hue: 0.1,
+    veil: 0.5,
     surfaces: [
       { name: 'companies/', meaning: 'A wall per client. One company\u2019s context can never reach another\u2019s.' },
       { name: 'personal/', meaning: 'You. Your preferences and the rules you teach HQ, in every company.' },
@@ -162,6 +230,7 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
     body: 'Every machine syncs to the same company cloud. People and agents share one context.',
     holdMs: 11_000,
     hue: 0.42,
+    veil: 0.46,
     surfaces: [
       { name: 'sync', meaning: 'Same on every machine' },
       { name: 'secrets', meaning: 'Injected at run time' },
@@ -177,6 +246,7 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
     body: 'From anywhere on your Mac, this opens the HQ desktop view.',
     holdMs: 9000,
     hue: 0.6,
+    veil: 0.56,
     selfPaced: true,
     shortcuts: [
       { keys: ['\u2325', '\u21E7', 'O'], does: 'Open the HQ desktop view' },
@@ -190,6 +260,7 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
     body: 'Once setup finishes, this is the shortest path to something real.',
     holdMs: 11_000,
     hue: 0.82,
+    veil: 0.54,
     selfPaced: true,
     steps: [
       {
