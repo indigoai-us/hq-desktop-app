@@ -45,6 +45,7 @@
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
+  import { startMeetingRecordingBridge } from './meeting-recording-bridge';
   import { SETUP_PROMPT } from './lib/setup-launch';
   import {
     createNativeWorkShellCapabilities,
@@ -443,6 +444,13 @@
       closed = true;
       void subscribed.then((unsubscribe) => unsubscribe());
     };
+  });
+
+  $effect(() => {
+    // Recreate on auth-generation changes, even when the account id is reused.
+    const generation = authGeneration;
+    if (lifecycle !== 'ready' || !self?.uid || !generation) return;
+    return untrack(() => startMeetingRecordingBridge());
   });
 
   // Presence lane (US-014): MeshClient over native hq-pro fetch → chat bus.

@@ -147,6 +147,7 @@
     activeRecordingsFromScheduledBots(events, botsByEventId),
   );
 
+  const nativeLiveMeeting = $derived(pickLiveMeeting($activeMeetings));
   const liveMeeting = $derived(
     pickLiveMeeting([...cachedActiveRecordings, ...$activeMeetings]),
   );
@@ -760,14 +761,17 @@
       </section>
     {/if}
 
-    <!-- 1. Live now — true live monitor (rounded only while active). -->
-    <LiveNowCard
-      meeting={liveMeeting}
-      memberships={$recordingMemberships}
-      onstart={startRecording}
-      onstop={stopRecording}
-      oncompany={setRecordingCompany}
-    />
+    <!-- Native controls apply to desktop detections, not calendar recording bots. -->
+    {#if nativeLiveMeeting}
+      <LiveNowCard
+        meeting={nativeLiveMeeting}
+        memberships={$recordingMemberships}
+        onstart={startRecording}
+        onstop={stopRecording}
+        oncompany={setRecordingCompany}
+        {openExternal}
+      />
+    {/if}
 
     <!-- 2. Up next — compact strip, not a summary card. -->
     <section
@@ -1770,8 +1774,7 @@
   .health-strip,
   .secondary-grid,
   .meetings-open-cal,
-  .toolbar-meta,
-  :global([data-testid="meetings-live-now"]) {
+  .toolbar-meta {
     display: none !important;
   }
 </style>

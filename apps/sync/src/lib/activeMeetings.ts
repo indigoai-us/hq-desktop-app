@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { emit, listen as nativeListen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
 import { safeUnlisten } from './listener-registry';
 import { get, writable } from 'svelte/store';
 import {
@@ -76,6 +76,9 @@ export const activeMeetings = writable<ActiveMeeting[]>([]);
 export const recordingMemberships = writable<RecordingMembership[]>([]);
 let defaultRecordingCompanyUid: string | null = null;
 
+let sessionEpoch = 0;
+let eventRevision = 0;
+const windowRevisions = new Map<string, number>();
 let unlisteners: UnlistenFn[] | null = null;
 let listenerPromise: Promise<() => void> | null = null;
 
@@ -108,7 +111,27 @@ export function removeActiveMeeting(windowId: string): void {
   activeMeetings.update((rows) => rows.filter((row) => row.windowId !== windowId));
 }
 
+// A recording event can arrive while the initial detection snapshot is pending.
+function upsertRecordingEvent(
+  windowId: string,
+  patch: Partial<ActiveMeeting>,
+  platform = 'other',
+): void {
+  const existing = get(activeMeetings).find((meeting) => meeting.windowId === windowId);
+  upsertActiveMeeting({
+    windowId,
+    platform,
+    meetingUrl: '',
+    detectedAt: new Date().toISOString(),
+    state: 'recording',
+    companyUid: null,
+    ...existing,
+    ...patch,
+  });
+}
+
 export async function startRecording(windowId: string): Promise<void> {
+  const epoch = sessionEpoch;
   updateActiveMeeting(windowId, { state: 'starting', error: undefined });
   const row = get(activeMeetings).find((meeting) => meeting.windowId === windowId);
   // Resolve attribution the same way the classic popover does: an explicit
@@ -124,8 +147,10 @@ export async function startRecording(windowId: string): Promise<void> {
       windowId,
       companyUid,
     });
+    if (epoch !== sessionEpoch) return;
     updateActiveMeeting(windowId, { recordingId });
   } catch (err) {
+    if (epoch !== sessionEpoch) return;
     console.error('start_recording failed:', err);
     updateActiveMeeting(windowId, {
       state: 'error',
@@ -135,10 +160,12 @@ export async function startRecording(windowId: string): Promise<void> {
 }
 
 export async function stopRecording(windowId: string): Promise<void> {
+  const epoch = sessionEpoch;
   updateActiveMeeting(windowId, { state: 'stopping' });
   // Backstop the SDK confirmation: if no recording:ended/recording:error
   // arrives, force the row out of `stopping` so it can't hang forever.
   armStopWatchdog(windowId, (id) => {
+    if (epoch !== sessionEpoch) return;
     const row = get(activeMeetings).find((m) => m.windowId === id);
     const patch = resolveStopTimeout(row?.state);
     if (patch) updateActiveMeeting(id, patch);
@@ -146,6 +173,7 @@ export async function stopRecording(windowId: string): Promise<void> {
   try {
     await invoke('stop_recording', { windowId });
   } catch (err) {
+    if (epoch !== sessionEpoch) return;
     console.error('stop_recording failed:', err);
     // The bridge errored before the SDK got the stop — we're still recording,
     // so cancel the watchdog and roll back rather than letting it fire `error`.
@@ -176,6 +204,7 @@ export function setRecordingCompany(windowId: string, companyUid: string | null)
  * or throw on the focus path.
  */
 export async function loadRecordingCompanyContext(): Promise<void> {
+  const epoch = sessionEpoch;
   const [list, settings] = await Promise.all([
     invoke<RecordingMembership[]>('meetings_list_memberships').catch(
       () => [] as RecordingMembership[],
@@ -184,6 +213,7 @@ export async function loadRecordingCompanyContext(): Promise<void> {
       () => ({}) as { defaultRecordingCompanyUid?: string | null },
     ),
   ]);
+  if (epoch !== sessionEpoch) return;
   setRecordingCompanyContext(list ?? [], settings?.defaultRecordingCompanyUid ?? null);
 }
 
@@ -203,31 +233,54 @@ function setRecordingCompanyContext(
   }
 }
 
-export function ensureActiveMeetingListeners(): Promise<() => void> {
+export function ensureActiveMeetingListeners(
+  { handleNotificationActions = true }: { handleNotificationActions?: boolean } = {},
+): Promise<() => void> {
   if (unlisteners) return Promise.resolve(stopActiveMeetingListeners);
   if (listenerPromise) return listenerPromise;
 
-  listenerPromise = installActiveMeetingListeners();
+  listenerPromise = installActiveMeetingListeners(handleNotificationActions);
   return listenerPromise;
 }
 
 export function stopActiveMeetingListeners(): void {
+  sessionEpoch += 1;
   unlisteners?.forEach((unlisten) => safeUnlisten(unlisten)());
   unlisteners = null;
   listenerPromise = null;
 }
 
-async function installActiveMeetingListeners(): Promise<() => void> {
-  const offs = await Promise.all([
+/** Clear account-owned state without stopping a recording in another window. */
+export function resetActiveMeetings(): void {
+  stopActiveMeetingListeners();
+  for (const meeting of get(activeMeetings)) clearStopWatchdog(meeting.windowId);
+  activeMeetings.set([]);
+  recordingMemberships.set([]);
+  defaultRecordingCompanyUid = null;
+  windowRevisions.clear();
+}
+
+async function installActiveMeetingListeners(handleNotificationActions: boolean): Promise<() => void> {
+  const epoch = sessionEpoch;
+  const listen = <T>(name: string, handler: (event: Event<T>) => void) =>
+    nativeListen<T>(name, (event) => {
+      if (epoch !== sessionEpoch) return;
+      const windowId = (event.payload as { windowId?: string } | null)?.windowId;
+      if (windowId && name !== 'notification:meeting-action') {
+        windowRevisions.set(windowId, ++eventRevision);
+      }
+      handler(event);
+    });
+  const results = await Promise.allSettled([
     listen<MeetingDetectedPayload>('meeting:detected', handleMeetingDetected),
     listen<{ windowId: string; platform: string; startedAt: string }>(
       'recording:started',
       (event) => {
         clearStopWatchdog(event.payload.windowId);
-        updateActiveMeeting(event.payload.windowId, {
+        upsertRecordingEvent(event.payload.windowId, {
           state: 'recording',
           error: undefined,
-        });
+        }, event.payload.platform);
       },
     ),
     listen<{ windowId: string; platform: string; endedAt: string }>(
@@ -248,7 +301,7 @@ async function installActiveMeetingListeners(): Promise<() => void> {
     // it no longer has to wait out the 12s timeout.
     listen<{ cmd: string; windowId: string; message: string }>('recording:error', (event) => {
       clearStopWatchdog(event.payload.windowId);
-      updateActiveMeeting(event.payload.windowId, {
+      upsertRecordingEvent(event.payload.windowId, {
         state: 'error',
         error: `${event.payload.cmd}: ${event.payload.message}`,
       });
@@ -286,6 +339,7 @@ async function installActiveMeetingListeners(): Promise<() => void> {
       'notification:meeting-action',
       async (event) => {
         const { action, windowId } = event.payload;
+        if (!handleNotificationActions) return;
         if (action === 'record' && windowId) {
           await startRecording(windowId);
           invoke('meetings_clear_prompt_badge').catch(() => undefined);
@@ -308,9 +362,20 @@ async function installActiveMeetingListeners(): Promise<() => void> {
     ),
   ]);
 
+  const offs = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+  const failure = results.find((result) => result.status === 'rejected');
+  if (epoch !== sessionEpoch || failure) {
+    offs.forEach((off) => safeUnlisten(off)());
+    if (epoch === sessionEpoch) {
+      listenerPromise = null;
+      sessionEpoch += 1;
+      throw failure?.reason;
+    }
+    return () => {};
+  }
   unlisteners = offs;
   emit('meetings-window:request-snapshot').catch(() => undefined);
-  return stopActiveMeetingListeners;
+  return () => { if (epoch === sessionEpoch) stopActiveMeetingListeners(); };
 }
 
 async function handleMeetingDetected(event: { payload: MeetingDetectedPayload }): Promise<void> {
@@ -372,6 +437,8 @@ async function handleMeetingDetected(event: { payload: MeetingDetectedPayload })
  * a backend hiccup must never blank the Meetings UX.
  */
 export async function seedActiveMeetingsFromBackend(): Promise<void> {
+  const epoch = sessionEpoch;
+  const revision = eventRevision;
   let detections: BackendDetection[];
   try {
     detections = await invoke<BackendDetection[]>('meetings_list_active_detections');
@@ -379,6 +446,8 @@ export async function seedActiveMeetingsFromBackend(): Promise<void> {
     console.warn('meetings_list_active_detections failed; skipping seed:', err);
     return;
   }
+  if (epoch !== sessionEpoch) return;
+  // Live events are newer than an in-flight snapshot, especially terminal events.
   for (const d of detections ?? []) {
     const meetingUrl = d.meetingUrl;
     const isSyntheticUrl =
@@ -386,7 +455,7 @@ export async function seedActiveMeetingsFromBackend(): Promise<void> {
     const windowId =
       d.windowId ??
       (isSyntheticUrl ? meetingUrl!.slice('recall-window:'.length) : (meetingUrl ?? ''));
-    if (!windowId) continue;
+    if (!windowId || (windowRevisions.get(windowId) ?? 0) > revision) continue;
     const existing = get(activeMeetings).find((meeting) => meeting.windowId === windowId);
     upsertActiveMeeting({
       ...existing,
@@ -423,8 +492,9 @@ export async function seedActiveMeetingsFromBackend(): Promise<void> {
     console.warn('meetings_list_active_recordings failed; skipping recording seed:', err);
     return;
   }
+  if (epoch !== sessionEpoch) return;
   for (const r of recordings ?? []) {
-    if (!r.windowId) continue;
+    if (!r.windowId || (windowRevisions.get(r.windowId) ?? 0) > revision) continue;
     const existing = get(activeMeetings).find((meeting) => meeting.windowId === r.windowId);
     if (existing) {
       // Only lift a still-pending row (detected/starting) to recording; never
