@@ -10,9 +10,12 @@ pub fn quit_app(app: tauri::AppHandle) {
 }
 
 /// Raise the main installer / popover window above other apps after OAuth
-/// (macOS + Windows). Uses the sticky post-OAuth raise so the wizard stays
-/// above the browser for the next step — not the generic show path used by
-/// first-run launch (which must not cover the provider login page).
+/// (macOS + Windows). Uses the post-OAuth raise so the wizard comes above the
+/// browser for the next step — not the generic show path used by first-run
+/// launch (which must not cover the provider login page). On Windows the
+/// topmost flag it applies is transient (released on the first focus change
+/// or a short timeout), never sticky: a sticky flag left the window above
+/// every other app for the rest of the process.
 #[tauri::command]
 pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
     let window = app

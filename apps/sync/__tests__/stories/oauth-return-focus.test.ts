@@ -89,6 +89,56 @@ describe('OAuth return focus (macOS + Windows)', () => {
     expect(body).toContain('suppress_blur_hide_briefly');
   });
 
+  it('the post-OAuth raise is transiently topmost on Windows, never sticky', () => {
+    // Windows bug: after signing in, HQ stayed above every other app and
+    // Alt+Tab could not bring anything in front of it until HQ was minimised.
+    // `bring_webview_to_front_after_oauth` set `always_on_top(true)` and
+    // nothing ever cleared it. The post-OAuth raise must now go through one
+    // shared helper that drops the flag on the first focus change or after a
+    // bounded timeout.
+    const focus = readRepo('src-tauri/src/util/window_focus.rs');
+    expect(focus).toContain('pub fn raise_transiently_topmost');
+    expect(focus).toContain('pub const TRANSIENT_TOPMOST_TIMEOUT');
+    const afterOauth = focus.slice(
+      focus.indexOf('pub fn bring_webview_to_front_after_oauth'),
+      focus.indexOf('pub fn raise_transiently_topmost'),
+    );
+    expect(afterOauth).toContain('raise_transiently_topmost(window)');
+    expect(afterOauth).not.toContain('set_always_on_top(true)');
+    // The Windows plumbing releases on focus-in, focus-out and the timer.
+    const plumbing = focus.slice(focus.indexOf('mod transient_topmost'));
+    expect(plumbing).toMatch(/WindowEvent::Focused\(true\)\s*=>\s*TopmostRelease::Focused/);
+    expect(plumbing).toMatch(/WindowEvent::Focused\(false\)\s*=>\s*TopmostRelease::Blurred/);
+    expect(plumbing).toContain('TopmostRelease::Timeout { generation }');
+    expect(plumbing).toContain('set_always_on_top(false)');
+
+    // Every remaining `set_always_on_top(true)` in window_focus.rs must sit in
+    // the keep_on_top branch that only the transient helper reaches.
+    const stickyCalls = focus.split('set_always_on_top(true)').length - 1;
+    expect(stickyCalls).toBe(1);
+    expect(focus).toMatch(/if keep_on_top \{\s*let _ = window\.set_always_on_top\(true\);/);
+
+    // The onboarding card show path and the renderer command share the helper.
+    // Comments in these files legitimately name the call they avoid, so only
+    // code lines are checked.
+    const codeOnly = (src: string) =>
+      src
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('//'))
+        .join('\n');
+    const tray = readRepo('src-tauri/src/tray.rs');
+    const onboardingIdx = tray.indexOf('pub fn show_onboarding_window');
+    const onboarding = tray.slice(onboardingIdx, onboardingIdx + 4800);
+    expect(onboarding).toContain('raise_transiently_topmost');
+    expect(codeOnly(onboarding)).not.toContain('set_always_on_top(true)');
+    // Nowhere in tray.rs, app.rs or oauth.rs may a window be left sticky topmost.
+    expect(codeOnly(tray)).not.toContain('set_always_on_top(true)');
+    const app = readRepo('src-tauri/src/commands/app.rs');
+    expect(codeOnly(app)).not.toContain('set_always_on_top(true)');
+    const oauth = readRepo('src-tauri/src/commands/oauth.rs');
+    expect(codeOnly(oauth)).not.toContain('set_always_on_top(true)');
+  });
+
   it('SignInPrompt and OnboardingWizard invoke bring_main_window_to_front', () => {
     const signIn = readRepo('src/components/SignInPrompt.svelte');
     const onboarding = readRepo('src/components/onboarding/OnboardingWizard.svelte');

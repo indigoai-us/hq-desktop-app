@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On Windows, the HQ window no longer stays above every other app after signing in; Alt+Tab works again. The window still comes to the front once after you finish signing in, and lets other apps in front of it as soon as you switch away.
+
 ## [0.10.299] — 2026-09-20
 
 - Picking several conversations at once in the sidebar now shows a checkbox next to each one, instead of the curved purple stroke down the left edge of the row. Hold Shift with the pointer over the sidebar and an empty box appears on every row so you can see what you can pick; click a box to pick that row. Shift-click to pick a range, Cmd-click to add or remove one, and Escape to clear, all as before. The boxes take up no space until you have something picked or are holding Shift, so the rows do not shift around as you move down the list.
