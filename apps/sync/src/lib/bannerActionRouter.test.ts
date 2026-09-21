@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BannerActionRouter, type BannerActionEvent } from './bannerActionRouter';
+import {
+  BannerActionRouter,
+  bannerOpenRoute,
+  type BannerActionEvent,
+} from './bannerActionRouter';
+import { routeForNotificationPayload } from './notificationRoutes';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -168,5 +173,26 @@ describe('BannerActionRouter', () => {
       requestId: 'request-1',
       success: false,
     });
+  });
+
+  it('resolves dm and share banner opens onto the same inbox routes as native notifications', () => {
+    const dm = { fromPersonUid: 'prs_ada', eventId: 'evt_1' };
+    const channel = { channelId: 'chn_eng', eventId: 'evt_root' };
+    const share = { issuerUid: 'prs_izzy' };
+    const missing = {};
+
+    expect(bannerOpenRoute('dm', dm)).toBe(routeForNotificationPayload(dm));
+    expect(bannerOpenRoute('dm', channel)).toBe(
+      routeForNotificationPayload(channel),
+    );
+    expect(bannerOpenRoute('share', share)).toBe(
+      routeForNotificationPayload(share),
+    );
+    expect(bannerOpenRoute('share', { issuerPersonUid: 'prs_maya' })).toBe(
+      'inbox:dm:prs_maya',
+    );
+    expect(bannerOpenRoute('dm', missing)).toBe('inbox');
+    expect(bannerOpenRoute('meeting', { windowId: 'WIN-1' })).toBeNull();
+    expect(bannerOpenRoute('update', {})).toBeNull();
   });
 });

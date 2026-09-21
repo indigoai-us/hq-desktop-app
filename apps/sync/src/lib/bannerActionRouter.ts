@@ -1,4 +1,5 @@
 import { safeUnlisten } from './listener-registry';
+import { routeForNotificationPayload } from './notificationRoutes';
 
 export type NotificationActionKind =
   | 'dm'
@@ -6,6 +7,21 @@ export type NotificationActionKind =
   | 'update'
   | 'meeting'
   | 'session';
+
+/**
+ * Inbox route for a banner body-click / open action. DM and share banners
+ * resolve the same way native notification clicks do; other kinds do not
+ * navigate the inbox.
+ */
+export function bannerOpenRoute(
+  kind: NotificationActionKind,
+  data: unknown,
+): string | null {
+  if (kind === 'dm' || kind === 'share') {
+    return routeForNotificationPayload(data);
+  }
+  return null;
+}
 
 export interface BannerActionEvent {
   requestId: string;

@@ -16,7 +16,9 @@
 //!   * [`deliver_message`] — DM / share notifications. These previously fired
 //!     through the now-dead `mac_notification_sys` path and so produced no OS
 //!     banner at all; they now take the same UN-when-granted / osascript-else
-//!     route as meetings, with the click routed by `kind` in `userInfo`.
+//!     route as meetings. `userInfo` carries `kind` plus thread ids
+//!     (`fromPersonUid` / `channelId` / `eventId` / `issuerUid`) so a body-click
+//!     can open `inbox:dm:<uid>` or `inbox:channel:<id>:<eventId>`.
 //!
 //! This module is compiled empty off macOS (inner `#![cfg]`), mirroring the
 //! `dm_mqtt` pattern of an unconditional `pub mod` declaration plus gated use.
@@ -145,8 +147,8 @@ define_class!(
         ///   * `"meeting"` (or a legacy notification with no `kind`) → the
         ///     Meetings screen, so the click surfaces the detected meeting with
         ///     its Record control.
-        ///   * `"dm"` / `"share"` → the default desktop-alt view (Inbox), where
-        ///     the message / shared file lives.
+        ///   * `"dm"` / `"share"` → the named inbox thread when `userInfo`
+        ///     carries the payload ids; otherwise the plain Inbox.
         #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
         fn did_receive(
             &self,
@@ -157,12 +159,23 @@ define_class!(
             let kind = unsafe { response_kind(response) };
             let window_id = unsafe { response_user_info_string(response, "windowId") };
             let platform = unsafe { response_user_info_string(response, "platform") };
+            let from_person_uid =
+                unsafe { response_user_info_string(response, "fromPersonUid") };
+            let channel_id = unsafe { response_user_info_string(response, "channelId") };
+            let event_id = unsafe { response_user_info_string(response, "eventId") };
+            let issuer_uid = unsafe { response_user_info_string(response, "issuerUid") };
             if let Some(app) = DELEGATE_APP.get() {
-                let route = click_route_for_kind(&kind);
+                let route = click_destination_route(
+                    &kind,
+                    &from_person_uid,
+                    &channel_id,
+                    &event_id,
+                    &issuer_uid,
+                );
                 let action = click_action_for_kind(&kind, &window_id);
                 // Only meeting prompts carry a tray prompt badge to clear; DM /
                 // share notifications do not touch it.
-                if route == Some("meetings") {
+                if route.as_deref() == Some("meetings") {
                     let pending = crate::tray::get_prompt_pending().saturating_sub(1);
                     crate::tray::set_prompt_badge(app, pending);
                 }
@@ -201,7 +214,7 @@ define_class!(
 
                     if let Err(e) = crate::commands::desktop_alt::open_desktop_alt_window_inner(
                         app,
-                        route,
+                        route.as_deref(),
                     )
                     .await
                     {
@@ -279,14 +292,73 @@ unsafe fn response_user_info_string(response: *mut AnyObject, key: &str) -> Stri
 /// `kind` tag carried in `userInfo`. Pure so the routing contract is unit-
 /// tested without a live `UNUserNotificationCenter`.
 ///
-/// `"dm"` / `"share"` → `None` (open the default desktop-alt view, i.e. Inbox).
-/// Everything else — including `"meeting"` and a legacy notification with no
-/// `kind` (empty string) — → `Some("meetings")`, preserving the pre-existing
-/// meeting-click behaviour.
+/// `"dm"` / `"share"` → `None` (thread route is built from payload ids via
+/// [`click_destination_route`]). Everything else — including `"meeting"` and
+/// a legacy notification with no `kind` (empty string) — → `Some("meetings")`,
+/// preserving the pre-existing meeting-click behaviour.
 fn click_route_for_kind(kind: &str) -> Option<&'static str> {
     match kind {
         "dm" | "share" => None,
         _ => Some("meetings"),
+    }
+}
+
+/// Thread ids posted on a DM / share notification so a body-click can name
+/// the inbox route. Empty strings are omitted from `userInfo`.
+#[derive(Debug, Clone, Default)]
+pub struct MessageUserInfo {
+    pub from_person_uid: String,
+    pub channel_id: String,
+    pub event_id: String,
+    pub issuer_uid: String,
+}
+
+/// Inbox route for a DM / share body-click. Mirrors the TypeScript
+/// `routeForNotificationPayload` helper: channel-origin wins, then DM peer,
+/// then share issuer, then a bare Inbox.
+fn thread_route_from_ids(
+    from_person_uid: &str,
+    channel_id: &str,
+    event_id: &str,
+    issuer_uid: &str,
+) -> String {
+    let channel = channel_id.trim();
+    let event = event_id.trim();
+    let from = from_person_uid.trim();
+    let issuer = issuer_uid.trim();
+    if !channel.is_empty() {
+        return if event.is_empty() {
+            format!("inbox:channel:{channel}")
+        } else {
+            format!("inbox:channel:{channel}:{event}")
+        };
+    }
+    if !from.is_empty() {
+        return format!("inbox:dm:{from}");
+    }
+    if !issuer.is_empty() {
+        return format!("inbox:dm:{issuer}");
+    }
+    "inbox".to_string()
+}
+
+/// Full destination for a body-click: thread route for dm/share, Meetings
+/// for everything else.
+fn click_destination_route(
+    kind: &str,
+    from_person_uid: &str,
+    channel_id: &str,
+    event_id: &str,
+    issuer_uid: &str,
+) -> Option<String> {
+    match kind {
+        "dm" | "share" => Some(thread_route_from_ids(
+            from_person_uid,
+            channel_id,
+            event_id,
+            issuer_uid,
+        )),
+        _ => Some("meetings".to_string()),
     }
 }
 
@@ -444,21 +516,33 @@ pub fn deliver_clickable(title: &str, body: &str, window_id: &str, platform: &st
 ///     per-process legacy/modern gate, so it still shows a banner.
 ///
 /// `kind` must be `"dm"` or `"share"` — it rides along in `userInfo` so a click
-/// opens the right desktop-alt surface. No-op-safe on every path.
-pub fn deliver_message(title: &str, body: &str, kind: &str) {
+/// opens the right desktop-alt surface. Thread ids in `info` name the inbox
+/// route. No-op-safe on every path.
+pub fn deliver_message(title: &str, body: &str, kind: &str, info: &MessageUserInfo) {
     ensure_authorization_requested();
     let granted = hq_platform::notifications::permission_state_without_app() == "granted";
-    if granted && deliver_un_message(title, body, kind) {
+    if granted && deliver_un_message(title, body, kind, info) {
         crate::util::logfile::log("notify", &format!("UN {kind} notification fired"));
         return;
     }
     deliver_osascript(title, body, kind);
 }
 
-/// Deliver a non-actionable UN banner tagged with `kind` in `userInfo`. Returns
-/// `false` (so the caller can fall back to osascript) when unbundled or when any
-/// Cocoa hop fails. Mirrors `deliver_clickable` minus the meeting-only payload.
-fn deliver_un_message(title: &str, body: &str, kind: &str) -> bool {
+fn set_user_info_string(user_info: *mut AnyObject, key: &str, value: &str) {
+    let trimmed = value.trim();
+    if user_info.is_null() || trimmed.is_empty() {
+        return;
+    }
+    unsafe {
+        let _: () = msg_send![user_info, setObject: ns_string(trimmed), forKey: ns_string(key)];
+    }
+}
+
+/// Deliver a non-actionable UN banner tagged with `kind` plus thread ids in
+/// `userInfo`. Returns `false` (so the caller can fall back to osascript) when
+/// unbundled or when any Cocoa hop fails. Mirrors `deliver_clickable` minus
+/// the meeting-only payload.
+fn deliver_un_message(title: &str, body: &str, kind: &str, info: &MessageUserInfo) -> bool {
     if !is_bundled() {
         return false;
     }
@@ -475,6 +559,10 @@ fn deliver_un_message(title: &str, body: &str, kind: &str) -> bool {
         if !user_info.is_null() {
             let _: () =
                 msg_send![user_info, setObject: ns_string(kind), forKey: ns_string("kind")];
+            set_user_info_string(user_info, "fromPersonUid", &info.from_person_uid);
+            set_user_info_string(user_info, "channelId", &info.channel_id);
+            set_user_info_string(user_info, "eventId", &info.event_id);
+            set_user_info_string(user_info, "issuerUid", &info.issuer_uid);
             let _: () = msg_send![&*content, setUserInfo: user_info];
         }
 
@@ -532,7 +620,10 @@ fn deliver_osascript(title: &str, body: &str, kind: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{click_action_for_kind, click_route_for_kind, osascript_notification_script};
+    use super::{
+        click_action_for_kind, click_destination_route, click_route_for_kind,
+        osascript_notification_script, thread_route_from_ids,
+    };
 
     #[test]
     fn meeting_click_records_the_named_meeting() {
@@ -556,12 +647,48 @@ mod tests {
     }
 
     #[test]
-    fn dm_and_share_clicks_open_the_default_inbox_view() {
-        // DM / share notifications must NOT hijack the Meetings screen; they
-        // open the default desktop-alt view (Inbox), where the message /
-        // shared file lives.
+    fn dm_and_share_clicks_do_not_hijack_meetings() {
+        // DM / share notifications must NOT hijack the Meetings screen; their
+        // destination is built from payload ids (see click_destination_route).
         assert_eq!(click_route_for_kind("dm"), None);
         assert_eq!(click_route_for_kind("share"), None);
+    }
+
+    #[test]
+    fn dm_click_opens_the_named_dm_thread() {
+        assert_eq!(
+            click_destination_route("dm", "prs_ada", "", "evt_1", ""),
+            Some("inbox:dm:prs_ada".to_string())
+        );
+    }
+
+    #[test]
+    fn channel_origin_click_opens_the_named_channel_message() {
+        assert_eq!(
+            click_destination_route("dm", "prs_ada", "chn_eng", "evt_root", ""),
+            Some("inbox:channel:chn_eng:evt_root".to_string())
+        );
+    }
+
+    #[test]
+    fn share_click_opens_the_issuer_dm_thread() {
+        assert_eq!(
+            click_destination_route("share", "", "", "evt_share", "prs_izzy"),
+            Some("inbox:dm:prs_izzy".to_string())
+        );
+    }
+
+    #[test]
+    fn dm_and_share_clicks_without_ids_fall_back_to_inbox() {
+        assert_eq!(
+            click_destination_route("dm", "", "", "", ""),
+            Some("inbox".to_string())
+        );
+        assert_eq!(
+            click_destination_route("share", "  ", "", "", ""),
+            Some("inbox".to_string())
+        );
+        assert_eq!(thread_route_from_ids("", "", "", ""), "inbox");
     }
 
     #[test]

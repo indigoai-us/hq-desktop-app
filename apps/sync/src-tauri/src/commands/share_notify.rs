@@ -349,10 +349,20 @@ async fn do_poll(app: &AppHandle) {
                             for evt in fresh.iter().filter(|_| native_allowed) {
                                 let body_text = notification_body(evt.note.as_deref(), &evt.paths);
                                 let title = notification_title(&evt.issuer_display_name);
+                                let issuer_uid = evt.issuer_person_uid.clone();
+                                let event_id = evt.event_id.clone();
 
                                 std::thread::spawn(move || {
                                     crate::commands::un_notify::deliver_message(
-                                        &title, &body_text, "share",
+                                        &title,
+                                        &body_text,
+                                        "share",
+                                        &crate::commands::un_notify::MessageUserInfo {
+                                            from_person_uid: String::new(),
+                                            channel_id: String::new(),
+                                            event_id,
+                                            issuer_uid,
+                                        },
                                     );
                                 });
                             }

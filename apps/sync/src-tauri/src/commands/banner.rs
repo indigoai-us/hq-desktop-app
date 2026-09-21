@@ -331,8 +331,8 @@ fn ns_str(s: &str) -> *mut objc2::runtime::AnyObject {
 
 // ── Source-specific constructors ─────────────────────────────────────────────────
 
-/// DM → banner. Body-click opens the DM detail; the chip copies the agent
-/// prompt when the DM carries one.
+/// DM → banner. Body-click opens the named inbox thread; the chip copies the
+/// agent prompt when the DM carries one.
 pub async fn show_dm_banner(
     app: AppHandle,
     event: crate::commands::dm_notify::DmEvent,
@@ -355,7 +355,7 @@ pub async fn show_dm_banner(
     show_banner(app, payload).await
 }
 
-/// Share ("shared with me") → banner. Body-click opens the share detail window.
+/// Share ("shared with me") → banner. Body-click opens the issuer's DM thread.
 pub async fn show_share_banner(
     app: AppHandle,
     event: crate::commands::share_notify::ShareEvent,

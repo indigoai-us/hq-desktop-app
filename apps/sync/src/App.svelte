@@ -35,6 +35,7 @@
   import { RecordingActionAckCoordinator } from './lib/recordingActionAck';
   import {
     BannerActionRouter,
+    bannerOpenRoute,
     type BannerActionEvent,
     type NotificationActionKind,
   } from './lib/bannerActionRouter';
@@ -722,7 +723,9 @@
       }
       if (action === 'open') {
         if (!data) throw new Error('DM event is unavailable');
-        await invoke('open_dm_detail', { event: data });
+        await invoke('open_desktop_alt_window', {
+          route: bannerOpenRoute('dm', data) ?? 'inbox',
+        });
         return;
       }
     } else if (kind === 'share') {
@@ -745,7 +748,9 @@
       }
       if (action === 'open') {
         if (!data) throw new Error('Share event is unavailable');
-        await invoke('open_share_detail', { events: [data] });
+        await invoke('open_desktop_alt_window', {
+          route: bannerOpenRoute('share', data) ?? 'inbox',
+        });
         return;
       }
     } else if (kind === 'update') {
@@ -896,14 +901,25 @@
     );
 
     // Native tray right-click menu (hq-tray-helper): Open desktop view +
-    // Sign Out. Signed-out users still get the workspace window so they can
-    // sign in there.
+    // Open Inbox + Sign Out. Signed-out users still get the workspace window
+    // so they can sign in there. Notification clicks no longer target the
+    // quick Inbox window (`open_dm_detail`); this tray item is the remaining
+    // explicit Inbox entry.
     unlisteners.push(
       await listen('tray:open-desktop', () => {
         void invoke('open_desktop_alt_window').catch((e) => {
           console.error('tray open_desktop_alt_window failed:', e);
           // Real open failure: keep first-run onboarding / sign-in reachable.
           void invoke('show_main_window').catch(console.error);
+        });
+      })
+    );
+
+    unlisteners.push(
+      await listen('tray:open-inbox', () => {
+        void invoke('open_desktop_alt_window', { route: 'inbox' }).catch((e) => {
+          console.error('tray open_desktop_alt_window (inbox) failed:', e);
+          void invoke('open_inbox_window').catch(console.error);
         });
       })
     );
@@ -1416,8 +1432,8 @@
     // thread emits `notification:share-action` with the full event payload.
     //
     // "copy" → write the templated prompt to the system clipboard.
-    // "open" → invoke open_share_detail with this single event so the
-    //          ShareDetail window focuses or opens with the right context.
+    // "claude" → open Claude Code with the templated prompt (dropdown).
+    // "open" → front the main window on inbox:dm:<issuerUid>.
     unlisteners.push(
       await listen<{
         action: 'claude' | 'copy' | 'open';
@@ -1426,6 +1442,8 @@
           eventId: string;
           issuerEmail: string;
           issuerDisplayName: string;
+          issuerPersonUid?: string;
+          issuerUid?: string;
           paths: string[];
           note: string | null;
           permission: string;
@@ -1449,7 +1467,8 @@
     // `notification:dm-action`:
     //   "copy" → write the sender's agent prompt to the clipboard so the
     //            recipient can paste it straight into their own agent session.
-    //   "open" → open the DM detail window (full message + details + Copy).
+    //   "open" → front the main window on inbox:dm:<fromPersonUid> (or
+    //            inbox:channel:<channelId>:<eventId> for channel-origin).
     unlisteners.push(
       await listen<{
         action: 'copy' | 'open';
@@ -1458,6 +1477,7 @@
           fromPersonUid: string;
           fromEmail: string;
           fromDisplayName: string;
+          channelId?: string;
           body: string;
           details?: string | null;
           prompt?: string | null;
