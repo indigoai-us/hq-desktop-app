@@ -1,3 +1,16 @@
+/* Fraunces carries the display voice: the DMG installer heading and the
+   welcome intro both set it at weight 300 with WONK on. Bundled rather than
+   loaded from Google, because the packaged app's CSP blocks remote assets. */
+@font-face {
+  font-family: 'Fraunces';
+  /* Plain woff2: WebKit ignores the legacy `woff2-variations` format hint and
+     drops the face entirely, which sends the display type to Georgia. */
+  src: url('../assets/fonts/fraunces-variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @font-face {
   font-family: 'Geist';
   src: url('../assets/fonts/geist-sans-400.woff2') format('woff2');
@@ -24,6 +37,23 @@
 
 :root {
   --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
+  --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+
+  /* Welcome-intro surface tokens. Prefixed rather than folded into the app
+     tokens: the intro is a dark full-screen film with its own veil, and the
+     shipped light/dark control tokens must keep their current values. */
+  --intro-veil-bg: rgba(0, 0, 0, 0.58);
+  --intro-veil-bg-soft: rgba(0, 0, 0, 0.34);
+  --intro-glass-filter: blur(34px) saturate(125%);
+  --intro-glass-filter-soft: blur(18px) saturate(115%);
+  --intro-fg: #fff;
+  --intro-fg-muted: rgba(255, 255, 255, 0.62);
+  --intro-fg-faint: rgba(255, 255, 255, 0.38);
+  --intro-fg-bg: rgba(255, 255, 255, 0.07);
+  --intro-hairline: rgba(255, 255, 255, 0.14);
+  --intro-radius-button: 8px;
+  --intro-radius-field: 10px;
+  --intro-radius-card: 18px;
   --hq-window-transparency-factor: 0.65;
   --hq-window-alpha-light: 0.35;
   --hq-window-alpha-dark: 0.48;
