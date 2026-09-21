@@ -1092,7 +1092,14 @@ pub fn show_onboarding_window(app: &AppHandle) {
     {
         position_above_tray_fallback(&window);
         set_dwm_small_corner(&window);
-        let _ = window.set_always_on_top(true);
+        // Deliberately NOT a bare `set_always_on_top(true)`: that flag was
+        // never cleared, so the card — and, after the post-OAuth raise, the
+        // desktop workspace — stayed above every other app for the rest of
+        // the process and Alt+Tab could not bring anything in front of HQ.
+        // `raise_transiently_topmost` raises above the browser once and drops
+        // the flag on the first focus change (the card hides on blur anyway)
+        // or after a short timeout.
+        crate::util::window_focus::raise_transiently_topmost(&window);
     }
     #[cfg(target_os = "macos")]
     if let Ok(size) = window.outer_size() {
@@ -1135,6 +1142,8 @@ pub fn show_onboarding_window(app: &AppHandle) {
             let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
         }
     }
+    // Windows already raised (transiently topmost) above.
+    #[cfg(not(target_os = "windows"))]
     crate::util::window_focus::bring_webview_to_front(&window);
 }
 
