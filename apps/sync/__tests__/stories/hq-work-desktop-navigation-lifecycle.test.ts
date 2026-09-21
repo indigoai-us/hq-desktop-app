@@ -563,12 +563,13 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
     expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
 
-    // A Custom native destination with no embedded surface must be visible,
-    // rather than silently leaving the stale destination selected.
+    // company:<slug>[:<tab>] is a first-class route (US-004). Without a
+    // registered extra page the shell still surfaces an error rather than
+    // silently keeping the previous destination.
     warmRoute('company:indigo:activity');
     await flush();
     expect(host.querySelector('[data-testid="embedded-navigation-error"]')?.textContent).toContain(
-      'Unsupported embedded destination',
+      'Unknown destination: company',
     );
 
     warmRoute('settings:appearance:untrusted');

@@ -75,6 +75,53 @@ describe('desktop route grammar', () => {
     expect(parseDesktopRoute('   ')).toBeNull();
   });
 
+  it('round-trips files:<slug>:<path> and company:<slug>[:<tab>]', () => {
+    const files = parseDesktopRoute(
+      'files:indigo:companies:indigo:knowledge:foo.md',
+    );
+    expect(files).toEqual({
+      kind: 'files',
+      slug: 'indigo',
+      path: 'companies:indigo:knowledge:foo.md',
+    });
+    expect(serializeDesktopRoute(files!)).toBe(
+      'files:indigo:companies:indigo:knowledge:foo.md',
+    );
+    expect(desktopRouteToEmbeddedTarget(files!)).toEqual({
+      kind: 'extra',
+      page: 'files',
+      param: 'companies:indigo:knowledge:foo.md',
+      companyUid: 'indigo',
+    });
+
+    const company = parseDesktopRoute('company:indigo');
+    expect(company).toEqual({ kind: 'company', slug: 'indigo' });
+    expect(serializeDesktopRoute(company!)).toBe('company:indigo');
+    const withTab = parseDesktopRoute('company:indigo:activity');
+    expect(withTab).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'activity',
+    });
+    expect(serializeDesktopRoute(withTab!)).toBe('company:indigo:activity');
+    expect(desktopRouteToEmbeddedTarget(withTab!)).toEqual({
+      kind: 'extra',
+      page: 'company',
+      param: 'activity',
+      companyUid: 'indigo',
+    });
+    expect(parseDesktopRoute('files:indigo')).toEqual({
+      kind: 'unsupported',
+      route: 'files:indigo',
+      reason: 'Unsupported embedded destination',
+    });
+    expect(parseDesktopRoute('company:indigo:activity:extra')).toEqual({
+      kind: 'unsupported',
+      route: 'company:indigo:activity:extra',
+      reason: 'Unsupported embedded destination',
+    });
+  });
+
   it('still parses the existing top-level destinations', () => {
     expect(parseDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(parseDesktopRoute('meetings')).toEqual({ kind: 'meetings' });

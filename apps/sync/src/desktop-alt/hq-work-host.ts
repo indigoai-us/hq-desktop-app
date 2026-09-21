@@ -36,6 +36,7 @@ import {
   type PackagesView,
 } from '@hq/ui';
 import { parseHqWorkOpenUrl, type HqWorkOpenTarget } from '../lib/hq-work';
+import { parseHqUrl } from './lib/deepLink';
 import {
   desktopRouteToEmbeddedTarget,
   parseDesktopRoute,
@@ -720,6 +721,28 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
       personUid: target.personUid!,
       replyRootEventId: target.replyRootEventId,
     };
+  }
+
+  // `hq://` is mapped in Rust for cold/warm delivery; keep the same mapping
+  // if a pending-route string still carries the original URL.
+  if (route.toLowerCase().startsWith('hq://')) {
+    const mapped = parseHqUrl(route);
+    if (!mapped) {
+      return {
+        kind: 'unsupported',
+        route: 'hq-url',
+        reason: 'Invalid hq deep link',
+      };
+    }
+    const parsedHq = parseDesktopRoute(mapped);
+    if (!parsedHq) {
+      return {
+        kind: 'unsupported',
+        route: 'hq-url',
+        reason: 'Invalid hq deep link',
+      };
+    }
+    return desktopRouteToEmbeddedTarget(parsedHq);
   }
 
   const parsed = parseDesktopRoute(route);

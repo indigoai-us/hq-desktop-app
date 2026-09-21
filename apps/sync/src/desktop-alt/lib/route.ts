@@ -7,8 +7,13 @@
  *   inbox:dm:<personUid>
  *   inbox:channel:<channelId>[:<messageId>]
  *
- * URL schemes (`hqwork://`, `hq-desktop://`) are handled by the host before
- * this parser runs.
+ * URL schemes (`hq://`, `hqwork://`, `hq-desktop://`) are handled by the
+ * host before this parser runs. `hq://` maps onto these wire strings:
+ *   inbox:dm:<personUid>
+ *   inbox:channel:<channelId>[:<messageId>]
+ *   files:<slug>:<path>
+ *   company:<slug>[:<tab>]
+ *   meetings
  */
 
 import {
@@ -35,6 +40,8 @@ export type DesktopRoute =
     }
   | { kind: 'messages' }
   | { kind: 'meetings' }
+  | { kind: 'files'; slug: string; path: string }
+  | { kind: 'company'; slug: string; tab?: string }
   | { kind: 'atlas' }
   | { kind: 'library'; tab: DesktopLibraryTab }
   | { kind: 'settings'; section?: EmbeddedSettingsSection }
@@ -99,6 +106,20 @@ export function parseDesktopRoute(
     case 'meetings':
       if (!detail) return { kind: 'meetings' };
       break;
+    case 'files': {
+      const slug = trimSegment(detail);
+      const path = rest.join(':').trim();
+      if (slug && path) return { kind: 'files', slug, path };
+      break;
+    }
+    case 'company': {
+      const slug = trimSegment(detail);
+      if (slug && rest.length <= 1) {
+        const tab = trimSegment(rest[0]);
+        return tab ? { kind: 'company', slug, tab } : { kind: 'company', slug };
+      }
+      break;
+    }
     case 'atlas':
       if (!detail) return { kind: 'home' };
       break;
@@ -147,6 +168,10 @@ export function serializeDesktopRoute(route: DesktopRoute): string {
       return 'messages';
     case 'meetings':
       return 'meetings';
+    case 'files':
+      return `files:${route.slug}:${route.path}`;
+    case 'company':
+      return route.tab ? `company:${route.slug}:${route.tab}` : `company:${route.slug}`;
     case 'atlas':
       return 'home';
     case 'library':
@@ -180,6 +205,20 @@ export function desktopRouteToEmbeddedTarget(
       return { kind: 'messages' };
     case 'meetings':
       return { kind: 'meetings' };
+    case 'files':
+      return {
+        kind: 'extra',
+        page: 'files',
+        param: route.path,
+        companyUid: route.slug,
+      };
+    case 'company':
+      return {
+        kind: 'extra',
+        page: 'company',
+        param: route.tab ?? null,
+        companyUid: route.slug,
+      };
     case 'atlas':
       return { kind: 'home' };
     case 'library':
