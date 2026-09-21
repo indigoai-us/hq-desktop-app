@@ -138,17 +138,23 @@
       const a = prog(t, 0.45, 0.8);
       if (a > 0) {
         ctx.save(); ctx.globalAlpha = a;
-        const fg = ctx.createRadialGradient(HUB.x, 230, 0, HUB.x, 230, 620);
-        fg.addColorStop(0, 'rgba(139,109,240,0.16)');
-        fg.addColorStop(0.5, 'rgba(229,106,179,0.06)');
+        // The pool has to reach zero inside the canvas, or its own bounding
+        // box shows up as a lighter rectangle over the field behind it.
+        const fg = ctx.createRadialGradient(HUB.x, 230, 0, HUB.x, 230, 430);
+        fg.addColorStop(0, 'rgba(139,109,240,0.12)');
+        fg.addColorStop(0.45, 'rgba(229,106,179,0.05)');
         fg.addColorStop(1, 'rgba(229,106,179,0)');
         ctx.fillStyle = fg; ctx.fillRect(0, 0, W, H);
         ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        // The grid has to die out well inside the canvas: the film now runs on
+        // one continuous field, and a patch of dots that reaches the canvas
+        // edge reads as a rectangle pasted over it.
         for (let gx = 30; gx < W; gx += 22) {
           for (let gy = 20; gy < RAIL_Y - 20; gy += 22) {
-            const d = Math.hypot(gx - HUB.x, gy - 230) / 560;
+            const d = Math.hypot(gx - HUB.x, (gy - 230) * 1.15) / 430;
             if (d > 1) continue;
-            ctx.globalAlpha = a * (1 - d) * (1 - d);
+            const fade = (1 - d) * (1 - d) * (1 - d);
+            ctx.globalAlpha = a * fade;
             ctx.beginPath(); ctx.arc(gx, gy, 1.2, 0, Math.PI * 2); ctx.fill();
           }
         }

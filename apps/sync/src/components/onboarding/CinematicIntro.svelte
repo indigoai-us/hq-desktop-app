@@ -26,6 +26,7 @@
     hueAt,
     reducedMotionBeats,
     takeoverOpacity,
+    veilAt,
     takeoverRadius,
     type IntroBeat,
   } from '../../lib/intro-sequence';
@@ -73,6 +74,10 @@
     elapsed < OVERTURE_MS ? 0.25 + 0.75 * easeInOut(elapsed / OVERTURE_MS) : 1,
   );
   const overtureProgress = $derived(Math.min(1, elapsed / OVERTURE_MS));
+  // The veil follows the same clock as the hue and chases it the same way, so
+  // a scene that wants more darkness under its copy gets there as a fade.
+  const veilTarget = $derived(veilAt(elapsed, beats));
+  let veil = $state(veilAt(0, INTRO_BEATS));
   // Reduced motion gets the end state immediately — no iris, no bloom.
   const irisRadius = $derived(reduced ? 1.4 : takeoverRadius(elapsed));
   const fieldOpacity = $derived(reduced ? 1 : takeoverOpacity(elapsed));
@@ -90,6 +95,7 @@
     // the person reads.
     if (!isWaitingForViewer(elapsed, beats)) elapsed += delta;
     hue += (hueTarget - hue) * Math.min(1, delta / 900);
+    veil += (veilTarget - veil) * Math.min(1, delta / 900);
     if (beatAt(elapsed, beats).complete) {
       void complete();
       return;
@@ -158,9 +164,23 @@
        this element is the person's own blurred desktop. The colour field
        irises open over it: HQ arrives in the room they are already in. -->
   <div class="field-mask" aria-hidden="true">
-    <GradientField {hue} {intensity} still={reduced} />
+    <!-- The glass: the person's desktop, blurred hard, under everything the
+         film paints. It is what makes the mesh read as an out-of-focus
+         photograph rather than a drawn gradient. -->
+    <div class="glass"></div>
+    <GradientField {hue} {intensity} {veil} still={reduced} />
+    <!-- A soft sun climbing out of the horizon through the overture. -->
+    <div class="sun" class:on={overtureProgress > 0.2} class:gone={!inOverture}></div>
     <DustField still={reduced} />
   </div>
+
+  <!-- A single hairline drawing across the field opens the film. -->
+  <div
+    class="horizon"
+    class:on={overtureProgress > 0.04}
+    class:gone={!inOverture}
+    aria-hidden="true"
+  ></div>
 
   <div class="drag-strip" data-tauri-drag-region></div>
 
@@ -176,9 +196,8 @@
       class:gone={!inOverture}
       style={`--p:${overtureProgress};`}
     >
-      <div class="mark"><svg viewBox="0 0 280 161" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M85.7251 3.66162H118.034V154.434H85.7251V89.8175H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z" fill="currentColor"/><path d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0638C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z" fill="currentColor"/></svg></div>
-      <span class="grule" aria-hidden="true"></span>
-      <p class="welcome">Welcome to HQ</p>
+      <div class="mark" class:still={reduced}><span class="mglow"></span><svg viewBox="0 0 280 161" fill="none" xmlns="http://www.w3.org/2000/svg"><path pathLength="1" d="M85.7251 3.66162H118.034V154.434H85.7251V89.8175H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z" fill="currentColor"/><path pathLength="1" d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0638C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z" fill="currentColor"/></svg></div>
+      <p class="welcome line" style="--d:2.3s"><span>Welcome to HQ</span></p>
     </div>
 
     {#each beats as beat, index (beat.id)}
@@ -191,8 +210,10 @@
         data-beat={beat.id}
       >
         <span class="ordinal r" style="--d:.1s">{String(index + 1).padStart(2, '0')}</span>
-        <h2 class="title r" class:small={beat.kind !== 'statement'} style="--d:.25s">{beat.title}</h2>
-        <p class="body r" style="--d:.4s">{beat.body}</p>
+        <h2 class="title line" class:small={beat.kind !== 'statement'} style="--d:.25s">
+          <span>{beat.title}</span>
+        </h2>
+        <p class="body r" style="--d:.46s">{beat.body}</p>
 
         {#if beat.kind === 'folder' && beat.surfaces}
           <!-- Caitlin's slide-18 choreography: the folder holds alone, travels
@@ -373,6 +394,68 @@
     will-change: clip-path, opacity;
   }
 
+  .glass {
+    position: absolute;
+    inset: 0;
+    background: var(--intro-veil-bg-soft);
+    -webkit-backdrop-filter: var(--intro-glass-filter);
+    backdrop-filter: var(--intro-glass-filter);
+  }
+
+  /* The sun: a wide, blurred bloom that climbs through the overture and is
+     gone by the first beat. Pure opacity + transform. */
+  .sun {
+    position: absolute;
+    left: 50%;
+    top: 60%;
+    width: min(64vmin, 620px);
+    height: min(64vmin, 620px);
+    background: radial-gradient(
+      circle at 50% 45%,
+      rgba(255, 255, 255, 0.18) 0%,
+      rgba(255, 255, 255, 0.11) 26%,
+      rgba(255, 255, 255, 0.05) 46%,
+      rgba(255, 255, 255, 0.02) 62%,
+      rgba(255, 255, 255, 0) 76%
+    );
+    filter: blur(56px);
+    opacity: 0;
+    transform: translate(-50%, 14%);
+    transition: transform 4.5s var(--ease-out), opacity 2s var(--ease-out);
+    will-change: transform, opacity;
+  }
+
+  .sun.on {
+    opacity: 0.8;
+    transform: translate(-50%, -38%);
+  }
+
+  .sun.gone {
+    opacity: 0;
+  }
+
+  /* The horizon: one hairline drawing left to right over the field. */
+  .horizon {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 60%;
+    height: 1px;
+    z-index: 1;
+    background: rgba(255, 255, 255, 0.4);
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform 1.6s var(--ease-in-out), opacity 1.1s var(--ease-out);
+  }
+
+  .horizon.on {
+    transform: scaleX(1);
+  }
+
+  .horizon.gone {
+    opacity: 0;
+  }
+
   .drag-strip {
     position: absolute;
     top: 0;
@@ -408,6 +491,8 @@
   .overture {
     position: absolute;
     inset: 0;
+    /* Sits above the horizon, the way the line does in the horizon concept. */
+    transform: translateY(-7%);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -423,24 +508,35 @@
 
   /* Logo: a long, transform-free fade over the field's slower bloom. */
 
-  /* A hairline in the brand spectrum that widens from the centre. */
-  .grule {
-    display: block;
-    height: 3px;
-    width: 0;
-    margin: 40px auto 0;
-    border-radius: 999px;
-    background: linear-gradient(96deg, #7de3f4 0%, #8b6df0 30%, #e56ab3 62%, #f28a4b 100%);
-    animation: widen 1.1s var(--ease) 1s forwards;
+  /* Masked reveal: the line is clipped by its own box and slides up through
+     it. Used for the overture caption and every beat title. */
+  .line {
+    overflow: hidden;
+    /* Never let the flex column squeeze the masked line: the mask would clip
+       the glyphs it is supposed to reveal. */
+    flex: 0 0 auto;
+    /* The mask is the glyph box, so it needs room for the ascenders as well
+       as the descenders — Fraunces at line-height 1.04 overflows both. */
+    padding: 0.12em 0 0.16em;
   }
 
-  .welcome {
-    opacity: 0;
-    animation: pop 0.8s var(--ease) 1.4s forwards;
+  .line > span {
+    display: block;
+    transform: translateY(112%);
+  }
+
+  .beat.active .line > span,
+  .overture .line > span {
+    animation: climb 1.2s var(--ease-out) var(--d, 0s) forwards;
+  }
+
+  .beat.still .line > span {
+    animation: none;
+    transform: none;
   }
 
   @keyframes pop { to { opacity: 1; } }
-  @keyframes widen { to { width: min(420px, 60vw); } }
+  @keyframes climb { to { transform: none; } }
   @keyframes rise { to { opacity: 1; transform: none; } }
 
   /* Entrance primitive for everything inside an active beat: 14px rise over
@@ -461,27 +557,86 @@
     transform: none;
   }
 
+  /* The mark draws itself in a single stroke, then fills, then blooms — the
+     ignition concept's move, retimed into our 3.2s overture. */
   .mark {
+    position: relative;
     width: 132px;
     color: #fff;
     filter: drop-shadow(0 20px 46px rgba(0, 0, 0, 0.55));
     opacity: 0;
-    animation: pop 1.2s var(--ease) 0.35s forwards;
+    animation: pop 0.5s var(--ease-out) 0.15s forwards;
   }
 
   .mark :global(svg) {
+    position: relative;
     width: 100%;
     height: auto;
     display: block;
   }
 
+  .mark :global(path) {
+    fill: transparent;
+    stroke: currentColor;
+    stroke-width: 1.25;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation:
+      stroke 1.7s var(--ease-in-out) 0.2s forwards,
+      ink 1.1s var(--ease-out) 1.6s forwards;
+  }
+
+  .mglow {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 46vmax;
+    height: 46vmax;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      rgba(255, 255, 255, 0.16) 0%,
+      rgba(255, 255, 255, 0.06) 30%,
+      transparent 62%
+    );
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.6);
+    animation: bloom 2.4s var(--ease-out) 1.9s forwards;
+  }
+
+  .mark.still :global(path) {
+    animation: none;
+    fill: currentColor;
+    stroke: none;
+  }
+
+  .mark.still {
+    animation: none;
+    opacity: 1;
+  }
+
+  .mark.still .mglow {
+    animation: none;
+    opacity: 0;
+  }
+
+  @keyframes stroke { to { stroke-dashoffset: 0; } }
+  @keyframes ink { to { fill: currentColor; stroke-opacity: 0; } }
+  @keyframes bloom {
+    to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  }
+
   .welcome {
-    margin: 22px 0 0;
-    font-size: 15px;
+    margin: 30px 0 0;
+    font-size: 12px;
+    line-height: 16px;
     font-weight: 400;
-    letter-spacing: 0.32em;
+    letter-spacing: 0.34em;
+    /* letter-spacing leaves a trailing gap after the last letter; balance it
+       so the caption is optically centred under the mark. */
+    padding-left: 0.34em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.72);
+    color: var(--intro-fg-faint);
   }
 
   .beat {
@@ -491,7 +646,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 14px;
+    gap: 18px;
     text-align: center;
     padding: 0 8px;
     transition: opacity 0.25s linear, filter 0.7s var(--ease), transform 0.9s var(--ease);
@@ -511,9 +666,11 @@
 
   .ordinal {
     font-size: 12px;
+    line-height: 16px;
     font-weight: 500;
     letter-spacing: 0.28em;
-    color: rgba(255, 255, 255, 0.5);
+    padding-left: 0.28em;
+    color: var(--intro-fg-faint);
   }
 
   .beat.wide {
@@ -522,29 +679,34 @@
   }
 
   .title.small {
-    font-size: clamp(24px, 2.8vw, 32px);
-    max-width: 24ch;
+    font-size: clamp(30px, 4.2vw, 56px);
+    max-width: 26ch;
   }
 
+  /* Display voice: Fraunces 300 with WONK on, the same face and axes the DMG
+     installer heading uses. */
   .title {
     margin: 0;
-    font-size: clamp(30px, 4.4vw, 46px);
-    font-weight: 600;
-    line-height: 1.08;
-    letter-spacing: -0.03em;
-    max-width: 14ch;
+    font-family: var(--font-display);
+    font-size: clamp(44px, 7.4vw, 124px);
+    font-weight: 300;
+    font-optical-sizing: auto;
+    font-variation-settings: 'wght' 300, 'SOFT' 0, 'WONK' 1;
+    line-height: 1.04;
+    letter-spacing: -0.04em;
+    max-width: 16ch;
     text-wrap: balance;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 32px rgba(0, 0, 0, 0.45);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 40px rgba(0, 0, 0, 0.4);
   }
 
   .body {
     margin: 0;
-    font-size: 16px;
-    line-height: 26px;
+    font-size: 14px;
+    line-height: 20px;
     font-weight: 400;
-    color: rgba(255, 255, 255, 0.86);
+    color: var(--intro-fg-muted);
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 3px 20px rgba(0, 0, 0, 0.4);
-    max-width: 52ch;
+    max-width: 62ch;
     text-wrap: pretty;
   }
 
@@ -704,9 +866,9 @@
     flex-direction: column;
     gap: 1px;
     text-align: left;
-    border-radius: 12px;
+    border-radius: var(--intro-radius-field);
     overflow: hidden;
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--intro-fg-bg);
     border: 1px solid rgba(255, 255, 255, 0.16);
   }
 
@@ -717,7 +879,8 @@
     align-items: baseline;
     padding: 11px 16px;
     background: rgba(10, 10, 16, 0.32);
-    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: var(--intro-glass-filter-soft);
+    backdrop-filter: var(--intro-glass-filter-soft);
   }
 
   .surface-name {
@@ -808,10 +971,11 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.07);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    backdrop-filter: blur(18px);
+    border-radius: var(--intro-radius-card);
+    background: var(--intro-fg-bg);
+    border: 1px solid var(--intro-hairline);
+    -webkit-backdrop-filter: var(--intro-glass-filter-soft);
+    backdrop-filter: var(--intro-glass-filter-soft);
   }
 
   .krow {
@@ -1025,33 +1189,39 @@
   }
 
   .skip.ghost {
-    background: transparent;
-    border-color: rgba(255, 255, 255, 0.16);
-    color: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.14);
+    color: var(--intro-fg);
   }
 
   .skip.ghost:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #fff;
+    background: rgba(255, 255, 255, 0.2);
+    opacity: 1;
   }
 
+  /* Button geometry from the welcome concepts: 10/16 padding, 14/20 type,
+     8px radius, white primary on black. */
   .skip {
     appearance: none;
-    border: 1px solid rgba(255, 255, 255, 0.24);
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
+    border: none;
+    background: #fff;
+    color: #000;
     font: inherit;
-    font-size: 13px;
-    padding: 8px 18px;
-    border-radius: var(--radius-pill);
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 400;
+    padding: 10px 16px;
+    border-radius: var(--intro-radius-button);
     cursor: pointer;
-    backdrop-filter: blur(12px);
-    transition: background 0.15s ease, border-color 0.15s ease;
+    transition: opacity 0.15s ease, transform 0.1s ease, background 0.15s ease,
+      border-color 0.15s ease;
   }
 
   .skip:hover {
-    background: rgba(255, 255, 255, 0.18);
-    border-color: rgba(255, 255, 255, 0.36);
+    opacity: 0.88;
+  }
+
+  .skip:active {
+    transform: scale(0.97);
   }
 
   .skip:focus-visible {
@@ -1061,8 +1231,36 @@
 
   @media (prefers-reduced-motion: reduce) {
     .overture,
-    .beat {
+    .beat,
+    .sun,
+    .horizon {
       transition: none;
+    }
+
+    .line > span,
+    .beat.active .line > span,
+    .overture .line > span {
+      animation: none;
+      transform: none;
+    }
+
+    .sun {
+      opacity: 0;
+    }
+
+    .mark :global(path) {
+      animation: none;
+      fill: currentColor;
+      stroke: none;
+    }
+
+    .mglow {
+      animation: none;
+      opacity: 0;
+    }
+
+    .horizon {
+      transform: scaleX(1);
     }
   }
 </style>
