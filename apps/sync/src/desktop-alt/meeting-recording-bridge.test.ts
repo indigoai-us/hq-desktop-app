@@ -120,6 +120,37 @@ describe('desktop recording bridge to the shared Meetings page', () => {
     expect(get(meetings.activeMeetings)[0]).toMatchObject({ state: 'recording', recordingId: 'existing' });
   });
 
+  it.each([
+    ['settings first', 'cmp_original'],
+    ['settings first', null],
+    ['recording first', 'cmp_original'],
+    ['recording first', null],
+  ])('preserves ledger attribution with %s and destination %s', async (order, companyUid) => {
+    detections = [detection];
+    const settings = deferred<{ defaultRecordingCompanyUid: string }>();
+    const ledger = deferred<unknown[]>();
+    const originalInvoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === 'get_settings') return settings.promise;
+      if (command === 'meetings_list_active_recordings') return ledger.promise;
+      return originalInvoke(command, ...args);
+    });
+    stop = startMeetingRecordingBridge();
+    await settle();
+    const resolveSettings = () => settings.resolve({ defaultRecordingCompanyUid: membership.companyUid });
+    const resolveLedger = () => ledger.resolve([{ windowId: 'window-1', recordingId: 'existing', companyUid }]);
+    if (order === 'settings first') resolveSettings();
+    else resolveLedger();
+    await settle();
+    if (order === 'settings first') resolveLedger();
+    else resolveSettings();
+    await settle();
+    expect(get(meetings.activeMeetings)[0]).toMatchObject({ state: 'recording', companyUid });
+    window.dispatchEvent(new Event('focus'));
+    await settle();
+    expect(get(meetings.activeMeetings)[0]).toMatchObject({ state: 'recording', companyUid });
+  });
+
   it('discards late hydration after an account change and disposes listeners', async () => {
     const pending = deferred<typeof detection[]>();
     mocks.invoke.mockImplementationOnce(() => pending.promise);

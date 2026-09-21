@@ -227,7 +227,7 @@ function setRecordingCompanyContext(
   // Seed the resolved default onto rows detected before this loaded — without
   // overwriting an explicit user choice (shouldBackfill guards that).
   for (const m of get(activeMeetings)) {
-    if (shouldBackfill(m, defaultRecordingCompanyUid)) {
+    if (m.state === 'detected' && !m.recordingId && shouldBackfill(m, defaultRecordingCompanyUid)) {
       updateActiveMeeting(m.windowId, { companyUid: defaultRecordingCompanyUid });
     }
   }
@@ -503,11 +503,9 @@ export async function seedActiveMeetingsFromBackend(): Promise<void> {
       updateActiveMeeting(r.windowId, {
         ...(lift ? { state: 'recording' as const, error: undefined } : {}),
         recordingId: existing.recordingId ?? r.recordingId,
-        // The ledger's company is what the recording is actually attributed to;
-        // adopt it unless the user has made an explicit per-row choice.
-        companyUid: existing.companyUserSet
-          ? (existing.companyUid ?? null)
-          : (r.companyUid ?? existing.companyUid ?? null),
+        // An existing recording's destination is fixed by its upload token.
+        // Null means Personal, not a missing default to back-fill.
+        companyUid: r.companyUid ?? null,
       });
     } else {
       // Recording with no retained detection (its detection aged out of the
