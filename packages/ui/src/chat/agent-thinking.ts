@@ -561,3 +561,32 @@ export function clearAgentEverywhere(
   }
   return changed ? out : map;
 }
+
+/**
+ * Reconcile the thinking rows with the bots that are answering right now.
+ *
+ * `busy` comes from the local bots listing (the CLI's in-flight markers). A
+ * bot that just started answering gets a row in its own DM; a bot that has
+ * finished loses its rows everywhere. Pure: returns a NEW map.
+ */
+export function syncBusyThinking(
+  map: ThinkingByRow,
+  opts: {
+    busy: readonly string[];
+    previouslyBusy: readonly string[];
+    nameOf: (agentUid: string) => string;
+    now: number;
+  },
+): ThinkingByRow {
+  let next = map;
+  const busyNow = new Set(opts.busy);
+  for (const uid of opts.previouslyBusy) {
+    if (!busyNow.has(uid)) next = clearAgentEverywhere(next, uid);
+  }
+  for (const uid of opts.busy) {
+    const rowId = `dm:${uid}`;
+    if (next[rowId]?.some((e) => e.agentUid === uid)) continue;
+    next = startThinkingIn(next, rowId, { agentUid: uid, agentName: opts.nameOf(uid) }, opts.now);
+  }
+  return next;
+}

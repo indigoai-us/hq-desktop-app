@@ -227,6 +227,7 @@
   }
 </script>
 
+{#if content.blocks.some((b) => b.kind !== "setupDone")}
 <div class="rich-content" data-testid="rich-message-content">
   {#each content.blocks as block, blockIndex (blockIndex)}
     {#if block.kind === "stat"}
@@ -444,6 +445,7 @@
     {/if}
   {/each}
 </div>
+{/if}
 
 <style>
   .rich-content {

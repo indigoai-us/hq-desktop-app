@@ -10,6 +10,7 @@ import {
   lastHeartbeatLabel,
   localBotsAsContacts,
   localBotForRow,
+  localBotNeedsOfflineNotice,
   localBotOfflineNotice,
   localBotPresence,
 } from "./local-bots.js";
@@ -172,5 +173,27 @@ describe("isAlreadyExistsFailure", () => {
     expect(isAlreadyExistsFailure("HQ API /v1/agents → 500: server error")).toBe(false);
     expect(isAlreadyExistsFailure("")).toBe(false);
     expect(isAlreadyExistsFailure(null)).toBe(false);
+  });
+});
+
+describe("localBotNeedsOfflineNotice", () => {
+  it("never shows for a bot HQ reports online", () => {
+    expect(localBotNeedsOfflineNotice(bot({ online: true }))).toBe(false);
+  });
+
+  it("does not flash 'starting up' when the online check could not run but the bot is running", () => {
+    // HQ Cloud rate-limited the presence check (online: null) while the bot was
+    // answering: the person saw "setup is starting up" over a working bot.
+    expect(localBotNeedsOfflineNotice(bot({ online: null, processAlive: true, state: "running" }))).toBe(false);
+  });
+
+  it("still shows when HQ says the heartbeat is stale, the process is gone, or the bot failed", () => {
+    expect(localBotNeedsOfflineNotice(bot({ online: false, processAlive: true }))).toBe(true);
+    expect(localBotNeedsOfflineNotice(bot({ online: null, processAlive: false }))).toBe(true);
+    expect(localBotNeedsOfflineNotice(bot({ online: null, processAlive: true, state: "failed" }))).toBe(true);
+  });
+
+  it("nothing to show without a bot", () => {
+    expect(localBotNeedsOfflineNotice(null)).toBe(false);
   });
 });

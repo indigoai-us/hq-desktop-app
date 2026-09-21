@@ -63,6 +63,8 @@
   import SetupRunCard from "../chat/SetupRunCard.svelte";
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
+  import SetupBotFinale from "../chat/SetupBotFinale.svelte";
+  import { messageMarksSetupDone } from "../chat/messaging/richMessageContent.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -82,6 +84,7 @@
     findSetupBot,
     findSetupBotContact,
     firstSignedInRuntime,
+    setupBotMarkedDone,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_INTRO,
@@ -307,6 +310,7 @@
     isAgentUid,
     newestMessageAtFrom,
     startThinkingIn,
+    syncBusyThinking,
     kickoffThinkingState,
     tickAll,
     type ThinkingByRow,
@@ -333,9 +337,12 @@
     type LocalBotTrace,
   } from "../chat/bot-runnability.js";
   import {
+    busyLocalBotUids,
     isAlreadyExistsFailure,
+    LOCAL_BOT_BUSY_POLL_MS,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
+    localBotNeedsOfflineNotice,
     localBotOfflineNotice,
     localBotPresence,
     type LocalBotEntryResult,
@@ -1766,6 +1773,8 @@
   let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
   /** The state behind that boolean, per runtime; null when the host has none. */
   let localBotRuntimeStatus = $state<Record<string, RuntimeStatus> | null>(null);
+  /** Coding tools installed on this Mac (signed in or not), for the setup finish card. */
+  let localCodingToolsInstalled = $state<Record<string, boolean>>({});
   /** Company/core workers a bot can be created from; loaded once on demand. */
   let localBotWorkers = $state<LocalBotWorkerOption[] | null>(null);
   async function loadLocalBotRuntimeReady(force = false): Promise<void> {
@@ -1778,12 +1787,15 @@
     const rec = result.value as Record<string, unknown>;
     const next: Record<string, boolean> = {};
     const statuses: Record<string, RuntimeStatus> = {};
+    const installed: Record<string, boolean> = {};
     for (const id of ["claude", "codex", "grok"]) {
       next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
+      installed[id] = rec[`${id}Available`] === true;
       const status = parseRuntimeStatus(rec[`${id}Status`]);
       if (status) statuses[id] = status;
     }
     localBotRuntimeReady = next;
+    localCodingToolsInstalled = installed;
     // Only when the host reported them — an empty map reads as "unknown".
     localBotRuntimeStatus = Object.keys(statuses).length > 0 ? statuses : null;
   }
@@ -2080,12 +2092,12 @@
     return { ok: false, reason: created.reason };
   }
   /**
-   * First open on this Mac: the setup bot starts by itself, so the person is
-   * greeted and walked through setup without pressing anything. Only when
-   * setup has never been run here, a coding tool is signed in (otherwise Run
-   * Setup shows the Connect step first), and once per app session. Run Setup
-   * then opens the bot's conversation. A failure leaves Run Setup to retry
-   * and explain.
+   * First open on this Mac: the setup bot starts by itself, so its hello is
+   * already waiting when the person opens the conversation. #welcome's button
+   * then just opens it (and #welcome also offers setting up in the coding tool
+   * they already use). Only when setup has never been run here, a coding tool
+   * is signed in (otherwise the button shows the Connect step first), and once
+   * per app session. A failure leaves the button to retry and explain.
    */
   $effect(() => {
     if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
@@ -2202,9 +2214,41 @@
     await loadLocalBotRuntimeReady();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
-  const selectedLocalBotOffline = $derived(
-    Boolean(selectedLocalBot && selectedLocalBot.online !== true),
+  /** The setup bot's DM, once the bot has marked setup finished: show the finish card. */
+  const setupBotDmDone = $derived.by(() => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return false;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupBotMarkedDone(timeline, bot.agentUid, messageMarksSetupDone);
+  });
+  $effect(() => {
+    if (setupBotDmDone) void loadLocalBotRuntimeReady();
+  });
+  /**
+   * The finish card, once put away, stays away.
+   *
+   * Setup ending is not the end of the conversation: people keep talking to
+   * the bot, and a card pinned under the last message follows them down the
+   * thread for ever. Dismissing is remembered per bot, so it does not come
+   * back on the next launch either.
+   */
+  let setupFinaleDismissedAt = $state(0);
+  const setupFinaleDismissKey = $derived(
+    selectedLocalBot ? `setup-finale-dismissed:${selectedLocalBot.agentUid}` : null,
   );
+  const setupFinaleVisible = $derived.by(() => {
+    if (!setupBotDmDone) return false;
+    void setupFinaleDismissedAt;
+    const key = setupFinaleDismissKey;
+    return !key || tenantStorage.getItem(key) !== "1";
+  });
+  function dismissSetupFinale(): void {
+    const key = setupFinaleDismissKey;
+    if (key) tenantStorage.setItem(key, "1");
+    setupFinaleDismissedAt = Date.now();
+  }
+  const selectedLocalBotOffline = $derived(localBotNeedsOfflineNotice(selectedLocalBot));
   /**
    * The open bot's coding tool needs a new sign-in (`hq bot list` reports it):
    * the bot has paused, so the conversation says so above the composer and
@@ -3241,6 +3285,43 @@
     selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
   );
 
+  // While a local bot's conversation is open, list its bots often enough that
+  // the thinking indicator can follow a short turn (the ordinary poll is 30 s).
+  $effect(() => {
+    if (!adapter.bots) return;
+    const bot = selectedLocalBot;
+    if (!bot || selectedRow?.kind !== "dm") return;
+    const handle = window.setInterval(() => {
+      void refreshLocalBots();
+    }, LOCAL_BOT_BUSY_POLL_MS);
+    return () => {
+      clearInterval(handle);
+    };
+  });
+
+  // A local bot that is mid-turn keeps its indicator, even after it posts.
+  // The CLI reports `busy` from the bot's own in-flight marker, so a progress
+  // note in the middle of a long turn no longer reads as "finished" and the
+  // DM stops going silent while the bot is still working. When the turn ends,
+  // `busy` drops and the row is cleared here.
+  let previouslyBusyBotUids: string[] = [];
+  const busyBotUids = $derived(busyLocalBotUids(localBots));
+  $effect(() => {
+    const busy = busyBotUids;
+    // The map is read and written here, so it must not be a dependency of
+    // this effect — only the busy list is.
+    untrack(() => {
+      const next = syncBusyThinking(thinkingByRow, {
+        busy,
+        previouslyBusy: previouslyBusyBotUids,
+        nameOf: (uid) => localBots.find((b) => b.agentUid === uid)?.name ?? "bot",
+        now: Date.now(),
+      });
+      previouslyBusyBotUids = busy;
+      if (next !== thinkingByRow) thinkingByRow = next;
+    });
+  });
+
   // Background-task chips for the agents in the selected conversation — the
   // room-scoped route for a channel (every agent on its roster), the
   // agent-wide view for a DM with an agent. One controller per selection;
@@ -3308,6 +3389,9 @@
     rowId: string,
   ): void {
     if (!thinkingByRow[rowId]?.length) return;
+    // A local bot that is still mid-turn keeps its row: its interim post is
+    // not the end of the turn, and the in-flight marker outranks the message.
+    if (busyBotUids.some((uid) => rowId === `dm:${uid}`)) return;
     // Timestamp-aware so a full-history hydrate or overlapping catch-up page
     // containing an OLD agent message cannot clear a newer row.
     thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
@@ -8161,6 +8245,17 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if setupFinaleVisible}
+                    <SetupBotFinale
+                      hasClaude={localCodingToolsInstalled.claude === true}
+                      hasCodex={localCodingToolsInstalled.codex === true}
+                      onclaude={() => void launchSetupIn("claude")}
+                      oncodex={() => void launchSetupIn("codex")}
+                      onopenurl={(url) => onopenurl?.(url)}
+                      ondismiss={dismissSetupFinale}
+                      launchError={setupLaunchError}
+                    />
+                  {/if}
                   {#if inSetupChannelWithAgent}
                     {@const agentState = setupAgent.state}
                     {@const stopFailure = setupAgent.failure}
