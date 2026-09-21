@@ -29,6 +29,15 @@ use winreg::RegKey;
 use crate::util::logfile::log;
 
 const HELPER_FLAG: &str = "--hq-update-helper";
+/// File name for the staged helper copy. Must not contain "update", "install",
+/// "setup", or "patch" (case-insensitively) — Windows' UAC installer-detection
+/// heuristic flags an unmanifested exe with one of those words in its name and
+/// refuses a non-elevated CreateProcess with ERROR_ELEVATION_REQUIRED (os error
+/// 740), regardless of the app manifest. See `helper_file_name_has_no_uac_trigger_words`.
+const HELPER_FILE_NAME: &str = "hq-sync-helper.exe";
+/// Substrings that trip Windows' UAC installer-detection heuristic on an
+/// unmanifested executable's file name.
+const UAC_INSTALLER_DETECTION_WORDS: &[&str] = &["update", "install", "setup", "patch"];
 const PARENT_PID_ARG: &str = "--parent-pid";
 const INSTALLER_ARG: &str = "--installer";
 const EXPECTED_SHA_ARG: &str = "--expected-sha256";
@@ -373,7 +382,13 @@ fn stage_update(bytes: &[u8], version: &str) -> Result<StagedUpdate, String> {
             .ok_or_else(|| "current HQ executable has no installation directory".to_string())?
             .to_path_buf();
         require_nsis_installer_ownership(registry_key_exists()?)?;
-        let helper = root.join("hq-update-helper.exe");
+        // The helper is a byte copy of the running app exe, launched by a
+        // plain (non-elevated) CreateProcess. Its file name must avoid
+        // "update"/"install"/"setup"/"patch" (see `helper_file_name_has_no_uac_trigger_words`)
+        // so Windows' UAC installer-detection heuristic does not flag it —
+        // that heuristic fires on file name alone, independent of the
+        // manifest fix in build.rs, so both defenses stay in place (HQ US-001).
+        let helper = root.join(HELPER_FILE_NAME);
         fs::copy(&original_exe, &helper)
             .map_err(|error| format!("copy signed update helper: {error}"))?;
         let install_backup = root.join("prior-install");
@@ -1085,4 +1100,60 @@ mod tests {
         assert!(require_nsis_installer_ownership(true).is_ok());
         assert!(require_nsis_installer_ownership(false).is_err());
     }
+
+    /// Regression test for HQ US-001: the staged helper is a byte copy of the
+    /// running app exe, launched by a plain (non-elevated) CreateProcess. If
+    /// its file name contains a UAC installer-detection trigger word, Windows
+    /// refuses the launch with ERROR_ELEVATION_REQUIRED (os error 740) no
+    /// matter what the manifest says. This must stay false for whatever name
+    /// `HELPER_FILE_NAME` resolves to, and the helper function must actually
+    /// catch a name that regresses.
+    #[test]
+    fn helper_file_name_has_no_uac_trigger_words() {
+        assert!(
+            !file_name_has_uac_trigger_word(HELPER_FILE_NAME),
+            "HELPER_FILE_NAME {HELPER_FILE_NAME:?} contains a UAC installer-detection trigger word"
+        );
+        // The function itself must be able to fail — otherwise this test
+        // would pass vacuously on an inverted or no-op implementation.
+        assert!(file_name_has_uac_trigger_word("hq-update-helper.exe"));
+        assert!(file_name_has_uac_trigger_word("hq-installer.exe"));
+        assert!(file_name_has_uac_trigger_word("HQ-SETUP.EXE"));
+        assert!(file_name_has_uac_trigger_word("hq-patch.exe"));
+        assert!(!file_name_has_uac_trigger_word("hq-sync-helper.exe"));
+    }
+
+    /// Regression test for HQ US-001: the app exe (and any byte copy of it,
+    /// such as the staged update helper) must carry an explicit
+    /// `requestedExecutionLevel` of `asInvoker` so Windows' UAC
+    /// installer-detection heuristic never applies to it, independent of the
+    /// file-name defense above. `build.rs` feeds this exact file to
+    /// `tauri_build` via `include_str!` on Windows.
+    #[test]
+    fn windows_app_manifest_declares_as_invoker_execution_level() {
+        let manifest = include_str!("../windows-app-manifest.xml");
+        assert!(
+            manifest.contains("requestedExecutionLevel"),
+            "windows-app-manifest.xml must declare a requestedExecutionLevel"
+        );
+        assert!(
+            manifest.contains(r#"level="asInvoker""#),
+            "windows-app-manifest.xml must request asInvoker, not requireAdministrator or highestAvailable"
+        );
+        // The manifest must still carry the Common-Controls dependency Tauri
+        // needs for WebView2 dialogs and native menus.
+        assert!(
+            manifest.contains("Microsoft.Windows.Common-Controls"),
+            "windows-app-manifest.xml must keep the Common-Controls dependency"
+        );
+    }
+}
+
+/// Whether `file_name` contains a substring that trips Windows' UAC
+/// installer-detection heuristic, case-insensitively.
+fn file_name_has_uac_trigger_word(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    UAC_INSTALLER_DETECTION_WORDS
+        .iter()
+        .any(|word| lower.contains(word))
 }
