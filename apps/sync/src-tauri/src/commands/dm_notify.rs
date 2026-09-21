@@ -2702,11 +2702,13 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
             let message = dm.body.clone();
             let from_person_uid = dm.from_person_uid.clone();
             let event_id = dm.event_id.clone();
+            let payload_json = crate::commands::un_notify::encode_action_payload(dm);
             let title_for_log = title.clone();
             let dispatched = with_current_notification_mutation(app, auth, || async move {
-                // Fire-and-forget: the custom banner/widget path above owns
-                // interactive actions, and UN delivery is async, so we never
-                // block an account transition waiting on a click.
+                // UN delivery is async. Dropdown actions (Copy prompt / Open
+                // details) are registered on the UN category and handled in
+                // the delegate; we never block an account transition waiting
+                // on a click.
                 tokio::task::spawn_blocking(move || {
                     crate::commands::un_notify::deliver_message(
                         &title,
@@ -2717,6 +2719,8 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
                             channel_id: String::new(),
                             event_id,
                             issuer_uid: String::new(),
+                            payload_json,
+                            ..Default::default()
                         },
                     );
                 })

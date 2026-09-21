@@ -317,13 +317,11 @@ async fn do_poll(app: &AppHandle) {
                             // the root cause of "native share notifications don't
                             // appear".
                             //
-                            // Trade-off (same one meetings already made): the
-                            // banner loses its inline "Actions" dropdown (Copy
-                            // prompt / Open details). Clicking the banner body
-                            // opens the desktop-alt window (routed by `kind` in
-                            // the UN delegate); the richer per-action surface
-                            // remains available in the in-app custom banner,
-                            // which is the default for everyone.
+                            // Dropdown actions (Copy prompt / Open details /
+                            // Open in Claude) are registered as UN categories
+                            // on the same path; the delegate emits the existing
+                            // `notification:share-action` events. The in-app
+                            // custom banner remains the default surface.
                             // Native-banner gate (Settings → Notifications):
                             // master switch, the per-event Shares toggle, and
                             // the "only when unfocused" rule, read fresh from
@@ -351,6 +349,8 @@ async fn do_poll(app: &AppHandle) {
                                 let title = notification_title(&evt.issuer_display_name);
                                 let issuer_uid = evt.issuer_person_uid.clone();
                                 let event_id = evt.event_id.clone();
+                                let payload_json =
+                                    crate::commands::un_notify::encode_action_payload(evt);
 
                                 std::thread::spawn(move || {
                                     crate::commands::un_notify::deliver_message(
@@ -362,6 +362,8 @@ async fn do_poll(app: &AppHandle) {
                                             channel_id: String::new(),
                                             event_id,
                                             issuer_uid,
+                                            payload_json,
+                                            ..Default::default()
                                         },
                                     );
                                 });
