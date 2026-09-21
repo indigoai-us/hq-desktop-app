@@ -1219,6 +1219,14 @@ This final paragraph verifies spacing after a thematic break.
     },
   ],
   meetings_list_active_recordings: () => [],
+  start_recording: async (args) => {
+    await emit('recording:started', { windowId: args?.windowId, platform: 'meet', startedAt: new Date().toISOString() });
+    return 'preview-recording';
+  },
+  stop_recording: async (args) => {
+    await emit('recording:ended', { windowId: args?.windowId, platform: 'meet', endedAt: new Date().toISOString() });
+    return null;
+  },
   is_indigo_user: () => true,
   available_channels: () => ['stable', 'beta', 'alpha'],
   notification_permission_state: () =>

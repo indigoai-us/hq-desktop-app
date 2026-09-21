@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Detected meetings now appear on the Meetings page with a recording destination picker, Start recording, and Stop recording. Opening the page after detection or after recording starts shows the current state, and the controls remain reachable in narrow windows.
+
 - When the setup bot finishes, a card now appears under its last message with a button to open your HQ in Claude Code or Codex (only the ones installed on this Mac) and a button to open the HQ console. You can dismiss the card, and it stays dismissed for that bot, so it no longer follows you down the conversation after setup. Before, if the bot formatted its finishing note slightly differently, the note showed up as a block of code at the end of the chat and no card appeared; it is now recognised however the bot writes it, and never shown as text.
 - A local bot's "thinking" line now stays up for the whole time it is working. It used to disappear the moment the bot posted a progress note, so a bot that was still busy looked finished and the chat went quiet. It now follows whether the bot is actually still answering, and clears when it is really done. Needs the matching hq-cli release to show the full turn; with an older CLI it behaves as before.
 - The setup bot's first message tells you it is checking your Mac and that this can take a minute, so a slow first reply no longer looks stuck. The #welcome channel also offers to finish setup in Claude Code or Codex if you would rather use those, and the setup button is now called Open Setup Agent.
