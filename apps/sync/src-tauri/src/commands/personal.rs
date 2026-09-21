@@ -301,6 +301,17 @@ pub(crate) fn is_personal_vault_path(rel: &str) -> bool {
     if rel == CONTINUITY_POINTER_REL {
         return true;
     }
+    // workspace/lanes is the lanes routing store (records, question routing,
+    // session index). Re-included despite the parent `workspace/` top-level
+    // exclusion so a question asked on one machine can be answered on another.
+    // Match on whole path segments: equality, or the constant plus a trailing
+    // separator. A naive `starts_with("workspace/lanes")` also matches
+    // `workspace/lanes-runs/`, which is machine-local run state and must not
+    // enter the personal vault. Mirrors `LANES_SYNC_REL` in
+    // @indigoai-us/hq-cloud `src/personal-vault.ts`.
+    if rel == LANES_SYNC_REL || rel.starts_with("workspace/lanes/") {
+        return true;
+    }
     let top = rel.split('/').next().unwrap_or("");
     if top.is_empty() {
         return false;
@@ -312,6 +323,12 @@ pub(crate) fn is_personal_vault_path(rel: &str) -> bool {
 /// continuity pointer. Mirrors `CONTINUITY_POINTER_REL` in
 /// `@indigoai-us/hq-cloud` (`src/personal-vault.ts`).
 pub(crate) const CONTINUITY_POINTER_REL: &str = "workspace/threads/handoff.json";
+
+/// Fixed hq-root-relative prefix (forward-slash separators) of the lanes
+/// routing store. Mirrors `LANES_SYNC_REL` in `@indigoai-us/hq-cloud`
+/// (`src/personal-vault.ts`). `workspace/lanes-runs/` is a sibling path,
+/// not a child, and stays machine-local.
+pub(crate) const LANES_SYNC_REL: &str = "workspace/lanes";
 
 /// Compute the hq-root-relative paths of the session-continuity carve-out:
 /// `workspace/threads/handoff.json` plus the single thread file it references
@@ -1931,6 +1948,68 @@ mod tests {
         );
         // Empty input still false (no top segment to evaluate).
         assert!(!is_personal_vault_path(""));
+    }
+
+    #[test]
+    fn test_lanes_sync_rel_reinclude() {
+        assert_eq!(LANES_SYNC_REL, "workspace/lanes");
+        assert!(
+            is_personal_vault_path("workspace/lanes/x.json"),
+            "lane records re-included in the personal vault despite workspace/ exclusion",
+        );
+        assert!(
+            is_personal_vault_path(LANES_SYNC_REL),
+            "the lanes directory itself is in scope",
+        );
+        assert!(
+            !is_personal_vault_path("workspace/lanes-runs/x.md"),
+            "lanes-runs is a sibling of workspace/lanes, not a child",
+        );
+        assert!(
+            !is_personal_vault_path("companies/acme/lanes/x.json"),
+            "company content stays out of the personal vault",
+        );
+    }
+
+    #[test]
+    fn test_lanes_sync_rel_segment_match_excludes_lanes_runs() {
+        assert!(
+            is_personal_vault_path("workspace/lanes/x.json"),
+            "workspace/lanes/ files must sync",
+        );
+        assert!(
+            !is_personal_vault_path("workspace/lanes-runs/x.md"),
+            "workspace/lanes-runs/ must not sync; dropping the trailing separator would include it",
+        );
+        assert!(
+            is_personal_vault_path("workspace/lanes/lanes/id.json"),
+            "nested files under workspace/lanes/ must sync",
+        );
+        assert!(
+            !is_personal_vault_path("workspace/lanes-runs"),
+            "the lanes-runs directory itself stays machine-local",
+        );
+    }
+
+    #[test]
+    fn test_lanes_sync_rel_constant_value() {
+        assert_eq!(LANES_SYNC_REL, "workspace/lanes");
+        assert!(
+            is_personal_vault_path(&format!("{LANES_SYNC_REL}/x.json")),
+            "carve-out matches children of the constant",
+        );
+        assert!(
+            is_personal_vault_path("workspace/lanes/x.json"),
+            "carve-out matches the lanes store",
+        );
+        assert!(
+            !is_personal_vault_path("workspace/lanes-runs/x.md"),
+            "neighbouring lanes-runs path must not match",
+        );
+        assert!(
+            !is_personal_vault_path("workspace/lane/x.json"),
+            "a truncated prefix is a different path",
+        );
     }
 
     // ── continuity_pointer_rel_paths (session-continuity carve-out) ───────

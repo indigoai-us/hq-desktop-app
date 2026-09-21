@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Work you hand to an assistant on one machine can now be answered from another. The small record of what was asked, and which piece of work it belongs to, travels with your other synced files. The working files themselves — notes, logs, drafts — stay on the machine that made them.
 - On Windows, the HQ window no longer stays above every other app after signing in; Alt+Tab works again. The window still comes to the front once after you finish signing in, and lets other apps in front of it as soon as you switch away.
 - Windows: the in-app updater no longer fails with "The requested operation requires elevation (os error 740)". The app now carries an explicit asInvoker manifest and the staged update helper no longer has "update" in its file name. Users on 0.10.246 through 0.10.299 need one manual reinstall of the current release to pick up this fix.
 
