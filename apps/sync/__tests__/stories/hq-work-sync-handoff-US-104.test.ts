@@ -157,4 +157,26 @@ describe('US-104 internal notification + deep-link routing', () => {
     ]);
     expect(takePendingChannelOpen()).toBeNull();
   });
+
+  it('stashes inbox:dm and inbox:channel routes onto the pending-open path', () => {
+    applyDesktopAltRoute('inbox:dm:prs_ada');
+    expect(takePendingConversation()).toMatchObject({
+      personUid: 'prs_ada',
+    });
+    expect(takePendingChannelOpen()).toBeNull();
+
+    applyDesktopAltRoute('inbox:channel:chn_eng:evt_root');
+    expect(takePendingChannelOpen()).toEqual({
+      channelId: 'chn_eng',
+      messageId: 'evt_root',
+      createdAt: null,
+      replyRootEventId: null,
+      automatic: false,
+      title: null,
+      companyUid: null,
+      focusCardId: null,
+      focusCardKind: null,
+    });
+    expect(takePendingConversation()).toBeNull();
+  });
 });

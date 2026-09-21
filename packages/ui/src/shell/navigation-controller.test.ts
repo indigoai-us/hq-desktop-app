@@ -325,6 +325,25 @@ describe("native/host destination conversion", () => {
       kind: "notifications",
     });
     expect(
+      destinationFromEmbeddedTarget({ kind: "inbox", dm: "prs_ada" }),
+    ).toEqual({
+      kind: "dm",
+      personUid: "prs_ada",
+      replyRootEventId: null,
+    });
+    expect(
+      destinationFromEmbeddedTarget({
+        kind: "inbox",
+        channelId: "chn_eng",
+        messageId: "evt_root",
+      }),
+    ).toEqual({
+      kind: "channel",
+      channelId: "chn_eng",
+      replyRootEventId: null,
+      messageId: "evt_root",
+    });
+    expect(
       destinationFromEmbeddedTarget({
         kind: "extra",
         page: "sessions",

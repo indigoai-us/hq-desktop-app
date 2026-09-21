@@ -30,7 +30,13 @@ export type EmbeddedSettingsSection =
 
 export type EmbeddedNavigationTarget =
   | { kind: 'home' }
-  | { kind: 'inbox' }
+  | {
+      kind: 'inbox';
+      /** DM peer personUid. */
+      dm?: string;
+      channelId?: string;
+      messageId?: string;
+    }
   | { kind: 'messages' }
   | { kind: 'setup-checkout'; companyUid: string; checkout?: string | null }
   | { kind: 'meetings'; meetingId?: string | null }

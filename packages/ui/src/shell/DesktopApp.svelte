@@ -1326,6 +1326,7 @@
   } | null>(null);
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
+  let inboxRouteNotice = $state<string | null>(null);
   let navigationPending = $state(false);
   let navigationUnavailable = $state<{
     destination: NavigationDestination;
@@ -1338,6 +1339,8 @@
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
   let cancelScrollRestore: (() => void) | null = null;
   const DESTINATION_UNAVAILABLE = "This destination is no longer available.";
+  const INBOX_ROUTE_MISSING_NOTICE =
+    "Couldn't find that conversation. Opened Inbox instead.";
   let tab = $state<ChannelTab>("chat");
   let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
@@ -5325,6 +5328,7 @@
     row: ConversationRow,
     nested?: {
       replyRootEventId?: string | null;
+      messageId?: string | null;
       tab?: ChannelTab;
       companyTab?: CompanyChannelTabId;
       agentSurface?: AgentChannelTab;
@@ -5338,6 +5342,7 @@
         kind: "channel",
         channelId: row.channelId,
         replyRootEventId,
+        messageId: nested?.messageId ?? null,
         tab: nextTab,
         companyTab: nested?.companyTab ?? "chat",
         agentSurface: nested?.agentSurface ?? "chat",
@@ -5648,6 +5653,7 @@
     navigationUnavailable = null;
     embeddedNavigationError = null;
     const next = applied.entry.destination;
+    if (next.kind !== "notifications") inboxRouteNotice = null;
     meetingFocusRequest = null;
     switch (next.kind) {
       case "messages":
@@ -5753,6 +5759,14 @@
           companyTab = next.companyTab === "office" ? "office" : "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
+          const messageId = next.messageId?.trim() || "";
+          if (messageId) {
+            pendingRestoreScroll = {
+              kind: "message",
+              id: messageId,
+              offset: 0,
+            };
+          }
         } else {
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = null;
@@ -5886,6 +5900,7 @@
     row: ConversationRow,
     options?: {
       replyRootEventId?: string | null;
+      messageId?: string | null;
       preserveView?: boolean;
       automatic?: boolean;
     },
@@ -5898,13 +5913,14 @@
     void navigate(
       destinationFromConversation(row, {
         replyRootEventId: options?.replyRootEventId ?? null,
+        messageId: options?.messageId ?? null,
       }),
     );
   }
 
   function applyConversationDeepLink(
     link: ConversationDeepLink,
-    options?: { preserveView?: boolean },
+    options?: { preserveView?: boolean; messageId?: string | null },
   ): void {
     const row =
       conversationRowForDeepLink(link, [...searchRows, ...railRows]) ??
@@ -5927,6 +5943,7 @@
     }
     handleSelect(row, {
       replyRootEventId: reply,
+      messageId: options?.messageId ?? null,
       preserveView: options?.preserveView,
     });
   }
@@ -5940,7 +5957,10 @@
         title: pending.title,
         companyUid: pending.companyUid,
       },
-      { preserveView: pending.automatic && view !== "conversation" },
+      {
+        preserveView: pending.automatic && view !== "conversation",
+        messageId: pending.messageId,
+      },
     );
     if (pending.focusCardId || pending.focusCardKind) {
       focusLifecycleCard({
@@ -7090,8 +7110,52 @@
     void navigate({ kind: "messages" });
   }
 
+  async function applyInboxDeepLink(
+    target: Extract<EmbeddedNavigationTarget, { kind: "inbox" }>,
+  ): Promise<void> {
+    inboxRouteNotice = null;
+    const generation = navigation.generation();
+    const destination = destinationFromEmbeddedTarget(target);
+    if (
+      !destination ||
+      (destination.kind !== "channel" && destination.kind !== "dm")
+    ) {
+      void navigate({ kind: "notifications" });
+      return;
+    }
+    const isCurrent = () => navigation.generation() === generation;
+    let row = rowForDestination(destination);
+    if (!row) {
+      if (directorySettled && companies != null) {
+        inboxRouteNotice = INBOX_ROUTE_MISSING_NOTICE;
+        void navigate({ kind: "notifications" });
+        return;
+      }
+      const outcome = await waitForDestinationRow(destination, {
+        isStale: () => !isCurrent(),
+      });
+      if (!isCurrent()) return;
+      if (outcome.status !== "ready") {
+        inboxRouteNotice = INBOX_ROUTE_MISSING_NOTICE;
+        void navigate({ kind: "notifications" });
+        return;
+      }
+      row = rowForDestination(destination);
+    }
+    if (!isCurrent()) return;
+    void navigate(destination);
+  }
+
   /** Apply a host route after DesktopApp's event listeners have mounted. */
   function applyEmbeddedNavigation(target: EmbeddedNavigationTarget): void {
+    if (
+      target.kind === "inbox" &&
+      (target.dm?.trim() || target.channelId?.trim())
+    ) {
+      void applyInboxDeepLink(target);
+      return;
+    }
+    inboxRouteNotice = null;
     const destination = destinationFromEmbeddedTarget(target);
     if (!destination) {
       embeddedNavigationError =
@@ -7614,6 +7678,16 @@
       role="alert"
     >
       Couldn’t open requested destination. {embeddedNavigationError}
+    </div>
+  {/if}
+
+  {#if inboxRouteNotice}
+    <div
+      class="inbox-route-notice"
+      data-testid="inbox-route-notice"
+      role="status"
+    >
+      {inboxRouteNotice}
     </div>
   {/if}
 
@@ -9461,6 +9535,18 @@
     flex-shrink: 0;
     border-bottom: 1px solid var(--v4-hairline, rgba(0, 0, 0, 0.08));
     background: color-mix(in srgb, var(--v4-text-1, #111) 6%, transparent);
+  }
+
+  .inbox-route-notice {
+    flex-shrink: 0;
+    margin: 8px 16px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line2);
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   .bot-auto-restore-banner {
