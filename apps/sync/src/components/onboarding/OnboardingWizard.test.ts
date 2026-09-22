@@ -38,6 +38,7 @@ import OnboardingWizard from './OnboardingWizard.svelte';
 import {
   BUILD_STEP_INDEX,
   CONNECTOR_IMPORT_STEP_INDEX,
+  TRUST_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
 } from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
@@ -509,9 +510,27 @@ describe('first-run browser session continuation', () => {
     expect(abandoned).toHaveLength(0);
   });
 
-  it('records abandonment once when the wizard is destroyed before finishing', async () => {
+  it('does not record abandonment when the wizard is destroyed within the minimum visible window', async () => {
     mountWizard(vi.fn(), 0);
     await flush();
+    await vi.advanceTimersByTimeAsync(11);
+    if (component === null) throw new Error('Expected the wizard to be mounted before destruction.');
+    await unmount(component);
+    component = null;
+    await flush();
+
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+    expect(abandoned).toHaveLength(0);
+  });
+
+  it('records abandonment with the visible duration after a step stays on screen for 5 seconds', async () => {
+    mountWizard(vi.fn(), 0);
+    await flush();
+    await vi.advanceTimersByTimeAsync(5000);
     if (component === null) throw new Error('Expected the wizard to be mounted before destruction.');
     await unmount(component);
     component = null;
@@ -523,6 +542,9 @@ describe('first-run browser session continuation', () => {
         (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
     );
     expect(abandoned).toHaveLength(1);
+    expect((abandoned[0]?.[1] as { properties: { durationMs?: number } }).properties.durationMs).toBe(
+      5000,
+    );
   });
 
   it('records abandonment when finishing fails before the wizard is destroyed', async () => {
@@ -532,6 +554,7 @@ describe('first-run browser session continuation', () => {
 
     primaryButton().click();
     await flushUntil(() => Boolean(host.querySelector('[data-testid="launcher-finish-error"]')));
+    await vi.advanceTimersByTimeAsync(5000);
     if (component === null) throw new Error('Expected the wizard to remain mounted after a failed finish.');
     await unmount(component);
     component = null;
@@ -546,11 +569,12 @@ describe('first-run browser session continuation', () => {
     expect(abandoned).toHaveLength(1);
   });
 
-  it('records onboarding abandonment once when the window goes away', async () => {
+  it('does not record abandonment when the window goes away inside the minimum visible window', async () => {
     stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
     await flushUntil(() => providerButtons().length === 2);
 
+    await vi.advanceTimersByTimeAsync(11);
     window.dispatchEvent(new PageTransitionEvent('pagehide'));
     window.dispatchEvent(new PageTransitionEvent('pagehide'));
     await flush();
@@ -560,10 +584,33 @@ describe('first-run browser session continuation', () => {
         command === 'emit_desktop_operational_telemetry' &&
         (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
     );
-    expect(abandoned).toHaveLength(1);
-    expect((abandoned[0]?.[1] as { properties: { step: string } }).properties.step).toBe(
-      'welcome-signin',
+    expect(abandoned).toHaveLength(0);
+  });
+
+  it('resets the abandonment timer when the current step changes', async () => {
+    mountWizard(vi.fn(), TRUST_STEP_INDEX);
+    await flush();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const continueButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-trust"] .btn-primary',
     );
+    if (!continueButton) throw new Error('Expected the trust step continue button to render.');
+    continueButton.click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    if (component === null) throw new Error('Expected the wizard to be mounted before destruction.');
+    await unmount(component);
+    component = null;
+    await flush();
+
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+    expect(abandoned).toHaveLength(0);
   });
 
   it('adds app version and normalized setup failure fields when native detail is absent', async () => {

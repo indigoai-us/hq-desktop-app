@@ -166,6 +166,7 @@
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
+  const MIN_VISIBLE_MS_FOR_ABANDON = 1500;
   // Provider buttons remain available after this short head start. The native
   // continuation attempt keeps running until it completes, expires, or a
   // person explicitly takes over with a provider.
@@ -245,6 +246,7 @@
   let onboardingAppVersion =
     typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : 'unknown';
   let onboardingAppVersionResolution: Promise<void> | null = null;
+  let currentStepVisibleAt = Date.now();
   let onboardingAbandoned = false;
   let onboardingCompleted = false;
 
@@ -338,6 +340,11 @@
     return WIZARD_STEPS.find((candidate) => candidate.index === step)?.id ?? 'welcome-signin';
   }
 
+  function setCurrentStep(step: number): void {
+    currentStep = step;
+    currentStepVisibleAt = Date.now();
+  }
+
   function recordStep(
     step: number,
     action: OnboardingAction,
@@ -371,8 +378,10 @@
 
   function recordOnboardingAbandonment(): void {
     if (consentOnly || finishing || finishInProgress || onboardingCompleted || onboardingAbandoned) return;
+    const durationMs = Date.now() - currentStepVisibleAt;
+    if (durationMs < MIN_VISIBLE_MS_FOR_ABANDON) return;
     onboardingAbandoned = true;
-    recordStep(currentStep, 'abandoned');
+    recordStep(currentStep, 'abandoned', { durationMs });
   }
 
   /**
@@ -447,7 +456,7 @@
     if (activeInitialStep === initialStep) return;
     activeInitialStep = initialStep;
     router = createWizardRouter({ start: initialStep });
-    currentStep = router.currentStep;
+    setCurrentStep(router.currentStep);
     panelStep = router.currentStep;
     graphicStep = router.currentStep;
     furthestStep = Math.max(furthestStep, router.currentStep);
@@ -2005,7 +2014,7 @@
     // ConnectorImportStep owns its entry so it can record detection outcomes
     // without a duplicate generic entry event.
     if (next !== CONNECTOR_IMPORT_STEP_INDEX) recordStep(next, 'entered');
-    currentStep = next;
+    setCurrentStep(next);
     furthestStep = Math.max(furthestStep, next);
     const token = ++transitionToken;
     clearTransitionTimers();
