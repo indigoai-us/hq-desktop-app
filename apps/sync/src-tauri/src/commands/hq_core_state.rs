@@ -417,6 +417,7 @@ impl CoreUpdateRescueTelemetry {
         let rescue_step = stage_markers
             .last()
             .and_then(|marker| marker.split('|').nth(1))
+            .map(core_update_rescue_step_from_marker)
             .filter(|stage| *stage != "unknown")
             .or_else(|| core_update_rescue_step_from_raw(raw))
             .unwrap_or("unknown");
@@ -532,6 +533,17 @@ fn core_update_stage_token(marker: &str) -> &'static str {
         "checkout"
     } else {
         "unknown"
+    }
+}
+
+fn core_update_rescue_step_from_marker(stage: &str) -> &'static str {
+    match stage {
+        "clone" => "clone",
+        "checkout" => "checkout",
+        "rsync" => "rsync",
+        "npm-install" => "npm-install",
+        "verify" => "verify",
+        _ => "unknown",
     }
 }
 
@@ -659,7 +671,9 @@ fn core_update_network_probe(raw: &str, error_class: &str) -> &'static str {
         }
     }
     match error_class {
-        "dns" | "tls" | "timeout" => error_class,
+        "dns" => "dns",
+        "tls" => "tls",
+        "timeout" => "timeout",
         "clone_failed" | "checkout_failed" => "unknown",
         _ if lower.contains("network unreachable") || lower.contains("offline") => "offline",
         _ => "unknown",
