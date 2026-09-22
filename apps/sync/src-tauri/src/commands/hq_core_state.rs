@@ -517,7 +517,7 @@ fn core_update_stage_markers(raw: &str) -> Vec<String> {
 
 fn core_update_stage_token(marker: &str) -> &'static str {
     let marker = marker.to_ascii_lowercase();
-    if marker.contains("clone") {
+    if marker.contains("clone") || marker.contains("cloning") {
         "clone"
     } else if marker.contains("rsync") {
         "rsync"
