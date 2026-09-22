@@ -321,6 +321,7 @@ async fn install_hq_core_update_observed(
             run.result.rescue_error_kind.unwrap_or("rescue_exit"),
             crate::commands::hq_core_state::CoreUpdateFailureDetails {
                 rescue_stderr_tail: Some(&run.result.rescue_stderr_tail),
+                rescue_telemetry: Some(&run.result.rescue_telemetry),
                 rescue_failure_category:
                     crate::commands::hq_core_state::classify_rescue_exit_failure(
                         &run.result.rescue_stderr_tail,
@@ -480,6 +481,12 @@ async fn install_hq_core_update_inner(
                 log_tail: diagnostic,
                 log_path: log_path.display().to_string(),
                 rescue_stderr_tail,
+                rescue_telemetry:
+                    crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
+                        &diagnostic,
+                        Some(npx_resolution),
+                        1,
+                    ),
                 npx_resolution,
                 baseline_persisted: true,
                 baseline_retry_target: latest,
@@ -629,6 +636,11 @@ async fn install_hq_core_update_inner(
     let rescue_output_for_baseline =
         crate::commands::hq_core_staging::read_raw_rescue_diagnostic_tail(&log_path)
             .unwrap_or_else(|_| log_tail.clone());
+    let rescue_telemetry = crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
+        &rescue_output_for_baseline,
+        Some(npx_resolution),
+        1 + u32::from(retry.outcome.attempted()),
+    );
 
     let (baseline_persisted, baseline_refresh_pending) = if exit_code == 0 {
         match crate::commands::hq_core_state::persist_applied_rescue_baseline(
@@ -695,6 +707,7 @@ async fn install_hq_core_update_inner(
             log_tail,
             log_path: log_path.display().to_string(),
             rescue_stderr_tail,
+            rescue_telemetry,
             npx_resolution,
             baseline_persisted,
             baseline_retry_target: latest,

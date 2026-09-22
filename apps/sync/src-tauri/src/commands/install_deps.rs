@@ -6524,8 +6524,10 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
             #[cfg(not(windows))] { None::<String> }
         };
         sentry::with_scope(|sentry_scope| {
-            // Only this pair groups events. Correlation and retry data remain context.
-            let fingerprint = hq_telemetry::setup_failure_fingerprint(dependency, category.as_str());
+            // Keep every dependency-install failure in one issue. Dependency,
+            // category, and retry data remain structured context.
+            let fingerprint =
+                hq_telemetry::setup_failure_fingerprint(dependency, category.as_str());
             sentry_scope.set_fingerprint(Some(&fingerprint));
             sentry_scope.set_tag("setup_stage", "deps");
             sentry_scope.set_tag("setup_dependency", dependency);
@@ -7538,7 +7540,7 @@ mod install_deps_planner_tests {
         );
         assert_eq!(events.len(), 1);
         let event = &events[0];
-        assert_eq!(event.fingerprint, vec!["qmd", "exit-nonzero"]);
+        assert_eq!(event.fingerprint, vec!["desktop-setup-dependency-install-failed"]);
         assert_eq!(event.tags["setup_stage"], "deps");
         assert_eq!(event.tags["setup_dependency"], "qmd");
         assert_eq!(event.tags["setup_error_category"], "exit-nonzero");
@@ -7595,7 +7597,9 @@ mod install_deps_planner_tests {
             }
         });
         assert_eq!(events.len(), 3);
-        assert!(events.iter().all(|event| event.fingerprint == vec!["node", "exit-nonzero"]));
+        assert!(events
+            .iter()
+            .all(|event| event.fingerprint == vec!["desktop-setup-dependency-install-failed"]));
         assert_eq!(events[0].tags["setup_attempt"], "1");
         assert_eq!(events[1].tags["setup_attempt"], "2");
         assert_eq!(string_extra(&events[0], "setup_frontend_session_id"), string_extra(&events[1], "setup_frontend_session_id"));
@@ -7795,7 +7799,7 @@ mod install_deps_planner_tests {
 
         let events = transport.events();
         assert_eq!(events.len(), 2);
-        for (dependency, category) in [("node", "exit-nonzero"), ("qmd", "exit-nonzero")] {
+        for dependency in ["node", "qmd"] {
             let event = events
                 .iter()
                 .find(|event| {
@@ -7803,7 +7807,10 @@ mod install_deps_planner_tests {
                 })
                 .expect("each concurrent reporter should capture its own envelope");
             assert_eq!(event.tags["setup_dependency"], dependency);
-            assert_eq!(event.fingerprint, vec![dependency, category]);
+            assert_eq!(
+                event.fingerprint,
+                vec!["desktop-setup-dependency-install-failed"]
+            );
         }
     }
 
@@ -9858,7 +9865,10 @@ mod cli_install_lock_skip_tests {
         assert_eq!(reportable_setup_failure_ids(deps, &results), vec!["hq-cli"]);
         let events = capture_reporting_loop(&results, &diagnostics);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].fingerprint, vec!["hq-cli", "exit-nonzero"]);
+        assert_eq!(
+            events[0].fingerprint,
+            vec!["desktop-setup-dependency-install-failed"]
+        );
         assert_eq!(events[0].tags["setup_error_category"], "exit-nonzero");
     }
 
@@ -10474,7 +10484,10 @@ mod cancellation_reporting_tests {
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert_eq!(event.level, sentry::Level::Error);
-        assert_eq!(event.fingerprint, vec!["hq-cli", "exit-nonzero"]);
+        assert_eq!(
+            event.fingerprint,
+            vec!["desktop-setup-dependency-install-failed"]
+        );
         assert_eq!(
             event.message.as_deref(),
             Some("Desktop setup dependency installation failed")

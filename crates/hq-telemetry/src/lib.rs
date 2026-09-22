@@ -82,10 +82,10 @@ fn bounded_redacted_core_update_diagnostic_tail(value: &str) -> String {
 }
 
 /// The exact Sentry issue grouping for setup dependency failures. Correlation
-/// fields deliberately stay outside this pair so retries and people do not
-/// fragment a single dependency/category root cause into separate issues.
-pub fn setup_failure_fingerprint<'a>(dependency: &'a str, category: &'a str) -> [&'a str; 2] {
-    [dependency, category]
+/// fields deliberately stay outside this identity so retries and people do not
+/// fragment setup failures into separate issues.
+pub fn setup_failure_fingerprint(_dependency: &str, _category: &str) -> [&'static str; 1] {
+    ["desktop-setup-dependency-install-failed"]
 }
 
 /// Isolate best-effort Sentry reporting from an interactive command. A failed
@@ -1292,6 +1292,27 @@ fn is_runner_hq_cloud_version(value: &str) -> bool {
             && semver::Version::parse(value).is_ok())
 }
 
+fn is_core_update_version(value: &str) -> bool {
+    value == "unknown"
+        || (value.len() <= 64
+            && value.chars().any(|character| character.is_ascii_digit())
+            && value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+')
+            }))
+}
+
+fn is_core_update_os_version(value: &str) -> bool {
+    value == "unknown"
+        || (value.len() <= 128
+            && !value.contains('/')
+            && !value.contains('\\')
+            && value.chars().all(|character| {
+                character.is_ascii_alphanumeric()
+                    || character.is_ascii_whitespace()
+                    || matches!(character, '.' | '-' | '_')
+            }))
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -1300,6 +1321,63 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
     match key {
         "runner_stack_shape" => Some(valid_runner_stack_shape(value)),
         "runner_stack_signature" => Some(valid_runner_stack_signature(value)),
+        "rescue_step" => Some(matches!(
+            value,
+            "clone" | "checkout" | "rsync" | "npm-install" | "verify" | "unknown"
+        )),
+        "rescue_error_class" => Some(matches!(
+            value,
+            "clone_failed"
+                | "checkout_failed"
+                | "rsync_missing"
+                | "npm_enoent"
+                | "eacces"
+                | "enospc"
+                | "dns"
+                | "tls"
+                | "timeout"
+                | "unknown"
+        )),
+        // Existing install-failure events retain the child's numeric exit code;
+        // Core update events use the closed semantic values below. Accept both
+        // shapes while keeping the numeric form bounded by i32 parsing.
+        "exit_code" => Some(
+            value.is_empty()
+                || value.parse::<i32>().is_ok()
+                || matches!(
+                    value,
+                    "signal_or_unknown" | "signal/none" | "other" | "not_available"
+                ),
+        ),
+        "git_source" | "rsync_source" => Some(matches!(value, "managed" | "system" | "none")),
+        "node_source" => Some(matches!(
+            value,
+            "not_resolved"
+                | "settings_path"
+                | "managed_toolchain"
+                | "user_prefix"
+                | "system_prefix"
+                | "login_shell"
+                | "unknown"
+        )),
+        "git_version" | "rsync_version" | "node_version" | "app_version" => {
+            Some(is_core_update_version(value))
+        }
+        "os_version" => Some(is_core_update_os_version(value)),
+        "disk_free_bucket" => Some(matches!(
+            value,
+            "<1G" | "1-5G" | "5-20G" | ">20G" | "unknown"
+        )),
+        "root_on_synced_folder" => {
+            Some(matches!(value, "onedrive" | "icloud" | "dropbox" | "none"))
+        }
+        "network_probe" => Some(matches!(
+            value,
+            "ok" | "dns" | "tls" | "timeout" | "offline" | "unknown"
+        )),
+        "attempt_number" | "suppressed_since_last" => {
+            Some(value.is_empty() || value.parse::<u32>().is_ok())
+        }
         "watcher_launch_origin" => Some(matches!(
             value,
             "renderer" | "app_launch" | "supervisor_respawn"
@@ -2510,14 +2588,58 @@ mod tests {
         assert!(!diagnostic.contains("x/y"));
     }
 
-    /// Correlation is event context, never part of the issue key: one failed
-    /// dependency/category stays one root cause across retries and people.
+    /// Correlation is event context, never part of the issue key: every setup
+    /// dependency failure stays in one root cause issue.
     #[test]
     fn setup_failure_fingerprint_is_only_dependency_and_closed_category() {
         assert_eq!(
             setup_failure_fingerprint("node", "exit-nonzero"),
-            ["node", "exit-nonzero"],
+            ["desktop-setup-dependency-install-failed"],
         );
+    }
+
+    #[test]
+    fn core_update_diagnostic_axes_are_closed_and_path_free() {
+        for (key, value) in [
+            ("rescue_step", "clone"),
+            ("rescue_error_class", "clone_failed"),
+            ("exit_code", "5"),
+            ("git_source", "managed"),
+            ("rsync_source", "system"),
+            ("node_source", "managed_toolchain"),
+            ("git_version", "2.44.0"),
+            ("rsync_version", "3.2.7"),
+            ("node_version", "20.11.1"),
+            ("app_version", "0.10.302"),
+            ("os_version", "macOS 15.6"),
+            ("disk_free_bucket", "1-5G"),
+            ("root_on_synced_folder", "onedrive"),
+            ("network_probe", "dns"),
+            ("attempt_number", "2"),
+            ("suppressed_since_last", "1"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(true),
+                "{key}"
+            );
+        }
+
+        for (key, value) in [
+            ("rescue_step", "/Users/ada/HQ"),
+            ("rescue_error_class", "fatal: clone failed"),
+            ("git_source", "managed:/Users/ada"),
+            ("git_version", "git version 2.44.0"),
+            ("disk_free_bucket", "3 GiB"),
+            ("network_probe", "Could not resolve host api.example.com"),
+            ("attempt_number", "two"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "{key}"
+            );
+        }
     }
 
     /// Diagnostic reporting remains fire-and-forget even when its work is
