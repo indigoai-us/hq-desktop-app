@@ -648,17 +648,44 @@ pub fn resolve_bin(name: &str) -> String {
 
 /// Resolve `name` exactly as a child with [`child_path`] would resolve it.
 ///
-/// The desktop app supplies that PATH explicitly to the runner. A git-specific
-/// lookup must therefore consult it before the older deterministic resolver:
-/// a Claude-settings directory or `~/.local/bin` can intentionally select a
-/// foreign Git ahead of HQ's managed shim. Only executable regular files count,
-/// matching Unix shell PATH lookup semantics.
-#[cfg(not(target_os = "windows"))]
-fn resolve_bin_on_child_path(name: &str) -> Option<String> {
-    std::env::split_paths(&child_path()).find_map(|dir| {
-        let candidate = dir.join(name);
-        is_executable_file(&candidate).then(|| candidate.to_string_lossy().into_owned())
-    })
+/// Resolve `name` through the exact PATH supplied to a spawned child.
+///
+/// The desktop app supplies that PATH explicitly to the runner. A lookup that
+/// reports provenance for a rescue must therefore consult this PATH rather
+/// than a separate resolver tree: a Claude-settings directory or a managed
+/// toolchain can intentionally select a different executable than the caller's
+/// ambient PATH. Only runnable regular files count, matching the child lookup
+/// semantics on each platform.
+pub fn resolve_bin_on_child_path(name: &str) -> Option<ResolvedProgram> {
+    #[cfg(target_os = "windows")]
+    {
+        for dir in std::env::split_paths(&child_path()) {
+            for candidate_name in candidate_filenames(name) {
+                let candidate = dir.join(candidate_name);
+                if is_runnable_shim(&candidate) {
+                    return Some(ResolvedProgram {
+                        path: candidate.to_string_lossy().into_owned(),
+                        kind: program_kind(candidate.to_string_lossy().as_ref()),
+                    });
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        for dir in std::env::split_paths(&child_path()) {
+            let candidate = dir.join(name);
+            if is_executable_file(&candidate) {
+                return Some(ResolvedProgram {
+                    path: candidate.to_string_lossy().into_owned(),
+                    kind: ResolvedProgramKind::Exe,
+                });
+            }
+        }
+    }
+
+    None
 }
 
 /// [`resolve_bin`] plus the classification of what it landed on.
@@ -729,11 +756,8 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         // Git-ownership decisions do not confuse an installed managed copy
         // with the one the child will execute.
         if name == "git" {
-            if let Some(path) = resolve_bin_on_child_path(name) {
-                return ResolvedProgram {
-                    path,
-                    kind: ResolvedProgramKind::Exe,
-                };
+            if let Some(resolved) = resolve_bin_on_child_path(name) {
+                return resolved;
             }
         }
 

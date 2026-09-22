@@ -468,6 +468,9 @@ pub struct RescueRunResult {
     /// Sanitized bounded diagnostic retained only for consent-gated telemetry.
     #[serde(skip_serializing)]
     pub(crate) rescue_stderr_tail: String,
+    /// Structured rescue dimensions parsed before the diagnostic is redacted.
+    #[serde(skip_serializing)]
+    pub(crate) rescue_telemetry: crate::commands::hq_core_state::CoreUpdateRescueTelemetry,
     /// Path-free provenance of the `npx` executable used for this rescue.
     #[serde(skip_serializing)]
     pub(crate) npx_resolution: crate::commands::hq_core_state::CoreUpdateNpxResolution,
@@ -723,6 +726,7 @@ async fn run_replace_from_staging_observed(
             run.rescue_error_kind.unwrap_or("rescue_exit"),
             crate::commands::hq_core_state::CoreUpdateFailureDetails {
                 rescue_stderr_tail: Some(&run.rescue_stderr_tail),
+                rescue_telemetry: Some(&run.rescue_telemetry),
                 rescue_failure_category:
                     crate::commands::hq_core_state::classify_rescue_exit_failure(
                         &run.rescue_stderr_tail,
@@ -842,6 +846,10 @@ async fn run_replace_from_staging_inner(
             log_tail: diagnostic.clone(),
             log_path: log_path.display().to_string(),
             rescue_stderr_tail: hq_telemetry::redact_core_update_diagnostic_tail(&diagnostic),
+            rescue_telemetry: crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
+                &diagnostic,
+                1,
+            ),
             npx_resolution,
             baseline_persisted: true,
             baseline_retry_target: "main".to_string(),
@@ -938,7 +946,13 @@ async fn run_replace_from_staging_inner(
     } else {
         (true, false)
     };
-    let rescue_stderr_tail = read_rescue_diagnostic_tail(&log_path).unwrap_or_default();
+    let raw_rescue_diagnostic = read_raw_rescue_diagnostic_tail(&log_path).unwrap_or_default();
+    let rescue_stderr_tail =
+        hq_telemetry::redact_core_update_diagnostic_tail(&raw_rescue_diagnostic);
+    let rescue_telemetry = crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
+        &raw_rescue_diagnostic,
+        1,
+    );
 
     log(
         "hq-core-staging",
@@ -950,6 +964,7 @@ async fn run_replace_from_staging_inner(
         log_tail,
         log_path: log_path.display().to_string(),
         rescue_stderr_tail,
+        rescue_telemetry,
         npx_resolution,
         baseline_persisted,
         // The staged rescue follows `main`; the durable marker is channel
