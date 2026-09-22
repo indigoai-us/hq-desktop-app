@@ -770,6 +770,8 @@ pub async fn preview_dm_banner(app: AppHandle) -> Result<(), String> {
         prompt: Some("Review the custom notification banner spike in repos/public/hq-sync and report on the feel vs native.".to_string()),
         created_at: "2026-05-29T00:00:00Z".to_string(),
         root_event_id: None,
+        message_kind: None,
+        attachments: None,
     };
     show_dm_banner(app, event).await
 }
@@ -789,6 +791,7 @@ pub async fn preview_share_banner(app: AppHandle) -> Result<(), String> {
         note: Some("Sharing the Q1 forecast — take a look before our sync.".to_string()),
         permission: "read".to_string(),
         created_at: "2026-05-29T00:00:00Z".to_string(),
+        dm_event_id: None,
     };
     show_share_banner(app, event).await
 }

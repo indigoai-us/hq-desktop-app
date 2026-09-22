@@ -25,6 +25,11 @@
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
+  import AttachmentStack from './AttachmentStack.svelte';
+  import {
+    isFileShareMessage,
+    type MessageAttachment,
+  } from '../../lib/messageAttachments';
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it. Extra fields
@@ -60,6 +65,10 @@
     // the templated share prompt so the standard Copy-prompt action works; the
     // host passes `onopenshareinclaude` for the Open-in-Claude action.
     share?: ShareEvent | null;
+    /** `"file_share"` for a share written as a DM. Absent on ordinary rows. */
+    messageKind?: string | null;
+    /** Vault-path file cards on a `file_share` DM. */
+    attachments?: MessageAttachment[] | null;
   }
 
   interface Props {
@@ -98,6 +107,8 @@
     // Share timeline: called with a share-card bubble's ShareEvent when its
     // "Open in Claude" action is tapped (the host owns the deep link).
     onopenshareinclaude?: (share: ShareEvent) => void | Promise<void>;
+    // File-share stack click. US-008 attaches the picker; unused here.
+    onopenattachments?: () => void;
     // When true, the reply composer is hidden and a static note renders in its
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
@@ -128,6 +139,7 @@
     reactions = {},
     ontogglereaction,
     onopenshareinclaude,
+    onopenattachments,
     readonly = false,
     composer = true,
     belowMessages,
@@ -509,7 +521,7 @@
       {/if}
       <div
         class="dm-bubble"
-        class:dm-bubble-share={!!msg.share}
+        class:dm-bubble-share={!!msg.share || isFileShareMessage(msg)}
         class:dm-bubble-thread-active={!!activeRootEventId && msg.rootEventId === activeRootEventId}
       >
         <!-- Copy the whole message. Hover/focus-revealed on every bubble so it
@@ -552,7 +564,16 @@
             {/if}
           </button>
         </div>
-        {#if msg.share}
+        {#if isFileShareMessage(msg)}
+          <AttachmentStack
+            attachments={msg.attachments ?? []}
+            senderName={messageAuthor(msg)}
+            onopen={onopenattachments}
+          />
+          {#if msg.body?.trim()}
+            <p class="share-card-note">{msg.body}</p>
+          {/if}
+        {:else if msg.share}
           {@const share = msg.share}
           <!-- Inline share card: file icon + filename(s), note, permission. -->
           <div class="share-card" class:share-card-multi={share.paths.length > 1}>

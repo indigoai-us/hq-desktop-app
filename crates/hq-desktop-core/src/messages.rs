@@ -218,6 +218,15 @@ pub struct MessageAttachment {
     pub size_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Client-generated id for multi-file messages. Absent on older rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Company vault the bytes live in (needed to presign GET).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
+    /// MIME type when distinct from `kind`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 /// One channel message, as returned by `/v1/notify/channels/{id}/messages`.

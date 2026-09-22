@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   BannerActionRouter,
   bannerOpenRoute,
+  shouldSuppressShareNotification,
   type BannerActionEvent,
 } from './bannerActionRouter';
 import { routeForNotificationPayload } from './notificationRoutes';
@@ -13,6 +14,15 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+describe('shouldSuppressShareNotification', () => {
+  it('suppresses share banners that already point at a DM event', () => {
+    expect(shouldSuppressShareNotification({ dmEventId: 'evt_dm' })).toBe(true);
+    expect(shouldSuppressShareNotification({ dmEventId: '  ' })).toBe(false);
+    expect(shouldSuppressShareNotification({ eventId: 'shr_1' })).toBe(false);
+    expect(shouldSuppressShareNotification(null)).toBe(false);
+  });
+});
 
 describe('BannerActionRouter', () => {
   it('contains an async Tauri unlisten rejection during disposal', async () => {

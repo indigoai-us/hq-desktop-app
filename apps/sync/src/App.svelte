@@ -36,6 +36,7 @@
   import {
     BannerActionRouter,
     bannerOpenRoute,
+    shouldSuppressShareNotification,
     type BannerActionEvent,
     type NotificationActionKind,
   } from './lib/bannerActionRouter';
@@ -1416,11 +1417,15 @@
         note: string | null;
         permission: string;
         createdAt: string;
-      }>>('share:new-events', async (_event) => {
-        // No-op for now — the notification handler in Rust owns the side
-        // effects (notification.show(), pending-events state, tray badge).
-        // This listener stays subscribed so a future in-window share-
-        // events list can hook here without needing a second registration.
+        dmEventId?: string;
+      }>>('share:new-events', async (event) => {
+        // Rust already drops shares that carry dmEventId. Keep the same
+        // guard here so a future in-window list never re-notifies a share
+        // that already landed as a DM.
+        const fresh = (event.payload ?? []).filter(
+          (item) => !shouldSuppressShareNotification(item),
+        );
+        void fresh;
       })
     );
 

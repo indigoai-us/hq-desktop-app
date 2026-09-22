@@ -73,19 +73,27 @@ interface TimelineEntry {
   createdAt: string;
 }
 
+/** True when this share already has a durable DM, so the client-side merge
+ * must not inject a second share card. */
+export function shareHasLinkedDm(share: ShareEvent): boolean {
+  return Boolean(share.dmEventId?.trim());
+}
+
 /**
  * Merge a peer's share events into their DM thread (both oldest → newest),
  * returning a NEW chronologically ordered list. Shares are converted with
  * `toMessage` (the host builds its own message shape); a share whose timestamp
- * ties a DM's sorts after it (stable).
+ * ties a DM's sorts after it (stable). Shares that already carry `dmEventId`
+ * are skipped so a file-share DM never renders twice.
  */
 export function mergeSharesIntoThread<M extends TimelineEntry>(
   messages: M[],
   shares: ShareEvent[],
   toMessage: (share: ShareEvent) => M,
 ): M[] {
-  if (shares.length === 0) return messages;
-  const merged = [...messages, ...shares.map(toMessage)];
+  const unmatched = shares.filter((share) => !shareHasLinkedDm(share));
+  if (unmatched.length === 0) return messages;
+  const merged = [...messages, ...unmatched.map(toMessage)];
   // Stable sort on timestamp keeps DMs before same-instant shares.
   return merged
     .map((m, i) => [m, i] as const)
