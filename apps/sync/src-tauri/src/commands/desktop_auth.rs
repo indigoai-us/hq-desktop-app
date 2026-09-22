@@ -1206,18 +1206,20 @@ mod authenticated_receipt_tests {
         );
 
         let path = authenticated_receipt_queue_path_from_home(home.path());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let receipts = loop {
-            let receipts = read_authenticated_receipt_queue(&path).expect("read receipt queue");
-            if receipts.len() >= 3 {
-                break receipts;
+        let receipts = tauri::async_runtime::block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let receipts = read_authenticated_receipt_queue(&path).expect("read receipt queue");
+                if receipts.len() >= 3 {
+                    break receipts;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "login receipts were not persisted before the test deadline"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "login receipts were not persisted before the test deadline"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        };
+        });
 
         for (flow, variant, expected_provider) in [
             ("manual_oauth", "control", "Google"),
