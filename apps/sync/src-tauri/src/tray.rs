@@ -487,7 +487,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                         let _ = app_handle.emit("tray:open-desktop", ());
                     }
                     id if id == MENU_OPEN_INBOX => {
-                        let _ = app_handle.emit("tray:open-inbox", ());
+                        let _ = app_handle.emit_to("main", "tray:open-inbox", ());
                     }
                     id if id == MENU_CHECK_UPDATES => {
                         crate::recovery::spawn_tray_check_for_updates(app_handle.clone());

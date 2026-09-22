@@ -161,7 +161,7 @@ pub fn spawn_and_poll(app: &AppHandle) {
                         let _ = app.emit("tray:open-desktop", ());
                     }
                     "inbox" => {
-                        let _ = app.emit("tray:open-inbox", ());
+                        let _ = app.emit_to("main", "tray:open-inbox", ());
                     }
                     "updates" => {
                         crate::recovery::spawn_tray_check_for_updates(app.clone());

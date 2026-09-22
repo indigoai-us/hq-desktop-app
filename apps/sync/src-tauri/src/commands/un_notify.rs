@@ -561,14 +561,14 @@ fn emit_dropdown_action(
                 "eventId": event_id,
                 "event": event,
             });
-            app.emit(EVENT_NOTIFICATION_SHARE_ACTION, &payload)
+            app.emit_to("main", EVENT_NOTIFICATION_SHARE_ACTION, &payload)
         }
         "dm" => {
             let payload = serde_json::json!({
                 "action": action,
                 "event": event,
             });
-            app.emit(EVENT_NOTIFICATION_DM_ACTION, &payload)
+            app.emit_to("main", EVENT_NOTIFICATION_DM_ACTION, &payload)
         }
         _ => return,
     };

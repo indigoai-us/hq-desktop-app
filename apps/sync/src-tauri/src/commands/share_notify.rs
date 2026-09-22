@@ -421,7 +421,7 @@ async fn do_poll(app: &AppHandle) {
 
                     // Emit to frontend — US-005 listens here (currently no-op
                     // after the eager-open removal, kept for future popover UI).
-                    let _ = app.emit(EVENT_SHARE_NEW_EVENTS, &notify_events);
+                    let _ = app.emit_to("main", EVENT_SHARE_NEW_EVENTS, &notify_events);
                 }
             }
         }
