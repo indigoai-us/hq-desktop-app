@@ -16,7 +16,6 @@ import {
   parseAgentStatusWake,
   dispatchEmbeddedNavigation,
   destinationFromEmbeddedTarget,
-  isEmbeddedSettingsSection,
   OPEN_SETTINGS_EVENT,
   requestChannelOpen,
   requestConversation,
@@ -37,6 +36,11 @@ import {
   type PackagesView,
 } from '@hq/ui';
 import { parseHqWorkOpenUrl, type HqWorkOpenTarget } from '../lib/hq-work';
+import { parseHqUrl } from './lib/deepLink';
+import {
+  desktopRouteToEmbeddedTarget,
+  parseDesktopRoute,
+} from './lib/route';
 import {
   enrichRequestFromContacts,
   requestBannerBody,
@@ -719,66 +723,37 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
     };
   }
 
-  const normalized = route.replace(/\//g, ':');
-  const [kind, detail, ...rest] = normalized.split(':');
-  const hasExtraSegments = rest.length > 0;
-  switch (kind) {
-    case 'home':
-    case 'sync':
-    case 'activity':
-    case 'core-drift':
-    case 'drift':
-      if (!detail) return { kind: 'home' };
-      break;
-    case 'inbox':
-    case 'notifications':
-      if (!detail) return { kind: 'inbox' };
-      break;
-    case 'messages':
-      if (!detail) return { kind: 'messages' };
-      break;
-    case 'meetings':
-      if (!detail) return { kind: 'meetings' };
-      break;
-    case 'atlas':
-      if (!detail) return { kind: 'home' };
-      break;
-    case 'library':
-      if (!hasExtraSegments && (!detail || detail === 'skills')) {
-        return { kind: 'library', tab: 'skills' };
-      }
-      if (
-        !hasExtraSegments &&
-        (detail === 'workers' ||
-          detail === 'installed' ||
-          detail === 'marketplace' ||
-          detail === 'submit' ||
-          detail === 'profile')
-      ) {
-        return { kind: 'library', tab: detail };
-      }
-      break;
-    case 'sessions':
-      // Host-registered destination (@hq/ui `extraPages`). `sessions` opens the
-      // new-session surface; `sessions:<id>` / `sessions/<id>` deep-links one.
-      // The shell gates the page itself, so an unregistered id surfaces its
-      // navigation error rather than a blank column.
-      if (!hasExtraSegments) {
-        return { kind: 'extra', page: 'sessions', param: detail || null };
-      }
-      break;
-    case 'settings':
-      if (!detail) return { kind: 'settings' };
-      if (!hasExtraSegments && isEmbeddedSettingsSection(detail)) {
-        return { kind: 'settings', section: detail };
-      }
-      break;
+  // `hq://` is mapped in Rust for cold/warm delivery; keep the same mapping
+  // if a pending-route string still carries the original URL.
+  if (route.toLowerCase().startsWith('hq://')) {
+    const mapped = parseHqUrl(route);
+    if (!mapped) {
+      return {
+        kind: 'unsupported',
+        route: 'hq-url',
+        reason: 'Invalid hq deep link',
+      };
+    }
+    const parsedHq = parseDesktopRoute(mapped);
+    if (!parsedHq) {
+      return {
+        kind: 'unsupported',
+        route: 'hq-url',
+        reason: 'Invalid hq deep link',
+      };
+    }
+    return desktopRouteToEmbeddedTarget(parsedHq);
   }
-  return {
-    kind: 'unsupported',
-    route,
-    reason: 'Unsupported embedded destination',
-  };
+
+  const parsed = parseDesktopRoute(route);
+  if (!parsed) {
+    return {
+      kind: 'unsupported',
+      route,
+      reason: 'Unsupported embedded destination',
+    };
+  }
+  return desktopRouteToEmbeddedTarget(parsed);
 }
 
 export function parseHqDesktopSetupUrl(
@@ -804,6 +779,22 @@ export function parseHqDesktopSetupUrl(
 function deliverImmediately(target: EmbeddedNavigationTarget): void {
   // Preserve the public helper's existing unit-test seam. The real embedded
   // shell supplies a controller and therefore only delivers after mount.
+  if (target.kind === 'inbox') {
+    const channelId = target.channelId?.trim() ?? '';
+    const dm = target.dm?.trim() ?? '';
+    if (channelId) {
+      requestChannelOpen(channelId, { messageId: target.messageId ?? null });
+      return;
+    }
+    if (dm) {
+      requestConversation({
+        personUid: dm,
+        email: '',
+        displayName: '',
+      });
+      return;
+    }
+  }
   if (target.kind === 'channel') {
     requestDeepLinkOpen({
       channelId: target.channelId,

@@ -110,6 +110,19 @@ describe('mergeSharesIntoThread', () => {
     const messages = [{ createdAt: '2026-07-01T09:00:00Z', id: 'm1' }];
     expect(mergeSharesIntoThread(messages, [], toMsg)).toBe(messages);
   });
+
+  it('skips share events that already carry dmEventId so a share never renders twice', () => {
+    const messages = [{ createdAt: '2026-07-01T09:00:00Z', id: 'evt_dm' }];
+    const merged = mergeSharesIntoThread(
+      messages,
+      [
+        share({ eventId: 's-linked', dmEventId: 'evt_dm', createdAt: '2026-07-01T10:00:00Z' }),
+        share({ eventId: 's-legacy', createdAt: '2026-07-01T11:00:00Z' }),
+      ],
+      toMsg,
+    );
+    expect(merged.map((m) => m.id)).toEqual(['evt_dm', 's-legacy']);
+  });
 });
 
 describe('applySharePreviews', () => {

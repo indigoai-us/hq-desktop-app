@@ -693,8 +693,13 @@ pub fn activation_policy(source: ActivationSource) -> ActivationAction {
 
 /// Typed top-level destinations that always reuse the single desktop window.
 ///
-/// Route strings match the frontend `resolvePendingDesktopRoute` / `desktop:navigate`
-/// contract in `src/desktop-alt/route.ts`.
+/// Route strings match the frontend `parseDesktopRoute` / `desktop:navigate`
+/// contract in `src/desktop-alt/lib/route.ts`.
+///
+/// Conversation deep links (`inbox:dm:<personUid>`,
+/// `inbox:channel:<channelId>[:<messageId>]`) are not separate enum arms:
+/// [`DesktopDestination::from_route_name`] keeps them as
+/// [`DesktopDestination::Custom`] so the frontend grammar can resolve them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopDestination {
     /// Default landing / activity digest + Core Drift card surface.
@@ -1922,6 +1927,14 @@ mod window_router_tests {
             DesktopDestination::Custom("company:indigo:activity".into()).route_str(),
             "company:indigo:activity"
         );
+        assert_eq!(
+            DesktopDestination::Custom("inbox:dm:prs_ada".into()).route_str(),
+            "inbox:dm:prs_ada"
+        );
+        assert_eq!(
+            DesktopDestination::Custom("inbox:channel:chn_eng:evt_root".into()).route_str(),
+            "inbox:channel:chn_eng:evt_root"
+        );
     }
 
     #[test]
@@ -1963,6 +1976,27 @@ mod window_router_tests {
         assert_eq!(
             DesktopDestination::from_route_name("sessions/abc"),
             Some(DesktopDestination::Custom("sessions:abc".into()))
+        );
+        // Inbox conversation deep links pass through so the frontend grammar
+        // (`inbox:dm:<personUid>`, `inbox:channel:<id>[:<messageId>]`) can
+        // resolve them. Bare `inbox` stays the Inbox destination.
+        assert_eq!(
+            DesktopDestination::from_route_name("inbox:dm:prs_ada"),
+            Some(DesktopDestination::Custom("inbox:dm:prs_ada".into()))
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("inbox:channel:chn_eng"),
+            Some(DesktopDestination::Custom("inbox:channel:chn_eng".into()))
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("inbox:channel:chn_eng:evt_root"),
+            Some(DesktopDestination::Custom(
+                "inbox:channel:chn_eng:evt_root".into()
+            ))
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("inbox/dm/prs_ada"),
+            Some(DesktopDestination::Custom("inbox:dm:prs_ada".into()))
         );
         assert_eq!(DesktopDestination::from_route_name(""), None);
         assert_eq!(DesktopDestination::from_route_name("   "), None);

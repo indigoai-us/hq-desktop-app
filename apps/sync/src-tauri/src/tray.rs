@@ -387,6 +387,7 @@ fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, _state: Tr
 const MENU_VERSION: &str = "version";
 const MENU_SYNC_NOW: &str = "sync-now";
 const MENU_OPEN_DESKTOP: &str = "open-desktop";
+const MENU_OPEN_INBOX: &str = "open-inbox";
 const MENU_CHECK_UPDATES: &str = "check-for-updates";
 const MENU_RECOVERY: &str = "recovery";
 const MENU_REPLAY_INTRO: &str = "replay-intro";
@@ -428,6 +429,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     let sync_now = MenuItemBuilder::with_id(MENU_SYNC_NOW, "Sync Now").build(app)?;
     let open_desktop =
         MenuItemBuilder::with_id(MENU_OPEN_DESKTOP, "Open desktop view").build(app)?;
+    let open_inbox = MenuItemBuilder::with_id(MENU_OPEN_INBOX, "Open Inbox").build(app)?;
     let check_updates =
         MenuItemBuilder::with_id(MENU_CHECK_UPDATES, "Check for updates…").build(app)?;
     let recovery = MenuItemBuilder::with_id(MENU_RECOVERY, "Recovery…").build(app)?;
@@ -442,6 +444,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .separator()
         .item(&sync_now)
         .item(&open_desktop)
+        .item(&open_inbox)
         .separator()
         .item(&check_updates)
         .item(&recovery)
@@ -482,6 +485,9 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     }
                     id if id == MENU_OPEN_DESKTOP => {
                         let _ = app_handle.emit("tray:open-desktop", ());
+                    }
+                    id if id == MENU_OPEN_INBOX => {
+                        let _ = app_handle.emit_to("main", "tray:open-inbox", ());
                     }
                     id if id == MENU_CHECK_UPDATES => {
                         crate::recovery::spawn_tray_check_for_updates(app_handle.clone());
@@ -1627,6 +1633,7 @@ mod tests {
     fn test_menu_id_constants() {
         assert_eq!(MENU_SYNC_NOW, "sync-now");
         assert_eq!(MENU_OPEN_DESKTOP, "open-desktop");
+        assert_eq!(MENU_OPEN_INBOX, "open-inbox");
         assert_eq!(MENU_CHECK_UPDATES, "check-for-updates");
         assert_eq!(MENU_RECOVERY, "recovery");
         assert_eq!(MENU_REPLAY_INTRO, "replay-intro");

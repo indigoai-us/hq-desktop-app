@@ -168,8 +168,8 @@ final class TrayController: NSObject {
 
         // Right-click context menu (NOT set as item.menu — that would make a
         // plain left-click open the menu instead of the popover). Items:
-        // Sync Now / Open desktop view / Check for updates / Recovery /
-        // Replay welcome intro / Sign Out / Quit HQ ⌘Q.
+        // Sync Now / Open desktop view / Open Inbox / Check for updates /
+        // Recovery / Replay welcome intro / Sign Out / Quit HQ ⌘Q.
         let sync = NSMenuItem(title: "Sync Now", action: #selector(syncNow), keyEquivalent: "")
         sync.target = self
         menu.addItem(sync)
@@ -177,6 +177,10 @@ final class TrayController: NSObject {
             title: "Open desktop view", action: #selector(openDesktop), keyEquivalent: "")
         desktop.target = self
         menu.addItem(desktop)
+        let inbox = NSMenuItem(
+            title: "Open Inbox", action: #selector(openInbox), keyEquivalent: "")
+        inbox.target = self
+        menu.addItem(inbox)
         menu.addItem(.separator())
         let updates = NSMenuItem(
             title: "Check for updates…", action: #selector(checkForUpdates), keyEquivalent: "")
@@ -251,6 +255,10 @@ final class TrayController: NSObject {
     @objc func syncNow() { writeCommand("sync") }
     @objc func openDesktop() {
         writeCommand("desktop")
+        activateHQ()
+    }
+    @objc func openInbox() {
+        writeCommand("inbox")
         activateHQ()
     }
     @objc func checkForUpdates() {

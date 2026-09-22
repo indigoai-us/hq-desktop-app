@@ -130,6 +130,20 @@ pub struct ShareEvent {
     pub note: Option<String>,
     pub permission: String,
     pub created_at: String,
+    /// Inbox DM written for this share (hq-pro US-005). When present, the
+    /// desktop fires the DM notification only — never a second share banner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dm_event_id: Option<String>,
+}
+
+/// True when the share already has a durable DM, so native/banner share
+/// notifications must be suppressed.
+pub fn share_represented_by_dm(event: &ShareEvent) -> bool {
+    event
+        .dm_event_id
+        .as_deref()
+        .map(|id| !id.trim().is_empty())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Deserialize)]
@@ -484,6 +498,32 @@ mod tests {
         assert_eq!(updated.len(), NOTIFIED_CAP);
         assert_eq!(updated.last().unwrap(), "brand-new");
         assert_eq!(updated.first().unwrap(), "old1"); // old0 evicted
+    }
+
+    #[test]
+    fn test_share_event_dm_event_id_defaults_absent_and_round_trips() {
+        let legacy = share_event("e1", "2026-05-29T03:19:02.349Z");
+        assert!(legacy.dm_event_id.is_none());
+        assert!(!share_represented_by_dm(&legacy));
+
+        let linked: ShareEvent = serde_json::from_str(
+            r#"{"eventId":"e2","issuerEmail":"a@b.com","issuerDisplayName":"A",
+                "paths":["/x.md"],"permission":"read",
+                "createdAt":"2026-05-29T03:19:02.349Z","dmEventId":"evt_dm_1"}"#,
+        )
+        .unwrap();
+        assert_eq!(linked.dm_event_id.as_deref(), Some("evt_dm_1"));
+        assert!(share_represented_by_dm(&linked));
+        let out = serde_json::to_value(&linked).unwrap();
+        assert_eq!(out["dmEventId"], "evt_dm_1");
+
+        let blank: ShareEvent = serde_json::from_str(
+            r#"{"eventId":"e3","issuerEmail":"a@b.com","issuerDisplayName":"A",
+                "paths":["/x.md"],"permission":"read",
+                "createdAt":"2026-05-29T03:19:02.349Z","dmEventId":"  "}"#,
+        )
+        .unwrap();
+        assert!(!share_represented_by_dm(&blank));
     }
 
     #[test]

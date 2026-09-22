@@ -40,5 +40,26 @@
     <string>HQ uses the microphone to detect when you join a meeting and (with your opt-in) to capture your audio for the transcript.</string>
     <key>NSCameraUsageDescription</key>
     <string>HQ uses your camera when you choose to share video in a meeting.</string>
+    <!--
+      Custom-scheme deep links. `hq-desktop` is the existing setup/signin
+      scheme; `hq` is the notification / console / email target (US-004).
+      tauri-plugin-deep-link also injects CFBundleURLTypes from
+      plugins.deep-link.desktop.schemes; both schemes are listed here so a
+      merge of this fragment still registers them.
+    -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>ai.indigo.hq-sync-menubar</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>hq-desktop</string>
+                <string>hq</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

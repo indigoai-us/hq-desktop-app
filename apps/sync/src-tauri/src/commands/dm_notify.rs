@@ -2700,13 +2700,29 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
         for dm in banner_worthy.iter().filter(|_| native_allowed) {
             let title = dm.from_display_name.clone();
             let message = dm.body.clone();
+            let from_person_uid = dm.from_person_uid.clone();
+            let event_id = dm.event_id.clone();
+            let payload_json = crate::commands::un_notify::encode_action_payload(dm);
             let title_for_log = title.clone();
             let dispatched = with_current_notification_mutation(app, auth, || async move {
-                // Fire-and-forget: the custom banner/widget path above owns
-                // interactive actions, and UN delivery is async, so we never
-                // block an account transition waiting on a click.
+                // UN delivery is async. Dropdown actions (Copy prompt / Open
+                // details) are registered on the UN category and handled in
+                // the delegate; we never block an account transition waiting
+                // on a click.
                 tokio::task::spawn_blocking(move || {
-                    crate::commands::un_notify::deliver_message(&title, &message, "dm");
+                    crate::commands::un_notify::deliver_message(
+                        &title,
+                        &message,
+                        "dm",
+                        &crate::commands::un_notify::MessageUserInfo {
+                            from_person_uid,
+                            channel_id: String::new(),
+                            event_id,
+                            issuer_uid: String::new(),
+                            payload_json,
+                            ..Default::default()
+                        },
+                    );
                 })
                 .await
             })
@@ -2841,8 +2857,8 @@ pub async fn open_communications_window(
 }
 
 /// Tauri command: open the conversation with the sender of a single DM.
-/// Invoked by App.svelte's `notification:dm-action` listener on the "open"
-/// action. Routes to the embedded desktop on the sender's person route.
+/// Notification clicks now front the main window via `open_desktop_alt_window`
+/// (US-002); this command remains for other callers of the quick Inbox path.
 #[tauri::command]
 pub async fn open_dm_detail(app: AppHandle, event: DmEvent) -> Result<(), String> {
     let person = event.from_person_uid.as_str();

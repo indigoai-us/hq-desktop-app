@@ -176,10 +176,14 @@ describe('HQ-DESKTOP-4F: share-detail shell:allow-open capability', () => {
       .map(([relative]) => relative)
       .sort();
     // ThreadPanel's pinned root now renders through the shared <Conversation/>
-    // primitive, so Conversation is the SOLE markdown render surface. The
-    // session transcript was the second one; it went with the in-app Sessions
-    // feature, which is why this list is now a single entry.
-    expect(renderers).toEqual(['components/messaging/Conversation.svelte']);
+    // primitive. AttachmentPreview is the file-share inline markdown surface
+    // and only mounts from Conversation, so it lives in the same granted
+    // windows. The session transcript was a third renderer; it went with the
+    // in-app Sessions feature.
+    expect(renderers).toEqual([
+      'components/messaging/AttachmentPreview.svelte',
+      'components/messaging/Conversation.svelte',
+    ]);
 
     const shellEntries = sources
       .filter(

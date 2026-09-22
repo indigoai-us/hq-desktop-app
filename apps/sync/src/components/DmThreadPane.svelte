@@ -6,6 +6,7 @@
   import { type ReactionEvent, dmScope } from '../lib/reactions';
   import { ReactionController } from '../lib/reactionController.svelte';
   import { mergeHydratedThread, shouldAppendInbound } from '../lib/dmThread';
+  import type { MessageAttachment } from '../lib/messageAttachments';
 
   // Wire type for a DM event — same fields as notificationGroups.DmEvent /
   // Item.dm (structural match; keep fields in lockstep). Exported so shells
@@ -19,6 +20,8 @@
     details?: string | null;
     prompt?: string | null;
     createdAt: string;
+    messageKind?: string | null;
+    attachments?: MessageAttachment[] | null;
   }
 
   // Main thread + composer for a DM selected from the quick-window side pane.
@@ -96,6 +99,8 @@
         prompt: live.prompt ?? null,
         createdAt: live.createdAt,
         direction: 'in',
+        messageKind: live.messageKind ?? null,
+        attachments: live.attachments ?? null,
       });
     }
     return chrono;
@@ -159,6 +164,8 @@
         prompt: dm.prompt ?? null,
         createdAt: dm.createdAt,
         direction: 'in',
+        messageKind: dm.messageKind ?? null,
+        attachments: dm.attachments ?? null,
       },
     ];
   }
