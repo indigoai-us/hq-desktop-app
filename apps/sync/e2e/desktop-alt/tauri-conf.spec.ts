@@ -104,7 +104,8 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
 
   it('centres the overlay traffic lights on the titlebar content centre line', () => {
     expect(desktopAlt.hiddenTitle).toBe(true);
-    expect(desktopAlt.trafficLightPosition).toEqual({ x: 20, y: 24 });
+    // 48px bar centre (24) minus the measured 5px macOS draw offset.
+    expect(desktopAlt.trafficLightPosition).toEqual({ x: 20, y: 19 });
     expect(desktopCommandSource).toContain('.hidden_title(true)');
     expect(desktopCommandSource).toContain(
       '.traffic_light_position(tauri::LogicalPosition::new',

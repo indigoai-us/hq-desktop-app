@@ -11,6 +11,10 @@ The release moves it under the version it ships in.
 - Clicking a DM or file-share notification now opens the main window on that conversation, even when HQ was not running. Before, the click opened the small quick Inbox window or landed on Home. The quick Inbox window is still available from the menu bar icon.
 - Links that start with hq:// (for example from an email or the HQ console) now open the right screen: a DM thread, a channel message, a file, a company, or Meetings. Existing hq-desktop:// setup and sign-in links work as before.
 - When someone shares files with you, the DM thread shows a card of square file tiles (up to four, then a +N tile). Click the card for a grid of every file, and click a file to preview images, PDFs, and text right in the thread, or open anything else in Files. One share produces one notification instead of two. Needs the matching HQ Cloud release; with an older server the thread looks as before.
+## [0.10.303] — 2026-09-22
+
+- On macOS, the close, minimise and zoom buttons now line up with the toolbar. They were sitting about five pixels low.
+- Back from Settings now always returns to the main Messages view, instead of whatever page you were on before you opened Settings. The titlebar arrows still walk back through your history.
 - Core update failures now report their cause, and a finished update no longer runs the installer again when saving its drift baseline fails.
 - Windows Core updates now install a real rsync executable before the rescue runs, and show a clear message when rsync cannot be installed.
 - If a Core rescue applied the release but could not restore preserved files, automatic checks stop retrying that target and show where the preserved bytes were kept.

@@ -7098,16 +7098,10 @@
   function closeSettings(): void {
     // Settings subsections each push a history entry, so a plain history
     // back would walk Profile → Appearance → … one tab at a time. The Back
-    // button means "close Settings": return to whatever the user was looking
-    // at before Settings opened, or Messages when Settings was the first stop.
-    const { entries, index } = navigationHistory.snapshot();
-    for (let i = index - 1; i >= 0; i -= 1) {
-      const destination = entries[i]?.destination;
-      if (destination && destination.kind !== "settings") {
-        void navigate(destination);
-        return;
-      }
-    }
+    // button means "close Settings": always land on the main Messages view,
+    // never on whatever page happened to be open before Settings. The
+    // titlebar history arrows still walk the full stack for users who want
+    // the previous page.
     void navigate({ kind: "messages" });
   }
 
