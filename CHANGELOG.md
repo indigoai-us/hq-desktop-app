@@ -11,6 +11,14 @@ The release moves it under the version it ships in.
 - Clicking a DM or file-share notification now opens the main window on that conversation, even when HQ was not running. Before, the click opened the small quick Inbox window or landed on Home. The quick Inbox window is still available from the menu bar icon.
 - Links that start with hq:// (for example from an email or the HQ console) now open the right screen: a DM thread, a channel message, a file, a company, or Meetings. Existing hq-desktop:// setup and sign-in links work as before.
 - When someone shares files with you, the DM thread shows a card of square file tiles (up to four, then a +N tile). Click the card for a grid of every file, and click a file to preview images, PDFs, and text right in the thread, or open anything else in Files. One share produces one notification instead of two. Needs the matching HQ Cloud release; with an older server the thread looks as before.
+- Core update failures now report their cause, and a finished update no longer runs the installer again when saving its drift baseline fails.
+- Windows Core updates now install a real rsync executable before the rescue runs, and show a clear message when rsync cannot be installed.
+- If a Core rescue applied the release but could not restore preserved files, automatic checks stop retrying that target and show where the preserved bytes were kept.
+
+## [0.10.302] — 2026-09-22
+
+- Story cards and the story detail pane now show who a story is assigned to. A person shows their photo or initials, an agent shows its mark, and a story with nobody assigned says Unassigned. The detail pane also shows who last changed the story. This uses the live project from HQ, so a name written only in the local plan does not override the assignment HQ has.
+
 - Long status updates in a channel now read as normal wrapped text. A post over about 1,200 characters that used the round bullet for its points was being mistaken for a log dump and shown in a narrow grey code box with a sideways scrollbar and a "Show more" cut, which made it unreadable on a phone. The check now recognises that bullet as ordinary writing, so those updates wrap like any other message. Real log and JSON dumps still get the compact box.
 
 ## [0.10.301] — 2026-09-21
