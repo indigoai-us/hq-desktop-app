@@ -102,6 +102,110 @@ struct RealtimeCredsResponse {
     region: String,
     /// The caller's own DM topic, e.g. `hq/<personUid>/dm`.
     topic: String,
+    /// Personal topic set mobile already subscribes to. Absent on older
+    /// credential responses; `work_subscribe_topics` derives the same leaves
+    /// from the DM topic (`hq/<personUid>/work` and `.../notifications`).
+    #[serde(default)]
+    topics: RealtimeTopicSet,
+}
+
+/// `topics` block of `POST /v1/realtime/credentials`. All fields optional so a
+/// response that only has `topic` still parses.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RealtimeTopicSet {
+    #[serde(default)]
+    work: String,
+    #[serde(default)]
+    notifications: String,
+}
+
+/// Frontend events for mesh pushes. Payload is ids only.
+pub const EVENT_WORK_PROJECT_VIEW: &str = "work:project-view";
+pub const EVENT_WORK_CHANGED: &str = "work:changed";
+pub const EVENT_SESSION_EVENT: &str = "work:session-event";
+
+/// Topics the DM connection subscribes to: the DM topic plus the same work and
+/// notifications topics mobile uses (`credentials.ts` `realtimeSubscribeTopics`).
+pub(crate) fn work_subscribe_topics(dm_topic: &str, topics: &RealtimeTopicSet) -> Vec<String> {
+    let uid = dm_topic
+        .strip_prefix("hq/")
+        .and_then(|rest| rest.strip_suffix("/dm"))
+        .filter(|uid| !uid.is_empty() && !uid.contains('/'));
+    let work = if topics.work.trim().is_empty() {
+        uid.map(|id| format!("hq/{id}/work")).unwrap_or_default()
+    } else {
+        topics.work.trim().to_string()
+    };
+    let notifications = if topics.notifications.trim().is_empty() {
+        uid.map(|id| format!("hq/{id}/notifications"))
+            .unwrap_or_default()
+    } else {
+        topics.notifications.trim().to_string()
+    };
+    let mut out = vec![dm_topic.to_string()];
+    for topic in [work, notifications] {
+        if !topic.is_empty() && !out.iter().any(|existing| existing == &topic) {
+            out.push(topic);
+        }
+    }
+    out
+}
+
+struct WorkForward {
+    event: &'static str,
+    payload: serde_json::Value,
+}
+
+/// Classify a work-topic or notifications-topic payload. Returns None for
+/// DM wakes, agent status, and anything this story does not apply.
+fn classify_work_push(bytes: &[u8]) -> Option<WorkForward> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let obj = value.as_object()?;
+    let str_field = |key: &str| obj.get(key).and_then(|v| v.as_str()).unwrap_or("");
+
+    if str_field("kind") == "SESSION_EVENT" {
+        let event = str_field("event");
+        if event.is_empty() {
+            return None;
+        }
+        return Some(WorkForward {
+            event: EVENT_SESSION_EVENT,
+            payload: serde_json::json!({
+                "projectId": str_field("projectId"),
+                "storyId": str_field("storyId"),
+                "event": event,
+                "chatId": str_field("chatId"),
+                "companyUid": str_field("companyUid"),
+            }),
+        });
+    }
+
+    if str_field("kind") == "board" && str_field("mutation") == "project-view" {
+        let project_id = str_field("projectId");
+        if project_id.is_empty() {
+            return None;
+        }
+        return Some(WorkForward {
+            event: EVENT_WORK_PROJECT_VIEW,
+            payload: serde_json::json!({
+                "projectId": project_id,
+                "companyUid": str_field("companyUid"),
+                "storyId": str_field("storyId"),
+            }),
+        });
+    }
+
+    if str_field("eventType") == "work.changed" {
+        return Some(WorkForward {
+            event: EVENT_WORK_CHANGED,
+            payload: serde_json::json!({
+                "resourceId": str_field("resourceId"),
+            }),
+        });
+    }
+
+    None
 }
 
 // ── Credentials fetch ──────────────────────────────────────────────────────────
@@ -392,12 +496,20 @@ async fn run_once(
     // error: tear the (now-poisoned) eventloop down and let the caller reconnect
     // with a fresh eventloop and fresh creds, instead of the panic unwinding
     // through and killing the long-lived receiver task.
-    let topic = match topic_override {
-        Some(derive) => derive(&creds.topic),
-        None => creds.topic.clone(),
+    let (topics, dm_topic) = match topic_override {
+        Some(derive) => {
+            let topic = derive(&creds.topic);
+            (vec![topic.clone()], topic)
+        }
+        None => (
+            work_subscribe_topics(&creds.topic, &creds.topics),
+            creds.topic.clone(),
+        ),
     };
     let app = app.clone();
-    let handle = tokio::task::spawn(drive_eventloop(app, client, eventloop, topic, wake));
+    let handle = tokio::task::spawn(drive_eventloop(
+        app, client, eventloop, topics, dm_topic, wake,
+    ));
     match handle.await {
         Ok(result) => result,
         Err(join_err) if join_err.is_panic() => {
@@ -421,7 +533,8 @@ async fn drive_eventloop(
     app: AppHandle,
     client: rumqttc::AsyncClient,
     mut eventloop: rumqttc::EventLoop,
-    topic: String,
+    topics: Vec<String>,
+    dm_topic: String,
     wake: MqttWakeAction,
 ) -> Result<(), String> {
     use rumqttc::{Event, Packet, QoS};
@@ -429,12 +542,14 @@ async fn drive_eventloop(
         match eventloop.poll().await {
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
                 log(LOG_TAG, "DM_MQTT_CONNECT_OK");
-                // Subscribe to our own topic. QoS 0 (AtMostOnce): the payload is
-                // only a wake signal — if one is dropped the 60s poll backstops it.
-                if let Err(e) = client.subscribe(topic.clone(), QoS::AtMostOnce).await {
-                    return Err(format!("subscribe: {e}"));
+                // QoS 0: a dropped work push falls back to the existing poll.
+                // The DM connection also takes work + notifications (US-006).
+                for topic in &topics {
+                    if let Err(e) = client.subscribe(topic.clone(), QoS::AtMostOnce).await {
+                        return Err(format!("subscribe: {e}"));
+                    }
+                    log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBED topic={topic}"));
                 }
-                log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBED topic={topic}"));
                 // Offline catch-up (US-006): drain anything missed while we were
                 // disconnected, before the first push arrives.
                 wake.fire(&app).await;
@@ -446,6 +561,15 @@ async fn drive_eventloop(
                 if matches!(wake, MqttWakeAction::Dm) {
                     if let Some(status) = agent_status_event(&publish.payload) {
                         let _ = app.emit(EVENT_AGENT_STATUS, &status);
+                        continue;
+                    }
+                    // Work and notification topics are not DM wakes. Forward
+                    // the three pushes the projects page applies, and ignore
+                    // the rest so a board wake does not poll the DM inbox.
+                    if publish.topic != dm_topic {
+                        if let Some(forward) = classify_work_push(&publish.payload) {
+                            let _ = app.emit(forward.event, &forward.payload);
+                        }
                         continue;
                     }
                 }
@@ -702,6 +826,54 @@ mod tests {
         assert!(agent_status_event(br#"{"type":"channel","channelId":"chn_1"}"#).is_none());
         assert!(agent_status_event(br#"{"type":"agent_status","agentUid":"agt_c","ts":"t"}"#).is_none());
         assert!(agent_status_event(b"not json").is_none());
+    }
+
+    #[test]
+    fn dm_connection_subscribes_to_work_and_notifications() {
+        let topics = work_subscribe_topics(
+            "hq/prs_abc/dm",
+            &RealtimeTopicSet {
+                work: "hq/prs_abc/work".into(),
+                notifications: "hq/prs_abc/notifications".into(),
+            },
+        );
+        assert_eq!(
+            topics,
+            vec![
+                "hq/prs_abc/dm".to_string(),
+                "hq/prs_abc/work".to_string(),
+                "hq/prs_abc/notifications".to_string(),
+            ]
+        );
+
+        // Older credential responses omit `topics`; the leaves are derived
+        // from the DM topic, matching mobile's `hq/{personUid}/work` set.
+        let derived = work_subscribe_topics("hq/prs_abc/dm", &RealtimeTopicSet::default());
+        assert_eq!(derived, topics);
+
+        let view = classify_work_push(
+            br#"{"v":1,"kind":"board","companyUid":"co_1","projectId":"proj_open","mutation":"project-view"}"#,
+        )
+        .expect("project-view");
+        assert_eq!(view.event, EVENT_WORK_PROJECT_VIEW);
+        assert_eq!(view.payload["projectId"], "proj_open");
+
+        let changed = classify_work_push(
+            br#"{"contractVersion":2,"eventType":"work.changed","scope":"work","resourceId":"thr_1"}"#,
+        )
+        .expect("work.changed");
+        assert_eq!(changed.event, EVENT_WORK_CHANGED);
+        assert_eq!(changed.payload["resourceId"], "thr_1");
+
+        let session = classify_work_push(
+            br#"{"kind":"SESSION_EVENT","event":"awaitingInput","projectId":"proj_open","storyId":"US-006","chatId":"chat_1","companyUid":"co_1"}"#,
+        )
+        .expect("session");
+        assert_eq!(session.event, EVENT_SESSION_EVENT);
+        assert_eq!(session.payload["storyId"], "US-006");
+
+        assert!(classify_work_push(br#"{"kind":"board","mutation":"story-patch"}"#).is_none());
+        assert!(classify_work_push(b"not json").is_none());
     }
 
     #[test]

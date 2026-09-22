@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- An open project updates when the same story changes on another device. A status change refetches that project, a work change reloads the company board, and a session that needs you or finishes updates the live marker on its card. You do not have to refresh the page. Needs the matching HQ Cloud release; with an older server the page still loads when you open it.
+
 ## [0.10.304] — 2026-09-22
 
 - Core update failures now include consistent diagnostics, so repeated failures are grouped together and the report shows what went wrong without exposing local paths.
