@@ -49,6 +49,7 @@
     type Project,
     type Story,
   } from "./projects-model.js";
+  import { overlayLiveAssignment } from "./project-view.js";
   import { relativeActivity } from "../common/relative-activity.js";
   import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
   import ProjectDetailView from "./ProjectDetailView.svelte";
@@ -61,13 +62,15 @@
     /** Platform seam — projects/settings/shell slices + capability flags. */
     adapter: PlatformAdapter;
     slug: string;
+    /** Cloud company uid for GET ProjectView. Absent for a local-only company. */
+    companyUid?: string | null;
     onnewproject?: () => void | Promise<void>;
   }
 
   /** Legacy cycle filter kept for needs-link + work-actions contracts. */
   type ProjectFilter = "all" | "active" | "needs-link";
 
-  let { adapter, slug, onnewproject }: Props = $props();
+  let { adapter, slug, companyUid = null, onnewproject }: Props = $props();
 
   // Wire the module-level project/session seams to this platform adapter.
   $effect.pre(() => {
@@ -156,10 +159,17 @@
     storyLoadGeneration = generation;
     storiesLoading = true;
     try {
-      const nextStories = await loadLocalProjectStories(
+      const staticStories = await loadLocalProjectStories(
         project.prdPath,
         project.provenance,
       );
+      const nextStories = await overlayLiveAssignment({
+        projectId: project.id,
+        companyUid,
+        staticStories,
+        getProjectView: (projectId, uid) =>
+          adapter.workMesh.getProjectView(projectId, uid),
+      });
       if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity))
         return;
       stories = nextStories;
@@ -532,6 +542,19 @@
     selectedStoryId = null;
   }
 
+  async function storiesForSelected(project: Project): Promise<Story[]> {
+    const staticStories = project.prdPath
+      ? await loadLocalProjectStories(project.prdPath, project.provenance)
+      : [];
+    return overlayLiveAssignment({
+      projectId: project.id,
+      companyUid,
+      staticStories,
+      getProjectView: (projectId, uid) =>
+        adapter.workMesh.getProjectView(projectId, uid),
+    });
+  }
+
   async function openProject(project: Project): Promise<void> {
     const companySlug = slug;
     const selectedIdentity = projectIdentity(project);
@@ -549,10 +572,17 @@
 
     storiesLoading = true;
     try {
-      const nextStories = await loadLocalProjectStories(
+      const staticStories = await loadLocalProjectStories(
         project.prdPath,
         project.provenance,
       );
+      const nextStories = await overlayLiveAssignment({
+        projectId: project.id,
+        companyUid,
+        staticStories,
+        getProjectView: (projectId, uid) =>
+          adapter.workMesh.getProjectView(projectId, uid),
+      });
       if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity))
         return;
       stories = nextStories;
