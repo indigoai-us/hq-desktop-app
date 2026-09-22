@@ -10,9 +10,9 @@
 // sync section is visible, stops polling once it isn't, and re-reads
 // immediately when the user returns to the section.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type PlatformAdapter } from "@hq/platform";
+import { ok, setJitterRandomForTests, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
@@ -22,7 +22,14 @@ const memoryStorage = installMemoryLocalStorage();
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
+// The live-sync poll is jittered; pin the draw to the nominal interval so the
+// tests below can advance the fake clock by exactly one period.
+beforeEach(() => {
+  setJitterRandomForTests(() => 0.5);
+});
+
 afterEach(async () => {
+  setJitterRandomForTests();
   if (component) await unmount(component);
   component = null;
   host?.remove();

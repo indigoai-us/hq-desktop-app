@@ -11,6 +11,8 @@ import {
   DEFAULT_TIMEOUT_MS,
   SMOKE_TOKEN_SECRET,
   evaluateSmokeResult,
+  installSmokeHqCli,
+  SMOKE_HQ_CLI_SPEC,
   isSmokeTempDir,
   launchAndWait,
   parseBootLog,
@@ -82,6 +84,8 @@ describe("bundle version and boot log", () => {
     expect(parseBootLog("boot: desktop-alt window created\nboot: shell_ready from UI")).toEqual({
       shellReady: true,
       windowCreated: true,
+      setupRefused: false,
+      lifecycleState: null,
       recoveryOpened: false,
       watchdogTimeout: false,
     });
@@ -144,9 +148,72 @@ describe("smoke home", () => {
     expect(tokens.expiresAt).toBe(1);
     expect(tokens.accessToken).not.toBe("");
     expect(menubar.firstRunCompleted).toBe(true);
+    expect(menubar.installCompleted).toBe(true);
+    // A finished install: the app resolves this folder and finds core.yaml.
+    expect(menubar.hqPath).toBe(join(home, "hq"));
+    expect(existsSync(join(home, "hq", "core", "core.yaml"))).toBe(true);
+    // Real account token: the sandbox folder must never sync to its vault.
+    expect(menubar.syncOnLaunch).toBe(false);
+    expect(menubar.personalSyncEnabled).toBe(false);
     expect(menubar.startAtLogin).toBe(false);
     expect(menubar.widgetEnabled).toBe(false);
     expect(logPath).toBe(join(home, ".hq", "logs", "hq-sync.log"));
+  });
+});
+
+describe("hq CLI in the smoke HOME", () => {
+  it("installs the real CLI into ~/.npm-global under the sandbox HOME", () => {
+    const home = "/tmp/hq-release-smoke-x";
+    const calls: { cmd: string; args: string[]; env: Record<string, string> }[] = [];
+    expect(() =>
+      installSmokeHqCli({
+        home,
+        spawnSyncImpl: ((cmd: string, args: string[], options: { env: Record<string, string> }) => {
+          calls.push({ cmd, args, env: options.env });
+          return { status: 0, stdout: "", stderr: "" };
+        }) as never,
+      }),
+    ).toThrow(/could not install/); // bin was not actually written by the fake
+    expect(calls).toHaveLength(1);
+    expect(calls[0].cmd).toBe("npm");
+    expect(calls[0].args).toEqual([
+      "install",
+      "--global",
+      "--prefix",
+      join(home, ".npm-global"),
+      SMOKE_HQ_CLI_SPEC,
+      "--no-audit",
+      "--no-fund",
+    ]);
+    expect(calls[0].env.HOME).toBe(home);
+  });
+
+  it("fails closed when npm fails", () => {
+    expect(() =>
+      installSmokeHqCli({
+        home: "/tmp/hq-release-smoke-y",
+        spawnSyncImpl: (() => ({ status: 1, stdout: "", stderr: "E404 not found" })) as never,
+      }),
+    ).toThrow(/could not install @indigoai-us\/hq-cli.*status=1.*E404/);
+  });
+});
+
+describe("setup refusal", () => {
+  it("names the cause when the app treats the smoke machine as not set up", () => {
+    const log = parseBootLog(
+      "[lifecycle] setup_lifecycle: state=NeedsInstall install_completed=false\n" +
+        "[ui] desktop window open refused: setup not finished, showing setup card\n",
+    );
+    expect(log.setupRefused).toBe(true);
+    expect(log.lifecycleState).toBe("NeedsInstall");
+    expect(() =>
+      evaluateSmokeResult({
+        log,
+        bundleVersion: "0.10.292",
+        expectedVersion: "0.10.292",
+        timedOut: true,
+      }),
+    ).toThrow(/not set up \(state=NeedsInstall\)/);
   });
 });
 
@@ -226,12 +293,18 @@ describe("launch smoke", () => {
     fakeChild.stdout = new EventEmitter();
     fakeChild.stderr = new EventEmitter();
 
+    const installedInto: string[] = [];
     const result = await runArtifactSmoke({
       appPath: app,
       expectedVersion: "0.10.179",
       timeoutMs: 1_000,
       env: { [SMOKE_TOKEN_SECRET]: "rt-non-indigo" },
       launch: true,
+      installHqCliImpl: ({ home }: { home: string }) => {
+        expect(spawned).toHaveLength(0);
+        installedInto.push(home);
+        return { bin: join(home, ".npm-global", "bin", "hq") };
+      },
       spawnImpl: ((cmd, args, options) => {
         spawned.push({ cmd: String(cmd), args: args as string[], env: options.env });
         return fakeChild;
@@ -252,6 +325,8 @@ describe("launch smoke", () => {
     expect(spawned[0].env.TMPDIR).toBe(spawned[0].env.HOME);
     expect(spawned[0].env.NPM_CONFIG_CACHE).toBe(join(spawned[0].env.HOME, ".npm"));
     expect(spawned[0].cmd).toContain("hq-sync-menubar");
+    // The hq CLI went into the same sandbox HOME the app launched with.
+    expect(installedInto).toEqual([spawned[0].env.HOME]);
   });
 
   it("fails closed without launching when the secret is missing", async () => {
@@ -291,6 +366,7 @@ describe("launch smoke", () => {
       timeoutMs: 1_000,
       env: { [SMOKE_TOKEN_SECRET]: "rt-non-indigo" },
       launch: true,
+      installHqCliImpl: () => ({ bin: "/fake/hq" }),
       spawnImpl: (() => fakeChild) as typeof import("node:child_process").spawn,
       sleep: async () => {
         fakeChild.stderr.emit("data", Buffer.from("[boot] shell_ready from UI\n"));
@@ -337,6 +413,7 @@ describe("launch smoke", () => {
         timeoutMs: 5,
         env: { [SMOKE_TOKEN_SECRET]: "rt-non-indigo" },
         launch: true,
+        installHqCliImpl: () => ({ bin: "/fake/hq" }),
         spawnImpl: (() => fakeChild) as typeof import("node:child_process").spawn,
         now: () => t,
         sleep: async () => {

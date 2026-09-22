@@ -12,6 +12,13 @@
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import RuntimeSignIn, { type RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import { runtimeIsReady, type BotHome, type BotRuntime, type CreateBotDraft } from "./create-bot-model.js";
+  import {
+    runtimeCanSignIn,
+    runtimeChipSuffix,
+    runtimeFooter,
+    runtimeStatusOf,
+    type RuntimeStatus,
+  } from "./runtime-status.js";
   import "./create-bot.css";
 
   interface Props {
@@ -19,6 +26,13 @@
     canLocal: boolean;
     canCloud: boolean;
     runtimeReady: Record<string, boolean> | null;
+    /**
+     * Per-runtime state, when the host has it. `runtimeReady` alone cannot
+     * tell a CLI that is not installed from one that could not be checked, and
+     * both used to be labelled "not signed in" with a Sign in that goes
+     * nowhere. Absent → the boolean's old behaviour.
+     */
+    runtimeStatus?: Record<string, RuntimeStatus> | null;
     companies: ReadonlyArray<{ companyUid: string; label: string; iconUrl?: string | null }>;
     disabled?: boolean;
     onpatch: (patch: Partial<CreateBotDraft>) => void;
@@ -28,6 +42,8 @@
     onsignin?: (runtime: BotRuntime) => void | Promise<void>;
     /** The inline sign-in connected — the host should refresh readiness. */
     onsignedin?: (runtime: BotRuntime) => void | Promise<void>;
+    /** Re-run the runtime check (after installing, or a failed probe). */
+    onrecheck?: () => void | Promise<void>;
     pollMs?: number;
   }
 
@@ -36,17 +52,35 @@
     canLocal,
     canCloud,
     runtimeReady,
+    runtimeStatus = null,
     companies,
     disabled = false,
     onpatch,
     signInApi = null,
     onsignin,
     onsignedin,
+    onrecheck,
     pollMs = 1500,
   }: Props = $props();
 
   /** Runtime whose inline sign-in is open. */
   let signingIn = $state<BotRuntime | null>(null);
+  /** True while a Check again / Try again is in flight. */
+  let rechecking = $state(false);
+
+  const draftStatus = $derived(runtimeStatusOf(runtimeStatus, draft.runtime));
+  const draftLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
+  const footer = $derived(runtimeFooter(draftStatus, draftLabel, draft.runtime, Boolean(signInApi || onsignin)));
+
+  async function recheck(): Promise<void> {
+    if (rechecking || !onrecheck) return;
+    rechecking = true;
+    try {
+      await onrecheck();
+    } finally {
+      rechecking = false;
+    }
+  }
 
   function pickHome(home: BotHome): void {
     if (disabled) return;
@@ -62,6 +96,9 @@
 
   async function requestSignIn(runtime: BotRuntime): Promise<void> {
     if (disabled) return;
+    // Never open a sign-in for a runtime whose binary was not found: it cannot
+    // succeed, and the modal sits on "Opening … sign-in…" for ever.
+    if (!runtimeCanSignIn(runtimeStatusOf(runtimeStatus, runtime))) return;
     onpatch({ home: "local", runtime });
     if (signInApi) {
       signingIn = runtime;
@@ -149,7 +186,9 @@
       <span class="cb-label" id="create-bot-runtime-label">Thinks with</span>
       <div class="cb-pills" role="radiogroup" aria-labelledby="create-bot-runtime-label">
         {#each LOCAL_BOT_RUNTIMES as rt (rt.id)}
-          {@const ready = runtimeIsReady(runtimeReady, rt.id)}
+          {@const status = runtimeStatusOf(runtimeStatus, rt.id)}
+          {@const ready = status ? status.state === "signedIn" : runtimeIsReady(runtimeReady, rt.id)}
+          {@const suffix = status ? runtimeChipSuffix(status) : ready ? "" : " · not signed in"}
           <button
             type="button"
             class="cb-pill"
@@ -157,19 +196,45 @@
             aria-checked={draft.runtime === rt.id}
             data-testid={`chat-bot-runtime-${rt.id}`}
             data-ready={ready}
+            data-runtime-state={status?.state ?? (ready ? "signedIn" : "signedOut")}
             disabled={disabled}
             onclick={() => pickRuntime(rt.id)}
           >
             <span class="cb-pill-dot" class:ready aria-hidden="true"></span>
-            {rt.label}{ready ? "" : " · not signed in"}
+            {rt.label}{suffix}
           </button>
         {/each}
       </div>
       {#if signingIn && signInApi}
         <RuntimeSignIn runtime={signingIn} api={signInApi} {pollMs} onconnected={connected} oncancel={() => (signingIn = null)} />
+      {:else if draftStatus}
+        <p
+          class="cb-help"
+          class:ok={draftStatus.state === "signedIn"}
+          class:error={footer.isError}
+          data-testid="chat-bot-runtime-help"
+          data-runtime-state={draftStatus.state}
+        >
+          {footer.text}
+          {#if footer.action === "signin"}
+            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>{footer.actionLabel}</button>
+          {:else if footer.action === "retry" && onrecheck}
+            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-recheck" disabled={disabled || rechecking} onclick={() => void recheck()}>{rechecking ? "Checking…" : footer.actionLabel}</button>
+          {/if}
+        </p>
+        {#if draftStatus.state === "notInstalled" && draftStatus.searched && draftStatus.searched.length > 0}
+          <details class="cb-help searched" data-testid="chat-bot-runtime-searched">
+            <summary>Where HQ looked</summary>
+            <ul>
+              {#each draftStatus.searched as dir (dir)}
+                <li>{dir}</li>
+              {/each}
+            </ul>
+          </details>
+        {/if}
       {:else if !runtimeIsReady(runtimeReady, draft.runtime)}
-        <p class="cb-help" data-testid="chat-bot-runtime-help">
-          {LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label} is not signed in on this Mac.
+        <p class="cb-help" data-testid="chat-bot-runtime-help" data-runtime-state="signedOut">
+          {draftLabel} is not signed in on this Mac.
           {#if signInApi || onsignin}
             <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>Sign in</button>
           {:else}
@@ -177,7 +242,7 @@
           {/if}
         </p>
       {:else}
-        <p class="cb-help ok" data-testid="chat-bot-runtime-help">Signed in on this Mac — the bot uses your own {LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label} plan.</p>
+        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this Mac — the bot uses your own {draftLabel} plan.</p>
       {/if}
     </div>
 
@@ -223,6 +288,20 @@
 </div>
 
 <style>
+  .cb-help.error {
+    color: var(--v4-error, #d9534f);
+  }
+  .cb-help.searched {
+    margin-top: 4px;
+  }
+  .cb-help.searched summary {
+    cursor: pointer;
+  }
+  .cb-help.searched ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    line-height: 1.5;
+  }
   .home-cards {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }

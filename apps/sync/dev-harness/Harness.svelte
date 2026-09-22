@@ -1,36 +1,24 @@
 <script lang="ts">
-  import SettingsPage from '../src/desktop-alt/pages/SettingsPage.svelte';
-  import Popover from '../src/components/Popover.svelte';
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
-  import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
-  import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
-  import SessionsPage from '../src/desktop-alt/pages/SessionsPage.svelte';
-  import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
   import { createLifecycleInvoke, resolveLifecycleOptions } from './lifecycle-scenario';
   import ActivityLog from '../src/components/ActivityLog.svelte';
   import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
   import DriftDetail from '../src/components/DriftDetail.svelte';
   import ShareDetail from '../src/components/ShareDetail.svelte';
-  import DmDetail from '../src/components/DmDetail.svelte';
-  import Widget from '../src/components/Widget.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
+  import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
-
-  import {
-    WIDGET_RECENT_STORAGE_KEY,
-    type WidgetStackItem,
-  } from '../src/stores/widgetNotifications';
   import '../src/desktop-alt/styles/desktop-alt.css';
-  import { popoverProps, bannerFixtures, workspaces } from './fixtures';
+  import { bannerFixtures } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
@@ -65,30 +53,6 @@
       direction: 'in',
     },
   ];
-
-  // The Indigo workspace fixture drives the ?view=company desktop board preview.
-  const indigoWorkspace = workspaces.find((w) => w.slug === 'indigo') ?? workspaces[0];
-
-  // ?view=home — the merged Home in isolation (DesktopApp is auth-gated). Real
-  // local-data sections only: portfolio stat strip + company table + today's
-  // meetings + the activity digest. Projects/meetings are inline fixtures.
-  const homeProjects = [
-    { id: 'p1', title: 'Native CRM', name: 'Native CRM', description: '', company: 'indigo', status: 'in-progress', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 8, storiesComplete: 3 },
-    { id: 'p2', title: 'Docs site refresh', name: 'Docs site refresh', description: '', company: 'indigo', status: 'done', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 5, storiesComplete: 5 },
-    { id: 'p3', title: 'Recovery flows', name: 'Recovery flows', description: '', company: 'liverecover', status: 'in-progress', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 6, storiesComplete: 1 },
-    { id: 'p4', title: 'Field sync', name: 'Field sync', description: '', company: 'moonflow', status: 'planning', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 0, storiesComplete: 0 },
-  ];
-  const todayISO = (h: number, m: number) => {
-    const d = new Date();
-    d.setHours(h, m, 0, 0);
-    return d.toISOString();
-  };
-  const homeMeetings = [
-    { id: 'mtg1', summary: 'Creative Ops kickoff', start: { dateTime: todayISO(10, 0) }, end: { dateTime: todayISO(10, 30) }, status: 'confirmed', sourceCompanyUid: 'cmp_indigo' },
-    { id: 'mtg2', summary: 'Indigo standup', start: { dateTime: todayISO(11, 30) }, end: { dateTime: todayISO(11, 45) }, status: 'confirmed', sourceCompanyUid: 'cmp_indigo' },
-    { id: 'mtg3', summary: 'Field sync', start: { dateTime: todayISO(16, 0) }, end: { dateTime: todayISO(16, 30) }, status: 'confirmed' },
-  ];
-  const homeCompanyNames = new Map([['cmp_indigo', 'Indigo']]);
 
   const driftPreviewReport = {
     count: 3,
@@ -158,118 +122,36 @@
     },
   ];
 
-  const dmPreviewEvent = {
-    eventId: 'dm-preview-1',
-    fromPersonUid: 'prs_maya',
-    fromEmail: 'maya@getindigo.ai',
-    fromDisplayName: 'Maya Chen',
-    body: 'The auxiliary desktop pass is ready for a final visual review.',
-    details: 'Includes recovery, permissions, meetings, shares, and the widget.',
-    prompt: '/review hq-desktop-app --surface auxiliary',
-    createdAt: '2026-07-26T17:42:00.000Z',
-  };
-
-  const widgetPreviewItems: WidgetStackItem[] = [
-    {
-      id: 'widget-preview-message',
-      type: 'message',
-      actor: 'Maya',
-      text: 'The desktop recovery pass is ready for review.',
-      ts: Date.now() - 90_000,
-      kind: 'dm',
-      clickActionId: 'open',
-      actionId: 'open',
-      actionLabel: 'Open',
-      data: { fromPersonUid: 'prs_maya' },
-      expiresAt: Date.now() + 60 * 60_000,
-      unread: true,
-    },
-    {
-      id: 'widget-preview-share',
-      type: 'share',
-      actor: 'Indigo',
-      text: 'Shared the HQ Desktop acceptance criteria.',
-      ts: Date.now() - 8 * 60_000,
-      kind: 'share',
-      clickActionId: 'open',
-      actionId: 'open',
-      actionLabel: 'Open',
-      data: {},
-      expiresAt: Date.now() + 60 * 60_000,
-      unread: false,
-    },
-  ];
-
-  const widgetUpdatePreviewItems: WidgetStackItem[] = [
-    {
-      id: 'widget-preview-update',
-      type: 'system',
-      actor: 'HQ',
-      text: 'Version 0.10.36-beta.1 is ready to install.',
-      ts: Date.now() - 30_000,
-      kind: 'update',
-      clickActionId: 'open',
-      actionId: 'update',
-      actionLabel: 'Update now',
-      data: {
-        version: '0.10.36-beta.1',
-        body: 'Desktop surface repairs and updater recovery.',
-        date: '2026-07-26',
-        detectedAt: new Date(Date.now() - 30_000).toISOString(),
-      },
-      expiresAt: Date.now() + 60 * 60_000,
-      unread: true,
-    },
-  ];
-
   // View + theme driven by URL query so screenshots target a known state:
-  //   ?view=settings|popover|signin|banner|shell   ?theme=light|dark
+  //   ?view=shell|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
   //   lifecycle view (channel-native company lifecycle, stateful mock) takes
   //     ?role=member (viewer.canAct=false everywhere) and ?state=blocked
-  // For the popover view, size the browser viewport to ~320x440 (the real
-  // window size) — the popover root fills 100vw/100vh. For settings, any
-  // viewport works; it renders centered on a desktop-ish backdrop.
+  // For the signin view, size the browser viewport to ~320x440 (the real
+  // `main` window size) — the sign-in root fills 100vw/100vh. The default
+  // view is the production HQ Work shell; size that one to ~1180x760.
   const params = new URLSearchParams(window.location.search);
-  const view = params.get('view') ?? 'settings';
+  const view = params.get('view') ?? 'shell';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
-  const scenario = params.get('scenario');
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
   // Bound by the wizard's real step count rather than a hand-written ceiling.
   // The literal `3` this replaced predated every step added after Consent, so
   // `?step=4` upward — including this harness's own default entry point, and
   // the Ready screen at 5 — silently fell back to Welcome.
   const LAST_ONBOARDING_STEP = WIZARD_STEPS[WIZARD_STEPS.length - 1].index;
+  // ?beat=0..N opens the intro directly on one scene for design work.
+  const introBeatParam = params.get('beat');
+  const introBeat =
+    introBeatParam === null ? null : Number.parseInt(introBeatParam, 10);
+
   const onboardingStep =
     Number.isInteger(requestedOnboardingStep) &&
     requestedOnboardingStep >= 0 &&
     requestedOnboardingStep <= LAST_ONBOARDING_STEP
       ? requestedOnboardingStep
       : 0;
-  // ?state=error renders the "Sync initialized" notice banner.
-  // ?state=auth-error renders the calm reconnect state without red styling.
-  // Otherwise the popover mounts in its idle fixture state.
-  // (CLI-update overflow preview retired with US-001 chrome strip.)
-  const stateOverride = params.get('state');
-  // The routed session for ?view=sessions, owned here so the harness performs
-  // the same navigate-and-remount the real shells do.
-  let harnessSessionId = $state(params.get('session'));
-  if (view === 'widget') {
-    localStorage.removeItem(WIDGET_RECENT_STORAGE_KEY);
-  }
-  const previewPopoverProps =
-    stateOverride === 'error'
-      ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
-      : stateOverride === 'auth-error'
-        ? {
-            ...popoverProps,
-            syncState: 'auth-error' as const,
-            errorMessage: 'Sign in once and HQ will resume automatically.',
-          }
-      : popoverProps;
-
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
   // and renders only after a `banner:event`. Set the attr + emit the fixture
   // once the component's listener has mounted (next tick).
@@ -277,7 +159,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'home' || view === 'sessions' || view === 'shell' || view === 'lifecycle'
+      : view === 'shell' || view === 'lifecycle'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -289,10 +171,6 @@
                 ? 'new-files-detail'
               : view === 'share-detail'
                 ? 'share-detail'
-                : view === 'dm-detail'
-                  ? 'dm-detail'
-                  : view === 'widget'
-                    ? 'widget'
         : view === 'permissions'
           ? 'meeting-permissions'
           : view === 'conversation'
@@ -318,29 +196,6 @@
     setTimeout(() => void emit('new-files:list', newFilesPreview), 75);
   } else if (view === 'share-detail') {
     setTimeout(() => void emit('share:events-list', sharePreviewEvents), 75);
-  } else if (view === 'dm-detail') {
-    setTimeout(() => void emit('dm:detail-event', dmPreviewEvent), 75);
-  }
-
-  // Deterministic safety-state previews for the full desktop shell. The delay
-  // lets DesktopApp register native-event listeners before the fixture fires.
-  if (view === 'desktop') {
-    setTimeout(() => {
-      if (scenario === 'conflict') {
-        void emit('sync:conflict', {
-          path: 'companies/indigo/projects/hq-desktop-app/prd.json',
-          localHash: 'local-preview',
-          remoteHash: 'remote-preview',
-          canAutoResolve: false,
-        });
-      } else if (scenario === 'sync-error') {
-        void emit('sync:error', {
-          company: 'indigo',
-          path: 'companies/indigo/projects/hq-desktop-app/prd.json',
-          message: 'The cloud connection closed before the desktop audit could finish.',
-        });
-      }
-    }, 250);
   }
 </script>
 
@@ -356,26 +211,21 @@
 {:else if view === 'share-detail'}
   <!-- Shared-with-me quick window at its native 640x560 size. -->
   <ShareDetail />
-{:else if view === 'dm-detail'}
-  <!-- Inbox / direct-message quick window at its native 820x640 size. -->
-  <DmDetail />
-{:else if view === 'widget'}
-  <!-- Floating widget: inspect idle at 66x43, or use ?state=stack at
-       the dynamic 340x480 maximum to exercise notification + mini-inbox UI. -->
-  <Widget
-    queued={scenario === 'update-available' || stateOverride === 'idle' ? 0 : 2}
-    initialItems={scenario === 'update-available'
-      ? widgetUpdatePreviewItems
-      : stateOverride === 'idle'
-        ? []
-        : widgetPreviewItems}
-  />
 {:else if view === 'meetings'}
   <!-- Upcoming Meetings at its native 460x600 size. -->
   <MeetingsWindow />
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />
+{:else if view === 'intro'}
+  <!-- The cinematic first-run intro. Resize the preview viewport to ~1100x740.
+       In the real app the window is transparent with native frosted material,
+       so what sits behind the intro is the person's blurred desktop. A browser
+       cannot reproduce NSVisualEffectView, so the harness paints a stand-in
+       "desktop" here purely so the iris takeover is visible during design
+       work. This backdrop does NOT exist in the shipped app. -->
+  <div class="fake-desktop" aria-hidden="true"></div>
+  <CinematicIntro onfinish={() => {}} startAtBeat={introBeat} />
 {:else if view === 'onboarding'}
   <!-- First-run onboarding at its real 780x620 transparent-window size.
        Pass ?step=0..3 to inspect every reachable lifecycle screen directly;
@@ -385,10 +235,6 @@
   <!-- Deterministic render failure for visually verifying the production
        Svelte error boundary without breaking any other harness route. -->
   <GlobalErrorBoundary component={GlobalErrorPreview} windowLabel="preview" />
-{:else if view === 'desktop'}
-  <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
-       live strip). Resize the preview viewport to ~1180x720. -->
-  <DesktopApp />
 {:else if view === 'shell'}
   <!-- Production HQ Work shell (HqWorkWorkShell). Pair with
        ?persona=empty-inbox|personal-only|multi-company|indigo so the mocked
@@ -404,10 +250,8 @@
   <!-- The banner fills 100vw/100vh (tight native window). Resize the preview
        viewport to ~366x104 to see it at real proportions. -->
   <BannerNotification />
-{:else if view === 'popover'}
-  <Popover {...previewPopoverProps} />
 {:else if view === 'signin'}
-  <!-- Auth-expiry recovery at the native 320x440 popover size. -->
+  <!-- Auth-expiry recovery at the native 320x440 `main` window size. -->
   <SignInPrompt reauth={true} />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
@@ -421,71 +265,25 @@
       ontogglereaction={() => {}}
     />
   </div>
-{:else if view === 'sessions'}
-  <!-- The in-app Sessions chat. `?session=` mounts a live transcript (folded
-       tool row, inline permission card, usage footer); omit it for the
-       chat-first empty state that starts a session on the first message.
-       Resize the viewport to ~1180x760. -->
-  <div class="sessions-stage">
-    <!-- `{#key}` mirrors the real shells, which remount the page on every
-         route change. That is what makes the first-send path testable here:
-         the message must survive the remount it triggers. -->
-    {#key harnessSessionId}
-      <SessionsPage
-        sessionId={harnessSessionId ?? undefined}
-        onopensession={(id) => {
-          harnessSessionId = id || null;
-          const next = new URL(window.location.href);
-          if (id) next.searchParams.set('session', id);
-          else next.searchParams.delete('session');
-          window.history.replaceState(null, '', next);
-        }}
-      />
-    {/key}
-  </div>
-{:else if view === 'company'}
-  <!-- The desktop window's company page (default Board tab). Sized to the
-       real desktop content area; data-window='desktop-alt' activates the
-       desktop token aliases. -->
-  <div class="desktop-stage">
-    <CompanyPage company={indigoWorkspace} />
-  </div>
-{:else if view === 'home'}
-  <!-- The merged Home in isolation. Resize the viewport to ~1180x760. -->
-  <div class="desktop-stage">
-    <HomePage
-      syncState={stateOverride === 'auth-error' ? 'auth-error' : 'idle'}
-      ready={true}
-      {workspaces}
-      progress={null}
-      companies={[]}
-      statsBySlug={{}}
-      status={null}
-      daemon={null}
-      activity={[]}
-      syncErrorMessage={stateOverride === 'auth-error' ? 'Sign in once and HQ will resume automatically.' : ''}
-      syncFilesProgressed={0}
-      syncTotalFiles={0}
-      transferredBytes={0}
-      autoSyncOn={true}
-      hqVersion="15.0.16"
-      conflicts={[]}
-      coreState={null}
-      projects={homeProjects}
-      meetingEvents={homeMeetings}
-      companyNamesByUid={homeCompanyNames}
-      onopencompany={() => {}}
-    />
-  </div>
 {:else}
-  <!-- Settings now live in the desktop-alt window (US-005). Preview the V4
-       SettingsPage rather than the retired popover Settings.svelte. -->
-  <div class="desktop-stage" class:light={theme === 'light'}>
-    <SettingsPage activeTab="sync" />
-  </div>
+  <!-- Production HQ Work shell (HqWorkWorkShell) — the harness default. Pair
+       with ?persona=empty-inbox|personal-only|multi-company|indigo. -->
+  <HqWorkWorkShell />
 {/if}
 
 <style>
+  .fake-desktop {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(40% 50% at 18% 22%, #3b4a63, transparent 70%),
+      radial-gradient(45% 45% at 82% 30%, #5a4360, transparent 70%),
+      radial-gradient(60% 55% at 50% 95%, #24303f, transparent 75%),
+      linear-gradient(160deg, #2b3446, #171d28);
+    filter: blur(26px) saturate(115%);
+  }
+
   :global(html[data-window='desktop-alt']),
   :global(html[data-window='desktop-alt'] body) {
     width: 100%;
@@ -519,24 +317,6 @@
   .window {
     border-radius: var(--radius-popover, 8px);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
-  /* Sessions is a full-bleed page in the real shell: it owns its own height
-     and its own scroll, so the stage gives it the viewport and nothing else. */
-  .sessions-stage {
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-  }
-
-  /* Desktop window content area (company page). desktop-alt.css paints the
-     body background under html[data-window='desktop-alt']; this just insets
-     the page like the real window's main pane. */
-  .desktop-stage {
-    box-sizing: border-box;
-    min-height: 100vh;
-    padding: 28px 32px;
   }
 
   /* Conversation preview: a fixed-width column with the messages-window

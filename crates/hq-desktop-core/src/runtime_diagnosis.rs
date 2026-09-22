@@ -414,6 +414,9 @@ fn parse_node_major(version: &str) -> Option<u32> {
     digits.split('.').next()?.parse::<u32>().ok()
 }
 
+/// Spawn attempts made while the probe target is still open for writing.
+const PROBE_TEXT_FILE_BUSY_ATTEMPTS: u32 = 5;
+
 async fn probe_command(program: &str, args: &[&str], deadline: Instant) -> ProbeOutcome {
     let Some(run_deadline) = deadline.checked_sub(PROBE_CLEANUP_RESERVE) else {
         return ProbeOutcome::Timeout;
@@ -429,7 +432,25 @@ async fn probe_command(program: &str, args: &[&str], deadline: Instant) -> Probe
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let mut child = match command.spawn() {
+    // `ETXTBSY` says a writer still holds the program open, not that the probe
+    // failed: the same file runs once that handle closes. An installer writing a
+    // runtime we probe moments later (and, on CI, a sibling process that forked
+    // while the write fd was open) hits exactly that, so the spawn is retried
+    // past it rather than reported as a `ProbeError`. Every other failure is
+    // returned on the first attempt, unchanged.
+    let mut attempt = 1u32;
+    let spawned = loop {
+        match command.spawn() {
+            Err(error)
+                if paths::is_text_file_busy(&error) && attempt < PROBE_TEXT_FILE_BUSY_ATTEMPTS =>
+            {
+                tokio::time::sleep(Duration::from_millis(20 * u64::from(attempt))).await;
+                attempt += 1;
+            }
+            other => break other,
+        }
+    };
+    let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
             return match error.kind() {

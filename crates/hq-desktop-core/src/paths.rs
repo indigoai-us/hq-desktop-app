@@ -990,6 +990,81 @@ fn managed_git_shim_script() -> String {
     "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n".to_string()
 }
 
+/// Number of spawn attempts made while a freshly written binary is still busy.
+#[cfg(not(target_os = "windows"))]
+const TEXT_FILE_BUSY_ATTEMPTS: u32 = 5;
+
+/// POSIX `ETXTBSY`. Same value on Linux and macOS.
+#[cfg(unix)]
+const ETXTBSY: i32 = 26;
+
+/// True when a spawn failed because the binary is still open for writing.
+///
+/// Linux refuses to `exec` a file that any process holds open for writing
+/// (`ETXTBSY`, os error 26). This is a statement about a WRITER somewhere on the
+/// host, never about the program: the identical file execs fine once that handle
+/// closes. The toolchain installer writes the managed Git and the resolver
+/// probes it moments later, so an installer thread — or a child it forked while
+/// the write fd was open — can still be holding that handle. The writer is often
+/// not even ours: `std::fs::write` closes its own handle before the spawn, but
+/// any thread that forks during that open window hands the inherited fd to its
+/// child, and the exec stays refused for as long as that child sits between
+/// `fork` and `exec`. macOS does not enforce this, which is why it only ever
+/// shows up on Linux.
+///
+/// Every caller that execs a file another process may be writing should route
+/// its spawn through this, because the condition clears on its own.
+#[cfg(unix)]
+pub(crate) fn is_text_file_busy(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(ETXTBSY) || error.kind() == std::io::ErrorKind::ExecutableFileBusy
+}
+
+/// Windows `ERROR_SHARING_VIOLATION` — the loader refused the image because
+/// another handle still holds it open without sharing.
+#[cfg(windows)]
+const ERROR_SHARING_VIOLATION: i32 = 32;
+
+/// Windows has no `ETXTBSY`, but it has the same real-world condition under a
+/// different number: while an installer is still writing the binary it holds an
+/// exclusive handle, and `CreateProcessW` fails with `ERROR_SHARING_VIOLATION`
+/// (os error 32) until that handle closes. Like `ETXTBSY` this is a statement
+/// about a WRITER, not about the program, so it is retryable for exactly the
+/// same reason. Os error 26 is NOT this condition on Windows — there it means
+/// `ERROR_NOT_DOS_DISK` — so the Unix errno is deliberately not honoured here.
+#[cfg(not(unix))]
+pub(crate) fn is_text_file_busy(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::ExecutableFileBusy {
+        return true;
+    }
+    #[cfg(windows)]
+    if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION) {
+        return true;
+    }
+    false
+}
+
+/// Spawn with a bounded retry while the target binary is still `ETXTBSY`.
+///
+/// Every other failure is returned untouched on the first attempt so error text
+/// and classification stay exactly as callers report them today.
+#[cfg(not(target_os = "windows"))]
+fn spawn_retrying_text_file_busy<F>(mut spawn: F) -> std::io::Result<std::process::Child>
+where
+    F: FnMut() -> std::io::Result<std::process::Child>,
+{
+    let mut attempt = 1;
+    loop {
+        match spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if is_text_file_busy(&error) && attempt < TEXT_FILE_BUSY_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempt)));
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Verify that the managed portable Git is safe to select ahead of a user's Git.
 ///
 /// A previous interrupted extraction can leave an existing `bin/git` that is
@@ -1018,18 +1093,20 @@ fn managed_git_health(git_bin: &Path) -> Result<(), String> {
         return Err(format!("managed Git is empty at {}", git_bin.display()));
     }
 
-    let mut child = Command::new(git_bin)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "managed Git could not start at {}: {error}",
-                git_bin.display()
-            )
-        })?;
+    let mut child = spawn_retrying_text_file_busy(|| {
+        Command::new(git_bin)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    })
+    .map_err(|error| {
+        format!(
+            "managed Git could not start at {}: {error}",
+            git_bin.display()
+        )
+    })?;
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match child.try_wait() {
@@ -1160,6 +1237,39 @@ pub fn managed_git_rescue_path_for_home(
 
 #[cfg(not(target_os = "windows"))]
 fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
+    for dir in unix_bin_search_dirs(home) {
+        let candidate = dir.join(name);
+        if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+/// Every directory the deterministic (non-`hq`, non-login-shell) lookup walks,
+/// in precedence order.
+///
+/// Split out of [`resolve_bin_in_dirs`] so callers that must EXPLAIN a failed
+/// lookup — "Claude Code is not installed, here is where HQ looked" — can name
+/// the same directories the resolver actually walked, instead of a second,
+/// drifting list.
+///
+/// The trailing block is the late-install lane: directories that only some
+/// machines have, appended AFTER the system prefixes so nothing they contain
+/// can outrank a Homebrew or `/usr/local` install that resolves today.
+///
+/// * `~/.claude/local` and `~/.claude/bin` — where Claude Code's own installer
+///   puts `claude` when it is not installed through a package manager. Without
+///   these the CLI resolves only through the login-shell lane, and a launch
+///   context with no usable login shell reports an installed CLI as absent.
+/// * `~/.asdf/shims`, `~/.local/share/mise/shims`, `~/.volta/bin` — version
+///   managers whose shims are the only copy of a globally installed CLI.
+///
+/// The npm/pnpm/bun global prefixes (including an explicit `PNPM_HOME`) come in
+/// through [`user_cli_dirs`] above, per `hq-cli-resolve-pnpm-home-bin`.
+#[cfg(not(target_os = "windows"))]
+fn unix_bin_search_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(home) = home {
         // Managed HQ toolchain (installed by hq-installer). Match
         // `child_path()` and hq-installer's login PATH order so a stale
@@ -1167,34 +1277,42 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
         // app's runtime PATH would execute.
         let toolchain = managed_toolchain_dir(home);
         for subdir in MANAGED_TOOLCHAIN_BIN_SUBDIRS {
-            let candidate = toolchain.join(subdir).join(name);
-            if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
-                return Some(candidate.to_string_lossy().to_string());
-            }
+            dirs.push(toolchain.join(subdir));
         }
-
         // User-level npm/pnpm prefixes after the managed toolchain, then
         // ~/.local/bin (where the installer's direct-binary yq/jq land).
-        for dir in user_cli_dirs(home)
-            .into_iter()
-            .chain(std::iter::once(home.join(".local").join("bin")))
-        {
-            let candidate = dir.join(name);
-            if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
-                return Some(candidate.to_string_lossy().to_string());
-            }
-        }
+        dirs.extend(user_cli_dirs(home));
+        dirs.push(home.join(".local").join("bin"));
     }
-
     // Standard install locations.
-    for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
-        let candidate = Path::new(prefix).join(name);
-        if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
-            return Some(candidate.to_string_lossy().to_string());
-        }
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    if let Some(home) = home {
+        dirs.push(home.join(".claude").join("local"));
+        dirs.push(home.join(".claude").join("bin"));
+        dirs.push(home.join(".asdf").join("shims"));
+        dirs.push(home.join(".local").join("share").join("mise").join("shims"));
+        dirs.push(home.join(".volta").join("bin"));
     }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|dir| seen.insert(dir.clone()));
+    dirs
+}
 
-    None
+/// The directories a program lookup walks on this machine, for diagnostics.
+///
+/// The UI shows these verbatim when a runtime CLI cannot be found, so a person
+/// who installed it somewhere unusual can see WHY HQ missed it rather than
+/// being told the CLI is not signed in.
+pub fn program_search_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        extended_search_dirs()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        unix_bin_search_dirs(home_dir().as_deref())
+    }
 }
 
 /// The `hq` cross-lane search directories on Unix, in EXACTLY today's
@@ -3247,6 +3365,76 @@ mod tests {
         );
     }
 
+    /// Claude Code's own installer writes `claude` to `~/.claude/local`, which
+    /// is on no package manager's prefix. Missing it left the CLI resolvable
+    /// only through the login shell, and a launch context without one reported
+    /// an installed, signed-in CLI as not signed in.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_a_claude_local_install() {
+        // A fixture-only name, because this machine may have a real
+        // `/opt/homebrew/bin/claude` that legitimately outranks the home dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let expected = tmp.path().join(".claude/local/hq-test-bin");
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), "hq-test-bin"),
+            Some(expected.to_string_lossy().to_string())
+        );
+        assert!(unix_bin_search_dirs(Some(tmp.path()))
+            .iter()
+            .any(|dir| dir.ends_with(".claude/local")));
+    }
+
+    /// Version-manager shims are the only copy of a globally installed CLI on
+    /// some machines.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_version_manager_shims() {
+        for relative in [".asdf/shims", ".local/share/mise/shims", ".volta/bin"] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let expected = tmp.path().join(relative).join("hq-test-bin");
+            std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+            std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+            assert_eq!(
+                resolve_bin_in_dirs(Some(tmp.path()), "hq-test-bin"),
+                Some(expected.to_string_lossy().to_string()),
+                "{relative} must be searched"
+            );
+        }
+    }
+
+    /// The late-install lane is additive: it may never outrank a directory
+    /// that already resolves today, or a bump could silently re-point every
+    /// spawn at a different binary.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_late_install_dirs_never_outrank_the_existing_precedence() {
+        let dirs = unix_bin_search_dirs(Some(Path::new("/home/x")));
+        let at = |suffix: &str| {
+            dirs.iter()
+                .position(|dir| dir.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} must be searched"))
+        };
+        assert!(at(".npm-global/bin") < at(".claude/local"));
+        assert!(at(".local/bin") < at(".claude/local"));
+        assert!(at("/opt/homebrew/bin") < at(".claude/local"));
+        assert!(at("/usr/local/bin") < at(".asdf/shims"));
+    }
+
+    /// The UI prints these to explain a failed lookup, so the list must be
+    /// non-empty and hold no duplicates.
+    #[test]
+    fn test_program_search_dirs_are_reportable() {
+        let dirs = program_search_dirs();
+        assert!(!dirs.is_empty());
+        let unique: std::collections::HashSet<_> = dirs.iter().collect();
+        assert_eq!(unique.len(), dirs.len(), "a repeated directory reads as a bug");
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_resolve_bin_in_dirs_finds_bun_global_binary() {
@@ -4206,9 +4394,22 @@ mod tests {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
         fn write_executable(path: &Path, body: &str) {
-            std::fs::create_dir_all(path.parent().expect("executable parent")).unwrap();
-            std::fs::write(path, body).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            use std::io::Write;
+
+            let parent = path.parent().expect("executable parent");
+            std::fs::create_dir_all(parent).unwrap();
+            let staging = parent.join(format!(
+                ".{}.fixture-{}",
+                path.file_name().expect("file name").to_string_lossy(),
+                std::process::id()
+            ));
+            {
+                let mut file = std::fs::File::create(&staging).unwrap();
+                file.write_all(body.as_bytes()).unwrap();
+                file.sync_all().unwrap();
+            }
+            std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::rename(&staging, path).unwrap();
         }
 
         let temp = tempfile::tempdir().unwrap();
@@ -4419,12 +4620,64 @@ printf '%s' '{"name":"@indigoai-us/hq-cli","version":"5.2.0"}' > "$HQ_CLI_UPDATE
 mod managed_git_shim_resolution_tests {
     use super::*;
 
+    /// Materialise an executable fixture with no write handle left open.
+    ///
+    /// The body is written to a sibling temp file inside a scope that drops
+    /// (and `sync_all`s) the `File` before the mode is set and before the path
+    /// is renamed into place, so the fixture only ever becomes visible at
+    /// `path` after this process has closed its writer. Without the explicit
+    /// scope, a sibling test's `Command::spawn` can fork while the write fd is
+    /// open, and the inherited fd makes Linux fail the exec with `ETXTBSY`.
     fn write_executable(path: &Path, body: &str) {
+        use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
-        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
-        std::fs::write(path, body).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let parent = path.parent().expect("parent");
+        std::fs::create_dir_all(parent).unwrap();
+        let staging = parent.join(format!(
+            ".{}.fixture-{}",
+            path.file_name().expect("file name").to_string_lossy(),
+            std::process::id()
+        ));
+        {
+            let mut file = std::fs::File::create(&staging).unwrap();
+            file.write_all(body.as_bytes()).unwrap();
+            file.sync_all().unwrap();
+        }
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::rename(&staging, path).unwrap();
+        assert!(
+            !fixture_has_open_write_handle(path),
+            "fixture {} still has an open write handle",
+            path.display()
+        );
+    }
+
+    /// True when this process still holds a writable fd on `path`.
+    ///
+    /// Linux only; every other target returns false because the check reads
+    /// `/proc/self/fd` and no other platform enforces `ETXTBSY` anyway.
+    fn fixture_has_open_write_handle(path: &Path) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let Ok(target) = std::fs::canonicalize(path) else {
+                return false;
+            };
+            let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
+                return false;
+            };
+            for entry in entries.flatten() {
+                if std::fs::read_link(entry.path()).ok().as_deref() == Some(target.as_path()) {
+                    return true;
+                }
+            }
+            false
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = path;
+            false
+        }
     }
 
     fn selected_git(path: &str) -> String {
@@ -4483,6 +4736,55 @@ mod managed_git_shim_resolution_tests {
         assert!(!repaired
             .split(':')
             .any(|entry| entry == shim.to_string_lossy()));
+    }
+
+    #[test]
+    fn text_file_busy_spawns_retry_until_the_binary_is_no_longer_busy() {
+        use std::cell::Cell;
+
+        let attempts = Cell::new(0u32);
+        let child = spawn_retrying_text_file_busy(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 3 {
+                return Err(std::io::Error::from_raw_os_error(26));
+            }
+            Command::new("/bin/sh")
+                .args(["-c", "exit 0"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        })
+        .expect("a transiently busy binary is retried");
+        let mut child = child;
+        let _ = child.wait();
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[test]
+    fn text_file_busy_retries_are_bounded_and_other_spawn_errors_are_not_retried() {
+        use std::cell::Cell;
+
+        let busy = Cell::new(0u32);
+        let error = spawn_retrying_text_file_busy(|| {
+            busy.set(busy.get() + 1);
+            Err(std::io::Error::from_raw_os_error(26))
+        })
+        .expect_err("a permanently busy binary still fails");
+        assert!(is_text_file_busy(&error), "unexpected error: {error}");
+        assert_eq!(busy.get(), TEXT_FILE_BUSY_ATTEMPTS);
+
+        let other = Cell::new(0u32);
+        let error = spawn_retrying_text_file_busy(|| {
+            other.set(other.get() + 1);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "nope",
+            ))
+        })
+        .expect_err("permission errors surface immediately");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(other.get(), 1, "non-ETXTBSY errors must not be retried");
     }
 
     #[test]

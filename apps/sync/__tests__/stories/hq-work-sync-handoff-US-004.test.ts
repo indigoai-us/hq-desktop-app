@@ -61,7 +61,7 @@ describe('US-004 silent HQ Work co-install after Sync update', () => {
     const end = hq.indexOf('#[cfg(test)]', start);
     const impl = hq.slice(start, end);
     expect(impl).not.toContain('show_desktop_window');
-    expect(impl).not.toContain('show_popover_window');
+    expect(impl).not.toContain('show_onboarding_window');
     expect(impl).not.toContain('reveal_handoff_card');
     expect(impl).not.toContain('open_desktop_alt_window');
     expect(impl).not.toContain('MessageDialog');

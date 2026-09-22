@@ -111,7 +111,14 @@ Do not paste `~/.hq/cognito-tokens.json` into Results.
 - Signed-in HQ Sync session (canonical `vault-users-*` Cognito). Approved
   operator domain: `@getindigo.ai`, `@vyg.ai`, or `@liverecover.com`.
 - Kill any other `ai.indigo.hq-sync-menubar` process before launching the
-  worktree bundle so AX / tray clicks hit this binary.
+  worktree bundle so AX / tray clicks hit this binary. Do this yourself — the
+  bundle no longer does it for you across identifiers. A build carrying its own
+  bundle identifier only reconciles the LaunchAgent named after that identifier
+  and only terminates its own install's processes, so a same-identifier
+  worktree build still collapses into the installed copy's single instance,
+  while a differently identified build leaves the installed app running
+  alongside it. See "Side-by-side local builds are scoped to their own bundle
+  identifier" in `docs/RELEASE.md`.
 - The screen must be **unlocked**. At the macOS lock screen the tray, the
   `Opt+Shift+O` global shortcut, and AX queries all silently no-op: the app
   runs, but no window is ever created and nothing reports an error.

@@ -2,8 +2,8 @@
  * Regression: the Sync PlatformAdapter must implement every member the
  * @hq/platform contract declares.
  *
- * The branch shipped US-102 with `appShell` missing `setDesktopWidget` and
- * `showOsNotification`. Only `svelte-check` caught it — the US-102 story test
+ * The branch shipped US-102 with `appShell` missing `showOsNotification`.
+ * Only `svelte-check` caught it — the US-102 story test
  * built the adapter and exercised individual commands, so vitest stayed green
  * while the app could not build. This test reads the contract source and
  * asserts group-by-group parity at runtime, so a future contract addition
@@ -110,8 +110,7 @@ describe('Sync PlatformAdapter contract parity', () => {
     const appShell = requiredMembers(interfaceBody(src, 'AppShellApi')).map(
       (m) => m.name,
     );
-    // The two members whose absence broke the build.
-    expect(appShell).toContain('setDesktopWidget');
+    // The member whose absence broke the build.
     expect(appShell).toContain('showOsNotification');
   });
 

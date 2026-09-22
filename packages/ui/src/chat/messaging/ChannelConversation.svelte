@@ -79,7 +79,7 @@
 
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
-  import { richContentForMessage } from "./richMessageContent";
+  import { messageHasVisibleContent, richContentForMessage } from "./richMessageContent";
   import { decisionAnswersFromMessages } from "./decision-answers";
   import type { DecisionOption } from "./richMessageContent";
   import {
@@ -102,12 +102,15 @@
   } from "./composer-drafts";
   import type { ConversationMessageWire } from "../chat-api";
   import { isReplyMessage } from "../live-messages";
+  import { copyableText } from "./conversation-copy";
   import {
     activeMentionQuery,
     applyMentionMarkup,
     filterMentionCandidates,
     mentionPayloadTargets,
     mentionSegments,
+    withHereMention,
+    mentionsPresentInBody,
     mentionTextForTarget,
     mergeMentionTargets,
     replaceActiveMention,
@@ -151,6 +154,12 @@
     ) => Promise<string | null>;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    /**
+     * Offer `@here` in the mention picker. True for a channel and for a group
+     * DM; false for a 1:1 DM, where there is one other person and they are
+     * already notified.
+     */
+    allowHereMention?: boolean;
     /** Open ReplyPanel for this root eventId. */
     onreply?: (rootEventId: string) => void;
     /** Start an in-channel session from this message. */
@@ -275,6 +284,7 @@
     previewCache,
     onpresign,
     mentionCandidates = [],
+    allowHereMention = false,
     onreply,
     onstartsession,
     onopensession,
@@ -523,10 +533,43 @@
   let composerEmojiOpen = $state(false);
   /** eventId whose full emoji picker is open (message-row "+" trigger). */
   let reactPickerFor = $state<string | null>(null);
+  /** eventId whose "Copy" just succeeded — flips the label to "Copied". */
+  let copiedEventId = $state<string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Copy the visible message text (body + details) to the clipboard. */
+  async function copyMessage(msg: ConversationMessageWire): Promise<void> {
+    const text = copyableText(msg, "body");
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    copiedEventId = msg.eventId;
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedEventId = null;
+      copiedTimer = null;
+    }, 1500);
+  }
   let dragActive = $state(false);
   let dragDepth = 0;
   let pasteCounter = 0;
+  /**
+   * Placeholder rows for a cold open. Widths are irregular on purpose — five
+   * identical bars read as a progress bar, not as a conversation.
+   */
+  const THREAD_SKELETON_ROWS = [
+    { name: 84, lines: [220, 320] },
+    { name: 64, lines: [280] },
+    { name: 96, lines: [180, 340, 240] },
+    { name: 72, lines: [260] },
+    { name: 88, lines: [300, 200] },
+  ];
   let scroller = $state<HTMLDivElement | null>(null);
+  /** The single box holding everything that scrolls — see the template note. */
+  let threadContent = $state<HTMLDivElement | null>(null);
   /**
    * Scroll ownership: the user wins. `stickToBottom` is the SINGLE gate for all
    * programmatic scrolling. It starts true (land on the newest message at mount
@@ -739,6 +782,7 @@
   onDestroy(() => {
     threadScroll.cancel();
     flushDraft();
+    if (copiedTimer) clearTimeout(copiedTimer);
   });
 
   const canSend = $derived(
@@ -749,7 +793,11 @@
   const showAgentMenu = $derived(replyText.trimStart().startsWith("/"));
   const mentionQuery = $derived(activeMentionQuery(replyText));
   const mentionHits = $derived(
-    filterMentionCandidates(mentionCandidates, mentionQuery, selectedMentions),
+    filterMentionCandidates(
+      withHereMention(mentionCandidates, allowHereMention),
+      mentionQuery,
+      selectedMentions,
+    ),
   );
   const showMentionPicker = $derived(mentionQuery !== null);
   const composerSegments = $derived(
@@ -1115,7 +1163,9 @@
     const body = replyText.trim();
     if (body === "/") return;
     if (!body && pendingFiles.length === 0) return;
-    const mentions = mentionPayloadTargets(selectedMentions);
+    const mentions = mentionPayloadTargets(
+      mentionsPresentInBody(body, selectedMentions),
+    );
     const files = [...pendingFiles];
     const eventId = `local-send-${sendSeq++}`;
     sendMeta.set(eventId, {
@@ -1169,7 +1219,13 @@
       forgetLocalSends(localSends.filter((row) => row.eventId === eventId));
       localSends = localSends.filter((row) => row.eventId !== eventId);
       const raw = err instanceof Error ? err.message.trim() : "";
-      attachError = formatComposerSendError(raw, files.length > 0);
+      // The mention names go in so a denial can name who could not be tagged;
+      // the server answers with a code and a sentence, never the offending uid.
+      attachError = formatComposerSendError(
+        raw,
+        files.length > 0,
+        mentions.map((mention) => mention.displayName),
+      );
       restoreDraftAfterFailedSend(body);
     }
   }
@@ -1241,6 +1297,38 @@
     });
   });
 
+  /**
+   * Hold the bottom while the content grows under it.
+   *
+   * The effect above only reacts to the timeline ARRAY changing. Most of what
+   * makes a freshly opened conversation settle is not a new row: an avatar
+   * decodes, a reaction bar appears when reactions resolve, a reply-count chip
+   * arrives, a code block finishes laying out, work-mesh activity merges into
+   * rows already on screen. Each of those makes the scroller taller after the
+   * pin ran, and the newest message walks off the bottom edge — the "have to
+   * scroll down a bit at the end" this fixes.
+   *
+   * Re-pinning is gated on `stickToBottom`, so a reader who has scrolled up is
+   * never yanked, and skipped during a history prepend, which anchors its own
+   * offset from `prependAnchorHeight`.
+   */
+  $effect(() => {
+    const el = scroller;
+    const content = threadContent;
+    if (!el || !content || typeof ResizeObserver === "undefined") return;
+    let lastHeight = content.offsetHeight;
+    const observer = new ResizeObserver(() => {
+      const height = content.offsetHeight;
+      if (height === lastHeight) return;
+      lastHeight = height;
+      if (!stickToBottom || loadingEarlier || prependAnchorHeight > 0) return;
+      if (restoreScrollPending) return;
+      el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  });
+
   $effect(() => {
     const target = restoreScroll;
     const el = scroller;
@@ -1298,6 +1386,23 @@
         onscroll={onThreadScroll}
         data-testid="conversation-thread"
       >
+      <!--
+        Everything that scrolls lives in ONE content box, for two reasons.
+
+        Anchoring: `flex: 1 0 auto` makes this box at least as tall as the
+        scroller, and `justify-content: flex-end` then parks short threads
+        against the composer. A conversation therefore starts at the bottom
+        structurally, on the first painted frame, with no scroll write and no
+        settle animation. A tall thread overflows normally because the box
+        never shrinks below its content.
+
+        Measurement: a ResizeObserver on the scroller cannot see its own
+        content grow. One wrapper gives `pinBottom` a single element whose
+        height changes when an avatar decodes, a reaction lands, a code block
+        lays out, or work-mesh activity merges in -- the late growth that used
+        to leave the reader a scroll short of the newest message.
+      -->
+      <div class="dm-thread-content" class:land-top={landAt === "top"} bind:this={threadContent}>
         {#if header}{@render header()}{/if}
         {#if headerOnly}
           <!-- header-only pane: nothing below the header -->
@@ -1309,6 +1414,29 @@
             role="status"
           >
             {emptyLabel}
+          </div>
+        {/if}
+        {#if timeline.length === 0 && loading}
+          <!--
+            Cold open: this conversation has nothing cached, so the pane would
+            otherwise be blank until the fetch lands. These placeholder rows
+            carry the real row geometry (32px avatar, name line, body lines) and
+            sit at the bottom like real messages, so the switch from placeholder
+            to message moves nothing. Aria-hidden: a reader is told the state by
+            the thread's own busy flag, not by five empty rows.
+          -->
+          <div class="thread-skeleton" data-testid="conversation-skeleton" aria-hidden="true">
+            {#each THREAD_SKELETON_ROWS as row, i (i)}
+              <div class="thread-skeleton-row">
+                <span class="thread-skeleton-avatar"></span>
+                <span class="thread-skeleton-column">
+                  <span class="thread-skeleton-name" style={`width:${row.name}px`}></span>
+                  {#each row.lines as width, j (j)}
+                    <span class="thread-skeleton-line" style={`width:${width}px`}></span>
+                  {/each}
+                </span>
+              </div>
+            {/each}
           </div>
         {/if}
         {#if loadingEarlier}
@@ -1440,7 +1568,7 @@
               }}
               time={row.timeLabel}
             />
-          {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
+          {:else if messageHasVisibleContent(msg) || parseMessageAttachments(msg).length > 0}
             {@const rich = richContentForMessage(msg)}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
@@ -1647,6 +1775,18 @@
                   >
                     Reply
                   </button>
+                  {#if copyableText(msg, "body")}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn dm-quick-copy"
+                      data-testid="message-copy"
+                      aria-label="Copy message text"
+                      title="Copy message"
+                      onclick={() => copyMessage(msg)}
+                    >
+                      {copiedEventId === msg.eventId ? "Copied" : "Copy"}
+                    </button>
+                  {/if}
                   {#if onstartsession}
                     <button
                       type="button"
@@ -1675,6 +1815,7 @@
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
         {/if}
+      </div>
       </div>
       {#if !stickToBottom && (landAt !== "top" || hasUnseenBelow)}
         <button
@@ -1992,8 +2133,8 @@
        hover-chrome fade cannot invalidate layout outside the thread. */
     contain: layout paint;
     /* 16px bottom so the last message's reaction bar doesn't kiss the
-       composer frame. */
-    padding: 8px 16px 16px;
+       composer frame. Sides follow --conv-inset (set on .chat-stage). */
+    padding: 8px var(--conv-inset, 16px) 16px;
     /* Float the 4px thumb 8px off the window edge, the way every other
        scroller in the design does — the sidebar already did this and the
        timeline did not, so the two rails disagreed down the same window. */
@@ -2003,8 +2144,73 @@
     gap: 0;
   }
 
+  /* Structural bottom anchoring. `flex: 1 0 auto` keeps this box at least as
+     tall as the scroller and never lets it shrink below its content, so a
+     short thread is pushed down by `justify-content: flex-end` and a long one
+     overflows exactly as before. The newest message is therefore against the
+     composer on the first painted frame, with no scroll write to see. */
+  .dm-thread-content {
+    display: flex;
+    flex: 1 0 auto;
+    flex-direction: column;
+    justify-content: flex-end;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  /* #welcome and friends land at the top and read downward. */
+  .dm-thread-content.land-top {
+    justify-content: flex-start;
+  }
+
   .dm-thread::-webkit-scrollbar {
     width: 4px;
+  }
+
+  /* ── Cold-open placeholder ───────────────────────────────────────────────
+     Geometry mirrors a real message row so replacing one with the other is a
+     paint, not a relayout: 32px avatar, 12px gutter, name line then body
+     lines on the same rhythm as `.dm-msg`. */
+  .thread-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    padding: 8px 0 4px;
+  }
+
+  .thread-skeleton-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .thread-skeleton-avatar,
+  .thread-skeleton-name,
+  .thread-skeleton-line {
+    display: inline-block;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--t1, #fff) 6%, transparent);
+  }
+
+  .thread-skeleton-avatar {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+  }
+
+  .thread-skeleton-column {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding-top: 2px;
+  }
+
+  .thread-skeleton-name {
+    height: 11px;
+  }
+
+  .thread-skeleton-line {
+    height: 10px;
   }
   .dm-thread::-webkit-scrollbar-thumb {
     background: var(--line);
@@ -2061,7 +2267,7 @@
   .dm-load-earlier {
     display: block;
     width: calc(100% - 24px);
-    margin: 8px 12px 4px;
+    margin: 8px var(--conv-inset, 12px) 4px;
     padding: 6px 10px;
     border: 0;
     border-radius: 8px;
@@ -2163,7 +2369,7 @@
     max-width: 42ch;
     overflow: hidden;
     color: var(--t1);
-    font-size: 13px;
+    font-size: 14px;
     /* 600 is the heaviest Geist face the shell ships; asking for 700 only
        rounds down (or synthesizes a smeared bold on fallback fonts). */
     font-weight: 600;
@@ -2191,9 +2397,12 @@
     border-radius: 4px;
   }
 
+  /* Sits beside the author like the thread pane ("Jacob Posel 3:48 PM"), not
+     flush right: the hover toolbar is pinned to the row's top-right corner,
+     and a right-aligned stamp lived exactly under it. */
   .dm-msg-header-time {
     flex: 0 0 auto;
-    margin-left: auto;
+    margin-left: 2px;
     color: var(--t3);
     font-family: var(--font-mono);
     font-size: 10px;
@@ -2261,13 +2470,21 @@
       --raised,
       var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06)))
     );
+    /* Links read as links. The muted body token (--t3) lands at ~2.9:1 on the
+       dark timeline, under AA, so a bare URL looked like dimmed prose. Reuse
+       the violet interactive ink the rest of the shell already uses for
+       actionable text instead of minting a new hex. */
+    --message-markdown-link: var(--vio-ink, var(--accent, #e0c4fe));
     min-width: 0;
     max-width: 100%;
     margin: 0;
-    font-family: var(--font-ui);
-    /* Match the composer and shell body; authors and metadata carry hierarchy. */
-    font-size: 13px;
-    line-height: 1.5;
+    /* Reading size for the timeline (two steps over the 13px UI base); the
+       author line sits one step under it so weight, not size, carries the
+       hierarchy. 1.7 leading: this is long-form reading, not a form field.
+       Values live in message-row.css so the composer reads the same ones. */
+    font-family: var(--msg-body-font-family, var(--font-ui));
+    font-size: var(--msg-body-font-size, 15px);
+    line-height: var(--msg-body-line-height, 1.7);
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
@@ -2366,14 +2583,17 @@
     min-width: 0;
   }
 
-  .dm-bubble-body :global(a) {
-    color: var(--message-markdown-muted);
+  .dm-bubble-body :global(a),
+  .dm-bubble-body :global(a:visited) {
+    color: var(--message-markdown-link);
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;
   }
 
   .dm-bubble-body :global(a:hover) {
+    /* Toward the primary text token: brighter on dark, deeper on light. */
+    color: color-mix(in srgb, var(--message-markdown-link) 88%, var(--t1));
     text-decoration-color: currentColor;
   }
 
@@ -2661,7 +2881,8 @@
     background: var(--c-field-bg);
   }
 
-  .dm-quick-reply {
+  .dm-quick-reply,
+  .dm-quick-copy {
     padding: 0 8px;
     color: var(--t1);
     font: 500 11px/1 var(--font-ui);
@@ -2676,7 +2897,7 @@
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-    margin: 0 16px 20px;
+    margin: 0 var(--conv-inset, 16px) 20px;
     /* Concept `.composer`: 10px radius, 12px of air above the caret. */
     padding: 12px 8px 8px 14px;
     background: var(--raised, var(--pop-hover));
@@ -2715,7 +2936,7 @@
     /* Must stay byte-identical to `.dm-reply-input` — this is an absolutely
        positioned mirror of it, and any difference in metrics slides the
        mention highlights off the words they belong to. */
-    font: 400 13px/1.46 var(--font-ui);
+    font: var(--msg-body-font, 400 15px / 1.7 var(--font-ui));
   }
 
   .composer-mention {
@@ -2734,10 +2955,10 @@
     border: none;
     background: none;
     color: var(--t1, var(--pop-text));
-    /* The chat body's size. What you type and what you have typed are the
-       same copy, so the composer setting its own larger size made the
-       message shrink the moment it was sent. */
-    font: 400 13px/1.46 var(--font-ui);
+    /* The chat body's font, from the shared token in message-row.css. What
+       you type and what you have typed are the same copy, so the composer
+       owning its own size made the message resize the moment it was sent. */
+    font: var(--msg-body-font, 400 15px / 1.7 var(--font-ui));
     caret-color: var(--t1, #f4f4f5);
   }
 

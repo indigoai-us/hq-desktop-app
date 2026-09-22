@@ -11,6 +11,9 @@ export interface ChannelWakeHint {
   eventId?: string;
   createdAt?: string;
   fromPersonUid?: string;
+  /** Author display name / email, when the mesh payload carries one. */
+  fromDisplayName?: string;
+  fromEmail?: string;
 }
 
 function asTrimmedString(value: unknown): string {
@@ -150,6 +153,8 @@ export function channelWakeFromPayload(
       eventId?: unknown;
       createdAt?: unknown;
       fromPersonUid?: unknown;
+      fromDisplayName?: unknown;
+      fromEmail?: unknown;
     };
     if (rec.type !== "channel") return null;
     const channelId = asTrimmedString(rec.channelId);
@@ -157,11 +162,17 @@ export function channelWakeFromPayload(
     const eventId = asTrimmedString(rec.eventId);
     const createdAt = asTrimmedString(rec.createdAt);
     const fromPersonUid = asTrimmedString(rec.fromPersonUid);
+    // Author identity when the server sends it — the notification feed names
+    // the sender, and resolving a uid client-side is a lossy fallback.
+    const fromDisplayName = asTrimmedString(rec.fromDisplayName);
+    const fromEmail = asTrimmedString(rec.fromEmail);
     return {
       channelId,
       ...(eventId ? { eventId } : {}),
       ...(createdAt ? { createdAt } : {}),
       ...(fromPersonUid ? { fromPersonUid } : {}),
+      ...(fromDisplayName ? { fromDisplayName } : {}),
+      ...(fromEmail ? { fromEmail } : {}),
     };
   } catch {
     return null;

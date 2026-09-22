@@ -26,8 +26,10 @@
   import HomeStep from "./HomeStep.svelte";
   import KindStep from "./KindStep.svelte";
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
+  import type { RuntimeStatus } from "./runtime-status.js";
   import {
     STEP_TITLES,
+    botDisplayName,
     botHandle,
     canAdvance,
     canCreate,
@@ -56,10 +58,22 @@
     avatar?: AvatarSelection;
     /** Job title for the agent profile ("Ad account analyst"). */
     title?: string;
+    /**
+     * Free-form display name ("Dr Love") when it differs from the handle the
+     * bot was created under. `hq bot create` only takes the handle, so the
+     * label is PATCHed onto the agent profile the same way the title is.
+     */
+    displayName?: string;
   }
 
   interface Props {
     botRuntimeReady?: Record<string, boolean> | null;
+    /**
+     * Per-runtime state (not-installed / couldn't-check / signed-out /
+     * signed-in). Optional: a host that has not been updated keeps the
+     * boolean-only behaviour.
+     */
+    botRuntimeStatus?: Record<string, RuntimeStatus> | null;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     existingNames?: readonly string[] | null;
     /** Companies a Cloud bot can be added to; empty hides Cloud. */
@@ -83,6 +97,8 @@
     signInApi?: RuntimeSignInApi | null;
     onsignin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    /** Re-read runtime readiness from the host (Check again / Try again). */
+    onrecheckruntimes?: (() => void | Promise<void>) | null;
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /** Sign-in poll interval; tests shorten it. */
@@ -93,6 +109,7 @@
 
   let {
     botRuntimeReady = null,
+    botRuntimeStatus = null,
     botWorkers = null,
     existingNames = null,
     agentTargets = null,
@@ -105,6 +122,7 @@
     signInApi = null,
     onsignin = null,
     onsignedin = null,
+    onrecheckruntimes = null,
     avatarPacks = null,
     loadAvatarPacks = null,
     pollMs = 1500,
@@ -122,6 +140,7 @@
     canLocal,
     canCloud,
     runtimeReady: botRuntimeReady,
+    runtimeStatus: botRuntimeStatus,
     existingNames: names,
     companies,
     ownerCompanies,
@@ -211,6 +230,7 @@
       return;
     }
     const title = draft.title.trim();
+    const displayName = botDisplayName(draft);
     if (draft.home === "cloud") {
       if (draft.companyUid) {
         await onCloudCreate?.(draft.companyUid, {
@@ -224,6 +244,7 @@
     await oncreate?.(toCreateInput(draft), {
       ...(draft.avatar ? { avatar: draft.avatar } : {}),
       ...(title ? { title } : {}),
+      ...(displayName ? { displayName } : {}),
     });
   }
 
@@ -300,7 +321,7 @@
       <BotPreviewCard
         placement="top"
         name={draft.name}
-        handle={draft.home === "cloud" ? botHandle(draft) : ""}
+        handle={botHandle(draft)}
         home={draft.home}
         runtime={draft.runtime}
         thinksWith={thinksWithLine(draft, ctx)}
@@ -319,12 +340,14 @@
           {canLocal}
           {canCloud}
           runtimeReady={botRuntimeReady}
+          runtimeStatus={botRuntimeStatus}
           {companies}
           disabled={busy}
           onpatch={patch}
           {signInApi}
           onsignin={onsignin ?? undefined}
           onsignedin={onsignedin ?? undefined}
+          onrecheck={onrecheckruntimes ?? undefined}
           {pollMs}
         />
       {:else if draft.home === "cloud"}
@@ -378,7 +401,7 @@
       <BotPreviewCard
         placement="rail"
         name={draft.name}
-        handle={draft.home === "cloud" ? botHandle(draft) : ""}
+        handle={botHandle(draft)}
         home={draft.home}
         runtime={draft.runtime}
         thinksWith={thinksWithLine(draft, ctx)}

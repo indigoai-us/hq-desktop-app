@@ -139,6 +139,9 @@ function mountSidebar(
       companies: [INDIGO, LIVERECOVER],
       self: { uid: "prs_stefan", displayName: "Stefan" },
       selectedId: "ch:hq-desktop",
+      // The fleet agent is on the rail because it talks to this user — a
+      // newly created agent never gets a row (agent-stub rule).
+      engagedAgentUids: ["agt_fleet"],
       ...extras,
     },
   });

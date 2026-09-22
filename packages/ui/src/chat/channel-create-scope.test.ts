@@ -11,7 +11,6 @@ import {
   formatChannelCreateFailure,
   isPersonalWorkspace,
   pickChannelCompanyUid,
-  personalScopeAllowed,
   companyUidsByPerson,
   unavailableChannelScopes,
   unconfirmedCreateMessage,
@@ -225,14 +224,14 @@ describe("defaultChannelCompanyUid", () => {
     ).toBe("cmp_indigo");
   });
 
-  it("falls back to the shared company when the active scope is personal", () => {
+  it("keeps personal when the active scope is personal, members or not", () => {
     expect(
       defaultChannelCompanyUid({
         activeScope: "personal",
         companies,
         members: [stefan, yousuf, shawon],
       }),
-    ).toBe("cmp_indigo");
+    ).toBe("");
   });
 });
 
@@ -249,17 +248,32 @@ describe("member-driven scope filtering", () => {
     ).toEqual(["Stefan Johnson isn't a member of LiveRecover"]);
   });
 
-  it("keeps personal only for the owner and their agents", () => {
-    const owner: ChannelCreateMember = {
-      personUid: "prs_corey",
-      label: "Corey",
+  it("keeps personal selected when a person is added", () => {
+    // Regression: picking someone outside every company used to flip "In"
+    // back to the first company and raise the external-member prompt.
+    const kristina: ChannelCreateMember = {
+      personUid: "prs_kristina",
+      label: "Kristina Cheraneva",
       companyUids: [],
     };
-    expect(personalScopeAllowed([agent], "prs_corey")).toBe(true);
-    expect(personalScopeAllowed([owner], "prs_corey")).toBe(true);
-    expect(personalScopeAllowed([stefan, yousuf, shawon], "prs_corey")).toBe(
-      false,
-    );
+    expect(
+      pickChannelCompanyUid({
+        activeScope: "personal",
+        companies,
+        members: [kristina],
+        currentUid: "",
+        selfUid: "prs_corey",
+      }),
+    ).toBe("");
+    expect(
+      pickChannelCompanyUid({
+        activeScope: "personal",
+        companies,
+        members: [stefan, agent],
+        currentUid: "",
+        selfUid: "prs_corey",
+      }),
+    ).toBe("");
   });
 
   it("does not treat unknown memberships as a restriction", () => {
@@ -270,20 +284,20 @@ describe("member-driven scope filtering", () => {
     ).toEqual(["cmp_indigo", "cmp_lr"]);
   });
 
-  it("auto-selects away from a now-unavailable current scope", () => {
+  it("auto-selects away from a now-unavailable company", () => {
     expect(
       pickChannelCompanyUid({
         activeScope: "all",
         companies,
         members: [stefan, yousuf],
-        currentUid: "",
+        currentUid: "cmp_lr",
       }),
     ).toBe("cmp_indigo");
   });
 });
 
 describe("channelCreateValidationMessage", () => {
-  it("tells the owner to pick the shared company instead of personal", () => {
+  it("never blocks a personal channel on company membership", () => {
     expect(
       channelCreateValidationMessage({
         activeScope: "all",
@@ -291,7 +305,7 @@ describe("channelCreateValidationMessage", () => {
         members: [stefan, yousuf, shawon],
         companyUid: "",
       }),
-    ).toBe("Stefan Johnson isn't a member of Personal — pick Indigo");
+    ).toBeNull();
   });
 
   it("names the selected company the invitee is missing from", () => {

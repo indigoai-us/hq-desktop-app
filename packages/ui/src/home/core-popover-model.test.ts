@@ -253,10 +253,16 @@ describe("G7: core pill dot tone", () => {
     expect(corePillDotTone({ cloudPaused: true })).toBe("warn");
   });
 
-  it("is green only when healthy", () => {
+  it("is green only when healthy and nothing is running", () => {
     expect(corePillDotTone({})).toBe("ok");
     expect(corePillDotTone({ syncState: "idle", conflictCount: 0 })).toBe("ok");
-    expect(corePillDotTone({ syncState: "syncing" })).toBe("ok");
+  });
+
+  // PL-01: a healthy run in flight used to read green, which made the pill
+  // silent about the one moment the user most wants to see. It now gets its
+  // own tone — still not amber, because a running sync is not trouble.
+  it("reads as active, not green, while a healthy sync runs", () => {
+    expect(corePillDotTone({ syncState: "syncing" })).toBe("active");
   });
 });
 

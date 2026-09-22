@@ -368,7 +368,23 @@ pub fn reconcile_installed(retire_legacy: bool) -> ReconcileReport {
         if !is_applications_bundle_exe(&exe) {
             return ReconcileReport::default();
         }
-        let Some(plist_path) = installed_plist_path() else {
+        // Scope every side effect below to THIS install's bundle identifier.
+        // A side-by-side build (own identifier, e.g. a local debug bundle)
+        // must not repoint or bootout the owner's agent, and must not kill the
+        // installed copy's process just because both binaries are named
+        // `hq-sync-menubar`.
+        let identifier = bundle_identifier_for_exe(&exe);
+        let (label, retire_legacy) = match install_scope(identifier.as_deref(), retire_legacy) {
+            InstallScope::Scoped {
+                label,
+                retire_legacy,
+            } => (label, retire_legacy),
+            InstallScope::Unknown => {
+                log_la("bundle identifier unknown; skipping LaunchAgent reconcile (no kill)");
+                return ReconcileReport::default();
+            }
+        };
+        let Some(plist_path) = plist_path_for_label(&label) else {
             log_la("no home directory; skipping");
             return ReconcileReport::default();
         };
@@ -382,7 +398,7 @@ pub fn reconcile_installed(retire_legacy: bool) -> ReconcileReport {
             plist_path: &plist_path,
             current_exe: &exe_str,
             self_pid: std::process::id(),
-            label: LAUNCH_AGENT_LABEL,
+            label: &label,
             uid: current_uid(),
             applications_dir: Path::new("/Applications"),
             running_bundle: &running_bundle,
@@ -395,13 +411,86 @@ pub fn reconcile_installed(retire_legacy: bool) -> ReconcileReport {
     }
 }
 
-/// Path to the real user LaunchAgent. Tests must not write this file.
-pub fn installed_plist_path() -> Option<PathBuf> {
+/// Path to the user LaunchAgent for `label`. Tests must not write the real one.
+pub fn plist_path_for_label(label: &str) -> Option<PathBuf> {
     dirs::home_dir().map(|home| {
         home.join("Library")
             .join("LaunchAgents")
-            .join(format!("{LAUNCH_AGENT_LABEL}.plist"))
+            .join(format!("{label}.plist"))
     })
+}
+
+/// Path to the real user LaunchAgent. Tests must not write this file.
+pub fn installed_plist_path() -> Option<PathBuf> {
+    plist_path_for_label(LAUNCH_AGENT_LABEL)
+}
+
+/// `CFBundleIdentifier` from an `Info.plist` body. Pure so every platform's CI
+/// covers it.
+pub fn bundle_identifier_from_info_plist(plist: &str) -> Option<String> {
+    let after_key = plist.split("<key>CFBundleIdentifier</key>").nth(1)?;
+    let value = after_key
+        .split("<string>")
+        .nth(1)?
+        .split("</string>")
+        .next()?;
+    let id = xml_unescape(value.trim());
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+/// Bundle identifier of the `.app` an executable lives in, or `None` when the
+/// bundle or its `Info.plist` cannot be read. `None` always means "this
+/// process does not know who it is", and every caller must then do nothing.
+pub fn bundle_identifier_for_exe(exe: &Path) -> Option<String> {
+    let bundle = enclosing_app_bundle(exe)?;
+    let info = bundle.join("Contents").join("Info.plist");
+    match std::fs::read_to_string(&info) {
+        Ok(text) => match bundle_identifier_from_info_plist(&text) {
+            Some(id) => Some(id),
+            None => {
+                log_la(&format!("no CFBundleIdentifier in {}", info.display()));
+                None
+            }
+        },
+        Err(err) => {
+            log_la(&format!("unreadable {}: {err}", info.display()));
+            None
+        }
+    }
+}
+
+/// What a running install is allowed to reconcile.
+///
+/// A side-by-side debug build carries its OWN bundle identifier. It must only
+/// ever touch the LaunchAgent named after that identifier, and may only
+/// terminate processes belonging to that same install — never the owner's
+/// installed `ai.indigo.hq-sync-menubar` copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallScope {
+    /// Reconcile the agent labelled `label`. `retire_legacy` can only be true
+    /// for the canonical shipped identifier — a differently identified build
+    /// never owns `HQ Sync.app`.
+    Scoped { label: String, retire_legacy: bool },
+    /// The bundle identifier could not be read. Do nothing: no plist rewrite,
+    /// no launchctl, and above all no kill.
+    Unknown,
+}
+
+/// Resolve the scope for a running install. An absent or blank identifier
+/// resolves to [`InstallScope::Unknown`] — "do not kill", never "kill
+/// everything".
+pub fn install_scope(identifier: Option<&str>, retire_legacy_requested: bool) -> InstallScope {
+    match identifier.map(str::trim) {
+        Some(id) if !id.is_empty() => InstallScope::Scoped {
+            label: id.to_string(),
+            retire_legacy: retire_legacy_requested && id == LAUNCH_AGENT_LABEL,
+        },
+        _ => InstallScope::Unknown,
+    }
 }
 
 /// launchctl argv pairs for bootout then bootstrap. Kept pure so tests can
@@ -544,7 +633,21 @@ pub fn schedule_handoff_after_exit() -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        let Some(plist_path) = installed_plist_path() else {
+        let identifier = match std::env::current_exe() {
+            Ok(exe) => bundle_identifier_for_exe(&exe),
+            Err(err) => {
+                log_la(&format!("current_exe failed: {err}"));
+                None
+            }
+        };
+        // Same scoping rule as `reconcile_installed`: hand off only this
+        // install's own launchd job, never the canonical one from a
+        // differently identified build.
+        let InstallScope::Scoped { label, .. } = install_scope(identifier.as_deref(), false) else {
+            log_la("bundle identifier unknown; skip launchd handoff");
+            return false;
+        };
+        let Some(plist_path) = plist_path_for_label(&label) else {
             log_la("no home directory; cannot hand off to launchd");
             return false;
         };
@@ -554,8 +657,8 @@ pub fn schedule_handoff_after_exit() -> bool {
         }
         let uid = current_uid();
         let self_pid = std::process::id();
-        bootout_foreign_job_if_needed(uid, self_pid);
-        spawn_handoff_waiter(self_pid, uid, &plist_path)
+        bootout_foreign_job_if_needed(uid, self_pid, &label);
+        spawn_handoff_waiter(self_pid, uid, &label, &plist_path)
     }
 }
 
@@ -709,9 +812,9 @@ fn log_la(msg: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn bootout_foreign_job_if_needed(uid: u32, self_pid: u32) {
+fn bootout_foreign_job_if_needed(uid: u32, self_pid: u32, label: &str) {
     let output = std::process::Command::new("launchctl")
-        .args(["list", LAUNCH_AGENT_LABEL])
+        .args(["list", label])
         .output();
     let agent_pid = match output {
         Ok(output) => parse_launchctl_list_pid(&String::from_utf8_lossy(&output.stdout)),
@@ -723,7 +826,7 @@ fn bootout_foreign_job_if_needed(uid: u32, self_pid: u32) {
     if !should_bootout_foreign_job(self_pid, agent_pid) {
         return;
     }
-    let target = format!("gui/{uid}/{LAUNCH_AGENT_LABEL}");
+    let target = format!("gui/{uid}/{label}");
     match std::process::Command::new("launchctl")
         .args(["bootout", &target])
         .output()
@@ -740,10 +843,9 @@ fn bootout_foreign_job_if_needed(uid: u32, self_pid: u32) {
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_handoff_waiter(self_pid: u32, uid: u32, plist_path: &Path) -> bool {
+fn spawn_handoff_waiter(self_pid: u32, uid: u32, label: &str, plist_path: &Path) -> bool {
     use std::process::Stdio;
-    let (argv, env) =
-        launchctl_handoff_after_exit_command(self_pid, uid, LAUNCH_AGENT_LABEL, plist_path);
+    let (argv, env) = launchctl_handoff_after_exit_command(self_pid, uid, label, plist_path);
     let Some((program, args)) = argv.split_first() else {
         log_la("handoff command was empty");
         return false;
@@ -1329,7 +1431,144 @@ mod tests {
         );
     }
 
+    // --- Bundle-identity scoping -------------------------------------------
+    //
+    // Field report 2026-09-18: a side-by-side debug build (own bundle id,
+    // updater off) started up and terminated the owner's installed
+    // /Applications/HQ.app process, because the LaunchAgent label was a
+    // hard-coded constant. The test build rewrote the canonical agent plist to
+    // its own exe, which made the installed exe "stale", which killed it.
+
+    const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>HQ</string>
+    <key>CFBundleIdentifier</key>
+    <string>ai.indigo.hq-dm-test-20260918a</string>
+</dict>
+</plist>
+"#;
+
     #[test]
+    fn reads_bundle_identifier_from_info_plist() {
+        assert_eq!(
+            bundle_identifier_from_info_plist(INFO_PLIST).as_deref(),
+            Some("ai.indigo.hq-dm-test-20260918a")
+        );
+    }
+
+    #[test]
+    fn missing_or_blank_bundle_identifier_reads_as_none() {
+        assert_eq!(
+            bundle_identifier_from_info_plist("<plist><dict></dict></plist>"),
+            None
+        );
+        assert_eq!(
+            bundle_identifier_from_info_plist(
+                "<key>CFBundleIdentifier</key>\n<string>   </string>"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn side_by_side_build_scopes_to_its_own_label_and_never_retires_legacy() {
+        let scope = install_scope(Some("ai.indigo.hq-dm-test-20260918a"), true);
+        assert_eq!(
+            scope,
+            InstallScope::Scoped {
+                label: "ai.indigo.hq-dm-test-20260918a".to_string(),
+                retire_legacy: false,
+            }
+        );
+    }
+
+    #[test]
+    fn canonical_build_keeps_its_label_and_legacy_retirement() {
+        assert_eq!(
+            install_scope(Some(LAUNCH_AGENT_LABEL), true),
+            InstallScope::Scoped {
+                label: LAUNCH_AGENT_LABEL.to_string(),
+                retire_legacy: true,
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_bundle_identifier_means_do_nothing_not_kill_everything() {
+        assert_eq!(install_scope(None, true), InstallScope::Unknown);
+        assert_eq!(install_scope(Some("   "), true), InstallScope::Unknown);
+    }
+
+    #[test]
+    fn scoped_label_selects_that_label_s_plist_only() {
+        let Some(mine) = plist_path_for_label("ai.indigo.hq-dm-test-20260918a") else {
+            return; // no home dir in this environment
+        };
+        let canonical = installed_plist_path().expect("home dir resolved once");
+        assert_ne!(mine, canonical);
+        assert!(mine
+            .to_string_lossy()
+            .ends_with("ai.indigo.hq-dm-test-20260918a.plist"));
+    }
+
+    #[test]
+    fn side_by_side_install_does_not_kill_the_canonical_install() {
+        // The test build's own agent plist does not exist, so nothing is
+        // repointed and no process is stale — the installed copy survives.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let own_plist = tmp.path().join("ai.indigo.hq-dm-test-20260918a.plist");
+        let installed_exe = "/Applications/HQ.app/Contents/MacOS/hq-sync-menubar";
+        let test_exe = "/Applications/HQ DM Test 20260918a.app/Contents/MacOS/hq-sync-menubar";
+        let report = reconcile_with(ReconcileRequest {
+            plist_path: &own_plist,
+            current_exe: test_exe,
+            self_pid: 4242,
+            label: "ai.indigo.hq-dm-test-20260918a",
+            uid: 501,
+            applications_dir: tmp.path(),
+            running_bundle: Path::new("/Applications/HQ DM Test 20260918a.app"),
+            trash_dir: None,
+            processes: &[(99, installed_exe.to_string())],
+            run_launchctl: false,
+            kill_processes: false,
+            retire_legacy: false,
+        });
+        assert_eq!(report, ReconcileReport::default());
+        assert!(report.killed.is_empty());
+        assert!(
+            !own_plist.exists(),
+            "must not create a plist it did not find"
+        );
+    }
+
+    #[test]
+    fn same_identifier_still_reaps_its_own_stale_process() {
+        // Single-instance behaviour for the SAME bundle id is unchanged: the
+        // canonical agent repoints from the old path and the old process at
+        // that path is stale.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plist = tmp.path().join("agent.plist");
+        fs::write(&plist, fixture(OLD_EXE, true)).expect("seed plist");
+        let report = reconcile_with(ReconcileRequest {
+            plist_path: &plist,
+            current_exe: CURRENT_BUNDLE_EXECUTABLE,
+            self_pid: 4242,
+            label: LAUNCH_AGENT_LABEL,
+            uid: 501,
+            applications_dir: tmp.path(),
+            running_bundle: Path::new("/Applications/HQ.app"),
+            trash_dir: None,
+            processes: &[(77, OLD_EXE.to_string())],
+            run_launchctl: false,
+            kill_processes: false,
+            retire_legacy: false,
+        });
+        assert_eq!(report.killed, vec![(77, OLD_EXE.to_string())]);
+    }
+    #[test]
+
     fn notice_when_repointed_or_killed_or_retired() {
         assert!(!ReconcileReport::default().should_surface_notice());
         assert!(ReconcileReport {

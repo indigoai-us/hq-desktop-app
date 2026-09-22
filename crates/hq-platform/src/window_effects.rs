@@ -89,6 +89,45 @@ pub fn apply_popover_vibrancy(window: &impl HasWindowHandle) {
     }
 }
 
+/// Apply the full-screen material behind the welcome film.
+///
+/// Distinct from [`apply_popover_vibrancy`] in two ways that matter for a film
+/// that covers the whole display: the material is the full-screen one (a deeper
+/// blur that reads as "the desktop is behind a sheet" rather than "a popover is
+/// floating"), and the corner radius is ZERO — a rounded corner on a
+/// full-screen window shows four notches of unblurred desktop.
+pub fn apply_fullscreen_vibrancy(window: &impl HasWindowHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+
+        match apply_vibrancy(
+            window,
+            NSVisualEffectMaterial::FullScreenUI,
+            Some(NSVisualEffectState::Active),
+            Some(0.0),
+        ) {
+            Ok(()) => log(
+                "ui",
+                "apply_vibrancy: success (FullScreenUI material, square corners, active)",
+            ),
+            Err(e) => log("ui", &format!("apply_vibrancy (fullscreen) FAILED: {e}")),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Windows keeps the existing backdrop: Mica/Acrylic already cover the
+        // whole window, and there is no separate full-screen material.
+        apply_windows_window_style(window, resolve_windows_appearance(None));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = window;
+    }
+}
+
 /// Apply Windows Mica (Win 11) or Acrylic (Win 10) matched to `appearance`.
 ///
 /// Re-call this from `WindowEvent::ThemeChanged` so live OS theme switches

@@ -109,7 +109,11 @@ const $ = <T extends Element>(selector: string): T | null =>
   document.querySelector<T>(selector);
 
 async function settleQuery(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  // The query input debounces at 110 ms (CreateModal.svelte). This used to
+  // sleep a real 150 ms, once per call, ~47 times across the file (~7 s of the
+  // file's ~9 s). Fake timers jump the same 150 ms instantly and assert the
+  // same thing: the debounce has fired and its result has rendered.
+  await vi.advanceTimersByTimeAsync(150);
   await tick();
 }
 
@@ -134,6 +138,7 @@ async function gotoCreate(name: string): Promise<void> {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   window.localStorage?.clear?.();
   host = document.createElement("div");
   host.className = "desktop-shell chat-shell";
@@ -147,6 +152,7 @@ afterEach(async () => {
   document
     .querySelectorAll('[data-testid="chat-create-modal"]')
     .forEach((node) => node.remove());
+  vi.useRealTimers();
 });
 
 describe("CreateModal find step", () => {
@@ -171,10 +177,11 @@ describe("CreateModal find step", () => {
     expect(document.activeElement).toBe(focusable[focusable.length - 1]);
   });
 
-  it("picking a person stages a group instead of navigating away", async () => {
-    // Clicking the first name used to call `onpick` straight through, which
-    // opened that DM and tore the modal down — so a second person could never
-    // be added and a group was unreachable from this modal.
+  it("picking a person opens the DM instead of the New-channel dialog", async () => {
+    // Picking one name used to land in the create step with that person staged
+    // as a channel member, so a plain DM meant naming a channel first — and,
+    // for anyone outside the active workspace, answering "add them from
+    // outside?" about a channel that did not exist.
     const onpick = vi.fn();
     open({ rows: [personRow()], onpick });
     await tick();
@@ -184,16 +191,42 @@ describe("CreateModal find step", () => {
     $<HTMLButtonElement>('[data-testid="chat-create-result"]')!.click();
     await tick();
 
-    expect(onpick, "picking a person must not navigate").not.toHaveBeenCalled();
-    const chips = [
-      ...document.querySelectorAll('[data-testid="chat-channel-chip"]'),
-    ].map((el) => el.textContent ?? "");
-    expect(chips.join(" "), "the person is staged as a member").toContain("Ada");
-    // Naming is what turns the staged people into a channel.
-    expect($('[data-testid="chat-channel-create"]')).not.toBeNull();
+    expect(onpick, "one person is a DM, not a channel").toHaveBeenCalledTimes(1);
+    expect(onpick.mock.calls[0][0]?.personUid).toBe("prs_ada");
+    expect($('[data-testid="chat-channel-name"]')).toBeNull();
+    expect(
+      document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+    ).toHaveLength(0);
   });
 
-  it("keyboard Enter stages a person the same way a click does", async () => {
+  it("opens the DM for a person outside the active workspace too", async () => {
+    // The reported bug: an outsider's name opened the New-channel dialog behind
+    // a cross-company confirm. Membership has no say in a 1:1 DM.
+    const onpick = vi.fn();
+    open({
+      api: stubApi({
+        listCompanyMembers: async () => ({
+          contacts: [{ personUid: "prs_me", displayName: "Stefan" }],
+        }),
+      }),
+      rows: [personRow({ id: "dm:prs_kri", title: "Kristina", personUid: "prs_kri" })],
+      contacts: [{ personUid: "prs_kri", displayName: "Kristina" }],
+      onpick,
+    });
+    await tick();
+    type($<HTMLInputElement>('[data-testid="chat-create-query"]')!, "Kri");
+    await settleQuery();
+
+    $<HTMLButtonElement>('[data-testid="chat-create-result"]')!.click();
+    await tick();
+
+    expect(onpick).toHaveBeenCalledTimes(1);
+    expect(onpick.mock.calls[0][0]?.personUid).toBe("prs_kri");
+    expect($('[data-testid="chat-create-confirm-external"]')).toBeNull();
+    expect($('[data-testid="chat-channel-name"]')).toBeNull();
+  });
+
+  it("keyboard Enter opens the DM the same way a click does", async () => {
     const onpick = vi.fn();
     open({ rows: [personRow()], onpick });
     await tick();
@@ -204,30 +237,17 @@ describe("CreateModal find step", () => {
     press(input, "Enter");
     await tick();
 
-    expect(onpick).not.toHaveBeenCalled();
-    const chips = [
-      ...document.querySelectorAll('[data-testid="chat-channel-chip"]'),
-    ].map((el) => el.textContent ?? "");
-    expect(chips.join(" ")).toContain("Ada");
-  });
-
-  it("a single unnamed person can still go straight to a DM", async () => {
-    const onpick = vi.fn();
-    open({ rows: [personRow()], onpick });
-    await tick();
-    type($<HTMLInputElement>('[data-testid="chat-create-query"]')!, "Ada");
-    await settleQuery();
-    $<HTMLButtonElement>('[data-testid="chat-create-result"]')!.click();
-    await tick();
-
-    const direct = $<HTMLButtonElement>(
-      '[data-testid="chat-channel-message-directly"]',
-    );
-    expect(direct, "one person and no name needs no channel").not.toBeNull();
-    direct!.click();
-    await tick();
     expect(onpick).toHaveBeenCalledTimes(1);
     expect(onpick.mock.calls[0][0]?.personUid).toBe("prs_ada");
+  });
+
+  it("the create row still opens the New-channel dialog", async () => {
+    // Criterion 2: channel creation keeps its own entry point.
+    open({ rows: [personRow()] });
+    await tick();
+    await gotoCreate("Growth");
+    expect($('[data-testid="chat-channel-name"]')).toBeTruthy();
+    expect($('[data-testid="chat-channel-create"]')).toBeTruthy();
   });
 
   it("picking a channel still opens it", async () => {
@@ -711,9 +731,13 @@ describe("CreateModal submit", () => {
     });
     await tick();
     await gotoCreate("Growth");
-    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
-      "",
-    );
+    // Personal scope: the toggle is on Personal and no company dropdown shows.
+    expect(
+      $('[data-testid="chat-channel-scope-personal"]')?.getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+    expect($('[data-testid="chat-channel-scope"]')).toBeNull();
 
     $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
     await vi.waitFor(() => {
@@ -870,6 +894,134 @@ describe("CreateModal member picker", () => {
   });
 });
 
+describe("CreateModal Company/Personal scope", () => {
+  const TWO = [
+    { companyUid: "cmp_amass", label: "Amass" },
+    { companyUid: "cmp_indigo", label: "Indigo" },
+  ];
+  /** Kristina is in none of the caller's companies. */
+  const kristinaRow = () =>
+    personRow({
+      id: "dm:prs_kristina",
+      title: "Kristina Cheraneva",
+      personUid: "prs_kristina",
+    });
+  const emptyRosters = () => vi.fn(async () => ({ contacts: [] }));
+
+  // Regression (#hq-desktop): picking a person while "In" was Personal flipped
+  // the scope back to the first company and raised "Add … from outside Amass?".
+  it("keeps Personal, and asks nothing, when a person is added", async () => {
+    const createChannel = vi.fn(
+      async (_args: { name: string; scope: string; companyUid?: string }) => ({
+        channelId: "chn_new",
+      }),
+    );
+    open({
+      api: stubApi({ createChannel, listCompanyMembers: emptyRosters() }),
+      rows: [kristinaRow()],
+      scopeCompanies: TWO,
+      activeScope: "personal",
+    });
+    await tick();
+    await gotoCreate("family therapy");
+    expect(
+      $('[data-testid="chat-channel-scope-personal"]')?.getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+
+    await pickMember("Kristina Cheraneva");
+    expect($('[data-testid="chat-create-confirm-external"]')).toBeNull();
+    expect(
+      $('[data-testid="chat-channel-scope-personal"]')?.getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+    expect($('[data-testid="chat-channel-scope"]')).toBeNull();
+    expect($('[data-testid="chat-channel-validation"]')).toBeNull();
+
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect(createChannel).toHaveBeenCalledTimes(1);
+    });
+    const args = createChannel.mock.calls[0][0];
+    expect(args).toMatchObject({ name: "family therapy", scope: "personal" });
+    expect(args).not.toHaveProperty("companyUid");
+  });
+
+  it("shows the company dropdown only while Company is chosen", async () => {
+    open({ scopeCompanies: TWO, activeScope: "cmp_amass" });
+    await tick();
+    await gotoCreate("Growth");
+    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+      "cmp_amass",
+    );
+
+    $<HTMLButtonElement>('[data-testid="chat-channel-scope-personal"]')?.click();
+    await tick();
+    expect($('[data-testid="chat-channel-scope"]')).toBeNull();
+
+    // Back to Company restores the company that was chosen before.
+    $<HTMLButtonElement>('[data-testid="chat-channel-scope-company"]')?.click();
+    await tick();
+    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+      "cmp_amass",
+    );
+  });
+
+  it("keeps the external prompt for a company channel, and drops it on Personal", async () => {
+    open({
+      api: stubApi({
+        listCompanyMembers: vi.fn(async () => ({
+          contacts: [{ personUid: "prs_ada", displayName: "Ada" }],
+        })),
+      }),
+      rows: [kristinaRow()],
+      scopeCompanies: TWO,
+      activeScope: "cmp_amass",
+    });
+    await tick();
+    await gotoCreate("Growth");
+    await pickMember("Kristina Cheraneva");
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-confirm-external"]')).toBeTruthy();
+    });
+    expect(
+      $('[data-testid="chat-create-confirm-external"]')?.textContent?.replace(
+        /\s+/g,
+        " ",
+      ),
+    ).toContain("Add Kristina Cheraneva from outside Amass?");
+
+    // Personal has no company to be outside of, so the question goes away.
+    $<HTMLButtonElement>(
+      '[data-testid="chat-create-confirm-external-add"]',
+    )?.click();
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-channel-scope-personal"]')?.click();
+    await tick();
+    expect($('[data-testid="chat-create-confirm-external"]')).toBeNull();
+    expect(
+      $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.disabled,
+    ).toBe(false);
+  });
+
+  it("holds Personal when the caller has no companies", async () => {
+    open({ scopeCompanies: [], activeScope: "personal" });
+    await tick();
+    await gotoCreate("Notes");
+    expect(
+      $<HTMLButtonElement>('[data-testid="chat-channel-scope-company"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(
+      $('[data-testid="chat-channel-scope-personal"]')?.getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+  });
+});
+
 describe("CreateModal cross-company confirmation (D7)", () => {
   const TWO_COMPANIES = [
     { companyUid: "cmp_indigo", label: "Indigo" },
@@ -907,8 +1059,8 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     expect(
       document.querySelectorAll('[data-testid="chat-channel-chip"]'),
     ).toHaveLength(1);
-    // Indigo is the only company on offer and Kai is not in it, so the shared
-    // rules fall back to Personal — which a teammate cannot be in either.
+    // Indigo is the only company on offer and Kai is not in it. The company
+    // choice stays put so the inline message can name the company at fault.
     expect(
       $('[data-testid="chat-channel-validation"]')?.textContent,
     ).toMatch(/Kai isn't a member of/);
@@ -989,6 +1141,68 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     expect(
       $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.disabled,
     ).toBe(false);
+  });
+
+  // Regression: the confirm used to inert the whole footer, so "Message … 
+  // directly" — the one action that needs no channel and no membership — could
+  // not be used until the cross-company question was answered.
+  it("lets the sole member be DM'd while the cross-company confirm is up", async () => {
+    const onpick = vi.fn();
+    open({
+      api: stubApi({ listCompanyMembers: rosters() }),
+      rows: [personRow({ id: "dm:prs_kai", title: "Kai", personUid: "prs_kai" })],
+      contacts: kaiContact,
+      scopeCompanies: TWO_COMPANIES,
+      onpick,
+    });
+    await tick();
+    await gotoCreate("Growth");
+    await pickMember("Kai");
+    expect($('[data-testid="chat-create-confirm-external"]')).toBeTruthy();
+
+    // Clearing the name leaves exactly one unnamed person — a plain DM.
+    const nameField = $<HTMLInputElement>('[data-testid="chat-channel-name"]')!;
+    type(nameField, "");
+    await tick();
+    $<HTMLButtonElement>(
+      '[data-testid="chat-create-confirm-external-add"]',
+    )?.click();
+    await tick();
+
+    const direct = $<HTMLButtonElement>(
+      '[data-testid="chat-channel-message-directly"]',
+    )!;
+    expect(direct).toBeTruthy();
+    expect(direct.closest("[inert]"), "the direct DM is never inerted").toBeNull();
+    direct.click();
+    await tick();
+    expect(onpick).toHaveBeenCalledTimes(1);
+    expect(onpick.mock.calls[0][0]?.personUid).toBe("prs_kai");
+  });
+
+  // Regression: with no name typed the copy rendered a bare "#", which read as
+  // "# —" against the following dash.
+  it("never names an empty channel in the cross-company confirm", async () => {
+    open({
+      api: stubApi({ listCompanyMembers: rosters() }),
+      rows: [personRow({ id: "dm:prs_kai", title: "Kai", personUid: "prs_kai" })],
+      contacts: kaiContact,
+      scopeCompanies: TWO_COMPANIES,
+    });
+    await tick();
+    await gotoCreate("Growth");
+    const nameField = $<HTMLInputElement>('[data-testid="chat-channel-name"]')!;
+    type(nameField, "");
+    await tick();
+    await pickMember("Kai");
+
+    const copy =
+      $('[data-testid="chat-create-confirm-external"]')
+        ?.textContent?.replace(/\s+/g, " ")
+        .trim() ?? "";
+    expect(copy).toContain("read and post in this channel");
+    expect(copy).not.toContain("# —");
+    expect(copy).not.toMatch(/in # /);
   });
 
   it("keeps the member, tagged, once the switch is confirmed", async () => {

@@ -10,4 +10,5 @@
 packages:
   - "apps/sync"
   - "apps/work"
+  - "apps/intro"
   - "packages/*"

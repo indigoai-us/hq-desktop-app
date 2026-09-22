@@ -38,10 +38,12 @@
     applyMentionMarkup,
     filterMentionCandidates,
     mentionPayloadTargets,
+    mentionsPresentInBody,
     mentionTextForTarget,
     mergeMentionTargets,
     replaceActiveMention,
     storedMentionType,
+    withHereMention,
     type MentionTarget,
   } from "../mentions.js";
   import { parseMessageAttachments } from "./channelMessageModels";
@@ -55,7 +57,10 @@
     type ChatAttachmentValidator,
     type ChatAttachmentWire,
   } from "./chat-attachments";
-  import { formatComposerSendError } from "./composer-send-error";
+  import {
+    formatComposerSendError,
+    isTerminalSendError,
+  } from "./composer-send-error";
   import AgentTaskStrip from "../tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../tasks/agent-tasks";
   import {
@@ -102,6 +107,14 @@
 
   interface LocalReply extends ConversationMessageWire {
     sendStatus?: "sending" | "failed";
+    /** Human reason a failed reply did not land — shown beside the row. */
+    sendError?: string;
+    /**
+     * The server refused the request itself (a mention it will never accept, a
+     * list over the cap). Retrying the identical payload always fails, so the
+     * row shows the reason WITHOUT a retry affordance.
+     */
+    sendFatal?: boolean;
   }
 
   interface Props {
@@ -173,6 +186,12 @@
     }) => void;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    /**
+     * Offer `@here` in the mention picker. True for a channel and for a group
+     * DM; false for a 1:1 DM, where there is one other person and they are
+     * already notified.
+     */
+    allowHereMention?: boolean;
     selfPersonUid?: string | null;
     /** Platform seam for opening an external URL from a message-body link. */
     onopenurl?: (url: string) => void;
@@ -208,6 +227,7 @@
     attachmentValidator = validateChatAttachment,
     onopenprofile,
     mentionCandidates = [],
+    allowHereMention = false,
     onopenurl,
     tasks = [],
     localBots = null,
@@ -378,7 +398,11 @@
 
   const mentionQuery = $derived(activeMentionQuery(draft));
   const mentionHits = $derived(
-    filterMentionCandidates(mentionCandidates, mentionQuery, selectedMentions),
+    filterMentionCandidates(
+      withHereMention(mentionCandidates, allowHereMention),
+      mentionQuery,
+      selectedMentions,
+    ),
   );
   const showMentionPicker = $derived(mentionQuery !== null);
 
@@ -659,7 +683,9 @@
         return;
       }
     }
-    const mentions = mentionPayloadTargets(selectedMentions);
+    const mentions = mentionPayloadTargets(
+      mentionsPresentInBody(text, selectedMentions),
+    );
     const localId = `local-${rootEventId}-${++localSeq}`;
     const optimistic: LocalReply = {
       eventId: localId,
@@ -687,9 +713,12 @@
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(mentions);
       startThinkingForThreadAgent(mentions);
-    } catch {
+    } catch (err) {
+      const failure = describeSendFailure(err, mentions);
       replies = replies.map((row) =>
-        row.eventId === localId ? { ...row, sendStatus: "failed" } : row,
+        row.eventId === localId
+          ? { ...row, sendStatus: "failed", ...failure }
+          : row,
       );
       agentThinking = [];
     } finally {
@@ -697,14 +726,42 @@
     }
   }
 
+  /**
+   * Turn a thrown send error into the row's human reason plus whether a retry
+   * could ever work. The adapter throws `[CODE] message`, so the code survives
+   * all the way here — dropping it (the old bare `catch {}`) left the user with
+   * "Failed — tap to retry" on a 4xx that no retry can fix.
+   */
+  function describeSendFailure(
+    err: unknown,
+    mentions: readonly MentionTarget[],
+  ): { sendError: string; sendFatal: boolean } {
+    const raw = err instanceof Error ? err.message.trim() : "";
+    return {
+      sendError: formatComposerSendError(
+        raw,
+        false,
+        mentions.map((mention) => mention.displayName),
+      ),
+      sendFatal: isTerminalSendError(raw),
+    };
+  }
+
   async function retrySend(eventId: string): Promise<void> {
     const failed = replies.find(
       (row) => row.eventId === eventId && row.sendStatus === "failed",
     );
-    if (!failed || sending) return;
+    if (!failed || failed.sendFatal || sending) return;
     sending = true;
     replies = replies.map((row) =>
-      row.eventId === eventId ? { ...row, sendStatus: "sending" } : row,
+      row.eventId === eventId
+        ? {
+            ...row,
+            sendStatus: "sending",
+            sendError: undefined,
+            sendFatal: undefined,
+          }
+        : row,
     );
     const retryMentions = mentionPayloadTargets(
       (failed.mentions ?? []).map((row) => ({
@@ -720,13 +777,23 @@
         retryMentions,
       );
       replies = replies.map((row) =>
-        row.eventId === eventId ? { ...row, sendStatus: undefined } : row,
+        row.eventId === eventId
+          ? {
+              ...row,
+              sendStatus: undefined,
+              sendError: undefined,
+              sendFatal: undefined,
+            }
+          : row,
       );
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(retryMentions);
-    } catch {
+    } catch (err) {
+      const failure = describeSendFailure(err, retryMentions);
       replies = replies.map((row) =>
-        row.eventId === eventId ? { ...row, sendStatus: "failed" } : row,
+        row.eventId === eventId
+          ? { ...row, sendStatus: "failed", ...failure }
+          : row,
       );
       agentThinking = [];
     } finally {
@@ -1150,6 +1217,14 @@
               {/if}
               {#if msg.sendStatus === "sending"}
                 <span class="reply-send-state" role="status">Sending…</span>
+              {:else if msg.sendStatus === "failed" && msg.sendFatal}
+                <span
+                  class="reply-send-state failed"
+                  data-testid="reply-panel-send-error"
+                  role="status"
+                >
+                  {msg.sendError ?? "Couldn't send this reply."}
+                </span>
               {:else if msg.sendStatus === "failed"}
                 <button
                   type="button"
@@ -1157,7 +1232,9 @@
                   data-testid="reply-panel-retry"
                   onclick={() => void retrySend(msg.eventId)}
                 >
-                  Failed — tap to retry
+                  {msg.sendError
+                    ? `${msg.sendError} Tap to retry.`
+                    : "Failed — tap to retry"}
                 </button>
               {/if}
             </div>
@@ -1166,8 +1243,14 @@
       {/if}
     </div>
 
-    <AgentThinkingRow entries={agentThinking} />
-    <AgentTaskStrip {tasks} />
+    <!-- Live rows sit between the list and the composer, so they carry the
+         list's horizontal inset themselves: the 18px avatar centres under the
+         36px avatar column of the rows above, and a gap keeps the last row
+         off the composer's border. -->
+    <div class="reply-live">
+      <AgentThinkingRow entries={agentThinking} />
+      <AgentTaskStrip {tasks} />
+    </div>
 
     <div class="reply-composer">
       {#if showMentionPicker}
@@ -1414,14 +1497,16 @@
     text-decoration: underline;
   }
 
-  .reply-md :global(a) {
-    color: var(--message-markdown-muted);
+  .reply-md :global(a),
+  .reply-md :global(a:visited) {
+    color: var(--message-markdown-link);
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;
   }
 
   .reply-md :global(a:hover) {
+    color: color-mix(in srgb, var(--message-markdown-link) 88%, var(--t1));
     text-decoration-color: currentColor;
   }
 
@@ -1435,11 +1520,13 @@
   .reply-md {
     --message-markdown-text: var(--t2, var(--fg, #e8e8e8));
     --message-markdown-muted: var(--t3, #a0a0a0);
+    --message-markdown-link: var(--vio-ink, var(--accent, #e0c4fe));
     min-width: 0;
     margin: 0;
-    /* Match the timeline reading size. */
-    font-size: 14px;
-    line-height: 1.55;
+    /* Match the timeline reading size (shared token, message-row.css). */
+    font-family: var(--msg-body-font-family, var(--font-ui));
+    font-size: var(--msg-body-font-size, 15px);
+    line-height: var(--msg-body-line-height, 1.7);
     color: var(--t1, var(--message-markdown-text));
     overflow-wrap: anywhere;
   }
@@ -1655,6 +1742,18 @@
   /* Mirrors the main composer (.dm-reply in ChannelConversation) so threaded
      replies get the same send box: raised 10px frame, focus ring on the frame,
      tools bottom-left, solid icon send bottom-right. */
+  .reply-live {
+    flex: 0 0 auto;
+    /* 12px list padding + 8px row padding, plus (36 - 18) / 2 so the small
+       avatar centres under the message avatar column. */
+    padding: 0 20px 0 29px;
+  }
+
+  .reply-live:has(:global(.agent-thinking)),
+  .reply-live:has(:global(.agent-tasks)) {
+    padding-bottom: 10px;
+  }
+
   .reply-composer {
     display: flex;
     flex-direction: column;
@@ -1683,7 +1782,8 @@
     border-radius: 0;
     background: transparent;
     color: var(--t1, var(--pop-text));
-    font: 400 13px/1.5 var(--font-ui, inherit);
+    /* Same token as the thread body above — typed text and sent text match. */
+    font: var(--msg-body-font, 400 15px / 1.7 var(--font-ui));
     caret-color: var(--t1, #f4f4f5);
     box-sizing: border-box;
   }

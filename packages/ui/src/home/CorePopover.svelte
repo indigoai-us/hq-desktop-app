@@ -8,7 +8,9 @@
    */
   import type { PlatformAdapter } from "@hq/platform";
   import CopyPromptButton from "./CopyPromptButton.svelte";
+  import OpenIssueInClaudeCode from "./OpenIssueInClaudeCode.svelte";
   import type { Issue } from "./copy-prompts.js";
+  import { sanitizeVisibleIdentifiers } from "../chat/visible-labels.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import type { HomeConflict } from "./home-model.js";
   import {
@@ -51,6 +53,37 @@
     /** Settings-backed Cloud Off flag. */
     cloudPaused?: boolean;
     /**
+     * PL-01 — sync status header. Reduced by the shell (`syncStateFromLive`
+     * plus the richer event-stream phase), never re-derived here.
+     */
+    syncState?: string | null;
+    /** Ago label from `lastSyncLabelFromLive`. Null renders "never". */
+    lastSyncLabel?: string | null;
+    /** Live caption while a run is in flight (`syncStatusLabel(...).detail`). */
+    syncCaption?: string | null;
+    /** Unresolved conflict count from the journal read (drives "Sync paused"
+     *  and the conflict notice payload). Falls back to `conflicts.length`. */
+    conflictCount?: number;
+    /** Company whose files conflicted — copy-prompt payload only. */
+    conflictCompany?: string | null;
+    /**
+     * PL-02 — sync trouble inputs.
+     * `errorMessage` is the message behind an `error` phase; empty suppresses
+     * the row, matching the tray popover.
+     */
+    errorMessage?: string | null;
+    errorCompany?: string | null;
+    /** Non-null → companies/manifest.yaml could not be read. */
+    manifestError?: string | null;
+    /** False → the workspaces listing fell back to local folders. */
+    cloudReachable?: boolean;
+    /** Raw cloud error. Sanitized here before it is ever rendered. */
+    cloudError?: string | null;
+    /** Workspaces, used only to turn `cmp_…` uids in errors into names. */
+    workspaces?: readonly Record<string, unknown>[] | null;
+    /** Absolute HQ root for the Claude Code hand-off. Empty → no open button. */
+    hqFolderPath?: string | null;
+    /**
      * Visual-QA only (D-08): inject fixture conflicts/packs/update when live
      * sources are empty. MUST stay false on real-data paths — defaulting true
      * put a fake conflict card and a phantom "4 packs" header in production.
@@ -88,6 +121,18 @@
     appVersion,
     conflicts = [],
     cloudPaused = false,
+    syncState = null,
+    lastSyncLabel = null,
+    syncCaption = null,
+    conflictCount,
+    conflictCompany = null,
+    errorMessage = null,
+    errorCompany = null,
+    manifestError = null,
+    cloudReachable = true,
+    cloudError = null,
+    workspaces = null,
+    hqFolderPath = null,
     useFixtures = false,
     recovery = null,
     onrecovery,
@@ -186,6 +231,22 @@
     updateStore.coreStatus === "checking" && !updateStore.coreVersion,
   );
 
+  /**
+   * Cloud errors can carry raw `cmp_…` / person uids. They are sanitized once,
+   * here, so nothing downstream (the row tooltip, the copy prompt) can leak
+   * an identifier the user has no name for.
+   */
+  const visibleCloudError = $derived(
+    sanitizeVisibleIdentifiers(cloudError, {
+      companies: (workspaces ?? []) as never[],
+    }),
+  );
+
+  /** Journal count wins; the live conflict stream is the fallback. */
+  const effectiveConflictCount = $derived(
+    conflictCount ?? modelConflicts.length,
+  );
+
   const model = $derived(
     buildCorePopoverViewModel({
       conflicts: modelConflicts,
@@ -200,6 +261,18 @@
       packsLoading,
       cloudPaused,
       packsExpanded,
+      syncState,
+      lastSyncLabel,
+      syncCaption,
+      notices: {
+        conflictCount: effectiveConflictCount,
+        conflictCompany,
+        errorMessage,
+        errorCompany,
+        manifestError,
+        cloudReachable,
+        cloudError: visibleCloudError,
+      },
     }),
   );
 
@@ -384,6 +457,26 @@
   data-testid="core-popover"
   data-tauri-drag-region="false"
 >
+  <header
+    class="core-status"
+    data-testid="core-popover-sync-status"
+    data-tone={model.syncHeader.tone}
+    role="status"
+  >
+    <span class="core-status-state" data-testid="core-popover-sync-state">
+      <span class="core-status-dot" aria-hidden="true">●</span>
+      {model.syncHeader.stateWord}
+    </span>
+    <span class="core-status-last" data-testid="core-popover-last-sync">
+      {model.syncHeader.lastSyncLine}
+    </span>
+    {#if model.syncHeader.caption}
+      <span class="core-status-caption" data-testid="core-popover-sync-caption">
+        {model.syncHeader.caption}
+      </span>
+    {/if}
+  </header>
+
   {#if recovery}
     <div
       class="core-recovery"
@@ -488,6 +581,40 @@
         {/each}
       </ul>
     </section>
+  {/if}
+
+  {#if model.notices.length > 0}
+    <ul class="core-notices" data-testid="core-popover-notices">
+      {#each model.notices as notice (notice.kind)}
+        <li
+          class="core-notice"
+          data-testid="core-popover-notice"
+          data-kind={notice.kind}
+          data-tone={notice.tone}
+          title={notice.detail ?? undefined}
+        >
+          <span class="core-notice-text">
+            <b class="core-notice-title">{notice.title}</b>
+            <span class="core-notice-body">{notice.body}</span>
+          </span>
+          <span class="core-notice-actions">
+            {#if notice.openLabel && hqFolderPath}
+              <OpenIssueInClaudeCode
+                shell={adapter.shell}
+                folder={hqFolderPath}
+                label={notice.openLabel}
+                issue={notice.issue}
+              />
+            {/if}
+            <CopyPromptButton
+              variant="inline"
+              label={notice.copyLabel}
+              issue={notice.issue}
+            />
+          </span>
+        </li>
+      {/each}
+    </ul>
   {/if}
 
   <div class="core-rows" data-testid="core-popover-version-rows">
@@ -707,6 +834,106 @@
     font: 400 13px/1.45 var(--font-ui);
     backdrop-filter: blur(40px) saturate(1.5);
     -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  }
+
+  /* PL-01 status header. Tones reuse the existing --ok / --warn / --ice-ink
+     tokens; no new colours. */
+  .core-status {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px 8px;
+    margin-bottom: 6px;
+    border-radius: 10px;
+    background: var(--raised);
+  }
+
+  .core-status-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t1);
+  }
+
+  .core-status-dot {
+    font-size: 9px;
+    line-height: 1;
+    color: var(--ok);
+  }
+
+  .core-status[data-tone="warn"] .core-status-dot {
+    color: var(--warn);
+  }
+
+  .core-status[data-tone="active"] .core-status-dot {
+    color: var(--ice-ink);
+  }
+
+  .core-status-last,
+  .core-status-caption {
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--t2);
+  }
+
+  .core-status-caption {
+    overflow: hidden;
+    color: var(--t3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* PL-02 trouble notices. */
+  .core-notices {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 0 6px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .core-notice {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warn) 8%, transparent);
+  }
+
+  .core-notice[data-tone="warn"] {
+    border-color: var(--panel-border);
+    background: var(--raised);
+  }
+
+  .core-notice-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .core-notice-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--t1);
+  }
+
+  .core-notice-body {
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--t2);
+  }
+
+  .core-notice-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
   }
 
   .core-recovery {

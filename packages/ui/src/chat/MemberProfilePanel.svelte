@@ -27,6 +27,13 @@
     saving?: boolean;
     saveError?: string | null;
     onsaveavatar?: (selection: AvatarSelection) => void | Promise<void>;
+    /**
+     * Open (or create) the 1:1 DM with this person. Omitted by callers that
+     * have no conversation surface to open — the button is then not rendered,
+     * but its row keeps its height so the panel never shifts. The panel closes
+     * itself (`onclose`) right after.
+     */
+    onmessage?: (member: StatusPersonRow) => void;
     onclose?: () => void;
   }
 
@@ -40,6 +47,7 @@
     saving = false,
     saveError = null,
     onsaveavatar,
+    onmessage,
     onclose,
   }: Props = $props();
 
@@ -56,6 +64,9 @@
   );
   const roleLabel = $derived((member.role ?? "").trim());
   const about = $derived((member.description ?? "").trim());
+  // No DM with yourself. Agents are DM-able in this build, so an agent profile
+  // keeps the button.
+  const canMessage = $derived(!you && Boolean(onmessage));
 </script>
 
 <aside
@@ -103,6 +114,24 @@
     {#if roleLabel}
       <div class="pp-role" data-testid="member-profile-role">{roleLabel}</div>
     {/if}
+
+    <div class="pp-action">
+      {#if canMessage}
+        <button
+          type="button"
+          class="pp-message"
+          data-testid="member-profile-message"
+          onclick={() => {
+            onmessage?.(member);
+            // Slack closes the profile once the DM is open; the conversation
+            // it just opened is what the person wants to look at.
+            onclose?.();
+          }}
+        >
+          Message
+        </button>
+      {/if}
+    </div>
 
     <dl class="pp-fields">
       {#if about}
@@ -245,6 +274,33 @@
     text-transform: capitalize;
   }
 
+  /* Fixed height whether or not the button renders, so opening the panel on
+     your own profile lays out identically to anyone else's. */
+  .pp-action {
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    height: 32px;
+    margin-top: 6px;
+  }
+
+  .pp-message {
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--v4-primary-bg, var(--t1));
+    color: var(--v4-primary-fg, var(--v4-bg, #0c0c0c));
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .pp-message:hover {
+    filter: brightness(1.08);
+  }
+
   .pp-picker {
     width: 100%;
     margin-top: 8px;
@@ -297,6 +353,7 @@
   }
 
   .pp-close:focus-visible,
+  .pp-message:focus-visible,
   .pp-email:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: 2px;

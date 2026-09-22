@@ -135,7 +135,7 @@
     }).then((fn) => {
       unlisten = safeUnlisten(fn);
       // Ready-handshake: tell Rust the listener is mounted so it emits the
-      // pending payload + shows the window (mirrors DmDetail / ShareDetail).
+      // pending payload + shows the window (mirrors ShareDetail).
       invoke('banner_window_ready');
     });
     return () => {

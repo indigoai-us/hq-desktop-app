@@ -15,6 +15,8 @@
   import { safeHref } from "../common/markdown.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import Tooltip from "../common/Tooltip.svelte";
+  import BrandLogoSlot from "../brand/BrandLogoSlot.svelte";
+  import { isEntitledBrand, type CachedBrand } from "../brand/brand.js";
   import Caret from "../common/Caret.svelte";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
@@ -67,6 +69,14 @@
     onopenMeetings?: () => void;
     onopenNotifications?: () => void;
     primaryAction?: { label: string; onselect: () => void };
+    /**
+     * White-label brand for the header slot (PL-04). Resolved by the shell
+     * from the same membership enrichment the popover reads, so an entitled
+     * company shows its logo here and an unentitled one is left alone.
+     */
+    brand?: CachedBrand | null;
+    /** Company name for the tenant logo's alt text. */
+    brandCompanyName?: string | null;
     /** Unread count drives monochrome bell dot only (no red pill). */
     unreadCount?: number;
     /**
@@ -86,6 +96,15 @@
     coreUseFixtures?: boolean;
     /** USER-EDIT drift count from the shell's core-state scan (G7 dot tone). */
     driftCount?: number;
+    /**
+     * PL-02 — sync trouble the shell reads from `list_syncable_workspaces`.
+     * Forwarded to the Core popover, which owns the notice rows.
+     */
+    manifestError?: string | null;
+    cloudReachable?: boolean;
+    cloudError?: string | null;
+    /** Workspaces, used only to resolve uids in error copy. */
+    workspaces?: readonly Record<string, unknown>[] | null;
     oncloudtoggle?: (paused: boolean) => void;
     onresolveconflict?: (
       path: string,
@@ -121,6 +140,8 @@
     fanoutDone = 0,
     fanoutTotal = 0,
     errorSummary = null,
+    errorMessage = "",
+    errorCompany = null,
     hydrationIssue = null,
     hydrationRefreshing = false,
     conflictCount = 0,
@@ -136,6 +157,8 @@
     onopenMeetings,
     onopenNotifications,
     primaryAction,
+    brand = null,
+    brandCompanyName = null,
     unreadCount = 0,
     syncStatus = null,
     onopenSync,
@@ -143,6 +166,10 @@
     conflicts = [],
     coreUseFixtures = false,
     driftCount = 0,
+    manifestError = null,
+    cloudReachable = true,
+    cloudError = null,
+    workspaces = null,
     onresolveconflict,
     onopenconflict,
     onopendrift,
@@ -158,6 +185,14 @@
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
+
+  /**
+   * Same gate as the popover's slot: entitlement must be explicitly true AND
+   * at least one brand field set. Anything else leaves the HQ wordmark alone.
+   */
+  const brandEntitled = $derived(
+    !!brand && isEntitledBrand(brand.brandingEnabled, brand.brand),
+  );
   const backHoverLabel = $derived(
     canGoBack && backLabel.trim() ? backLabel : "Back",
   );
@@ -504,11 +539,44 @@
     { key: "grok", label: "Grok Build (terminal)" },
   ];
 
-  /** G7: amber dot while a conflict/attention item is pending; green when healthy. */
+  /**
+   * Live caption for the Core popover header while a run is in flight. The
+   * title bar already reduces the run (`syncStatusLabel`); the popover reuses
+   * that sentence rather than counting files a second time.
+   */
+  const syncCaptionText = $derived(
+    syncLabel?.tone === "busy"
+      ? [syncLabel.detail, syncLabel.text].filter(Boolean).join(" · ")
+      : null,
+  );
+
+  /** Message behind an `error` phase — the reduced run carries it. */
+  const syncErrorMessage = $derived(
+    syncStatus?.phase === "error"
+      ? (syncStatus.message ?? errorMessage ?? null)
+      : (errorMessage ?? null),
+  );
+
+  /**
+   * Phase the Core popover header speaks about.
+   *
+   * `syncState` is reduced from the on-disk journal, which only ever reports
+   * `idle` or `conflict`. The event-stream reducer (`syncStatus`) is the only
+   * source that sees a run start or a run fail, so a non-idle phase there
+   * wins — otherwise a failing sync would read "All synced".
+   */
+  const coreSyncPhase = $derived(
+    syncStatus && syncStatus.phase !== "idle" ? syncStatus.phase : syncState,
+  );
+
+  /** G7: amber dot while a conflict/attention item is pending; green when
+   *  healthy; a quiet blue while a run is in flight (PL-01). */
   const coreDotTone = $derived(
     corePillDotTone({
       conflictCount: Math.max(conflictCount, conflicts.length),
-      syncState,
+      syncState: coreSyncPhase,
+      manifestError,
+      cloudReachable,
       driftCount,
       cloudPaused,
     }),
@@ -586,12 +654,31 @@
         <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
       </svg>
     </button>
-    <span
-      class="v4-wordmark"
-      data-testid="titlebar-wordmark"
-      aria-label="HQ"
-      data-tauri-drag-region>HQ</span
-    >
+    {#if brandEntitled}
+      <!-- White-label header slot (PL-04): the tenant logo replaces the HQ
+           wordmark, with the permanent powered-by lockup underneath. Gated on
+           the same `isEntitledBrand` check the popover uses, so an unentitled
+           company keeps the wordmark chrome exactly as it was. -->
+      <div
+        class="v4-brand-slot"
+        data-testid="titlebar-brand-slot"
+        data-tauri-drag-region
+      >
+        <BrandLogoSlot
+          {brand}
+          brandingEnabled={true}
+          companyName={brandCompanyName}
+          size="desktop"
+        />
+      </div>
+    {:else}
+      <span
+        class="v4-wordmark"
+        data-testid="titlebar-wordmark"
+        aria-label="HQ"
+        data-tauri-drag-region>HQ</span
+      >
+    {/if}
     <span
       class="v4-day-date"
       data-testid="titlebar-day-date"
@@ -905,6 +992,7 @@
               <span
                 class="v4-core-dot"
                 class:warn={coreDotTone === "warn"}
+                class:active={coreDotTone === "active"}
                 data-testid="titlebar-core-dot"
                 data-tone={coreDotTone}
                 aria-hidden="true">●</span
@@ -920,6 +1008,18 @@
             appVersion={version}
             {conflicts}
             {cloudPaused}
+            syncState={coreSyncPhase}
+            {lastSyncLabel}
+            syncCaption={syncCaptionText}
+            conflictCount={Math.max(conflictCount, conflicts.length)}
+            {conflictCompany}
+            errorMessage={syncErrorMessage}
+            errorCompany={errorCompany ?? null}
+            {manifestError}
+            {cloudReachable}
+            {cloudError}
+            {workspaces}
+            {hqFolderPath}
             useFixtures={coreUseFixtures}
             recovery={recoveryCard}
             onrecovery={handleRecoveryAction}
@@ -961,6 +1061,14 @@
     user-select: none;
     -webkit-user-select: none;
     cursor: default;
+  }
+
+  .v4-brand-slot {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    min-width: 0;
+    margin-right: 2px;
   }
 
   .v4-titlebar-leading {
@@ -1128,6 +1236,10 @@
 
   /* Attention pending (conflicts / sync error / paused): amber, tokens
      rgb(240,168,0) light / rgb(250,204,21) dark via --warn (G7). */
+  .v4-core-dot.active {
+    color: var(--ice-ink);
+  }
+
   .v4-core-dot.warn {
     color: var(--warn);
   }

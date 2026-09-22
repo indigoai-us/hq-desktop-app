@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn only_the_call_window_label_owns_the_registry() {
-        for label in ["main", "desktop-alt", "meetings-window", "widget"] {
+        for label in ["main", "desktop-alt", "meetings-window"] {
             assert!(!owns_window_label(label), "{label} must not own calls");
         }
         assert!(owns_window_label(CALL_WINDOW_LABEL));

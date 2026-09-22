@@ -68,6 +68,7 @@ export * from "./chat/channel-admin.js";
 export * from "./chat/portfolio-session.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
+export * from "./chat/agent-stubs.js";
 export {
   DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
   CONVERSATION_BOOT_GRACE_MS,
@@ -148,12 +149,20 @@ export {
 } from "./settings/settings-prefs.js";
 export * from "./avatars/index.js";
 
+// White-label brand slot (US-005) — shared by the popover and the shell.
+export { default as BrandLogoSlot } from "./brand/BrandLogoSlot.svelte";
+export { default as PoweredByHq } from "./brand/PoweredByHq.svelte";
+export * from "./brand/brand.js";
+
 // V2 windowed desktop shell — composes the title bar + channel rail + views.
 export { default as LinkContextMenu } from "./common/LinkContextMenu.svelte";
 export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
 export * from "./shell/embedded-navigation.js";
+export * from "./shell/notification-recovery.js";
+export { default as NotificationActionRecovery } from "./shell/NotificationActionRecovery.svelte";
+export * from "./shell/sync-events.js";
 export * from "./shell/navigation-history.js";
 export * from "./shell/navigation-scroll.js";
 export * from "./shell/navigation-controller.js";
@@ -203,6 +212,8 @@ export { default as NotificationsView } from "./inbox/NotificationsView.svelte";
 export * from "./inbox/notifications-model.js";
 export * from "./inbox/notification-groups.js";
 export * from "./inbox/live-notifications.js";
+export * from "./inbox/file-bundles.js";
+export * from "./inbox/agent-join-bundles.js";
 
 // Wave 3 (US-010): remaining desktop-alt screens, area barrels.
 export * as common from "./common/index.js";

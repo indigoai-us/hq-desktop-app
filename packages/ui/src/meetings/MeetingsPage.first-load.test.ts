@@ -9,6 +9,7 @@ import { mount, tick, unmount } from "svelte";
 import {
   ok,
   failure,
+  unavailable,
   type AdapterResult,
   type PlatformAdapter,
 } from "@hq/platform";
@@ -36,6 +37,8 @@ const api = {
   listCalendars: () => call("listCalendars") as never,
   connectCalendar: () => call("connectCalendar") as never,
   disconnectCalendar: () => call("disconnectCalendar") as never,
+  permissionsState: () => Promise.resolve(unavailable("desktop-only")) as never,
+  openPermissionsSetup: () => call("openPermissionsSetup") as never,
 };
 
 function fakeAdapter(): PlatformAdapter {

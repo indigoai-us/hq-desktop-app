@@ -235,6 +235,7 @@
 <style>
   /* Live monitor — rounded container reserved for a true live detection. */
   .card {
+    flex-shrink: 0;
     min-width: 0;
     overflow: hidden;
     border: 1px solid var(--v4-hairline);
@@ -271,14 +272,14 @@
   }
   .card-body {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
   }
-  .live-company {
-    display: none;
-  }
   .live-main {
+    min-width: 0;
+    flex: 1 1 180px;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -346,7 +347,12 @@
     cursor: pointer;
   }
   .live-company {
-    display: none;
+    min-width: 0;
+    flex: 0 1 240px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 0;
   }
   .lc-label {
     flex: 0 0 auto;
@@ -385,7 +391,7 @@
     flex: 0 0 auto;
     flex-wrap: wrap;
     gap: 8px;
-    margin-top: 12px;
+    margin-top: 0;
   }
 
   /* Calm standing-by — naked hairline strip. */

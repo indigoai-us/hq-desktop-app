@@ -226,3 +226,24 @@ it('opening a reply does not also open the conversation', async () => {
     expect(onopen).not.toHaveBeenCalled();
   } finally {await unmount(component); host.remove();}
 });
+
+
+it('renders known senders and neutral unattributed channel/file activity', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const common = {status:'read',createdAt:'2026-09-19T12:00:00Z'};
+  const component = mount(NotificationsView,{target:host,props:{api:{
+    fetchNotifications: async () => ({notifications:[
+      {...common,id:'known',type:'channel_message',actorName:'Ada',channelName:'#dev'},
+      {...common,id:'unknown',type:'channel_message',actorName:'Someone',channelName:'#project-launch'},
+      {...common,id:'file1',type:'new_file',actorName:'Someone',context:'indigo · docs/a.md'},
+      {...common,id:'file2',type:'new_file',actorName:'Someone',context:'indigo · docs/b.md'},
+    ]}), ackNotification:async()=>{},readAllNotifications:async()=>{},runNotificationAction:async()=>({}),
+  }}});
+  try {
+    await vi.waitFor(()=>expect(host.textContent?.replace(/\s+/g, ' ')).toContain('Ada sent a message'));
+    expect(host.textContent).toContain('New messages');
+    expect(host.textContent).toContain('2 files added');
+    expect(host.textContent).not.toContain('Someone');
+    expect(host.querySelectorAll('[data-testid="notifications-row"]')).toHaveLength(3);
+  } finally { await unmount(component); host.remove(); }
+});

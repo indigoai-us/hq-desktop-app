@@ -387,14 +387,27 @@ mod tests {
     #[test]
     fn probe_skills_only_root_needs_install() {
         let tmp = tempfile::tempdir().unwrap();
-        for dir in [".claude/skills/setup", ".hq", "companies/acme", "sync-manifests"] {
+        for dir in [
+            ".claude/skills/setup",
+            ".hq",
+            "companies/acme",
+            "sync-manifests",
+        ] {
             fs::create_dir_all(tmp.path().join(dir)).unwrap();
         }
-        fs::write(tmp.path().join(".claude/skills/setup/SKILL.md"), "# setup\n").unwrap();
+        fs::write(
+            tmp.path().join(".claude/skills/setup/SKILL.md"),
+            "# setup\n",
+        )
+        .unwrap();
         let probe = probe_hq_setup(tmp.path());
         assert_eq!(probe.readiness, HqSetupReadiness::NeedsInstall);
         assert!(!probe.is_ready());
-        assert!(probe.detail.as_deref().unwrap_or("").contains("not installed"));
+        assert!(probe
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("not installed"));
     }
 
     #[test]
@@ -425,12 +438,19 @@ mod tests {
         write_core_yaml(tmp.path());
         let probe = probe_hq_setup(tmp.path());
         assert_eq!(probe.readiness, HqSetupReadiness::NeedsRescue);
-        assert!(probe.detail.as_deref().unwrap_or("").contains("settings.json"));
+        assert!(probe
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("settings.json"));
     }
 
     #[test]
     fn probe_readiness_serializes_snake_case_for_the_page() {
-        assert_eq!(serde_json::to_string(&HqSetupReadiness::Ready).unwrap(), "\"ready\"");
+        assert_eq!(
+            serde_json::to_string(&HqSetupReadiness::Ready).unwrap(),
+            "\"ready\""
+        );
         assert_eq!(
             serde_json::to_string(&HqSetupReadiness::NeedsInstall).unwrap(),
             "\"needs_install\""

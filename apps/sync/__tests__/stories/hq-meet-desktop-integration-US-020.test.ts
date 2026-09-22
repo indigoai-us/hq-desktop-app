@@ -166,13 +166,13 @@ function bench(
     if (url === END_PATH) {
       record(END_PATH, body);
       return options.endFails
-        ? { status: 503, body: "{}" }
+        ? { status: 500, body: "{}" }
         : { status: 200, body: JSON.stringify({ code: "OK" }) };
     }
     if (url === REVOKE_PATH) {
       record(REVOKE_PATH, body);
       return options.revokeFails
-        ? { status: 503, body: "{}" }
+        ? { status: 500, body: "{}" }
         : { status: 200, body: JSON.stringify({ code: "OK" }) };
     }
     if (url.startsWith(ROOM_PATH)) {

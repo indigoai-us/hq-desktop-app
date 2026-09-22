@@ -33,7 +33,9 @@ now a thin command-and-orchestration layer over that crate.
   marker.
 - The classifier is wired into app startup (`commands/lifecycle.rs`), exposed via
   a `get_lifecycle_state` command, and the Svelte `App.svelte` routes the
-  onboarding states to the wizard and everything else to the normal popover.
+  onboarding states to the wizard, and sign-in when signed out. A signed-in
+  person is sent to the desktop window — the tray window renders nothing for
+  them (PL-06) and the tray popover it used to render was deleted in PL-07.
 
 ### Onboarding wizard UI (complete)
 
@@ -46,8 +48,8 @@ installer:
 3. **Setup** — the orchestrator framework: an eight-stage progress screen that
    sequences the install stages and auto-advances when they settle.
 4. **Ready** — completion and launch actions for Claude Code and Codex. A
-   successful launch immediately finishes onboarding and hands control back to
-   the tray/popover; **Finish** provides the same handoff without launching a
+   successful launch immediately finishes onboarding and hands control to the
+   desktop window; **Finish** provides the same handoff without launching a
    tool. The screen warns that setup is only complete after opening the HQ
    folder in Claude Code or Codex and running `/setup`, and frames **Finish** as
    deferring that step until later.

@@ -431,7 +431,7 @@ pub fn handle_page_load(label: &str, event: tauri::webview::PageLoadEvent) {
 /// Notification entry points use this before creating, revealing, or routing
 /// user-visible webviews. Development, already-completed versions, and every
 /// fallback path publish readiness after their startup callback has established
-/// the tray, widget, and notification producers.
+/// the tray and notification producers.
 pub async fn wait_until_ready() {
     startup_readiness().wait().await;
 }
@@ -762,9 +762,9 @@ fn run_ready_callback(callback: &ReadyCallback) {
 /// Finish startup surface setup before waking notification entry points.
 ///
 /// The cache state itself transitions to `Ready` before this point, but the
-/// callback creates the widget/tray and arms notification producers. Publishing
+/// callback creates the tray and arms notification producers. Publishing
 /// the sticky readiness signal afterward prevents a just-unblocked banner from
-/// racing widget takeover initialization.
+/// racing notification-producer initialization.
 fn release_startup_gate(callback: &ReadyCallback) {
     run_ready_callback(callback);
     signal_startup_gate_ready();

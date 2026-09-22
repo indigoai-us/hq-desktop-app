@@ -9,9 +9,19 @@
  */
 
 import type { LocalBotRow } from "@hq/platform";
+import { botRowDisplayName, type BotDisplayNames } from "./bot-display-names.js";
 import type { ConversationRow } from "./sidebar-model.js";
 
 export const LOCAL_BOTS_POLL_MS = 30_000;
+
+/**
+ * Faster listing cadence while a local bot's own conversation is open.
+ *
+ * The thinking indicator follows the CLI's `busy` flag, and a bot's turn can
+ * be shorter than the ordinary 30 s poll — at that rate the indicator would
+ * appear after the answer. Only runs for the open conversation.
+ */
+export const LOCAL_BOT_BUSY_POLL_MS = 6_000;
 
 /** Runtimes a bot can think with, in picker order. */
 export const LOCAL_BOT_RUNTIMES: ReadonlyArray<{ id: LocalBotRow["runtime"]; label: string }> = [
@@ -36,6 +46,7 @@ export function localBotRuntimeLabel(id: string): string {
 export function localBotsAsContacts<T extends { personUid: string }>(
   contacts: readonly T[],
   bots: readonly LocalBotRow[] | null | undefined,
+  displayNames?: BotDisplayNames | null,
 ): Array<T | { personUid: string; displayName: string; companyUid: null }> {
   if (!bots || bots.length === 0) return [...contacts];
   const seen = new Set(contacts.map((c) => c.personUid.trim()));
@@ -44,7 +55,7 @@ export function localBotsAsContacts<T extends { personUid: string }>(
     const uid = bot.agentUid.trim();
     if (!uid || seen.has(uid)) continue;
     seen.add(uid);
-    extra.push({ personUid: uid, displayName: bot.name, companyUid: null });
+    extra.push({ personUid: uid, displayName: botRowDisplayName(bot, displayNames), companyUid: null });
   }
   return [...contacts, ...extra];
 }
@@ -150,6 +161,34 @@ export function localBotPresence(
   const bot = localBotForRow(bots, row);
   if (!bot) return null;
   return bot.online === true ? "online" : "offline";
+}
+
+/**
+ * Should the conversation show the "offline / starting up" notice?
+ *
+ * `online: false` is HQ saying the heartbeat is stale. `online: null` only
+ * means the app could not ask this time (HQ Cloud rate-limited the check, or
+ * the network blinked). A bot whose process is running and has not failed is
+ * treated as fine in that case: flashing "is starting up" over a bot that is
+ * answering messages reads as broken, and the next listing settles it.
+ */
+export function localBotNeedsOfflineNotice(bot: LocalBotRow | null | undefined): boolean {
+  if (!bot || bot.online === true) return false;
+  if (bot.online === null && bot.processAlive && bot.state !== "failed" && !bot.promotionHold) return false;
+  return true;
+}
+
+/**
+ * Agent uids of local bots that are mid-turn right now.
+ *
+ * The thinking indicator is otherwise ended by the first message from the
+ * agent, which is wrong for a bot that posts an interim note and keeps
+ * working. The CLI reports `busy` from its own in-flight marker, so this is
+ * the truthful "still answering" signal for a local bot's DM.
+ */
+export function busyLocalBotUids(bots: readonly LocalBotRow[] | null | undefined): string[] {
+  if (!bots) return [];
+  return bots.filter((b) => b.busy === true).map((b) => b.agentUid.trim()).filter(Boolean);
 }
 
 /** One-line thread notice for an offline local bot. */

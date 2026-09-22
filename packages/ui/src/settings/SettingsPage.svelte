@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, type Snippet } from "svelte";
+  import { onMount } from "svelte";
   import type { AdapterResult, PlatformAdapter } from "@hq/platform";
   import type {
     SettingsPatch,
@@ -93,7 +93,6 @@
     openExternal = (url: string) => {
       window.open(url, "_blank", "noopener,noreferrer");
     },
-    widgetSettings,
   }: {
     activeTab?: SettingsTab | null;
     onnavigate?: (tab: SettingsTab | null) => void;
@@ -113,8 +112,6 @@
     /** Sign-out intent — host owns the tray sign-out flow. */
     onsignout?: () => void | Promise<void>;
     openExternal?: (url: string) => void | Promise<void>;
-    /** Desktop widget settings panel (host-injected; unavailable note otherwise). */
-    widgetSettings?: Snippet;
   } = $props();
 
   const _activeSection = $derived(
@@ -1154,8 +1151,7 @@
   }
 
   // The Dock icon must change NOW, not at next launch — so persist first, then
-  // re-apply the activation policy from the freshly written preference. Same
-  // save-then-apply contract as the widget toggle.
+  // re-apply the activation policy from the freshly written preference.
   //
   // A failed save reverts the optimistic checkbox (nothing was written). A
   // failed apply keeps the new value — disk is already authoritative — but
@@ -2041,25 +2037,6 @@
                     </button>
                   {/if}
                 </div>
-              {/if}
-            </div>
-          </section>
-
-          <section
-            id="widget"
-            class="settings-section"
-            hidden={activeTab !== "widget"}
-          >
-            <h2>Notifications widget</h2>
-            <div class="settings-card">
-              {#if widgetSettings}
-                {@render widgetSettings()}
-              {:else}
-                <UnavailableNote
-                  label="Notifications widget"
-                  message="The desktop widget is configured from the HQ desktop app."
-                  testid="settings-widget-unavailable"
-                />
               {/if}
             </div>
           </section>

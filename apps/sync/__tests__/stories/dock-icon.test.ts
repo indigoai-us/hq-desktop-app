@@ -130,6 +130,19 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       expect(lifecycle).toMatch(/first_run \|\| state\.is_some_and\(lifecycle_keeps_main_window_visible\)/);
     });
 
+    it('does not treat a bundled CLI version mismatch as missing tools at launch', () => {
+      // Feedback #2290: v0.10.260 ANDed bundled_hq_cli_ready into tools_present,
+      // so every auto-update restart re-opened Welcome while hq and node were
+      // already on disk. The version check stays for dependency install.
+      const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
+      const setup = lifecycle.slice(lifecycle.indexOf('pub fn setup_lifecycle'));
+      const body = setup.slice(0, setup.indexOf('\n}\n'));
+      expect(body).toMatch(/tools_present_for_lifecycle_gate\(hq_resolved, node_resolved\)/);
+      expect(body).not.toMatch(
+        /tools_present[^\n]*=[^\n]*bundled_hq_cli_ready|&& crate::commands::install_deps::bundled_hq_cli_ready/,
+      );
+    });
+
     it('advances the cached lifecycle verdict when setup finishes so the same launch routes to the desktop', () => {
       const firstRun = readRepo('src-tauri/src/commands/first_run.rs');
       expect(firstRun).toMatch(/pub fn mark_first_run_complete\(app: AppHandle\)/);
@@ -149,15 +162,16 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       const src = readRepo('src-tauri/src/tray.rs');
       expect(src).toMatch(/pub fn show_desktop_window/);
       // The show-only helper must not carry toggle_desktop_window's hide branch.
-      const body = src.slice(src.indexOf('pub fn show_desktop_window'));
+      // Its body is the shared route-aware opener (PL-05).
+      const body = src.slice(src.indexOf('pub fn show_desktop_window_at'));
       expect(body.slice(0, body.indexOf('\n}\n'))).not.toMatch(/\.hide\(\)/);
     });
 
     it('logs desktop opening failure without replacing it with the popover', () => {
       const src = readRepo('src-tauri/src/tray.rs');
-      const body = src.slice(src.indexOf('pub fn show_desktop_window'));
+      const body = src.slice(src.indexOf('pub fn show_desktop_window_at'));
       const show = body.slice(0, body.indexOf('\n}\n'));
-      expect(show).not.toMatch(/show_popover_window/);
+      expect(show).not.toMatch(/show_onboarding_window/);
       expect(show).toContain('desktop activation failed: {e}');
     });
 

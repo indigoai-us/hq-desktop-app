@@ -105,7 +105,10 @@ pub struct ClientHealthContractError {
 
 impl ClientHealthContractError {
     fn new(code: ClientHealthContractErrorCode, field: impl Into<String>) -> Self {
-        Self { code, field: field.into() }
+        Self {
+            code,
+            field: field.into(),
+        }
     }
 }
 
@@ -485,8 +488,24 @@ fn assert_safe_bounded_string(
     let is_shell_meta = |c: char| {
         matches!(
             c,
-            ';' | '|' | '&' | '$' | '<' | '>' | '`' | '\'' | '"' | '(' | ')' | '{' | '}' | '*'
-                | '?' | '!' | '#' | '=' | ','
+            ';' | '|'
+                | '&'
+                | '$'
+                | '<'
+                | '>'
+                | '`'
+                | '\''
+                | '"'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '*'
+                | '?'
+                | '!'
+                | '#'
+                | '='
+                | ','
         )
     };
     if value.chars().any(|c| c.is_whitespace() || is_shell_meta(c)) {
@@ -499,14 +518,18 @@ fn assert_safe_bounded_string(
     let mut chars = value.chars();
     let first = chars.next();
     let second = chars.next();
-    let drive_letter = matches!((first, second), (Some(letter), Some(':')) if letter.is_ascii_alphabetic());
+    let drive_letter =
+        matches!((first, second), (Some(letter), Some(':')) if letter.is_ascii_alphabetic());
     if value.contains('/') || value.contains('\\') || value.starts_with('~') || drive_letter {
         return Err(ClientHealthContractError::new(
             ClientHealthContractErrorCode::UnsafeValue,
             field,
         ));
     }
-    if SECRET_PREFIXES.iter().any(|prefix| value.starts_with(prefix)) {
+    if SECRET_PREFIXES
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+    {
         return Err(ClientHealthContractError::new(
             ClientHealthContractErrorCode::UnsafeValue,
             field,
@@ -696,7 +719,10 @@ pub fn parse_client_health_repair_args(
         }
     }
     if let Some(entry) = raw.get("targetVersion") {
-        args.target_version = Some(assert_version(&format!("{field}.targetVersion"), Some(entry))?);
+        args.target_version = Some(assert_version(
+            &format!("{field}.targetVersion"),
+            Some(entry),
+        )?);
     }
     Ok(args)
 }
@@ -876,8 +902,7 @@ pub fn parse_client_health_command_receipt(
         receipt.postcondition = Some(parse_postcondition("postcondition", entry)?);
     }
     if let Some(entry) = raw.get("manualActionRequired") {
-        receipt.manual_action_required =
-            Some(assert_boolean("manualActionRequired", Some(entry))?);
+        receipt.manual_action_required = Some(assert_boolean("manualActionRequired", Some(entry))?);
     }
     if let Some(entry) = raw.get("checks") {
         let Value::Array(entries) = entry else {
@@ -1312,10 +1337,16 @@ mod tests {
             ("updateFailed", HEARTBEAT_UPDATE_FAILED),
             ("runnerFailed", HEARTBEAT_RUNNER_FAILED),
             ("heartbeatStale", HEARTBEAT_STALE),
-            ("cliWatermarkNoCompletedRun", HEARTBEAT_CLI_WATERMARK_NO_COMPLETED_RUN),
+            (
+                "cliWatermarkNoCompletedRun",
+                HEARTBEAT_CLI_WATERMARK_NO_COMPLETED_RUN,
+            ),
         ] {
             let parsed = parse_client_health_heartbeat(&value(raw));
-            assert!(parsed.is_ok(), "canonical heartbeat {name} must parse: {parsed:?}");
+            assert!(
+                parsed.is_ok(),
+                "canonical heartbeat {name} must parse: {parsed:?}"
+            );
         }
     }
 
@@ -1332,7 +1363,10 @@ mod tests {
         );
         assert_eq!(parsed.last_sync_success_at, None);
         let wire = serde_json::to_value(&parsed).expect("serializes");
-        assert_eq!(wire, input, "wire field names/values must survive round-trip");
+        assert_eq!(
+            wire, input,
+            "wire field names/values must survive round-trip"
+        );
         assert!(
             wire.get("lastSyncSuccessAt").is_none(),
             "the watermark must never masquerade as a completed success"
@@ -1347,7 +1381,10 @@ mod tests {
             ("repairFailed", RECEIPT_REPAIR_FAILED),
         ] {
             let parsed = parse_client_health_command_receipt(&value(raw));
-            assert!(parsed.is_ok(), "canonical receipt {name} must parse: {parsed:?}");
+            assert!(
+                parsed.is_ok(),
+                "canonical receipt {name} must parse: {parsed:?}"
+            );
         }
     }
 
@@ -1356,7 +1393,10 @@ mod tests {
         let input = value(HEARTBEAT_HEALTHY);
         let parsed = parse_client_health_heartbeat(&input).expect("healthy parses");
         let reserialized = serde_json::to_value(&parsed).expect("heartbeat serializes");
-        assert_eq!(reserialized, input, "wire field names/values must survive round-trip");
+        assert_eq!(
+            reserialized, input,
+            "wire field names/values must survive round-trip"
+        );
     }
 
     #[test]
@@ -1382,7 +1422,10 @@ mod tests {
         let mut unchecked = value(HEARTBEAT_HEALTHY);
         unchecked["updaterState"] = json!("unchecked");
         let parsed = parse_client_health_heartbeat(&unchecked).expect("unchecked parses");
-        assert_eq!(parsed.updater_state, Some(ClientHealthUpdaterState::Unchecked));
+        assert_eq!(
+            parsed.updater_state,
+            Some(ClientHealthUpdaterState::Unchecked)
+        );
         let wire = serde_json::to_value(&parsed).expect("serializes");
         assert_eq!(wire.get("updaterState"), Some(&json!("unchecked")));
     }
@@ -1440,7 +1483,10 @@ mod tests {
         ] {
             let error = parse_client_health_heartbeat(&value(raw))
                 .expect_err(&format!("invalid heartbeat {name} must be rejected"));
-            assert_eq!(error.code, code, "unexpected code for invalid heartbeat {name}");
+            assert_eq!(
+                error.code, code,
+                "unexpected code for invalid heartbeat {name}"
+            );
         }
     }
 
@@ -1465,7 +1511,10 @@ mod tests {
         ] {
             let error = parse_client_health_command_receipt(&value(raw))
                 .expect_err(&format!("invalid receipt {name} must be rejected"));
-            assert_eq!(error.code, code, "unexpected code for invalid receipt {name}");
+            assert_eq!(
+                error.code, code,
+                "unexpected code for invalid receipt {name}"
+            );
         }
     }
 
@@ -1500,9 +1549,15 @@ mod tests {
         // Newer sequence replaces the stored snapshot.
         assert!(should_apply_heartbeat(Some(older.sequence), newer.sequence));
         // The late/replayed older sequence is dropped.
-        assert!(!should_apply_heartbeat(Some(newer.sequence), older.sequence));
+        assert!(!should_apply_heartbeat(
+            Some(newer.sequence),
+            older.sequence
+        ));
         // Equal sequence is a replay: dropped.
-        assert!(!should_apply_heartbeat(Some(newer.sequence), newer.sequence));
+        assert!(!should_apply_heartbeat(
+            Some(newer.sequence),
+            newer.sequence
+        ));
     }
 
     // ── US-009/US-010 repair-intent contract additions ──────────────────────
@@ -1579,7 +1634,10 @@ mod tests {
         // An unknown key (e.g. a conflict-resolution choice) fails closed.
         let unknown = parse_client_health_repair_args("args", &json!({ "resolve": "local" }))
             .expect_err("unknown arg must be rejected");
-        assert_eq!(unknown.code, ClientHealthContractErrorCode::UnknownEnumValue);
+        assert_eq!(
+            unknown.code,
+            ClientHealthContractErrorCode::UnknownEnumValue
+        );
 
         // A shell fragment smuggled as a version fails the SemVer gate.
         let poisoned =
@@ -1595,7 +1653,10 @@ mod tests {
         let post = parsed.postcondition.as_ref().expect("has postcondition");
         assert!(post.verified);
         assert_eq!(post.sync_state, Some(ClientHealthSyncState::Idle));
-        assert_eq!(post.versions.as_ref().and_then(|v| v.core.as_deref()), Some("3.18.0"));
+        assert_eq!(
+            post.versions.as_ref().and_then(|v| v.core.as_deref()),
+            Some("3.18.0")
+        );
         // Byte-for-byte survival of the closed proof object.
         assert_eq!(serde_json::to_value(&parsed).unwrap(), input);
 

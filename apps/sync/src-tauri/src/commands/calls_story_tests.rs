@@ -56,7 +56,6 @@ fn story_main_window_close_and_navigation_never_touch_a_live_call() {
         "desktop-alt",
         "meetings-window",
         "communications",
-        "widget",
         "detail-dm-1",
         "",
         "CALL",

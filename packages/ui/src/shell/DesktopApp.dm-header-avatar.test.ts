@@ -227,6 +227,9 @@ describe("DesktopApp DM header avatar", () => {
           lastActivityAt: now(),
         },
       ],
+      // The agent is on the rail because it has talked to this user — an
+      // agent that has only been created never gets a row (agent-stub rule).
+      engagedAgentUids: ["agt_photo"],
     });
 
     const dm = await vi.waitFor(() => {

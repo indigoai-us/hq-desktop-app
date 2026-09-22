@@ -16,9 +16,11 @@
   import IdentityMark from "../messaging/IdentityMark.svelte";
   import {
     BOT_SCOPE_COPY,
+    NAME_MAX,
     TITLE_MAX,
-    nameIssue,
-    normalizeBotName,
+    botHandle,
+    displayNameIssue,
+    localHandleIssue,
     templateBringsLine,
     titleIssue,
     type BotMemory,
@@ -61,8 +63,24 @@
 
   const SCOPES: readonly BotScope[] = ["personal", "company"];
 
-  const nameError = $derived(nameIssue(draft.name, existingNames));
+  const nameError = $derived(displayNameIssue(draft.name));
   const nameTouched = $derived(draft.name.trim().length > 0);
+  /** The slug the bot is created under: derived from the name, or typed. */
+  const handle = $derived(botHandle(draft));
+  const handleError = $derived(localHandleIssue(draft, existingNames));
+  /**
+   * The handle field opens by hand, and opens itself the first time the
+   * derived handle is unusable — a collision, or a name with nothing to
+   * slugify, is fixed here rather than by making the person rename the bot.
+   * It latches: a field that vanished the moment it became valid would take
+   * the person's edit with it.
+   */
+  let handleOpen = $state(false);
+  const handleForced = $derived(nameTouched && !nameError && Boolean(handleError));
+  $effect(() => {
+    if (handleForced) handleOpen = true;
+  });
+  const showHandleField = $derived(handleOpen);
   const titleError = $derived(titleIssue(draft.title));
   const brings = $derived(templateBringsLine(template));
   const hasPicker = $derived(Boolean(avatarPacks || loadAvatarPacks));
@@ -116,7 +134,8 @@
       autocomplete="off"
       spellcheck="false"
       data-testid="chat-bot-name"
-      placeholder="assistant"
+      placeholder="Assistant"
+      maxlength={NAME_MAX + 20}
       aria-describedby="create-bot-name-help"
       aria-invalid={nameTouched && nameError ? "true" : undefined}
       value={draft.name}
@@ -124,10 +143,50 @@
       use:focusOnMount
       oninput={(event) => onpatch({ name: (event.currentTarget as HTMLInputElement).value })}
     />
-    <p class="cb-help" class:error={nameTouched && nameError} class:ok={!nameError} id="create-bot-name-help" data-testid="chat-bot-name-help">
-      {nameError ?? `${normalizeBotName(draft.name)} is available — it's the bot's @handle everywhere.`}
+    <p
+      class="cb-help"
+      class:error={nameTouched && (nameError || handleError)}
+      class:ok={!nameError && !handleError}
+      id="create-bot-name-help"
+      data-testid="chat-bot-name-help"
+    >
+      {#if nameError}
+        {nameError}
+      {:else if handleError}
+        {handleError}
+      {:else}
+        <span data-testid="chat-bot-derived-handle">@{handle}</span> — type that to mention it.
+        {#if !showHandleField}
+          <button type="button" class="cb-linkish" data-testid="chat-bot-handle-edit" disabled={disabled} onclick={() => (handleOpen = true)}>
+            Edit handle
+          </button>
+        {/if}
+      {/if}
     </p>
   </div>
+
+  {#if showHandleField}
+    <div class="cb-field">
+      <label class="cb-label" for="create-bot-handle">Handle</label>
+      <input
+        id="create-bot-handle"
+        class="cb-input"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        data-testid="chat-bot-handle"
+        placeholder="scout-2"
+        aria-describedby="create-bot-handle-help"
+        aria-invalid={handleError ? "true" : undefined}
+        value={handle}
+        disabled={disabled}
+        oninput={(event) => onpatch({ handle: (event.currentTarget as HTMLInputElement).value })}
+      />
+      <p class="cb-help" class:error={handleError} id="create-bot-handle-help" data-testid="chat-bot-handle-help">
+        {handleError ?? `@${handle} is available — it's how the bot is mentioned and what the CLI calls it.`}
+      </p>
+    </div>
+  {/if}
 
   <div class="cb-field">
     <label class="cb-label" for="create-bot-title">Title</label>
@@ -154,7 +213,7 @@
     <span class="cb-label" id="create-bot-avatar-label">Avatar</span>
     <div class="avatar-row">
       <span class="avatar-mark" aria-hidden="true">
-        <IdentityMark kind="agent" label={draft.name || "bot"} avatarUrl={previewAvatar} agentUid={`agt_preview_${normalizeBotName(draft.name) || "bot"}`} />
+        <IdentityMark kind="agent" label={draft.name || "bot"} avatarUrl={previewAvatar} agentUid={`agt_preview_${handle || "bot"}`} />
       </span>
       {#if hasPicker}
         <button
@@ -176,7 +235,7 @@
     {#if avatarOpen && hasPicker}
       <div class="avatar-picker" data-testid="chat-bot-avatar-picker">
         <AvatarPackPicker
-          agentUid={`agt_preview_${normalizeBotName(draft.name) || "bot"}`}
+          agentUid={`agt_preview_${handle || "bot"}`}
           packs={avatarPacks}
           loadPacks={loadAvatarPacks ?? undefined}
           selected={draft.avatar ?? null}

@@ -287,7 +287,7 @@ mod win {
 
     /// Install the thread-local `WH_CALLWNDPROC` intercept on the current
     /// (event-loop) thread. Call from `main()` BEFORE `tauri::Builder::build()` so
-    /// it also covers a `WM_ENDSESSION` landing during the config-window / widget
+    /// it also covers a `WM_ENDSESSION` landing during the config-window
     /// WebView2 creation tauri performs inside the `RunEvent::Ready` dispatch. A
     /// failure is logged and a bounded Sentry warning is emitted, but is never
     /// fatal — the `RunEvent::Exit` fallback still covers the non-re-entrant path.

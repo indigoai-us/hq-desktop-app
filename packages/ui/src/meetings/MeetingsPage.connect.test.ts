@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type AdapterResult, type PlatformAdapter } from "@hq/platform";
+import { ok, unavailable, type AdapterResult, type PlatformAdapter } from "@hq/platform";
 
 import MeetingsPage from "./MeetingsPage.svelte";
 import {
@@ -32,6 +32,8 @@ function wireApi() {
       listCalendars: () => call("listCalendars") as never,
       connectCalendar: () => call("connectCalendar") as never,
       disconnectCalendar: () => call("disconnectCalendar") as never,
+      permissionsState: () => Promise.resolve(unavailable("desktop-only")) as never,
+      openPermissionsSetup: () => call("openPermissionsSetup") as never,
     },
     feedback: {
       submitBugReport: () => call("submitBugReport") as never,
@@ -55,6 +57,8 @@ function fakeAdapter(): PlatformAdapter {
       listCalendars: () => call("listCalendars") as never,
       connectCalendar: () => call("connectCalendar") as never,
       disconnectCalendar: () => call("disconnectCalendar") as never,
+      permissionsState: () => Promise.resolve(unavailable("desktop-only")) as never,
+      openPermissionsSetup: () => call("openPermissionsSetup") as never,
     },
     feedback: {
       submitBugReport: () => call("submitBugReport") as never,

@@ -34,6 +34,10 @@ import {
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
 import { createCallsApi } from '../calls/api.js';
+import {
+  retryThrottled,
+  type RequestPolicyOptions,
+} from '../request-policy.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -47,6 +51,11 @@ export interface SyncPlatformAdapterConfig {
    * invoke("hq_pro_fetch") so Cognito stays in Rust.
    */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Overrides for the shared 429/503 policy. Tests inject a synchronous
+   * `sleep` and a deterministic `random`; production uses the defaults.
+   */
+  requestPolicy?: RequestPolicyOptions;
 }
 
 const NOT_MAPPED = unavailable(
@@ -56,9 +65,9 @@ const NOT_MAPPED = unavailable(
 
 /**
  * Distinct from NOT_MAPPED: the Sync host already owns this surface natively
- * (tray, floating widget, notification banners) and the embedded HQ Work UI
+ * (tray, notification banners) and the embedded HQ Work UI
  * must not drive a second one. Project non-goal: "Porting the sync engine,
- * tray, or widget anywhere". Refusing loudly beats a silent `ok()`, which
+ * or tray anywhere". Refusing loudly beats a silent `ok()`, which
  * would make the embedded settings toggle look effective while nothing moved.
  */
 const HOST_OWNED = unavailable(
@@ -140,6 +149,7 @@ export function createSyncPlatformAdapter(
   // Production must not use window.fetch; tests pass a throwing stub.
   void config.fetch;
   const invokeFn = config.invoke;
+  const requestPolicy = config.requestPolicy ?? {};
   const flags = createFeatureFlagGate({
     // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
     endpoint: '',
@@ -179,20 +189,31 @@ export function createSyncPlatformAdapter(
     return ok(versions);
   }
 
-  async function hqProJson<T>(
+  /**
+   * One hq-pro request attempt, plus the two fields the shared 429/503 policy
+   * reads. Rust returns `retryAfter` alongside status/body so the header is
+   * honoured here rather than lost at the bridge.
+   */
+  async function hqProAttempt<T>(
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
-  ): AdapterPromise<T> {
+  ): Promise<{
+    result: AdapterResult<T>;
+    status: number | null;
+    retryAfter?: string | null;
+  }> {
     const raw = await call<unknown>('hq_pro_fetch', {
       url: path,
       method,
       body: body === undefined ? null : JSON.stringify(body),
     });
-    if (!raw.ok) return raw;
+    if (!raw.ok) return { result: raw, status: null };
     const rec = asRecord(raw.value);
     if (rec && typeof rec.status === 'number') {
       const text = typeof rec.body === 'string' ? rec.body : '';
+      const retryAfter =
+        typeof rec.retryAfter === 'string' ? rec.retryAfter : null;
       if (rec.status < 200 || rec.status >= 300) {
         let code = `http-${rec.status}`;
         let message = `${method} ${path} failed`;
@@ -210,21 +231,43 @@ export function createSyncPlatformAdapter(
         } catch {
           /* keep http-status defaults */
         }
-        return failure(code, message);
+        return { result: failure(code, message), status: rec.status, retryAfter };
       }
       if (rec.status === 204 || !text.trim()) {
-        return ok(undefined as T);
+        return { result: ok(undefined as T), status: rec.status };
       }
       try {
-        return ok(JSON.parse(text) as T);
+        return { result: ok(JSON.parse(text) as T), status: rec.status };
       } catch (err) {
-        return failure(
-          'network',
-          err instanceof Error ? err.message : String(err),
-        );
+        return {
+          result: failure(
+            'network',
+            err instanceof Error ? err.message : String(err),
+          ),
+          status: rec.status,
+        };
       }
     }
-    return ok(raw.value as T);
+    return { result: ok(raw.value as T), status: null };
+  }
+
+  /**
+   * Every hq-pro call the embedded UI makes goes through here, so the 429/503
+   * policy is applied once for the whole desktop surface. The AdapterResult
+   * handed back is unchanged — a throttle that survives the retries still
+   * surfaces as the `http-429` failure callers already render.
+   */
+  async function hqProJson<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await retryThrottled(
+      () => hqProAttempt<T>(method, path, body),
+      (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
+      requestPolicy,
+    );
+    return attempted.result;
   }
 
   /**
@@ -234,9 +277,9 @@ export function createSyncPlatformAdapter(
    * invoke them only after the requested value is persisted.
    */
   async function persistThenApplyAppShellPreference(
-    key: 'dockIcon' | 'widgetEnabled',
+    key: 'dockIcon',
     value: boolean,
-    applyCommand: 'apply_dock_icon' | 'apply_widget_settings',
+    applyCommand: 'apply_dock_icon',
   ): AdapterPromise<void> {
     const settingsInvoker: SettingsInvoker = <T>(
       command: string,
@@ -517,6 +560,7 @@ export function createSyncPlatformAdapter(
           values: args.values,
           idempotencyKey: args.idempotencyKey ?? null,
         }),
+      checkCompanySlug: (slug) => call('check_company_slug', { slug }),
       getCompanyTab: (companyUid, tab) =>
         call('get_company_tab', { companyUid, tab }),
       runCompanyTabAction: (args) =>
@@ -727,6 +771,10 @@ export function createSyncPlatformAdapter(
       connectCalendar: () => hqProJson('POST', WEB_PATHS.googleConnect),
       disconnectCalendar: (accountId) =>
         hqProJson('DELETE', WEB_PATHS.googleAccount(accountId)),
+      // Native meeting-detector permissions. The Rust side reads TCC without
+      // prompting; the setup window is the only surface that prompts.
+      permissionsState: () => call('meetings_permissions_state'),
+      openPermissionsSetup: () => call('open_meeting_permissions_window'),
     },
 
     marketplace: {
@@ -1038,12 +1086,6 @@ export function createSyncPlatformAdapter(
       requestNotificationPermission: () =>
         call('notification_request_permission'),
       openNotificationSettings: () => call('notification_open_settings'),
-      setDesktopWidget: (enabled) =>
-        persistThenApplyAppShellPreference(
-          'widgetEnabled',
-          enabled,
-          'apply_widget_settings',
-        ),
       showOsNotification: async () => HOST_OWNED,
     },
 

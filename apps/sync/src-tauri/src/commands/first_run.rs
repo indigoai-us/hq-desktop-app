@@ -146,19 +146,22 @@ pub fn should_show_auto_sync_notice(state: State<'_, LaunchKindState>) -> bool {
 #[tauri::command]
 pub fn mark_first_run_complete(app: AppHandle) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
-    merge_menubar_flags(
-        &path,
-        &[
-            ("firstRunCompleted", Value::Bool(true)),
-            ("autoSyncNoticeShown", Value::Bool(true)),
-            ("realtimeSync", Value::Bool(true)),
-            ("personalSyncEnabled", Value::Bool(true)),
-            // A brand-new install is owed the welcome channel's guided setup.
-            // An updating user (`mark_auto_sync_notice_shown`, the lifecycle
-            // backfill) is not: they were set up before this flow existed.
-            ("welcomeSetupPending", Value::Bool(true)),
-        ],
-    )?;
+    let menubar = read_menubar_obj(&path);
+    let mut flags = vec![
+        ("firstRunCompleted", Value::Bool(true)),
+        ("autoSyncNoticeShown", Value::Bool(true)),
+        ("realtimeSync", Value::Bool(true)),
+        ("personalSyncEnabled", Value::Bool(true)),
+    ];
+    // A brand-new install is owed the welcome channel's guided setup.
+    // An updating user (`mark_auto_sync_notice_shown`, the lifecycle
+    // backfill) is not: they were set up before this flow existed.
+    // Re-running the installer after a misclassified launch must not
+    // reset a finished welcome (feedback #2290).
+    if hq_desktop_core::lifecycle::should_arm_welcome_setup_pending(&menubar) {
+        flags.push(("welcomeSetupPending", Value::Bool(true)));
+    }
+    merge_menubar_flags(&path, &flags)?;
     // Setup is done for this process too: window routing must stop treating
     // `main` as the setup card, or the next Dock / tray click reopens it.
     crate::commands::lifecycle::set_lifecycle_state(
@@ -189,15 +192,22 @@ pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
     }
 }
 
-/// Reposition the main window to the menu-bar popover anchor and show it. Used on
-/// the onboarding→popover handoff so the popover appears next to the tray rather
-/// than staying centered where the installer was. Uses `show_popover_window`,
-/// which anchors under the native menu-bar helper icon on macOS (the menu-bar
-/// item is a separate helper process, so there is no Tauri tray to read a rect
-/// from) with a top-right fallback.
+/// Hand first-run off to the desktop workspace: open the desktop window, then
+/// hide the installer card in `main`.
+///
+/// The command keeps its historical name (the onboarding renderer invokes
+/// `show_main_window_at_tray` when the wizard finishes). Onboarding is done at
+/// that point, so `main` goes back to being the hidden controller and the user
+/// lands in the desktop window.
+///
+/// The order matters: the card is only dismissed once the desktop window has
+/// actually opened. If opening fails, the error is returned with the card
+/// still on screen rather than leaving the user with no window at all.
 #[tauri::command]
-pub fn show_main_window_at_tray(app: AppHandle) {
-    crate::tray::show_popover_window(&app);
+pub async fn show_main_window_at_tray(app: AppHandle) -> Result<(), String> {
+    crate::commands::desktop_alt::open_desktop_alt_window_inner(app.clone(), None).await?;
+    crate::tray::hide_onboarding_window(&app);
+    Ok(())
 }
 
 /// Mark the one-time auto-sync notice as shown for an updating user. Also sets

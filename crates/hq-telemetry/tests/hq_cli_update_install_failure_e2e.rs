@@ -3,8 +3,8 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_install_failure_episode,
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
-    DeliveredPrefixShim, InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome,
+    report_non_convergent_install, report_npm_cache_setup_failure, DeliveredPrefixShim,
+    InstallEnvironment, InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome,
     ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
     NpmToolchainSource, RequestedSpecKind, ResolutionSource, SettingsPathTelemetry,
 };
@@ -214,7 +214,8 @@ const DISK_FULL_STDERR: &str = "npm error code ENOSPC\n\
 /// `SyntaxError` and NONE of npm's structured markers — so `npm_error_code=none`,
 /// `npm_syscall=unknown`, `npm_path_shape=none`, `npm_lifecycle_failed=false`,
 /// the exact `none:unknown:none` shape the reported issue grouped under at Error.
-const NODE_SIX_STDERR: &str = "/usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/index.js:1\n\
+const NODE_SIX_STDERR: &str =
+    "/usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/index.js:1\n\
     export { Arborist }\n\
     ^^^^^^\n\
     SyntaxError: Unexpected token export\n\
@@ -580,7 +581,14 @@ fn missing_global_install_target_captures_a_path_safe_warning_with_the_diagnosti
     // scrubber — no drive letter, user directory, path component, or raw npm stderr.
     assert_path_safe(
         &event,
-        &["C:\\", "Users", "AppData", "Roaming", "node_modules", "npm error"],
+        &[
+            "C:\\",
+            "Users",
+            "AppData",
+            "Roaming",
+            "node_modules",
+            "npm error",
+        ],
     );
 }
 
@@ -1372,8 +1380,7 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
         assert_eq!(tag(&event, key), Some(value), "tag {key}");
     }
     assert!(
-        tag(&event, "npm_stderr_shapes")
-            .is_some_and(|shapes| shapes.contains("stack_frame:")),
+        tag(&event, "npm_stderr_shapes").is_some_and(|shapes| shapes.contains("stack_frame:")),
         "shapes tag must carry the bounded stack-frame count: {:?}",
         tag(&event, "npm_stderr_shapes")
     );
@@ -1405,7 +1412,13 @@ fn reported_windows_markerless_occurrence_groups_attributed_and_path_safe() {
     assert_eq!(WINDOWS_MARKERLESS_STDERR.len(), 149);
     let env = reopen_windows_env();
     let event = single_event(captured_events(|| {
-        report_install_failure_with_environment(Some(1), WINDOWS_MARKERLESS_STDERR, None, false, &env)
+        report_install_failure_with_environment(
+            Some(1),
+            WINDOWS_MARKERLESS_STDERR,
+            None,
+            false,
+            &env,
+        )
     }));
     // Still an unexplained updater failure — stays Error, NOT downgraded.
     assert_eq!(event.level, sentry::Level::Error);
@@ -1432,12 +1445,15 @@ fn reported_windows_markerless_occurrence_groups_attributed_and_path_safe() {
     assert_eq!(tag(&event, "npm_toolchain_source"), Some("user-path"));
     // The diagnostics extra carries the origin/shapes attribution as a fixed-shape
     // suffix, and NEVER the raw stderr.
-    assert!(event
-        .extra
-        .get("npm_diagnostics")
-        .and_then(|value| value.as_str())
-        .is_some_and(|summary| summary
-            .contains("stderr_origin=non-npm stderr_shapes=path_like:2")));
+    assert!(
+        event
+            .extra
+            .get("npm_diagnostics")
+            .and_then(|value| value.as_str())
+            .is_some_and(
+                |summary| summary.contains("stderr_origin=non-npm stderr_shapes=path_like:2")
+            )
+    );
     assert!(
         !event.extra.contains_key("npm_stderr"),
         "raw npm stderr must never reach Sentry"
@@ -2223,7 +2239,13 @@ fn foreign_registry_e404_captures_a_path_safe_attributed_warning() {
 #[test]
 fn npmjs_origin_e404_stays_a_loud_error_under_an_attributed_signature() {
     let event = single_event(captured_events(|| {
-        report_install_failure_with_environment(Some(1), NPMJS_E404_STDERR, None, false, &e404_env())
+        report_install_failure_with_environment(
+            Some(1),
+            NPMJS_E404_STDERR,
+            None,
+            false,
+            &e404_env(),
+        )
     }));
     // An npmjs-origin E404 is a genuine "we asked npmjs for something not there"
     // defect — it must stay at Error (the anti-masking guard for the downgrade).
@@ -2311,7 +2333,10 @@ fn a_prerelease_target_version_survives_as_an_attributed_tag() {
         )
     }));
     assert_eq!(tag(&event, "hq_cli_target_version"), Some("6.0.0-beta.1"));
-    assert_eq!(tag(&event, "npm_requested_spec_kind"), Some("pinned-version"));
+    assert_eq!(
+        tag(&event, "npm_requested_spec_kind"),
+        Some("pinned-version")
+    );
 }
 
 #[test]

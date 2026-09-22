@@ -605,7 +605,9 @@ mod tests {
         custody.tick(NOW + 10 * 60 * 1_000);
         assert!(!custody.holds_credentials());
         assert_eq!(
-            custody.confirm("attempt-1", NOW + 10 * 60 * 1_000).unwrap_err(),
+            custody
+                .confirm("attempt-1", NOW + 10 * 60 * 1_000)
+                .unwrap_err(),
             CustodyError::Finished(AttemptEnd::Expired)
         );
     }
@@ -662,7 +664,9 @@ mod tests {
     fn id_token_with_nonce(nonce: Option<&str>) -> String {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let payload = match nonce {
-            Some(value) => format!(r#"{{"sub":"placeholder-sub","email":"a@example.test","nonce":"{value}"}}"#),
+            Some(value) => {
+                format!(r#"{{"sub":"placeholder-sub","email":"a@example.test","nonce":"{value}"}}"#)
+            }
             None => r#"{"sub":"placeholder-sub","email":"a@example.test"}"#.to_string(),
         };
         format!(

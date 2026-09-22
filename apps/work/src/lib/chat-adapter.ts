@@ -508,6 +508,9 @@ export function createConversationApi(
         replayed: raw.replayed === true,
       };
     },
+    checkCompanySlug: adapter.messaging.checkCompanySlug
+      ? async (slug: string) => call(adapter.messaging.checkCompanySlug!(slug))
+      : undefined,
     getCompanyTab: adapter.messaging.getCompanyTab
       ? async (companyUid, tab) =>
           call(adapter.messaging.getCompanyTab!(companyUid, tab))

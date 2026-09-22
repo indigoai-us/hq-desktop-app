@@ -85,7 +85,29 @@ describe("one Svelte source across web, desktop and mobile", () => {
       .sort();
     // apps/work is the shared shell; apps/sync is the existing desktop host.
     // Mobile must reuse apps/work rather than introduce a third.
-    expect(configs).toEqual(["apps/sync/svelte.config.js", "apps/work/svelte.config.js"]);
+    // apps/intro is a review-only preview harness for the first-run welcome
+    // film, not a product surface — it ships in no bundle and owns no
+    // components (see the next assertion, which pins that).
+    expect(configs).toEqual([
+      "apps/intro/svelte.config.js",
+      "apps/sync/svelte.config.js",
+      "apps/work/svelte.config.js",
+    ]);
+  });
+
+  it("keeps the intro preview harness a window around apps/sync, not a fork", async () => {
+    // The only thing that earns apps/intro its exemption above is that it
+    // owns no UI of its own: one shell file that mounts the real, shipped
+    // component. The moment it grows a second component, or stops importing
+    // from apps/sync, it has become a third app and this fails.
+    const files = await walk(join(REPO_ROOT, "apps/intro"));
+    const svelte = files.filter((f) => f.endsWith(".svelte")).map(rel).sort();
+    expect(svelte).toEqual(["apps/intro/src/App.svelte"]);
+
+    const shell = readFileSync(join(REPO_ROOT, "apps/intro/src/App.svelte"), "utf8");
+    expect(shell).toContain(
+      "../../sync/src/components/onboarding/CinematicIntro.svelte",
+    );
   });
 
   it("has no byte-identical Svelte components across app trees", async () => {

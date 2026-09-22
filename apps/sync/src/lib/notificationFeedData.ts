@@ -1,17 +1,19 @@
 /**
- * Shared notification-feed data layer — used by both the menubar popover feed
- * (`components/NotificationFeed.svelte`) and the desktop combined Inbox page
- * (`desktop-alt/pages/InboxPage.svelte`, US-008).
+ * Shared notification-feed data layer. Its original consumers — the tray
+ * popover's feed and the desktop-alt Inbox page — are both gone; what reads it
+ * now is the share-detail quick window (`components/QuickWindowSidePane.svelte`
+ * and `components/NotificationRow.svelte`).
  *
  * Owns:
  *   - loading + merging the server notification history with the current
- *     session's activity log (moved verbatim from NotificationFeed.svelte),
- *   - the local "read" watermark (a persisted last-read timestamp) that drives
- *     unread dots, the tab badge, and Mark-all-read,
+ *     session's activity log,
+ *   - the server unread set (`fetchServerUnreadIds`) that drives unread dots,
  *   - small display helpers (relative timestamps, avatar initials).
  *
- * The read state is machine-local by design: the backend has no read-receipt
- * API, so a monotonic watermark in localStorage is the honest source of truth.
+ * The local read watermark this module used to own was deleted in PL-07: the
+ * popover's "Mark all read" was its only writer, so with the popover gone it
+ * could never advance and every dot would have frozen. Read state is the
+ * server's.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -277,47 +279,81 @@ export async function loadNotificationItems(
   return (await loadNotificationTimeline(limit, options)).items;
 }
 
-// ── Read watermark ────────────────────────────────────────────────────────────
+// ── Server read state ────────────────────────────────────────────────────────
 
-const LAST_READ_KEY = 'hq-sync:notifications-last-read';
+/**
+ * Map one NOTIF-store row onto the `Item.id` shape this module mints
+ * (`dm:${eventId}`, `share:${eventId}`, `file:${eventId}`), or null when the
+ * row cannot be matched.
+ *
+ * Keyed by `sourceEventId`, not the store row `id`: the store row is a
+ * notification ABOUT an event, and this module mints ids from the event
+ * itself, so `sourceEventId` is the only field the two sides share. That is
+ * also the key the desktop composer dedupes on
+ * (packages/ui/src/inbox/live-notifications.ts, `composeLiveNotifications`),
+ * and the type→prefix map here mirrors its `liveSourceKind`. A row with no
+ * `sourceEventId` is skipped rather than keyed on the store id, because that
+ * could never match anything and would only look like coverage.
+ */
+export function serverRowToItemId(row: {
+  type?: unknown;
+  sourceEventId?: unknown;
+}): string | null {
+  const source = typeof row.sourceEventId === 'string' ? row.sourceEventId.trim() : '';
+  if (!source) return null;
+  const t = (typeof row.type === 'string' ? row.type : '').trim().toLowerCase();
+  if (t === 'dm' || t === 'dm_received') return `dm:${source}`;
+  if (t === 'file_share' || t === 'file_shared') return `share:${source}`;
+  if (t === 'new_file' || t === 'file_added') return `file:${source}`;
+  return null;
+}
 
-export function getLastReadTs(): number {
-  try {
-    const raw = localStorage.getItem(LAST_READ_KEY);
-    const n = raw == null ? 0 : Number(raw);
-    return Number.isFinite(n) ? n : 0;
-  } catch {
-    return 0;
+/** One page cap; unread is small in practice but a reader with 99+ exists. */
+const UNREAD_PAGE_LIMIT = 100;
+/** Hard stop on the cursor walk so a misbehaving cursor cannot spin forever. */
+const UNREAD_MAX_PAGES = 10;
+
+/**
+ * Ids the SERVER says are unread, in `Item.id` shape.
+ *
+ * This replaces the local `hq-sync:notifications-last-read` watermark for the
+ * widget. The watermark had exactly one writer — the popover feed's Mark all
+ * read — so retiring the popover would have frozen it, and every dot in the
+ * widget with it. The store is what the desktop feed already reads, so this is
+ * the same read model rather than a second one that can disagree.
+ *
+ * Walks `nextCursor` so the tail of a large unread set does not render as
+ * read. Rejects on transport failure; the caller decides what "the server said
+ * nothing" means for its surface, and it must NOT be "fall back to the
+ * watermark" — that is the two-models bug this exists to remove.
+ */
+interface UnreadPage {
+  notifications?: Array<{ type?: unknown; status?: unknown; sourceEventId?: unknown }>;
+  nextCursor?: unknown;
+}
+
+export async function fetchServerUnreadIds(): Promise<ReadonlySet<string>> {
+  const ids = new Set<string>();
+  let cursor: string | null = null;
+  for (let page = 0; page < UNREAD_MAX_PAGES; page++) {
+    const res: UnreadPage | null = await invoke<UnreadPage | null>('fetch_notifications', {
+      limit: UNREAD_PAGE_LIMIT,
+      cursor,
+      unreadOnly: true,
+    });
+    for (const row of res?.notifications ?? []) {
+      // `unreadOnly` is a server filter; re-check so a lenient server cannot
+      // light a dot for a read row.
+      if (row.status !== 'unread') continue;
+      const id = serverRowToItemId(row);
+      if (id) ids.add(id);
+    }
+    const next: string = typeof res?.nextCursor === 'string' ? res.nextCursor.trim() : '';
+    if (!next) break;
+    cursor = next;
   }
+  return ids;
 }
-
-/** Advance the watermark to now (Mark all read). Returns the new watermark.
- *  Broadcasts `hq:notifications-read` so in-window badge consumers (e.g. the
- *  V4 sidebar) recompute without a data refetch. */
-export function markAllNotificationsRead(now: number = Date.now()): number {
-  try {
-    localStorage.setItem(LAST_READ_KEY, String(now));
-  } catch {
-    // localStorage unavailable — unread dots just persist for the session.
-  }
-  try {
-    window.dispatchEvent(new CustomEvent('hq:notifications-read', { detail: { at: now } }));
-  } catch {
-    // Non-browser context (unit tests) — nothing to notify.
-  }
-  return now;
-}
-
-/** True when the item is newer than the read watermark. */
-export function isUnread(item: Item, lastReadTs: number): boolean {
-  return item.ts > lastReadTs;
-}
-
-export function countUnread(items: Item[], lastReadTs: number): number {
-  return items.reduce((n, it) => n + (isUnread(it, lastReadTs) ? 1 : 0), 0);
-}
-
-// ── Display helpers ───────────────────────────────────────────────────────────
 
 /** Compact relative timestamp for feed rows: "now", "2m", "3h", "5d", else "Jun 10". */
 export function relativeTime(ms: number, now: number = Date.now()): string {

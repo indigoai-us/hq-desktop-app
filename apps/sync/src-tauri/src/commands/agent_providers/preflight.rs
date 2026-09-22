@@ -10,7 +10,7 @@ use hq_desktop_core::workspaces::{
 };
 use serde::Serialize;
 
-use super::SessionTool;
+use super::{RuntimeStatus, SessionTool};
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "agent-providers";
@@ -38,6 +38,15 @@ pub struct Preflight {
     pub grok_available: bool,
     /// The Grok CLI signs in separately from grok.com in the browser.
     pub grok_logged_in: bool,
+    /// The one thing the three booleans above cannot say: WHICH of
+    /// not-installed / could-not-check / signed-out a runtime is in. The
+    /// booleans stay for the older panes that read them; every new surface
+    /// should read these, because `available == false` and
+    /// `logged_in == false` look identical and lead to a Sign in that cannot
+    /// succeed.
+    pub claude_status: RuntimeStatus,
+    pub codex_status: RuntimeStatus,
+    pub grok_status: RuntimeStatus,
     pub companies: Vec<CompanyOption>,
 }
 
@@ -59,6 +68,17 @@ async fn local_lookup<T: Send + 'static>(
         .map_err(|_| "Setup lookup failed. Please retry.".to_owned())?
 }
 
+/// The status arm alone, for the support log. Never the `searched` list (long)
+/// nor anything a CLI printed.
+fn status_tag(status: &RuntimeStatus) -> &'static str {
+    match status {
+        RuntimeStatus::SignedIn => "signed_in",
+        RuntimeStatus::SignedOut => "signed_out",
+        RuntimeStatus::NotInstalled { .. } => "not_installed",
+        RuntimeStatus::ProbeFailed { .. } => "probe_failed",
+    }
+}
+
 #[tauri::command]
 pub async fn agent_session_preflight() -> Result<Preflight, String> {
     let (hq_root, setup, tools, entries) = local_lookup(
@@ -73,17 +93,32 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
     )
     .await?;
     // Ask each provider, not stale account markers left behind after sign-out.
-    let (claude_logged_in, codex_logged_in, grok_logged_in) = tokio::join!(
-        async { tools.claude_cli && super::logged_in(SessionTool::Claude).await },
-        async { tools.codex_cli && super::logged_in(SessionTool::Codex).await },
-        async { tools.grok_cli && super::logged_in(SessionTool::Grok).await },
+    //
+    // The provider is asked even when `detect_ai_tools` reported no CLI: that
+    // detection is a login-shell `command -v` with a 4s cap, so a slow or
+    // unusual shell makes an installed CLI look absent — and short-circuiting
+    // on it is what turned "I could not check" into "not signed in". The
+    // resolver lookup inside `runtime_status` is the authority on presence;
+    // the shell probe only promotes a status the lookup could not place.
+    let (claude_status, codex_status, grok_status) = tokio::join!(
+        super::runtime_status(SessionTool::Claude),
+        super::runtime_status(SessionTool::Codex),
+        super::runtime_status(SessionTool::Grok),
     );
+    let claude_logged_in = claude_status.is_signed_in();
+    let codex_logged_in = codex_status.is_signed_in();
+    let grok_logged_in = grok_status.is_signed_in();
+    // `available` keeps its old meaning for the panes that read it: either
+    // evidence of an installed CLI counts.
+    let claude_available = tools.claude_cli || claude_status.is_installed();
+    let codex_available = tools.codex_cli || codex_status.is_installed();
+    let grok_available = tools.grok_cli || grok_status.is_installed();
     // One line per preflight so a support log answers "why did AI tools say
     // Claude Code is not installed" without a debug build.
     log(
         LOG_TAG,
         &format!(
-            "preflight claude_cli={} claude_desktop={} claude_logged_in={} codex_cli={} codex_desktop={} codex_logged_in={} hooks_ready={} hq_setup={:?} detail={}",
+            "preflight claude_cli={} claude_desktop={} claude_logged_in={} codex_cli={} codex_desktop={} codex_logged_in={} hooks_ready={} hq_setup={:?} detail={} claude_status={} codex_status={} grok_status={}",
             tools.claude_cli,
             tools.claude_desktop,
             claude_logged_in,
@@ -92,7 +127,10 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
             codex_logged_in,
             setup.is_ready(),
             setup.readiness,
-            setup.detail.as_deref().unwrap_or("-")
+            setup.detail.as_deref().unwrap_or("-"),
+            status_tag(&claude_status),
+            status_tag(&codex_status),
+            status_tag(&grok_status)
         ),
     );
     let companies = entries
@@ -112,12 +150,15 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         hooks_ready: setup.is_ready(),
         hq_setup: setup.readiness,
         hooks_error: setup.detail,
-        claude_available: tools.claude_cli,
+        claude_available,
         claude_logged_in,
-        codex_available: tools.codex_cli,
+        codex_available,
         codex_logged_in,
-        grok_available: tools.grok_cli,
+        grok_available,
         grok_logged_in,
+        claude_status,
+        codex_status,
+        grok_status,
         companies,
     })
 }

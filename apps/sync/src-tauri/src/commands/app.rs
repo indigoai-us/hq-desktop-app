@@ -10,9 +10,12 @@ pub fn quit_app(app: tauri::AppHandle) {
 }
 
 /// Raise the main installer / popover window above other apps after OAuth
-/// (macOS + Windows). Uses the sticky post-OAuth raise so the wizard stays
-/// above the browser for the next step — not the generic show path used by
-/// first-run launch (which must not cover the provider login page).
+/// (macOS + Windows). Uses the post-OAuth raise so the wizard comes above the
+/// browser for the next step — not the generic show path used by first-run
+/// launch (which must not cover the provider login page). On Windows the
+/// topmost flag it applies is transient (released on the first focus change
+/// or a short timeout), never sticky: a sticky flag left the window above
+/// every other app for the rest of the process.
 #[tauri::command]
 pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
@@ -28,33 +31,25 @@ pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
 /// The popover window is `decorations: false`, so it has no traffic-light close
 /// control, and `CloseRequested` only reaches it via Cmd-W. This is the
 /// explicit "make it go away" path. Besides hiding, it records the dismissal
-/// with `tray::note_popover_dismissed` so the launch-time onboarding pin stops
+/// with `tray::note_onboarding_card_dismissed` so the launch-time onboarding pin stops
 /// suppressing click-away for the rest of the process.
 #[tauri::command]
 pub fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "Main window is not available.".to_string())?;
-    crate::tray::note_popover_dismissed();
+    crate::tray::note_onboarding_card_dismissed();
     window.hide().map_err(|e| e.to_string())
 }
 
-/// Ask the main menubar window to show its existing Settings surface.
+/// Open the desktop workspace on its Settings surface.
 ///
-/// Desktop-alt is a separate webview, but Settings still lives in the main
-/// popover App.svelte state. This command keeps the renderer contract simple:
-/// desktop UI invokes `open_settings_window`, Rust shows/focuses the main
-/// window, then emits the same event path the tray menu already uses.
+/// Settings is the shell's own `settings` route (`DesktopApp`), so this routes
+/// straight there instead of emitting `tray:open-settings` into the hidden
+/// `main` controller and hoping it forwards.
 #[tauri::command]
 pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Emitter;
-
-    if let Some(window) = app.get_webview_window("main") {
-        crate::util::window_focus::bring_webview_to_front(&window);
-    }
-
-    app.emit_to("main", "tray:open-settings", ())
-        .map_err(|e| e.to_string())?;
+    crate::tray::show_desktop_window_at(&app, Some("settings"));
     Ok(())
 }
 

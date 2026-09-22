@@ -241,9 +241,12 @@ mod tests {
 
     #[test]
     fn native_meeting_projections_are_not_uploaded() {
-        let tmp=TempDir::new().unwrap();let root=tmp.path();let filter=IgnoreFilter::for_hq_root(root).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
         assert!(!filter.should_sync(&root.join("companies/indigo/sources/meetings/native-abc.md")));
-        assert!(!filter.should_sync(&root.join("companies/indigo/sources/meetings/native-abc.raw.json")));
+        assert!(!filter
+            .should_sync(&root.join("companies/indigo/sources/meetings/native-abc.raw.json")));
         assert!(filter.should_sync(&root.join("companies/indigo/sources/meetings/manual-notes.md")));
     }
     #[test]

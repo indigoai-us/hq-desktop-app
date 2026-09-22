@@ -50,17 +50,9 @@ const daemonCommandSource = readFileSync(
   appUrl('src-tauri/src/commands/daemon.rs'),
   'utf8',
 );
-const widgetSource = readFileSync(
-  appUrl('src-tauri/src/commands/widget.rs'),
-  'utf8',
-);
-const settingsSource = readFileSync(
-  appUrl('src-tauri/src/commands/settings.rs'),
-  'utf8',
-);
 const frontendMainSource = readFileSync(appUrl('src/main.ts'), 'utf8');
-const popoverSource = readFileSync(
-  appUrl('src/components/Popover.svelte'),
+const activityLogSource = readFileSync(
+  appUrl('src/components/ActivityLog.svelte'),
   'utf8',
 );
 const prewarmSource = readFileSync(
@@ -242,17 +234,13 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(syncCommandSource).toContain('this computer');
   });
 
-  it('defaults the floating widget off on Windows without changing macOS', () => {
-    expect(widgetSource).toContain('fn default_widget_enabled() -> bool');
-    expect(widgetSource).toContain('!cfg!(target_os = "windows")');
-    expect(widgetSource).toContain('unwrap_or_else(default_widget_enabled)');
-    expect(settingsSource).toContain('default_widget_enabled()');
-  });
-
-  it('uses an opaque popover surface fallback on Windows', () => {
+  it('uses an opaque surface fallback on Windows', () => {
+    // PL-07 deleted the tray popover, which carried the original fallback.
+    // The platform flag and the same fallback pattern live on in the
+    // remaining transparent windows.
     expect(frontendMainSource).toContain("dataset.platform = isWindows ? 'windows' : 'other'");
-    expect(popoverSource).toContain(":global(html[data-platform='windows']) .mbpop");
-    expect(popoverSource).toContain('backdrop-filter: none');
+    expect(activityLogSource).toContain(":global(html[data-platform='windows']) .detail-header");
+    expect(activityLogSource).toContain('backdrop-filter: none');
   });
 
   it('keeps the runner-phase vocabulary single-source across core, validator, and the TS union', () => {

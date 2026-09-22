@@ -748,8 +748,11 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
             .or_else(|| app.get_webview_window("main"));
         if let Some(window) = window {
             // AppKit / WebView2 window ops must run on the UI thread.
-            // Sticky topmost is intentional here (post-OAuth only) so the
-            // wizard stays above the browser for the next step.
+            // The raise is transiently topmost (post-OAuth only) so the
+            // window comes above the browser once; the flag is released on
+            // the first focus change or a short timeout, never left sticky —
+            // a sticky flag here is what kept the workspace window above every
+            // other app after sign-in (Alt+Tab could not get past HQ).
             let win = window.clone();
             let _ = app.run_on_main_thread(move || {
                 crate::util::window_focus::bring_webview_to_front_after_oauth(&win);

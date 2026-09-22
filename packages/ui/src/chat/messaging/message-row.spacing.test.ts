@@ -64,3 +64,53 @@ describe("shared message-row name→body spacing", () => {
     );
   });
 });
+
+describe("composer type matches message body type", () => {
+  it("defines the shared body-font tokens", () => {
+    expect(messageRowCss).toContain("--msg-body-font-family: var(--font-ui)");
+    expect(messageRowCss).toContain("--msg-body-font-size: 15px");
+    expect(messageRowCss).toContain("--msg-body-line-height: 1.7");
+    expect(messageRowCss).toMatch(
+      /--msg-body-font:\s*400 var\(--msg-body-font-size\) \/ var\(--msg-body-line-height\)\s*var\(--msg-body-font-family\);/,
+    );
+  });
+
+  it("makes every message body read the tokens rather than literal sizes", () => {
+    expect(channelConversationSrc).toMatch(
+      /\.dm-bubble-body\s*\{[\s\S]*?font-family:\s*var\(--msg-body-font-family[\s\S]*?font-size:\s*var\(--msg-body-font-size[\s\S]*?line-height:\s*var\(--msg-body-line-height/,
+    );
+    expect(replyPanelSrc).toMatch(
+      /\.reply-root-body,\s*\n\s*\.reply-md\s*\{[\s\S]*?font-family:\s*var\(--msg-body-font-family[\s\S]*?font-size:\s*var\(--msg-body-font-size[\s\S]*?line-height:\s*var\(--msg-body-line-height/,
+    );
+  });
+
+  it("makes every composer read the same font token as the body", () => {
+    const composerFont =
+      "font: var(--msg-body-font, 400 15px / 1.7 var(--font-ui));";
+    for (const [selector, src] of [
+      [".dm-reply-input", channelConversationSrc],
+      [".mention-input-overlay", channelConversationSrc],
+      [".reply-input", replyPanelSrc],
+    ] as const) {
+      const rule = new RegExp(
+        `\\${selector}\\s*\\{[\\s\\S]*?\\n  \\}`,
+      ).exec(src)?.[0];
+      expect(rule, `${selector} rule not found`).toBeTruthy();
+      expect(rule).toContain(composerFont);
+      // No literal font shorthand left to drift away from the body.
+      expect(rule).not.toMatch(/font:\s*400 \d+px/);
+    }
+  });
+
+  it("keeps the mention overlay mirror byte-identical to the composer input", () => {
+    const fontDecl = (selector: string) =>
+      new RegExp(`\\${selector}\\s*\\{[\\s\\S]*?\\n  \\}`)
+        .exec(channelConversationSrc)?.[0]
+        .match(/^\s*font:.*$/m)?.[0]
+        .trim();
+    expect(fontDecl(".mention-input-overlay")).toBe(
+      fontDecl(".dm-reply-input"),
+    );
+    expect(fontDecl(".dm-reply-input")).toBeTruthy();
+  });
+});

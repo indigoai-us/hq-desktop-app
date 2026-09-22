@@ -775,9 +775,12 @@ describe('onboarding launch handoff', () => {
     );
 
     // Advanced holds exactly the two own-tool launchers, none of them primary.
+    // It starts open and recommends that path to people who already use those
+    // tools, so they do not have to discover the disclosure on their own.
     const advanced = host.querySelector<HTMLDetailsElement>('[data-testid="onboarding-advanced"]');
     expect(advanced).not.toBeNull();
-    expect(advanced!.open).toBe(false);
+    expect(advanced!.open).toBe(true);
+    expect(advanced!.textContent).toContain('Recommended if you already use Claude Code or Codex');
     expect(advanced!.querySelector('summary')?.textContent?.trim()).toBe('Advanced');
     const row = advanced!.querySelector('[data-testid="onboarding-launchers"]');
     expect(row).not.toBeNull();

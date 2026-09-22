@@ -5,7 +5,7 @@
   import type { Item } from '../lib/notificationGroups';
   import {
     loadNotificationItems,
-    getLastReadTs,
+    fetchServerUnreadIds,
   } from '../lib/notificationFeedData';
   import {
     countUnreadConversations,
@@ -65,12 +65,14 @@
   let retrying = $state(false);
   let query = $state('');
   let didAutoSelect = $state(false);
-  // Snapshot once per mount — matches NotificationFeed (session-stable).
-  const lastReadTs = getLastReadTs();
+  // Server read state, snapshotted per load. The local read watermark this
+  // replaced had no writer left once the tray popover (and its "Mark all
+  // read") was deleted, so its dots would have frozen.
+  let unreadIds = $state<ReadonlySet<string>>(new Set<string>());
   let loadGeneration = 0;
   let channelLoadGeneration = 0;
 
-  const rows = $derived(conversationRows(items, lastReadTs, viewedIds));
+  const rows = $derived(conversationRows(items, unreadIds, viewedIds));
   const orderedChannels = $derived(orderQuickWindowChannels(channels));
   type RailEntry =
     | { kind: 'conversation'; key: string; timestamp: number; row: ConversationRow }
@@ -120,7 +122,7 @@
     ),
   );
   const attentionCount = $derived(
-    countUnreadConversations(items, lastReadTs, viewedIds) +
+    countUnreadConversations(items, unreadIds, viewedIds) +
       channels.filter((channel) => (channel.unread ?? 0) > 0).length,
   );
 
@@ -183,9 +185,15 @@
     loading = true;
     try {
       // Full feed — conversationRows filters dm|share and caps conversations at 30.
-      const next = await loadNotificationItems(undefined, { includeUpdates: false });
+      // The unread set is fetched alongside it so a row's dot and its content
+      // come from the same round of reads.
+      const [next, unread] = await Promise.all([
+        loadNotificationItems(undefined, { includeUpdates: false }),
+        fetchServerUnreadIds(),
+      ]);
       if (generation !== loadGeneration) return;
       items = next;
+      unreadIds = unread;
       loadError = null;
     } catch (err) {
       if (generation !== loadGeneration) return;

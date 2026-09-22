@@ -199,18 +199,6 @@ pub async fn show_banner(app: AppHandle, payload: BannerPayload) -> Result<(), S
     #[cfg(target_os = "macos")]
     crate::webview_asset_cache::wait_until_ready().await;
 
-    // US-003: widget owns every DM/share/meeting/update while widget mode is on.
-    if crate::commands::widget::takeover_active(&app) {
-        log(
-            LOG_TAG,
-            &format!(
-                "takeover: routing kind={} title={} to widget",
-                payload.kind, payload.title
-            ),
-        );
-        return crate::commands::widget::show_widget_notification(app, payload).await;
-    }
-
     log(
         LOG_TAG,
         &format!(
@@ -754,12 +742,16 @@ fn dismiss_banner_inner(app: &AppHandle) {
     }
 }
 
-/// Show the main popover anchored under the tray icon. Used by the update
-/// banner's body-click so the user lands on the full update UI — positioned at
-/// the menu-bar tray (like a normal popover open), NOT centered on screen.
+/// Open the desktop workspace. Used by the update banner's body-click and by
+/// the native-notification retry path, so the user lands on the full UI.
+///
+/// The command keeps its historical name (the renderer and the platform
+/// adapter both invoke `show_main_window`); the surface it opens is the
+/// desktop window, which is where the update, notification and sync UI now
+/// lives.
 #[tauri::command]
 pub async fn show_main_window(app: AppHandle) -> Result<(), String> {
-    crate::tray::show_window_at_tray(&app);
+    crate::tray::show_desktop_window(&app);
     Ok(())
 }
 

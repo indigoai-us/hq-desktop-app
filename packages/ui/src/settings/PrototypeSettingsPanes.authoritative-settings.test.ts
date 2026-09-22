@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { failure, ok, type PlatformAdapter } from "@hq/platform";
+import { failure, ok, type PlatformAdapter, unavailable } from "@hq/platform";
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
 import type { Workspace } from "../chat/workspaces";
 
@@ -50,7 +50,11 @@ function adapterForSettings(options: {
       openNotificationSettings,
       requestNotificationPermission,
     },
-    meetings: { listAccounts: async () => ok([]) },
+    meetings: {
+      listAccounts: async () => ok([]),
+      // This suite is about host-backed settings; the detector row hides on !ok.
+      permissionsState: async () => unavailable("desktop-only"),
+    },
     sync: { getSyncStatus: async () => ok({}) },
   } as unknown as PlatformAdapter;
   return { adapter, updateSettings, openNotificationSettings, requestNotificationPermission };

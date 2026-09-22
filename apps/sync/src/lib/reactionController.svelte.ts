@@ -1,6 +1,6 @@
 /**
  * Reactive controller for the reactions UI (US-025), shared by every Conversation
- * host (MessagesShell DM pane, ChannelView, ThreadPanel, DmDetail).
+ * host (MessagesShell DM pane, ChannelView, ThreadPanel, ShareDetail).
  *
  * Each host creates one controller for its open conversation's messageScope and:
  *   - feeds it the visible message ids (`setMessages`) so it can load reactions

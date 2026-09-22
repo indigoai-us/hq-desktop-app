@@ -1,6 +1,6 @@
 <script lang="ts">
   // Shared conversation primitive: a scrollable, Slack-like message timeline plus a
-  // reply composer. Extracted from DmDetail.svelte (US-008) so DMs, channels,
+  // reply composer. Extracted from the retired DmDetail window (US-008) so DMs, channels,
   // and threads can all render the same thread + composer surface. Pure
   // presentation — the parent owns the message list, the send call, and the
   // optimistic append; this component just renders `messages` and invokes the
@@ -262,7 +262,7 @@
     await onsend(text);
     // Clear the composer only on a clean send. The parent sets `sendError`
     // inside `onsend` (synchronously, in its catch) when the send fails, so a
-    // null `sendError` here means success — matching DmDetail's prior behavior
+    // null `sendError` here means success — matching the original behavior
     // of clearing `replyText` only in the try path.
     if (!sendError) replyText = '';
   }
@@ -1631,133 +1631,6 @@
    * Full Messages keeps its separate override layer below unchanged.
    * ────────────────────────────────────────────────────────────────────── */
 
-  :global(html[data-window='dm-detail']) .dm-thread {
-    padding: 1rem 1.375rem 1.25rem;
-    gap: 0;
-  }
-
-  :global(html[data-window='dm-detail']) .dm-msg {
-    max-width: min(84%, 560px);
-    margin-top: 0.25rem;
-  }
-
-  :global(html[data-window='dm-detail']) .dm-msg-group-start {
-    margin-top: 0.875rem;
-  }
-
-  :global(html[data-window='dm-detail']) .date-separator + .dm-msg {
-    margin-top: 0.1875rem;
-  }
-
-  :global(html[data-window='dm-detail']) .dm-msg-in .dm-bubble:not(.dm-bubble-share) {
-    padding: 0.125rem 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-  }
-
-  :global(html[data-window='dm-detail']) .dm-msg-out .dm-bubble:not(.dm-bubble-share) {
-    padding: 0.5rem 0.6875rem;
-    border: 1px solid color-mix(in srgb, var(--pop-text) 9%, transparent);
-    border-radius: 10px 10px 3px 10px;
-    background: color-mix(in srgb, var(--pop-text) 6%, transparent);
-  }
-
-  :global(html[data-window='dm-detail']) .dm-bubble.dm-bubble-share {
-    padding: 0.75rem;
-    border: 1px solid color-mix(in srgb, var(--pop-text) 12%, transparent);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--pop-text) 5%, transparent);
-  }
-
-  :global(html[data-window='dm-detail']) .dm-bubble-thread-active {
-    box-shadow: none;
-  }
-
-  :global(html[data-window='dm-detail']) .dm-action {
-    border: 0;
-    background: transparent;
-    color: var(--pop-muted);
-    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
-  }
-
-  :global(html[data-window='dm-detail']) .dm-action:hover {
-    background: transparent;
-    color: var(--pop-text);
-  }
-
-  :global(html[data-window='dm-detail']) .thread-affordance {
-    gap: 0.25rem;
-    margin-top: 0.1875rem;
-    padding: 0.1875rem 0;
-    border: 0;
-    border-bottom: 1px solid transparent;
-    border-radius: 0;
-    background: transparent;
-    color: var(--pop-muted);
-    font-size: 0.6875rem;
-    font-weight: 560;
-    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
-  }
-
-  :global(html[data-window='dm-detail']) .thread-affordance:hover {
-    border-bottom-color: var(--pop-muted);
-    background: transparent;
-    color: var(--pop-text);
-  }
-
-  :global(html[data-window='dm-detail']) .thread-affordance-count {
-    font-weight: 600;
-  }
-
-  :global(html[data-window='dm-detail']) .dm-msg-time,
-  :global(html[data-window='dm-detail']) .dm-msg-pending {
-    font-size: 0.65625rem;
-  }
-
-  :global(html[data-window='dm-detail']) .btn {
-    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
-  }
-
-  :global(html[data-window='dm-detail']) .btn-copy {
-    padding: 0.1875rem 0;
-    border: 0;
-    border-bottom: 1px solid var(--pop-divider);
-    border-radius: 0;
-    background: transparent;
-    color: var(--pop-muted);
-  }
-
-  :global(html[data-window='dm-detail']) .btn-copy:hover {
-    background: transparent;
-    color: var(--pop-text);
-  }
-
-  :global(html[data-window='dm-detail']) .share-card-permission {
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-  }
-
-  :global(html[data-window='dm-detail']) .new-messages-jump {
-    border-color: color-mix(in srgb, var(--pop-text) 12%, transparent);
-    background: color-mix(in srgb, var(--pop-bg) 88%, transparent);
-    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
-  }
-
-  :global(html[data-window='dm-detail']) .dm-action:active:not(:disabled),
-  :global(html[data-window='dm-detail']) .thread-affordance:active:not(:disabled),
-  :global(html[data-window='dm-detail']) .btn:active:not(:disabled) {
-    transform: scale(0.97);
-  }
-
-  :global(html[data-window='dm-detail']) .dm-action:focus-visible,
-  :global(html[data-window='dm-detail']) .thread-affordance:focus-visible,
-  :global(html[data-window='dm-detail']) .btn:focus-visible {
-    outline: 2px solid var(--pop-text);
-    outline-offset: 2px;
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .inline-spinner {
       animation-duration: 1.4s;
@@ -1765,18 +1638,12 @@
 
     .load-retry,
     .new-messages-jump,
-    .dm-action-retry,
-    :global(html[data-window='dm-detail']) .dm-action,
-    :global(html[data-window='dm-detail']) .thread-affordance,
-    :global(html[data-window='dm-detail']) .btn {
+    .dm-action-retry {
       transition: none;
     }
 
     .load-retry:active:not(:disabled),
-    .dm-action-retry:active:not(:disabled),
-    :global(html[data-window='dm-detail']) .dm-action:active:not(:disabled),
-    :global(html[data-window='dm-detail']) .thread-affordance:active:not(:disabled),
-    :global(html[data-window='dm-detail']) .btn:active:not(:disabled) {
+    .dm-action-retry:active:not(:disabled) {
       transform: none;
     }
 
@@ -1788,11 +1655,11 @@
   /* ──────────────────────────────────────────────────────────────────────
    * Messages-window override layer (desktop "Company OS" language).
    *
-   * Conversation is shared: the classic popover DmDetail window renders it as
-   * the monochrome light-glass surface defined ABOVE (those rules are the
-   * default and stay untouched), while the standalone Messages window adopts
-   * the desktop token system. These overrides are gated under
-   * `[data-window='messages']` so DmDetail's appearance is unaffected.
+   * Conversation is shared: the share-detail window renders it as the
+   * monochrome light-glass surface defined ABOVE (those rules are the default
+   * and stay untouched), while the standalone Messages window adopts the
+   * desktop token system. These overrides are gated under
+   * `[data-window='messages']` so share-detail's appearance is unaffected.
    *
    * Outbound vs inbound is distinguished by SURFACE LAYERING + alignment, not
    * a saturated fill: inbound left on a subtle raise surface, outbound
@@ -2007,8 +1874,7 @@
    * Only real objects such as shared files retain card treatment.
    */
   .dm-msg,
-  :global([data-window='messages']) .dm-msg,
-  :global(html[data-window='dm-detail']) .dm-msg {
+  :global([data-window='messages']) .dm-msg {
     display: grid;
     grid-template-columns: 28px minmax(0, 720px);
     align-self: stretch;
@@ -2020,14 +1886,12 @@
   }
 
   .dm-msg-group-start,
-  :global([data-window='messages']) .dm-msg-group-start,
-  :global(html[data-window='dm-detail']) .dm-msg-group-start {
+  :global([data-window='messages']) .dm-msg-group-start {
     margin-top: 0.875rem;
   }
 
   .date-separator + .dm-msg,
-  :global([data-window='messages']) .date-separator + .dm-msg,
-  :global(html[data-window='dm-detail']) .date-separator + .dm-msg {
+  :global([data-window='messages']) .date-separator + .dm-msg {
     margin-top: 0.25rem;
   }
 
@@ -2096,9 +1960,7 @@
   .dm-msg-out .dm-bubble,
   :global([data-window='messages']) .dm-bubble,
   :global([data-window='messages']) .dm-msg-in .dm-bubble,
-  :global([data-window='messages']) .dm-msg-out .dm-bubble,
-  :global(html[data-window='dm-detail']) .dm-msg-in .dm-bubble:not(.dm-bubble-share),
-  :global(html[data-window='dm-detail']) .dm-msg-out .dm-bubble:not(.dm-bubble-share) {
+  :global([data-window='messages']) .dm-msg-out .dm-bubble {
     width: 100%;
     max-width: 100%;
     padding: 0;
@@ -2108,8 +1970,7 @@
   }
 
   .dm-bubble-share,
-  :global([data-window='messages']) .dm-bubble-share,
-  :global(html[data-window='dm-detail']) .dm-bubble.dm-bubble-share {
+  :global([data-window='messages']) .dm-bubble-share {
     width: min(100%, 560px);
     padding: 0.75rem;
     border: 1px solid var(--border, var(--pop-border));
@@ -2118,8 +1979,7 @@
   }
 
   .dm-msg-time,
-  :global([data-window='messages']) .dm-msg-time,
-  :global(html[data-window='dm-detail']) .dm-msg-time {
+  :global([data-window='messages']) .dm-msg-time {
     margin: 0.1875rem 0 0;
     font-size: var(--text-micro, 0.65625rem);
   }

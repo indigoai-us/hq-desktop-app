@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 
 /// HQ Work macOS application bundle identifier.
 pub const HQ_WORK_BUNDLE_ID: &str = "ai.getindigo.hq-work";
@@ -627,37 +627,6 @@ pub fn mark_hq_work_handoff_card_shown() -> Result<(), String> {
     )
 }
 
-#[allow(dead_code)] // retained two-app launcher; live intercept no longer steals the window
-fn apply_handoff_plan(
-    app: &AppHandle,
-    plan: DesktopAltHandoffPlan,
-    installed: bool,
-) -> Result<bool, String> {
-    match intercept_with_launch(plan, installed, launch_hq_work) {
-        Ok(HandoffInterceptAction::OpenDesktopAlt) => Ok(false),
-        Ok(HandoffInterceptAction::ShowHandoffCard { first_show }) => {
-            if first_show {
-                let _ = mark_hq_work_handoff_card_shown();
-            }
-            handoff_log(&format!("handoff.card_shown first={first_show}"));
-            reveal_handoff_card(app, first_show);
-            Ok(true)
-        }
-        Ok(HandoffInterceptAction::Launched { url }) => {
-            handoff_log(&format!(
-                "handoff.launched {}",
-                url.as_deref().unwrap_or("hqwork://open")
-            ));
-            hide_compact_popover(app);
-            Ok(true)
-        }
-        Err(err) => {
-            handoff_log(&format!("handoff.failed {err}"));
-            Err(err)
-        }
-    }
-}
-
 /// Live intercept never steals the desktop-alt window (US-103 embed-in-process).
 pub fn intercept_steals_desktop_alt_window() -> bool {
     false
@@ -705,25 +674,6 @@ pub async fn maybe_intercept_dm_open(
         .unwrap_or_else(|| "messages".to_string());
     spawn_embedded_desktop_open(app, route);
     Ok(true)
-}
-
-#[allow(dead_code)]
-fn hide_compact_popover(app: &AppHandle) {
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if let Some(popover) = handle.get_webview_window("main") {
-            let _ = popover.hide();
-        }
-    });
-}
-
-#[allow(dead_code)]
-fn reveal_handoff_card(app: &AppHandle, first_show: bool) {
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        crate::tray::show_popover_window(&handle);
-    });
-    let _ = app.emit(HANDOFF_SHOW_CARD_EVENT, HandoffCardEvent { first_show });
 }
 
 pub fn parse_hq_work_feed(json: &str) -> Result<HqWorkFeed, String> {

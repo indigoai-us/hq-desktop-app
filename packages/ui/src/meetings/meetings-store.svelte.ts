@@ -10,6 +10,7 @@ import {
   saveMeetingsCache,
   type MeetingsStorage,
 } from "./meetings-cache";
+import { startJitteredPoll } from "@hq/platform";
 import { isAlreadyScheduledError, isPlanRequiredError } from "./invite-errors";
 import { isRecordingCompanyMembership } from "./recording-membership";
 import {
@@ -189,7 +190,7 @@ let rowPending = $state<Map<string, MeetingBotAction>>(new Map());
 let started = false;
 let viewActive = false;
 let lastRefreshAt = 0;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+let stopPoll: (() => void) | null = null;
 
 // In-app Google calendar OAuth: pending flag + bounded post-consent account
 // watch (focus + interval, hard-stopped at CONNECT_POLL_MAX_MS).
@@ -1026,9 +1027,12 @@ export function startMeetingsStore(): void {
 
   hydrateFromCache();
 
-  pollTimer = setInterval(() => {
-    if (viewActive) void refresh();
-  }, POLL_INTERVAL_MS);
+  stopPoll = startJitteredPoll({
+    intervalMs: POLL_INTERVAL_MS,
+    tick: () => {
+      if (viewActive) return refresh();
+    },
+  });
 
   if (typeof window !== "undefined") {
     storeFocusHandler = () => {
@@ -1047,10 +1051,8 @@ export function startMeetingsStore(): void {
  * whole session) but exported so tests can reset between runs.
  */
 export function stopMeetingsStore(): void {
-  if (pollTimer !== null) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
+  stopPoll?.();
+  stopPoll = null;
   if (typeof window !== "undefined") {
     if (storeFocusHandler) window.removeEventListener("focus", storeFocusHandler);
     if (storeStorageHandler) window.removeEventListener("storage", storeStorageHandler);

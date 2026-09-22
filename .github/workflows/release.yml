@@ -904,7 +904,9 @@ jobs:
       # have stopped v0.10.178 — every prior test ran as an Indigo user
       # with conversations.
       - name: Non-Indigo artifact smoke
-        timeout-minutes: 5
+        # 8, not 5: the smoke now installs the real hq CLI into its sandbox
+        # HOME (up to 3 min on a slow registry) before the 30s launch.
+        timeout-minutes: 8
         env:
           HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO: ${{ secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -1601,7 +1603,31 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release upload "$TAG" release/* -R "$REPOSITORY"
+          # One asset at a time, with retries. A single `gh release upload`
+          # over the whole set aborts the step on the first 400 from
+          # uploads.github.com, which happens mid-transfer on the ~60-90 MB
+          # installers (three releases in a row on 2026-09-17: v0.10.283 and
+          # both v0.10.284 attempts). The broken transfer leaves a `starter`
+          # asset with that name on the draft, so a plain retry of the same
+          # name is refused too. `--clobber` replaces any such leftover, and
+          # the per-asset loop means one bad transfer costs one retry, not a
+          # full rebuild. The exact-asset-set verification below is unchanged
+          # and still gates publication.
+          for asset in release/*; do
+            uploaded="false"
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$TAG" "$asset" -R "$REPOSITORY" --clobber; then
+                uploaded="true"
+                break
+              fi
+              echo "::warning::Upload of $(basename "$asset") failed (attempt ${attempt}/5); retrying."
+              sleep $((attempt * 10))
+            done
+            if [ "$uploaded" != "true" ]; then
+              echo "::error::Upload of $(basename "$asset") failed after 5 attempts."
+              exit 1
+            fi
+          done
 
       - name: Verify exact draft release asset set
         if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}

@@ -710,24 +710,24 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 ---
 
-### DM Notifications (click → DmDetail, reply)
+### DM Notifications (click → desktop conversation, reply)
 
 > Send test DMs with `hq dm <recipient> <body>` (plain), `--prompt`, and/or `--details`
-> to exercise each payload shape. Reply (DM-103/104) requires the hq-pro
+> to exercise each payload shape. Reply requires the hq-pro
 > `POST /v1/notify/dm` endpoint to be deployed.
 
-#### DM-101: Every DM type opens the DmDetail window on body-click
+#### DM-101: Every DM type opens the conversation on body-click
 
 - [ ] 1. Send the test user a **plain** DM (no prompt, no details) and click the banner body
-- [ ] 2. Verify the **DmDetail** window ("Direct Message") opens showing sender name/email + body
+- [ ] 2. Verify the **desktop window** opens on that sender's conversation
 - [ ] 3. Repeat with a **prompt-only** DM, a **details-only** DM, and a **prompt+details** DM
-- [ ] 4. Verify the body-click opens DmDetail in **all four** cases (previously plain DMs did nothing and prompt DMs copied instead of opening)
+- [ ] 4. Verify the body-click opens the conversation in **all four** cases
 
 #### DM-102: "Copy prompt" action button still copies (rich DM)
 
 - [ ] 1. Send a DM with a `prompt`; on the banner, choose the **Copy prompt** action (not body-click)
 - [ ] 2. Paste into a text editor — verify the prompt text is on the clipboard
-- [ ] 3. Verify body-clicking the same banner type opens DmDetail (does NOT copy)
+- [ ] 3. Verify body-clicking the same banner type opens the conversation (does NOT copy)
 
 #### DM-103: CPU stays bounded with multiple unactioned DMs
 
@@ -735,9 +735,9 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] 2. In Activity Monitor, verify `hq-sync` CPU stays near a single capped spin slot (~1 core max), not one core per banner
 - [ ] 3. Dismiss the banners — verify CPU returns to idle
 
-#### DM-104: Reply from DmDetail (requires deployed `POST /v1/notify/dm`)
+#### DM-104: Reply from the conversation (requires deployed `POST /v1/notify/dm`)
 
-- [ ] 1. Open a DM in DmDetail, type a reply, click **Send** (or ⌘↵)
+- [ ] 1. Open a DM conversation, type a reply, click **Send** (or ⌘↵)
 - [ ] 2. Verify the textarea clears and "Sent ✓" appears briefly
 - [ ] 3. On the original **sender's** machine, verify the reply arrives as a DM notification
 - [ ] 4. Inspect `~/.hq/logs/hq-sync.log` — verify `DM_NOTIFY_SEND_OK`
@@ -745,7 +745,7 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 #### DM-105: Reply error is surfaced (no silent failure)
 
 - [ ] 1. With the send endpoint unavailable (or signed out), attempt a reply
-- [ ] 2. Verify an inline error message appears in DmDetail (not a silent no-op)
+- [ ] 2. Verify an inline error message appears in the composer (not a silent no-op)
 - [ ] 3. Inspect `~/.hq/logs/hq-sync.log` — verify a `DM_NOTIFY_SEND_FAIL` line
 
 ---
@@ -828,14 +828,12 @@ verification pass on the built macOS app.
 
 ---
 
-## Widget mode (US-006)
+## Menubar launcher (US-006)
 
-Widget mode (always-on-top HQ wordmark + in-window notification stack), native
-banner takeover, fullscreen occlusion queue/flush, and the menubar → desktop
-launcher path cannot be fully exercised headless. Automated coverage for
-US-006 is the **source-contract + pure-reducer** suite under
-`e2e/desktop-alt/` (`widget-lifecycle.spec.ts`, `menubar-launcher.spec.ts`,
-plus IA/inbox/shared-all hover specs — run with `pnpm run test:e2e:desktop-alt`).
+The menubar → desktop launcher path cannot be fully exercised headless.
+Automated coverage is the **source-contract + pure-reducer** suite under
+`e2e/desktop-alt/` (`menubar-launcher.spec.ts` plus the IA/inbox/shared-all
+hover specs — run with `pnpm run test:e2e:desktop-alt`).
 
 This section is the **manual / live** half. Drive it with the HQ skill
 **`indigo:hq-sync-test-macos`** (build → launch with dev env vars → AX +
@@ -844,52 +842,8 @@ CGEvent tray/popover driving → transparent `NSWindow` screencapture).
 ### Setup
 
 - [ ] Build + launch HQ Sync via `indigo:hq-sync-test-macos` (signed-in).
-- [ ] Confirm `~/.hq/menubar.json` either omits `widgetEnabled` or sets
-      `"widgetEnabled": true` (default ON).
-- [ ] Have a second surface ready to go fullscreen (browser, video, or any
-      full-screen app) so occlusion can be forced.
 
-### 1 — Widget window on launch (lower-right)
-
-- [ ] 1. Launch the app (or relaunch after a clean quit).
-- [ ] 2. Verify the HQ wordmark **widget** appears at the **lower-right** of
-      the configured display within a few seconds of launch (always-on-top,
-      non-activating).
-- [ ] 3. Expected: idle wordmark only (no notification stack) until a
-      notification arrives.
-
-### 2 — Native banner suppressed (takeover)
-
-- [ ] 1. With widget mode ON, trigger a notification that would normally show
-      a native banner (DM, share, meeting, or update path).
-- [ ] 2. Verify the notification appears as a **one-line row on the widget
-      stack** (above the wordmark), **not** as the classic dm-banner /
-      native OS toast path.
-- [ ] 3. Expected: no separate floating banner window; stack grows upward
-      from the lower-right anchor.
-
-### 3 — Fullscreen occlusion queue + flush
-
-- [ ] 1. Put another app in **fullscreen** so the widget is occluded (or
-      cover it so macOS reports occlusion).
-- [ ] 2. While occluded, trigger 2+ notifications.
-- [ ] 3. Expected: the widget does **not** show new stack rows while
-      occluded; a **plain superscript count** on the wordmark reflects
-      queued items (no badge chrome).
-- [ ] 4. Exit fullscreen / uncover the widget so it becomes visible again.
-- [ ] 5. Expected: queued rows **flush** into the visible stack
-      (newest-on-top, capped), each with a fresh auto-collapse window.
-
-### 4 — Toggle-off restores native + closes widget
-
-- [ ] 1. Open desktop Settings → Widget (or the widget prefs surface) and
-      turn **Widget mode OFF**.
-- [ ] 2. Expected: the widget window **closes** immediately.
-- [ ] 3. Trigger another notification.
-- [ ] 4. Expected: delivery returns to the **native** banner path (dm-banner
-      / OS notification), not the (now-closed) widget stack.
-
-### 5 — Menubar click opens the desktop window
+### 1 — Menubar click opens the desktop window
 
 - [ ] 1. While signed in, **click the menu-bar HQ icon**.
 - [ ] 2. Expected: the **desktop view** window opens (or toggles closed if

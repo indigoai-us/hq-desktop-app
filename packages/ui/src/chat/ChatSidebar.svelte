@@ -19,6 +19,7 @@
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
   import { onMount, untrack } from "svelte";
+  import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import {
     COMPOSER_DRAFT_CHANGED_EVENT,
     listDraftRowIds,
@@ -47,6 +48,7 @@
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
+  import type { BotDisplayNames } from "./bot-display-names.js";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
@@ -63,8 +65,35 @@
     adminCompanyUids,
     browseOnlyCompanyProjectChannels,
   } from "./channel-admin";
+  import { isAgentUid } from "./agent-thinking";
+  import {
+    loadEngagedAgents,
+    rememberEngagedAgent,
+    saveEngagedAgents,
+    threadHasRealMessage,
+  } from "./agent-stubs";
   import { isSelf, selfIsAdmin, type SelfIdentity } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
+  import {
+    archiveConversations,
+    archivedRowCount,
+    filterByArchived,
+    loadArchived,
+    loadShowArchived,
+    saveArchived,
+    saveShowArchived,
+    unarchiveConversations,
+  } from "./session-archive.js";
+  import {
+    applyClick as applySelectionClick,
+    applySelectionKey,
+    clearSelection,
+    EMPTY_SELECTION,
+    pruneSelection,
+    selectAll as selectAllRows,
+    selectOnly,
+    type SelectionState,
+  } from "./session-selection.js";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import {
     createChannelDirectoryReconciler,
@@ -95,6 +124,7 @@
     loadSetupPinDismissed,
     loadShowFilter,
     mergeContactActivity,
+    isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
     normalizeChannel,
     normalizeConversations,
@@ -136,7 +166,9 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
+  import { titleWhenTruncated } from "../common/truncation-title";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { focusOnMount, menuPortal, portal } from "./portal.js";
   import {
@@ -219,6 +251,8 @@
      * card seams leave these unset and the rows are hidden.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    /** In-modal company creation (name → details + invites → create). */
+    companyCreate?: CompanyCreateSeam | null;
     oncreateagent?:
       | ((
           companyUid: string,
@@ -230,6 +264,10 @@
       | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
       | null;
     botRuntimeReady?: Record<string, boolean> | null;
+    /** Per-runtime state (not-installed / couldn't-check / signed-out). */
+    botRuntimeStatus?: Record<string, RuntimeStatus> | null;
+    /** Re-read runtime readiness from the host. */
+    onrecheckruntimes?: (() => void | Promise<void>) | null;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
@@ -243,6 +281,8 @@
      * from — otherwise a bot could not be added to a channel or group chat.
      */
     localBots?: readonly LocalBotRow[] | null;
+    /** agentUid → display name for local bots that have one. */
+    botDisplayNames?: BotDisplayNames | null;
     /**
      * The user's own local bots that this computer cannot run right now — a
      * wiped config, a reinstall, a second Mac. They are not on `localBots`,
@@ -250,6 +290,14 @@
      * four of their own bots the moment the account listing was unavailable.
      */
     ownedLocalBotUids?: readonly string[] | null;
+    /**
+     * Agents this user has a real conversation with, seeded by the host.
+     * Creating an agent announces it to the whole company, so an `agt_*` row
+     * stays off the rail until it messages the user (or the user opens/pins
+     * it). The sidebar also persists its own evidence; this prop lets a host
+     * with its own store — or a test — seed it.
+     */
+    engagedAgentUids?: readonly string[] | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -333,9 +381,12 @@
     oncompanyscopechange,
     onsignout,
     oncreatecompany = null,
+    companyCreate = null,
     oncreateagent = null,
     oncreatebot = null,
     botRuntimeReady = null,
+    botRuntimeStatus = null,
+    onrecheckruntimes = null,
     botWorkers = null,
     existingBotNames = null,
     botSignIn = null,
@@ -343,7 +394,9 @@
     avatarPacks = null,
     loadAvatarPacks = null,
     localBots = null,
+    botDisplayNames = null,
     ownedLocalBotUids = null,
+    engagedAgentUids = null,
     onrows,
     ondisplayrows,
     onactions,
@@ -426,6 +479,62 @@
   }
   let dmDots = $state<string[]>(loadDmDots(storage));
   let recentDms = $state<string[]>(loadRecentDms(storage));
+  /**
+   * Agents with a proven real conversation. Creating an agent DMs the whole
+   * company, so an `agt_*` row stays off the rail until it actually talks to
+   * this user (or the user opens/pins it) — see `agent-stubs.ts`.
+   */
+  let engagedAgents = $state<string[]>([
+    ...new Set([...loadEngagedAgents(storage), ...(engagedAgentUids ?? [])]),
+  ]);
+  /** Agent uids whose thread we already probed for real-message evidence. */
+  const agentEngagementProbed = new Set<string>();
+
+  function markAgentEngaged(personUid: string | null | undefined): void {
+    const next = rememberEngagedAgent(engagedAgents, personUid);
+    if (next.size === engagedAgents.length) return;
+    engagedAgents = [...next];
+    saveEngagedAgents(next, storage);
+  }
+
+  /**
+   * A `dm:new-message` wake carries no body, and the membership announcement
+   * arrives on the same wake — so the wake alone can never prove engagement.
+   * Read the newest page of the agent's thread once and promote it only when
+   * something other than the announcement is in there.
+   */
+  async function resolveAgentEngagement(personUid: string): Promise<void> {
+    const uid = personUid.trim();
+    if (!uid || !isAgentUid(uid)) return;
+    if (engagedAgents.includes(uid) || agentEngagementProbed.has(uid)) return;
+    const fetchThread = api.fetchDmThread;
+    if (typeof fetchThread !== "function") {
+      // No thread seam on this host: fall back to trusting the wake rather
+      // than silently dropping a live agent conversation.
+      markAgentEngaged(uid);
+      return;
+    }
+    agentEngagementProbed.add(uid);
+    try {
+      const page = await fetchThread.call(api, { withPersonUid: uid, limit: 20 });
+      const messages = Array.isArray(page?.messages) ? page.messages : [];
+      const real = threadHasRealMessage(messages, uid, (message) =>
+        isAgentJoinNoticeEvent({
+          fromPersonUid: message.fromPersonUid,
+          fromEmail: message.fromEmail,
+          fromDisplayName: message.fromDisplayName,
+          body: message.body,
+          details: message.details,
+          prompt: message.prompt,
+        }),
+      );
+      if (real) markAgentEngaged(uid);
+      else agentEngagementProbed.delete(uid);
+    } catch {
+      // Best effort — retry on the agent's next message.
+      agentEngagementProbed.delete(uid);
+    }
+  }
   /** personUid → unreadCount from inbox `pairUnreads` (absent-safe). */
   let pairUnreads = $state<Map<string, number>>(new Map());
   /** Pending incoming connection requests (same source as MessagesShell). */
@@ -440,6 +549,47 @@
   });
   let sortMode = $state<SortMode>("recent");
   let showFilter = $state<ShowFilter>(loadShowFilter(storage));
+  /** Archived conversation ids — hidden from the rail until "Show archived". */
+  let archivedIds = $state<string[]>(loadArchived(storage));
+  const archivedSet = $derived(new Set(archivedIds));
+  let showArchived = $state<boolean>(loadShowArchived(storage));
+  /** Multi-select: off until the user cmd/shift-clicks or picks "Select". */
+  let selectionMode = $state(false);
+  let selection = $state<SelectionState>(EMPTY_SELECTION);
+  let focusedRowId = $state<string | null>(null);
+  /**
+   * Shift-hover affordance: empty checkboxes preview which rows can be picked.
+   * Tracked at the document level because the modifier can be pressed before
+   * the pointer reaches the rail, and cleared on blur/visibility change so a
+   * modifier released outside the window cannot strand the boxes on screen.
+   */
+  let shiftHeld = $state(false);
+  let sidebarHovered = $state(false);
+  const showSelectGutter = $derived(
+    selectionMode || (shiftHeld && sidebarHovered),
+  );
+
+  $effect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Shift") shiftHeld = true;
+    }
+    function onKeyUp(event: KeyboardEvent) {
+      if (event.key === "Shift") shiftHeld = false;
+    }
+    function clearShift() {
+      shiftHeld = false;
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", clearShift);
+    document.addEventListener("visibilitychange", clearShift);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", clearShift);
+      document.removeEventListener("visibilitychange", clearShift);
+    };
+  });
   let personFilter = $state<string | null>(null);
   // People aren't company-scoped — switching company scope clears a stale
   // person filter so it can't silently empty the newly scoped list.
@@ -580,6 +730,12 @@
   let activeId = $state<string | null>(null);
   $effect(() => {
     activeId = selectedId;
+    // An open conversation is a conversation. A deep link, the DM widget, or
+    // a header click can select an agent thread the rail is still hiding —
+    // selecting it is the user saying it is real, so promote it.
+    if (selectedId?.startsWith("dm:")) {
+      markAgentEngaged(selectedId.slice(3));
+    }
   });
 
   // History searches are debounced; conversation completion stays synchronous
@@ -679,6 +835,17 @@
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
+  /**
+   * The user's own agents: local bots this machine runs, plus their own bots
+   * this machine cannot run right now. They are never the company-wide
+   * broadcast clutter the agent-stub rule exists to remove, so they stay on
+   * the rail whether or not they have messaged.
+   */
+  const ownAgentUids = $derived([
+    ...(localBots ?? []).map((bot) => bot.agentUid),
+    ...(ownedLocalBotUids ?? []),
+  ]);
+
   // Synthetic #setup support channel (deduped against a real server `setup`
   // channel) — pinned by default; once unpinned it lists under TODAY (bottom)
   // instead of sinking into LAST WEEK with zero activity.
@@ -719,6 +886,8 @@
       pinnedIds: pinsWithSetup,
       dmDots,
       recentDms,
+      engagedAgentUids: engagedAgents,
+      ownAgentUids,
     }),
   );
 
@@ -736,7 +905,7 @@
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
   // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
-    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots), {
+    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
@@ -764,7 +933,11 @@
 
   const filteredRows = $derived(
     applySidebarFilters(
-      showFilter === "company-projects" ? [...allRows, ...browseRows] : allRows,
+      filterByArchived(
+        showFilter === "company-projects" ? [...allRows, ...browseRows] : allRows,
+        archivedSet,
+        showArchived,
+      ),
       {
         scope,
         show: showFilter,
@@ -866,11 +1039,149 @@
   const grouped = $derived(
     sortMode === "type" ? groupByType(railRows) : groupByDay(railRows),
   );
+  /** Rows in painted order — the selection model's range/keyboard order. */
+  const renderedRows = $derived(flattenGrouped(grouped, lastWeekExpanded));
+  const orderedRowIds = $derived(renderedRows.map((row) => row.id));
   $effect(() => {
     const emit = ondisplayrows;
     if (!emit) return;
-    emit(flattenGrouped(grouped, lastWeekExpanded));
+    emit(renderedRows);
   });
+  // A filter change, an archive, or a company switch can drop selected rows.
+  $effect(() => {
+    const ids = orderedRowIds;
+    const next = pruneSelection(untrack(() => selection), ids);
+    if (next !== untrack(() => selection)) selection = next;
+  });
+  const selectionCount = $derived(selection.selected.length);
+  const selectionAllArchived = $derived(
+    selectionCount > 0 &&
+      selection.selected.every((id) => archivedSet.has(id)),
+  );
+  const archivedVisibleCount = $derived(archivedRowCount(allRows, archivedSet));
+
+  function setShowArchived(next: boolean): void {
+    showArchived = next;
+    saveShowArchived(next, storage);
+  }
+
+  function persistArchived(next: string[]): void {
+    archivedIds = next;
+    saveArchived(next, storage);
+  }
+
+  /**
+   * Archive is reversible and never deletes: it only adds the row id to the
+   * archived list, so unread counts and history come back untouched.
+   */
+  function archiveRows(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    persistArchived(archiveConversations(archivedIds, ids));
+  }
+
+  function unarchiveRows(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    persistArchived(unarchiveConversations(archivedIds, ids));
+  }
+
+  function toggleRowArchive(rowId: string): void {
+    if (archivedSet.has(rowId)) unarchiveRows([rowId]);
+    else archiveRows([rowId]);
+  }
+
+  function enterSelectionMode(rowId?: string): void {
+    selectionMode = true;
+    if (rowId) {
+      selection = selectOnly(rowId);
+      focusedRowId = rowId;
+    }
+  }
+
+  function exitSelectionMode(): void {
+    selectionMode = false;
+    selection = clearSelection();
+    focusedRowId = null;
+  }
+
+  function archiveSelection(): void {
+    const ids = selection.selected;
+    if (selectionAllArchived) unarchiveRows(ids);
+    else archiveRows(ids);
+    exitSelectionMode();
+  }
+
+  function selectAllVisible(): void {
+    selection = selectAllRows(orderedRowIds);
+    focusedRowId = orderedRowIds.at(-1) ?? null;
+  }
+
+  /**
+   * Row click. cmd/ctrl or shift enters selection mode and never opens the
+   * conversation; a plain click in selection mode moves the selection, and
+   * outside it opens the row as before.
+   */
+  function handleRowClick(row: ConversationRow, event: MouseEvent): void {
+    const multi = event.metaKey || event.ctrlKey || event.shiftKey;
+    if (!selectionMode && !multi) {
+      void openRow(row);
+      return;
+    }
+    event.preventDefault();
+    if (!selectionMode) selectionMode = true;
+    selection = applySelectionClick(selection, orderedRowIds, row.id, {
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+    });
+    focusedRowId = row.id;
+  }
+
+  /**
+   * Checkbox toggle. Always additive/subtractive (never a replace), so ticking
+   * a box can build a selection one row at a time without a modifier key.
+   */
+  function toggleRowSelection(row: ConversationRow, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectionMode) selectionMode = true;
+    selection = applySelectionClick(selection, orderedRowIds, row.id, {
+      shiftKey: false,
+      metaKey: true,
+      ctrlKey: false,
+    });
+    focusedRowId = row.id;
+    if (selection.selected.length === 0) exitSelectionMode();
+  }
+
+  function selectionKeydown(event: KeyboardEvent): void {
+    if (!selectionMode || event.isComposing) return;
+    const result = applySelectionKey(
+      selection,
+      orderedRowIds,
+      {
+        key: event.key,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+      },
+      focusedRowId,
+    );
+    if (!result.handled) return;
+    event.preventDefault();
+    selection = result.state;
+    focusedRowId = result.focusId;
+    if (result.state.selected.length === 0 && event.key === "Escape") {
+      exitSelectionMode();
+      return;
+    }
+    if (result.focusId) {
+      document
+        .querySelector<HTMLElement>(
+          `[data-conversation-id="${CSS.escape(result.focusId)}"]`,
+        )
+        ?.focus();
+    }
+  }
   $effect(() => {
     const emit = onactions;
     if (!emit) return;
@@ -967,6 +1278,18 @@
     contextMenu = null;
   }
 
+  function archiveFromMenu(): void {
+    if (!contextMenu) return;
+    toggleRowArchive(contextMenu.row.id);
+    contextMenu = null;
+  }
+
+  function selectFromMenu(): void {
+    if (!contextMenu) return;
+    enterSelectionMode(contextMenu.row.id);
+    contextMenu = null;
+  }
+
   /** Mutually exclusive overlays: opening one closes the others (D-03). */
   function closeAllOverlays(): void {
     filterOpen = false;
@@ -995,15 +1318,19 @@
   /** The "+" button: a plain channel; the host resets the kind on its own opens. */
   function openCreateFromButton(): void {
     createKind = "channel";
+    createStep = "find";
     openCreate();
   }
 
   /** What the create modal makes inside a company when opened by the host. */
   let createKind = $state<"channel" | "project">("channel");
+  /** Which step the create modal opens on — "company" for New company. */
+  let createStep = $state<"find" | "company">("find");
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
   export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
     createKind = options.kind ?? "channel";
+    createStep = "find";
     openCreate();
   }
 
@@ -1076,6 +1403,16 @@
   let scopeEntryBusy = $state(false);
 
   async function newCompanyFromSwitcher(): Promise<void> {
+    // The in-modal flow owns this when the host wired it: the switcher opens
+    // the create modal on its company step instead of jumping to #setup.
+    if (companyCreate) {
+      scopeMenuOpen = false;
+      scopeEntryError = null;
+      createKind = "channel";
+      createStep = "company";
+      openCreate();
+      return;
+    }
     if (!oncreatecompany || scopeEntryBusy) return;
     scopeEntryBusy = true;
     scopeEntryError = null;
@@ -1143,7 +1480,8 @@
       !filterOpen &&
       !footerMenuOpen &&
       !searchOpen &&
-      !contextMenu
+      !contextMenu &&
+      !selectionMode
     )
       return;
 
@@ -1183,6 +1521,11 @@
       }
       if (searchOpen) {
         searchOpen = false;
+        event.preventDefault();
+        return;
+      }
+      if (selectionMode) {
+        exitSelectionMode();
         event.preventDefault();
         return;
       }
@@ -1634,6 +1977,22 @@
             contacts = mergeContactsWithInbox(contacts, [
               { fromPersonUid, createdAt: stamp },
             ]);
+            if (isAgentUid(fromPersonUid)) {
+              const body = payload.body ?? null;
+              if (body == null) {
+                // MQTT delivery carries no body — read the thread once.
+                void resolveAgentEngagement(fromPersonUid);
+              } else if (
+                !isAgentJoinNoticeEvent({
+                  fromPersonUid,
+                  body,
+                  details: payload.details,
+                  prompt: payload.prompt,
+                })
+              ) {
+                markAgentEngaged(fromPersonUid);
+              }
+            }
           }
           if (
             !shouldBumpDmUnread({
@@ -1803,6 +2162,7 @@
       });
       recentDms = rememberRecentDm(recentDms, row.personUid);
       saveRecentDms(recentDms, storage);
+      markAgentEngaged(row.personUid);
       // Optimistic clear (local dot + numeric pair unread), then server mark-read.
       dmDots = clearDmDot(dmDots, row.personUid);
       saveDmDots(dmDots, storage);
@@ -2020,7 +2380,7 @@
               {/if}
             </button>
           {/each}
-          {#if oncreatecompany}
+          {#if oncreatecompany || companyCreate}
             <div class="chat-scope-sep" role="separator"></div>
             <button
               type="button"
@@ -2244,6 +2604,27 @@
               </button>
             {/if}
 
+            <button
+              type="button"
+              class="chat-filter-row"
+              class:active={showArchived}
+              data-testid="chat-filter-archived"
+              aria-pressed={showArchived}
+              onclick={() => setShowArchived(!showArchived)}
+            >
+              <span class="chat-filter-lead" aria-hidden="true">🗄</span>
+              <span class="chat-filter-text">Show archived</span>
+              {#if archivedVisibleCount > 0 && !showArchived}
+                <span
+                  class="chat-filter-meta"
+                  data-testid="chat-filter-archived-count">{archivedVisibleCount}</span
+                >
+              {/if}
+              {#if showArchived}
+                <span class="chat-filter-check" aria-hidden="true">✓</span>
+              {/if}
+            </button>
+
             {#if people.length > 0}
               <div class="chat-filter-caption pad-top">People</div>
               <div class="chat-people-list">
@@ -2285,7 +2666,55 @@
     </div>
   </header>
 
-  <div class="chat-scroll" data-testid="chat-conversation-list" aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}>
+  {#if selectionMode}
+    <div
+      class="chat-selection-bar"
+      data-testid="chat-selection-bar"
+      role="toolbar"
+      aria-label="Selected conversations"
+    >
+      <span class="chat-selection-count" data-testid="chat-selection-count">
+        {selectionCount} selected
+      </span>
+      <button
+        type="button"
+        class="chat-selection-action"
+        data-testid="chat-selection-all"
+        onclick={selectAllVisible}
+      >
+        Select all
+      </button>
+      <button
+        type="button"
+        class="chat-selection-action primary"
+        data-testid="chat-selection-archive"
+        disabled={selectionCount === 0}
+        onclick={archiveSelection}
+      >
+        {selectionAllArchived ? "Unarchive" : "Archive"}
+      </button>
+      <button
+        type="button"
+        class="chat-selection-action"
+        data-testid="chat-selection-done"
+        onclick={exitSelectionMode}
+      >
+        Done
+      </button>
+    </div>
+  {/if}
+
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="chat-scroll"
+    data-testid="chat-conversation-list"
+    onmouseenter={() => (sidebarHovered = true)}
+    onmouseleave={() => (sidebarHovered = false)}
+    data-selection-mode={selectionMode ? "on" : undefined}
+    data-select-gutter={showSelectGutter ? "on" : undefined}
+    aria-multiselectable={selectionMode ? true : undefined}
+    aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}
+  >
     {#if allRows.length === 0 && (!firstRefreshSettled || loading)}
       <div class="sidebar-skeleton" role="status" aria-label="Loading conversations" data-testid="sidebar-loading">
         <span class="sr-only">Loading conversations…</span>
@@ -2325,7 +2754,12 @@
         </span>
         PINNED
       </div>
-      <div class="chat-list" role="list" aria-labelledby="chat-pinned-label">
+      <div
+        class="chat-list"
+        role={selectionMode ? "listbox" : "list"}
+        aria-multiselectable={selectionMode ? true : undefined}
+        aria-labelledby="chat-pinned-label"
+      >
         {#each grouped.pinned as row (row.id)}
           {@render conversationRow(row)}
         {/each}
@@ -2345,7 +2779,8 @@
       </div>
       <div
         class="chat-list"
-        role="list"
+        role={selectionMode ? "listbox" : "list"}
+        aria-multiselectable={selectionMode ? true : undefined}
         aria-labelledby={`chat-sec-${section.key}`}
       >
         {#each section.rows as row (row.id)}
@@ -2377,7 +2812,12 @@
         {/if}
       </button>
       {#if lastWeekExpanded}
-        <div class="chat-list" role="list" aria-label="Last week">
+        <div
+          class="chat-list"
+          role={selectionMode ? "listbox" : "list"}
+          aria-multiselectable={selectionMode ? true : undefined}
+          aria-label="Last week"
+        >
           {#each grouped.lastWeek as row (row.id)}
             {@render conversationRow(row)}
           {/each}
@@ -2485,6 +2925,26 @@
         {pinsWithSetup.includes(contextMenu.row.id)
           ? "Unpin conversation"
           : "Pin conversation"}
+      </button>
+      <button
+        type="button"
+        class="chat-popover-row"
+        role="menuitem"
+        data-testid="chat-context-archive"
+        onclick={archiveFromMenu}
+      >
+        {archivedSet.has(contextMenu.row.id)
+          ? "Unarchive conversation"
+          : "Archive conversation"}
+      </button>
+      <button
+        type="button"
+        class="chat-popover-row"
+        role="menuitem"
+        data-testid="chat-context-select"
+        onclick={selectFromMenu}
+      >
+        Select conversations
       </button>
       {#each rowExtras?.(contextMenu.row)?.actions ?? [] as action (action.id)}
         <button
@@ -2775,7 +3235,7 @@
     <CreateModal
       {api}
       rows={[...directoryRows, ...browseRows]}
-      contacts={localBotsAsContacts(contacts, localBots)}
+      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
       {scopeCompanies}
       createCompanies={createScopeCompanies}
       activeScope={scope}
@@ -2788,10 +3248,13 @@
       }}
       oncreated={onChannelCreated}
       {oncreatecompany}
+      {companyCreate}
       {oncreateagent}
       {agentCompanies}
       {oncreatebot}
       {botRuntimeReady}
+      {botRuntimeStatus}
+      {onrecheckruntimes}
       {botWorkers}
       {existingBotNames}
       {botCompanies}
@@ -2800,6 +3263,7 @@
       {avatarPacks}
       {loadAvatarPacks}
       initialKind={createKind}
+      initialStep={createStep}
     />
   {/if}
 </aside>
@@ -2857,11 +3321,24 @@
   <div class="chat-row-group" data-testid="chat-row-group">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      role="listitem"
+      role={selectionMode ? "presentation" : "listitem"}
       class="chat-li"
+      class:gutter-open={showSelectGutter}
       onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
       onmouseleave={scheduleHoverCardHide}
     >
+      <span class="chat-select-gutter" aria-hidden={!showSelectGutter}>
+        <input
+          type="checkbox"
+          class="chat-select-check"
+          data-testid="chat-row-checkbox"
+          data-checkbox-for={row.id}
+          tabindex={showSelectGutter ? 0 : -1}
+          checked={selectionMode && selection.selected.includes(row.id)}
+          aria-label={`Select ${row.title}`}
+          onclick={(e) => toggleRowSelection(row, e)}
+        />
+      </span>
       {#if hasChildren}
         <button
           type="button"
@@ -2885,8 +3362,17 @@
         class:has-badge={hasBadge}
         data-kind={row.kind}
         data-conversation-id={row.id}
-        title={scopeLabel?.text}
-        onclick={() => void openRow(row)}
+        class:selected={selectionMode && selection.selected.includes(row.id)}
+        class:archived={archivedSet.has(row.id)}
+        role={selectionMode ? "option" : undefined}
+        aria-selected={selectionMode
+          ? selection.selected.includes(row.id)
+          : undefined}
+        onkeydown={selectionKeydown}
+        data-selected={selectionMode && selection.selected.includes(row.id)
+          ? "true"
+          : undefined}
+        onclick={(e) => handleRowClick(row, e)}
         oncontextmenu={(e) => openContextMenu(row, e)}
       >
         {#if row.kind === "channel"}
@@ -2953,6 +3439,11 @@
               />
             {/if}
           {/if}
+          {#if archivedSet.has(row.id)}
+            <span class="chat-row-archived-pill" data-testid="chat-row-archived-pill">
+              Archived
+            </span>
+          {/if}
           {#if extras?.badge}
             <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
               {extras.badge}
@@ -2963,7 +3454,7 @@
               class="chat-row-scope"
               data-testid="chat-row-scope"
               data-kind={scopeLabel.kind}
-              title={scopeLabel.text}>{scopeLabel.text}</span
+              use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
             >
           {/if}
         </span>
@@ -2971,7 +3462,8 @@
           <span
             class="chat-row-reveal"
             data-testid="chat-row-reveal"
-            aria-hidden="true">{scopeLabel.text}</span
+            aria-hidden="true"
+            use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
           >
         {/if}
         {#if row.unreadCount != null && row.unreadCount > 0}
@@ -3025,7 +3517,6 @@
             class:action={child.kind === "action"}
             class:selected={child.selected === true}
             aria-current={child.selected ? "page" : undefined}
-            title={child.meta ? `${child.label} · ${child.meta}` : child.label}
             data-testid="chat-row-child"
             data-child-id={child.id}
             onclick={child.onselect}
@@ -3046,9 +3537,13 @@
                 </svg>
               {/if}
             </span>
-            <span class="chat-row-child-label">{child.label}</span>
+            <span class="chat-row-child-label" use:titleWhenTruncated={child.label}
+              >{child.label}</span
+            >
             {#if child.meta}
-              <span class="chat-row-child-meta">{child.meta}</span>
+              <span class="chat-row-child-meta" use:titleWhenTruncated={child.meta}
+                >{child.meta}</span
+              >
             {/if}
           </button>
         {/each}
@@ -3436,7 +3931,7 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     line-height: 20px;
     font-weight: 400;
     text-align: left;
@@ -3546,7 +4041,7 @@
   .chat-row {
     contain: content;
     content-visibility: auto;
-    contain-intrinsic-size: auto 32px;
+    contain-intrinsic-size: auto 34px;
     position: relative;
     display: flex;
     align-items: center;
@@ -3556,17 +4051,18 @@
     width: auto;
     min-width: 0;
     min-height: 0;
-    padding: 6px 8px;
+    padding: 7px 8px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--t2);
     font: inherit;
-    /* Same step as the timeline body (14px) so the rail and the conversation
-       share one reading size. */
-    font-size: 14px;
+    /* One step under the timeline body so the rail reads as navigation, not
+       content. Line height is fixed in px so row height is set by padding
+       alone (7px + 17px + 7px = 31px). */
+    font-size: 13px;
     font-weight: 400;
-    line-height: 1.2;
+    line-height: 17px;
     text-align: left;
     cursor: pointer;
   }
@@ -3625,7 +4121,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 400;
   }
 
@@ -3756,10 +4252,13 @@
     margin-left: auto;
     padding: 0 5px;
     border-radius: 999px;
-    background: var(--ice-ink);
-    color: var(--badge-fg);
-    font-size: 10px;
+    /* A count, not an alert: muted text on the row's own background. The
+       filled pill read louder than the unread title it sits next to. */
+    background: transparent;
+    color: var(--t3);
+    font-size: 11px;
     font-weight: 500;
+    font-variant-numeric: tabular-nums;
     line-height: 1;
   }
 
@@ -3975,6 +4474,147 @@
     color: var(--v4-text-3, var(--text-3));
     background: transparent;
     white-space: nowrap;
+  }
+
+  /* Muted marker on an archived row; only visible under "Show archived". */
+  .chat-row-archived-pill {
+    flex: none;
+    margin-left: 2px;
+    padding: 1px 5px;
+    border-radius: 6px;
+    font-size: 10px;
+    line-height: 1.3;
+    color: var(--v4-text-3, var(--text-3));
+    background: var(--hover);
+    white-space: nowrap;
+  }
+
+  .chat-row.archived .chat-row-title {
+    opacity: 0.7;
+  }
+
+  /* Selection is a state, not an event — no transition on the toggle.
+     Banned: the curved left-edge stroke that used to mark selected rows
+     (an inset accent box-shadow on the left edge, curved by the 8px radius).
+     Selection is carried by the checkbox in .chat-select-gutter. */
+  .chat-row.selected {
+    background: var(--hover);
+  }
+
+  /* Checkbox gutter. Zero-width until a selection exists or Shift is held, so
+     resting rows keep their original geometry and nothing jumps on hover. */
+  .chat-select-gutter {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 0;
+    height: 24px;
+    overflow: hidden;
+    opacity: 0;
+    transition:
+      width 120ms ease,
+      opacity 120ms ease;
+  }
+
+  .chat-li.gutter-open .chat-select-gutter {
+    width: 22px;
+    opacity: 1;
+  }
+
+  .chat-li.gutter-open .chat-row-children-toggle {
+    left: 30px;
+  }
+
+  .chat-select-check {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: none;
+    box-sizing: border-box;
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--line, var(--t3));
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .chat-select-check:checked {
+    position: relative;
+    border-color: var(--accent, var(--t1));
+    background: var(--accent, var(--t1));
+  }
+
+  /* The glyph is masked, not painted, so its colour is the accent's contrast
+     pair. The popover accent is white in dark mode — a white-stroked check
+     would vanish into the fill. */
+  .chat-select-check:checked::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--popover-primary-text, var(--c-bg, var(--bg, #111113)));
+    mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Cpath d='M3 6.7 5.4 9.1 10 4.2' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 13px 13px no-repeat;
+    -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Cpath d='M3 6.7 5.4 9.1 10 4.2' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 13px 13px no-repeat;
+  }
+
+  .chat-select-check:focus-visible {
+    outline: 2px solid var(--accent, var(--t1));
+    outline-offset: 1px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chat-select-gutter {
+      transition: none;
+    }
+  }
+
+  .chat-selection-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line, var(--hover));
+  }
+
+  .chat-selection-count {
+    flex: 1 1 auto;
+    font-size: var(--type-metadata, 13px);
+    color: var(--t2, var(--text-2));
+    white-space: nowrap;
+  }
+
+  .chat-selection-action {
+    flex: none;
+    padding: 3px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: var(--type-metadata, 13px);
+    cursor: pointer;
+  }
+
+  .chat-selection-action:hover:not(:disabled) {
+    background: var(--hover);
+  }
+
+  .chat-selection-action.primary {
+    background: var(--hover);
+  }
+
+  .chat-selection-action:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .chat-filter-meta {
+    flex: none;
+    font-size: 11px;
+    color: var(--v4-text-3, var(--text-3));
   }
 
   .chat-row-hover-card {

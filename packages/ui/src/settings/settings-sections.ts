@@ -8,7 +8,6 @@
 export type SettingsTab =
   | "sync"
   | "notifications"
-  | "widget"
   | "updates"
   | "general"
   | "appearance"
@@ -24,7 +23,6 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
 }> = [
   { id: "sync", label: "Sync" },
   { id: "notifications", label: "Notifications" },
-  { id: "widget", label: "Notifications widget" },
   { id: "updates", label: "Updates" },
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },

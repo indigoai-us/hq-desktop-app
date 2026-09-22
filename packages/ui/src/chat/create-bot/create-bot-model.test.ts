@@ -14,7 +14,9 @@ import {
   handleIssue,
   initialDraft,
   introIssue,
-  nameIssue,
+  displayNameIssue,
+  localHandleIssue,
+  botDisplayName,
   nextStep,
   prevStep,
   scopeIssue,
@@ -100,13 +102,43 @@ describe("initialDraft", () => {
 });
 
 describe("names", () => {
-  it("validates with the CLI's rule and rejects taken names", () => {
-    expect(nameIssue("scout", [])).toBeNull();
-    expect(nameIssue("  Scout ", [])).toBeNull();
-    expect(nameIssue("", [])).toBe("Give your bot a name.");
-    expect(nameIssue("Bad Name", [])).toContain("Lowercase letters");
-    expect(nameIssue("a--b", [])).toContain("Lowercase letters");
-    expect(nameIssue("scout", ["Scout"])).toBe("You already have a bot named scout.");
+  it("takes a free-form display name — spaces and capitals included", () => {
+    expect(displayNameIssue("Dr Love")).toBeNull();
+    expect(displayNameIssue("scout")).toBeNull();
+    expect(displayNameIssue("")).toBe("Give your bot a name.");
+    expect(displayNameIssue("   ")).toBe("Give your bot a name.");
+    expect(displayNameIssue("x".repeat(60))).toBeNull();
+    expect(displayNameIssue("x".repeat(61))).toContain("60");
+    expect(displayNameIssue("Dr\u001bLove")).toContain("control characters");
+  });
+
+  it("derives the handle from the display name", () => {
+    expect(botHandle({ name: "Dr Love", handle: "" })).toBe("dr-love");
+    expect(botDisplayName({ name: "Dr Love", handle: "" })).toBe("Dr Love");
+    // A name that is already its own slug needs no display name stored.
+    expect(botDisplayName({ name: "scout", handle: "" })).toBe("");
+    expect(botDisplayName({ name: "  scout  ", handle: "" })).toBe("");
+  });
+
+  it("reports handle problems against the handle, never the display name", () => {
+    expect(localHandleIssue({ name: "Dr Love", handle: "" }, [])).toBeNull();
+    // Two bots whose names slugify the same collide on the handle.
+    expect(localHandleIssue({ name: "Dr Love", handle: "" }, ["dr-love"])).toBe(
+      "You already have a bot with the handle @dr-love.",
+    );
+    expect(localHandleIssue({ name: "scout", handle: "" }, ["Scout"])).toContain("@scout");
+    // Nothing to slugify — an emoji-only name — is fixed by typing a handle.
+    expect(localHandleIssue({ name: "\u{1f680}\u{1f680}", handle: "" }, [])).toContain("no letters or digits");
+    expect(localHandleIssue({ name: "\u{1f680}", handle: "rocket" }, [])).toBeNull();
+    // A typed handle is slugified the same way, so "A--B" is simply "a-b";
+    // only one with nothing to slugify is rejected.
+    expect(botHandle({ name: "Dr Love", handle: "A--B" })).toBe("a-b");
+    expect(localHandleIssue({ name: "Dr Love", handle: "A--B" }, [])).toBeNull();
+    expect(localHandleIssue({ name: "Dr Love", handle: "!!!" }, [])).toContain("no letters or digits");
+    // A 60-character name still yields a handle inside the CLI's 40 cap.
+    expect(localHandleIssue({ name: "Do".repeat(30), handle: "" }, [])).toBeNull();
+    expect(botHandle({ name: "Do".repeat(30), handle: "" }).length).toBeLessThanOrEqual(40);
+    expect(displayNameIssue("\u{1f680}\u{1f680}")).toBeNull();
   });
 
   it("suggests the first free name and skips taken ones", () => {
@@ -273,14 +305,20 @@ describe("steps", () => {
     expect(handleIssue({ name: "", handle: "" })).toContain("Give your bot a handle");
   });
 
-  it("details validates name, then title, then who it is for", () => {
+  it("details validates name, then handle, then title, then who it is for", () => {
     const c = ctx({ existingNames: ["scout"] });
-    expect(stepIssue("details", draft({ name: "scout" }), c)).toBe("You already have a bot named scout.");
+    expect(stepIssue("details", draft({ name: "scout" }), c)).toBe("You already have a bot with the handle @scout.");
+    // The display name is free-form: only its derived handle collides.
+    expect(stepIssue("details", draft({ name: "Scout Two" }), c)).toBeNull();
     expect(stepIssue("details", draft({ name: "buddy", title: "x".repeat(61) }), c)).toContain("60");
     expect(stepIssue("details", draft({ name: "buddy", intro: "x".repeat(501) }), c)).toContain("500");
     expect(stepIssue("details", draft({ name: "buddy", title: "Ad account analyst" }), c)).toBeNull();
+    // A display name with spaces and capitals is accepted and slugified.
+    expect(stepIssue("details", draft({ name: "Dr Love" }), c)).toBeNull();
     // The name is reported before the company choice.
-    expect(stepIssue("details", draft({ name: "scout", scope: "company" }), c)).toBe("You already have a bot named scout.");
+    expect(stepIssue("details", draft({ name: "scout", scope: "company" }), c)).toBe(
+      "You already have a bot with the handle @scout.",
+    );
   });
 
   it("canCreate needs every walked step valid, from any step", () => {
@@ -303,6 +341,9 @@ describe("steps", () => {
 describe("toCreateInput", () => {
   it("maps the draft to the CLI input and omits defaults", () => {
     expect(toCreateInput(draft({ name: " Scout " }))).toEqual({ name: "scout", runtime: "claude", autoApprove: true });
+    // A free-form name reaches the CLI as its slug; the label is stored apart.
+    expect(toCreateInput(draft({ name: "Dr Love" })).name).toBe("dr-love");
+    expect(toCreateInput(draft({ name: "Dr Love", handle: "@love-doc" })).name).toBe("love-doc");
     expect(
       toCreateInput(
         draft({

@@ -22,9 +22,6 @@ describe('US-005 reroute desktop-alt opens to HQ Work', () => {
   const dm = readRepo('src-tauri/src/commands/dm_notify.rs');
   const messages = readRepo('src-tauri/src/commands/messages.rs');
   const app = readRepo('src/App.svelte');
-  const popover = readRepo('src/components/Popover.svelte');
-  const feed = readRepo('src/components/NotificationFeed.svelte');
-  const widget = readRepo('src/components/Widget.svelte');
 
   describe('one seam', () => {
     it('adds LaunchHqWork to DesktopAltHandoffPlan', () => {
@@ -48,23 +45,26 @@ describe('US-005 reroute desktop-alt opens to HQ Work', () => {
       expect(hideAt).toBeGreaterThan(interceptAt);
     });
 
-    it('maybe_intercept launches HQ Work when installed and returns true', () => {
-      expect(hq).toContain('fn apply_handoff_plan');
-      expect(hq).toContain('intercept_with_launch');
+    it('the plan seam still maps a Launch outcome to the launcher', () => {
+      // PL-05 deleted `apply_handoff_plan` (the dead two-app launcher that
+      // showed / hid the popover). The decision seam itself is live and is
+      // covered by the Rust unit test `intercept_with_launch_three_outcomes`.
+      expect(hq).toContain('pub fn intercept_with_launch');
       expect(hq).toContain('HandoffInterceptAction::Launched');
       expect(hq).toContain('launch_hq_work');
-      expect(hq).toContain('handoff.launched');
-      const applyAt = hq.indexOf('fn apply_handoff_plan');
-      const apply = hq.slice(applyAt, applyAt + 1600);
-      expect(apply).toContain('hide_compact_popover');
-      expect(apply).toContain('Ok(true)');
+      expect(hq).toContain('intercept_with_launch_three_outcomes');
+      // The popover show/hide helpers the launcher used are gone.
+      expect(hq).not.toContain('fn hide_compact_popover');
+      expect(hq).not.toContain('fn reveal_handoff_card');
     });
 
-    it('maybe_intercept shows the US-003 card when HQ Work is missing', () => {
+    it('the plan seam still maps a missing install to the US-003 card', () => {
       expect(hq).toContain('should_intercept_desktop_alt');
       expect(hq).toContain('handoff_enabled && !installed');
       expect(hq).toContain('HandoffInterceptAction::ShowHandoffCard');
-      expect(hq).toContain('reveal_handoff_card');
+      // US-103: the live intercept is a permanent no-op, so nothing reaches
+      // the card in this build.
+      expect(hq).toContain('pub fn intercept_steals_desktop_alt_window');
     });
 
     it('flag off restores desktop-alt regardless of install', () => {
@@ -142,14 +142,13 @@ describe('US-005 reroute desktop-alt opens to HQ Work', () => {
   });
 
   describe('call sites stay on existing Tauri commands', () => {
-    it('Svelte still invokes open_desktop_alt_window / communications / dm_detail', () => {
+    it('Svelte still invokes open_desktop_alt_window / dm_detail', () => {
+      // PL-07 deleted Popover.svelte and NotificationFeed.svelte, which held
+      // the other call sites (`open_desktop_alt_window` with a route, and
+      // `open_communications_window`). The commands themselves stay — the
+      // Rust seam assertions above are what guard them.
       expect(app).toContain("invoke('open_desktop_alt_window')");
-      expect(popover).toContain("invoke('open_desktop_alt_window'");
-      expect(feed).toContain("invoke('open_desktop_alt_window'");
-      expect(feed).toContain("invoke('open_dm_detail'");
-      expect(widget).toContain("invoke('open_desktop_alt_window'");
-      expect(widget).toContain("invoke('open_communications_window'");
-      expect(widget).toContain("invoke('open_dm_detail'");
+      expect(app).toContain("invoke('open_dm_detail'");
     });
 
     it('retains desktop-alt window code for flag-off rollback', () => {

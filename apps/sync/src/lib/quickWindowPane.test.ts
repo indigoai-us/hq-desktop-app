@@ -106,25 +106,30 @@ describe('paneItems', () => {
   });
 });
 
+/** Every id in the list, as the server unread set would report it. */
+function allUnread(items: Item[]): ReadonlySet<string> {
+  return new Set(items.map((it) => it.id));
+}
+
 describe('rowUnread', () => {
-  it('is true when newer than watermark and not viewed', () => {
+  it('is true when the server reports the id unread and it is not viewed', () => {
     const it = item('dm:1', 'dm', 100);
-    expect(rowUnread(it, 50, new Set())).toBe(true);
+    expect(rowUnread(it, new Set(['dm:1']), new Set())).toBe(true);
   });
 
-  it('viewed overrides unread even when newer than watermark', () => {
+  it('viewed overrides unread even when the server still reports it unread', () => {
     const it = item('dm:1', 'dm', 100);
-    expect(rowUnread(it, 50, new Set(['dm:1']))).toBe(false);
+    expect(rowUnread(it, new Set(['dm:1']), new Set(['dm:1']))).toBe(false);
   });
 
-  it('watermark boundary: ts equal to lastRead is read', () => {
+  it('is read when the id is absent from the server unread set', () => {
     const it = item('dm:1', 'dm', 100);
-    expect(rowUnread(it, 100, new Set())).toBe(false);
+    expect(rowUnread(it, new Set(), new Set())).toBe(false);
   });
 
-  it('watermark boundary: ts just above lastRead is unread', () => {
-    const it = item('dm:1', 'dm', 101);
-    expect(rowUnread(it, 100, new Set())).toBe(true);
+  it('ignores timestamps entirely — an old unread row still counts', () => {
+    const it = item('dm:1', 'dm', 1);
+    expect(rowUnread(it, new Set(['dm:1']), new Set())).toBe(true);
   });
 });
 
@@ -229,7 +234,7 @@ describe('conversationRows', () => {
       dmItem('dm:l1', 200, { fromPersonUid: 'prs_lizzie', actor: 'Lizzie', body: 'lizzie older' }),
       dmItem('dm:i1', 100, { fromPersonUid: 'prs_izzy', actor: 'Izzy', body: 'izzy oldest' }),
     ];
-    const rows = conversationRows(items, 0, new Set());
+    const rows = conversationRows(items, allUnread(items), new Set());
     expect(rows).toHaveLength(2);
     expect(rows[0].key).toBe('dm:prs_izzy');
     expect(rows[0].latest.id).toBe('dm:i3');
@@ -255,7 +260,7 @@ describe('conversationRows', () => {
         summary: 'q2.xlsx',
       }),
     ];
-    const rows = conversationRows(items, 0, new Set());
+    const rows = conversationRows(items, allUnread(items), new Set());
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.key)).toEqual(['dm:prs_izzy', 'share:prs_izzy']);
     expect(rows[0].kind).toBe('dm');
@@ -286,7 +291,7 @@ describe('conversationRows', () => {
       }),
     ];
 
-    const rows = conversationRows(items, 0, new Set());
+    const rows = conversationRows(items, allUnread(items), new Set());
     expect(rows).toHaveLength(3);
     expect(rows[0].ids).toEqual(['dm:join-1', 'dm:join-2']);
     expect(rows[0].unreadCount).toBe(2);
@@ -302,7 +307,7 @@ describe('conversationRows', () => {
       dmItem('dm:i2', 200, { fromPersonUid: 'prs_izzy', actor: 'Izzy' }),
       dmItem('dm:i1', 100, { fromPersonUid: 'prs_izzy', actor: 'Izzy' }),
     ];
-    const rows = conversationRows(items, 0, new Set(['dm:i3', 'dm:i1']));
+    const rows = conversationRows(items, allUnread(items), new Set(['dm:i3', 'dm:i1']));
     expect(rows).toHaveLength(1);
     expect(rows[0].unreadCount).toBe(1);
   });
@@ -313,7 +318,7 @@ describe('conversationRows', () => {
       dmItem('dm:e2', 200, { fromPersonUid: '', fromEmail: 'a@x.y', actor: 'A', body: 'email2' }),
       dmItem('dm:n1', 100, { fromPersonUid: '', fromEmail: '', actor: 'NoUid', body: 'actor' }),
     ];
-    const rows = conversationRows(items, 0, new Set());
+    const rows = conversationRows(items, allUnread(items), new Set());
     expect(rows).toHaveLength(2);
     expect(rows[0].key).toBe('dm:a@x.y');
     expect(rows[0].ids).toEqual(['dm:e1', 'dm:e2']);
@@ -325,7 +330,7 @@ describe('conversationRows', () => {
       dmItem('dm:a1', 200, { fromPersonUid: 'agt_bot', actor: 'Bot' }),
       dmItem('dm:h1', 100, { fromPersonUid: 'prs_izzy', actor: 'Izzy' }),
     ];
-    const rows = conversationRows(items, 0, new Set());
+    const rows = conversationRows(items, allUnread(items), new Set());
     expect(rows[0].agent).toBe(true);
     expect(rows[1].agent).toBe(false);
   });
@@ -337,7 +342,7 @@ describe('conversationRows', () => {
         actor: `Person ${i}`,
       }),
     );
-    const rows = conversationRows(items, 0, new Set());
+    const rows = conversationRows(items, allUnread(items), new Set());
     expect(rows).toHaveLength(30);
     expect(rows[0].key).toBe('dm:prs_person_0');
     expect(rows[29].key).toBe('dm:prs_person_29');
@@ -349,7 +354,7 @@ describe('conversationRows', () => {
       dmItem('dm:1', 200, { fromPersonUid: 'prs_izzy' }),
       item('file:2', 'new-file', 100),
     ];
-    const rows = conversationRows(items, 0, new Set());
+    const rows = conversationRows(items, allUnread(items), new Set());
     expect(rows).toHaveLength(1);
     expect(rows[0].latest.id).toBe('dm:1');
   });
@@ -364,8 +369,8 @@ describe('countUnreadConversations', () => {
       }),
     );
 
-    expect(conversationRows(items, 0, new Set())).toHaveLength(30);
-    expect(countUnreadConversations(items, 0, new Set())).toBe(35);
+    expect(conversationRows(items, allUnread(items), new Set())).toHaveLength(30);
+    expect(countUnreadConversations(items, allUnread(items), new Set())).toBe(35);
   });
 
   it('counts multiple unread messages from one sender as one conversation', () => {
@@ -380,8 +385,8 @@ describe('countUnreadConversations', () => {
       }),
     ];
 
-    expect(countUnreadConversations(items, 0, new Set())).toBe(1);
-    expect(countUnreadConversations(items, 0, new Set(['dm:one', 'dm:two']))).toBe(0);
+    expect(countUnreadConversations(items, allUnread(items), new Set())).toBe(1);
+    expect(countUnreadConversations(items, allUnread(items), new Set(['dm:one', 'dm:two']))).toBe(0);
   });
 });
 

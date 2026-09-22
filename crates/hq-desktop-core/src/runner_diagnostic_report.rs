@@ -296,20 +296,13 @@ pub fn parse_runner_report_memory_class(bytes: &[u8]) -> RunnerReportMemoryClass
     let heap = value.get("javascriptHeap");
     let js_heap_total_mb = bytes_to_mb(heap, "totalMemory");
     let js_heap_used_mb = bytes_to_mb(heap, "usedMemory");
-    let libuv_active_handles = value
-        .get("libuv")
-        .and_then(Value::as_array)
-        .map(|handles| {
-            handles
-                .iter()
-                .take(RUNNER_REPORT_LIBUV_CAP)
-                .filter(|h| {
-                    h.get("is_active")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                })
-                .count() as u64
-        });
+    let libuv_active_handles = value.get("libuv").and_then(Value::as_array).map(|handles| {
+        handles
+            .iter()
+            .take(RUNNER_REPORT_LIBUV_CAP)
+            .filter(|h| h.get("is_active").and_then(Value::as_bool).unwrap_or(false))
+            .count() as u64
+    });
     RunnerReportMemoryClass {
         js_heap_total_mb,
         js_heap_used_mb,
@@ -659,7 +652,10 @@ mod tests {
             ".npm",
             ".pipe",
         ] {
-            assert!(!rendered.contains(poison), "leaked {poison:?} in {rendered:?}");
+            assert!(
+                !rendered.contains(poison),
+                "leaked {poison:?} in {rendered:?}"
+            );
         }
     }
 

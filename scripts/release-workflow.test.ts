@@ -954,7 +954,16 @@ exec "$REAL_NODE" "$@"
         /action == 'create-draft' \|\| steps\.release-plan\.outputs\.action == 'reset-draft'/g,
       ),
     ).toHaveLength(4);
-    expect(publish).toContain('gh release upload "$TAG" release/* -R "$REPOSITORY"');
+    // One asset per upload, retried, `--clobber` so a partial `starter`
+    // asset from a broken transfer is replaced instead of colliding
+    // (2026-09-17: three releases died on a mid-transfer 400/500 from
+    // uploads.github.com after green builds).
+    expect(publish).toContain('for asset in release/*; do');
+    expect(publish).toContain(
+      'gh release upload "$TAG" "$asset" -R "$REPOSITORY" --clobber',
+    );
+    expect(publish).toContain('for attempt in 1 2 3 4 5; do');
+    expect(publish).not.toContain('gh release upload "$TAG" release/* -R "$REPOSITORY"');
     expect(publish).toContain(
       ".release-control/scripts/release-asset-contract.mjs verify",
     );

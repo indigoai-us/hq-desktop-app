@@ -382,7 +382,9 @@ export interface SendReplyArgs {
   channelId?: string;
   mentions?: Array<{
     participantUid: string;
-    participantType: "human" | "agent";
+    // "broadcast" is the @here token — participantUid is "here" and the
+    // server expands it against the channel's current members.
+    participantType: "human" | "agent" | "broadcast";
     displayName: string;
     email?: string;
   }>;
@@ -621,6 +623,12 @@ export interface MessagingApi {
     values: Record<string, string>;
     idempotencyKey?: string;
   }): AdapterPromise<Json>;
+  /**
+   * GET /v1/companies/slug-available?slug={value} — advisory company-handle
+   * check for the create-company step. Optional: a host without the route
+   * omits it and the step falls back to submit-time validation.
+   */
+  checkCompanySlug?(slug: string): AdapterPromise<Json>;
   /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
   getCompanyTab?(companyUid: string, tab: string): AdapterPromise<Json>;
   /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
@@ -638,7 +646,8 @@ export interface MessagingApi {
     extras?: {
       mentions?: Array<{
         participantUid: string;
-        participantType: "human" | "agent";
+        // "broadcast" is the @here token (participantUid "here").
+        participantType: "human" | "agent" | "broadcast";
         displayName: string;
       }>;
       attachments?: Array<{
@@ -739,6 +748,22 @@ export interface CalendarConnectResult {
   url: string;
 }
 
+/**
+ * macOS privacy (TCC) snapshot for the desktop meeting detector, as returned
+ * by the native `meetings_permissions_state` command. Each status is one of
+ * `"granted" | "denied" | "not-determined" | "unknown"`. `allRequiredGranted`
+ * is true only when accessibility, screen capture, and microphone are all
+ * granted — the detector never starts without it.
+ */
+export interface MeetingPermissionsSnapshot {
+  accessibility: string;
+  screenCapture: string;
+  microphone: string;
+  systemAudio: string;
+  fullDiskAccess: string;
+  allRequiredGranted: boolean;
+}
+
 export interface MeetingsApi {
   listMemberships(): AdapterPromise<Json[]>;
   listUpcoming(): AdapterPromise<Json[]>;
@@ -754,6 +779,18 @@ export interface MeetingsApi {
   connectCalendar(): AdapterPromise<CalendarConnectResult>;
   /** `DELETE /v1/google/accounts/{accountId}` — revoke + remove one account. */
   disconnectCalendar(accountId: string): AdapterPromise<Json>;
+  /**
+   * Prompt-less read of the native meeting-detector permissions
+   * (`meetings_permissions_state`). Unavailable on hosts without a native
+   * detector (web, HQ Work desktop); callers hide their UI on `!ok`.
+   */
+  permissionsState(): AdapterPromise<MeetingPermissionsSnapshot>;
+  /**
+   * Open (or focus) the native "Meeting Permissions" setup window
+   * (`open_meeting_permissions_window`). It requests each missing macOS
+   * permission and starts the detector as soon as everything is granted.
+   */
+  openPermissionsSetup(): AdapterPromise<void>;
 }
 
 export interface MarketplaceApi {
@@ -971,8 +1008,6 @@ export interface AppShellApi {
    *  visible either way — hiding the Dock icon does not hide the app. */
   setDockVisible(visible: boolean): AdapterPromise<void>;
   setAutostart(enabled: boolean): AdapterPromise<void>;
-  /** Show or hide the floating HQ wordmark widget without restart. */
-  setDesktopWidget(enabled: boolean): AdapterPromise<void>;
   consumePendingRoute(): AdapterPromise<string | null>;
   takePendingMessagesTarget(): AdapterPromise<Json | null>;
   setActiveCompany(slug: string): AdapterPromise<void>;
@@ -1069,7 +1104,14 @@ export interface LocalBotRuntimeSignIn {
 export interface LocalBotRow {
   /** Absent on older CLI versions; cloud only after verified activation. */
   hosting?: "local" | "cloud";
+  /** The handle: the bot's folder name and what every mention resolves to. */
   name: string;
+  /**
+   * Free-form label ("Dr Love") when the bot has one. Absent on every CLI
+   * that reports only the handle, which is why the app also keeps its own
+   * copy (`chat/bot-display-names.ts`); readers fall back to `name`.
+   */
+  displayName?: string;
   agentUid: string;
   ownerUid: string;
   runtime: "claude" | "codex" | "grok";
@@ -1088,6 +1130,16 @@ export interface LocalBotRow {
   /** Server-side liveness (heartbeat < 90 s); null when hq-pro was unreachable. */
   online: boolean | null;
   lastHeartbeatAt: string | null;
+  /**
+   * The bot is mid-turn right now: it took a message and has not finished
+   * answering. The CLI reads this from the bot's own in-flight marker on this
+   * machine, so it is true while the model is still thinking and nothing has
+   * been posted yet, and stays true across an interim progress post. Absent on
+   * older CLI versions — treat as unknown, not idle.
+   */
+  busy?: boolean;
+  /** When the oldest turn still in flight started (ISO); null when idle. */
+  busySince?: string | null;
   daemonInstalled: boolean;
   daemonLoaded: boolean;
   dir: string;

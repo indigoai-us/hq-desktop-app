@@ -1,4 +1,4 @@
-// Pure helpers for DM conversation views (DmDetail.svelte and MessagesShell).
+// Pure helpers for DM conversation views (DmThreadPane and MessagesShell).
 //
 // The detail window opens scoped to one peer and renders the two-way thread. A
 // freshly-arrived inbound DM (broadcast as `dm:new-events`) should fold into the
@@ -108,7 +108,7 @@ export function shouldAppendInbound(
 
 /**
  * Append a batch of freshly-arrived inbound DMs to an already-rendered thread.
- * The caller supplies the renderer-specific mapping because DmDetail and
+ * The caller supplies the renderer-specific mapping because DmThreadPane and
  * MessagesShell carry slightly different message shapes, while the peer/dedupe
  * rule stays identical.
  */

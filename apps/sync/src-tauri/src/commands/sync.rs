@@ -74,10 +74,10 @@ use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
 use crate::events::{
     SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompanyProvisionedEvent, SyncErrorEvent,
-    SyncEvent, SyncProgressEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
-    EVENT_SYNC_COMPLETE, EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR,
-    EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS,
-    EVENT_SYNC_SETUP_NEEDED,
+    SyncEvent, SyncProgressEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR,
+    EVENT_SYNC_COMPANY_PROVISIONED, EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT,
+    EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN,
+    EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -1535,6 +1535,11 @@ fn handle_sync_line<R: tauri::Runtime>(
                 None => Ok(()),
             }
         }
+        // One row per conflicted path for the shell's conflict list. The
+        // aggregate `complete.conflicts` count still drives the journal and
+        // the banner; this is the per-file detail the resolve actions need,
+        // and it carries no counter of its own so the two can't disagree.
+        SyncEvent::Conflict(payload) => app.emit(EVENT_SYNC_CONFLICT, payload.clone()),
         // A parsed no-op by design: returning true from this handler refreshes
         // the process watchdog, while keeping local journal maintenance out of
         // file-transfer totals, Recent Changes, and frontend progress.
@@ -3495,6 +3500,46 @@ mod tests {
         flush_pending_sync_progress(&handle, folder);
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    /// A runner `conflict` line must reach the renderer as `sync:conflict`
+    /// with the conflicted path. The shell builds its per-file conflict rows
+    /// (Keep local / Keep cloud / Open in editor) from this stream; before the
+    /// event was modelled, the line was dropped at the parse seam and the rows
+    /// had nothing to render.
+    #[test]
+    fn handle_sync_line_emits_a_per_file_conflict_event() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(RunnerPhaseContext::default());
+
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        handle.listen(EVENT_SYNC_CONFLICT, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        let folder = hq_folder.path().to_str().unwrap();
+        let line = r#"{"type":"conflict","company":"indigo","path":"knowledge/readme.md","direction":"pull","resolution":"keep"}"#;
+        assert!(
+            handle_sync_line(&handle, folder, &totals, &phase, "jwt", line),
+            "a conflict line is a real protocol record and must refresh the watchdog"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "exactly one conflict event per conflicted path");
+        assert_eq!(seen[0]["path"], "knowledge/readme.md");
+        assert_eq!(seen[0]["company"], "indigo");
+        assert_eq!(seen[0]["canAutoResolve"], false);
     }
 
     #[test]

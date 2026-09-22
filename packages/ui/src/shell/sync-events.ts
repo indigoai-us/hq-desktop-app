@@ -20,4 +20,12 @@ export interface SyncEventHost {
     event: string,
     handler: (event: { payload?: unknown }) => void,
   ): Promise<SyncUnlistenFn>;
+  /**
+   * Publish back onto the same bus. The shell needs this for the native
+   * notification retry (PL-03): only the controller window can execute a
+   * notification action, so the shell asks it to rather than re-implementing
+   * the routing. Optional — a host with a listen-only bridge simply renders
+   * the recovery banner without a working Retry.
+   */
+  emit?(event: string, payload?: unknown): void | Promise<void>;
 }

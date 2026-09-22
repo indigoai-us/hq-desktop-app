@@ -6,10 +6,11 @@
 //!
 //! Phase 7 (2026-04-19): protocol realigned with `hq-sync-runner`. Previously
 //! the menubar spawned `hq sync --json` (never shipped) with a different event
-//! shape. The runner now drives this. Legacy `SyncConflictEvent` remains as a
-//! no-op stub for frontend compatibility — the runner does not emit per-file
-//! conflict events (conflicts are handled inline via `--on-conflict <strategy>`
-//! and surface as aborts via `complete.aborted: true`).
+//! shape. The runner now drives this. The runner does emit per-file `conflict`
+//! events alongside the inline `--on-conflict <strategy>` handling and the
+//! aggregate `complete.conflicts` / `complete.aborted` fields; see
+//! [`SyncConflictEvent`], which models the runner's shape (it was a dead stub
+//! with an invented shape until then, which is why the lines were dropped).
 //!
 //! Source of truth for the protocol:
 //!   packages/hq-cloud/src/bin/sync-runner.ts :: `RunnerEvent`
@@ -104,16 +105,42 @@ pub struct SyncErrorEvent {
     pub message: String,
 }
 
-/// Legacy conflict event — kept for frontend-shape compatibility but the
-/// runner does not emit per-file conflicts. Menubar infers conflicts from
-/// `complete.aborted` and `complete.conflicts > 0`.
+/// `{type: "conflict", company?, path, direction?, resolution?}`
+/// Per-file divergence, emitted by `hq-sync-runner` once per conflicted path
+/// (`sync-runner-company` forwards the engine's `conflict` event and stamps
+/// the company label onto it).
+///
+/// This build used to model conflicts as an aggregate only: the variant was a
+/// dead stub with a `localHash`/`remoteHash` shape the runner never sent, so
+/// every `conflict` line failed to deserialize and `parse_sync_line` dropped
+/// it. The desktop shell's per-file conflict rows (Keep local / Keep cloud /
+/// Open in editor) listen for `sync:conflict` and therefore almost never
+/// appeared — only the `complete.conflicts` count did.
+///
+/// Fields follow the runner, not the old stub. The engine does not report
+/// hashes or local/remote timestamps on this event (they live in
+/// `.hq-conflicts/index.json`, written after the fact), so they are absent
+/// here rather than invented. `direction` is the leg that hit the divergence
+/// (`push` | `pull`) and `resolution` is what the runner's `--on-conflict`
+/// policy did with it (`keep` | `skip` | `abort` | `overwrite`) — together
+/// they are the conflict kind. Both are optional so an older or leaner
+/// emitter still parses.
+///
+/// `can_auto_resolve` is not part of the runner protocol; it defaults to
+/// false and is forwarded as `canAutoResolve` for the renderer's shape. A
+/// conflict the runner kept is exactly the case a human still has to settle,
+/// so claiming otherwise would be wrong.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // Legacy no-op stub retained for frontend compatibility — see module doc
 pub struct SyncConflictEvent {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub company: Option<String>,
     pub path: String,
-    pub local_hash: String,
-    pub remote_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub direction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub resolution: Option<String>,
+    #[serde(default)]
     pub can_auto_resolve: bool,
 }
 
@@ -257,6 +284,9 @@ pub enum SyncEvent {
     Plan(SyncPlanEvent),
     Progress(SyncProgressEvent),
     MaintenanceProgress(SyncMaintenanceProgressEvent),
+    /// Per-file divergence. Forwarded to the renderer as `sync:conflict` so
+    /// the shell can list the conflicted path with a resolve action.
+    Conflict(SyncConflictEvent),
     Error(SyncErrorEvent),
     Complete(SyncCompleteEvent),
     /// hq-cloud ≥5.24.0. Emitted only under the `currency-gated` delete
@@ -332,7 +362,9 @@ pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
 pub const EVENT_SYNC_DELETE_REFUSED_STALE_ETAG: &str = "sync:delete-refused-stale-etag";
 pub const EVENT_SYNC_NEW_FILES: &str = "sync:new-files";
 pub const EVENT_SYNC_ALL_COMPLETE: &str = "sync:all-complete";
-/// Deprecated — kept for frontend shape-compat. Not emitted by the runner.
+/// One per conflicted path, carrying `path` (+ `company`, `direction`,
+/// `resolution`). The shell builds its per-file conflict rows from this
+/// stream and clears them on `sync:all-complete`.
 pub const EVENT_SYNC_CONFLICT: &str = "sync:conflict";
 /// Emitted once per newly-provisioned company after `provision_missing_companies` succeeds.
 pub const EVENT_SYNC_COMPANY_PROVISIONED: &str = "sync:company-provisioned";
@@ -1007,6 +1039,90 @@ mod tests {
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("\"addedBy\""));
+    }
+
+    // ── Per-file conflict events ─────────────────────────────────────────
+
+    /// The conflict line the runner actually emits, verbatim in shape.
+    ///
+    /// Source of truth: hq-cloud `src/bin/sync-runner-company.ts` — it
+    /// forwards the engine's `conflict` event and stamps `company` on it, so
+    /// the desktop sees `{type, company, path, direction, resolution}`. Kept
+    /// literal: the desktop modelled an invented `localHash`/`remoteHash`
+    /// shape for two protocol generations and silently dropped every one of
+    /// these lines.
+    const CONFLICT_LINE: &str = r#"{"type":"conflict","company":"indigo","path":"knowledge/readme.md","direction":"pull","resolution":"keep"}"#;
+
+    #[test]
+    fn test_conflict_line_is_well_formed_json_of_the_expected_type() {
+        // Guards the fixture: a typo would make the parse test fail for the
+        // wrong reason, and a malformed fixture could never catch a drop.
+        let value: serde_json::Value =
+            serde_json::from_str(CONFLICT_LINE).expect("fixture must be valid JSON");
+        assert_eq!(value["type"], "conflict");
+        assert_eq!(value["path"], "knowledge/readme.md");
+    }
+
+    #[test]
+    fn test_parse_sync_line_yields_the_conflicted_path() {
+        let parsed = parse_sync_line(CONFLICT_LINE);
+        let Some(SyncEvent::Conflict(payload)) = parsed else {
+            panic!("runner conflict line must parse into SyncEvent::Conflict, got {parsed:?}");
+        };
+        assert_eq!(payload.path, "knowledge/readme.md");
+        assert_eq!(payload.company.as_deref(), Some("indigo"));
+        assert_eq!(payload.direction.as_deref(), Some("pull"));
+        assert_eq!(payload.resolution.as_deref(), Some("keep"));
+        assert!(
+            !payload.can_auto_resolve,
+            "the runner never sends canAutoResolve; it must default to false \
+             rather than promising the shell an automatic fix"
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_line_conflict_tolerates_a_bare_path_only_emitter() {
+        // `company` / `direction` / `resolution` are optional so a leaner or
+        // older emitter still produces a usable row.
+        let parsed = parse_sync_line(r#"{"type":"conflict","path":"a.md"}"#);
+        let Some(SyncEvent::Conflict(payload)) = parsed else {
+            panic!("a path-only conflict line must still parse, got {parsed:?}");
+        };
+        assert_eq!(payload.path, "a.md");
+        assert_eq!(payload.company, None);
+    }
+
+    #[test]
+    fn test_conflict_event_serializes_in_the_shape_the_shell_reads() {
+        // The shell keys its conflict rows off `path` and reads
+        // `canAutoResolve` (camelCase). snake_case here would render no rows.
+        let Some(SyncEvent::Conflict(payload)) = parse_sync_line(CONFLICT_LINE) else {
+            panic!("fixture must parse");
+        };
+        let value: serde_json::Value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["path"], "knowledge/readme.md");
+        assert_eq!(value["canAutoResolve"], false);
+        assert!(
+            value.get("can_auto_resolve").is_none(),
+            "serde rename_all must be applied"
+        );
+    }
+
+    #[test]
+    fn test_conflict_event_does_not_touch_run_totals_conflict_count() {
+        // The aggregate count comes from `complete.conflicts`. If the per-file
+        // event also counted, a run would double-report every conflict.
+        use crate::sync_outcome::RunTotals;
+        let mut totals = RunTotals::default();
+        totals.accumulate(&parse_sync_line(CONFLICT_LINE).unwrap());
+        assert_eq!(totals.conflicts, 0);
+        totals.accumulate(
+            &parse_sync_line(
+                r#"{"type":"complete","company":"indigo","filesDownloaded":0,"bytesDownloaded":0,"filesSkipped":0,"conflicts":1,"aborted":false}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(totals.conflicts, 1);
     }
 
     // ── Forward-compatibility regression tests (US-004) ──────────────────

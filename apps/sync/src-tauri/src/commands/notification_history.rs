@@ -107,12 +107,12 @@ pub struct NotificationHistory {
     pub files: Vec<FileHistoryItem>,
 }
 
-/// Legacy standalone-window IPC. The unified app retired that window in favor
-/// of the popover's inline NotificationFeed, so the compatibility path focuses
-/// the main surface where the feed is already mounted.
+/// Legacy standalone-window IPC. The unified app retired that window, so the
+/// compatibility path opens the desktop workspace on its notifications
+/// surface, where the feed is mounted.
 #[tauri::command]
 pub async fn open_notification_history(app: AppHandle) -> Result<(), String> {
-    crate::tray::show_window_at_tray(&app);
+    crate::tray::show_desktop_window_at(&app, Some("notifications"));
     Ok(())
 }
 

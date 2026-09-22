@@ -49,6 +49,7 @@ mod events;
 mod fd_limit;
 #[cfg(target_os = "macos")]
 mod glass;
+mod intro_window;
 mod recovery;
 mod titlebar_layout;
 mod tray;
@@ -57,6 +58,7 @@ mod updater;
 mod util;
 #[cfg(target_os = "macos")]
 mod webview_asset_cache;
+mod window_restore;
 #[cfg(target_os = "windows")]
 mod windows_update;
 
@@ -143,14 +145,14 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
 fn register_global_shortcuts(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
-    for (label, code) in [("Opt+Shift+H", Code::KeyH), ("Opt+Shift+O", Code::KeyO)] {
-        let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), code);
-        if let Err(error) = app.global_shortcut().register(shortcut) {
-            util::logfile::log(
-                "ui",
-                &format!("global shortcut {label} register FAILED: {error}"),
-            );
-        }
+    // Opt+Shift+O only: the Opt+Shift+H popover toggle is retired.
+    let label = "Opt+Shift+O";
+    let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyO);
+    if let Err(error) = app.global_shortcut().register(shortcut) {
+        util::logfile::log(
+            "ui",
+            &format!("global shortcut {label} register FAILED: {error}"),
+        );
     }
 }
 
@@ -201,11 +203,6 @@ fn setup_startup_surfaces(
         tray::show_window_centered(app);
         util::logfile::log("app", "first-run launch: centered onboarding card");
     }
-
-    // US-002: always-on-top HQ wordmark widget (lower-right of the
-    // configured display). Gated by widgetEnabled in menubar.json
-    // (default on). Non-activating, appearance-reactive.
-    commands::widget::setup_widget_window(app);
 
     // macOS: the menu-bar item lives in a separate native helper process
     // (tao parks an in-process status item off-screen on Tahoe).
@@ -352,7 +349,7 @@ fn main() {
     // HQ-DESKTOP-44 (re-entrant path): install the thread-local WH_CALLWNDPROC
     // session-end intercept on THIS (event-loop) thread now — BEFORE
     // `tauri::Builder::build()` — so it is armed for a `WM_ENDSESSION` that lands
-    // during the config-window / widget WebView2 creation tauri runs inside the
+    // during the config-window WebView2 creation tauri runs inside the
     // `RunEvent::Ready` dispatch, where tao's handler is already taken and
     // `RunEvent::Exit` can never fire. Do NOT move this after `build()`. See
     // `commands::session_end_intercept` and the "Exit Lifecycle" doc.
@@ -378,11 +375,10 @@ fn main() {
 
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
-    // Opt+Shift+H — global hotkey to summon the popover from anywhere.
-    // Opt+Shift+O — global hotkey to reveal the larger desktop window.
-    // Defined up front so the plugin builder and the setup-time `register`
-    // calls agree on the exact key combos.
-    let show_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
+    // Opt+Shift+O — global hotkey to reveal the desktop window. Defined up
+    // front so the plugin builder and the setup-time `register` calls agree on
+    // the exact key combo. The Opt+Shift+H popover toggle is retired: the
+    // popover is no longer a surface the user summons.
     let desktop_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyO);
 
     // The `main` popover is created from `tauri.conf.json`, so its WebView2
@@ -475,21 +471,7 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
-                        // Toggle the popover: hides it if already up, else shows
-                        // it (and hides the desktop window — one at a time).
-                        // Window ops (incl. the is_visible toggle query) must run
-                        // on the main thread, so marshal off the shortcut callback.
-                        let app_main = app.clone();
-                        let _ = app.run_on_main_thread(move || {
-                            hq_telemetry::record_native_panic_seam(
-                                hq_telemetry::NativePanicSeam::GlobalShortcutTogglePopover,
-                            );
-                            tray::toggle_popover_window(&app_main);
-                        });
-                    } else if shortcut == &desktop_shortcut
-                        && event.state() == ShortcutState::Pressed
-                    {
+                    if shortcut == &desktop_shortcut && event.state() == ShortcutState::Pressed {
                         // Toggle the desktop window: hide if visible, else open
                         // it (hiding the popover first — one HQ window at a time).
                         // Marshal to the main thread for the same reason.
@@ -505,9 +487,10 @@ fn main() {
                             if desktop_visible {
                                 tray::hide_desktop_alt(&app_main);
                             } else {
-                                if let Some(main) = app_main.get_webview_window("main") {
-                                    let _ = main.hide();
-                                }
+                                // `open_desktop_alt_window_inner` hides `main`
+                                // itself — but only once it knows setup is
+                                // finished. Hiding it here first would blank
+                                // the installer card mid-setup.
                                 let app_handle = app_main.clone();
                                 tauri::async_runtime::spawn(async move {
                                     if let Err(e) =
@@ -536,7 +519,6 @@ fn main() {
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
-        .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::NotificationSessionState::new())
         .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
         .manage(commands::dm_notify::PairUnreadState::new())
@@ -567,7 +549,7 @@ fn main() {
                         // Cmd-W is an explicit dismissal, same as Esc or the
                         // popover's close button — release the onboarding
                         // blur-hide pin so click-away works from here on.
-                        tray::note_popover_dismissed();
+                        tray::note_onboarding_card_dismissed();
                         let _ = window.hide();
                     });
                 }
@@ -687,6 +669,7 @@ fn main() {
             commands::setup_secret::setup_store_secret,
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_main_window_vibrancy,
+            intro_window::set_intro_fullscreen,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_setup_status,
@@ -781,6 +764,7 @@ fn main() {
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
             tray::set_tray_state,
+            tray::finish_replay_intro,
             updater::check_for_updates,
             updater::reinstall_latest_release,
             crate::recovery::shell_ready,
@@ -950,7 +934,6 @@ fn main() {
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::open_inbox_window,
             commands::dm_notify::open_communications_window,
-            commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
             commands::dm_notify::send_dm_to_email,
             commands::dm_notify::fetch_dm_thread,
@@ -980,6 +963,7 @@ fn main() {
             commands::messages::invite_to_channel,
             commands::messages::send_channel_message,
             commands::messages::run_card_action,
+            commands::messages::check_company_slug,
             commands::messages::get_company_tab,
             commands::messages::run_company_tab_action,
             crate::deep_link::take_pending_setup_target,
@@ -1012,12 +996,6 @@ fn main() {
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
             commands::banner::preview_meeting_banner,
-            commands::widget::resize_widget,
-            commands::widget::set_widget_focusable,
-            commands::widget::widget_ready,
-            commands::widget::list_displays,
-            commands::widget::apply_widget_settings,
-            commands::widget::hide_widget_stack,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
@@ -1386,6 +1364,7 @@ fn main() {
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
+            commands::install_deps::setup_qmd_abi_repair(app.handle());
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 
@@ -1618,10 +1597,9 @@ fn main() {
             // Show, never toggle: a Dock click that hides the window reads as a
             // no-op. Signed-out users can sign in inside the desktop workspace.
             //
-            // `has_visible_windows` is deliberately ignored: the always-on-top
-            // floating widget counts as a visible window, so honouring the flag
-            // would make the Dock icon inert for every user who has the widget
-            // enabled (the default on macOS).
+            // `has_visible_windows` is deliberately ignored: a hidden-but-live
+            // notification banner still counts as a visible window, so
+            // honouring the flag would make the Dock icon inert.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 // Same reason as the focus handler above: no eager force-probe.

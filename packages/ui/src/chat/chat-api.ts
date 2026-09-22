@@ -232,7 +232,9 @@ export interface SendReplyArgs {
   channelId?: string;
   mentions?: Array<{
     participantUid: string;
-    participantType: "human" | "agent";
+    // "broadcast" is the @here token — participantUid is "here" and the
+    // server expands it against the channel's current members.
+    participantType: "human" | "agent" | "broadcast";
     displayName: string;
     email?: string;
   }>;
@@ -293,7 +295,8 @@ export interface ConversationApi {
     body: string;
     mentions?: Array<{
       participantUid: string;
-      participantType: "human" | "agent";
+      // "broadcast" is the @here token (participantUid "here").
+      participantType: "human" | "agent" | "broadcast";
       displayName: string;
     }>;
     attachments?: Array<{
@@ -347,6 +350,12 @@ export interface ConversationApi {
     values: Record<string, string>;
     idempotencyKey?: string;
   }): Promise<CardActionResult>;
+  /**
+   * GET /v1/companies/slug-available?slug={value} — advisory company-handle
+   * check. Optional: a host without the route omits it, and the create step
+   * falls back to the submit-time answer.
+   */
+  checkCompanySlug?(slug: string): Promise<unknown>;
   /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
   getCompanyTab?(companyUid: string, tab: string): Promise<unknown>;
   /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
@@ -435,6 +444,9 @@ export interface ChatWakeEvents {
     eventId?: string;
     createdAt?: string;
     fromPersonUid?: string;
+    /** Author display name / email when the mesh payload carried one. */
+    fromDisplayName?: string;
+    fromEmail?: string;
     unread?: number;
     /** `unread` is an authoritative rollup, not a one-message delta. */
     absoluteUnread?: boolean;
@@ -463,6 +475,14 @@ export interface ChatWakeEvents {
     eventId?: string;
     createdAt?: string;
     direction?: "in" | "out";
+    /**
+     * Message body, when the transport carries one. The native inbox poll
+     * does; MQTT delivery does not. Present bodies let the rail tell an agent
+     * membership announcement from a message the agent actually sent.
+     */
+    body?: string | null;
+    details?: string | null;
+    prompt?: string | null;
     /** A preceding `dm:pair-unreads` event already set the exact badge count. */
     absoluteUnread?: boolean;
   };

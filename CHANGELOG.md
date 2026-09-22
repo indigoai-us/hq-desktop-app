@@ -8,13 +8,168 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Story cards and the story detail pane now show who a story is assigned to. A person shows their photo or initials, an agent shows its mark, and a story with nobody assigned says Unassigned. The detail pane also shows who last changed the story. This uses the live project from HQ, so a name written only in the local plan does not override the assignment HQ has.
+
+- Long status updates in a channel now read as normal wrapped text. A post over about 1,200 characters that used the round bullet for its points was being mistaken for a log dump and shown in a narrow grey code box with a sideways scrollbar and a "Show more" cut, which made it unreadable on a phone. The check now recognises that bullet as ordinary writing, so those updates wrap like any other message. Real log and JSON dumps still get the compact box.
+
+## [0.10.301] — 2026-09-21
+
+- Detected meetings now appear on the Meetings page with a recording destination picker, Start recording, and Stop recording. Opening the page after detection or after recording starts shows the current state, and the controls remain reachable in narrow windows.
+
+- When the setup bot finishes, a card now appears under its last message with a button to open your HQ in Claude Code or Codex (only the ones installed on this Mac) and a button to open the HQ console. You can dismiss the card, and it stays dismissed for that bot, so it no longer follows you down the conversation after setup. Before, if the bot formatted its finishing note slightly differently, the note showed up as a block of code at the end of the chat and no card appeared; it is now recognised however the bot writes it, and never shown as text.
+- A local bot's "thinking" line now stays up for the whole time it is working. It used to disappear the moment the bot posted a progress note, so a bot that was still busy looked finished and the chat went quiet. It now follows whether the bot is actually still answering, and clears when it is really done. Needs the matching hq-cli release to show the full turn; with an older CLI it behaves as before.
+- The setup bot's first message tells you it is checking your Mac and that this can take a minute, so a slow first reply no longer looks stuck. The #welcome channel also offers to finish setup in Claude Code or Codex if you would rather use those, and the setup button is now called Open Setup Agent.
+- The "is starting up" notice no longer flashes over a bot that is running and answering, when HQ Cloud briefly could not be asked whether it was online.
+- On Windows, the HQ window no longer stays above every other app after signing in; Alt+Tab works again. The window still comes to the front once after you finish signing in, and lets other apps in front of it as soon as you switch away.
+- Windows: the in-app updater no longer fails with "The requested operation requires elevation (os error 740)". The app now carries an explicit asInvoker manifest and the staged update helper no longer has "update" in its file name. Users on 0.10.246 through 0.10.299 need one manual reinstall of the current release to pick up this fix.
+
+## [0.10.299] — 2026-09-20
+
+- Picking several conversations at once in the sidebar now shows a checkbox next to each one, instead of the curved purple stroke down the left edge of the row. Hold Shift with the pointer over the sidebar and an empty box appears on every row so you can see what you can pick; click a box to pick that row. Shift-click to pick a range, Cmd-click to add or remove one, and Escape to clear, all as before. The boxes take up no space until you have something picked or are holding Shift, so the rows do not shift around as you move down the list.
+- Developer tooling: the browser preview harness works again. It had kept pointing at five pages that were removed in an earlier cleanup, which left the preview blank; those entries are gone and a check now fails if a preview import ever stops resolving. No change for people using the app.
+
+## [0.10.298] — 2026-09-19
+
+- The New bot wizard now tells apart the three reasons a coding tool can't be used, instead of calling all of them “not signed in”. A tool that isn't installed says so and points at where to get it; a check that couldn't finish says so and offers to try again; only a tool that really is signed out offers Sign in. Sign in is no longer offered for a tool the app can't find, and a sign-in that doesn't open now says what went wrong instead of sitting on “Opening…”. The app also looks in more places for the tools, including Claude Code's own install folder and version-manager shims.
+- Your personal bot can now be brought into a channel with other people. Add it the way you add anyone else, and everyone in that channel can tag it by name and get a reply there. It stays yours: nobody else can add it to a channel of their own, tag it into one you have not put it in, or message it directly. If someone tries, HQ says only its owner can add it and points them at you. Take it out of the channel and it disappears from everyone else's @ list again. Needs the matching server change to be live first.
+- The New bot wizard no longer says Claude Code is not signed in when it is. On some Macs the check ran without the account name macOS needs to find your Claude Code sign-in, so it read an empty one and reported you as signed out — which also left Next greyed out and the Sign in button unable to fix it. It now looks under your own account, so a signed-in Claude Code is recognised. A Claude Code that really is signed out still shows as signed out.
+- HQ no longer shows the first-run “Welcome to HQ” / sign-in screen to people who are already set up. On launch the app checks whether you are set up and signed in, and if that check cannot complete — which can happen for a moment right after an update installs and the app restarts — it used to assume you were a brand-new user and show the setup card. It now waits for a real answer, retries, and shows a plain loading spinner in the meantime. If your session has genuinely ended you still get the sign-in screen, and the reason is written to the app log.
+- The New channel window now asks **Company or Personal** first, and only shows the company list when you pick Company. Choosing Personal and then adding someone used to switch you back to your first company and ask whether to add that person from outside it, so a personal channel with another person could not be made. Personal now stays Personal no matter who you add, and there is nothing to be outside of, so nothing asks. Company channels are unchanged: the company list still greys out companies someone is not in, and still asks before you add someone from outside the one you picked.
+- You can give a new bot a real name. The name field used to refuse anything but lowercase letters, digits and hyphens, so “Dr Love” was rejected. It now takes whatever you type — spaces, capitals — and works out the handle to mention it by, shown under the field as “@dr-love”. If that handle is already taken by one of your bots, or your name has nothing to make a handle from, it says so and opens a Handle field to fix it there, instead of making you rename the bot. The bot shows its name in the sidebar, in your messages list and in Settings; bots you made before this still show the name they had.
+- The New bot flow now says what “Personal” means for other people: a personal bot has no company identity, so teammates can’t find it — make it a company bot if you want to share it.
+- Channel notifications now look up who sent the message and avoid repeated anonymous entries. If the sender cannot be retrieved, the feed shows one “New messages” summary for that channel. Existing anonymous summaries are consolidated, and files without a recorded author show “File added” instead of “Someone added a file”.
+
+## [0.10.297] — 2026-09-19
+
+- Links in channel and thread messages are easier to see. A pasted URL used to render in the same dim grey as the surrounding text, so it barely read as something you could click. It now uses the violet the app already uses for other clickable text, still underlined, and brightens when you hover it.
+- The profile you get by clicking someone's name now has a Message button under their name. It opens your direct message with them — the existing one, or a new one — and closes the profile. It is not there on your own profile, and it works for people outside your company without asking to add them first.
+- Meeting detection can be switched on again. HQ can only spot Zoom, Teams, and Meet calls on your Mac once you allow it Accessibility, Screen Recording, and Microphone, and the screen that asks for those had no way in since the Sessions cleanup — so on a fresh install detection was quietly off and nothing said so. Settings → Meetings now has a "Meeting detection" row that shows what is missing and a Set up button that asks for each permission and starts detection as soon as everything is allowed. The Meetings screen shows the same "Meeting detection is off" note with a Set up button.
+- Clicking a "Meeting detected" alert now starts recording that meeting, and opens the Meetings screen so you can see it running. It used to open the Meetings screen and stop there.
+- Creating a company now checks the handle while you type it. A moment after you stop typing it says whether that handle is free, and if it is taken it offers one that is not — click it to fill it in. A handle with the wrong shape says what to change before it asks the server at all. "Create company" stays off while it is checking and while the handle is taken or malformed. If the check itself cannot run, it says so and lets you create anyway; the server still decides. The line sits in the same place whether it has something to say or not, so nothing on the form jumps around. Needs the matching server change to be live first.
+
+## [0.10.296] — 2026-09-19
+
+- You can create a company straight from search. Type a name and pick "Create company <name>": the same window shows a second step with the company details and a list of people to invite by email, and "Create company" makes it. The app then switches to the new company and opens its channel. "New company" in the sidebar and the company switcher goes to that step too, instead of sending you to the setup channel. Back returns to search with what you typed still there, and if the server refuses — a name already taken, an invite it will not send — it says so in the window in its own words.
+
+## [0.10.295] — 2026-09-19
+
+- Hovering the grey email under a name in the sidebar no longer pops a tooltip repeating the same email. Sidebar sub-labels now show a tooltip only when the text is too wide for the rail and gets cut off, and the tooltip then shows the full value.
+- You can now type `@here` in a channel or a group message to notify everyone currently in it. It appears at the top of the @ list, is picked with the keyboard like a person, and shows as a mention in the message you send. It reaches people only — a bot still needs its name typed — and anyone who can post in the conversation can use it. Someone you tag by name in the same message is notified once, not twice. Typing it as part of another word, in an address like `nowhere@here`, or inside code is just text. One-to-one messages do not offer it: there is only one other person and they are already notified.
+- Switching between channels and direct messages no longer shifts the page as it loads, and no longer scrolls down a little at the end. The newest message is against the composer from the moment the conversation appears, and it stays there while avatars, images and reactions finish loading. A conversation you have already opened comes straight back with a short fade instead of a blank pane, and one you have not opened yet shows placeholder rows the same size as real messages. If you have scrolled up to read older messages, late-arriving content no longer drags you back down.
+- You can @mention someone from outside your company again. Tagging a person who is not already in the channel now adds them to that one channel and delivers the mention, instead of refusing the whole message. They get read and post in that channel and nothing else — no access to your company, your files, or any other channel. Needs the matching server change to be live first.
+- When two people in the @mention list share a name, the list now always shows something next to each one, so two identical entries for different people can no longer appear. It shows their company, or their email address. For someone the app knows only by name, it looks the email up and marks the row as outside your company in the meantime, and keeps that mark if the lookup comes back empty. Two bots with the same name show a short id, which is the only thing that tells them apart.
+- A test or development build of HQ running alongside your installed copy no longer shuts the installed copy down when it starts. Each build now only manages the startup entry and processes that belong to its own install.
+- When a reply in a thread fails to send, it now says why instead of just "Failed — tap to retry". If the message tagged someone the channel will not accept, it names the @mentions and tells you to remove the name, and it no longer offers a retry that could never work. A genuine connection problem still offers the retry.
+- The @mention list in a company channel no longer offers people that channel will always refuse. Tagging someone who is not in the company rejected the whole message, and when the same person had two entries the picker showed two identical names with no way to tell which one worked.
+
+## [0.10.294] — 2026-09-18
+
+- Picking one person in search now opens the direct message right away, including people outside your company. The prompt about messaging someone outside the company no longer stands in the way of writing to them directly.
+
+## [0.10.293] — 2026-09-18
+
+- On the "HQ is ready" screen at the end of setup, the Advanced section now starts open, so the Open in Claude Code and Codex buttons are in view straight away. Its note now recommends that path if you already use Claude Code or Codex. You can still close it.
+- Deleting an @mention from your draft before you send now really removes it. Previously a person you had picked from the mention list and then deleted was still mentioned when you hit send, which also invited them to the channel. Only the people still @mentioned in the message you send are mentioned and invited.
+- Bots no longer fill up your sidebar the moment someone creates them. Creating an agent announces it to everyone in the company, so a day of fleet work put dozens of never-used bot rows — each with a "1" badge from the announcement — at the top of every teammate's list. A bot now gets a row only once it has actually messaged you, you have messaged it, you pinned it, or it is one of your own bots. You can still find and start a conversation with any bot from the "+" and search, and sending the first message brings its row in.
+- The "… just joined" announcement no longer counts as an unread message, and no longer pops a desktop notification for every bot created. In the notifications list those announcements are hidden unless you run the company's bots, where they group into one line per company per ten minutes.
+- The welcome film now plays full screen. It covers the whole display — over the menu bar and the Dock, with no window edges or rounded corners — and your own desktop blurs and darkens underneath it as the film fades in, then comes back as it fades out. It used to open as a large window inside the usable screen area, so the menu bar and the Dock stayed on top of it. Both ways in are covered: the first run of a new install, and "Replay welcome intro". Escape and Skip intro still end it at any point, and the window goes back exactly where it was.
+
+- The folder in the welcome film is folder-shaped again. It was drawn half again wider than it was tall, so at full screen it read as a folder that had been pulled sideways. Its glow was a wide oval for the same reason, and the two dots on the line out to the file tree were slightly squashed. All three are drawn to their own proportions now, at any screen size and with reduced motion on.
+
+- Fixed a build break that stopped the macOS app from compiling at all. Removing the menu-bar panel renamed the internal helper that brings the setup card to the front, and the setup-skip guard added in the same release was still calling it by its old name.
+- Setting up Git no longer fails with "Text file busy". Right after HQ installs its own copy of Git, the check that makes sure Git works could run while the file was still being written and report a startup failure. HQ now waits briefly and retries before giving up.
+- The same "Text file busy" problem is now handled everywhere HQ starts a program it may have just written. Checking which version of the HQ command line is installed, and checking whether Node is working, could both report a failure when the only thing wrong was that the file was still being written. Both now wait briefly and retry instead of reporting a false problem.
+- Setup can no longer be skipped by accident. The welcome film teaches the Option+Shift+O shortcut, and pressing it during setup used to close the setup card and open the full HQ window with nothing installed underneath. Until setup finishes, that shortcut — and every other way of opening the HQ window — now brings the setup card back instead.
+- The small menu-bar panel has been removed for good. It stopped opening for signed-in people in the previous release, and the code behind it is now gone. Everything it used to show lives in the main HQ window. Setting up HQ for the first time and signing back in still happen in the small window as before, and the menu-bar icon, its unread count and its right-click menu are unchanged.
+- Unread dots in the small shared-file window now come from HQ's servers rather than a mark that only the menu-bar panel could update. They would otherwise have stopped changing once that panel was removed.
+- You can now archive conversations in the left sidebar to get them out of the
+  way. Right-click one and choose "Archive conversation", or pick several at
+  once: hold cmd (or ctrl) and click to add rows, hold shift and click to take a
+  whole run of them, then hit Archive in the bar at the top of the list. Press
+  Esc to drop the selection. Archiving only hides a conversation — nothing is
+  deleted, and anything unread stays unread.
+- The filter menu has a new "Show archived" switch. Turn it on and archived
+  conversations come back into the list with a small "Archived" label, so you
+  can read them or unarchive them, on their own or several at a time.
+
+### Release process
+
+- The release check that launches the built app as a signed-in test user now gives that user a finished HQ install: an HQ folder and the `hq` command-line tool. Since setup can no longer be skipped, a sign-in alone is treated as an unfinished setup and the app correctly shows setup, which failed the v0.10.292 release. If the check sees that again, it now says so directly.
+
+## [0.10.291] — 2026-09-18
+
+- Messages in a channel now have a Copy button next to Reply. Hover a message and click Copy to put its text on your clipboard; the button reads "Copied" for a moment to confirm (#922).
+- "Replay welcome intro" now actually plays the welcome film. Choosing it from
+  the menu-bar icon did nothing at all while you were signed in: the film plays
+  in HQ's compact window, and that window stays hidden behind the main HQ
+  workspace, so nothing came to the front. HQ now brings the film forward, plays
+  it, and puts you back in the window you were in when it ends.
+- "Replay welcome intro" is also in the HQ menu at the top of the screen, right
+  under "Recovery…", so you no longer have to find the menu-bar icon to watch it
+  again.
+
+### Documentation
+
+- Company switching has integration coverage for the selected company context
+  (#909).
+
+## [0.10.290] — 2026-09-18
+
+- HQ will no longer open as one of your automated agents. If the HQ credentials saved on this computer belong to a fleet agent rather than to a person, HQ now stops and asks you to sign in as yourself, instead of opening with the agent's name and address shown as your account. Signed in that way, HQ could not save your profile and showed none of your companies. Signing in normally is unaffected.
+- HQ search no longer dies right after launch when the search tool was built for a different Node.js than the one HQ is running. HQ now notices the mismatch, rebuilds the search tool against its own Node, and does that on its own the next time the app opens.
+
+## [0.10.289] — 2026-09-18
+
+- The main HQ window no longer shrinks to a tiny thumbnail when the display it was on goes to sleep or is unplugged. When macOS moves the window to another screen it can leave it far smaller than the window's minimum size, and clicking the menu-bar icon brought it back at that size every time. HQ now checks the window each time it opens, and when the screen it is on changes: it is pulled fully onto the screen you are using, and a window that came back too small is restored to its normal size, centred.
+- The first time you open HQ on a new computer, a short welcome film now plays before setup: four beats that say what HQ is, with a Skip button on screen the whole time. It plays once per computer — finishing it, skipping it or pressing Escape all drop you straight into the setup card, and it never comes back on an update, a relaunch or a resumed setup. If you want to watch it again, right-click the HQ icon in the menu bar and choose "Replay welcome intro". On a machine whose graphics cannot run it, HQ goes to the setup card instead of showing you a blank screen.
+
+## [0.10.288] — 2026-09-18
+
+- After an app update, HQ no longer re-opens the Welcome / sign-in card when HQ is already set up on this computer. A new app version can arrive before the `hq` command is upgraded; that mismatch is no longer treated as "not installed".
+
+## [0.10.287] — 2026-09-18
+
+- When a file changes in two places at once, HQ now names the file. The app used to be told only how many files clashed, so the Core panel could say "2 files need you" without ever listing them, and the Keep local / Keep cloud buttons had nothing to act on. Each clashing file now arrives with its path, from both a sync you start and the automatic background sync, so the list of files to sort out is the real one.
+- Text you type in a message box is now the same size and spacing as the messages above it. The message box, the thread reply box and the messages themselves all read one shared setting, so typing no longer looks smaller than what you just sent.
+- Notifications about channel messages now say who sent the message ("Jacob Posel sent a message"), with the channel underneath as context and the sender's initials on the avatar. They used to name the channel as the sender, hash suffix and all ("#project-fleet-bots-ga-sprint-a61db44b sent a message").
+- Channel names in notifications no longer show the random id at the end, so you see "#project-fleet-bots-ga-sprint" instead of "#project-fleet-bots-ga-sprint-a61db44b".
+- When someone adds a batch of files, the notifications list now shows one line per person instead of one per file — "cnueno@gmail.com added 14 files", with the shared folder underneath and the time of the most recent one. Clicking it opens what the newest file would have opened, and the unread count counts the batch once. A single file still reads "added a file".
+- In the main HQ window, the Core panel's buttons for a file that changed in two places now work. Keep local, Keep cloud and Open in editor did nothing there — the resolve step only existed in the menu-bar panel. "Resolve conflicts" in the Core panel now opens Settings › Sync.
+
+## [0.10.286] — 2026-09-17
+
+- In a thread, the "is thinking" line for a bot now lines up with the messages above it and keeps a small gap from the reply box, instead of hugging the left edge and touching it.
+- The message column in the main window now keeps a wider minimum width on a laptop screen and stays centred with growing side margins on a wide screen, instead of always giving up a fixed share of the width to margins. Nothing changes when a thread or profile pane is open.
+- When HQ's servers are busy and ask the app to slow down, the app now waits the time it was asked to wait before trying again, instead of retrying straight away. Its background checks (bots, tasks, sync status, the channel list and the rest) are also spaced out slightly at random, so everyone's app no longer asks at exactly the same moment, and a check that was asked to slow down waits longer before the next one. In practice this means fewer "could not load" moments when a lot of people are using HQ at once.
+- The Core panel in the main window (the "Core" button in the title bar) now tells you how sync is doing: whether everything is synced, a sync is running, or sync is paused, plus when the last sync finished and a live line while files are moving. The Core dot in the title bar turns amber when something needs you and reads as busy while a sync runs.
+- The Core panel now also shows the sync problems that used to appear only in the menu-bar popover: files that changed in two places, a sync that started but needs a hand to finish, a companies list HQ could not read, and "cloud unreachable, showing local folders". Each one comes with the same Copy prompt (and, where it applies, Open in Claude Code) buttons you had before.
+- When your HQ session expires, the main HQ window now says so. A notice appears at the top of the window with a Sign in button that takes you straight to signing in again. Until now sync just quietly paused, and only the menu-bar popover mentioned it.
+- If a click on a message or shared-file notification does not go through, the main HQ window now shows a short notice with a Retry button that runs the action again. That recovery step used to exist only in the menu-bar popover.
+- Companies on the white-label plan now see their own logo in the main HQ window's header, with the "powered by HQ" mark beneath it, the same as in the menu-bar popover. Everyone else sees exactly the header they see today.
+- The small menu-bar panel no longer opens once you are signed in. Clicking the menu-bar icon, clicking the Dock icon, pressing Opt+Shift+O or launching HQ again all take you to the main HQ window, and everything the panel used to show now lives there. The menu-bar icon still changes as sync runs, still shows your unread count, and its right-click menu still works exactly as before. Setting up HQ for the first time and signing back in still happen in the small panel.
+- Opening HQ from a notification, from the update banner, or from the Settings shortcut now takes you to the main HQ window instead of the small menu-bar panel. Finishing setup drops you straight into the main window too, and the notification-history link opens it on your notifications. The Opt+Shift+H shortcut that used to pop open the small panel is gone; Opt+Shift+O still opens and closes the main window.
+- The main HQ window opens larger by default, about 1400 by 920 points instead of 1180 by 760, so conversations and the sidebar have more room on a laptop screen without resizing on every launch. The smallest allowed size is unchanged.
+- Clicking a direct-message notification now opens that conversation in the main HQ window. It used to try to open a separate small "Messages" window; that window stopped being reachable a while ago and has now been removed, so there is one less window to keep track of and nothing else changes.
+- The small floating HQ widget is gone. It sat on your desktop showing recent messages, conversations and activity. Everything it showed is in the HQ window's notification list, and a new message now arrives as the ordinary HQ notification banner again instead of being folded into the widget. The "Desktop widget" switch and the "Notifications widget" section of Settings are gone with it, as is the "Hide notifications" item in the menu-bar icon's right-click menu. If you had the widget turned off, nothing changes for you at all.
+
+## [0.10.285] — 2026-09-17
+
+- A Core update no longer stops because of one file it cannot back up, usually an iCloud file that has not been downloaded or a shortcut in your HQ folder that points outside it. HQ says which file it skipped, leaves it where it is, and finishes the rest of the update. That file is not backed up, so the snapshot cannot completely restore it. The update still stops if HQ cannot make a backup at all.
+- Renaming or copying a company skill folder no longer stops that company's sync. Before, the renamed skill kept its old identity, the cloud refused it, and every later sync of the company stopped before uploading or downloading anything, while the app still showed the sync as complete. Now HQ gives the skill the right identity before uploading, and if anything about one skill still fails, only that skill is skipped and named; the rest of the company syncs.
+
+## [0.10.283] — 2026-09-17
+
+- The Back button in Settings now closes Settings and returns you to where you were before you opened it. It used to step backwards through each Settings tab you had visited first, so leaving Settings could take several clicks.
 - You will not see a difference in daily use, but when a Core update fails, HQ now records whether it could not read a file for the safety backup, found a shortcut in the HQ folder that points outside it, or needs a newer version of Git for the update download. This does not fix the update by itself. It helps us see which cause happens most often, so we can fix that cause first instead of guessing.
+- Conversations are easier to read: messages sit in a centered column with real side margins (they tighten when a thread or profile pane is open), the text is a little larger with more space between lines, and type renders lighter across the whole window. In the left sidebar the names are one size smaller with slightly taller rows, and unread counts are quiet grey numbers instead of white pills. Hovering a message no longer covers its timestamp with the reaction bar; the time now sits next to the author's name.
+- The little widget's unread dots now come from the same place as the main notification list: a message shows as unread until you've actually read it, on any of your machines. Before this, the widget kept its own private "last looked" marker, so it could show old messages as new (or new ones as already read) with no way to fix it.
 
 ## [0.10.281] — 2026-09-17
 
 - HQ no longer quietly stops part of what it is doing when the terminal or tool that started it goes away. If you launched HQ from a terminal or a script that was capturing its output and then closed that program, the next background task that tried to print a status line could crash on its own, so whatever you had asked for never finished. Printing a status line can no longer do that. The log at `~/.hq/logs/hq-sync.log` still records these details.
 
 ## [0.10.280] — 2026-09-17
+- The little widget's unread dots now come from the same place as the main notification list: a message shows as unread until you've actually read it, on any of your machines. Before this, the widget kept its own private "last looked" marker, so it could show old messages as new (or new ones as already read) with no way to fix it.
 
 - You can now reach every notification, not just the most recent 50. A "Load older notifications" button appears at the end of the list whenever there are more, and the ones already on screen stay put when you load more. Before this, if you had a few hundred notifications, most of them were simply unreachable in the app.
 - While HQ is syncing, a small counter next to the bell shows how far along it is — "3 of 28" — so you can see a sync happening without opening anything. It disappears when the sync finishes. If sync needs your attention, the HQ Core button still shows that, as before.

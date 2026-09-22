@@ -3,7 +3,7 @@
 The desktop workspace is the single HQ UI. The decorated Tauri window
 (`desktop-alt`, `@hq/ui` DesktopApp) is what every user gets after sign-in.
 The compact menubar popover remains a status/quick-actions surface (tray
-right-click / Opt+Shift+H), not a second chat app.
+right-click / Opt+Shift+O), not a second chat app.
 
 ## Access Model
 

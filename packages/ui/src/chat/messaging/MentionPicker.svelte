@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    isHereMention,
     mentionRowPill,
     mentionRowSubtitle,
     mentionTargetLabel,
@@ -31,7 +32,8 @@
     <div class="mention-empty">No one matches</div>
   {:else}
     {#each hits as hit, index (hit.participantUid)}
-      {@const pill = mentionRowPill(hit)}
+      {@const here = isHereMention(hit)}
+      {@const pill = here ? null : mentionRowPill(hit)}
       {@const generated =
         hit.participantType === "agent"
           ? agentAvatarFor(hit.participantUid)
@@ -40,6 +42,7 @@
         type="button"
         class="mention-row"
         class:selected={index === highlight}
+        data-testid={here ? "mention-row-here" : "mention-row"}
         role="option"
         aria-selected={index === highlight}
         aria-label={mentionTargetLabel(hit)}
@@ -48,8 +51,9 @@
         <span
           class="mention-ava"
           class:agent={hit.participantType === "agent"}
+          class:here
           aria-hidden="true"
-          >{#if generated}<img
+          >{#if here}@{:else if generated}<img
               class="mention-ava-img"
               src={generated}
               alt=""
@@ -58,7 +62,7 @@
         >
         <span class="mention-copy">
           <span class="mention-name"
-            >{hit.displayName}{#if pill}<span
+            >{here ? "@here" : hit.displayName}{#if pill}<span
                 class="mention-tag"
                 data-testid="mention-disambiguator">{pill}</span
               >{/if}</span
@@ -140,6 +144,12 @@
   .mention-ava.agent {
     background: #312e81;
     overflow: hidden;
+  }
+
+  /* @here is a broadcast, not a person — no initial, no generated avatar. */
+  .mention-ava.here {
+    background: #3f3f46;
+    color: #e4e4e7;
   }
 
   .mention-ava-img {

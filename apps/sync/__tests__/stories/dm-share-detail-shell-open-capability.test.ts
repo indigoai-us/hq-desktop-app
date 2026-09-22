@@ -9,11 +9,10 @@ import { renderMessageBodyMarkdown } from '../../src/lib/messageMarkdown';
 //   UnhandledRejection: Non-Error promise rejection captured with value:
 //   Command plugin:shell|open not allowed by ACL
 //
-// The dm-detail window (DM notification -> "Open details") and the share-detail
-// window both mount the shared <Conversation/> pane through <DmThreadPane/>, and
-// Conversation renders DM bodies through renderMessageBodyMarkdown(), whose
-// markdown link / autolink / mailto branches emit
-// `<a … target="_blank" rel="noopener noreferrer">`.
+// The share-detail window mounts the shared <Conversation/> pane through
+// <DmThreadPane/>, and Conversation renders DM bodies through
+// renderMessageBodyMarkdown(), whose markdown link / autolink / mailto branches
+// emit `<a … target="_blank" rel="noopener noreferrer">`.
 //
 // tauri-plugin-shell (2.3.5, Cargo.lock-pinned) injects a document-level click
 // listener that intercepts any such anchor, preventDefaults the click and calls
@@ -24,8 +23,10 @@ import { renderMessageBodyMarkdown } from '../../src/lib/messageMarkdown';
 // desktop-alt windows render the identical UI and already had the grant.
 //
 // The Sentry grouping signature carries no window label (metadata.value is the
-// bare ACL message), so a click in EITHER window groups into the same issue —
-// both windows must be granted for the cluster to close.
+// bare ACL message), so a click in ANY of these windows groups into the same
+// issue — every one of them must be granted for the cluster to close. The
+// dm-detail window was one of the two named in the issue; it has since been
+// deleted as unreachable, so only its share-detail twin remains here.
 //
 // These are source-contract checks (the unit suite never boots a real Tauri
 // window), in the house style of activity-log-drag-capability.test.ts. Pins on
@@ -68,7 +69,6 @@ const generated = JSON.parse(
 ) as Record<string, Capability & { local?: boolean }>;
 
 const mainTs = readFileSync(root('src/main.ts'), 'utf8');
-const dmDetail = readFileSync(root('src/components/DmDetail.svelte'), 'utf8');
 const shareDetail = readFileSync(root('src/components/ShareDetail.svelte'), 'utf8');
 const dmThreadPane = readFileSync(root('src/components/DmThreadPane.svelte'), 'utf8');
 const conversation = readFileSync(root('src/components/messaging/Conversation.svelte'), 'utf8');
@@ -84,7 +84,6 @@ const shareNotifyRs = readFileSync(
 const WINDOWS_GRANTED_SHELL_OPEN = [
   'default',
   'desktop-alt-capability',
-  'dm-detail',
   'drift-detail',
   'meeting-permissions',
   'meetings-window',
@@ -92,15 +91,8 @@ const WINDOWS_GRANTED_SHELL_OPEN = [
   'share-detail',
 ];
 
-describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', () => {
-  it('grants shell:allow-open to the dm-detail window (DM markdown links are inert + reject without it)', () => {
-    const cap = capabilities.get('dm-detail');
-    expect(cap).toBeDefined();
-    expect(cap!.windows).toContain('dm-detail');
-    expect(cap!.permissions.map(permissionId)).toContain('shell:allow-open');
-  });
-
-  it('grants shell:allow-open to the share-detail window (same Conversation pane, same grouping signature)', () => {
+describe('HQ-DESKTOP-4F: share-detail shell:allow-open capability', () => {
+  it('grants shell:allow-open to the share-detail window (DM markdown links are inert + reject without it)', () => {
     const cap = capabilities.get('share-detail');
     expect(cap).toBeDefined();
     expect(cap!.windows).toContain('share-detail');
@@ -137,14 +129,11 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
     }
   });
 
-  it('routes the dm-detail and share-detail window labels to the components that render DM markdown', () => {
-    expect(mainTs).toMatch(/windowLabel === 'dm-detail'[\s\S]*?Component = DmDetail/);
+  it('routes the share-detail window label to the component that renders DM markdown', () => {
     expect(mainTs).toMatch(/windowLabel === 'share-detail'[\s\S]*?Component = ShareDetail/);
   });
 
-  it('mounts the shared Conversation pane in both windows (DmDetail/ShareDetail -> DmThreadPane -> Conversation)', () => {
-    expect(dmDetail).toMatch(/import\s+DmThreadPane[\s\S]*?from\s+'\.\/DmThreadPane\.svelte'/);
-    expect(dmDetail).toMatch(/<DmThreadPane\b/);
+  it('mounts the shared Conversation pane (ShareDetail -> DmThreadPane -> Conversation)', () => {
     expect(shareDetail).toMatch(/import\s+DmThreadPane[\s\S]*?from\s+'\.\/DmThreadPane\.svelte'/);
     expect(shareDetail).toMatch(/<DmThreadPane\b/);
     expect(dmThreadPane).toMatch(/import\s+Conversation[\s\S]*?from\s+'\.\/messaging\/Conversation\.svelte'/);
@@ -212,8 +201,9 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
     expect(threadPanelMounts).toEqual([]);
   });
 
-  it('builds both windows under the labels the capabilities grant', () => {
-    expect(dmNotifyRs).toMatch(/DM_DETAIL_LABEL:\s*&str\s*=\s*"dm-detail"/);
+  it('builds the window under the label the capability grants', () => {
     expect(shareNotifyRs).toMatch(/SHARE_DETAIL_LABEL:\s*&str\s*=\s*"share-detail"/);
+    // The dm-detail twin is gone; nothing may rebuild it without a capability.
+    expect(dmNotifyRs).not.toContain('"dm-detail"');
   });
 });

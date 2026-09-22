@@ -2,12 +2,47 @@
  * Structured channel mentions — same contract as hq-mobile / hq-pro.
  *
  * A mention is an entity (person prs_* or agent agt_*), not a work-mesh
- * thread. POST /v1/notify/channels/{id}/messages { mentions } adds a
- * non-member when the caller is the channel owner. Do not create a parallel
- * work-mesh thread for @-mentions.
+ * thread. POST /v1/notify/channels/{id}/messages { mentions } adds anyone who
+ * is not already on the channel roster to THAT ONE CHANNEL — including a
+ * person from outside the channel's company, who joins as a channel guest with
+ * read + post there and nothing else. Do not create a parallel work-mesh
+ * thread for @-mentions.
  */
 
-export type MentionParticipantType = "human" | "agent";
+export type MentionParticipantType = "human" | "agent" | "broadcast";
+
+/**
+ * `@here` — one token that notifies everybody currently in this conversation.
+ *
+ * It travels as a single entry in the same `mentions[]` array as people:
+ * `{ participantUid: "here", participantType: "broadcast" }`. The SERVER
+ * expands it against the channel's live member set (hq-pro-core
+ * `resolveChannelMentions` -> `expandHereMention`), so the app never sends a
+ * list of uids for it and the roster can never go stale between compose and
+ * send. It is exempt from the 25-mention cap, reaches people only (a bot still
+ * needs its name typed), and is not offered in a 1:1 DM.
+ */
+export const HERE_MENTION_UID = "here";
+export const HERE_MENTION_NAME = "here";
+
+/** The picker row / draft target for `@here`. */
+export function hereMentionTarget(): MentionTarget {
+  return {
+    participantUid: HERE_MENTION_UID,
+    participantType: "broadcast",
+    displayName: HERE_MENTION_NAME,
+  };
+}
+
+export function isHereMention(target: {
+  participantUid: string;
+  participantType?: string | null;
+}): boolean {
+  return (
+    target.participantType === "broadcast" &&
+    target.participantUid.trim().toLowerCase() === HERE_MENTION_UID
+  );
+}
 
 export interface MentionTarget {
   participantUid: string;
@@ -36,12 +71,37 @@ export function mentionTypeForUid(uid: string): MentionParticipantType {
 export function mentionPayloadTargets(
   mentions: readonly MentionTarget[],
 ): MentionTarget[] {
-  return mentions.map((mention) => ({
-    participantUid: mention.participantUid,
-    participantType: mention.participantType,
-    displayName: mention.displayName,
-    ...(mention.email ? { email: mention.email } : {}),
-  }));
+  return mentions.map((mention) =>
+    // `@here` is a token, not an identity: it carries no display name and no
+    // email, and the server reads only the two fields below.
+    isHereMention(mention)
+      ? {
+          participantUid: HERE_MENTION_UID,
+          participantType: "broadcast" as const,
+          displayName: "",
+        }
+      : {
+          participantUid: mention.participantUid,
+          participantType: mention.participantType,
+          displayName: mention.displayName,
+          ...(mention.email ? { email: mention.email } : {}),
+        },
+  );
+}
+
+/**
+ * Prepend the `@here` row to the picker's candidates when this conversation
+ * supports it — every channel and group DM, never a 1:1 DM (there is one other
+ * person and they are already notified). It sorts first so `@h` + Enter is the
+ * fast path, and it is matched by the ordinary filter on its "here" name.
+ */
+export function withHereMention(
+  candidates: readonly MentionTarget[],
+  allowHere: boolean,
+): MentionTarget[] {
+  if (!allowHere) return [...candidates];
+  const rest = candidates.filter((row) => !isHereMention(row));
+  return [hereMentionTarget(), ...rest];
 }
 
 export function mentionTargetsFromContacts(
@@ -118,6 +178,7 @@ export function agentFallbackLabel(uid: string): string {
  */
 export function collapseDuplicateMentionTargets(
   targets: readonly MentionTarget[],
+  options: MentionDisambiguationOptions = {},
 ): MentionTarget[] {
   const byUid = new Map<string, MentionTarget>();
   for (const target of targets) {
@@ -131,7 +192,7 @@ export function collapseDuplicateMentionTargets(
     const prev = byUid.get(uid);
     byUid.set(uid, prev ? mergeSameIdentity(prev, target) : target);
   }
-  return disambiguateMentionTargets([...byUid.values()]);
+  return disambiguateMentionTargets([...byUid.values()], options);
 }
 
 /** Merge two rows already known to be the SAME participantUid. */
@@ -164,36 +225,120 @@ function displayNameKey(target: MentionTarget): string {
   return target.displayName.trim().toLowerCase();
 }
 
+/** Options that control how a display-name collision is labelled. */
+export interface MentionDisambiguationOptions {
+  /**
+   * What to show on a colliding HUMAN row that has neither a company nor an
+   * email yet — "outside Indigo". The shell supplies it from the active
+   * company, because this module has no view of the tenant.
+   */
+  outsideLabel?: string | null;
+}
+
+/** "outside Indigo" — the placeholder label for an unresolved outside person. */
+export function outsideCompanyLabel(
+  companyName: string | null | undefined,
+): string | null {
+  const name = companyName?.trim();
+  return name ? `outside ${name}` : null;
+}
+
 /**
- * The label that tells two same-named targets apart, and the pill the picker
- * renders. COMPANY NAME first, then an email for humans.
+ * The label that tells two same-named targets apart. COMPANY NAME first, then
+ * an email.
  *
- * A raw uid is never a label. The picker used to fall back to a `…906VYS`
- * suffix of the agent uid, which read as a bug ("why does this agent have that
- * weird id?") and told the user nothing. When nothing human resolves we return
- * null and the row simply renders without a pill; the uid stays a hidden match
- * keyword (see {@link filterMentionCandidates}) so typing part of it still
- * finds the row.
+ * A PERSON NEVER SEES A UID FRAGMENT. A human whose row came from the app-wide
+ * display-name map carries only a uid and a name; the shell resolves that
+ * person's email from the connections roster and the row relabels itself once
+ * it arrives. Until then — and if the lookup fails — the row reads
+ * `outsideLabel` ("outside Indigo"), which is true of every such row and tells
+ * the user which of the two entries is the teammate they meant.
+ *
+ * The uid tag survives for AGENTS only. An agent has no email and often no
+ * company, so on a collision there is genuinely nothing else to print, and two
+ * identical unpickable agent rows is how the wrong tenant's agent gets
+ * mentioned.
  */
-export function mentionDisambiguatorFor(target: MentionTarget): string | null {
+export function mentionDisambiguatorFor(
+  target: MentionTarget,
+  options: MentionDisambiguationOptions = {},
+): string | null {
   const companyName = target.companyName?.trim();
   if (companyName) return companyName;
   const email = target.email?.trim();
   if (email) return email;
-  return null;
+  if (target.participantType === "agent") {
+    const uid = target.participantUid.trim();
+    return uid ? mentionUidTag(uid) : null;
+  }
+  return options.outsideLabel?.trim() || null;
 }
 
 /**
- * The pill beside the display name: the owning COMPANY, for agents and for
- * humans when known. Never an id, never an email (the email is already the
- * human row's subtitle). Unresolved company → no pill.
+ * The uids whose email the shell still needs to fetch: colliding HUMAN rows
+ * with no company and no email. Exported so the resolve-then-relabel flow is
+ * testable without a component, and so the shell asks the server only about
+ * rows a label would actually change.
+ */
+export function mentionUidsNeedingEmail(
+  targets: readonly MentionTarget[],
+): string[] {
+  const counts = new Map<string, number>();
+  for (const target of targets) {
+    const key = displayNameKey(target);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const uids: string[] = [];
+  for (const target of targets) {
+    if (target.participantType !== "human") continue;
+    if (target.companyName?.trim() || target.email?.trim()) continue;
+    if ((counts.get(displayNameKey(target)) ?? 0) < 2) continue;
+    const uid = target.participantUid.trim();
+    if (uid) uids.push(uid);
+  }
+  return uids;
+}
+
+/** Fill in emails resolved from the connections roster, keyed by uid. */
+export function applyResolvedMentionEmails(
+  targets: readonly MentionTarget[],
+  emailByUid: Readonly<Record<string, string>>,
+): MentionTarget[] {
+  return targets.map((target) => {
+    if (target.email?.trim()) return target;
+    const resolved = emailByUid[target.participantUid.trim()]?.trim();
+    return resolved ? { ...target, email: resolved } : target;
+  });
+}
+
+/** A short, stable tail of a uid — a disambiguator of last resort, never a name. */
+export function mentionUidTag(uid: string): string {
+  const bare = uid
+    .trim()
+    .replace(/^agent:/i, "")
+    .replace(/^(agt_|prs_)/i, "");
+  return `id …${bare.slice(-6)}`;
+}
+
+/**
+ * The pill beside the display name: the owning COMPANY when it is known, and
+ * otherwise whatever label disambiguation settled on for a colliding row —
+ * "outside Indigo" for an unresolved person, a uid tag for a same-named agent.
+ * A row whose name does not collide carries no disambiguator and so shows no
+ * pill. An email is never duplicated into the pill; it is already the human
+ * row's subtitle.
  */
 export function mentionRowPill(target: MentionTarget): string | null {
-  return target.companyName?.trim() || null;
+  const companyName = target.companyName?.trim();
+  if (companyName) return companyName;
+  const label = target.disambiguator?.trim();
+  if (!label) return null;
+  return label === target.email?.trim() ? null : label;
 }
 
 /** The row's subtitle: what kind of participant it is, or the human's email. */
 export function mentionRowSubtitle(target: MentionTarget): string {
+  if (isHereMention(target)) return "Notify everyone in this conversation";
   if (target.participantType === "agent") return "Bot";
   return target.email?.trim() || "Teammate";
 }
@@ -224,6 +369,7 @@ export function stampMentionCompany(
  */
 export function disambiguateMentionTargets(
   targets: readonly MentionTarget[],
+  options: MentionDisambiguationOptions = {},
 ): MentionTarget[] {
   const sorted = [...targets].sort(
     (a, b) =>
@@ -245,7 +391,7 @@ export function disambiguateMentionTargets(
       const { disambiguator: _drop, ...rest } = target;
       return rest;
     }
-    const label = mentionDisambiguatorFor(target);
+    const label = mentionDisambiguatorFor(target, options);
     if (!label) {
       if (target.disambiguator === undefined) return target;
       const { disambiguator: _stale, ...rest } = target;
@@ -346,6 +492,46 @@ export function mergeMentionTargets(
   return [...byId.values()];
 }
 
+/**
+ * The stretches of a plain-text body that are CODE: fenced blocks (```…```)
+ * and inline spans (`…`). An `@name` inside one of them is literal text, so it
+ * is never chipped in the composer and never rides along on send.
+ */
+export function codeRegionsInBody(
+  body: string,
+): Array<{ start: number; end: number }> {
+  const regions: Array<{ start: number; end: number }> = [];
+  const fence = /```[\s\S]*?(?:```|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = fence.exec(body)) !== null) {
+    regions.push({ start: match.index, end: match.index + match[0].length });
+  }
+  const inFence = (index: number) =>
+    regions.some((r) => index >= r.start && index < r.end);
+  const inline = /`[^`\n]*`/g;
+  while ((match = inline.exec(body)) !== null) {
+    if (inFence(match.index)) continue;
+    regions.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return regions;
+}
+
+/**
+ * A mention token only counts on a WORD BOUNDARY.
+ *
+ * Without this, "@here" matched inside "@heretic" and inside "nowhere@here",
+ * chipping text the user never meant as a mention (and, for `@here`, sending a
+ * broadcast they never asked for). The rule: nothing word-like or a second "@"
+ * immediately before the token, nothing word-like immediately after it.
+ */
+function isMentionBoundary(body: string, start: number, end: number): boolean {
+  const before = start > 0 ? body[start - 1]! : "";
+  const after = end < body.length ? body[end]! : "";
+  if (before && /[\w@]/.test(before)) return false;
+  if (after && /\w/.test(after)) return false;
+  return true;
+}
+
 export function mentionSpansForBody(
   body: string,
   mentions: readonly MentionTarget[],
@@ -355,10 +541,19 @@ export function mentionSpansForBody(
   ]
     .filter((text) => text.length > 1)
     .sort((a, b) => b.length - a.length);
+  const code = codeRegionsInBody(body);
+  const inCode = (index: number) =>
+    code.some((r) => index >= r.start && index < r.end);
   const spans: Array<{ start: number; end: number }> = [];
   let index = 0;
   while (index < body.length) {
-    const match = mentionTexts.find((text) => body.startsWith(text, index));
+    const match = inCode(index)
+      ? undefined
+      : mentionTexts.find(
+          (text) =>
+            body.startsWith(text, index) &&
+            isMentionBoundary(body, index, index + text.length),
+        );
     if (!match) {
       index += 1;
       continue;
@@ -367,6 +562,24 @@ export function mentionSpansForBody(
     index += match.length;
   }
   return spans;
+}
+
+/**
+ * Keep only the mentions whose `@Name` text is still present in the body.
+ * The composer remembers every target the user picked, but a pick the user
+ * later deleted from the draft must not ride along on send — the server
+ * invites every mentioned person to the channel, so a stale pick would
+ * invite someone the sender deliberately removed.
+ */
+export function mentionsPresentInBody(
+  body: string,
+  mentions: readonly MentionTarget[],
+): MentionTarget[] {
+  const spans = mentionSpansForBody(body, mentions);
+  const present = new Set(spans.map((span) => body.slice(span.start, span.end)));
+  return mentions.filter((mention) =>
+    present.has(mentionTextForTarget(mention)),
+  );
 }
 
 function escapeHtml(value: string): string {
@@ -427,7 +640,11 @@ function decorateMentionText(
   let cursor = 0;
   while (cursor < text.length) {
     if (text[cursor] === "@") {
-      const hit = tokens.find(({ token }) => text.startsWith(token, cursor));
+      const hit = tokens.find(
+        ({ token }) =>
+          text.startsWith(token, cursor) &&
+          isMentionBoundary(text, cursor, cursor + token.length),
+      );
       if (hit) {
         const attrs =
           hit.target.participantType === "human" && hit.target.participantUid
@@ -470,18 +687,27 @@ export function applyMentionMarkup(
 
   let out = "";
   let cursor = 0;
+  // Markdown has already turned fences and inline spans into <pre>/<code>.
+  // Text inside them is code the user typed literally, so it is copied through
+  // untouched — "`@here`" renders as code, never as a mention chip.
+  let codeDepth = 0;
   while (cursor < html.length) {
     const tagStart = html.indexOf("<", cursor);
     const textEnd = tagStart === -1 ? html.length : tagStart;
-    out += decorateMentionText(html.slice(cursor, textEnd), tokens);
+    const run = html.slice(cursor, textEnd);
+    out += codeDepth > 0 ? run : decorateMentionText(run, tokens);
     if (tagStart === -1) break;
     const tagEnd = html.indexOf(">", tagStart);
     if (tagEnd === -1) {
       out += html.slice(tagStart);
       break;
     }
-    out += html.slice(tagStart, tagEnd + 1);
+    const tag = html.slice(tagStart, tagEnd + 1);
+    const name = /^<\s*(\/?)\s*(code|pre)\b/i.exec(tag);
+    if (name) codeDepth = name[1] ? Math.max(0, codeDepth - 1) : codeDepth + 1;
+    out += tag;
     cursor = tagEnd + 1;
   }
   return out;
 }
+

@@ -13,8 +13,8 @@ describe('desktop-alt V4 safety flows (US-012)', () => {
   const desktopApp = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
   const syncModel = readRepoFile('../../packages/ui/src/common/sync-model.ts');
   const homePage = readRepoFile('../../packages/ui/src/home/HomePage.svelte');
-  const popoverApp = readRepoFile('src/App.svelte');
   const driftDetail = readRepoFile('src/components/DriftDetail.svelte');
+  const syncAdapter = readRepoFile('../../packages/platform/src/tauri/sync-adapter.ts');
 
   it('conflicts surface as a NeedsYou card with keep-local / keep-remote / compare actions', () => {
     // Card model (home-model) carries the action ids + labels from the spec.
@@ -28,11 +28,24 @@ describe('desktop-alt V4 safety flows (US-012)', () => {
   });
 
   it('conflict actions are wired to resolve_conflict (keep-local/keep-remote) + open_in_editor', () => {
-    // The resolve handler stayed in the menubar app when the desktop window
-    // adopted the @hq/ui shell; the card model above is what the shell renders.
-    expect(popoverApp).toContain('conflictStore.resolveConflict(path, strategy)');
-    expect(popoverApp).toMatch(/['"]keep-local['"]/);
-    expect(popoverApp).toMatch(/['"]keep-remote['"]/);
+    // The desktop shell owns the resolve path now. It used to rely on the
+    // menubar popover, which left the Core popover's per-file Resolve controls
+    // inert in the desktop window. PL-07 then deleted that popover, which held
+    // the last renderer copy of the resolve handler. Asserted on DesktopApp and
+    // the platform adapter, never the popover. The behavioural proof is
+    // packages/ui/src/shell/DesktopApp.conflict-resolve.test.ts, which mounts
+    // the shell and clicks the row.
+    expect(desktopApp).toContain('adapter.sync.resolveConflict(path, strategy)');
+    expect(desktopApp).toContain('onresolveconflict=');
+    expect(desktopApp).toContain('onopenconflict=');
+    expect(desktopApp).toMatch(/['"]keep-local['"]/);
+    expect(desktopApp).toMatch(/['"]keep-remote['"]/);
+    expect(desktopApp).toContain('adapter.shell.openInEditor(path)');
+    expect(syncAdapter).toContain("call('resolve_conflict', { path, strategy })");
+    expect(syncAdapter).toContain("openInEditor: (path) => call('open_in_editor', { path })");
+    expect(homePage).toMatch(
+      /await onresolveconflict\?\.\(path, actionId as "keep-local" \| "keep-remote"\)/,
+    );
   });
 
   it('core drift surfaces as a NeedsYou card restored via restore_from_upstream', () => {

@@ -20,7 +20,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type LocalBotRow, type PlatformAdapter, type RemoteBotRow } from "@hq/platform";
+import {
+  ok,
+  setJitterRandomForTests,
+  type LocalBotRow,
+  type PlatformAdapter,
+  type RemoteBotRow,
+} from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -145,12 +151,16 @@ let component: ReturnType<typeof mount> | null = null;
 beforeEach(() => {
   window.localStorage.clear();
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  // Background polls are jittered; pin the draw to the nominal interval so
+  // these tests can advance the fake clock by exactly one period.
+  setJitterRandomForTests(() => 0.5);
 });
 
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  setJitterRandomForTests();
   vi.restoreAllMocks();
 });
 
@@ -169,6 +179,8 @@ function mountApp(
   platform: PlatformAdapter,
   initialRow?: ConversationRow,
   sidebarApi: ChatSidebarApi = createFixtureChatSidebarApi(),
+  /** Agents with a real conversation — see the agent-stub rail rule. */
+  engagedAgentUids: readonly string[] = [],
 ): void {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -180,6 +192,7 @@ function mountApp(
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
       coreFixtures: false,
+      engagedAgentUids,
       ...(initialRow ? { initialRow } : {}),
     },
   });
@@ -653,7 +666,11 @@ describe("when HQ Cloud cannot list your bots", () => {
         ],
       }),
     } as ChatSidebarApi;
-    mountApp(wipedBotAdapter(async () => CLOUD_UNSUPPORTED), undefined, sidebarApi);
+    // `izzy` is someone else's cloud bot: it is on the rail because it has
+    // talked to this user, not because it exists (see the agent-stub rule).
+    mountApp(wipedBotAdapter(async () => CLOUD_UNSUPPORTED), undefined, sidebarApi, [
+      FLEET_UID,
+    ]);
 
     const chipFor = (uid: string) =>
       q(`[data-conversation-id="dm:${uid}"] [data-testid="bot-kind-chip"]`);

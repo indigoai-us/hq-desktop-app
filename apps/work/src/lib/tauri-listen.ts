@@ -7,9 +7,11 @@ type TauriListenFn = <T>(
   handler: TauriEventHandler<T>,
 ) => Promise<UnlistenFn>;
 
+type TauriEmitFn = (event: string, payload?: unknown) => Promise<void>;
+
 type TauriWindow = Window & {
   __TAURI__?: {
-    event?: { listen?: TauriListenFn };
+    event?: { listen?: TauriListenFn; emit?: TauriEmitFn };
   };
 };
 
@@ -45,4 +47,28 @@ export async function tauriListen<T>(
     throw unavailableTauriListen(event, moduleError);
   }
   return tauri.listen(event, handler);
+}
+
+/**
+ * Publish an app-level event. Same module-first / global-fallback resolution as
+ * `tauriListen`, used by the shell's notification-retry seam (PL-03) to ask the
+ * controller window to re-run a failed native notification action.
+ */
+export async function tauriEmit(
+  event: string,
+  payload?: unknown,
+): Promise<void> {
+  let tauri: typeof import("@tauri-apps/api/event");
+  try {
+    tauri = await (tauriModulePromise ??= import("@tauri-apps/api/event"));
+  } catch (moduleError) {
+    const globalTauri =
+      typeof window === "undefined"
+        ? undefined
+        : (window as TauriWindow).__TAURI__;
+    const emit = globalTauri?.event?.emit;
+    if (emit) return emit(event, payload);
+    throw unavailableTauriListen(event, moduleError);
+  }
+  return tauri.emit(event, payload);
 }

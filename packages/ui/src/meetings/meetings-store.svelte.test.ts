@@ -69,6 +69,8 @@ function wireApi(
       connectCalendar: () => call("connectCalendar") as never,
       disconnectCalendar: (accountId: string) =>
         call("disconnectCalendar", accountId) as never,
+      permissionsState: () => call("permissionsState") as never,
+      openPermissionsSetup: () => call("openPermissionsSetup") as never,
     },
     feedback: {
       submitBugReport: (title: string, body: string) =>
@@ -520,6 +522,8 @@ describe("meetings store recording-company attribution", () => {
         listCalendars: (account: string) => call("listCalendars", account) as never,
         connectCalendar: () => call("connectCalendar") as never,
         disconnectCalendar: (accountId: string) => call("disconnectCalendar", accountId) as never,
+        permissionsState: () => call("permissionsState") as never,
+        openPermissionsSetup: () => call("openPermissionsSetup") as never,
       },
       feedback: { submitBugReport: (title, body) => call("submitBugReport", { title, body }) as never },
       settings: {

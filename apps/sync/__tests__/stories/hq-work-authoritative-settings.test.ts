@@ -73,7 +73,6 @@ function nativeHost(
       case 'start_daemon':
       case 'stop_daemon':
       case 'apply_dock_icon':
-      case 'apply_widget_settings':
         return undefined;
       default:
         return null;
@@ -113,7 +112,6 @@ describe('embedded HQ Work authoritative settings', () => {
     let persisted: Record<string, unknown> = {
       startAtLogin: false,
       dockIcon: true,
-      widgetEnabled: true,
     };
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const invoke: SyncInvokeFn = async (command, args) => {
@@ -156,7 +154,6 @@ describe('embedded HQ Work authoritative settings', () => {
           prefs: {
             startAtLogin: true,
             dockIcon: true,
-            widgetEnabled: true,
           },
         },
       });
@@ -199,25 +196,20 @@ describe('embedded HQ Work authoritative settings', () => {
     expect(persisted().startAtLogin).toBe(false);
   });
 
-  it('persists Dock and desktop-widget controls through native apply commands across an injected-host component remount', async () => {
+  it('persists the Dock control through its native apply command across an injected-host component remount', async () => {
     const { adapter, calls, persisted } = nativeHost({
       startAtLogin: false,
       dockIcon: true,
-      widgetEnabled: false,
     });
     mountPane('general', adapter);
     await vi.waitFor(() => {
       expect(host.querySelector('[aria-label="Show in Dock"]')?.getAttribute('aria-checked')).toBe('true');
-      expect(host.querySelector('[aria-label="Desktop widget"]')?.getAttribute('aria-checked')).toBe('false');
     });
     host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]')?.click();
-    host.querySelector<HTMLButtonElement>('[aria-label="Desktop widget"]')?.click();
     await vi.waitFor(() => {
       expect(persisted().dockIcon).toBe(false);
-      expect(persisted().widgetEnabled).toBe(true);
     });
     expect(calls).toContainEqual({ command: 'apply_dock_icon', args: undefined });
-    expect(calls).toContainEqual({ command: 'apply_widget_settings', args: undefined });
 
     await unmount(component!);
     component = null;
@@ -228,7 +220,6 @@ describe('embedded HQ Work authoritative settings', () => {
     });
     await vi.waitFor(() => {
       expect(host.querySelector('[aria-label="Show in Dock"]')?.getAttribute('aria-checked')).toBe('false');
-      expect(host.querySelector('[aria-label="Desktop widget"]')?.getAttribute('aria-checked')).toBe('true');
     });
   });
 

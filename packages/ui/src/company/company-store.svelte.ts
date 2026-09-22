@@ -1,3 +1,4 @@
+import { startJitteredPoll } from "@hq/platform";
 import type { AdapterResult, CompanyApi } from "@hq/platform";
 import type { CompanySummary } from "./company-summary.svelte";
 import type { CompanyBoard } from "./company-board.svelte";
@@ -57,7 +58,7 @@ const POLL_INTERVAL_MS = 30_000;
 const cache = createResourceCache({ ttlMs: POLL_INTERVAL_MS });
 const key = (resource: CompanyResource, slug: string) => `${slug}:${resource}`;
 let active: { slug: string; resource: CompanyResource } | null = null;
-let timer: ReturnType<typeof setInterval> | null = null;
+let stopPoll: (() => void) | null = null;
 
 const loaders = {
   summary: (slug: string) =>
@@ -110,8 +111,11 @@ function refreshActive(): void {
 }
 
 export function startCompanyStore(): void {
-  if (timer !== null) return;
-  timer = setInterval(refreshActive, POLL_INTERVAL_MS);
+  if (stopPoll !== null) return;
+  stopPoll = startJitteredPoll({
+    intervalMs: POLL_INTERVAL_MS,
+    tick: refreshActive,
+  });
   window.addEventListener("focus", refreshActive);
 }
 
@@ -138,8 +142,8 @@ export function invalidateCompanyResources(
 }
 
 export function stopCompanyStore(): void {
-  if (timer !== null) clearInterval(timer);
-  timer = null;
+  stopPoll?.();
+  stopPoll = null;
   if (typeof window !== "undefined")
     window.removeEventListener("focus", refreshActive);
   active = null;

@@ -25,6 +25,15 @@ function webAdapter(): PlatformAdapter {
       fetchChannel: async () => ok(null),
       fetchDm: async () => ok(null),
     },
+    meetings: {
+      listAccounts: async () => ok([]),
+    },
+    appShell: {
+      notificationPermissionState: async () => ok("default"),
+    },
+    settings: {
+      getSettings: async () => ok({}),
+    },
   } as unknown as PlatformAdapter;
 }
 
@@ -270,5 +279,45 @@ describe("DesktopApp title-bar back/forward", () => {
     );
     await tick();
     expect(extraPage()).toBe("bravo");
+  });
+});
+
+describe("DesktopApp settings Back button", () => {
+  async function openSettingsSection(
+    section: "profile" | "appearance" | "notifications",
+  ): Promise<void> {
+    dispatchEmbeddedNavigation({ kind: "settings", section });
+    await tick();
+    await tick();
+  }
+
+  it("Given the user opened Settings from a page and walked several sections, when they press Back, then Settings closes and that page is shown again (not the previous section)", async () => {
+    await mountShell();
+    await goTo("alpha");
+    await openSettingsSection("profile");
+    await openSettingsSection("appearance");
+    await openSettingsSection("notifications");
+    expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
+
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-back"]')?.click();
+    await tick();
+    await tick();
+
+    expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
+    expect(extraPage()).toBe("alpha");
+  });
+
+  it("Given Settings was the first destination, when the user presses Back, then the main Messages view is shown", async () => {
+    await mountShell();
+    await openSettingsSection("profile");
+    await openSettingsSection("appearance");
+    expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
+
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-back"]')?.click();
+    await tick();
+    await tick();
+
+    expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
+    expect(extraPage()).toBeNull();
   });
 });

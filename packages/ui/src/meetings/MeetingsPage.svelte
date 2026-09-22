@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { PlatformAdapter } from "@hq/platform";
+  import type {
+    MeetingPermissionsSnapshot,
+    PlatformAdapter,
+  } from "@hq/platform";
   import {
     activeMeetings,
     recordingMemberships,
@@ -18,6 +21,10 @@
   } from "./meetings-store.svelte";
   import type { MeetingsStorage } from "./meetings-cache";
   import LiveNowCard from "../common/LiveNowCard.svelte";
+  import {
+    meetingDetectionNeedsSetup,
+    missingMeetingPermissions,
+  } from "./meeting-permissions";
   import MeetingsAgenda from "./MeetingsAgenda.svelte";
   import {
     buildConnectedCalendarRows,
@@ -140,6 +147,7 @@
     activeRecordingsFromScheduledBots(events, botsByEventId),
   );
 
+  const nativeLiveMeeting = $derived(pickLiveMeeting($activeMeetings));
   const liveMeeting = $derived(
     pickLiveMeeting([...cachedActiveRecordings, ...$activeMeetings]),
   );
@@ -296,6 +304,32 @@
   // only renders it. `null` = nothing to surface (no-op dedupe / missing bot).
   let toast = $state<ToastDescriptor | null>(null);
   let calendarOpening = $state(false);
+
+  // Native detector permissions. When the host reports them and something
+  // required is missing, detection is silently off — say so here, because
+  // this is the screen a person opens when "HQ didn't notice my meeting".
+  let meetingPerms = $state<MeetingPermissionsSnapshot | null>(null);
+  let meetingPermsOpening = $state(false);
+  const detectionNeedsSetup = $derived(meetingDetectionNeedsSetup(meetingPerms));
+  const detectionMissing = $derived(
+    meetingPerms ? missingMeetingPermissions(meetingPerms) : [],
+  );
+
+  async function refreshMeetingPermissions(): Promise<void> {
+    const res = await adapter.meetings.permissionsState();
+    meetingPerms = res.ok ? res.value : null;
+  }
+
+  async function openDetectionSetup(): Promise<void> {
+    if (meetingPermsOpening) return;
+    meetingPermsOpening = true;
+    try {
+      const res = await adapter.meetings.openPermissionsSetup();
+      if (!res.ok) flashToast("warn", "Couldn’t open the meeting permissions setup.");
+    } finally {
+      meetingPermsOpening = false;
+    }
+  }
   let upNextJoining = $state(false);
   let connectStarting = $state(false);
   const connectPending = $derived(meetingsStore.connectPending);
@@ -455,8 +489,13 @@
     });
     startMeetingsStore();
     setMeetingsViewActive(true);
+    void refreshMeetingPermissions();
+    // Re-read after the person returns from System Settings / the setup window.
+    const onFocus = () => void refreshMeetingPermissions();
+    window.addEventListener("focus", onFocus);
 
     return () => {
+      window.removeEventListener("focus", onFocus);
       setMeetingsViewActive(false);
       if (focusClearTimer) clearTimeout(focusClearTimer);
     };
@@ -696,14 +735,43 @@
       </button>
     </div>
 
-    <!-- 1. Live now — true live monitor (rounded only while active). -->
-    <LiveNowCard
-      meeting={liveMeeting}
-      memberships={$recordingMemberships}
-      onstart={startRecording}
-      onstop={stopRecording}
-      oncompany={setRecordingCompany}
-    />
+    {#if detectionNeedsSetup}
+      <section
+        class="detect-setup"
+        role="status"
+        aria-label="Meeting detection is off"
+        data-testid="meetings-detection-setup"
+      >
+        <div class="detect-copy">
+          <div class="detect-title">Meeting detection is off</div>
+          <div class="detect-meta">
+            HQ needs {detectionMissing.join(" and ")} to spot Zoom, Teams, and Meet calls on this Mac
+          </div>
+        </div>
+        <button
+          type="button"
+          class="btn subtle"
+          data-testid="meetings-detection-setup-open"
+          onclick={openDetectionSetup}
+          disabled={meetingPermsOpening}
+          aria-busy={meetingPermsOpening}
+        >
+          {meetingPermsOpening ? "Opening…" : "Set up"}
+        </button>
+      </section>
+    {/if}
+
+    <!-- Native controls apply to desktop detections, not calendar recording bots. -->
+    {#if nativeLiveMeeting}
+      <LiveNowCard
+        meeting={nativeLiveMeeting}
+        memberships={$recordingMemberships}
+        onstart={startRecording}
+        onstop={stopRecording}
+        oncompany={setRecordingCompany}
+        {openExternal}
+      />
+    {/if}
 
     <!-- 2. Up next — compact strip, not a summary card. -->
     <section
@@ -1067,6 +1135,33 @@
 
   .toast-warn {
     --toast-dot: var(--v4-warn);
+  }
+
+  .detect-setup {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 10px 0 0;
+    padding: 8px 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+
+  .detect-copy {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .detect-title {
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 12px);
+    line-height: 18px;
+  }
+
+  .detect-meta {
+    color: var(--v4-text-2);
+    font-size: var(--type-body, 12px);
+    line-height: 18px;
   }
 
   .btn {
@@ -1679,8 +1774,7 @@
   .health-strip,
   .secondary-grid,
   .meetings-open-cal,
-  .toolbar-meta,
-  :global([data-testid="meetings-live-now"]) {
+  .toolbar-meta {
     display: none !important;
   }
 </style>

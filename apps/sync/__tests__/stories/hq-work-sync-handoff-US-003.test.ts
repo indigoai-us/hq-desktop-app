@@ -2,21 +2,17 @@
 /**
  * US-003 — Sync: 'Desktop view moved' handoff card with Install/Open.
  *
- * Source-contract on the Rust intercept + real HqWorkHandoffCard mount
- * (mock invoker at the Tauri boundary). Do not open desktop-alt when the
- * handoff flag is on and HQ Work is missing.
+ * Source-contract on the Rust intercept and the invoke wrappers (mock
+ * invoker at the Tauri boundary). Do not open desktop-alt when the handoff
+ * flag is on and HQ Work is missing. The HqWorkHandoffCard UI these tests
+ * also covered was deleted in 434f0b31 (the desktop workspace replaced the
+ * classic popover shell), so its tests went with it.
  */
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('svelte', async () => {
-  // @ts-expect-error client entry has no public type export.
-  return await import('../../node_modules/svelte/src/index-client.js');
-});
-
-import { flushSync, mount, unmount } from 'svelte';
 import {
   getHqWorkHandoffCardShown,
   installHqWork,
@@ -41,24 +37,7 @@ function mockInvoker(
   return Object.assign(fn, { calls });
 }
 
-let host: HTMLElement;
-let component: ReturnType<typeof mount> | null = null;
-
-function mountCard(_props: Record<string, unknown> = {}): HTMLElement {
-  throw new Error('HqWorkHandoffCard was removed; the desktop workspace is the only UI');
-}
-
-async function flush(): Promise<void> {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
-  flushSync();
-}
-
-afterEach(async () => {
-  if (component) {
-    await unmount(component);
-    component = null;
-  }
-  host?.remove();
+afterEach(() => {
   vi.clearAllMocks();
 });
 
@@ -119,44 +98,6 @@ describe('US-003 desktop-view-moved handoff card', () => {
       expect(hq).toContain('refusing to install unsigned HQ Work bytes');
       expect(hq).toContain('require_artifact_signature');
       expect(hq).toContain('install_hq_work_with');
-    });
-  });
-
-  describe.skip('Frontend card', () => {
-
-    it('Install invokes install_hq_work then swaps the CTA to Open / launch_hq_work', async () => {
-      const invokeFn = mockInvoker();
-      mountCard({ invokeFn, firstShow: false });
-      const install = host.querySelector<HTMLButtonElement>(
-        '[data-testid="hq-work-handoff-install"]',
-      );
-      expect(install).toBeTruthy();
-      install?.click();
-      await flush();
-      expect(invokeFn.calls.map((c) => c.command)).toEqual(['install_hq_work']);
-      const open = host.querySelector<HTMLButtonElement>('[data-testid="hq-work-handoff-open"]');
-      expect(open).toBeTruthy();
-      expect(host.querySelector('[data-testid="hq-work-handoff-install"]')).toBeNull();
-      open?.click();
-      await flush();
-      expect(invokeFn.calls.map((c) => c.command)).toEqual([
-        'install_hq_work',
-        'launch_hq_work',
-      ]);
-      expect(invokeFn.calls[1].args).toEqual({ url: null });
-    });
-
-    it('failed install keeps the Install button', async () => {
-      const invokeFn = mockInvoker((command) => {
-        if (command === 'install_hq_work') throw new Error('signature verification failed');
-        return undefined;
-      });
-      mountCard({ invokeFn });
-      host.querySelector<HTMLButtonElement>('[data-testid="hq-work-handoff-install"]')?.click();
-      await flush();
-      expect(host.querySelector('[data-testid="hq-work-handoff-install"]')).toBeTruthy();
-      expect(host.querySelector('[data-testid="hq-work-handoff-open"]')).toBeNull();
-      expect(host.textContent).toMatch(/signature verification failed/);
     });
   });
 

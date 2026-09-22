@@ -144,9 +144,7 @@ pub fn spawn_and_poll(app: &AppHandle) {
                 // Window ops MUST run on the main thread — calling them from
                 // this poll thread deadlocks AppKit.
                 let app_main = app.clone();
-                let app_hide = app.clone();
                 let _ = app.run_on_main_thread(move || {
-                    crate::commands::widget::hide_widget_stack_now(&app_hide);
                     crate::tray::activate_primary_surface(&app_main);
                 });
             } else {
@@ -161,12 +159,6 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     "desktop" => {
                         let _ = app.emit("tray:open-desktop", ());
                     }
-                    "hide-notifications" => {
-                        crate::commands::widget::hide_widget_stack_now(&app);
-                    }
-                    "widget-peek" => {
-                        crate::commands::widget::show_widget_stack_now(&app);
-                    }
                     "updates" => {
                         crate::recovery::spawn_tray_check_for_updates(app.clone());
                     }
@@ -175,6 +167,14 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     }
                     "signout" => {
                         let _ = app.emit("tray:sign-out", ());
+                    }
+                    // Re-run the first-run welcome film on demand.
+                    // `begin_replay_intro` brings `main` (the only window that
+                    // renders the film) to the front before emitting, and
+                    // remembers the desktop window so the film can hand the
+                    // person back to it. The frontend owns the sizing dance.
+                    "replay-intro" => {
+                        crate::tray::begin_replay_intro(&app);
                     }
                     "quit" => app.exit(0),
                     other => log("tray", &format!("native helper: unknown cmd '{other}'")),

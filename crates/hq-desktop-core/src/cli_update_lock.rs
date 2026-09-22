@@ -247,7 +247,9 @@ pub fn acquire_cli_update_lock_waiting(
     )? {
         CliUpdateLockWaitAttempt::Acquired(guard) => Ok(CliUpdateLockAttempt::Acquired(guard)),
         CliUpdateLockWaitAttempt::Held { holder } => Ok(CliUpdateLockAttempt::Held { holder }),
-        CliUpdateLockWaitAttempt::Cancelled => unreachable!("the non-cancellable wait never cancels"),
+        CliUpdateLockWaitAttempt::Cancelled => {
+            unreachable!("the non-cancellable wait never cancels")
+        }
     }
 }
 
@@ -298,7 +300,9 @@ pub fn acquire_cli_update_lock_waiting_in(
     )? {
         CliUpdateLockWaitAttempt::Acquired(guard) => Ok(CliUpdateLockAttempt::Acquired(guard)),
         CliUpdateLockWaitAttempt::Held { holder } => Ok(CliUpdateLockAttempt::Held { holder }),
-        CliUpdateLockWaitAttempt::Cancelled => unreachable!("the non-cancellable wait never cancels"),
+        CliUpdateLockWaitAttempt::Cancelled => {
+            unreachable!("the non-cancellable wait never cancels")
+        }
     }
 }
 

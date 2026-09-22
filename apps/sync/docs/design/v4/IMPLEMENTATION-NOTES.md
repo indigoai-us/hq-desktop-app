@@ -18,7 +18,7 @@ requirement to restore retired standalone screens.
   Team, Activity, Deployments, Secrets, and Settings.
 - Library includes Skills, Workers, Installed, and Profile. Marketplace and
   admin Moderation are global routes.
-- Settings includes Sync, Notifications, Widget, Updates, General, and Meetings.
+- Settings includes Sync, Notifications, Updates, General, and Meetings.
 - The titlebar owns live sync verdicts and the app-version updater popout. The
   retired status bar is not part of the current shell.
 - Central-canvas text is 14px/400; sparse metadata may use 13px. Bold,

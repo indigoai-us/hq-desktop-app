@@ -262,7 +262,9 @@ fn report_provision_error(
     // also collapses the per-slug proliferation via fingerprint. `None` for
     // every non-validation arm, so their tags/fingerprints/levels are untouched.
     let validation_kind: Option<&str> = match err {
-        CliProvisionError::Validation { validation_kind, .. } => Some(validation_kind),
+        CliProvisionError::Validation {
+            validation_kind, ..
+        } => Some(validation_kind),
         _ => None,
     };
     // Known setup-incomplete validation subclasses are user-laptop / setup
@@ -1630,7 +1632,9 @@ mod tests {
         // A generic "malformed" without manifest context must NOT be downgraded
         // as manifest-malformed — it stays unclassified/Error (Codex P2).
         assert_eq!(
-            classify_setup_validation_failure(&["[hq cloud provision] slug is malformed".to_string()]),
+            classify_setup_validation_failure(&[
+                "[hq cloud provision] slug is malformed".to_string()
+            ]),
             "unclassified"
         );
     }

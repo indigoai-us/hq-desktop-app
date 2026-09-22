@@ -27,6 +27,10 @@
    * claims to affect the native host is read from and written through it.
    */
   import { onMount } from "svelte";
+  import {
+    startJitteredPoll,
+    type MeetingPermissionsSnapshot,
+  } from "@hq/platform";
   import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
@@ -67,6 +71,7 @@
   } from "../meetings/meetings-store.svelte";
   import { isRecordingWorkspace } from "../meetings/recording-membership.js";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
+  import { missingMeetingPermissions } from "../meetings/meeting-permissions";
 
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
@@ -132,6 +137,40 @@
   let calendarConnectMessage = $state<string | null>(null);
   let calendarConnectWarn = $state(false);
   let calendarDisconnectingId = $state<string | null>(null);
+
+  // Native meeting-detector permissions (macOS Accessibility, Screen
+  // Recording, Microphone). The detector never starts until all three are
+  // granted, and nothing else in the app asks for them — this row is the
+  // only way in (a fresh install with no row here has detection silently
+  // off). `null` = host cannot detect meetings, or not loaded yet.
+  let meetingPerms = $state<MeetingPermissionsSnapshot | null>(null);
+  let meetingPermsOpening = $state(false);
+  let meetingPermsError = $state<string | null>(null);
+  const meetingPermsMissing = $derived(
+    meetingPerms
+      ? missingMeetingPermissions(meetingPerms)
+      : [],
+  );
+
+  async function refreshMeetingPermissions(): Promise<void> {
+    if (!adapter || !canWatchMeetings) return;
+    const res = await adapter.meetings.permissionsState();
+    meetingPerms = res.ok ? res.value : null;
+  }
+
+  async function openMeetingPermissionsSetup(): Promise<void> {
+    if (!adapter || meetingPermsOpening) return;
+    meetingPermsOpening = true;
+    meetingPermsError = null;
+    try {
+      const res = await adapter.meetings.openPermissionsSetup();
+      if (!res.ok) {
+        meetingPermsError = "Couldn’t open the meeting permissions setup. Try again.";
+      }
+    } finally {
+      meetingPermsOpening = false;
+    }
+  }
   let appVersion = $state(version);
   const coreVersion = $derived(updateStore.coreVersion);
   const cliVersion = $derived(updateStore.cliVersion);
@@ -146,11 +185,8 @@
   // $effect below) instead of reading once at mount.
   const LIVE_SYNC_POLL_MS = 5000;
   let dockVisibilityChanged = false;
-  let desktopWidgetChanged = false;
   let dockWriteSeq = 0;
-  let desktopWidgetWriteSeq = 0;
   let dockAuthoritativeValue: boolean | undefined;
-  let desktopWidgetAuthoritativeValue: boolean | undefined;
   type NativeSettings = {
     startAtLogin: boolean;
     syncOnLaunch: boolean;
@@ -334,38 +370,6 @@
       patch({ showInDock: dockIcon });
     } else if (dockAuthoritativeValue !== undefined) {
       patch({ showInDock: dockAuthoritativeValue });
-    }
-  }
-
-  async function toggleDesktopWidget(): Promise<void> {
-    const next = !prefs.desktopWidget;
-    const writeSeq = ++desktopWidgetWriteSeq;
-    desktopWidgetChanged = true;
-    patch({ desktopWidget: next });
-    if (!adapter) return;
-    const result = await adapter.appShell.setDesktopWidget(next);
-    if (writeSeq !== desktopWidgetWriteSeq) return;
-    if (result.ok) {
-      desktopWidgetAuthoritativeValue = next;
-      return;
-    }
-    nativeError = actionableError("Desktop widget", result.message);
-    if (result.reason !== "error") return;
-    const settings = await adapter.settings.getSettings();
-    if (writeSeq !== desktopWidgetWriteSeq) return;
-    desktopWidgetChanged = false;
-    if (!settings.ok) {
-      if (desktopWidgetAuthoritativeValue !== undefined) {
-        patch({ desktopWidget: desktopWidgetAuthoritativeValue });
-      }
-      return;
-    }
-    const widgetEnabled = readHostBooleanSetting(settings.value, "widgetEnabled");
-    if (widgetEnabled !== undefined) {
-      desktopWidgetAuthoritativeValue = widgetEnabled;
-      patch({ desktopWidget: widgetEnabled });
-    } else if (desktopWidgetAuthoritativeValue !== undefined) {
-      patch({ desktopWidget: desktopWidgetAuthoritativeValue });
     }
   }
 
@@ -840,7 +844,7 @@
 
   function readHostBooleanSetting(
     raw: unknown,
-    key: "dockIcon" | "widgetEnabled",
+    key: "dockIcon",
   ): boolean | undefined {
     if (!raw || typeof raw !== "object") return undefined;
     const value = (raw as Record<string, unknown>)[key];
@@ -848,18 +852,11 @@
   }
 
   function hydrateHostBackedToggles(raw: unknown): void {
-    const next: Partial<
-      Pick<ShellSettingsPrefs, "showInDock" | "desktopWidget">
-    > = {};
+    const next: Partial<Pick<ShellSettingsPrefs, "showInDock">> = {};
     const dockIcon = readHostBooleanSetting(raw, "dockIcon");
     if (dockIcon !== undefined) {
       dockAuthoritativeValue = dockIcon;
       if (!dockVisibilityChanged) next.showInDock = dockIcon;
-    }
-    const widgetEnabled = readHostBooleanSetting(raw, "widgetEnabled");
-    if (widgetEnabled !== undefined) {
-      desktopWidgetAuthoritativeValue = widgetEnabled;
-      if (!desktopWidgetChanged) next.desktopWidget = widgetEnabled;
     }
     if (Object.keys(next).length > 0) patch(next);
   }
@@ -1013,8 +1010,10 @@
     // section is actually visible, and stop the moment it isn't.
     if (section !== "sync" || !canSync) return;
     void refreshLiveSync();
-    const handle = setInterval(() => void refreshLiveSync(), LIVE_SYNC_POLL_MS);
-    return () => clearInterval(handle);
+    return startJitteredPoll({
+      intervalMs: LIVE_SYNC_POLL_MS,
+      tick: () => refreshLiveSync(),
+    });
   });
 
   onMount(() => {
@@ -1041,6 +1040,7 @@
     // Re-read after returning from System Settings (v1 SettingsPage pattern).
     const onFocus = () => {
       void refreshNotifPermission();
+      void refreshMeetingPermissions();
       void refreshNativeSettings();
       void refreshVersions();
       if (section === "sync") void refreshLiveSync();
@@ -1058,6 +1058,7 @@
     void refreshVersions();
     void loadReleaseChannel();
     void refreshNativeSettings();
+    void refreshMeetingPermissions();
     if (adapter.isAvailable("canSync")) {
       void adapter.settings.getConfig().then((res) => {
         if (res.ok && !customHqRoot) {
@@ -1093,10 +1094,6 @@
       <div class="set-row unavailable" data-testid="settings-menubar-unavailable">
         <div><div class="sn">Menubar quick access</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
         <span class="mono">HOST-OWNED</span>
-      </div>
-      <div class="set-row">
-        <div><div class="sn">Desktop widget</div><div class="sd">Float the mini notifications widget on your desktop</div></div>
-        <button type="button" class="toggle" class:on={prefs.desktopWidget} role="switch" aria-checked={prefs.desktopWidget} aria-label="Desktop widget" onclick={() => void toggleDesktopWidget()}></button>
       </div>
     {/if}
 
@@ -1261,6 +1258,37 @@
       <span class="mono">{lists.active.length} ACTIVE</span>
     </div>
   {:else if section === "meetings"}
+    {#if canWatchMeetings && meetingPerms}
+      <div class="set-row" data-testid="settings-meeting-permissions">
+        <div>
+          <div class="sn">Meeting detection</div>
+          <div class="sd">
+            {#if meetingPerms.allRequiredGranted}
+              HQ can spot Zoom, Teams, and Meet calls on this Mac
+            {:else}
+              Off — HQ needs {meetingPermsMissing.join(", ")} to spot meetings on this Mac
+            {/if}
+            {#if meetingPermsError}
+              <div class="sd" role="alert" data-testid="settings-meeting-permissions-error">{meetingPermsError}</div>
+            {/if}
+          </div>
+        </div>
+        {#if meetingPerms.allRequiredGranted}
+          <span class="mono ok" data-testid="settings-meeting-permissions-ready">Ready</span>
+        {:else}
+          <button
+            type="button"
+            class="chip"
+            data-testid="settings-meeting-permissions-setup"
+            onclick={() => void openMeetingPermissionsSetup()}
+            disabled={meetingPermsOpening}
+            aria-busy={meetingPermsOpening}
+          >
+            {meetingPermsOpening ? "Opening…" : "Set up"}
+          </button>
+        {/if}
+      </div>
+    {/if}
     {#if canWatchMeetings}
       <div class="set-row">
         <div>

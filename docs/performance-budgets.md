@@ -83,8 +83,8 @@ allowed. A `background-position` shimmer becomes a gradient overlay moved with
 
 ### 5. Broadcast-emit discipline (Rust)
 
-`app.emit(...)` wakes **every** open webview — popover, main window, banner —
-even when only one subscribes. The count of broadcast `.emit(` sites in
+`app.emit(...)` wakes **every** open webview — the `main` controller, the
+desktop window, the banner — even when only one subscribes. The count of broadcast `.emit(` sites in
 `apps/sync/src-tauri/src` is pinned as a **ceiling that ratchets down, never
 up**; new event plumbing should use `emit_to(label, …)`.
 

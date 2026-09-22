@@ -56,6 +56,36 @@ plist keys), reloads launchd (`bootout` / `bootstrap`), retires a leftover
 `HQ Sync.app` in `/Applications`, and terminates processes still running from
 that old path.
 
+### Side-by-side local builds are scoped to their own bundle identifier
+
+All of that reconciliation is scoped to the identifier in the running bundle's
+`Contents/Info.plist`, resolved at launch:
+
+- The LaunchAgent it reads, rewrites, boots out, and hands off to is
+  `~/Library/LaunchAgents/<that identifier>.plist` — not the canonical
+  `ai.indigo.hq-sync-menubar.plist`.
+- Only processes that its own agent's plist named as a stale path (or that run
+  from a leftover bundle it owns) can be terminated.
+- Retiring `/Applications/HQ Sync.app` happens only for the canonical
+  `ai.indigo.hq-sync-menubar` identifier.
+- An unreadable `Info.plist` or a missing `CFBundleIdentifier` means **do
+  nothing**: no plist rewrite, no launchctl, no kill. The reason is logged
+  under the `launchagent` tag.
+
+Single-instance behaviour within one identifier is unchanged: the canonical
+build still repoints its own agent and reaps its own old process.
+
+Why this matters for a debug bundle built alongside an installed copy: before
+this scoping, a local build with its own identifier still reconciled the
+canonical agent. It repointed that plist at its own executable, which made
+`/Applications/HQ.app/Contents/MacOS/hq-sync-menubar` the "stale" path, and the
+owner's running installed app was terminated on the debug build's startup.
+Observed 2026-09-18 while hand-testing a side-by-side bundle. Changing
+`productName`/identifier alone was not enough to isolate the build; the
+identifier now drives the reconcile scope. Regression coverage:
+`crates/hq-platform/src/launchagent.rs` (`install_scope`,
+`side_by_side_install_does_not_kill_the_canonical_install`).
+
 After an updater install on macOS, HQ must not `app.restart()` through
 LaunchServices. That relaunch is invisible to launchd, so a KeepAlive agent
 starts a second copy every ~10s and the single-instance handler steals focus.

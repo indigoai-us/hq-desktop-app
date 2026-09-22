@@ -269,23 +269,8 @@ describe('Sync PlatformAdapter mapped HQ Work actions', () => {
     ]);
   });
 
-  it('persists widget visibility before reusing the native apply command', async () => {
-    const { adapter, calls } = makeAdapter({ untouched: true, widgetEnabled: false });
-
-    expectOk(await adapter.appShell.setDesktopWidget(true));
-
-    expect(calls).toEqual([
-      { command: 'get_settings', args: undefined },
-      {
-        command: 'save_settings',
-        args: { prefs: { untouched: true, widgetEnabled: true } },
-      },
-      { command: 'apply_widget_settings', args: undefined },
-    ]);
-  });
-
-  it('serializes concurrent dock and widget preference writes through the shared queue', async () => {
-    let persisted = { untouched: true, dockIcon: true, widgetEnabled: false };
+  it('serializes concurrent app-shell preference writes through the shared queue', async () => {
+    let persisted = { untouched: true, dockIcon: true };
     let saveCount = 0;
     let inFlightSaves = 0;
     let maxInFlightSaves = 0;
@@ -309,36 +294,28 @@ describe('Sync PlatformAdapter mapped HQ Work actions', () => {
         persisted = prefs;
         return undefined;
       }
-      if (command === 'apply_dock_icon' || command === 'apply_widget_settings') {
-        return undefined;
-      }
+      if (command === 'apply_dock_icon') return undefined;
       throw new Error(`Unexpected command: ${command}`);
     };
     const adapter = createSyncPlatformAdapter({ invoke });
 
-    const dock = adapter.appShell.setDockVisible(false);
+    const hide = adapter.appShell.setDockVisible(false);
     await vi.waitFor(() => expect(savedSnapshots).toHaveLength(1));
-    const widget = adapter.appShell.setDesktopWidget(true);
+    const show = adapter.appShell.setDockVisible(true);
 
     await vi.waitFor(() => expect(maxInFlightSaves).toBe(1));
     expect(savedSnapshots).toHaveLength(1);
     releaseFirstSave();
 
-    expectOk(await dock);
-    expectOk(await widget);
-    expect(persisted).toEqual({
-      untouched: true,
-      dockIcon: false,
-      widgetEnabled: true,
-    });
-    expect(savedSnapshots[1]).toEqual({
-      untouched: true,
-      dockIcon: false,
-      widgetEnabled: true,
-    });
+    expectOk(await hide);
+    expectOk(await show);
+    // The second write read the first one's result rather than the pre-queue
+    // snapshot, so no patch is lost and the last write wins.
+    expect(persisted).toEqual({ untouched: true, dockIcon: true });
+    expect(savedSnapshots[1]).toEqual({ untouched: true, dockIcon: true });
     expect(calls.filter(({ command }) => command.startsWith('apply_'))).toEqual([
       { command: 'apply_dock_icon', args: undefined },
-      { command: 'apply_widget_settings', args: undefined },
+      { command: 'apply_dock_icon', args: undefined },
     ]);
   });
 

@@ -15,6 +15,7 @@
    * is hidden entirely when the host cannot send one.
    */
   import type { Channel } from "./channels.js";
+  import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
   import type { LocalBotEntryResult } from "./local-bots.js";
@@ -23,6 +24,20 @@
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
+  import type {
+    CompanyCreateSeam,
+    CompanyDraftForm,
+    CompanyInvite,
+    InviteFailure,
+  } from "./create-company/create-company-flow.js";
+  import { slugFieldOf } from "./create-company/create-company-flow.js";
+  import {
+    createSlugWatcher,
+    slugBlocksSubmit,
+    SLUG_IDLE,
+    type SlugState,
+    type SlugWatcher,
+  } from "./create-company/slug-availability.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
     initialsFor,
@@ -62,7 +77,6 @@
     companyUidsByPerson,
     defaultChannelCompanyUid,
     directoryRowsFromFeed,
-    personalScopeAllowed,
     pickChannelCompanyUid,
     unavailableChannelScopes,
     unconfirmedCreateMessage,
@@ -105,6 +119,13 @@
      * navigates; the modal only closes on success or shows the reason inline.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    /**
+     * Create a company without leaving the modal: `open` posts the server's
+     * `create_company` card and hands back the fields IT declares, `submit`
+     * runs that card's action and sends the invites. When the host wires this,
+     * every "Create company" affordance uses it and nothing jumps to #setup.
+     */
+    companyCreate?: CompanyCreateSeam | null;
     oncreateagent?:
       | ((
           companyUid: string,
@@ -123,6 +144,10 @@
       | null;
     /** `{ claude: true, codex: false, … }` — which runtimes are signed in here. */
     botRuntimeReady?: Record<string, boolean> | null;
+    /** Per-runtime state (not-installed / couldn't-check / signed-out). */
+    botRuntimeStatus?: Record<string, RuntimeStatus> | null;
+    /** Re-read runtime readiness from the host. */
+    onrecheckruntimes?: (() => void | Promise<void>) | null;
     /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** Names the user's local bots already use (availability check). */
@@ -143,6 +168,11 @@
      * channel" opens the modal in project mode.
      */
     initialKind?: "channel" | "project";
+    /**
+     * Which step to open on. "company" is the New company entry: the modal
+     * opens straight on its second step, with no name typed yet.
+     */
+    initialStep?: "find" | "company";
   }
 
   let {
@@ -157,10 +187,13 @@
     onpick,
     oncreated,
     oncreatecompany = null,
+    companyCreate = null,
     oncreateagent = null,
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
+    botRuntimeStatus = null,
+    onrecheckruntimes = null,
     botWorkers = null,
     existingBotNames = null,
     botCompanies = null,
@@ -169,6 +202,7 @@
     avatarPacks = null,
     loadAvatarPacks = null,
     initialKind = "channel",
+    initialStep = "find",
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -182,8 +216,10 @@
   const canCreateCloudBot = $derived(!!oncreateagent && agentTargets.length > 0);
   /** A Local bot can be created on this Mac. */
   const canCreateLocalBot = $derived(!!oncreatebot);
+  /** A company can be made from here — in-modal when the host wired it. */
+  const canCreateCompany = $derived(!!companyCreate || !!oncreatecompany);
   const showEntryPoints = $derived(
-    !!oncreatecompany || canCreateCloudBot || canCreateLocalBot,
+    canCreateCompany || canCreateCloudBot || canCreateLocalBot,
   );
   let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
@@ -209,9 +245,217 @@
     }
   }
 
-  function newCompany(): void {
+  /**
+   * "New company" / "Create company <Name>". The in-modal flow owns this when
+   * the host wired it; the older host callback (which lands in #setup) is the
+   * fallback, so a build without the flow is not left without the row.
+   */
+  function newCompany(name = ""): void {
+    if (companyCreate) {
+      void enterCompanyStep(name);
+      return;
+    }
     if (!oncreatecompany) return;
     void runEntry("company", oncreatecompany);
+  }
+
+  // ── New company: the second step, inside this same modal ──
+  /** The server's own form, once its card has been posted and read back. */
+  let companyForm = $state<CompanyDraftForm | null>(null);
+  /** Field id → what the person typed. Seeded from the card's own values. */
+  let companyValues = $state<Record<string, string>>({});
+  let companyInvites = $state<CompanyInvite[]>([]);
+  let companyInviteInput = $state("");
+  let companyRole = $state("member");
+  /** The card is being fetched (opening) or submitted (creating). */
+  let companyOpening = $state(false);
+  let companyCreating = $state(false);
+  let companyError = $state<string | null>(null);
+  /** Invites the server refused after the company was made. */
+  let companyInviteFailures = $state<InviteFailure[]>([]);
+  /** The name typed in the palette, kept so Back can restore the query. */
+  let companyName = $state("");
+
+  const companyBusy = $derived(companyOpening || companyCreating);
+
+  // ── Live handle check ──────────────────────────────────────────────────
+  /** The field the check watches, once the card says which one it is. */
+  let companySlugFieldId = $state<string | null>(null);
+  let companySlugState = $state<SlugState>(SLUG_IDLE);
+  let companySlugWatcher: SlugWatcher | null = null;
+
+  function stopCompanySlugWatch(): void {
+    companySlugWatcher?.cancel();
+    companySlugWatcher = null;
+    companySlugFieldId = null;
+    companySlugState = SLUG_IDLE;
+  }
+
+  /**
+   * Start watching the card's handle field. Needs both a check seam and a
+   * field to watch — without either, the step behaves exactly as it did
+   * before and the submit answer is still the authority.
+   */
+  function startCompanySlugWatch(
+    form: CompanyDraftForm,
+    seeded: Record<string, string>,
+  ): void {
+    stopCompanySlugWatch();
+    const check = companyCreate?.checkSlug;
+    if (!check) return;
+    const fieldId = slugFieldOf(form.fields);
+    if (!fieldId) return;
+    companySlugFieldId = fieldId;
+    companySlugWatcher = createSlugWatcher({
+      check,
+      constraints:
+        form.fields.find((field) => field.id === fieldId)?.constraints ?? null,
+      onstate: (next) => {
+        companySlugState = next;
+      },
+    });
+    const initial = seeded[fieldId] ?? "";
+    if (initial.trim()) companySlugWatcher.input(initial);
+  }
+
+  // A pending check must not outlive the modal: a timer that fires after the
+  // card is gone would call the route for a handle nobody is typing anymore.
+  $effect(() => () => companySlugWatcher?.cancel());
+
+  /** Take the server's suggested handle. */
+  function acceptCompanySlugSuggestion(): void {
+    const suggestion = companySlugState.suggestion;
+    if (!suggestion || !companySlugFieldId) return;
+    setCompanyValue(companySlugFieldId, suggestion);
+  }
+
+  /** Required fields the person has not filled in yet. */
+  const companyMissing = $derived(
+    (companyForm?.fields ?? []).filter(
+      (field) => field.required && !(companyValues[field.id] ?? "").trim(),
+    ),
+  );
+  const companySubmitDisabled = $derived(
+    companyBusy ||
+      !companyForm ||
+      companyMissing.length > 0 ||
+      // Checking, taken, or malformed. "Couldn't check" deliberately does NOT
+      // block: the server still decides on submit.
+      slugBlocksSubmit(companySlugState),
+  );
+
+  async function enterCompanyStep(name: string): Promise<void> {
+    if (!companyCreate) return;
+    companyName = name.trim();
+    companyError = null;
+    companyForm = null;
+    companyValues = {};
+    companyInvites = [];
+    companyInviteInput = "";
+    companyInviteFailures = [];
+    companyRole = "member";
+    stopCompanySlugWatch();
+    step = "company";
+    companyOpening = true;
+    try {
+      const result = await companyCreate.open();
+      if (!result.ok) {
+        companyError = result.reason;
+        return;
+      }
+      companyForm = result.form;
+      const seeded: Record<string, string> = {};
+      for (const field of result.form.fields) seeded[field.id] = field.value;
+      if (result.form.nameFieldId && companyName) {
+        seeded[result.form.nameFieldId] = companyName;
+      }
+      companyValues = seeded;
+      startCompanySlugWatch(result.form, seeded);
+    } catch (err) {
+      companyError = err instanceof Error ? err.message : String(err);
+    } finally {
+      companyOpening = false;
+    }
+  }
+
+  function setCompanyValue(id: string, value: string): void {
+    companyValues = { ...companyValues, [id]: value };
+    if (id === companySlugFieldId) companySlugWatcher?.input(value);
+  }
+
+  function addCompanyInvite(): void {
+    const email = companyInviteInput.trim();
+    if (!email) return;
+    if (!isValidEmail(email)) {
+      companyError = `${email} doesn't look like an email address.`;
+      return;
+    }
+    const key = email.toLowerCase();
+    if (companyInvites.some((invite) => invite.email.toLowerCase() === key)) {
+      companyInviteInput = "";
+      return;
+    }
+    companyInvites = [...companyInvites, { email, role: companyRole }];
+    companyInviteInput = "";
+    companyError = null;
+  }
+
+  function removeCompanyInvite(email: string): void {
+    companyInvites = companyInvites.filter((invite) => invite.email !== email);
+  }
+
+  function onCompanyInviteKey(event: KeyboardEvent): void {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      addCompanyInvite();
+    }
+  }
+
+  /**
+   * Create the company. The host switches the app into it and opens its
+   * channel; this closes on the way out. A refused INVITE does not close —
+   * the company exists, and the person is told which addresses to fix.
+   */
+  async function submitCompany(): Promise<void> {
+    if (!companyCreate || !companyForm || companySubmitDisabled) return;
+    // A typed-but-not-added address is what the person meant to invite.
+    if (companyInviteInput.trim()) addCompanyInvite();
+    companyCreating = true;
+    companyError = null;
+    companyInviteFailures = [];
+    try {
+      const values: Record<string, string> = {};
+      for (const field of companyForm.fields) {
+        values[field.id] = (companyValues[field.id] ?? "").trim();
+      }
+      const result = await companyCreate.submit(companyForm, values, companyInvites);
+      if (!result.ok) {
+        companyError = result.reason;
+        return;
+      }
+      if (result.company.inviteFailures.length > 0) {
+        companyInviteFailures = result.company.inviteFailures;
+        companyInvites = [];
+        return;
+      }
+      onclose();
+    } catch (err) {
+      companyError = err instanceof Error ? err.message : String(err);
+    } finally {
+      companyCreating = false;
+    }
+  }
+
+  /** Back to the search step with the typed name still in the box. */
+  function backFromCompany(): void {
+    if (companyBusy) return;
+    stopCompanySlugWatch();
+    const restore = companyName || query;
+    query = restore;
+    queryDebounced = restore;
+    companyError = null;
+    activeIndex = 0;
+    step = "find";
   }
 
   /**
@@ -258,7 +502,7 @@
   }
 
   /** `email` — compose a first message to an address the picker cannot match. */
-  type Step = "find" | "create" | "summary" | "bot" | "email";
+  type Step = "find" | "create" | "summary" | "bot" | "email" | "company";
 
   interface MemberChip {
     key: string;
@@ -281,6 +525,7 @@
     | "invite-failed"
     | "member-unreachable"
     | "member-agent-scope"
+    | "member-personal-bot"
     | "member-not-owner"
     | "member-other"
     | "first-message-failed";
@@ -306,6 +551,15 @@
   }
 
   let step = $state<Step>("find");
+  // Opened as "New company" (sidebar switcher): go straight to the second
+  // step. Read once, at mount — a later prop change must not yank the person
+  // out of the step they are on.
+  let initialStepApplied = false;
+  $effect(() => {
+    if (initialStepApplied) return;
+    initialStepApplied = true;
+    if (initialStep === "company" && companyCreate) void enterCompanyStep("");
+  });
   let query = $state("");
   let queryDebounced = $state("");
   let activeIndex = $state(0);
@@ -359,6 +613,8 @@
   let listEl = $state<HTMLDivElement | null>(null);
   let suggestionsEl = $state<HTMLDivElement | null>(null);
   let confirmEl = $state<HTMLDivElement | null>(null);
+  /** The `Message … directly` button, so the confirm's tab ring can include it. */
+  let directEl = $state<HTMLButtonElement | null>(null);
   let slugInputEl = $state<HTMLInputElement | null>(null);
   let pickerInputEl = $state<HTMLInputElement | null>(null);
 
@@ -455,16 +711,28 @@
       ? classifyFindQuery(queryDebounced).email
       : null,
   );
+  /**
+   * The exact name typed, offered as a company. A company name is not a slug
+   * — it is shown as written — so this is the raw query, not `createSlug`,
+   * and it stands even when a channel of that name already exists.
+   */
+  const companyOffer = $derived(
+    canCreateCompany && findKind !== "email" && queryDebounced.trim()
+      ? queryDebounced.trim()
+      : null,
+  );
   const flatCount = $derived(
     findResults.rows.length +
       (findResults.createSlug ? 1 : 0) +
+      (companyOffer ? 1 : 0) +
       (emailOffer ? 1 : 0),
   );
 
   type RenderItem =
     | { kind: "heading"; label: string }
     | { kind: "row"; row: FindRow; index: number }
-    | { kind: "create"; index: number };
+    | { kind: "create"; index: number }
+    | { kind: "company"; index: number; name: string };
 
   const renderItems = $derived.by<RenderItem[]>(() => {
     const items: RenderItem[] = [];
@@ -492,6 +760,10 @@
     }
     if (findResults.createSlug) {
       items.push({ kind: "create", index });
+      index += 1;
+    }
+    if (companyOffer) {
+      items.push({ kind: "company", index, name: companyOffer });
     }
     return items;
   });
@@ -569,8 +841,41 @@
         companyUids: memberCompanies.get(chip.personUid as string) ?? [],
       })),
   );
-  /** Personal is only for the owner and their own agents. */
-  const personalAllowed = $derived(personalScopeAllowed(scopeMembers, selfUid));
+  /** Company vs Personal is an explicit two-way choice; Personal is the
+   *  owner's own scope and stays put when the roster changes. */
+  const scopeMode = $derived<"company" | "personal">(
+    companyUid ? "company" : "personal",
+  );
+  const canScopeCompany = $derived(targetCompanies.length > 0);
+  /** The company to restore when the user toggles back to Company. */
+  let lastCompanyUid = $state("");
+  $effect(() => {
+    if (companyUid) lastCompanyUid = companyUid;
+  });
+
+  function setScopeMode(next: "company" | "personal"): void {
+    if (next === "personal") {
+      companyUid = "";
+      return;
+    }
+    if (!canScopeCompany) return;
+    // Restore the company the user had before switching to Personal; if there
+    // is none, fall back to the shared create-scope default.
+    if (
+      lastCompanyUid &&
+      targetCompanies.some((c) => c.companyUid === lastCompanyUid)
+    ) {
+      companyUid = lastCompanyUid;
+      return;
+    }
+    companyUid =
+      defaultChannelCompanyUid({
+        activeScope,
+        companies: targetCompanies,
+        members: scopeMembers,
+        selfUid,
+      }) || (targetCompanies[0]?.companyUid ?? "");
+  }
   const scopeUnavailable = $derived(
     unavailableChannelScopes(targetCompanies, scopeMembers, selfUid),
   );
@@ -661,6 +966,12 @@
    */
   function isExternal(chip: MemberChip): boolean {
     if (chip.type !== "person" || !chip.personUid || !companyUid) return false;
+    // Positively placed in another company: the shared scope rules own this
+    // case (the "In" option is marked unavailable and Create is blocked
+    // inline), same as `pickCandidate`. Asking "add anyway?" on top of a block
+    // that Create will refuse would be two answers to one question.
+    const known = memberCompanies.get(chip.personUid) ?? [];
+    if (known.length > 0 && !known.includes(companyUid)) return false;
     return (
       companyRelation(chip.personUid, companyUid, contacts, roster) === "outside"
     );
@@ -763,7 +1074,7 @@
       // Same split as the click handler: a channel is a destination, a person
       // is the first member of something being composed.
       if (row.kind === "channel") onpick(row.row);
-      else enterCreateWithPerson(row);
+      else openPersonDirectly(row);
       return;
     }
     // Only the trailing create row may fall through here — a stale index into
@@ -773,7 +1084,12 @@
       enterEmailCompose(emailOffer);
       return;
     }
-    if (findResults.createSlug) enterCreate(query);
+    const createIndex = findResults.createSlug ? findResults.rows.length : -1;
+    if (index === createIndex) {
+      enterCreate(query);
+      return;
+    }
+    if (companyOffer) newCompany(companyOffer);
   }
 
   function onFindKey(event: KeyboardEvent): void {
@@ -810,53 +1126,22 @@
         selfPersonUid: selfUid,
       });
       if (raw.createSlug) enterCreate(query);
+      else if (canCreateCompany && query.trim()) newCompany(query.trim());
     }
   }
 
   /**
-   * Picking a PERSON from the find list starts a group, it does not navigate.
+   * Picking a PERSON from the find list opens the 1:1 DM with them.
    *
-   * Clicking the first name used to call `onpick` straight through, which
-   * opened that DM and tore the modal down — so a second person could never be
-   * added and a group was unreachable from here. Land in the create step with
-   * them already added instead: the "With" picker takes more people, the name
-   * field is required before Create, and the first message is optional.
-   * A one-to-one DM is still one click away (`Message … directly`).
+   * Selecting one person used to land in the create step with them staged as
+   * the first member of a channel, which put the New-channel form — and, for
+   * anyone outside the active workspace, a cross-company confirm — between the
+   * user and a plain DM. A DM needs no channel, so it does not ask for one.
+   * Groups are still reachable: the "Create channel #…" row and the lifecycle
+   * entry points open the create step, and its "With" picker takes people.
    */
-  function enterCreateWithPerson(row: FindRow): void {
-    const uid = row.row.personUid?.trim() ?? "";
-    // Staging a group is only worth it when this host can actually finish one.
-    // Without create/add-member seams the create step is a dead end — a
-    // disabled Create button and no way to add anybody — so opening the DM is
-    // strictly better than stranding the user there.
-    if (!uid || !canCreate || !canAddMembers) {
-      onpick(row.row);
-      return;
-    }
-    channelName = "";
-    slugOverride = null;
-    companyUid = defaultCompanyUid(activeScope, targetCompanies);
-    members = [
-      chipFor(
-        {
-          key: `${row.kind === "agent" ? "agent" : "person"}:${uid}`,
-          type: row.kind === "agent" ? "agent" : "person",
-          personUid: uid,
-          email: null,
-          label: row.label,
-          sublabel: row.sublabel,
-          companyUid: row.row.companyUid ?? null,
-        },
-        null,
-      ),
-    ];
-    syncScope();
-    firstMessage = "";
-    createError = null;
-    createUnconfirmed = false;
-    pickerQuery = "";
-    confirmPick = null;
-    step = "create";
+  function openPersonDirectly(row: FindRow): void {
+    onpick(row.row);
   }
 
   /**
@@ -1000,7 +1285,7 @@
    * the backdrop must refuse too.
    */
   function closeAll(): void {
-    if (creating || emailSending) return;
+    if (creating || emailSending || companyCreating) return;
     if (step === "email" && emailOutcome) {
       finishEmail();
       return;
@@ -1041,7 +1326,7 @@
       // here too rather than letting Tab escape to the page behind the overlay.
       if (event.key === "Tab") {
         const active = document.activeElement as HTMLElement | null;
-        if (active && trapRoot()?.contains(active)) return;
+        if (active && trapContains(active)) return;
         onDialogKey(event);
         return;
       }
@@ -1063,6 +1348,13 @@
         step = "find";
         return;
       }
+      if (step === "company") {
+        // Escape closes the whole modal from here, like every other step: the
+        // back arrow is what returns to the search list.
+        if (companyBusy) return;
+        closeAll();
+        return;
+      }
       if (step === "email" && !emailOutcome) {
         backFromEmail();
         return;
@@ -1081,8 +1373,18 @@
    * itself — otherwise Tab walked straight out of the alertdialog into the
    * live form and let the user edit the very workspace being confirmed.
    */
-  function trapRoot(): HTMLElement | null {
-    return confirmSubject ? confirmEl : dialogEl;
+  function trapRoots(): HTMLElement[] {
+    if (!confirmSubject) return dialogEl ? [dialogEl] : [];
+    // `Message … directly` stays in the ring: it is the one control the
+    // question does not gate.
+    const roots: HTMLElement[] = [];
+    if (confirmEl) roots.push(confirmEl);
+    if (soleHumanMember && directEl) roots.push(directEl);
+    return roots;
+  }
+
+  function trapContains(node: HTMLElement): boolean {
+    return trapRoots().some((root) => root.contains(node));
   }
 
   function onDialogKey(event: KeyboardEvent): void {
@@ -1094,13 +1396,18 @@
         event.preventDefault();
         void sendEmailMessage();
       }
+      else if (step === "company" && !companySubmitDisabled) {
+        event.preventDefault();
+        void submitCompany();
+      }
       // The bot flow handles its own ⌘↵ (it knows when the draft is complete).
       return;
     }
     if (event.key !== "Tab") return;
-    const items = [
-      ...(trapRoot()?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []),
-    ];
+    const items = trapRoots().flatMap((root) => [
+      ...root.querySelectorAll<HTMLElement>(FOCUSABLE),
+      ...(root.matches(FOCUSABLE) ? [root] : []),
+    ]);
     if (items.length === 0) return;
     event.preventDefault();
     const current = document.activeElement as HTMLElement | null;
@@ -1129,6 +1436,12 @@
       });
     }
     return handle;
+  }
+
+  /** Focus the FIRST field of a server-declared form, and nothing after it. */
+  function focusFirstField(node: HTMLInputElement, first: boolean) {
+    if (!first) return;
+    return focusEndOnMount(node);
   }
 
   // ── Create-step fields ─────────────────────────────────────────────────────
@@ -1313,6 +1626,9 @@
     if (reason === "member-agent-scope") {
       return "bots can only join channels in a workspace they belong to.";
     }
+    if (reason === "member-personal-bot") {
+      return "only this bot's owner can add it to a channel.";
+    }
     return "couldn't add them.";
   }
 
@@ -1323,9 +1639,11 @@
         ? "member-unreachable"
         : reason === "agent-scope"
           ? "member-agent-scope"
-          : reason === "not-owner"
-            ? "member-not-owner"
-            : "member-other";
+          : reason === "personal-bot"
+            ? "member-personal-bot"
+            : reason === "not-owner"
+              ? "member-not-owner"
+              : "member-other";
     return issueFrom({
       key: chip.key,
       label: chip.label,
@@ -1673,6 +1991,9 @@
     if (issue.reason === "first-message-failed") return true;
     // The server refused on ROLE — a retry from the same account is a dead end.
     if (issue.reason === "member-not-owner") return false;
+    // Same for somebody else's personal bot: only its owner can add it, so a
+    // retry from this account fails identically every time.
+    if (issue.reason === "member-personal-bot") return false;
     if (issue.reason === "member-other") return true;
     return issue.reason === "member-unreachable" && !offersEmailFallback(issue);
   }
@@ -1739,18 +2060,19 @@
           onkeydown={onFindKey}
         />
       {:else}
-        {#if step === "create" || step === "bot" || (step === "email" && !emailOutcome)}
+        {#if step === "create" || step === "bot" || step === "company" || (step === "email" && !emailOutcome)}
           <button
             type="button"
             class="create-back"
             data-testid="chat-create-back"
             aria-label="Back to search"
-            disabled={creating || emailSending || entryBusy !== null}
+            disabled={creating || emailSending || entryBusy !== null || companyBusy}
             onclick={() => {
               if (step === "bot") {
                 entryError = null;
                 step = "find";
-              } else if (step === "email") backFromEmail();
+              } else if (step === "company") backFromCompany();
+              else if (step === "email") backFromEmail();
               else backToFind();
             }}
           >
@@ -1760,15 +2082,17 @@
         <h2 id="create-modal-title" class="create-title">
           {step === "create"
             ? "New channel"
-            : step === "bot"
-              ? "New bot"
-              : step === "email"
-                ? emailOutcome
-                  ? emailOutcome.state === "delivered"
-                    ? "Message sent"
-                    : "Request sent"
-                  : `Message ${emailTarget}`
-                : "Channel created"}
+            : step === "company"
+              ? "New company"
+              : step === "bot"
+                ? "New bot"
+                : step === "email"
+                  ? emailOutcome
+                    ? emailOutcome.state === "delivered"
+                      ? "Message sent"
+                      : "Request sent"
+                    : `Message ${emailTarget}`
+                  : "Channel created"}
         </h2>
         <span class="create-spacer"></span>
       {/if}
@@ -1794,7 +2118,7 @@
         <!-- Only options and presentational headings may live inside the
              listbox; the empty/no-match notes render after it. -->
         {#if findKind !== "email"}
-          {#each renderItems as item (item.kind === "heading" ? `h:${item.label}` : item.kind === "create" ? "create-row" : item.row.key)}
+          {#each renderItems as item (item.kind === "heading" ? `h:${item.label}` : item.kind === "create" ? "create-row" : item.kind === "company" ? "create-company-row" : item.row.key)}
             {#if item.kind === "heading"}
               <div class="create-group" role="presentation">{item.label}</div>
             {:else if item.kind === "row"}
@@ -1810,7 +2134,7 @@
                 onclick={() =>
                   item.row.kind === "channel"
                     ? onpick(item.row.row)
-                    : enterCreateWithPerson(item.row)}
+                    : openPersonDirectly(item.row)}
               >
                 {#if item.row.kind === "channel"}
                   <span class="create-glyph" aria-hidden="true">#</span>
@@ -1829,7 +2153,7 @@
                   >
                 {/if}
               </button>
-            {:else}
+            {:else if item.kind === "create"}
               <button
                 type="button"
                 class="create-row create-row-action"
@@ -1845,6 +2169,22 @@
                 <span class="create-row-name"
                   >Create channel #{findResults.createSlug}</span
                 >
+              </button>
+            {:else}
+              <!-- The typed name as a COMPANY, spelled exactly as written. -->
+              <button
+                type="button"
+                class="create-row create-row-action"
+                id={`create-opt-${item.index}`}
+                role="option"
+                tabindex="-1"
+                data-testid="chat-create-company-row"
+                aria-selected={highlightIndex === item.index}
+                onmouseenter={() => (activeIndex = item.index)}
+                onclick={() => newCompany(item.name)}
+              >
+                <span class="create-glyph" aria-hidden="true">+</span>
+                <span class="create-row-name">Create company {item.name}</span>
               </button>
             {/if}
           {/each}
@@ -1895,14 +2235,14 @@
           inert={confirmSubject !== null}
         >
           <div class="create-group" role="presentation">Create</div>
-          {#if oncreatecompany}
+          {#if canCreateCompany}
             <button
               type="button"
               class="create-row create-entry-row"
               data-testid="chat-create-new-company"
               aria-busy={entryBusy === "company" ? "true" : undefined}
               disabled={entryBusy !== null}
-              onclick={newCompany}
+              onclick={() => newCompany(queryDebounced.trim())}
             >
               <span class="create-entry-ic" aria-hidden="true">
                 <svg viewBox="0 0 16 16" fill="none">
@@ -1915,7 +2255,11 @@
                 </svg>
               </span>
               <span class="create-entry-label">New company</span>
-              <span class="create-entry-hint">Opens the setup step in #setup</span>
+              <span class="create-entry-hint">
+                {companyCreate
+                  ? "Name it, invite people, done"
+                  : "Opens the setup step in #setup"}
+              </span>
             </button>
           {/if}
           {#if canCreateLocalBot || canCreateCloudBot}
@@ -1969,9 +2313,189 @@
           {/if}
         </div>
       {/if}
+    {:else if step === "company"}
+      <div class="create-body" data-testid="chat-create-company-step">
+        {#if companyOpening}
+          <p class="create-note" role="status" data-testid="chat-create-company-loading">
+            Getting the company form…
+          </p>
+        {:else if companyForm}
+          {#if companyForm.summary}
+            <p class="create-help">{companyForm.summary}</p>
+          {/if}
+          {#each companyForm.fields as field, i (field.id)}
+            <div class="create-field">
+              <span class="create-label" id={`create-company-${field.id}-label`}
+                >{field.label}</span
+              >
+              {#if field.control === "select"}
+                <select
+                  class="create-select"
+                  data-testid={`chat-create-company-field-${field.id}`}
+                  aria-labelledby={`create-company-${field.id}-label`}
+                  disabled={companyBusy}
+                  value={companyValues[field.id] ?? ""}
+                  onchange={(event) =>
+                    setCompanyValue(field.id, event.currentTarget.value)}
+                >
+                  {#each field.options as option (option.id)}
+                    <option value={option.id}>{option.label}</option>
+                  {/each}
+                </select>
+              {:else}
+                <input
+                  class="create-input"
+                  type="text"
+                  maxlength="200"
+                  data-testid={`chat-create-company-field-${field.id}`}
+                  aria-labelledby={`create-company-${field.id}-label`}
+                  disabled={companyBusy}
+                  value={companyValues[field.id] ?? ""}
+                  oninput={(event) =>
+                    setCompanyValue(field.id, event.currentTarget.value)}
+                  use:focusFirstField={i === 0}
+                />
+              {/if}
+            </div>
+            {#if field.id === companySlugFieldId}
+              <!-- Reserved height: the row is always in the layout, so the
+                   fields below never jump as the verdict changes. -->
+              <p
+                class="create-slug-status"
+                data-testid="chat-create-company-slug-status"
+                data-status={companySlugState.status}
+                role="status"
+                aria-live="polite"
+              >
+                {#if companySlugState.message}
+                  <span>{companySlugState.message}</span>
+                {/if}
+                {#if companySlugState.suggestion}
+                  <button
+                    type="button"
+                    class="create-slug-suggestion"
+                    data-testid="chat-create-company-slug-suggestion"
+                    disabled={companyBusy}
+                    onclick={acceptCompanySlugSuggestion}
+                  >
+                    Use {companySlugState.suggestion}
+                  </button>
+                {/if}
+              </p>
+            {/if}
+            {#if field.hint}
+              <p class="create-help">{field.hint}</p>
+            {/if}
+            {#if field.error}
+              <p class="create-help" role="alert">{field.error}</p>
+            {/if}
+          {/each}
+
+          <div class="create-members">
+            <div class="create-cell">
+              <div class="create-field create-field-wrap create-field-flush">
+                <span class="create-label" id="create-company-invite-label">Invite</span>
+                <div class="create-chips">
+                  {#each companyInvites as invite (invite.email)}
+                    <span class="create-chip" data-testid="chat-create-company-invite">
+                      <span class="create-chip-name">{invite.email}</span>
+                      <span class="create-tag">{invite.role}</span>
+                      <button
+                        type="button"
+                        class="create-chip-x"
+                        aria-label={`Remove ${invite.email}`}
+                        disabled={companyBusy}
+                        onclick={() => removeCompanyInvite(invite.email)}
+                      >
+                        <span aria-hidden="true">×</span>
+                      </button>
+                    </span>
+                  {/each}
+                  <input
+                    class="create-input create-picker"
+                    type="text"
+                    data-testid="chat-create-company-invite-input"
+                    placeholder={companyInvites.length === 0
+                      ? "Email addresses, one at a time…"
+                      : ""}
+                    aria-labelledby="create-company-invite-label"
+                    disabled={companyBusy}
+                    bind:value={companyInviteInput}
+                    onkeydown={onCompanyInviteKey}
+                  />
+                </div>
+              </div>
+            </div>
+            <div class="create-field">
+              <span class="create-label" id="create-company-role-label">Role</span>
+              <select
+                class="create-select"
+                data-testid="chat-create-company-role"
+                aria-labelledby="create-company-role-label"
+                disabled={companyBusy}
+                bind:value={companyRole}
+              >
+                <option value="member">Member</option>
+                <option value="owner">Owner</option>
+              </select>
+            </div>
+            <p class="create-help">
+              Each address gets an invite once the company exists. Nobody is
+              invited if you leave this empty.
+            </p>
+          </div>
+        {/if}
+
+        {#if companyInviteFailures.length > 0}
+          <p class="create-note" role="alert" data-testid="chat-create-company-invite-error">
+            {companyInviteFailures[0].email} wasn't invited: {companyInviteFailures[0]
+              .reason}
+            {#if companyInviteFailures.length > 1}
+              ({companyInviteFailures.length - 1} more)
+            {/if}
+          </p>
+        {/if}
+        {#if companyError}
+          <p class="create-note" role="alert" data-testid="chat-create-company-error">
+            {companyError}
+          </p>
+        {/if}
+      </div>
+      <div class="create-footer" data-testid="chat-create-company-foot">
+        {#if companyInviteFailures.length > 0}
+          <!-- The company is made; only the invites failed. The one thing left
+               to do here is leave. -->
+          <button type="button" class="create-submit" onclick={() => onclose()}>
+            Done
+          </button>
+        {:else if companyForm}
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-company-submit"
+            disabled={companySubmitDisabled}
+            onclick={submitCompany}
+          >
+            {companyCreating ? "Creating…" : "Create company"}
+          </button>
+        {:else if !companyOpening}
+          <!-- The form never opened. Nothing to submit; the only move is to go
+               back and try again, so say so rather than offering a dead button. -->
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-company-retry"
+            onclick={() => void enterCompanyStep(companyName)}
+          >
+            Try again
+          </button>
+        {/if}
+      </div>
     {:else if step === "bot"}
       <CreateBotFlow
         {botRuntimeReady}
+        {botRuntimeStatus}
+        {onrecheckruntimes}
         {botWorkers}
         existingNames={existingBotNames}
         {botCompanies}
@@ -2148,28 +2672,62 @@
 
         <div class="create-field">
           <span class="create-label" id="create-scope-label">In</span>
-          <select
-            class="create-select"
-            data-testid="chat-channel-scope"
+          <div
+            class="create-kind"
+            role="radiogroup"
             aria-labelledby="create-scope-label"
-            disabled={creating}
-            bind:value={companyUid}
+            data-testid="chat-channel-scope-mode"
           >
-            {#each targetCompanies as company (company.companyUid)}
-              {@const blocked = scopeUnavailable.find(
-                (row) => row.company.companyUid === company.companyUid,
-              )}
-              <option value={company.companyUid} disabled={Boolean(blocked)}>
-                {blocked ? `${company.label} — ${blocked.reason}` : company.label}
-              </option>
-            {/each}
-            <!-- Personal is the owner's own scope: only they and their agents
-                 can be in it, so it is held (not hidden) once a teammate is
-                 picked — the value stays legible instead of a blank select. -->
-            <option value="" disabled={!personalAllowed}>Personal</option>
-          </select>
+            <button
+              type="button"
+              role="radio"
+              class="create-kind-option"
+              class:selected={scopeMode === "company"}
+              aria-checked={scopeMode === "company"}
+              data-testid="chat-channel-scope-company"
+              disabled={creating || !canScopeCompany}
+              onclick={() => setScopeMode("company")}
+            >
+              Company
+            </button>
+            <button
+              type="button"
+              role="radio"
+              class="create-kind-option"
+              class:selected={scopeMode === "personal"}
+              aria-checked={scopeMode === "personal"}
+              data-testid="chat-channel-scope-personal"
+              disabled={creating}
+              onclick={() => setScopeMode("personal")}
+            >
+              Personal
+            </button>
+          </div>
         </div>
-        {#if scopeUnavailable.length > 0}
+        {#if scopeMode === "company"}
+          <div class="create-field">
+            <span class="create-label" id="create-company-label">Company</span>
+            <select
+              class="create-select"
+              data-testid="chat-channel-scope"
+              aria-labelledby="create-company-label"
+              disabled={creating}
+              bind:value={companyUid}
+            >
+              {#each targetCompanies as company (company.companyUid)}
+                {@const blocked = scopeUnavailable.find(
+                  (row) => row.company.companyUid === company.companyUid,
+                )}
+                <option value={company.companyUid} disabled={Boolean(blocked)}>
+                  {blocked
+                    ? `${company.label} — ${blocked.reason}`
+                    : company.label}
+                </option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+        {#if scopeMode === "company" && scopeUnavailable.length > 0}
           <p class="create-help" data-testid="chat-channel-scope-unavailable">
             {scopeUnavailable[0].reason}
           </p>
@@ -2350,11 +2908,17 @@
         </p>
       {/if}
 
-      <div class="create-footer" inert={confirmSubject !== null}>
+      <!-- The confirm inerts the footer EXCEPT the direct-DM action: answering a
+           cross-company question is not a precondition for a 1:1 DM. -->
+      <div
+        class="create-footer"
+        inert={confirmSubject !== null && soleHumanMember === null}
+      >
         {#if soleHumanMember}
           <!-- Still one unnamed person: a plain DM needs no channel at all. -->
           <button
             type="button"
+            bind:this={directEl}
             class="create-direct"
             data-testid="chat-channel-message-directly"
             disabled={creating}
@@ -2374,7 +2938,7 @@
           type="button"
           class="create-submit"
           data-testid="chat-channel-create"
-          disabled={submitDisabled}
+          disabled={submitDisabled || confirmSubject !== null}
           aria-busy={creating}
           aria-describedby={blockReason ? "create-submit-reason" : undefined}
           onclick={() => void submitCreate()}
@@ -2462,8 +3026,9 @@
         </p>
         <p class="create-confirm-body">
           {confirmSubject.label} isn't listed in {workspaceLabel}. They'll be able
-          to read and post in #{slugCanonical} — nothing else. This does not give
-          them workspace membership or access to any files.
+          to read and post in {slugCanonical ? `#${slugCanonical}` : "this channel"}
+          — nothing else. This does not give them workspace membership or access
+          to any files.
         </p>
         <p class="create-confirm-body">
           People often belong to several workspaces, so they may already have
@@ -2880,6 +3445,45 @@
   .create-slug-echo {
     color: var(--t3);
     font-family: var(--font-mono);
+  }
+
+  /*
+   * The live handle verdict. min-height keeps the row in the layout even when
+   * it says nothing, so the invite list below never jumps while someone types.
+   */
+  .create-slug-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 20px;
+    margin: 0;
+    padding: 0 16px 8px 96px;
+    color: var(--t2);
+    font-size: 12px;
+  }
+
+  .create-slug-status[data-status="available"] {
+    color: var(--ok, #3fb950);
+  }
+
+  .create-slug-status[data-status="taken"],
+  .create-slug-status[data-status="invalid"] {
+    color: var(--warn, #d29922);
+  }
+
+  .create-slug-suggestion {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent, inherit);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .create-slug-suggestion:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .create-select {

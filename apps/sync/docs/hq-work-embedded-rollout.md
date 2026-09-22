@@ -5,7 +5,7 @@ The desktop workspace (`desktop-alt` window, `@hq/ui` DesktopApp via
 Signed-out and first-run onboarding lead into it. There is no email-domain
 cohort and no classic popover chat shell.
 
-Tray icon, compact status popover (Opt+Shift+H), widget, and the sync engine
+Tray icon, compact status popover (onboarding and sign-in only), widget, and the sync engine
 stay in Sync. No second app, no co-install, no account or data migration.
 
 This file remains the source of truth for the combined-app embed

@@ -13,6 +13,10 @@
     "./emoji-shortcodes": {
       "svelte": "./src/common/emojiShortcodes.ts",
       "default": "./src/common/emojiShortcodes.ts"
+    },
+    "./brand": {
+      "svelte": "./src/brand/index.ts",
+      "default": "./src/brand/index.ts"
     }
   },
   "scripts": {

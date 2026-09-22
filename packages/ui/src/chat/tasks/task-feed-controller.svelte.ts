@@ -9,6 +9,8 @@
 //
 // Never throws: a failing agent yields an errored, empty feed and the strip
 // simply shows nothing for it.
+import { startJitteredPoll } from "@hq/platform";
+
 import { agentTaskFeed, type AgentTaskFeed } from "./agent-task-feed";
 import { roomTaskFeed } from "./room-task-feed";
 import type { AgentTask } from "./agent-tasks";
@@ -40,7 +42,7 @@ export function isAgentUid(uid: string): boolean {
 export class TaskFeedController {
   feeds = $state<Map<string, AgentTaskFeed>>(new Map());
   sources = $state<Map<string, TaskFeedSource>>(new Map());
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private stopPoll: (() => void) | null = null;
   private disposed = false;
   private readonly agents: string[];
   private readonly channelId: string | null;
@@ -54,8 +56,14 @@ export class TaskFeedController {
     this.fetchRoomTasks = options.fetchRoomTasks ?? null;
     const pollMs = options.pollMs ?? AGENT_TASK_POLL_MS;
     if (this.agents.length === 0 || (!this.fetchTasks && !this.fetchRoomTasks)) return;
-    void this.tick();
-    this.timer = setInterval(() => void this.tick(), pollMs);
+    // Jittered, and pushed out while a throttle is outstanding: a channel
+    // full of agents otherwise has every client asking for the task feed on
+    // the same beat.
+    this.stopPoll = startJitteredPoll({
+      intervalMs: pollMs,
+      tick: () => this.tick(),
+      immediate: true,
+    });
   }
 
   /**
@@ -138,7 +146,7 @@ export class TaskFeedController {
 
   dispose(): void {
     this.disposed = true;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.stopPoll?.();
+    this.stopPoll = null;
   }
 }

@@ -18,11 +18,17 @@
  * Platform-pure: timers injectable, refresh is a seam.
  */
 
+import { startJitteredPoll } from "@hq/platform";
+
 import { isWorkSessionTopic } from "./board-reconcile";
 
+/**
+ * Timer seam. `setTimeout`, not `setInterval`: the poll is jittered, so each
+ * tick is armed at its own delay rather than on a fixed period.
+ */
 export interface FeedTimerHost {
-  setInterval(fn: () => void, ms: number): unknown;
-  clearInterval(handle: unknown): void;
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
 }
 
 export type WorkSessionFeedMode = "idle" | "polling" | "wake-driven";
@@ -63,8 +69,8 @@ export function shouldTreatAsWorkSessionWake(topicOrKind: string): boolean {
 }
 
 const realTimers: FeedTimerHost = {
-  setInterval: (fn, ms) => setInterval(fn, ms),
-  clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 };
 
 export function createWorkSessionFeed(
@@ -72,14 +78,12 @@ export function createWorkSessionFeed(
 ): WorkSessionFeed {
   const timers = options.timers ?? realTimers;
   let mode: WorkSessionFeedMode = "idle";
-  let handle: unknown = null;
+  let stopPoll: (() => void) | null = null;
   let stopped = false;
 
   const stopPolling = (): void => {
-    if (handle != null) {
-      timers.clearInterval(handle);
-      handle = null;
-    }
+    stopPoll?.();
+    stopPoll = null;
   };
 
   const refresh = (): void => {
@@ -100,7 +104,12 @@ export function createWorkSessionFeed(
         return;
       }
       mode = "polling";
-      handle = timers.setInterval(refresh, options.pollMs);
+      stopPoll = startJitteredPoll({
+        intervalMs: options.pollMs,
+        tick: refresh,
+        setTimeoutFn: (fn, ms) => timers.setTimeout(fn, ms),
+        clearTimeoutFn: (h) => timers.clearTimeout(h),
+      });
     },
     wake() {
       if (stopped) return;

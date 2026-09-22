@@ -4,6 +4,10 @@
    convention as v4/tokens.css: :root + force-light, system-dark :root,
    then .dark / force-dark. Forced light out-specifies the media query. */
 .chat-shell {
+  /* Grayscale antialiasing: subpixel rendering on a dark surface makes every
+     weight read one step heavier than the type was designed for. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   --window: transparent;
   --side-bg: rgba(0, 0, 0, 0.2);
   --ground: rgba(255, 255, 255, 0.02);

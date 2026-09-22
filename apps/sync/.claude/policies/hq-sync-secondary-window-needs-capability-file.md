@@ -33,7 +33,6 @@ Existing canonical examples in `src-tauri/capabilities/`:
 - `meetings-window.json` — meetings secondary window
 - `drift-detail.json` — drift secondary window
 - `share-detail.json` — share secondary window
-- `dm-detail.json` — DM secondary window
 
 ## Rationale
 

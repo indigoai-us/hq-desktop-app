@@ -426,7 +426,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
   });
 
-  it("blocks a bad or taken name, gates on a signed-in runtime, and never caps the bot count", async () => {
+  it("takes a free-form name, blocks a taken handle, gates on a signed-in runtime, and never caps the bot count", async () => {
     const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "x" }));
     // No per-person limit: the row stays enabled no matter how many bots exist.
     mountSidebar({ companies: [INDIGO], oncreatebot });
@@ -459,16 +459,31 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     click('[data-testid="create-bot-next"]');
     await settle();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
-    name.value = "Bad Name";
+    // Spaces and capitals are a display name now, not an error.
+    name.value = "Dr Love";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe("@dr-love");
+    // An emoji-only name has nothing to slugify: the handle is what blocks.
+    name.value = "🚀";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("Lowercase letters");
-    name.value = "scout";
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("no letters or digits");
+    // The handle field opens on its own so the block is fixable in place.
+    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
+    handle.value = "rocket";
+    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    handle.value = "";
+    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    name.value = "Scout";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("already have a bot named scout");
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("handle @scout");
     // A free name clears the block.
     name.value = "assistant";
     name.dispatchEvent(new Event("input", { bubbles: true }));
@@ -491,5 +506,57 @@ describe("ChatSidebar offers the user's local bots in the '+' modal", () => {
     query.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(30);
     await vi.waitFor(() => expect(q('[data-testid="chat-create-modal"]')?.textContent).toContain("scout"));
+  });
+});
+
+describe("ChatSidebar company switcher — in-modal company creation", () => {
+  const companyCreate = {
+    open: async () => ({
+      ok: true as const,
+      form: {
+        channelId: "setup",
+        cardId: "card_create_company_2",
+        title: "Name your company",
+        summary: null,
+        actionId: "submit",
+        nameFieldId: "name",
+        fields: [
+          {
+            id: "name",
+            label: "Company name",
+            control: "text" as const,
+            options: [],
+            value: "",
+            required: true,
+            error: null,
+            hint: null,
+            description: null,
+          },
+        ],
+      },
+    }),
+    submit: async () => ({
+      ok: true as const,
+      company: {
+        companyUid: "cmp_new",
+        companyChannelId: "chn_new",
+        inviteFailures: [],
+      },
+    }),
+  };
+
+  it("opens the create modal on its company step instead of #setup", async () => {
+    const oncreatecompany = vi.fn(async () => okTarget);
+    mountSidebar({ companies: [INDIGO, ACME], oncreatecompany, companyCreate });
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    await settle();
+    click('[data-testid="chat-scope-new-company"]');
+    await settle(10);
+    expect(q('[data-testid="chat-create-company-step"]')).toBeTruthy();
+    expect(
+      q<HTMLInputElement>('[data-testid="chat-create-company-field-name"]')?.value,
+    ).toBe("");
+    expect(oncreatecompany).not.toHaveBeenCalled();
   });
 });

@@ -6,11 +6,13 @@ import {
   filterMentionCandidates,
   mergeMentionTargets,
   mentionSpansForBody,
+  mentionsPresentInBody,
   mentionRowPill,
   mentionRowSubtitle,
   mentionTargetLabel,
   mentionTargetsFromContacts,
   mentionTargetsFromContactsPayload,
+  mentionUidTag,
   mentionTypeForUid,
   replaceActiveMention,
   stampMentionCompany,
@@ -94,7 +96,7 @@ describe("channel mentions", () => {
     ]);
   });
 
-  it("keeps both nameless-company dupes but never labels them with a uid", () => {
+  it("labels nameless-company AGENT dupes with a uid tag", () => {
     const rows = collapseDuplicateMentionTargets([
       {
         participantUid: "agt_aaaaaaaaaaaa111111",
@@ -108,12 +110,48 @@ describe("channel mentions", () => {
       },
     ]);
     expect(rows).toHaveLength(2);
+    // An agent has no email and often no company, so on a name collision there
+    // is genuinely nothing else to print — and two identical unpickable rows is
+    // how the wrong tenant's agent gets mentioned. The uid tag is the label of
+    // LAST resort and reachable ONLY on a collision. Humans never get one:
+    // see "a person is never labelled with a uid fragment" below.
+    const tags = rows.map((row) => row.disambiguator);
+    expect(tags).toEqual([
+      mentionUidTag("agt_aaaaaaaaaaaa111111"),
+      mentionUidTag("agt_bbbbbbbbbbbb222222"),
+    ]);
+    expect(new Set(rows.map(mentionTargetLabel)).size).toBe(2);
     for (const row of rows) {
-      // No company, no email → no label at all. A uid tail like "…906VYS" is
-      // never shown to the user.
+      // No company → the pill falls back to the disambiguator, which is the
+      // only thing on the row that tells these two agents apart.
+      expect(mentionRowPill(row)).toBe(row.disambiguator);
+      expect(mentionTargetLabel(row)).toContain("Izzy (");
+    }
+  });
+
+  it("never labels a person with a uid fragment", () => {
+    const rows = collapseDuplicateMentionTargets([
+      {
+        participantUid: "prs_01KQ7NTBRY8X2QAA4S8AAF26W6",
+        participantType: "human",
+        displayName: "Jacob Posel",
+      },
+      {
+        participantUid: "prs_01KQ2ZJV5X8CF37JP3VWDWS1NJ",
+        participantType: "human",
+        displayName: "Jacob Posel",
+      },
+    ]);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      // The original rule, restored: a uid tail like "…DWS1NJ" is never shown
+      // to a user for a person. With no outside label supplied there is simply
+      // no pill; the shell always supplies one ("outside Indigo") and the email
+      // replaces it once the connections roster answers.
       expect(row.disambiguator).toBeUndefined();
       expect(mentionRowPill(row)).toBeNull();
-      expect(mentionTargetLabel(row)).toBe("Izzy");
+      expect(mentionTargetLabel(row)).toBe("Jacob Posel");
+      expect(mentionTargetLabel(row)).not.toContain("…");
     }
   });
 
@@ -529,5 +567,36 @@ describe("applyMentionMarkup markup safety", () => {
     expect(
       stampMentionCompany(rows, "  ").map((row) => row.companyUid),
     ).toEqual(["cmp_indigo", "cmp_liverecover"]);
+  });
+});
+
+describe("mentionsPresentInBody", () => {
+  const ada = {
+    participantUid: "prs_ada",
+    participantType: "human" as const,
+    displayName: "Ada Lovelace",
+  };
+  const bob = {
+    participantUid: "prs_bob",
+    participantType: "human" as const,
+    displayName: "Bob",
+  };
+
+  it("drops a picked mention the user deleted from the draft", () => {
+    expect(mentionsPresentInBody("hey @Bob can you look?", [ada, bob])).toEqual([
+      bob,
+    ]);
+  });
+
+  it("keeps every mention still in the body, and none when all are gone", () => {
+    expect(
+      mentionsPresentInBody("@Ada Lovelace and @Bob", [ada, bob]),
+    ).toEqual([ada, bob]);
+    expect(mentionsPresentInBody("nobody here", [ada, bob])).toEqual([]);
+  });
+
+  it("does not treat a longer name as a match for its prefix", () => {
+    const bobby = { ...bob, participantUid: "prs_bobby", displayName: "Bobby" };
+    expect(mentionsPresentInBody("ping @Bobby", [bob, bobby])).toEqual([bobby]);
   });
 });

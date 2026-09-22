@@ -40,9 +40,11 @@ env HQ_DISABLE_BLUR_HIDE=1 HQ_DEV_SHOW_ON_LAUNCH=1 HQ_INSTALLER_DEBUG_DEPS=1 \
   "$HOME/Applications/HQ.app/Contents/MacOS/hq-sync-menubar" >"$HQ_MATRIX_OUT/app.stdout" 2>&1 &
 APP_PID=$!
 sleep 12; screencapture -x "$SHOTS/t000.png"
-# The first-run card auto-shows; if it did not, summon it (Opt+Shift+H).
+# The first-run card auto-shows. The Opt+Shift+H summon fallback is retired
+# (PL-05) — there is no keystroke that brings the card back, so a missing card
+# is recorded as the product failure it is and the run continues.
 if ! osascript -e 'tell application "System Events" to get name of every window of process "hq-sync-menubar"' 2>/dev/null | grep -q HQ; then
-  osascript -e 'tell application "System Events" to key code 4 using {option down, shift down}' 2>/dev/null; sleep 3
+  note "first-run card did not auto-show (no summon fallback since the popover shortcut was retired)"
 fi
 done_flag=0; i=0
 while (( $(date +%s) - t0 < TIMEOUT )); do

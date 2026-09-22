@@ -75,11 +75,6 @@ mod tests {
             default_recording_company_uid: None,
             telemetry_enabled: None,
             claude_projects_dir: None,
-            widget_enabled: None,
-            widget_display: None,
-            widget_placement: None,
-            widget_auto_hide_seconds: None,
-            widget_show_needs_action: None,
             dock_icon: None,
             hq_work_handoff: None,
             in_app_sessions: None,
@@ -126,17 +121,6 @@ mod tests {
             // Telemetry is opt-out — defaults ON when absent from disk (#159).
             telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
             claude_projects_dir: prefs.claude_projects_dir,
-            // Widget defaults ON when absent (ships default-enabled after update).
-            widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
-            // Pass-through — None = primary display.
-            widget_display: prefs.widget_display,
-            widget_placement: Some(
-                prefs
-                    .widget_placement
-                    .unwrap_or_else(|| "bottom-right".to_string()),
-            ),
-            widget_auto_hide_seconds: Some(prefs.widget_auto_hide_seconds.unwrap_or(8)),
-            widget_show_needs_action: Some(prefs.widget_show_needs_action.unwrap_or(true)),
             // Dock icon defaults ON when absent (existing installs gain the
             // Dock icon on upgrade; explicit `false` is the only opt-out).
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
@@ -183,12 +167,6 @@ mod tests {
         // identity-aware resolution happens inside get_settings itself
         // and is exercised by util::release_channel::tests.
         assert_eq!(result.release_channel, None);
-        // Widget defaults ON when absent; display stays None (primary).
-        assert_eq!(result.widget_enabled, Some(true));
-        assert_eq!(result.widget_display, None);
-        assert_eq!(result.widget_placement.as_deref(), Some("bottom-right"));
-        assert_eq!(result.widget_auto_hide_seconds, Some(8));
-        assert_eq!(result.widget_show_needs_action, Some(true));
         // Retired hqWorkHandoff is ignored, not defaulted.
         assert_eq!(result.hq_work_handoff, None);
     }
@@ -235,11 +213,6 @@ mod tests {
             default_recording_company_uid: Some("co_xyz".to_string()),
             telemetry_enabled: Some(false),
             claude_projects_dir: Some("/Users/test/.claude-ridge/projects".to_string()),
-            widget_enabled: Some(false),
-            widget_display: Some("DELL U2720Q".to_string()),
-            widget_placement: Some("top-left".to_string()),
-            widget_auto_hide_seconds: Some(0),
-            widget_show_needs_action: Some(false),
             dock_icon: Some(false),
             hq_work_handoff: Some(true),
             in_app_sessions: Some(true),
@@ -274,12 +247,6 @@ mod tests {
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_beta_pref_is_honored`.
         assert_eq!(result.release_channel, Some("alpha".to_string()));
-        // explicit widget_enabled false + display pass through
-        assert_eq!(result.widget_enabled, Some(false));
-        assert_eq!(result.widget_display, Some("DELL U2720Q".to_string()));
-        assert_eq!(result.widget_placement.as_deref(), Some("top-left"));
-        assert_eq!(result.widget_auto_hide_seconds, Some(0));
-        assert_eq!(result.widget_show_needs_action, Some(false));
         // explicit dock_icon false survives the default-on coercion — the
         // menubar-only opt-out must not be silently re-enabled on every save
         assert_eq!(result.dock_icon, Some(false));
@@ -313,11 +280,6 @@ mod tests {
             default_recording_company_uid: None,
             telemetry_enabled: Some(true),
             claude_projects_dir: None,
-            widget_enabled: Some(true),
-            widget_display: Some("Built-in Retina Display".to_string()),
-            widget_placement: Some("follow-tray".to_string()),
-            widget_auto_hide_seconds: Some(15),
-            widget_show_needs_action: Some(true),
             dock_icon: Some(true),
             hq_work_handoff: Some(false),
             in_app_sessions: Some(false),
@@ -341,16 +303,10 @@ mod tests {
         // releaseChannel round-trips as a camelCase string (matches the
         // #[serde(rename_all = "camelCase")] on MenubarPrefs).
         assert_eq!(parsed.release_channel, Some("beta".to_string()));
-        assert_eq!(parsed.widget_placement.as_deref(), Some("follow-tray"));
-        assert_eq!(parsed.widget_auto_hide_seconds, Some(15));
-        assert_eq!(parsed.widget_show_needs_action, Some(true));
         assert!(
             json.contains("\"releaseChannel\":"),
             "expected camelCase key 'releaseChannel' in serialized output, got: {json}"
         );
-        assert!(json.contains("\"widgetPlacement\": \"follow-tray\""));
-        assert!(json.contains("\"widgetAutoHideSeconds\": 15"));
-        assert!(json.contains("\"widgetShowNeedsAction\": true"));
     }
 
     #[test]
@@ -535,88 +491,19 @@ mod tests {
         assert!(prefs.meeting_detect_notify.is_none());
     }
 
-    // ── Widget prefs (US-004) ─────────────────────────────────────────────────
-
     #[test]
-    fn test_widget_defaults_absent_enabled_on_display_none() {
-        // Absent widget_enabled → Some(true); widget_display stays None (primary).
-        let result = apply_defaults(empty_prefs());
-        assert_eq!(result.widget_enabled, Some(true));
-        assert_eq!(result.widget_display, None);
-        assert_eq!(result.widget_placement.as_deref(), Some("bottom-right"));
-        assert_eq!(result.widget_auto_hide_seconds, Some(8));
-        assert_eq!(result.widget_show_needs_action, Some(true));
-    }
-
-    #[test]
-    fn test_explicit_widget_enabled_false_preserved() {
-        // A user who toggled the widget off must not be flipped back on.
-        let prefs = MenubarPrefs {
-            widget_enabled: Some(false),
-            ..empty_prefs()
-        };
-        let result = apply_defaults(prefs);
-        assert_eq!(result.widget_enabled, Some(false));
-    }
-
-    #[test]
-    fn test_widget_fields_serialize_camel_case_and_skip_none() {
-        // Explicit values → camelCase keys; None fields are skipped (no null).
-        let with_values = MenubarPrefs {
-            widget_enabled: Some(false),
-            widget_display: Some("DELL U2720Q".to_string()),
-            widget_placement: Some("top-right".to_string()),
-            widget_auto_hide_seconds: Some(0),
-            widget_show_needs_action: Some(false),
-            ..empty_prefs()
-        };
-        let json = serde_json::to_string(&with_values).unwrap();
-        assert!(
-            json.contains("\"widgetEnabled\":false"),
-            "expected camelCase widgetEnabled, got: {json}"
-        );
-        assert!(
-            json.contains("\"widgetDisplay\":\"DELL U2720Q\""),
-            "expected camelCase widgetDisplay, got: {json}"
-        );
-        assert!(json.contains("\"widgetPlacement\":\"top-right\""));
-        assert!(json.contains("\"widgetAutoHideSeconds\":0"));
-        assert!(json.contains("\"widgetShowNeedsAction\":false"));
-        assert!(!json.contains("widget_enabled"));
-        assert!(!json.contains("widget_display"));
-
-        let none_fields = MenubarPrefs {
-            widget_enabled: None,
-            widget_display: None,
-            ..empty_prefs()
-        };
-        let skipped = serde_json::to_string(&none_fields).unwrap();
-        assert!(
-            !skipped.contains("widgetEnabled"),
-            "None widget_enabled must skip (no null), got: {skipped}"
-        );
-        assert!(
-            !skipped.contains("widgetDisplay"),
-            "None widget_display must skip (no null), got: {skipped}"
-        );
-    }
-
-    #[test]
-    fn test_merge_prefs_preserves_existing_widget_fields_when_typed_none() {
-        // When the typed struct has widget fields None (e.g. Settings UI
-        // didn't touch them / older client), merge must keep on-disk values.
+    fn test_merge_prefs_preserves_retired_widget_keys_on_disk() {
+        // The floating widget and its prefs were removed. `widgetEnabled` /
+        // `widgetDisplay` are no longer typed fields, so an existing
+        // menubar.json carries them as unknown keys. Merge must leave them
+        // alone rather than dropping the rest of the file's untyped state
+        // along with them.
         let existing = r#"{
             "widgetEnabled": false,
             "widgetDisplay": "DELL U2720Q",
             "machineId": "mid-keep"
         }"#;
-        let prefs = MenubarPrefs {
-            // Typed fields None — should not wipe on-disk widget prefs.
-            widget_enabled: None,
-            widget_display: None,
-            ..empty_prefs()
-        };
-        let merged = merge_prefs_over_existing(&prefs, Some(existing)).unwrap();
+        let merged = merge_prefs_over_existing(&empty_prefs(), Some(existing)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(v["widgetEnabled"], false);
         assert_eq!(v["widgetDisplay"], "DELL U2720Q");

@@ -285,7 +285,10 @@ pub mod macos {
                 stringWithUTF8String: b"vide\0".as_ptr() as *const i8
             ];
             if video_type.is_null() {
-                log(super::LOG_TAG, "request_camera_access: NSString init failed");
+                log(
+                    super::LOG_TAG,
+                    "request_camera_access: NSString init failed",
+                );
                 return;
             }
 
@@ -299,7 +302,10 @@ pub mod macos {
                 );
             });
 
-            log(super::LOG_TAG, "AVCaptureDevice.requestAccess(video): calling");
+            log(
+                super::LOG_TAG,
+                "AVCaptureDevice.requestAccess(video): calling",
+            );
             let _: () = msg_send![
                 av_cls,
                 requestAccessForMediaType: video_type,

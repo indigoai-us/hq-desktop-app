@@ -23,7 +23,7 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
-  import { failure, type PlatformAdapter } from "@hq/platform";
+  import { failure, startJitteredPoll, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -63,6 +63,8 @@
   import SetupRunCard from "../chat/SetupRunCard.svelte";
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
+  import SetupBotFinale from "../chat/SetupBotFinale.svelte";
+  import { messageMarksSetupDone } from "../chat/messaging/richMessageContent.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -82,6 +84,7 @@
     findSetupBot,
     findSetupBotContact,
     firstSignedInRuntime,
+    setupBotMarkedDone,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_INTRO,
@@ -103,6 +106,11 @@
     type EntryPointResult,
     type EntryPointTarget,
   } from "../chat/lifecycle-entry-points.js";
+  import {
+    openCreateCompanyDraft,
+    submitCreateCompany,
+    type CompanyCreateSeam,
+  } from "../chat/create-company/create-company-flow.js";
   import {
     patchLifecycleCardState,
     submitLifecycleCardAction,
@@ -152,7 +160,22 @@
   } from "../settings/ShellSettings.svelte";
   import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
   import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
+  import SessionExpiredBanner from "./SessionExpiredBanner.svelte";
+  import NotificationActionRecovery from "./NotificationActionRecovery.svelte";
+  import {
+    cacheLogoAssets,
+    readBrandCache,
+    syncBrandFromWorkspaces,
+    type CachedBrand,
+  } from "../brand/brand.js";
+  import {
+    recoveryFromEvent,
+    RECOVERY_EVENT,
+    RETRY_EVENT,
+    type NativeNotificationRecovery,
+  } from "./notification-recovery.js";
   import type { SyncEventHost } from "./sync-events.js";
+  import type { HomeConflict } from "../home/home-model.js";
   import {
     emptySyncStatus,
     reduceSyncEvent,
@@ -268,7 +291,10 @@
     type LinkMenuAnchor,
   } from "../common/external-links.js";
   import {
+    applyResolvedMentionEmails,
     disambiguateMentionTargets,
+    mentionUidsNeedingEmail,
+    outsideCompanyLabel,
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
     mergeMentionRosters,
@@ -284,6 +310,7 @@
     isAgentUid,
     newestMessageAtFrom,
     startThinkingIn,
+    syncBusyThinking,
     kickoffThinkingState,
     tickAll,
     type ThinkingByRow,
@@ -310,9 +337,12 @@
     type LocalBotTrace,
   } from "../chat/bot-runnability.js";
   import {
+    busyLocalBotUids,
     isAlreadyExistsFailure,
+    LOCAL_BOT_BUSY_POLL_MS,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
+    localBotNeedsOfflineNotice,
     localBotOfflineNotice,
     localBotPresence,
     type LocalBotEntryResult,
@@ -320,6 +350,11 @@
     plainBotFailure,
     promotedBotCompany,
   } from "../chat/local-bots.js";
+  import {
+    loadBotDisplayNames,
+    rememberBotDisplayName,
+    type BotDisplayNames,
+  } from "../chat/bot-display-names.js";
   import {
     adoptFallbackNotice,
     BOT_RESTORE_ALL,
@@ -387,6 +422,7 @@
   } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
     ChatSidebarApi,
@@ -503,7 +539,11 @@
     mergePaletteRows,
     paletteConversationItems,
   } from "./palette-rows.js";
-  import { joinableMemberships, type Workspace } from "../chat/workspaces.js";
+  import {
+    joinableMemberships,
+    type Workspace,
+    type WorkspacesResult,
+  } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
     buildCompanyIconMap,
@@ -571,6 +611,12 @@
     /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
     onretryroster?: () => void;
     /**
+     * Start reauthentication from the session-expired banner (PL-03). The
+     * desktop host clears the dead session and lands the user on its sign-in
+     * surface. Omitted → the banner states the problem without an action.
+     */
+    onsignin?: () => void | Promise<void>;
+    /**
      * Verified signed-in principal (host-supplied: web = Cognito session,
      * desktop = its auth source). Drives "you" tagging + admin gating in the
      * shared UI. Null on the unauth / empty path.
@@ -578,6 +624,13 @@
     self?: SelfIdentity | null;
     /** Native account partition for renderer persistence and async guards. */
     tenantAccountId?: string | null;
+    /**
+     * Agents the user has a real conversation with. Creating an agent
+     * announces it to the whole company, so an `agt_*` rail row stays hidden
+     * until it messages the user; a host with its own record of past agent
+     * conversations seeds it here.
+     */
+    engagedAgentUids?: readonly string[] | null;
     /** Monotonic native auth-session generation. A new value remounts the host. */
     tenantGeneration?: number;
     /**
@@ -749,8 +802,10 @@
     syncEvents = null,
     rosterStatus = null,
     onretryroster,
+    onsignin,
     self = null,
     tenantAccountId = null,
+    engagedAgentUids = null,
     tenantGeneration = 0,
     isAdmin = null,
     accountLabel = null,
@@ -826,6 +881,133 @@
   }
 
   /**
+   * Session-expired notice (PL-03). `start_sync` returns Ok on the needs-reauth
+   * path and emits `sync:auth-error` instead, so without this banner a paused
+   * session is invisible in the desktop window — the tray popover was the only
+   * surface that said so. Dismissal is session-only; the next auth error shows
+   * it again.
+   */
+  let authErrorMessage = $state<string | null>(null);
+  let authSignInPending = $state(false);
+
+  async function startReauth(): Promise<void> {
+    if (!onsignin || authSignInPending) return;
+    authSignInPending = true;
+    try {
+      await onsignin();
+    } catch (err) {
+      console.error("sign-in from session-expired banner failed:", err);
+    } finally {
+      authSignInPending = false;
+    }
+  }
+
+  /**
+   * Native-notification action retry (PL-03). The controller window owns the
+   * action routing, so it broadcasts its recovery record here and re-runs the
+   * action when this shell asks. See ./notification-recovery.ts.
+   */
+  let notificationRecovery = $state<NativeNotificationRecovery | null>(null);
+  let notificationRetrying = $state(false);
+
+  function retryNotificationAction(): void {
+    const host = syncEvents;
+    if (!host?.emit || !notificationRecovery || notificationRetrying) return;
+    // Optimistic: the controller echoes the authoritative state back on
+    // RECOVERY_EVENT, which either clears the banner or releases the control.
+    notificationRetrying = true;
+    void Promise.resolve(host.emit(RETRY_EVENT)).catch((err) => {
+      console.error("notification retry: emit failed:", err);
+      notificationRetrying = false;
+    });
+  }
+
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    void host
+      .listen(RECOVERY_EVENT, (event) => {
+        const parsed = recoveryFromEvent(event?.payload);
+        if (!parsed) return;
+        notificationRecovery = parsed.recovery;
+        notificationRetrying = parsed.recovery ? parsed.retrying : false;
+      })
+      .then(
+        (un) => {
+          if (disposed) un();
+          else unlisten = un;
+        },
+        (err) => {
+          console.error("notification recovery: subscribe failed:", err);
+        },
+      );
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
+
+  /**
+   * White-label brand for the title bar (PL-04). Resolved from the same
+   * membership enrichment the popover reads (`Workspace.brand` +
+   * `brandingEnabled`), through the shared runtime so the cache, the
+   * entitlement rule and the offline fallback stay identical.
+   */
+  let brandState = $state<CachedBrand | null>(null);
+
+  function brandStorage(): Storage | null {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      // Storage disabled (private mode / sandboxed host): no cache, no brand
+      // beyond what the live roster carries this session.
+      return null;
+    }
+  }
+
+  $effect(() => {
+    const storage = brandStorage();
+    if (!storage) return;
+    const roster = companies;
+    // A roster that has not arrived (or failed to) is not evidence that the
+    // entitlement was withdrawn. Keep painting the cached logo — that is the
+    // offline launch the brand cache exists for.
+    if (roster == null || rosterStatus === "failed") {
+      brandState = readBrandCache(storage);
+      return;
+    }
+    const preferSlug = selectedCompanySlug || null;
+    const next = syncBrandFromWorkspaces(roster, {
+      cloudReachable: true,
+      preferSlug,
+      storage,
+    });
+    brandState = next;
+    if (next) {
+      void cacheLogoAssets(next, storage).then(
+        (cached) => {
+          brandState = cached;
+        },
+        (err) => {
+          console.error("brand: caching logo assets failed:", err);
+        },
+      );
+    }
+  });
+
+  const brandCompanyName = $derived.by(() => {
+    const slug = brandState?.companySlug;
+    if (!slug) return null;
+    return (
+      (companies ?? []).find((c) => c.slug === slug)?.displayName ?? slug
+    );
+  });
+
+  /**
    * `start_sync` returns as soon as the runner is REGISTERED, not when the
    * pull finishes, and it deliberately returns Ok on the needs-reauth path
    * (commands/sync.rs — "avoids red error UI", emitting `sync:auth-error`
@@ -877,6 +1059,63 @@
    * filters to one company and this one deliberately watches every run.
    */
   let syncStatus = $state<SyncStatusState>(emptySyncStatus());
+
+  /**
+   * Per-file conflict rows for the Core popover. Separate from the reducer
+   * above because that one only needs the phase; this one needs the path so
+   * the row's Keep local / Keep cloud buttons have something to resolve.
+   */
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    let disposed = false;
+    const handles: Array<() => void> = [];
+
+    const track = (pending: Promise<() => void>): void => {
+      void pending.then(
+        (un) => {
+          if (disposed) un();
+          else handles.push(un);
+        },
+        (err) => {
+          console.error("conflicts: event subscribe failed:", err);
+        },
+      );
+    };
+
+    track(
+      host.listen("sync:conflict", (event) => {
+        const payload = (event?.payload ?? {}) as Record<string, unknown>;
+        const path =
+          typeof payload.path === "string" && payload.path.trim()
+            ? payload.path.trim()
+            : null;
+        if (!path) return;
+        if (conflictFiles.some((c) => c.path === path)) return;
+        conflictFiles = [
+          ...conflictFiles,
+          {
+            path,
+            canAutoResolve: payload.canAutoResolve === true,
+            status: "pending",
+            at: Date.now(),
+          },
+        ];
+      }),
+    );
+    // A fresh run re-reports whatever is still conflicted, so a stale row from
+    // the previous run must not linger with a path that may no longer exist.
+    track(
+      host.listen("sync:all-complete", () => {
+        conflictFiles = [];
+      }),
+    );
+
+    return () => {
+      disposed = true;
+      for (const un of handles) un();
+    };
+  });
 
   $effect(() => {
     const host = syncEvents;
@@ -936,6 +1175,20 @@
         membershipSyncError =
           message?.trim() ||
           "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
+        // The membership banner only exists while there is a company to pull.
+        // The session is broken either way, so say so in its own banner too.
+        authErrorMessage =
+          message?.trim() ||
+          "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
+      }),
+    );
+    // `begin_reauth` clears the dead session and announces it without a sync
+    // run, so the banner must hear this event as well or a reauth started
+    // elsewhere leaves this window looking signed in.
+    track(
+      host.listen("auth:reauth-required", () => {
+        authErrorMessage =
+          "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
       }),
     );
     // `sync:complete` is emitted PER COMPANY (SyncCompleteEvent carries
@@ -951,6 +1204,8 @@
           membershipSyncPending = false;
           membershipSyncError = null;
         }
+        // A completed run proves the session works again.
+        authErrorMessage = null;
       }),
     );
     // Terminal backstop: a run that attempts the company but never emits a
@@ -1190,6 +1445,12 @@
   // thread notice track the bot without any CLI on the user's side.
   let localBotRecords = $state<LocalBotRow[]>([]);
   const localBots = $derived(locallyHostedBots(localBotRecords));
+  /**
+   * agentUid → display name for bots whose label differs from their handle.
+   * `hq bot list` reports the handle only, so the app keeps this copy of what
+   * it PATCHed onto the agent profile; every reader falls back to the handle.
+   */
+  let botDisplayNames = $state<BotDisplayNames>(loadBotDisplayNames());
   let localBotBusy = $state<string | null>(null);
   let localBotActionError = $state<string | null>(null);
   /**
@@ -1493,28 +1754,59 @@
     if (!adapter.bots) return;
     void refreshLocalBots();
     void refreshRemoteBots();
-    const handle = window.setInterval(() => void refreshLocalBots(), LOCAL_BOTS_POLL_MS);
-    const remoteHandle = window.setInterval(() => void refreshRemoteBots(), REMOTE_BOTS_POLL_MS);
+    // Jittered (R2): a fixed period put every client's bot refresh on the
+    // same beat, and a throttled pass now pushes its successor out.
+    const stopLocal = startJitteredPoll({
+      intervalMs: LOCAL_BOTS_POLL_MS,
+      tick: () => refreshLocalBots(),
+    });
+    const stopRemote = startJitteredPoll({
+      intervalMs: REMOTE_BOTS_POLL_MS,
+      tick: () => refreshRemoteBots(),
+    });
     return () => {
-      clearInterval(handle);
-      clearInterval(remoteHandle);
+      stopLocal();
+      stopRemote();
     };
   });
   /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
   let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
+  /** The state behind that boolean, per runtime; null when the host has none. */
+  let localBotRuntimeStatus = $state<Record<string, RuntimeStatus> | null>(null);
+  /** Coding tools installed on this Mac (signed in or not), for the setup finish card. */
+  let localCodingToolsInstalled = $state<Record<string, boolean>>({});
   /** Company/core workers a bot can be created from; loaded once on demand. */
   let localBotWorkers = $state<LocalBotWorkerOption[] | null>(null);
-  async function loadLocalBotRuntimeReady(): Promise<void> {
+  async function loadLocalBotRuntimeReady(force = false): Promise<void> {
     const preflight = adapter.sessions?.preflight;
-    if (!preflight || localBotRuntimeReady) return;
+    if (!preflight) return;
+    // A cached reading is enough unless the person asked to check again.
+    if (localBotRuntimeReady && !force) return;
     const result = await preflight();
     if (!result.ok) return;
     const rec = result.value as Record<string, unknown>;
     const next: Record<string, boolean> = {};
+    const statuses: Record<string, RuntimeStatus> = {};
+    const installed: Record<string, boolean> = {};
     for (const id of ["claude", "codex", "grok"]) {
       next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
+      installed[id] = rec[`${id}Available`] === true;
+      const status = parseRuntimeStatus(rec[`${id}Status`]);
+      if (status) statuses[id] = status;
     }
     localBotRuntimeReady = next;
+    localCodingToolsInstalled = installed;
+    // Only when the host reported them — an empty map reads as "unknown".
+    localBotRuntimeStatus = Object.keys(statuses).length > 0 ? statuses : null;
+  }
+
+  /**
+   * Ask again (Check again in the flow). The old reading stays on screen while
+   * it runs: clearing it would read as "unknown", which the flow treats as
+   * ready, and Next would blink enabled on a runtime that cannot host a bot.
+   */
+  async function recheckLocalBotRuntimes(): Promise<void> {
+    await loadLocalBotRuntimeReady(true);
   }
   async function loadLocalBotWorkers(): Promise<void> {
     const workers = adapter.bots?.workers;
@@ -1584,19 +1876,25 @@
     const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
     await refreshLocalBots();
     if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    // The label is remembered before the PATCH so the sidebar shows the name
+    // the person typed even if the profile write fails or the app is offline.
+    const label = extras.displayName?.trim() || input.name;
+    if (extras.displayName?.trim()) {
+      botDisplayNames = rememberBotDisplayName(botDisplayNames, agentUid, extras.displayName);
+    }
     // A kickoff turn starts with no message from the person, so nothing else
     // would show "is thinking…" while the bot works on it.
     if (input.kickoff?.trim()) kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: input.name };
     // Identity exists (the CLI returned a uid); the launch agent is installing.
     botProgressByUid = {
       ...botProgressByUid,
-      [agentUid]: { name: input.name, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
+      [agentUid]: { name: label, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
     };
     const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
     const row: ConversationRow = existing ?? {
       id: `dm:${agentUid}`,
       kind: "dm",
-      title: input.name,
+      title: label,
       companyUid: null,
       unreadDot: false,
       lastActivityAt: Date.now(),
@@ -1608,19 +1906,24 @@
     return { ok: true, agentUid, name: input.name };
   }
   /**
-   * The parts of the create flow neither create path has a field for — the job
-   * title and the avatar pick — written onto the agent profile now that the
-   * bot has a uid. Sequential: both land on the same profile document. Local
-   * bots bring both; a cloud bot brings the title.
+   * The parts of the create flow neither create path has a field for — the
+   * display name, the job title and the avatar pick — written onto the agent
+   * profile now that the bot has a uid. Sequential: all three land on the
+   * same profile document. `hq bot create` takes only the handle, so a bot
+   * named "Dr Love" is created as `dr-love` and labelled here.
    */
   async function saveNewBotProfile(agentUid: string, extras: CreateBotExtras): Promise<void> {
     const title = extras.title?.trim() ?? "";
-    if (title) {
+    const displayName = extras.displayName?.trim() ?? "";
+    if (title || displayName) {
       try {
-        await adapter.identity.updateAgentProfile(agentUid, { title });
+        await adapter.identity.updateAgentProfile(agentUid, {
+          ...(title ? { title } : {}),
+          ...(displayName ? { displayName } : {}),
+        });
       } catch (err) {
-        // The bot exists and works; only its subtitle is missing.
-        console.warn("[hq-desktop] bot title save failed:", err);
+        // The bot exists and works; only its label/subtitle is missing.
+        console.warn("[hq-desktop] bot profile save failed:", err);
       }
     }
     if (extras.avatar) await saveNewBotAvatar(agentUid, extras.avatar);
@@ -1789,12 +2092,12 @@
     return { ok: false, reason: created.reason };
   }
   /**
-   * First open on this Mac: the setup bot starts by itself, so the person is
-   * greeted and walked through setup without pressing anything. Only when
-   * setup has never been run here, a coding tool is signed in (otherwise Run
-   * Setup shows the Connect step first), and once per app session. Run Setup
-   * then opens the bot's conversation. A failure leaves Run Setup to retry
-   * and explain.
+   * First open on this Mac: the setup bot starts by itself, so its hello is
+   * already waiting when the person opens the conversation. #welcome's button
+   * then just opens it (and #welcome also offers setting up in the coding tool
+   * they already use). Only when setup has never been run here, a coding tool
+   * is signed in (otherwise the button shows the Connect step first), and once
+   * per app session. A failure leaves the button to retry and explain.
    */
   $effect(() => {
     if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
@@ -1911,9 +2214,41 @@
     await loadLocalBotRuntimeReady();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
-  const selectedLocalBotOffline = $derived(
-    Boolean(selectedLocalBot && selectedLocalBot.online !== true),
+  /** The setup bot's DM, once the bot has marked setup finished: show the finish card. */
+  const setupBotDmDone = $derived.by(() => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return false;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupBotMarkedDone(timeline, bot.agentUid, messageMarksSetupDone);
+  });
+  $effect(() => {
+    if (setupBotDmDone) void loadLocalBotRuntimeReady();
+  });
+  /**
+   * The finish card, once put away, stays away.
+   *
+   * Setup ending is not the end of the conversation: people keep talking to
+   * the bot, and a card pinned under the last message follows them down the
+   * thread for ever. Dismissing is remembered per bot, so it does not come
+   * back on the next launch either.
+   */
+  let setupFinaleDismissedAt = $state(0);
+  const setupFinaleDismissKey = $derived(
+    selectedLocalBot ? `setup-finale-dismissed:${selectedLocalBot.agentUid}` : null,
   );
+  const setupFinaleVisible = $derived.by(() => {
+    if (!setupBotDmDone) return false;
+    void setupFinaleDismissedAt;
+    const key = setupFinaleDismissKey;
+    return !key || tenantStorage.getItem(key) !== "1";
+  });
+  function dismissSetupFinale(): void {
+    const key = setupFinaleDismissKey;
+    if (key) tenantStorage.setItem(key, "1");
+    setupFinaleDismissedAt = Date.now();
+  }
+  const selectedLocalBotOffline = $derived(localBotNeedsOfflineNotice(selectedLocalBot));
   /**
    * The open bot's coding tool needs a new sign-in (`hq bot list` reports it):
    * the bot has paused, so the conversation says so above the composer and
@@ -2370,6 +2705,149 @@
   let lastReplyRowId = $state<string | null>(null);
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  /**
+   * Per-file conflicts the Core popover lists. Since #913 the runner's
+   * per-file `sync:conflict` event is forwarded from both manual Sync Now and
+   * the watch daemon, carrying the conflicted path, so these rows reflect the
+   * real conflict set; the `sync:complete` aggregate still drives the notice
+   * count and the recovery card. This state exists so a row's Keep local /
+   * Keep cloud buttons reach `resolve_conflict` instead of doing nothing,
+   * which is what they did in the desktop window before (the handlers had
+   * stayed behind in the menubar popover).
+   */
+  let conflictFiles = $state<HomeConflict[]>([]);
+
+  function setConflictStatus(
+    path: string,
+    status: HomeConflict["status"],
+    error?: string,
+  ): void {
+    conflictFiles = conflictFiles.map((c) =>
+      c.path === path ? { ...c, status, error } : c,
+    );
+  }
+
+  /**
+   * Keep local / Keep cloud on a Core-popover conflict row.
+   *
+   * Runs the same `resolve_conflict` command the menubar popover used (the
+   * adapter forwards it to `hq sync resolve`), then re-reads the journal so
+   * the conflict count and the sync state settle on the real outcome rather
+   * than an optimistic guess.
+   */
+  async function resolveConflictFile(
+    path: string,
+    strategy: "keep-local" | "keep-remote",
+  ): Promise<void> {
+    if (!adapter.isAvailable("canSync")) return;
+    if (typeof adapter.sync?.resolveConflict !== "function") return;
+    const current = conflictFiles.find((c) => c.path === path);
+    if (current && current.status === "resolving") return;
+    setConflictStatus(path, "resolving");
+    let result;
+    try {
+      result = await adapter.sync.resolveConflict(path, strategy);
+    } catch (err) {
+      console.error("resolve_conflict threw:", err);
+      setConflictStatus(path, "error", "Could not resolve this file.");
+      return;
+    }
+    if (!result.ok) {
+      console.error("resolve_conflict failed:", result.reason, result.message);
+      setConflictStatus(
+        path,
+        "error",
+        result.message?.trim() || "Could not resolve this file.",
+      );
+      return;
+    }
+    // Resolved files leave the list; the row disappearing IS the confirmation.
+    conflictFiles = conflictFiles.filter((c) => c.path !== path);
+    liveSync = await readLiveSyncStatus(adapter);
+  }
+
+  /**
+   * "Open in editor" on a conflict row — same `open_in_editor` command the
+   * popover called. It lives on the shell slice (canLaunchApps), not sync.
+   */
+  async function openConflictInEditor(path: string): Promise<void> {
+    if (!adapter.isAvailable("canLaunchApps")) return;
+    if (typeof adapter.shell?.openInEditor !== "function") return;
+    try {
+      const result = await adapter.shell.openInEditor(path);
+      if (!result.ok) {
+        console.error("open_in_editor failed:", result.reason, result.message);
+      }
+    } catch (err) {
+      console.error("open_in_editor threw:", err);
+    }
+  }
+
+  /**
+   * The title bar's "Resolve conflicts" recovery action.
+   *
+   * Resolve-all deliberately does NOT pick a strategy on the user's behalf —
+   * keep-local and keep-remote each discard one side of every file at once.
+   * When per-file rows exist the popover already offers the choice per file;
+   * otherwise (the aggregate-only path the runner actually produces) this
+   * opens Settings › Sync, which is where the conflict is worked through. The
+   * button's own "Opening…" label is written for this.
+   */
+  function openConflictResolution(): void {
+    openSettings("sync");
+  }
+  /**
+   * PL-02 — sync trouble the Core popover reports, read from the SAME
+   * `list_syncable_workspaces` envelope the menubar used. The command never
+   * rejects on a cloud outage; it resolves `{ cloudReachable: false, error }`,
+   * and `manifestError` is set when companies/manifest.yaml could not be read.
+   * Defaults are healthy so a host that cannot sync shows no notices at all.
+   */
+  let cloudReachable = $state(true);
+  let cloudError = $state<string | null>(null);
+  let manifestError = $state<string | null>(null);
+  let syncWorkspaces = $state<Record<string, unknown>[]>([]);
+  let hqFolderPath = $state<string | null>(null);
+
+  async function readWorkspaceHealth(): Promise<void> {
+    if (!adapter.isAvailable("canSync")) return;
+    // `canSync` is a capability flag, not a guarantee that this particular
+    // host implements the workspaces listing. Missing method = no notices,
+    // not a crash in the shell's mount effect.
+    if (typeof adapter.sync?.listSyncableWorkspaces !== "function") return;
+    let res;
+    try {
+      res = await adapter.sync.listSyncableWorkspaces();
+    } catch (err) {
+      console.error("listSyncableWorkspaces (core notices) threw:", err);
+      return;
+    }
+    if (!res.ok) {
+      // `unavailable` is a host without the command, not an outage — saying
+      // "Cloud unreachable" there would be a lie.
+      if (res.reason !== "unavailable") {
+        console.error("listSyncableWorkspaces (core notices) failed:", res.message);
+      }
+      return;
+    }
+    const envelope = (res.value ?? {}) as unknown as Partial<WorkspacesResult>;
+    cloudReachable = envelope.cloudReachable !== false;
+    cloudError =
+      typeof envelope.error === "string" && envelope.error.trim()
+        ? envelope.error.trim()
+        : null;
+    manifestError =
+      typeof envelope.manifestError === "string" && envelope.manifestError.trim()
+        ? envelope.manifestError.trim()
+        : null;
+    syncWorkspaces = Array.isArray(envelope.workspaces)
+      ? (envelope.workspaces as unknown as Record<string, unknown>[])
+      : [];
+    hqFolderPath =
+      typeof envelope.hqFolderPath === "string" && envelope.hqFolderPath.trim()
+        ? envelope.hqFolderPath.trim()
+        : hqFolderPath;
+  }
   let meshConnectionState = $state<string>("idle");
   let tenantCompanyId = $state<string | null>(null);
   const tenantStorage = $derived(
@@ -2807,6 +3285,43 @@
     selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
   );
 
+  // While a local bot's conversation is open, list its bots often enough that
+  // the thinking indicator can follow a short turn (the ordinary poll is 30 s).
+  $effect(() => {
+    if (!adapter.bots) return;
+    const bot = selectedLocalBot;
+    if (!bot || selectedRow?.kind !== "dm") return;
+    const handle = window.setInterval(() => {
+      void refreshLocalBots();
+    }, LOCAL_BOT_BUSY_POLL_MS);
+    return () => {
+      clearInterval(handle);
+    };
+  });
+
+  // A local bot that is mid-turn keeps its indicator, even after it posts.
+  // The CLI reports `busy` from the bot's own in-flight marker, so a progress
+  // note in the middle of a long turn no longer reads as "finished" and the
+  // DM stops going silent while the bot is still working. When the turn ends,
+  // `busy` drops and the row is cleared here.
+  let previouslyBusyBotUids: string[] = [];
+  const busyBotUids = $derived(busyLocalBotUids(localBots));
+  $effect(() => {
+    const busy = busyBotUids;
+    // The map is read and written here, so it must not be a dependency of
+    // this effect — only the busy list is.
+    untrack(() => {
+      const next = syncBusyThinking(thinkingByRow, {
+        busy,
+        previouslyBusy: previouslyBusyBotUids,
+        nameOf: (uid) => localBots.find((b) => b.agentUid === uid)?.name ?? "bot",
+        now: Date.now(),
+      });
+      previouslyBusyBotUids = busy;
+      if (next !== thinkingByRow) thinkingByRow = next;
+    });
+  });
+
   // Background-task chips for the agents in the selected conversation — the
   // room-scoped route for a channel (every agent on its roster), the
   // agent-wide view for a DM with an agent. One controller per selection;
@@ -2874,6 +3389,9 @@
     rowId: string,
   ): void {
     if (!thinkingByRow[rowId]?.length) return;
+    // A local bot that is still mid-turn keeps its row: its interim post is
+    // not the end of the turn, and the in-flight marker outranks the message.
+    if (busyBotUids.some((uid) => rowId === `dm:${uid}`)) return;
     // Timestamp-aware so a full-history hydrate or overlapping catch-up page
     // containing an OLD agent message cannot clear a newer row.
     thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
@@ -3067,22 +3585,41 @@
       liveTimelineId = null;
       return;
     }
-    // Do not mount the cached thread inside the click flush — a 20-bubble
-    // remount on Deacon froze the next hop. Clear now, paint on the next frame.
-    // Keep hydrating=true so "No messages yet" does not flash (US-018).
+    const cached = untrack(() => timelineCache.get(row.id) ?? []);
+    const token = row.id;
+    if (cached.length > 0) {
+      // Paint the cached thread in THIS tick. The old code cleared the rows
+      // and waited a frame, which put a guaranteed empty frame between the
+      // two conversations: the pane blanked, then filled, then the list
+      // settled against the bottom. Handing the mount its final rows means
+      // the first painted frame of the new conversation is already complete
+      // and already anchored, and nothing moves afterwards.
+      //
+      // The frame this used to spend was there to keep a 20-bubble remount
+      // out of the click flush. Mounting the same rows one frame later cost
+      // the same work and bought a flash, so the cost stays and the flash
+      // goes; the cross-fade in `.conversation-layer` covers the swap.
+      liveTimeline = cached;
+      liveTimelineId = row.id;
+      timelineHydrating = false;
+      // `catchUpTimeline` reads the timeline state synchronously before its
+      // first await. Called bare from an effect body those reads become
+      // dependencies of THIS effect, and since it also writes the timeline the
+      // effect re-arms itself forever. `untrack` keeps the read out of the
+      // dependency set — the frame this used to sit behind hid the problem.
+      untrack(() => {
+        void catchUpTimeline(row);
+      });
+      return;
+    }
+    // Nothing cached: there is no content to hold, so the deferral is free.
+    // Keep hydrating=true so "No messages yet" does not flash (US-018) — the
+    // conversation shows its bottom-anchored placeholder rows instead.
     liveTimeline = [];
     liveTimelineId = row.id;
-    const cached = untrack(() => timelineCache.get(row.id) ?? []);
     timelineHydrating = true;
-    const token = row.id;
     const frame = requestAnimationFrame(() => {
       if (selectedRow?.id !== token) return;
-      if (cached.length > 0) {
-        liveTimeline = cached;
-        timelineHydrating = false;
-        void catchUpTimeline(row);
-        return;
-      }
       void fetchTimelineRaw(row)
         .then((raw) => applyFetchedTimeline(row, raw))
         .finally(() => {
@@ -3509,6 +4046,32 @@
   function closeMemberProfile(): void {
     openProfileMember = null;
     agentAvatarSaveError = null;
+  }
+
+  /**
+   * Profile panel "Message": open (or create) the 1:1 DM with this person and
+   * close the panel. Same path the search palette's one-person pick takes —
+   * the existing DM row when the rail already has one, else a synthesized row
+   * handed to the normal select. Someone outside the viewer's company is DM'd
+   * directly; no "add them to the company" question stands in the way.
+   */
+  function messageMemberDirectly(member: StatusPersonRow): void {
+    const uid = member.personUid?.trim();
+    if (!uid) return;
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === uid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${uid}`,
+        kind: "dm",
+        title: member.displayName?.trim() || uid,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: uid,
+        email: member.email?.trim() || undefined,
+      },
+    );
   }
 
   function openAgentProfileFromHeader(): void {
@@ -4069,6 +4632,10 @@
         url: typeof raw?.url === "string" ? raw.url : undefined,
       };
     },
+    checkCompanySlug: adapter.messaging.checkCompanySlug
+      ? async (slug: string) =>
+          unwrapAdapter(await adapter.messaging.checkCompanySlug!(slug))
+      : undefined,
     getCompanyTab: adapter.messaging.getCompanyTab
       ? async (companyUid, tabId) =>
           unwrapAdapter(await adapter.messaging.getCompanyTab!(companyUid, tabId))
@@ -4290,6 +4857,45 @@
     if (result.ok) navigateToEntryTarget(result.target, null);
     return result;
   }
+
+  /**
+   * The create-modal's own company flow: the server's `create_company` card,
+   * rendered as step 2 of the modal instead of a jump to #setup. Creating the
+   * company mints its channel server-side; this switches the app into the new
+   * company and opens that channel.
+   */
+  const companyCreateSeam = $derived<CompanyCreateSeam | null>(
+    canRunEntryPoints
+      ? {
+          open: () => openCreateCompanyDraft(conversationApi),
+          checkSlug: conversationApi.checkCompanySlug
+            ? (slug: string) => conversationApi.checkCompanySlug!(slug)
+            : null,
+          submit: async (form, values, invites) => {
+            const result = await submitCreateCompany(
+              conversationApi,
+              form,
+              values,
+              invites,
+            );
+            if (result.ok) {
+              createCompanyRequested = true;
+              const uid = result.company.companyUid;
+              const channelId = result.company.companyChannelId;
+              if (uid) changeTenantCompany(uid);
+              if (channelId) {
+                requestChannelOpen(channelId, {
+                  companyUid: uid,
+                  focusCardId: null,
+                  focusCardKind: null,
+                });
+              }
+            }
+            return result;
+          },
+        }
+      : null,
+  );
 
   /**
    * #welcome "Open <Company>" / "Continue setup for <Company>": select the
@@ -5549,44 +6155,154 @@
     configureMeetingsApi(null);
   });
 
-  const mentionRoster = $derived(
-    // Resolve companyUid → company label, then re-run disambiguation so two
-    // survivors that share a display name render "Izzy (LiveRecover)" vs
-    // "Izzy (Indigo)" instead of two identical, unpickable rows.
-    disambiguateMentionTargets(
+  /** Everyone already IN the open channel. A teammate's personal bot is not on
+   * the company contacts roster (it has no membership), so without this a
+   * channel member could never @mention it — the picker said "No one matches"
+   * while the bot sat on the roster. */
+  const openChannelMentionTargets = $derived(
+    mentionTargetsFromContacts(
+      (selectedRow?.channelId
+        ? (channelRosterById[selectedRow.channelId.trim()] ?? [])
+        : []
+      ).map((member) => ({
+        personUid: member.personUid,
+        displayName: member.displayName,
+      })),
+    ),
+  );
+
+  /** The user's own local bots: never on the contacts roster, but @mentionable
+   * anywhere the user can add them.
+   *
+   * Deliberately the HANDLE, not the display name: the picker matches on the
+   * label it inserts, so a bot labelled "Dr Love" would not be found by
+   * typing the `@dr-love` the create flow told the person to type. Showing
+   * the display name here needs the picker to match on both. */
+  const localBotMentionTargets = $derived(
+    mentionTargetsFromContacts(
+      localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
+    ),
+  );
+
+  /**
+   * The display-name map spans every company and DM peer the app has seen, so
+   * it offers people who are not in the open channel's company. That is now
+   * correct: the server adds such a person to THAT ONE CHANNEL as a guest and
+   * delivers the mention, so filtering these rows out (which this did while the
+   * server still answered 403 MENTION_PARTICIPANT_NOT_VISIBLE) would hide
+   * people the user can legitimately tag.
+   *
+   * What these rows must not do is render as a SECOND, identical-looking entry
+   * for the same human — two bare "Jacob Posel" rows, one of them a different
+   * person entirely. A map row carries a name and nothing else, so a colliding
+   * row is labelled "outside <company>" immediately and relabelled with the
+   * person's email as soon as the connections roster answers
+   * (see mentionEmailByUid). A person is never shown a uid fragment.
+   */
+  const identityMentionTargets = $derived(
+    mentionTargetsFromContacts(
+      Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
+        personUid,
+        displayName,
+      })),
+    ),
+  );
+
+  /**
+   * The company a row is "outside" of, from the user's point of view: the open
+   * channel's workspace, else the selected one.
+   */
+  const mentionOutsideLabel = $derived(
+    outsideCompanyLabel(
+      companyDisplayName(mentionRosterCompanyUid, companyNames),
+    ),
+  );
+
+  /**
+   * Emails resolved from the connections roster for people the app knows only
+   * from the app-wide display-name map (uid + name). A person must never be
+   * labelled with a uid fragment, so when two such rows collide the email is
+   * what finally tells them apart.
+   */
+  let mentionEmailByUid = $state<Record<string, string>>({});
+  // Plain, non-reactive: uids already asked about. Writing it inside the
+  // lookup effect must not re-trigger that effect.
+  const mentionEmailAsked = new Set<string>();
+
+  /** Rows merged and company-labelled, before disambiguation. */
+  const mentionRosterRows = $derived(
+    applyResolvedMentionEmails(
       mergeMentionRosters(
         mentionCandidates,
         liveMentionTargets,
-        mentionTargetsFromContacts(
-          Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
-            personUid,
-            displayName,
-          })),
-        ),
-        // Everyone already IN the open channel. A teammate's personal bot is
-        // not on the company contacts roster (it has no membership), so
-        // without this a channel member could never @mention it — the picker
-        // said "No one matches" while the bot sat on the roster.
-        mentionTargetsFromContacts(
-          (selectedRow?.channelId
-            ? (channelRosterById[selectedRow.channelId.trim()] ?? [])
-            : []
-          ).map((member) => ({
-            personUid: member.personUid,
-            displayName: member.displayName,
-          })),
-        ),
-        // The user's own local bots: never on the contacts roster, but
-        // @mentionable anywhere the user can add them.
-        mentionTargetsFromContacts(
-          localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
-        ),
+        identityMentionTargets,
+        openChannelMentionTargets,
+        localBotMentionTargets,
       ).map((target) => {
         if (!target.companyUid || target.companyName) return target;
         const name = companyDisplayName(target.companyUid, companyNames);
         return name ? { ...target, companyName: name } : target;
       }),
+      mentionEmailByUid,
     ),
+  );
+
+  /**
+   * Resolve the email for a duplicate-name person we know only by uid, using
+   * the same connections roster the DM recipient picker reads. Unscoped on
+   * purpose: the whole point is that this person is outside the open channel's
+   * company, so the tenant-scoped roster cannot answer. Each uid is asked about
+   * once; a failure leaves the row reading "outside <company>" and is logged,
+   * never swallowed.
+   */
+  $effect(() => {
+    const wanted = mentionUidsNeedingEmail(mentionRosterRows).filter(
+      (uid) => !mentionEmailAsked.has(uid),
+    );
+    if (wanted.length === 0) return;
+    for (const uid of wanted) mentionEmailAsked.add(uid);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await adapter.messaging.listContacts();
+        if (cancelled) return;
+        if (!res.ok) {
+          console.warn(
+            "[hq-desktop] could not resolve mention emails from the connections roster:",
+            res.code ?? res.reason,
+            res.message ?? "",
+          );
+          return;
+        }
+        const found: Record<string, string> = {};
+        for (const row of mentionTargetsFromContactsPayload(res.value)) {
+          const email = row.email?.trim();
+          if (email && wanted.includes(row.participantUid))
+            found[row.participantUid] = email;
+        }
+        if (Object.keys(found).length === 0) return;
+        mentionEmailByUid = { ...mentionEmailByUid, ...found };
+      } catch (err) {
+        if (cancelled) return;
+        console.warn(
+          "[hq-desktop] mention email lookup failed; duplicate names stay labelled by company:",
+          err,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const mentionRoster = $derived(
+    // Re-run disambiguation after company labels and resolved emails are in,
+    // so two survivors sharing a display name render "Jacob Posel (Indigo)" vs
+    // "Jacob Posel (jacob@…)" — or "(outside Indigo)" until the email lands —
+    // instead of two identical, unpickable rows.
+    disambiguateMentionTargets(mentionRosterRows, {
+      outsideLabel: mentionOutsideLabel,
+    }),
   );
 
   async function applyChannelWake(wake: {
@@ -5866,8 +6582,7 @@
       if (selectedRow?.id !== id) return;
       void catchUpTimeline(row);
     };
-    const handle = setInterval(tick, TIMELINE_SAFETY_INTERVAL_MS);
-    return () => clearInterval(handle);
+    return startJitteredPoll({ intervalMs: TIMELINE_SAFETY_INTERVAL_MS, tick });
   });
 
   function attachmentCompanyUid(row: ConversationRow | null): string | null {
@@ -6360,7 +7075,19 @@
   }
 
   function closeSettings(): void {
-    void leaveCurrentDestination();
+    // Settings subsections each push a history entry, so a plain history
+    // back would walk Profile → Appearance → … one tab at a time. The Back
+    // button means "close Settings": return to whatever the user was looking
+    // at before Settings opened, or Messages when Settings was the first stop.
+    const { entries, index } = navigationHistory.snapshot();
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const destination = entries[i]?.destination;
+      if (destination && destination.kind !== "settings") {
+        void navigate(destination);
+        return;
+      }
+    }
+    void navigate({ kind: "messages" });
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
@@ -6586,16 +7313,26 @@
     syncOverlay();
     overlayQuery.addEventListener("change", syncOverlay);
 
-    let syncTimer: number | undefined;
+    let stopSyncPoll: (() => void) | undefined;
+    let stopHealthPoll: (() => void) | undefined;
     if (adapter.isAvailable("canSync")) {
       void readLiveSyncStatus(adapter).then((next) => {
         liveSync = next;
       });
-      syncTimer = window.setInterval(() => {
-        void readLiveSyncStatus(adapter).then((next) => {
-          liveSync = next;
-        });
-      }, 30_000);
+      stopSyncPoll = startJitteredPoll({
+        intervalMs: 30_000,
+        tick: () =>
+          readLiveSyncStatus(adapter).then((next) => {
+            liveSync = next;
+          }),
+      });
+      // Workspace health hits the cloud, so it runs on a slower beat than the
+      // local journal read above.
+      void readWorkspaceHealth();
+      stopHealthPoll = startJitteredPoll({
+        intervalMs: 120_000,
+        tick: () => readWorkspaceHealth(),
+      });
     }
     // Warm the pack cache at launch so Core open is a cache read, not `hq`.
     if (adapter.isAvailable("canManagePackages")) {
@@ -6722,7 +7459,8 @@
       detachEmbeddedNavigation?.();
       if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
       overlayQuery.removeEventListener("change", syncOverlay);
-      if (syncTimer !== undefined) window.clearInterval(syncTimer);
+      stopSyncPoll?.();
+      stopHealthPoll?.();
       window.removeEventListener("keydown", onKey);
       unregisterShortcuts();
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
@@ -6766,9 +7504,20 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
+    conflicts={conflictFiles}
+    onresolveconflict={(path, strategy) => resolveConflictFile(path, strategy)}
+    onopenconflict={(path) => openConflictInEditor(path)}
+    onresolveconflicts={openConflictResolution}
+    {manifestError}
+    {cloudReachable}
+    {cloudError}
+    workspaces={syncWorkspaces}
+    hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
     {syncStatus}
+    brand={brandState}
+    {brandCompanyName}
     onopenSync={() => openSettings("sync")}
     {sidebarCollapsed}
     coreUseFixtures={coreFixtures}
@@ -6825,6 +7574,27 @@
         dismissBotRestorePrompt();
       }}
     />
+  {/if}
+
+  {#if authErrorMessage}
+    <SessionExpiredBanner
+      message={authErrorMessage}
+      signingIn={authSignInPending}
+      onsignin={onsignin ? () => void startReauth() : undefined}
+      ondismiss={() => (authErrorMessage = null)}
+    />
+  {/if}
+
+  {#if notificationRecovery}
+    <!-- The compact native retry banner could not be created, so the action is
+         recovered here instead of dying in the console. -->
+    <div class="notification-recovery-banner">
+      <NotificationActionRecovery
+        message={notificationRecovery.message}
+        pending={notificationRetrying}
+        onretry={retryNotificationAction}
+      />
+    </div>
   {/if}
 
   {#if adapter.isAvailable("canSync") && membershipsToPull.length > 0}
@@ -6930,6 +7700,7 @@
           selectedId={selectedRow?.id ?? null}
           scopeUid={tenantCompanyId}
           {tenantAccountId}
+          {engagedAgentUids}
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
@@ -6949,15 +7720,19 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+          companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
+          botRuntimeStatus={localBotRuntimeStatus}
+          onrecheckruntimes={recheckLocalBotRuntimes}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
           loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
+          {botDisplayNames}
           {ownedLocalBotUids}
           onrows={(rows) => {
             railRows = rows;
@@ -7047,6 +7822,11 @@
           <header
             class="channel-header chat-shell"
             data-testid="channel-header"
+            data-reply-open={openReplyRootId ||
+            openProfileMember ||
+            openAgentMember
+              ? "true"
+              : "false"}
           >
             <div class="channel-title-block">
               <div class="channel-title">
@@ -7465,6 +8245,17 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if setupFinaleVisible}
+                    <SetupBotFinale
+                      hasClaude={localCodingToolsInstalled.claude === true}
+                      hasCodex={localCodingToolsInstalled.codex === true}
+                      onclaude={() => void launchSetupIn("claude")}
+                      oncodex={() => void launchSetupIn("codex")}
+                      onopenurl={(url) => onopenurl?.(url)}
+                      ondismiss={dismissSetupFinale}
+                      launchError={setupLaunchError}
+                    />
+                  {/if}
                   {#if inSetupChannelWithAgent}
                     {@const agentState = setupAgent.state}
                     {@const stopFailure = setupAgent.failure}
@@ -7746,6 +8537,18 @@
                     </div>
                   {/if}
                 {/snippet}
+                <!--
+                  One layer per conversation. `{#key}` remounts it on every
+                  switch, which restarts `conversation-enter` — an opacity-only
+                  ease-out that softens the swap. It starts part-visible rather
+                  than at zero so the incoming conversation is legible on its
+                  first painted frame and the pane never flashes empty.
+
+                  Opacity only, and nothing here animates height, top or
+                  margin: the box is identical before and after, so the fade
+                  cannot move a single row. `prefers-reduced-motion` drops it.
+                -->
+                <div class="conversation-layer">
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
                   {localBots}
@@ -7776,6 +8579,7 @@
                   previewCache={imagePreviewCache}
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
+                  allowHereMention={Boolean(selectedRow?.channelId)}
                   onreply={openReply}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
@@ -7803,6 +8607,7 @@
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />
+                </div>
               {/key}
               {#if openArtifactView}
                 <div
@@ -7884,6 +8689,7 @@
                     saving={agentAvatarSaving}
                     saveError={agentAvatarSaveError}
                     onsaveavatar={saveOpenAgentAvatar}
+                    onmessage={messageMemberDirectly}
                     onclose={closeMemberProfile}
                   />
                 </div>
@@ -7944,6 +8750,7 @@
                     {displayNameByUid}
                     onopenprofile={openProfileForAuthor}
                     mentionCandidates={mentionRoster}
+                    allowHereMention={Boolean(selectedRow?.channelId)}
                     {onopenurl}
                   />
                 </div>
@@ -8163,13 +8970,41 @@
     flex-direction: column;
   }
 
-  .chat-stage :global(.conversation) {
+  /* The layer carries the column sizing the conversation used to own, so the
+     wrapper is invisible to layout — same box, same flex behaviour. */
+  .conversation-layer {
+    display: flex;
     flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    animation: conversation-enter 140ms ease-out both;
+  }
+
+  .conversation-layer > :global(.conversation) {
+    flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
   }
 
-  .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
+  /* Starts at 0.55, not 0: the new conversation is readable immediately and
+     only the last of the fade is in motion. A fade from zero would replace
+     the old "blank then fill" flash with a slower one. */
+  @keyframes conversation-enter {
+    from {
+      opacity: 0.55;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .conversation-layer {
+      animation: none;
+    }
+  }
+
+  .chat-stage:has(.reply-column:not(.overlay)) .conversation-layer {
     min-width: min(320px, 50%);
   }
 
@@ -8177,7 +9012,7 @@
      between the main channel column and the thread panel. Profile panels
      keep their narrower fixed column (see .reply-column below). */
   .chat-stage:has(.reply-column:not(.profile-column):not(.overlay))
-    :global(.conversation) {
+    .conversation-layer {
     flex: 1 1 0;
     min-width: min(360px, 50%);
   }
@@ -8256,6 +9091,23 @@
     font: 400 12px/1.4 var(--font-ui);
   }
 
+  /* Horizontal inset shared by the channel header, the timeline, and the
+     composer so their left edges line up. The column reads like a document:
+     a centred column capped at 880px: the inset is whatever is left over on
+     each side, never under 40px, so the column stays wide on a laptop and the
+     margins keep growing on a wide screen (the Claude desktop model). Pulled
+     in when a thread or profile pane takes the right-hand third, so the
+     messages keep a readable width there. */
+  .channel-header,
+  .chat-stage {
+    --conv-inset: max(40px, calc((100% - 880px) / 2));
+  }
+
+  .channel-header[data-reply-open="true"],
+  .chat-stage[data-reply-open="true"] {
+    --conv-inset: 24px;
+  }
+
   .channel-header {
     position: relative;
     z-index: 20;
@@ -8264,7 +9116,7 @@
     gap: 10px;
     flex: 0 0 auto;
     height: 52px;
-    padding: 0 20px;
+    padding: 0 var(--conv-inset, 20px);
     overflow: visible;
     border-bottom: 1px solid var(--line);
   }
@@ -8603,6 +9455,14 @@
     font-size: 12px;
     line-height: 1.4;
   }
+  /* Hosts the popover-sized recovery row in the shell's banner stack, so the
+     moved component keeps its own compact idiom without floating. */
+  .notification-recovery-banner {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--v4-hairline, rgba(0, 0, 0, 0.08));
+    background: color-mix(in srgb, var(--v4-text-1, #111) 6%, transparent);
+  }
+
   .bot-auto-restore-banner {
     margin: 8px 16px;
     padding: 8px 12px;

@@ -4,7 +4,7 @@
 //! Left-click opens the desktop workspace (setup still uses the installer card
 //! on `main` until HQ is installed).
 //! Right-click shows a context menu with "Sync Now",
-//! "Open desktop view", and "Quit". Opt+Shift+H still toggles the status popover.
+//! "Open desktop view", and "Quit". Opt+Shift+O toggles the desktop window.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -139,24 +139,25 @@ fn blur_hide_suppressed() -> bool {
     now_ms() < SUPPRESS_BLUR_UNTIL_MS.load(Ordering::SeqCst)
 }
 
-/// Set the first time the user explicitly dismisses the popover — Esc, the
-/// header close button, a tray toggle that hid it, or Cmd-W.
+/// Set the first time the user explicitly dismisses the `main` window — Esc, a
+/// tray toggle that hid it, or Cmd-W. Since PL-07 the only thing that window
+/// ever paints is the onboarding / consent / sign-in card.
 ///
-/// Read by [`should_hide_popover_on_blur`]. The onboarding blur-hide pin below
-/// is a *launch-time* verdict that never clears, so on a first-run / installer
-/// launch the popover kept ignoring click-away for the whole process lifetime,
-/// long after onboarding was done — the "I can't get rid of it" bug. An
-/// explicit dismissal proves the user is driving the window deliberately, so
+/// Read by [`should_hide_onboarding_card_on_blur`]. The onboarding blur-hide
+/// pin below is a *launch-time* verdict that never clears, so on a first-run /
+/// installer launch the window kept ignoring click-away for the whole process
+/// lifetime, long after onboarding was done — the "I can't get rid of it" bug.
+/// An explicit dismissal proves the user is driving the window deliberately, so
 /// from then on normal click-away dismissal is restored.
-static USER_DISMISSED_POPOVER: AtomicBool = AtomicBool::new(false);
+static USER_DISMISSED_ONBOARDING_CARD: AtomicBool = AtomicBool::new(false);
 
-/// Record an explicit user dismissal of the popover (see `USER_DISMISSED_POPOVER`).
-pub fn note_popover_dismissed() {
-    USER_DISMISSED_POPOVER.store(true, Ordering::SeqCst);
+/// Record an explicit user dismissal of the onboarding card (see `USER_DISMISSED_ONBOARDING_CARD`).
+pub fn note_onboarding_card_dismissed() {
+    USER_DISMISSED_ONBOARDING_CARD.store(true, Ordering::SeqCst);
 }
 
-fn popover_dismissed_by_user() -> bool {
-    USER_DISMISSED_POPOVER.load(Ordering::SeqCst)
+fn onboarding_card_dismissed_by_user() -> bool {
+    USER_DISMISSED_ONBOARDING_CARD.load(Ordering::SeqCst)
 }
 
 fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool {
@@ -186,6 +187,46 @@ pub(crate) fn setup_owns_main_window(
         .map(crate::commands::lifecycle::lifecycle_keeps_main_window_visible);
     let first_run_pending = first_run_launch && setup_lifecycle.unwrap_or(true);
     first_run_pending || setup_lifecycle.unwrap_or(false) || oauth_in_flight
+}
+
+/// Whether setup blocks the desktop workspace from opening at all.
+///
+/// Narrower than [`setup_owns_main_window`] on purpose: an OAuth flow in
+/// flight does not count, because a signed-out person signs in from inside
+/// the workspace and must be able to get back to it. Only "HQ is not set up
+/// on this computer yet" blocks the open.
+pub(crate) fn setup_blocks_desktop_window(
+    first_run_launch: bool,
+    lifecycle: Option<hq_desktop_core::lifecycle::LifecycleState>,
+) -> bool {
+    setup_owns_main_window(first_run_launch, lifecycle, false)
+}
+
+/// If setup is still running, bring the installer card back and report `true`
+/// so the caller does not open the desktop workspace.
+///
+/// This is the guard every desktop-window open goes through. The global
+/// Opt+Shift+O shortcut used to open the workspace directly, which let a
+/// person leave setup with nothing installed — and the first-run intro
+/// teaches that exact shortcut before setup has started.
+pub fn redirect_to_setup_if_unfinished(app: &AppHandle) -> bool {
+    let first_run_launch = app
+        .try_state::<crate::commands::first_run::LaunchKindState>()
+        .map(|state| crate::commands::first_run::should_autoshow_on_launch(state.0))
+        .unwrap_or(false);
+    let lifecycle = crate::commands::lifecycle::current_lifecycle_state(app);
+    if !setup_blocks_desktop_window(first_run_launch, lifecycle) {
+        return false;
+    }
+    crate::util::logfile::log(
+        "ui",
+        "desktop window open refused: setup not finished, showing setup card",
+    );
+    // Window ops must run on the main thread — callers include async command
+    // bodies, which run on a tokio worker.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || show_onboarding_window(&handle));
+    true
 }
 
 /// Last-known horizontal centre of the native "HQ" menu-bar icon, in Cocoa
@@ -346,9 +387,9 @@ fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, _state: Tr
 const MENU_VERSION: &str = "version";
 const MENU_SYNC_NOW: &str = "sync-now";
 const MENU_OPEN_DESKTOP: &str = "open-desktop";
-const MENU_HIDE_NOTIFICATIONS: &str = "hide-notifications";
 const MENU_CHECK_UPDATES: &str = "check-for-updates";
 const MENU_RECOVERY: &str = "recovery";
+const MENU_REPLAY_INTRO: &str = "replay-intro";
 const MENU_SIGN_OUT: &str = "sign-out";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
@@ -387,11 +428,11 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     let sync_now = MenuItemBuilder::with_id(MENU_SYNC_NOW, "Sync Now").build(app)?;
     let open_desktop =
         MenuItemBuilder::with_id(MENU_OPEN_DESKTOP, "Open desktop view").build(app)?;
-    let hide_notifications =
-        MenuItemBuilder::with_id(MENU_HIDE_NOTIFICATIONS, "Hide notifications").build(app)?;
     let check_updates =
         MenuItemBuilder::with_id(MENU_CHECK_UPDATES, "Check for updates…").build(app)?;
     let recovery = MenuItemBuilder::with_id(MENU_RECOVERY, "Recovery…").build(app)?;
+    let replay_intro =
+        MenuItemBuilder::with_id(MENU_REPLAY_INTRO, REPLAY_INTRO_LABEL).build(app)?;
     let settings = MenuItemBuilder::with_id(MENU_SETTINGS, "Settings").build(app)?;
     let sign_out = MenuItemBuilder::with_id(MENU_SIGN_OUT, "Sign Out").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit HQ").build(app)?;
@@ -401,10 +442,10 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .separator()
         .item(&sync_now)
         .item(&open_desktop)
-        .item(&hide_notifications)
         .separator()
         .item(&check_updates)
         .item(&recovery)
+        .item(&replay_intro)
         .separator()
         .item(&settings)
         .item(&sign_out)
@@ -442,9 +483,6 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     id if id == MENU_OPEN_DESKTOP => {
                         let _ = app_handle.emit("tray:open-desktop", ());
                     }
-                    id if id == MENU_HIDE_NOTIFICATIONS => {
-                        crate::commands::widget::hide_widget_stack_now(&app_handle);
-                    }
                     id if id == MENU_CHECK_UPDATES => {
                         crate::recovery::spawn_tray_check_for_updates(app_handle.clone());
                     }
@@ -453,6 +491,9 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     }
                     id if id == MENU_SIGN_OUT => {
                         let _ = app_handle.emit("tray:sign-out", ());
+                    }
+                    id if id == MENU_REPLAY_INTRO => {
+                        begin_replay_intro(&app_handle);
                     }
                     id if id == MENU_SETTINGS => {
                         let _ = app_handle.emit("tray:open-settings", ());
@@ -483,9 +524,6 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     hq_telemetry::record_native_panic_seam(
                         hq_telemetry::NativePanicSeam::TrayLeftClick,
                     );
-                    // Collapse any expanded widget overlay so it cannot cover
-                    // the desktop workspace we are about to show.
-                    crate::commands::widget::hide_widget_stack_now(&app_handle);
                     activate_primary_surface(&app_handle);
                 }
             }
@@ -495,13 +533,13 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     Ok(tray)
 }
 
-/// Inputs to [`should_hide_popover_on_blur`]. Grouped in a struct so the
-/// decision stays a pure function that can be unit-tested without a running
+/// Inputs to [`should_hide_onboarding_card_on_blur`]. Grouped in a struct so
+/// the decision stays a pure function that can be unit-tested without a running
 /// Tauri app or a real window.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlurHideInputs {
     /// A native modal (folder picker, save panel) is open. It steals key-window
-    /// status from the popover; hiding would unparent and dismiss the modal.
+    /// status from the card; hiding would unparent and dismiss the modal.
     pub modal_open: bool,
     /// One of OUR OWN secondary windows (drift / DM / share detail) is visible,
     /// i.e. focus moved within HQ rather than away from it.
@@ -514,18 +552,21 @@ pub(crate) struct BlurHideInputs {
     /// Onboarding / installer / OAuth is in flight, so a blur must not dismiss
     /// the surface the user is working through.
     pub onboarding_pin: bool,
-    /// The user has explicitly dismissed the popover at least once this
+    /// The user has explicitly dismissed the onboarding card at least once this
     /// process. Releases the onboarding pin, which is otherwise permanent.
     pub user_dismissed_once: bool,
 }
 
-/// Decide whether a `Focused(false)` on the popover should hide it.
+/// Decide whether a `Focused(false)` on the `main` window should hide it.
+///
+/// Named for what that window now shows: the onboarding / consent / sign-in
+/// card. The tray popover this protected was deleted in PL-07.
 ///
 /// Everything except `onboarding_pin` is an unconditional veto. The onboarding
 /// pin is a *soft* veto: it protects the installer from spurious blur until the
 /// user shows they can close the window on their own, after which click-away
 /// works normally again.
-pub(crate) fn should_hide_popover_on_blur(inputs: BlurHideInputs) -> bool {
+pub(crate) fn should_hide_onboarding_card_on_blur(inputs: BlurHideInputs) -> bool {
     if inputs.modal_open
         || inputs.secondary_window_open
         || inputs.env_disabled
@@ -575,7 +616,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         "macOS: menu-bar item provided by native helper (tao tray skipped)",
     );
 
-    // Hide the popover when the user clicks away. `window.hide()` preserves
+    // Hide the `main` window when the user clicks away. `window.hide()` preserves
     // the renderer state (DOM, Svelte stores, listeners), so re-showing is
     // instant. Only wired on macOS where the menubar popover pattern
     // expects click-off-to-dismiss.
@@ -604,7 +645,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     .webview_windows()
                     .iter()
                     .any(|(label, w)| label != "main" && w.is_visible().unwrap_or(false));
-                let should_hide = should_hide_popover_on_blur(BlurHideInputs {
+                let should_hide = should_hide_onboarding_card_on_blur(BlurHideInputs {
                     modal_open: is_modal_open(),
                     secondary_window_open: secondary_open,
                     env_disabled: disable_blur_hide,
@@ -612,7 +653,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     onboarding_pin: onboarding_window_requires_blur_suppression(
                         win_clone.app_handle(),
                     ),
-                    user_dismissed_once: popover_dismissed_by_user(),
+                    user_dismissed_once: onboarding_card_dismissed_by_user(),
                 });
                 handle_tray_blur_hide(should_hide, || {
                     let _ = win_clone.hide();
@@ -812,34 +853,6 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }
 
-/// Show + focus the main window, positioned under the tray icon.
-///
-/// Used by the global keyboard shortcut so the popover can be summoned
-/// from anywhere without clicking the tray icon. If the tray rect isn't
-/// available yet (race during startup) we still show the window — it
-/// will appear at its last position rather than under the icon.
-pub fn show_window_at_tray(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    // One HQ window at a time: summoning the popover hides the desktop view.
-    hide_desktop_alt(app);
-    #[cfg(target_os = "windows")]
-    {
-        position_above_tray_fallback(&window);
-        set_dwm_small_corner(&window);
-        let _ = window.set_always_on_top(true);
-    }
-    #[cfg(not(target_os = "windows"))]
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        if let Ok(Some(rect)) = tray.rect() {
-            position_below_tray(&window, rect);
-        }
-    }
-    crate::util::window_focus::bring_webview_to_front(&window);
-    let _ = window.emit("popover:opened", ());
-}
-
 /// Show + focus the main window centered on screen for first-run onboarding.
 ///
 /// Must not leave the window sticky-topmost — OAuth opens a normal browser
@@ -855,24 +868,24 @@ pub fn show_window_centered(app: &AppHandle) {
 
 // `show_main_window` (the Svelte-invokable wrapper) lives in
 // commands/banner.rs now — the meeting-detect notification's "open" action
-// hits the same handler as the update banner's body-click, and both just
-// call `show_window_at_tray` here. One name, one handler.
+// hits the same handler as the update banner's body-click, and both open the
+// desktop workspace. One name, one handler.
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Popover ↔ desktop window management (toggle + single-window-at-a-time)
+// `main` ↔ desktop window management (toggle + single-window-at-a-time)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Only one primary HQ surface is ever on-screen at a time: the classic popover
-// (`main`) OR the desktop window (`desktop-alt`). Showing one hides the other.
+// Only one primary HQ surface is ever on-screen at a time: the onboarding /
+// sign-in card (`main`) OR the desktop window (`desktop-alt`). Showing one
+// hides the other.
 //
 // WindowRouter activation policy:
 //   Tray left-click / taskbar second-process / Dock → desktop workspace
 //   Setup still owns `main` (installer card) until HQ is installed
-//   Opt+Shift+H → toggle compact status popover
 // Press again with the target open and it hides (toggle sources only).
 
 /// Hide the desktop window if it's open — enforces "only one HQ window at a
-/// time" whenever the popover is summoned.
+/// time" whenever the onboarding card is summoned.
 pub fn hide_desktop_alt(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("desktop-alt") {
         let _ = win.hide();
@@ -901,14 +914,46 @@ pub fn toggle_desktop_window(app: &AppHandle) {
                 .await
         {
             // Real open failure: keep first-run onboarding / sign-in reachable
-            // on `main`. show_popover_window does AppKit window ops and must
-            // run on the main thread.
+            // on `main` — but only if `main` has anything to render. Since
+            // PL-06 a signed-in person gets an empty `main`, so falling back to
+            // it would put a blank transparent window on screen instead of an
+            // error. show_onboarding_window does AppKit window ops and must run on
+            // the main thread.
+            let authenticated = crate::commands::auth::get_auth_state(app_clone.clone())
+                .await
+                .map(|state| state.authenticated)
+                // An unreadable session is not a signed-in one: fall back to
+                // `main`, where the sign-in prompt is still rendered.
+                .unwrap_or(false);
+            if !main_window_has_ui(
+                onboarding_window_requires_blur_suppression(&app_clone),
+                authenticated,
+            ) {
+                crate::util::logfile::log(
+                    "tray",
+                    "desktop open failed while signed in; `main` has no UI to fall back to",
+                );
+                return;
+            }
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
-                show_popover_window(&app_main);
+                show_onboarding_window(&app_main);
             });
         }
     });
+}
+
+/// Whether the `main` window would render anything for the current person.
+///
+/// Since PL-06 `main` renders exactly three things: the loading dot, the
+/// onboarding / consent card, and the sign-in prompt. A signed-in person gets
+/// an empty window, so no activation path may show `main` for them — it would
+/// put a blank transparent rectangle on screen.
+///
+/// `setup_owns_main` is [`onboarding_window_requires_blur_suppression`]: first
+/// run, install / consent lifecycle states, or browser OAuth in flight.
+pub(crate) fn main_window_has_ui(setup_owns_main: bool, authenticated: bool) -> bool {
+    setup_owns_main || !authenticated
 }
 
 /// Show + focus the desktop workspace. Never hides it.
@@ -921,12 +966,96 @@ pub fn toggle_desktop_window(app: &AppHandle) {
 /// this is safe to call whether or not the window has been built yet, including
 /// during onboarding. Opening failures are logged without switching surfaces.
 pub fn show_desktop_window(app: &AppHandle) {
+    show_desktop_window_at(app, None);
+}
+
+/// Show + focus the desktop workspace on a specific surface.
+///
+/// `route` is the same string [`crate::commands::desktop_alt::open_desktop_alt_window`]
+/// takes: an already-open window gets a live `desktop:navigate`, a fresh build
+/// queues the route for the frontend to consume on mount. Used by the Rust
+/// callers that used to summon the popover at a particular surface (the
+/// notification history, the Settings command).
+pub fn show_desktop_window_at(app: &AppHandle, route: Option<&str>) {
     let app_clone = app.clone();
+    let route = route.map(str::to_string);
     tauri::async_runtime::spawn(async move {
         if let Err(e) =
-            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone, None).await
+            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone, route.as_deref())
+                .await
         {
             crate::util::logfile::log("tray", &format!("desktop activation failed: {e}"));
+        }
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Replay welcome intro
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Was the desktop window on screen when the replay started? The film plays on
+/// `main`, which means the desktop window is hidden for its duration; when the
+/// film ends the person must land back where they were, not on an empty
+/// onboarding card.
+static REPLAY_RESTORE_DESKTOP: AtomicBool = AtomicBool::new(false);
+
+/// Menu-item label shared by every "Replay welcome intro" entry point (native
+/// helper menu, in-process tray menu, macOS application menu).
+pub const REPLAY_INTRO_LABEL: &str = "Replay welcome intro";
+
+/// Start the welcome film. The single code path behind every trigger.
+///
+/// Only `main` renders the film, and since PL-06 `main` is a hidden controller
+/// for a signed-in person — so emitting the event alone changes nothing
+/// visible. Bring `main` forward first (which also hides the desktop window),
+/// then tell it to play. `Onboarding.svelte` owns the sizing from there.
+pub fn begin_replay_intro(app: &AppHandle) {
+    let handle = app.clone();
+    // AppKit window ops must run on the main thread; callers reach this from
+    // the tray-helper poll thread and from menu-event callbacks.
+    let _ = app.run_on_main_thread(move || {
+        let desktop_visible = handle
+            .get_webview_window("desktop-alt")
+            .and_then(|win| win.is_visible().ok())
+            .unwrap_or(false);
+        REPLAY_RESTORE_DESKTOP.store(desktop_visible, Ordering::SeqCst);
+        show_onboarding_window(&handle);
+        let _ = handle.emit_to("main", "tray:replay-intro", ());
+    });
+}
+
+/// Put the surfaces back the way the replay found them.
+///
+/// Called by the frontend when the film finishes (or fails). If the desktop
+/// window was open when the replay started, it comes back and `main` hides;
+/// otherwise the onboarding card simply stays where it was.
+pub fn end_replay_intro(app: &AppHandle) {
+    if !REPLAY_RESTORE_DESKTOP.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    hide_onboarding_window(app);
+    show_desktop_window(app);
+}
+
+/// Tauri command: the film ended — restore the pre-replay window arrangement.
+#[tauri::command]
+pub fn finish_replay_intro(app: AppHandle) {
+    end_replay_intro(&app);
+}
+
+/// Hide the `main` window and record the dismissal.
+///
+/// The onboarding → desktop handoff hands the user off to the desktop window,
+/// so the installer card must go away and the launch-time onboarding pin must
+/// stop suppressing click-away for the rest of the process.
+pub fn hide_onboarding_window(app: &AppHandle) {
+    note_onboarding_card_dismissed();
+    // Window ops must run on the main thread — this is called from an async
+    // command body, which runs on a tokio worker.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.hide();
         }
     });
 }
@@ -937,20 +1066,22 @@ pub fn show_desktop_window(app: &AppHandle) {
 /// installer card instead of a workspace with nothing installed underneath.
 pub fn activate_primary_surface(app: &AppHandle) {
     if onboarding_window_requires_blur_suppression(app) {
-        show_popover_window(app);
+        show_onboarding_window(app);
         return;
     }
     show_desktop_window(app);
 }
 
-/// Show the popover (`main`) on-screen, hiding the desktop window first.
+/// Show the `main` window on-screen, hiding the desktop window first. Since
+/// PL-07 the only thing it ever paints is the onboarding / consent / sign-in
+/// card.
 ///
 /// Positions it top-right just under the menu bar — on macOS Tahoe the tao
 /// tray rect lives off-screen, so we place the window ourselves rather than
 /// anchoring to the (absent/parked) tray icon. Suppresses the spurious
 /// click-away hide that fires because the helper process, not HQ, is frontmost
 /// when this is invoked.
-pub fn show_popover_window(app: &AppHandle) {
+pub fn show_onboarding_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     suppress_blur_hide_briefly();
     hide_desktop_alt(app);
@@ -961,13 +1092,20 @@ pub fn show_popover_window(app: &AppHandle) {
     {
         position_above_tray_fallback(&window);
         set_dwm_small_corner(&window);
-        let _ = window.set_always_on_top(true);
+        // Deliberately NOT a bare `set_always_on_top(true)`: that flag was
+        // never cleared, so the card — and, after the post-OAuth raise, the
+        // desktop workspace — stayed above every other app for the rest of
+        // the process and Alt+Tab could not bring anything in front of HQ.
+        // `raise_transiently_topmost` raises above the browser once and drops
+        // the flag on the first focus change (the card hides on blur anyway)
+        // or after a short timeout.
+        crate::util::window_focus::raise_transiently_topmost(&window);
     }
     #[cfg(target_os = "macos")]
     if let Ok(size) = window.outer_size() {
         let win_w = size.width as f64;
 
-        // Preferred: anchor the popover under the menu-bar icon, on the SAME
+        // Preferred: anchor the card under the menu-bar icon, on the SAME
         // monitor the icon was clicked on. The native helper reports the icon's
         // horizontal centre in Cocoa screen POINTS, which span every display, so
         // a click on a secondary monitor carries an anchor inside that monitor's
@@ -1004,8 +1142,9 @@ pub fn show_popover_window(app: &AppHandle) {
             let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
         }
     }
+    // Windows already raised (transiently topmost) above.
+    #[cfg(not(target_os = "windows"))]
     crate::util::window_focus::bring_webview_to_front(&window);
-    let _ = window.emit("popover:opened", ());
 }
 
 #[cfg(target_os = "windows")]
@@ -1054,30 +1193,6 @@ fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
     if let Ok(hwnd) = window.hwnd() {
         hq_platform::window_effects::set_small_corner(hwnd.0 as isize);
     }
-}
-
-/// Toggle the popover: hide it if it's already visible *and focused*,
-/// otherwise show / raise it (which also hides the desktop window).
-///
-/// Used by tray left-click (US-004) and the Opt+Shift+H shortcut. After
-/// browser OAuth the installer often stays visible but buried behind the
-/// browser; a tray/menu-bar click must raise that window instead of
-/// toggle-hiding it (macOS + Windows).
-pub fn toggle_popover_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
-            let focused = window.is_focused().unwrap_or(false);
-            if !focused {
-                crate::util::window_focus::bring_webview_to_front(&window);
-                let _ = window.emit("popover:opened", ());
-                return;
-            }
-            note_popover_dismissed();
-            let _ = window.hide();
-            return;
-        }
-    }
-    show_popover_window(app);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1305,6 +1420,52 @@ pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn main_window_has_no_ui_for_a_signed_in_person() {
+        // PL-06: the authenticated branch of App.svelte renders nothing, so
+        // showing `main` here would be a blank transparent window.
+        assert!(!main_window_has_ui(false, true));
+    }
+
+    #[test]
+    fn main_window_still_has_ui_for_onboarding_and_for_sign_in() {
+        // Setup owns `main` — the onboarding / consent card renders there even
+        // though the person already has a session (consent re-prompt, OAuth).
+        assert!(main_window_has_ui(true, true));
+        // Signed out in steady state — the sign-in prompt renders there.
+        assert!(main_window_has_ui(false, false));
+        // First run, not signed in yet.
+        assert!(main_window_has_ui(true, false));
+    }
+
+    #[test]
+    fn every_setup_owned_state_keeps_main_renderable() {
+        // `activate_primary_surface` shows `main` exactly when
+        // `onboarding_window_requires_blur_suppression` is true, i.e. when
+        // `setup_owns_main_window` is true. That branch must never be able to
+        // show an empty window, whatever the auth state is.
+        for oauth_in_flight in [false, true] {
+            for lifecycle in [
+                Some(hq_desktop_core::lifecycle::LifecycleState::NeedsInstall),
+                Some(hq_desktop_core::lifecycle::LifecycleState::InstallResume),
+                Some(hq_desktop_core::lifecycle::LifecycleState::NeedsAuthForInstall),
+                Some(hq_desktop_core::lifecycle::LifecycleState::InstalledFirstRun),
+                Some(hq_desktop_core::lifecycle::LifecycleState::InstalledLegacyUpdate),
+                Some(hq_desktop_core::lifecycle::LifecycleState::SteadyState),
+                None,
+            ] {
+                for first_run_launch in [false, true] {
+                    if setup_owns_main_window(first_run_launch, lifecycle, oauth_in_flight) {
+                        assert!(
+                            main_window_has_ui(true, true),
+                            "setup-owned main must be renderable"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Baseline: a genuine click-away on a steady-state popover.
     fn plain_blur() -> BlurHideInputs {
         BlurHideInputs {
@@ -1319,7 +1480,7 @@ mod tests {
 
     #[test]
     fn blur_hides_the_popover_on_a_plain_click_away() {
-        assert!(should_hide_popover_on_blur(plain_blur()));
+        assert!(should_hide_onboarding_card_on_blur(plain_blur()));
     }
 
     #[test]
@@ -1355,7 +1516,7 @@ mod tests {
             ),
         ] {
             assert!(
-                !should_hide_popover_on_blur(inputs),
+                !should_hide_onboarding_card_on_blur(inputs),
                 "expected no hide while {label}"
             );
         }
@@ -1368,11 +1529,11 @@ mod tests {
             ..plain_blur()
         };
         assert!(
-            !should_hide_popover_on_blur(pinned),
+            !should_hide_onboarding_card_on_blur(pinned),
             "installer / first-run surface must survive a spurious blur"
         );
         assert!(
-            should_hide_popover_on_blur(BlurHideInputs {
+            should_hide_onboarding_card_on_blur(BlurHideInputs {
                 user_dismissed_once: true,
                 ..pinned
             }),
@@ -1384,13 +1545,13 @@ mod tests {
     fn an_explicit_dismissal_does_not_override_a_hard_veto() {
         // Esc / close-button history must not make a native picker or one of
         // our own detail windows dismiss the popover out from under the user.
-        assert!(!should_hide_popover_on_blur(BlurHideInputs {
+        assert!(!should_hide_onboarding_card_on_blur(BlurHideInputs {
             modal_open: true,
             onboarding_pin: true,
             user_dismissed_once: true,
             ..plain_blur()
         }));
-        assert!(!should_hide_popover_on_blur(BlurHideInputs {
+        assert!(!should_hide_onboarding_card_on_blur(BlurHideInputs {
             secondary_window_open: true,
             user_dismissed_once: true,
             ..plain_blur()
@@ -1398,11 +1559,11 @@ mod tests {
     }
 
     #[test]
-    fn note_popover_dismissed_latches_the_dismissal_flag() {
+    fn note_onboarding_card_dismissed_latches_the_dismissal_flag() {
         // Process-global latch: assert the transition, not the initial value —
         // other tests in this binary may have flipped it already.
-        note_popover_dismissed();
-        assert!(popover_dismissed_by_user());
+        note_onboarding_card_dismissed();
+        assert!(onboarding_card_dismissed_by_user());
     }
 
     #[test]
@@ -1466,9 +1627,10 @@ mod tests {
     fn test_menu_id_constants() {
         assert_eq!(MENU_SYNC_NOW, "sync-now");
         assert_eq!(MENU_OPEN_DESKTOP, "open-desktop");
-        assert_eq!(MENU_HIDE_NOTIFICATIONS, "hide-notifications");
         assert_eq!(MENU_CHECK_UPDATES, "check-for-updates");
         assert_eq!(MENU_RECOVERY, "recovery");
+        assert_eq!(MENU_REPLAY_INTRO, "replay-intro");
+        assert_eq!(REPLAY_INTRO_LABEL, "Replay welcome intro");
         assert_eq!(MENU_SIGN_OUT, "sign-out");
         assert_eq!(MENU_SETTINGS, "settings");
         assert_eq!(MENU_QUIT, "quit");
@@ -1623,6 +1785,34 @@ mod tests {
             assert!(setup_owns_main_window(false, Some(LifecycleState::InstalledFirstRun), false));
             assert!(setup_owns_main_window(false, Some(LifecycleState::SteadyState), true));
             assert!(!setup_owns_main_window(false, Some(LifecycleState::SteadyState), false));
+        }
+
+        /// Regression: the Opt+Shift+O shortcut opened the desktop workspace
+        /// while HQ was not installed, so a person could leave setup with
+        /// nothing on disk. Every unfinished-setup state must block the open.
+        #[test]
+        fn unfinished_setup_blocks_the_desktop_window() {
+            use super::super::setup_blocks_desktop_window;
+            for state in [
+                LifecycleState::NeedsInstall,
+                LifecycleState::InstallResume,
+                LifecycleState::NeedsAuthForInstall,
+                LifecycleState::InstalledFirstRun,
+            ] {
+                assert!(setup_blocks_desktop_window(false, Some(state)));
+                assert!(setup_blocks_desktop_window(true, Some(state)));
+            }
+            assert!(setup_blocks_desktop_window(true, None));
+        }
+
+        /// Finished setup opens normally, and sign-in inside the workspace
+        /// (OAuth in flight) is not something this guard looks at.
+        #[test]
+        fn finished_setup_does_not_block_the_desktop_window() {
+            use super::super::setup_blocks_desktop_window;
+            assert!(!setup_blocks_desktop_window(true, Some(LifecycleState::SteadyState)));
+            assert!(!setup_blocks_desktop_window(false, Some(LifecycleState::SteadyState)));
+            assert!(!setup_blocks_desktop_window(false, None));
         }
     }
 }

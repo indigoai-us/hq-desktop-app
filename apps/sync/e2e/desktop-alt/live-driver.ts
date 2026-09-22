@@ -131,8 +131,11 @@ export interface LiveDesktopAltProbe {
   consoleErrors(): Promise<string[]>;
   /** invoke() in the focused webview; rejects with the backend's own error. */
   invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T>;
-  /** Whether a desktop-alt webview exists. Restores focus to the popover. */
-  hasDesktopAltWindow(): Promise<boolean>;
+  /**
+   * Whether a desktop-alt webview exists. Restores focus to the popover.
+   * `waitMs` bounds how long to wait for one to appear (default 8s).
+   */
+  hasDesktopAltWindow(waitMs?: number): Promise<boolean>;
   /** Invoke the app's real quit command and prove its exact process exits. */
   quitAndAssertExited(timeoutMs: number): Promise<void>;
   dispose(): Promise<void>;
@@ -350,7 +353,7 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
     return this.invokeTauriCommand<T>(command, args);
   }
 
-  async hasDesktopAltWindow(): Promise<boolean> {
+  async hasDesktopAltWindow(waitMs = 8_000): Promise<boolean> {
     // Opening the workspace hides `main` and creates a second WebView2 target.
     // Give msedgedriver a bounded window to attach instead of sampling once
     // before the new handle exists.
@@ -359,7 +362,7 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
       await this.driver.waitUntil(async () => {
         desktop = await this.findDesktopAltWindow();
         return Boolean(desktop);
-      }, 8_000);
+      }, waitMs);
     } catch {
       desktop = await this.findDesktopAltWindow();
     }
@@ -699,7 +702,10 @@ function windowsProcessIdsForExecutable(appPath: string): Promise<number[]> {
       'powershell',
       ['-NoProfile', '-NonInteractive', '-Command', query],
       {
-        timeout: 10_000,
+        // Identifying the process happens before the quit deadline starts, so
+        // this bound does not loosen the exit assertion. A cold WMI query on a
+        // busy runner has been seen to take longer than 10s.
+        timeout: 30_000,
         maxBuffer: 1024 * 1024,
         env: { ...process.env, HQ_SYNC_E2E_APP_PATH: appPath },
       },

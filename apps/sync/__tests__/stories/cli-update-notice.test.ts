@@ -4,9 +4,12 @@ import { describe, expect, it } from 'vitest';
 
 // DEV-1705 / feedback_bf4dede2: the menubar app never told users their hq CLI
 // was stale. Detection (registry check + semver compare + events) lives in
-// App + Rust. The overflow menu that hosted the notice was removed in US-001
-// (chrome-free notification panel); CLI update UI relocates with settings in
-// US-005. These contracts keep the backend dismiss path and App handlers live.
+// Rust. The overflow menu that hosted the notice was removed in US-001
+// (chrome-free notification panel), and PL-07 deleted the tray popover and the
+// tray window's copy of the CLI-update state along with it. The whole CLI
+// update surface — check, install, dismiss — is the desktop window's
+// Settings → Updates pane (packages/ui/src/settings/SettingsPage.svelte).
+// These contracts keep the backend dismiss path live underneath it.
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const readIfExists = (p: string) => {
@@ -18,8 +21,9 @@ const readIfExists = (p: string) => {
 };
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
-const popover = read('src/components/Popover.svelte');
 const app = read('src/App.svelte');
+const settingsPage = read('../../packages/ui/src/settings/SettingsPage.svelte');
+const syncAdapter = read('../../packages/platform/src/tauri/sync-adapter.ts');
 const hqCliUpdate =
   readIfExists('src-tauri/src/commands/hq_cli_update.rs') +
   '\n' +
@@ -32,26 +36,21 @@ const hqCliUpdate =
 const mainRs = read('src-tauri/src/main.rs');
 const fixtures = read('dev-harness/fixtures.ts');
 
-describe('CLI-update notice: removed from chrome-free popover (US-001)', () => {
-  it('does not host the overflow CLI-update copy/dismiss UI in Popover', () => {
-    const p = normalize(popover);
-    expect(p).not.toContain('HQ_CLI_UPGRADE_CMD');
-    expect(p).not.toContain('copyHqCliCommand');
-    expect(p).not.toContain('hqCliCmdCopied');
-    expect(p).not.toContain('ondismisshqcliupdate');
-    expect(p).not.toContain('hqCliUpdateAvailable');
-    expect(p).not.toContain('<code class="cli-cmd">');
+describe('CLI-update notice: the desktop Settings pane owns the surface', () => {
+  it('Settings → Updates checks, installs and dismisses the CLI update', () => {
+    const settings = normalize(settingsPage);
+    expect(settings).toContain('async function handleDismissHqCliUpdate()');
+    expect(settings).toContain('adapter.updates.dismissCliUpdate()');
+    expect(settings).toContain('hqCliUpdateErrorContext = "dismiss"');
+    // ...and the adapter it calls is the one that reaches the Rust command.
+    expect(normalize(syncAdapter)).toContain("call('set_hq_cli_update_dismissed', { version })");
   });
-});
 
-describe('CLI-update notice: App + backend dismiss path stay wired', () => {
-  it('App.svelte persists the dismissal per-version then hides the state', () => {
-    const a = normalize(app);
-    expect(a).toContain('async function handleDismissHqCliUpdate()');
-    expect(a).toContain('hqCliUpdateAvailable = null;');
-    expect(a).toContain("invoke('set_hq_cli_update_dismissed', { version: latest })");
-    // No longer passed into the chrome-free Popover.
-    expect(a).not.toContain('ondismisshqcliupdate={handleDismissHqCliUpdate}');
+  it('the tray window keeps no second copy of the CLI-update state', () => {
+    // PL-07: nothing in `main` renders it, so holding the state there would be
+    // a silent duplicate of what Settings already owns.
+    expect(app).not.toContain('hqCliUpdateAvailable');
+    expect(app).not.toContain('set_hq_cli_update_dismissed');
   });
 });
 

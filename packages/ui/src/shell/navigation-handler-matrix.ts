@@ -113,6 +113,10 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyPendingConversation: "push",
   changeTenantCompany: "push",
   openCompanyFromSetup: "push",
+  // Core popover "Resolve conflicts" → Settings › Sync, through navigate().
+  openConflictResolution: "push",
+  // Hands the file to the OS editor; the shell stays where it is.
+  openConflictInEditor: "none",
   // #welcome / Home setup card → the setup bot's DM (handleSelect).
   openSetupBotDm: "push",
   applyChannelWake: "none",
@@ -875,7 +879,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "sync-status-poll",
     file: SHARED_SHELL_FILE,
-    needle: "syncTimer = window.setInterval(() => {",
+    needle: "stopSyncPoll = startJitteredPoll({",
     destinationKind: "none",
     history: "none",
     host: "shared-shell",
