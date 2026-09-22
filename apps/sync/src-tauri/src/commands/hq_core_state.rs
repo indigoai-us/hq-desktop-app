@@ -394,7 +394,7 @@ impl Default for CoreUpdateRescueTelemetry {
             node_source: "unknown",
             node_version: "unknown".to_string(),
             disk_free_bucket: "unknown",
-            root_on_synced_folder: "none",
+            root_on_synced_folder: "unknown",
             network_probe: "unknown",
             attempt_number: 1,
             first_error_line: None,
@@ -404,11 +404,7 @@ impl Default for CoreUpdateRescueTelemetry {
 }
 
 impl CoreUpdateRescueTelemetry {
-    pub(crate) fn from_raw(
-        raw: &str,
-        npx_resolution: Option<CoreUpdateNpxResolution>,
-        attempt_number: u32,
-    ) -> Self {
+    pub(crate) fn from_raw(raw: &str, attempt_number: u32) -> Self {
         let rescue_error_class = raw
             .lines()
             .find_map(core_update_rescue_error_class)
@@ -418,8 +414,6 @@ impl CoreUpdateRescueTelemetry {
             .last()
             .and_then(|marker| marker.split('|').nth(1))
             .map(core_update_rescue_step_from_marker)
-            .filter(|stage| *stage != "unknown")
-            .or_else(|| core_update_rescue_step_from_raw(raw))
             .unwrap_or("unknown");
         let first_error_line = raw.lines().find_map(|line| {
             core_update_rescue_error_class(line).map(|_| line.trim().chars().take(240).collect())
@@ -432,9 +426,7 @@ impl CoreUpdateRescueTelemetry {
             git_version: core_update_tool_version(raw, "git", "git_version"),
             rsync_source: core_update_tool_source("rsync"),
             rsync_version: core_update_tool_version(raw, "rsync", "rsync_version"),
-            node_source: npx_resolution
-                .map(|resolution| resolution.source)
-                .unwrap_or("unknown"),
+            node_source: core_update_node_source(),
             node_version: core_update_tool_version(raw, "node", "node_version"),
             disk_free_bucket: core_update_disk_free_bucket(raw),
             root_on_synced_folder: core_update_synced_folder(raw),
@@ -451,11 +443,22 @@ fn core_update_tool_source(name: &str) -> &'static str {
     if !resolved.is_resolved() {
         return "none";
     }
-    match paths::resolution_source_of(std::path::Path::new(&resolved.path)) {
+    core_update_tool_source_for_path(std::path::Path::new(&resolved.path))
+}
+
+fn core_update_tool_source_for_path(path: &std::path::Path) -> &'static str {
+    match paths::resolution_source_of(path) {
         hq_desktop_core::paths::ResolutionSource::ManagedToolchain => "managed",
         hq_desktop_core::paths::ResolutionSource::NotResolved => "none",
         _ => "system",
     }
+}
+
+fn core_update_node_source() -> &'static str {
+    let Some(resolved) = paths::resolve_bin_on_child_path("node") else {
+        return "not_resolved";
+    };
+    paths::resolution_source_of(std::path::Path::new(&resolved.path)).telemetry_value()
 }
 
 fn core_update_tool_version(raw: &str, tool: &str, key: &str) -> String {
@@ -469,19 +472,21 @@ fn core_update_tool_version(raw: &str, tool: &str, key: &str) -> String {
     }
 
     raw.lines()
-        .filter(|line| line.to_ascii_lowercase().contains(tool))
         .find_map(|line| {
-            line.split_whitespace()
-                .map(|token| {
-                    token.trim_matches(|character: char| {
-                        !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '+')
-                    })
-                })
-                .find(|token| {
-                    token.chars().any(|character| character.is_ascii_digit()) && token.contains('.')
-                })
+            let line = line.trim();
+            let value = match tool {
+                "git" => line.strip_prefix("git version "),
+                "rsync" => line.strip_prefix("rsync version "),
+                "node" => line
+                    .strip_prefix("node version ")
+                    .or_else(|| line.strip_prefix("node --version"))
+                    .map(|value| value.trim_start_matches(|character: char| {
+                        matches!(character, ':' | '=' | ' ' | '\t')
+                    })),
+                _ => None,
+            }?;
+            value.split_whitespace().next().map(core_update_safe_version)
         })
-        .map(core_update_safe_version)
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -544,23 +549,6 @@ fn core_update_rescue_step_from_marker(stage: &str) -> &'static str {
         "npm-install" => "npm-install",
         "verify" => "verify",
         _ => "unknown",
-    }
-}
-
-fn core_update_rescue_step_from_raw(raw: &str) -> Option<&'static str> {
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains(CLONE_CHECKOUT_FAILURE_NEEDLE) || lower.contains("checkout failed") {
-        Some("checkout")
-    } else if lower.contains("rsync") {
-        Some("rsync")
-    } else if lower.contains("npm") || lower.contains("npx") {
-        Some("npm-install")
-    } else if lower.contains("verify") || lower.contains("source sha") {
-        Some("verify")
-    } else if lower.contains("clone") {
-        Some("clone")
-    } else {
-        None
     }
 }
 
@@ -657,7 +645,7 @@ fn core_update_synced_folder(raw: &str) -> &'static str {
     } else if lower.contains("dropbox") {
         "dropbox"
     } else {
-        "none"
+        "unknown"
     }
 }
 
@@ -1782,6 +1770,8 @@ const CORE_UPDATE_SENTRY_RATE_LIMIT: Duration = Duration::from_secs(30 * 60);
 struct CoreUpdateSentryRateKey {
     rescue_step: &'static str,
     rescue_error_class: &'static str,
+    pre_rescue_error_kind: Option<&'static str>,
+    pre_rescue_error_category: Option<RescueFailureCategory>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1858,10 +1848,7 @@ fn claim_core_update_sentry_capture(
     report: &CoreUpdateSentryFailureReport,
     now: Instant,
 ) -> Option<u32> {
-    let key = CoreUpdateSentryRateKey {
-        rescue_step: report.rescue_telemetry.rescue_step,
-        rescue_error_class: report.rescue_telemetry.rescue_error_class,
-    };
+    let key = core_update_sentry_rate_key(report);
     let mut limits = CORE_UPDATE_SENTRY_RATE_LIMITS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -1894,12 +1881,34 @@ fn claim_core_update_sentry_capture(
     }
 }
 
+fn core_update_sentry_rate_key(report: &CoreUpdateSentryFailureReport) -> CoreUpdateSentryRateKey {
+    let unclassified_rescue = report.rescue_telemetry.rescue_step == "unknown"
+        && report.rescue_telemetry.rescue_error_class == "unknown";
+    CoreUpdateSentryRateKey {
+        rescue_step: report.rescue_telemetry.rescue_step,
+        rescue_error_class: report.rescue_telemetry.rescue_error_class,
+        pre_rescue_error_kind: unclassified_rescue.then_some(report.error_kind),
+        pre_rescue_error_category: unclassified_rescue.then_some(report.error_category),
+    }
+}
+
 fn send_core_update_failure_report(
     report: CoreUpdateSentryFailureReport,
     suppressed_since_last: u32,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let fingerprint = core_update_sentry_fingerprint(report.error_kind, report.error_category);
+        for marker in &report.rescue_telemetry.stage_markers {
+            let message = marker
+                .split_once('|')
+                .map(|(_, stage)| stage)
+                .unwrap_or("unknown");
+            sentry::add_breadcrumb(sentry::Breadcrumb {
+                category: Some("core-update".to_string()),
+                message: Some(message.to_string()),
+                ..Default::default()
+            });
+        }
         sentry::with_scope(
             |sentry_scope| {
                 sentry_scope.set_fingerprint(Some(&fingerprint));
@@ -1938,17 +1947,6 @@ fn send_core_update_failure_report(
                 sentry_scope.set_tag("app_version", env!("APP_VERSION"));
                 sentry_scope.set_tag("os_version", os_info::get().version().to_string());
                 sentry_scope.set_tag("suppressed_since_last", suppressed_since_last.to_string());
-                for marker in &report.rescue_telemetry.stage_markers {
-                    let message = marker
-                        .split_once('|')
-                        .map(|(_, stage)| stage)
-                        .unwrap_or("unknown");
-                    sentry::add_breadcrumb(sentry::Breadcrumb {
-                        category: Some("core-update".to_string()),
-                        message: Some(message.to_string()),
-                        ..Default::default()
-                    });
-                }
                 sentry_scope.set_extra(
                     "coreUpdateExitCode",
                     report
@@ -2022,7 +2020,6 @@ fn core_update_sentry_failure_report(
     let rescue_telemetry = details.rescue_telemetry.cloned().unwrap_or_else(|| {
         CoreUpdateRescueTelemetry::from_raw(
             details.rescue_stderr_tail.unwrap_or_default(),
-            details.npx_resolution,
             1 + u32::from(details.managed_git_retry.attempted()),
         )
     });
@@ -5625,20 +5622,21 @@ error: clone failed";
     #[test]
     fn rescue_telemetry_extracts_closed_dimensions_and_scrubs_reason() {
         let raw = "==> Cloning source\n==> Verifying checkout\nnode_version=20.11.1\ngit_version=2.44.0\nrsync_version=3.2.7\ndisk free: 3 GiB\nnetwork_probe=ok\nroot=/Users/ada/OneDrive/HQ\nattempt_number=2\nfatal: clone failed at /Users/ada/OneDrive/HQ\n";
-        let telemetry = CoreUpdateRescueTelemetry::from_raw(
-            raw,
-            Some(CoreUpdateNpxResolution {
-                resolved: true,
-                source: "managed_toolchain",
-            }),
-            1,
-        );
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
 
         assert_eq!(telemetry.rescue_step, "verify");
         assert_eq!(telemetry.rescue_error_class, "clone_failed");
         assert_eq!(telemetry.git_version, "2.44.0");
         assert_eq!(telemetry.rsync_version, "3.2.7");
-        assert_eq!(telemetry.node_source, "managed_toolchain");
+        assert!(matches!(
+            telemetry.node_source,
+            "settings_path"
+                | "managed_toolchain"
+                | "user_prefix"
+                | "system_prefix"
+                | "login_shell"
+                | "not_resolved"
+        ));
         assert_eq!(telemetry.node_version, "20.11.1");
         assert_eq!(telemetry.disk_free_bucket, "1-5G");
         assert_eq!(telemetry.root_on_synced_folder, "onedrive");
@@ -5653,6 +5651,29 @@ error: clone failed";
         );
         assert!(!reason.contains("/Users/ada"));
         assert!(!reason.contains("OneDrive/HQ"));
+    }
+
+    #[test]
+    fn rescue_telemetry_does_not_infer_versions_from_unstructured_output() {
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(
+            "source=https://github.com/indigoai-us/hq-core/releases/tag/v0.10.302\n",
+            1,
+        );
+
+        assert_eq!(telemetry.git_version, "unknown");
+        assert_eq!(telemetry.rsync_version, "unknown");
+        assert_eq!(telemetry.node_version, "unknown");
+        assert_eq!(telemetry.root_on_synced_folder, "unknown");
+    }
+
+    #[test]
+    fn rescue_telemetry_keeps_the_latest_unknown_stage_unknown() {
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(
+            "==> Cloning source\n==> Preparing retry\nfatal: clone failed\n",
+            1,
+        );
+
+        assert_eq!(telemetry.rescue_step, "unknown");
     }
 
     #[test]
@@ -5676,7 +5697,7 @@ error: clone failed";
             ("fatal: SSL certificate problem", "unknown", "tls"),
             ("fatal: operation timed out", "unknown", "timeout"),
         ] {
-            let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, None, 1);
+            let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
             assert_eq!(telemetry.rescue_step, expected_step, "raw={raw:?}");
             assert_eq!(telemetry.rescue_error_class, expected_class, "raw={raw:?}");
         }
@@ -5686,7 +5707,6 @@ error: clone failed";
     fn rescue_telemetry_does_not_classify_a_user_path_as_an_error() {
         let telemetry = CoreUpdateRescueTelemetry::from_raw(
             "==> Verifying\ncreated /tmp/error: clone failed.txt\n",
-            None,
             1,
         );
 
@@ -5695,7 +5715,6 @@ error: clone failed";
 
         let marker_telemetry = CoreUpdateRescueTelemetry::from_raw(
             "==> Verify /Users/ada/T2026-09-22T17:00:00Z\n",
-            None,
             1,
         );
         assert!(marker_telemetry
@@ -5729,11 +5748,9 @@ error: clone failed";
     fn sentry_rate_limits_each_rescue_step_and_error_class() {
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_sentry_signatures_for_test();
-        let report = |
-            error_kind: &'static str,
-            error_category: RescueFailureCategory,
-            exit_code: Option<i32>,
-        | CoreUpdateSentryFailureReport {
+        let report = |error_kind: &'static str,
+                      error_category: RescueFailureCategory,
+                      exit_code: Option<i32>| CoreUpdateSentryFailureReport {
             source: "automatic",
             channel: Channel::Release,
             exit_code,
@@ -5753,6 +5770,7 @@ error: clone failed";
                     "network" => "dns",
                     _ => "eacces",
                 },
+                stage_markers: vec!["marker|clone".to_string()],
                 ..Default::default()
             },
             npx_resolution: Some(CoreUpdateNpxResolution {
@@ -5808,9 +5826,42 @@ error: clone failed";
         assert_eq!(events[0].tags["rescue_step"], "clone");
         assert_eq!(events[0].tags["rescue_error_class"], "clone_failed");
         assert_eq!(events[0].tags["suppressed_since_last"], "0");
+        assert!(events[0].breadcrumbs.values.iter().any(|breadcrumb| {
+            breadcrumb.category.as_deref() == Some("core-update")
+                && breadcrumb.message.as_deref() == Some("clone")
+        }));
         assert_eq!(
             events[0].extra["rescueStderrTail"],
             sentry::protocol::Value::String("fatal: could not clone Core source".to_string())
+        );
+    }
+
+    #[test]
+    fn unclassified_pre_rescue_failures_keep_distinct_rate_keys() {
+        let telemetry = CoreUpdateRescueTelemetry::default();
+        let report = |error_kind: &'static str, error_category| CoreUpdateSentryFailureReport {
+            source: "automatic",
+            channel: Channel::Release,
+            exit_code: None,
+            error_kind,
+            error_category,
+            rescue_stderr_tail: None,
+            rescue_telemetry: telemetry.clone(),
+            npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+        };
+
+        let first = report("rescue_spawn", RescueFailureCategory::MissingDependency);
+        let second = report("network", RescueFailureCategory::Network);
+        let same = report("rescue_spawn", RescueFailureCategory::MissingDependency);
+
+        assert_ne!(
+            core_update_sentry_rate_key(&first),
+            core_update_sentry_rate_key(&second)
+        );
+        assert_eq!(
+            core_update_sentry_rate_key(&first),
+            core_update_sentry_rate_key(&same)
         );
     }
 

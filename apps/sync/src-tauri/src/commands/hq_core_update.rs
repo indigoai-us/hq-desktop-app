@@ -484,7 +484,6 @@ async fn install_hq_core_update_inner(
                 rescue_telemetry:
                     crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
                         &diagnostic,
-                        Some(npx_resolution),
                         1,
                     ),
                 npx_resolution,
@@ -636,10 +635,10 @@ async fn install_hq_core_update_inner(
     let rescue_output_for_baseline =
         crate::commands::hq_core_staging::read_raw_rescue_diagnostic_tail(&log_path)
             .unwrap_or_else(|_| log_tail.clone());
+    let rescue_attempt_number = rescue_attempt_number(retry.outcome);
     let rescue_telemetry = crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
-        &rescue_output_for_baseline,
-        Some(npx_resolution),
-        1 + u32::from(retry.outcome.attempted()),
+        &rescue_stderr_tail,
+        rescue_attempt_number,
     );
 
     let (baseline_persisted, baseline_refresh_pending) = if exit_code == 0 {
@@ -874,6 +873,15 @@ fn rescue_result_after_managed_git_retry(
         initial_log_tail,
         initial_rescue_stderr_tail,
     )
+}
+
+fn rescue_attempt_number(
+    outcome: crate::commands::hq_core_state::ManagedGitRetryOutcome,
+) -> u32 {
+    match outcome {
+        crate::commands::hq_core_state::ManagedGitRetryOutcome::Succeeded => 2,
+        _ => 1,
+    }
 }
 
 /// Managed-rsync preflight for the Windows Core-update rescue.
@@ -1283,6 +1291,19 @@ mod tests {
                 "original clone failure".to_string(),
             )
         );
+    }
+
+    #[test]
+    fn failed_managed_git_retry_telemetry_stays_on_the_original_attempt() {
+        use crate::commands::hq_core_state::ManagedGitRetryOutcome;
+
+        assert_eq!(rescue_attempt_number(ManagedGitRetryOutcome::NotNeeded), 1);
+        assert_eq!(
+            rescue_attempt_number(ManagedGitRetryOutcome::ManagedGitUnavailable),
+            1
+        );
+        assert_eq!(rescue_attempt_number(ManagedGitRetryOutcome::Failed), 1);
+        assert_eq!(rescue_attempt_number(ManagedGitRetryOutcome::Succeeded), 2);
     }
 
     #[test]

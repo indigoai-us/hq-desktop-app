@@ -848,7 +848,6 @@ async fn run_replace_from_staging_inner(
             rescue_stderr_tail: hq_telemetry::redact_core_update_diagnostic_tail(&diagnostic),
             rescue_telemetry: crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
                 &diagnostic,
-                Some(npx_resolution),
                 1,
             ),
             npx_resolution,
@@ -952,7 +951,6 @@ async fn run_replace_from_staging_inner(
         hq_telemetry::redact_core_update_diagnostic_tail(&raw_rescue_diagnostic);
     let rescue_telemetry = crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
         &raw_rescue_diagnostic,
-        Some(npx_resolution),
         1,
     );
 
