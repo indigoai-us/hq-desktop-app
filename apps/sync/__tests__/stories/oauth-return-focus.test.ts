@@ -45,10 +45,10 @@ describe('OAuth return focus (macOS + Windows)', () => {
     const oauth = readRepo('src-tauri/src/commands/oauth.rs');
     expect(oauth).toContain('oauth_flow_keeps_window_visible');
     expect(oauth).toContain('clear_sticky_topmost');
-    const startIdx = oauth.indexOf('pub async fn start_oauth_login');
-    expect(startIdx).toBeGreaterThan(-1);
-    const startBody = oauth.slice(startIdx, startIdx + 2000);
-    expect(startBody).toContain('clear_sticky_topmost');
+    const armIdx = oauth.indexOf('pub(crate) fn arm_oauth_flow');
+    expect(armIdx).toBeGreaterThan(-1);
+    const armBody = oauth.slice(armIdx, armIdx + 2000);
+    expect(armBody).toContain('clear_sticky_topmost');
     const idx = oauth.indexOf('pub async fn oauth_listen_for_code');
     expect(idx).toBeGreaterThan(-1);
     const body = oauth.slice(idx, idx + 3500);
