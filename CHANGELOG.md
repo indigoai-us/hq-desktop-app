@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Clicking a DM or file-share notification now opens the main window on that conversation, even when HQ was not running. Before, the click opened the small quick Inbox window or landed on Home. The quick Inbox window is still available from the menu bar icon.
+- Links that start with hq:// (for example from an email or the HQ console) now open the right screen: a DM thread, a channel message, a file, a company, or Meetings. Existing hq-desktop:// setup and sign-in links work as before.
+- When someone shares files with you, the DM thread shows a card of square file tiles (up to four, then a +N tile). Click the card for a grid of every file, and click a file to preview images, PDFs, and text right in the thread, or open anything else in Files. One share produces one notification instead of two. Needs the matching HQ Cloud release; with an older server the thread looks as before.
 - Detected meetings now appear on the Meetings page with a recording destination picker, Start recording, and Stop recording. Opening the page after detection or after recording starts shows the current state, and the controls remain reachable in narrow windows.
 
 - When the setup bot finishes, a card now appears under its last message with a button to open your HQ in Claude Code or Codex (only the ones installed on this Mac) and a button to open the HQ console. You can dismiss the card, and it stays dismissed for that bot, so it no longer follows you down the conversation after setup. Before, if the bot formatted its finishing note slightly differently, the note showed up as a block of code at the end of the chat and no card appeared; it is now recognised however the bot writes it, and never shown as text.
