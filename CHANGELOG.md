@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On macOS, the window buttons and the Back button in Library and Settings stay lined up when the Interface size is set to Compact or Large. Before, Compact slid the Back button under the green window button and shifted the title bar off centre.
 - An open project updates when the same story changes on another device. A status change refetches that project, a work change reloads the company board, and a session that needs you or finishes updates the live marker on its card. You do not have to refresh the page. Needs the matching HQ Cloud release; with an older server the page still loads when you open it.
 
 ## [0.10.304] — 2026-09-22
