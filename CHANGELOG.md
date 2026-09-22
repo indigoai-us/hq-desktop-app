@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Core update failures now include consistent diagnostics, so repeated failures are grouped together and the report shows what went wrong without exposing local paths.
+
+## [0.10.303] — 2026-09-22
+
 - On macOS, the close, minimise and zoom buttons now line up with the toolbar. They were sitting about five pixels low.
 - Back from Settings now always returns to the main Messages view, instead of whatever page you were on before you opened Settings. The titlebar arrows still walk back through your history.
 - Core update failures now report their cause, and a finished update no longer runs the installer again when saving its drift baseline fails.
