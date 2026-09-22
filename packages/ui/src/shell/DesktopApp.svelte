@@ -9040,8 +9040,27 @@
     zoom: 0.9;
   }
 
+  /* The native macOS traffic lights are drawn by AppKit and do not zoom with
+     the shell, so the overlay titlebar must stay at its real 48pt height and
+     78pt leading gutter at every Interface size. Dividing the shared
+     titlebar-layout.ts constants by the same factor the shell zooms by keeps
+     the Back pill clear of the green light and puts the bar's centre line
+     back on the lights. Scoped to the overlay case only — web and Windows
+     (native caption buttons, 12px gutter) keep the plain tokens. */
+  :global(html[data-ui-size="compact"]:not([data-platform="windows"]))
+    .desktop-shell.has-window-controls {
+    --titlebar-height: calc(48px / 0.9);
+    --titlebar-leading-inset: calc(78px / 0.9);
+  }
+
   :global(html[data-ui-size="large"]) .desktop-shell {
     zoom: 1.12;
+  }
+
+  :global(html[data-ui-size="large"]:not([data-platform="windows"]))
+    .desktop-shell.has-window-controls {
+    --titlebar-height: calc(48px / 1.12);
+    --titlebar-leading-inset: calc(78px / 1.12);
   }
 
   .desktop-body {

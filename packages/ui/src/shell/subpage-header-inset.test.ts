@@ -3,7 +3,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
   TITLEBAR_HEIGHT_CSS_VAR,
+  TITLEBAR_HEIGHT_PX,
   TITLEBAR_LEADING_INSET_CSS_VAR,
+  TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX,
 } from "../home/titlebar-layout.js";
 
 const SRC = join(import.meta.dirname, "..");
@@ -119,5 +121,69 @@ describe("sub-page Back headers share PageHeader + titlebar inset", () => {
       offenders,
       `new Back header without PageHeader: ${offenders.join(", ")}`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * Interface size zooms `.desktop-shell` (WebKit `zoom`), but the native macOS
+ * traffic lights are drawn by AppKit and do not zoom. The overlay titlebar
+ * tokens therefore have to be divided by the same factor so the bar still
+ * renders at its real height and gutter — otherwise the sub-page Back pill
+ * slides under the green light at Compact.
+ */
+describe("Interface-size zoom compensates the overlay titlebar tokens", () => {
+  const source = read("shell/DesktopApp.svelte");
+  const UI_SIZES = ["compact", "large"] as const;
+
+  function zoomFactor(size: string): number {
+    const rule = new RegExp(
+      `:global\\(html\\[data-ui-size="${size}"\\]\\)\\s*\\.desktop-shell\\s*\\{[^}]*?zoom:\\s*([0-9.]+)\\s*;`,
+    ).exec(source);
+    expect(rule, `no zoom rule for data-ui-size="${size}"`).not.toBeNull();
+    return Number(rule![1]);
+  }
+
+  function compensationRule(size: string): string {
+    const rule = new RegExp(
+      `:global\\(html\\[data-ui-size="${size}"\\][\\s\\S]*?\\)\\s*\\.desktop-shell\\.has-window-controls\\s*\\{([^}]*)\\}`,
+    ).exec(source);
+    expect(
+      rule,
+      `no .has-window-controls compensation rule for data-ui-size="${size}"`,
+    ).not.toBeNull();
+    return rule![1];
+  }
+
+  it.each(UI_SIZES)(
+    "%s divides both titlebar tokens by its own zoom factor",
+    (size) => {
+      const factor = zoomFactor(size);
+      const body = compensationRule(size);
+      expect(body, size).toContain(
+        `${TITLEBAR_HEIGHT_CSS_VAR}: calc(${TITLEBAR_HEIGHT_PX}px / ${factor})`,
+      );
+      expect(body, size).toContain(
+        `${TITLEBAR_LEADING_INSET_CSS_VAR}: calc(${TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX}px / ${factor})`,
+      );
+    },
+  );
+
+  it("only compensates where the window controls are overlaid", () => {
+    for (const size of UI_SIZES) {
+      const scoped = new RegExp(
+        `:global\\(html\\[data-ui-size="${size}"\\][\\s\\S]*?\\)\\s*\\.desktop-shell\\.has-window-controls`,
+      );
+      expect(scoped.test(source), size).toBe(true);
+    }
+    // The plain zoom rules must not carry the compensated tokens themselves;
+    // web and Windows keep the tokens.css values.
+    for (const size of UI_SIZES) {
+      const plain = new RegExp(
+        `:global\\(html\\[data-ui-size="${size}"\\]\\)\\s*\\.desktop-shell\\s*\\{([^}]*)\\}`,
+      ).exec(source);
+      expect(plain, size).not.toBeNull();
+      expect(plain![1], size).not.toContain(TITLEBAR_HEIGHT_CSS_VAR);
+      expect(plain![1], size).not.toContain(TITLEBAR_LEADING_INSET_CSS_VAR);
+    }
   });
 });
