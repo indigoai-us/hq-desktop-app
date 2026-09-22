@@ -508,11 +508,25 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         category: RescueFailureCategory::Network,
         needle: "from promisor remote",
     },
-    RescueStderrPattern {
-        category: RescueFailureCategory::Network,
-        needle: "clone succeeded, but checkout failed",
-    },
 ];
+
+const CLONE_CHECKOUT_FAILURE_NEEDLE: &str = "clone succeeded, but checkout failed";
+const CLONE_CHECKOUT_TRANSPORT_NEEDLES: &[&str] = &[
+    "rpc failed",
+    "curl 92",
+    "curl 56",
+    "early eof",
+    "unexpected disconnect",
+    "remote helper 'https' aborted session",
+];
+
+fn clone_checkout_failure_is_network(stderr: &str) -> bool {
+    stderr.contains(CLONE_CHECKOUT_FAILURE_NEEDLE)
+        && (CLONE_CHECKOUT_TRANSPORT_NEEDLES
+            .iter()
+            .any(|needle| stderr.contains(needle))
+            || (stderr.contains("could not fetch") && stderr.contains("promisor remote")))
+}
 
 // These are OS-error renderings emitted before the rescue process can start or
 // while its update baseline is being persisted. They intentionally do not
@@ -591,6 +605,10 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
         }
     }) {
         return category;
+    }
+
+    if clone_checkout_failure_is_network(&stderr) {
+        return RescueFailureCategory::Network;
     }
 
     if stderr.contains("remote-https")
@@ -3611,6 +3629,19 @@ error: clone failed";
         assert_eq!(
             classify_rescue_stderr_failure(stderr),
             RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn local_checkout_failure_without_transport_diagnostic_is_unknown() {
+        let stderr = concat!(
+            "warning: Clone succeeded, but checkout failed.\n",
+            "error: invalid path 'aux.txt'\n",
+        );
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Unknown
         );
     }
 
