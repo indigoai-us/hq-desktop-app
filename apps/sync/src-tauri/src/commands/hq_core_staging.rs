@@ -853,10 +853,13 @@ async fn run_replace_from_staging_inner(
     })?;
 
     let exit_code = status.code().unwrap_or(-1);
+    let log_tail =
+        tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
     let baseline_persisted = if exit_code == 0 {
         match crate::commands::hq_core_state::persist_applied_rescue_baseline(
             &hq_folder,
             &previous_baseline_paths,
+            &log_tail,
         ) {
             Ok(commit) => {
                 log(
@@ -880,8 +883,6 @@ async fn run_replace_from_staging_inner(
     } else {
         true
     };
-    let log_tail =
-        tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
     let rescue_stderr_tail = read_rescue_diagnostic_tail(&log_path).unwrap_or_default();
 
     log(

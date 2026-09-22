@@ -607,6 +607,7 @@ async fn install_hq_core_update_inner(
         match crate::commands::hq_core_state::persist_applied_rescue_baseline(
             &hq_folder,
             &previous_baseline_paths,
+            &log_tail,
         ) {
             Ok(commit) => {
                 log(

@@ -1849,21 +1849,94 @@ pub(crate) fn core_drift_baseline_paths_before_rescue(
     hq_folder: &std::path::Path,
     source_repo: &str,
 ) -> BTreeSet<String> {
+    core_drift_baseline_before_rescue(hq_folder, source_repo).unwrap_or_default()
+}
+
+/// Return the previous baseline membership, preserving the distinction between
+/// an absent baseline and a valid empty baseline for the post-rescue refresh.
+pub(crate) fn core_drift_baseline_before_rescue(
+    hq_folder: &std::path::Path,
+    source_repo: &str,
+) -> Option<BTreeSet<String>> {
     let Some((source, commit)) = local_source_stamp(hq_folder) else {
-        return BTreeSet::new();
+        return None;
     };
     if source != source_repo {
-        return BTreeSet::new();
+        return None;
     }
-    hq_desktop_core::drift_scope::load_core_drift_baseline(hq_folder, &source, &commit)
-        .map(|baseline| {
+    hq_desktop_core::drift_scope::load_core_drift_baseline(hq_folder, &source, &commit).map(
+        |baseline| {
             baseline
                 .normalized_blobs
-                .into_iter()
-                .map(|(path, _)| path)
+                .into_keys()
                 .collect()
-        })
-        .unwrap_or_default()
+        },
+    )
+}
+
+fn normalize_rescue_path_relative(
+    hq_folder: &std::path::Path,
+    skipped_path: &str,
+) -> Option<String> {
+    let root = hq_folder.to_string_lossy().replace('\\', "/");
+    let candidate = skipped_path.trim().replace('\\', "/");
+    let root = root.trim_end_matches('/');
+
+    if candidate.len() <= root.len()
+        || !candidate[..root.len()].eq_ignore_ascii_case(root)
+        || candidate.as_bytes().get(root.len()) != Some(&b'/')
+    {
+        return None;
+    }
+
+    let relative = candidate[root.len() + 1..].trim_matches('/');
+    if relative.is_empty()
+        || relative.split('/').any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return None;
+    }
+    Some(relative.to_string())
+}
+
+/// Parse the rescue's explicit snapshot-skip diagnostics. A marker without a
+/// following absolute warning path makes the local fallback unsafe because its
+/// bytes may still be from before the applied release.
+fn skipped_rescue_paths(
+    hq_folder: &std::path::Path,
+    rescue_output: &str,
+) -> Result<BTreeSet<String>, String> {
+    let mut skipped = BTreeSet::new();
+    let mut awaiting_path = false;
+
+    for line in rescue_output.lines() {
+        let line = line.trim();
+        if line.starts_with("HQ_RESCUE_SKIPPED_KIND=") {
+            if awaiting_path {
+                return Err("rescue snapshot skip marker had no parseable path".to_string());
+            }
+            awaiting_path = true;
+            continue;
+        }
+        if !awaiting_path {
+            continue;
+        }
+        let Some(path) = line.strip_prefix("warning: snapshot skipped ") else {
+            continue;
+        };
+        let Some(path) = path.split(". It was not backed up").next() else {
+            continue;
+        };
+        let Some(relative) = normalize_rescue_path_relative(hq_folder, path.trim()) else {
+            return Err("rescue snapshot skip path was not under the HQ root".to_string());
+        };
+        skipped.insert(relative);
+        awaiting_path = false;
+    }
+
+    if awaiting_path {
+        return Err("rescue snapshot skip marker had no parseable path".to_string());
+    }
+    Ok(skipped)
 }
 
 /// Persist the drift baseline from the tree the rescue just wrote.
@@ -1876,14 +1949,18 @@ pub(crate) fn core_drift_baseline_paths_before_rescue(
 pub(crate) fn persist_applied_rescue_baseline(
     hq_folder: &std::path::Path,
     previous_baseline_paths: &BTreeSet<String>,
+    rescue_output: &str,
 ) -> Result<String, String> {
     let (source, commit) = local_source_stamp(hq_folder).ok_or_else(|| {
         "rescue completed without a replaced_from_source.last_sync_sha stamp".to_string()
     })?;
+    let skipped = skipped_rescue_paths(hq_folder, rescue_output)?;
     let locked = read_locked_paths(hq_folder);
     let blobs = walk_local_under_scope(hq_folder, &locked)
         .into_iter()
-        .filter(|(path, _)| previous_baseline_paths.contains(path))
+        .filter(|(path, _)| {
+            previous_baseline_paths.contains(path) && !skipped.contains(path)
+        })
         .map(|(path, (sha, _))| (path, sha))
         .collect();
     hq_desktop_core::drift_scope::persist_core_drift_baseline(hq_folder, &source, &commit, blobs)?;
@@ -4549,7 +4626,7 @@ error: clone failed";
         )
         .unwrap();
 
-        let persisted = persist_applied_rescue_baseline(root, &previous_paths).unwrap();
+        let persisted = persist_applied_rescue_baseline(root, &previous_paths, "").unwrap();
         assert_eq!(persisted, new_commit);
         let baseline =
             hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &new_commit)
@@ -4566,6 +4643,41 @@ error: clone failed";
         assert!(!baseline
             .normalized_blobs
             .contains_key("core/policies/local-only.md"));
+    }
+
+    #[test]
+    fn applied_rescue_baseline_excludes_paths_the_rescue_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let source = "indigoai-us/hq-core";
+        let new_commit = "4".repeat(40);
+        let kept = "core/policies/kept.md";
+        let skipped = "core/policies/skipped.md";
+        std::fs::create_dir_all(root.join("core/policies")).unwrap();
+        std::fs::write(root.join(kept), b"new kept\n").unwrap();
+        std::fs::write(root.join(skipped), b"old skipped\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {new_commit}\n"
+            ),
+        )
+        .unwrap();
+        let previous_paths = [kept.to_string(), skipped.to_string()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+
+        let output = format!(
+            "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EACCES\nwarning: snapshot skipped {}. It was not backed up and was left untouched. The update continued.",
+            root.join(skipped).display()
+        );
+        persist_applied_rescue_baseline(root, &previous_paths, &output).unwrap();
+
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &new_commit)
+                .unwrap();
+        assert!(baseline.normalized_blobs.contains_key(kept));
+        assert!(!baseline.normalized_blobs.contains_key(skipped));
     }
 
     #[test]
@@ -4587,7 +4699,7 @@ error: clone failed";
 
         let previous_paths = core_drift_baseline_paths_before_rescue(root, source);
         assert!(previous_paths.is_empty());
-        persist_applied_rescue_baseline(root, &previous_paths).unwrap();
+        persist_applied_rescue_baseline(root, &previous_paths, "").unwrap();
 
         let baseline =
             hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &commit).unwrap();
