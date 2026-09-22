@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   attachmentStackItems,
   attachmentTypeBadge,
+  formatAttachmentSize,
   isFileShareMessage,
   type MessageAttachment,
 } from './messageAttachments';
@@ -50,5 +51,17 @@ describe('attachmentTypeBadge', () => {
     expect(attachmentTypeBadge(att('noext', { contentType: 'application/pdf' }))).toBe('PDF');
     expect(attachmentTypeBadge(att('noext', { kind: 'image/png' }))).toBe('IMG');
     expect(attachmentTypeBadge(att('noext'))).toBe('FILE');
+  });
+});
+
+describe('formatAttachmentSize', () => {
+  it('returns an empty string when size is missing', () => {
+    expect(formatAttachmentSize(undefined)).toBe('');
+  });
+
+  it('formats bytes, kilobytes, and megabytes', () => {
+    expect(formatAttachmentSize(512)).toBe('512 B');
+    expect(formatAttachmentSize(2048)).toBe('2.0 KB');
+    expect(formatAttachmentSize(2 * 1024 * 1024)).toBe('2.0 MB');
   });
 });

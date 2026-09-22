@@ -13,6 +13,7 @@
   import { parseWorkSessionEvent } from '../../lib/workSessionEvent';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
+  import { invoke } from '@tauri-apps/api/core';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import {
     LinkContextMenu,
@@ -26,6 +27,9 @@
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
   import AttachmentStack from './AttachmentStack.svelte';
+  import AttachmentPicker from './AttachmentPicker.svelte';
+  import AttachmentPreview from './AttachmentPreview.svelte';
+  import { filesRouteForAttachment } from '../../lib/attachmentPresign';
   import {
     isFileShareMessage,
     type MessageAttachment,
@@ -107,8 +111,10 @@
     // Share timeline: called with a share-card bubble's ShareEvent when its
     // "Open in Claude" action is tapped (the host owns the deep link).
     onopenshareinclaude?: (share: ShareEvent) => void | Promise<void>;
-    // File-share stack click. US-008 attaches the picker; unused here.
+    // File-share stack click. Fires in addition to opening the in-thread picker.
     onopenattachments?: () => void;
+    /** Navigate to `files:<slug>:<path>` (tests inject; default opens the desktop). */
+    onnavigatefiles?: (route: string) => void;
     // When true, the reply composer is hidden and a static note renders in its
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
@@ -140,6 +146,7 @@
     ontogglereaction,
     onopenshareinclaude,
     onopenattachments,
+    onnavigatefiles,
     readonly = false,
     composer = true,
     belowMessages,
@@ -161,6 +168,47 @@
   }
 
   let linkMenu = $state<LinkMenuAnchor | null>(null);
+  let pickerAttachments = $state<MessageAttachment[] | null>(null);
+  let previewIndex = $state<number | null>(null);
+
+  function openAttachmentPicker(attachments: MessageAttachment[]): void {
+    pickerAttachments = attachments;
+    previewIndex = null;
+    onopenattachments?.();
+  }
+
+  function closeAttachmentPicker(): void {
+    pickerAttachments = null;
+    previewIndex = null;
+  }
+
+  function closeAttachmentPreview(): void {
+    previewIndex = null;
+  }
+
+  function openAttachmentInFiles(attachment: MessageAttachment): void {
+    const route = filesRouteForAttachment(attachment);
+    if (onnavigatefiles) {
+      onnavigatefiles(route);
+      return;
+    }
+    void invoke('open_desktop_alt_window', { route }).catch(() => {
+      // Navigation is best-effort; the preview stays open so the user can retry.
+    });
+  }
+
+  function onAttachmentDialogKey(event: KeyboardEvent): void {
+    if (event.key !== 'Escape') return;
+    if (previewIndex !== null) {
+      event.preventDefault();
+      closeAttachmentPreview();
+      return;
+    }
+    if (pickerAttachments) {
+      event.preventDefault();
+      closeAttachmentPicker();
+    }
+  }
 
   function openConversationLink(url: string): void {
     void openExternal(url).catch(() => {
@@ -568,7 +616,7 @@
           <AttachmentStack
             attachments={msg.attachments ?? []}
             senderName={messageAuthor(msg)}
-            onopen={onopenattachments}
+            onopen={() => openAttachmentPicker(msg.attachments ?? [])}
           />
           {#if msg.body?.trim()}
             <p class="share-card-note">{msg.body}</p>
@@ -782,6 +830,25 @@
     </div>
   </div>
 {/if}
+{/if}
+
+<svelte:window onkeydown={onAttachmentDialogKey} />
+
+{#if pickerAttachments}
+  <AttachmentPicker
+    attachments={pickerAttachments}
+    onclose={closeAttachmentPicker}
+    onselect={(index) => (previewIndex = index)}
+  />
+{/if}
+{#if pickerAttachments && previewIndex !== null}
+  <AttachmentPreview
+    attachments={pickerAttachments}
+    index={previewIndex}
+    onclose={closeAttachmentPreview}
+    onindex={(next) => (previewIndex = next)}
+    onopeninfiles={openAttachmentInFiles}
+  />
 {/if}
 
 <style>
