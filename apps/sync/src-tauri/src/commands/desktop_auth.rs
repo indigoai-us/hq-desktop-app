@@ -359,7 +359,8 @@ pub async fn desktop_continuation_await_identity(
     with_custody(|custody| custody.accept_callback(&attempt_id, &matched_state, now_ms()))
         .map_err(|error| custody_error_code(error).to_string())?;
 
-    let tokens = super::oauth::exchange_code_for_tokens(&callback.code).await?;
+    let exchanged = super::oauth::exchange_code_for_tokens(&callback.code).await?;
+    let tokens = exchanged.tokens;
 
     // Server-side verification. The desktop reading its own claims proves
     // nothing — the backend checks the signature, the audience, and that the
@@ -421,7 +422,13 @@ pub async fn desktop_continuation_confirm(
     // durable writer runs, so quitting after a completed write preserves its
     // original event id and timestamp for a later retry.
     if let Some(account_id) = state.account_id.as_deref() {
-        record_desktop_login_completed(&app, account_id, "browser_continuation", "continuation");
+        record_desktop_login_completed(
+            &app,
+            account_id,
+            "browser_continuation",
+            "continuation",
+            None,
+        );
     } else {
         eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
     }
@@ -764,7 +771,7 @@ fn desktop_platform() -> &'static str {
     }
 }
 
-fn desktop_receipt_base(app: &AppHandle) -> Option<serde_json::Value> {
+fn desktop_receipt_base<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<serde_json::Value> {
     let install_attempt_id = super::first_run::install_attempt_id()?;
     Some(serde_json::json!({
         "installAttemptId": install_attempt_id,
@@ -777,7 +784,9 @@ fn desktop_receipt_base(app: &AppHandle) -> Option<serde_json::Value> {
 
 /// The installation id can read the first-run state from disk. Do that work on
 /// the blocking pool after the user-facing command has already returned.
-async fn desktop_receipt_base_in_background(app: AppHandle) -> Result<serde_json::Value, String> {
+async fn desktop_receipt_base_in_background<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || desktop_receipt_base(&app))
         .await
         .map_err(|error| format!("desktop receipt preparation task failed: {error}"))?
@@ -787,16 +796,18 @@ async fn desktop_receipt_base_in_background(app: AppHandle) -> Result<serde_json
 /// Record the successful native sign-in edge. This has no company attribution:
 /// a login can complete before a workspace is selected, and pretending one was
 /// selected would corrupt the person-to-company join.
-pub(crate) fn record_desktop_login_completed(
-    app: &AppHandle,
+pub(crate) fn record_desktop_login_completed<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     authorized_account_id: &str,
     flow: &str,
     variant: &str,
+    identity_provider: Option<&str>,
 ) {
     let app = app.clone();
     let authorized_account_id = authorized_account_id.to_string();
     let flow = flow.to_string();
     let variant = variant.to_string();
+    let identity_provider = identity_provider.map(str::to_owned);
     tauri::async_runtime::spawn(async move {
         let result = async {
             let mut body = desktop_receipt_base_in_background(app).await?;
@@ -805,7 +816,10 @@ pub(crate) fn record_desktop_login_completed(
                 .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
             object.insert("flow".to_string(), serde_json::json!(flow));
             object.insert("variant".to_string(), serde_json::json!(variant));
-            object.insert("provider".to_string(), serde_json::json!("cognito"));
+            object.insert(
+                "provider".to_string(),
+                serde_json::json!(identity_provider.as_deref().unwrap_or("cognito")),
+            );
             schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
                 endpoint: AuthenticatedReceiptEndpoint::SessionActivated,
                 body,
@@ -1156,6 +1170,70 @@ mod authenticated_receipt_tests {
             .next()
             .expect("login receipt spawn");
         assert!(!before_background.contains("desktop_receipt_base"));
+    }
+
+    #[test]
+    fn login_receipt_records_selected_provider_for_manual_and_continuation_flows() {
+        let _env_guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().expect("temp home");
+        fs::create_dir_all(home.path().join(".hq")).expect("create temp HQ directory");
+        let _home = crate::util::test_support::scoped_home(home.path());
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        record_desktop_login_completed(
+            &handle,
+            "person-a",
+            "manual_oauth",
+            "control",
+            Some("Google"),
+        );
+        record_desktop_login_completed(
+            &handle,
+            "person-a",
+            "manual_oauth",
+            "control",
+            Some("MicrosoftPersonal"),
+        );
+        record_desktop_login_completed(
+            &handle,
+            "person-a",
+            "browser_continuation",
+            "continuation",
+            None,
+        );
+
+        let path = authenticated_receipt_queue_path_from_home(home.path());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let receipts = loop {
+            let receipts = read_authenticated_receipt_queue(&path).expect("read receipt queue");
+            if receipts.len() >= 3 {
+                break receipts;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "login receipts were not persisted before the test deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+
+        for (flow, variant, expected_provider) in [
+            ("manual_oauth", "control", "Google"),
+            ("manual_oauth", "control", "MicrosoftPersonal"),
+            ("browser_continuation", "continuation", "cognito"),
+        ] {
+            assert!(
+                receipts.iter().any(|receipt| {
+                    receipt.body.get("flow") == Some(&serde_json::json!(flow))
+                        && receipt.body.get("variant") == Some(&serde_json::json!(variant))
+                        && receipt.body.get("provider")
+                            == Some(&serde_json::json!(expected_provider))
+                }),
+                "missing {flow}/{variant} receipt for provider {expected_provider}"
+            );
+        }
     }
 
     #[test]

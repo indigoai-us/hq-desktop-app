@@ -215,11 +215,13 @@ describe('authenticated desktop receipts keep the install-to-company join intact
   it('reports a completed browser sign-in from native code, where the bearer token lives', () => {
     const confirm = rustFunction(desktopAuth, 'desktop_continuation_confirm');
     expect(confirm).toContain('record_desktop_login_completed');
-    expect(confirm).toContain('"browser_continuation", "continuation"');
+    expect(confirm).toMatch(/"browser_continuation",\s*"continuation",\s*None/);
     const manualOauth = rustFunction(oauth, 'oauth_exchange_code');
     expect(manualOauth).toContain('record_desktop_login_completed');
     expect(manualOauth).toContain('"manual_oauth"');
     expect(manualOauth).toContain('"control"');
+    expect(manualOauth).toContain('identity_provider.as_deref()');
+    expect(oauth).toContain('identity_provider: selected_identity_provider');
     expect(desktopAuth).toContain('session_activated_url()');
     expect(desktopAuth).toContain('super::first_run::install_attempt_id()?');
     expect(desktopAuth).toContain('.bearer_auth(jwt)');
