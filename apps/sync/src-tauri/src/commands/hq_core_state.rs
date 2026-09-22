@@ -3882,8 +3882,32 @@ mod tests {
 
         clear_automatic_no_retry_for_manual(Channel::Release);
         assert!(persisted_automatic_no_retry_target(Channel::Release).is_none());
-        let manual_run_guard = try_begin_core_update().expect("manual retry stays available");
-        drop(manual_run_guard);
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::Eligible,
+            "a manual Update or Restore clears the automatic no-retry target before spawning",
+        );
+        let manual_calls = Arc::new(AtomicUsize::new(0));
+        let manual_calls_for_run = Arc::clone(&manual_calls);
+        let manual = execute_native_core_auto_update(
+            CoreAutoUpdateCandidate {
+                channel: Channel::Release,
+                local_version: Some("15.0.4"),
+                target_version: target,
+                is_eligible: true,
+                version_behind: true,
+            },
+            true,
+            false,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                manual_calls_for_run.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+        assert_eq!(manual, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(manual_calls.load(Ordering::Acquire), 1);
     }
 
     #[tokio::test]
