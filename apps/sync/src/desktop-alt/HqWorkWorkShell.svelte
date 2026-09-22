@@ -23,7 +23,9 @@
     reportDownloadProgress,
     reportIdleWait,
     reportInstallFailed,
+    dispatchWorkPush,
     subscribeRosterRefreshEvents,
+    WORK_PUSH_EVENTS,
     toSelfIdentity,
     workspacesFromMembershipRows,
     common,
@@ -597,6 +599,11 @@
     const unsubscribeRosterEvents = subscribeRosterRefreshEvents(listen, () => {
       if (!cancelled && lifecycle === 'ready') void rosterRefresher.refresh();
     });
+    const unlistenWorkPushes = WORK_PUSH_EVENTS.map((eventName) =>
+      listen(eventName, (event) => {
+        if (!cancelled) dispatchWorkPush(eventName, event.payload);
+      }).catch(() => () => {}),
+    );
 
     // Native View-menu accelerators (⌘⇧]/⌘⇧[/⌘N/⌘/) are consumed by AppKit
     // before the webview sees the keydown; the menu handler emits the binding
@@ -702,6 +709,9 @@
       clearTimeout(bootRevealTimeoutId);
       hydration += 1;
       unsubscribeRosterEvents();
+      for (const pending of unlistenWorkPushes) {
+        void pending.then((unlisten) => safeUnlisten(unlisten)());
+      }
       rosterRefresher.dispose();
       detachNavigation?.();
       detachNavigation = null;

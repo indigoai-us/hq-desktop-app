@@ -50,6 +50,13 @@
     type Story,
   } from "./projects-model.js";
   import { overlayLiveAssignment } from "./project-view.js";
+  import { invalidateCompanyBoards } from "../company/company-store.svelte.js";
+  import {
+    createProjectRefetchWindow,
+    onWorkPush,
+    sessionRefFromSessionEvent,
+    upsertSessionMarker,
+  } from "./work-push.js";
   import { relativeActivity } from "../common/relative-activity.js";
   import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
   import ProjectDetailView from "./ProjectDetailView.svelte";
@@ -203,11 +210,40 @@
     }
   }
 
+  let pushSessions = $state<PortfolioSessionRef[]>([]);
+
   onMount(() => {
     const tick = setInterval(() => {
       now = Date.now();
     }, 15_000);
-    return () => clearInterval(tick);
+    const refetchWindow = createProjectRefetchWindow({
+      isOpen: (projectId) => selected?.id === projectId,
+      refetch: (projectId) => {
+        const project = selected;
+        if (!project || project.id !== projectId) return;
+        void refreshSelectedStoriesForProvenance(project);
+      },
+    });
+    const stopPushes = onWorkPush((push) => {
+      if (push.kind === "project-view") {
+        refetchWindow.note(push.projectId);
+        return;
+      }
+      if (push.kind === "work.changed") {
+        invalidateCompanyBoards();
+        return;
+      }
+      if (push.projectId && selected && push.projectId !== selected.id) return;
+      pushSessions = upsertSessionMarker(
+        pushSessions,
+        sessionRefFromSessionEvent(push),
+      );
+    });
+    return () => {
+      clearInterval(tick);
+      refetchWindow.dispose();
+      stopPushes();
+    };
   });
 
   const companyProjects = $derived(
@@ -217,7 +253,7 @@
       .sort(compareProjectsByRecency),
   );
 
-  const sessions: PortfolioSessionRef[] = [];
+  const sessions = $derived(pushSessions);
 
   function leadLabel(project: Project): string | null {
     const person = responsiblePerson(project.provenance, "project");
@@ -678,6 +714,7 @@
       oncloseStory={closeStory}
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
+      {sessions}
     />
   {:else}
     <header class="projects-header">
