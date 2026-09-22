@@ -298,6 +298,11 @@ pub(crate) enum RescueFailureCategory {
     NpxResolveFailed,
     Timeout,
     LockContention,
+    SnapshotRecoveryRequired,
+    RsyncPartialTransfer,
+    DirectoryNotEmpty,
+    RsyncBroken,
+    PreserveRestoreFailed,
     Unknown,
 }
 
@@ -318,6 +323,11 @@ impl RescueFailureCategory {
         Self::NpxResolveFailed,
         Self::Timeout,
         Self::LockContention,
+        Self::SnapshotRecoveryRequired,
+        Self::RsyncPartialTransfer,
+        Self::DirectoryNotEmpty,
+        Self::RsyncBroken,
+        Self::PreserveRestoreFailed,
         Self::Unknown,
     ];
 
@@ -338,6 +348,11 @@ impl RescueFailureCategory {
             Self::NpxResolveFailed => "npx-resolve-failed",
             Self::Timeout => "timeout",
             Self::LockContention => "lock-contention",
+            Self::SnapshotRecoveryRequired => "snapshot-recovery-required",
+            Self::RsyncPartialTransfer => "rsync-partial-transfer",
+            Self::DirectoryNotEmpty => "directory-not-empty",
+            Self::RsyncBroken => "rsync-broken",
+            Self::PreserveRestoreFailed => "preserve-restore-failed",
             Self::Unknown => "unknown",
         }
     }
@@ -353,6 +368,22 @@ struct RescueStderrPattern {
 // unsuccessfully. Keep every recognized stderr phrase in this one ordered
 // table: specific causes must precede their broader counterparts.
 const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::RsyncBroken,
+        needle: "rsync found at",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::SnapshotRecoveryRequired,
+        needle: "safety snapshot circuit breaker is open",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::RsyncPartialTransfer,
+        needle: "some files/attrs were not transferred",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::DirectoryNotEmpty,
+        needle: "enotempty",
+    },
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
         needle: "rsync preflight failed",
@@ -434,6 +465,10 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         needle: "connection timed out",
     },
     RescueStderrPattern {
+        category: RescueFailureCategory::Timeout,
+        needle: "ssl connection timeout",
+    },
+    RescueStderrPattern {
         category: RescueFailureCategory::Network,
         needle: "failed to connect",
     },
@@ -446,12 +481,36 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         needle: "connection reset",
     },
     RescueStderrPattern {
-        category: RescueFailureCategory::MissingDependency,
-        needle: "is not a git command",
+        category: RescueFailureCategory::Network,
+        needle: "remote helper 'https' aborted session",
     },
     RescueStderrPattern {
-        category: RescueFailureCategory::MissingDependency,
-        needle: "remote helper 'https' aborted session",
+        category: RescueFailureCategory::Network,
+        needle: "was not closed cleanly",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "bytes of body are still expected",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "unexpected disconnect while reading sideband packet",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "early eof",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "invalid index-pack output",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "from promisor remote",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "clone succeeded, but checkout failed",
     },
 ];
 
@@ -459,7 +518,14 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
 // while its update baseline is being persisted. They intentionally do not
 // participate in rescue-exit classification. Keep specific causes before their
 // broader counterparts so an actionable diagnosis is not shadowed.
+const NPM_CACHE_OTHER_WINDOW_NEEDLE: &str =
+    "hq sync is still preparing its npm cache in another window. wait a moment, then try sync again.";
+
 const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::LockContention,
+        needle: NPM_CACHE_OTHER_WINDOW_NEEDLE,
+    },
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
         needle: "no such file or directory",
@@ -512,10 +578,26 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
         match line.strip_prefix("hq_rescue_failure_kind=").map(str::trim) {
             Some("snapshot-copy-unreadable") => Some(RescueFailureCategory::SnapshotUnreadable),
             Some("snapshot-copy-failed") => Some(RescueFailureCategory::SnapshotFailed),
+            Some("snapshot-recovery-circuit-breaker") => {
+                Some(RescueFailureCategory::SnapshotRecoveryRequired)
+            }
+            Some("rsync-partial") => Some(RescueFailureCategory::RsyncPartialTransfer),
+            Some("rsync-failed") => Some(RescueFailureCategory::RsyncBroken),
+            Some("rsync-found-but-broken") => Some(RescueFailureCategory::RsyncBroken),
+            Some("network-unreachable") => Some(RescueFailureCategory::Network),
+            Some("missing-dependency") => Some(RescueFailureCategory::MissingDependency),
+            Some("preserve-restore-failed") => Some(RescueFailureCategory::PreserveRestoreFailed),
             _ => None,
         }
     }) {
         return category;
+    }
+
+    if stderr.contains("remote-https")
+        && stderr.contains("is not a git command")
+        && stderr.contains("remote helper 'https' aborted session")
+    {
+        return RescueFailureCategory::MissingDependency;
     }
 
     RESCUE_STDERR_PATTERNS
@@ -1205,6 +1287,7 @@ fn core_update_sentry_exit_code(exit_code: Option<i32>) -> &'static str {
         Some(3) => "3",
         Some(4) => "4",
         Some(5) => "5",
+        Some(23) => "23",
         Some(126) => "126",
         Some(127) => "127",
         Some(-1) => "signal_or_unknown",
@@ -3462,10 +3545,227 @@ error: clone failed";
     }
 
     #[test]
+    fn rescue_https_missing_helper_without_abort_is_not_missing_dependency() {
+        assert_eq!(
+            classify_rescue_stderr_failure("git: 'remote-https' is not a git command"),
+            RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
     fn rescue_generic_clone_failure_remains_unknown() {
         assert_eq!(
             classify_rescue_stderr_failure("error: clone failed"),
             RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn fixture_1_http2_clone_disconnect_is_network() {
+        let stderr = concat!(
+            "error: RPC failed; curl 92 HTTP/2 stream 3 was not closed cleanly: CANCEL (err 8)\n",
+            "error: 625 bytes of body are still expected\n",
+            "fetch-pack: unexpected disconnect while reading sideband packet\n",
+            "fatal: early EOF\n",
+            "fatal: fetch-pack: invalid index-pack output\n",
+            "fatal: could not fetch 454b8427cd757f30dc7fdb9a325d19c399770417 from promisor remote\n",
+            "warning: Clone succeeded, but checkout failed.\n",
+            "error: clone failed",
+        );
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn fixture_2_ssl_connection_timeout_is_timeout() {
+        let stderr =
+            "fatal: unable to access '[Filtered]': SSL connection timeout\nerror: clone failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Timeout
+        );
+    }
+
+    #[test]
+    fn fixture_3_https_helper_abort_without_missing_helper_is_network() {
+        let stderr = "fatal: remote helper 'https' aborted session\nerror: clone failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn fixture_4_curl_receive_timeout_is_timeout() {
+        let stderr = concat!(
+            "error: RPC failed; curl 56 Recv failure: Operation timed out\n",
+            "fatal: expected 'packfile'\n",
+            "error: clone failed",
+        );
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Timeout
+        );
+    }
+
+    #[test]
+    fn fixture_5_snapshot_circuit_breaker_is_recovery_required() {
+        let stderr =
+            "error: safety snapshot circuit breaker is open: two interrupted updates still need recovery proof.";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::SnapshotRecoveryRequired
+        );
+    }
+
+    #[test]
+    fn fixture_6_rsync_code_23_is_partial_transfer() {
+        let stderr = "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1306) [sender=3.4.1]";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::RsyncPartialTransfer
+        );
+        assert_eq!(core_update_sentry_exit_code(Some(23)), "23");
+    }
+
+    #[test]
+    fn fixture_7_enotempty_is_directory_not_empty() {
+        let stderr = "Error: ENOTEMPTY, Directory not empty: '[Filtered]' '[Filtered]'";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::DirectoryNotEmpty
+        );
+    }
+
+    #[test]
+    fn fixture_8_npm_cache_other_window_is_lock_contention() {
+        let detail = "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.";
+
+        assert_eq!(
+            classify_core_update_error(CoreUpdateErrorKind::RescueSpawn, detail, None),
+            RescueFailureCategory::LockContention
+        );
+    }
+
+    #[test]
+    fn fixture_9_found_rsync_that_exits_is_rsync_broken() {
+        let stderr = concat!(
+            "error: rsync preflight failed before any safety snapshot was allocated.\n",
+            "rsync exited with status 1.\n",
+            r#"rsync found at: [Filtered]\AppData\Local\IndigoHQ\toolchain\npm-prefix\rsync.cmd"#,
+            "\nInstall or repair rsync, then retry the HQ update.",
+        );
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::RsyncBroken
+        );
+    }
+
+    #[test]
+    fn fixture_10_network_unreachable_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=network-unreachable";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=network-unreachable\nerror: clone failed",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn fixture_10_missing_dependency_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=missing-dependency";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=missing-dependency\nerror: clone failed",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn fixture_11_preserve_restore_failed_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed\nerror: restore failed",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::PreserveRestoreFailed
+        );
+    }
+
+    #[test]
+    fn snapshot_recovery_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker\nerror: rescue failed",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::SnapshotRecoveryRequired
+        );
+    }
+
+    #[test]
+    fn rsync_partial_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=rsync-partial";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=rsync-partial\nrsync exited with status 23",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::RsyncPartialTransfer
+        );
+    }
+
+    #[test]
+    fn rsync_failed_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=rsync-failed";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=rsync-failed\nrsync exited with status 1",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::RsyncBroken
+        );
+    }
+
+    #[test]
+    fn rsync_found_but_broken_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken\nrsync exited with status 1",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::RsyncBroken
         );
     }
 
@@ -3830,6 +4130,7 @@ error: clone failed";
         assert_eq!(core_update_sentry_exit_code(Some(3)), "3");
         assert_eq!(core_update_sentry_exit_code(Some(-1)), "signal_or_unknown");
         assert_eq!(core_update_sentry_exit_code(None), "not_available");
+        assert_eq!(core_update_sentry_exit_code(Some(23)), "23");
         assert_eq!(core_update_sentry_exit_code(Some(42)), "other");
     }
 
@@ -3842,6 +4143,17 @@ error: clone failed";
                 label.bytes().all(|byte| byte.is_ascii_alphanumeric()
                     || matches!(byte, b'_' | b'.' | b':' | b'-')),
                 "{label:?} violates hq-pro SAFE_MARKETING_LABEL_RE"
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_failure_categories_are_admitted_by_the_closed_error_vocabulary() {
+        for category in RescueFailureCategory::ALL {
+            assert!(
+                crate::commands::telemetry::ERROR_CATEGORY_VALUES.contains(&category.label()),
+                "{} must be present in ERROR_CATEGORY_VALUES",
+                category.label()
             );
         }
     }
