@@ -291,7 +291,7 @@ describe("DesktopApp settings Back button", () => {
     await tick();
   }
 
-  it("Given the user opened Settings from a page and walked several sections, when they press Back, then Settings closes and that page is shown again (not the previous section)", async () => {
+  it("Given the user opened Settings from a page and walked several sections, when they press Back, then Settings closes and the main Messages view is shown (not that page, not the previous section)", async () => {
     await mountShell();
     await goTo("alpha");
     await openSettingsSection("profile");
@@ -304,7 +304,7 @@ describe("DesktopApp settings Back button", () => {
     await tick();
 
     expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
-    expect(extraPage()).toBe("alpha");
+    expect(extraPage()).toBeNull();
   });
 
   it("Given Settings was the first destination, when the user presses Back, then the main Messages view is shown", async () => {

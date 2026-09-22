@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX,
+  MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX,
   TITLEBAR_HEIGHT_CSS_VAR,
   TITLEBAR_HEIGHT_PX,
   TITLEBAR_LEADING_INSET_CSS_VAR,
@@ -18,14 +19,21 @@ describe("titlebar layout — traffic-light centre line", () => {
   it("places the traffic-light centre on the titlebar content centre", () => {
     expect(TITLEBAR_HEIGHT_PX).toBe(48);
     expect(titlebarContentCenterPx()).toBe(24);
-    expect(trafficLightYPx()).toBe(24);
-    expect(trafficLightPosition()).toEqual({ x: 20, y: 24 });
+    expect(MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX).toBe(5);
+    // macOS draws the lights 5px below `y`, so y=19 centres them on 24.
+    expect(trafficLightYPx()).toBe(19);
+    expect(trafficLightYPx() + MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX).toBe(
+      titlebarContentCenterPx(),
+    );
+    expect(trafficLightPosition()).toEqual({ x: 20, y: 19 });
   });
 
   it("follows the titlebar height so a taller bar keeps the lights centred", () => {
-    expect(trafficLightYPx(56)).toBe(28);
-    expect(trafficLightYPx(40)).toBe(20);
-    expect(titlebarContentCenterPx(56)).toBe(trafficLightYPx(56));
+    expect(trafficLightYPx(56)).toBe(23);
+    expect(trafficLightYPx(40)).toBe(15);
+    expect(titlebarContentCenterPx(56)).toBe(
+      trafficLightYPx(56) + MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX,
+    );
   });
 
   it("keeps the macOS gutter and leading inset that the titlebar CSS reserves", () => {
