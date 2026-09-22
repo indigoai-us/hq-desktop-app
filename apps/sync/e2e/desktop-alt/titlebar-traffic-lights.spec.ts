@@ -9,9 +9,10 @@ import { readRepoFile } from './harness';
  *
  * The live desktop window mounts `@hq/ui` V4TitleBar. Native macOS lights are
  * positioned via Tauri `trafficLightPosition` / `traffic_light_position`,
- * using the same titlebar height as the CSS. If the titlebar height changes,
- * `trafficLightYPx(height)` / `traffic_light_y_px` follow it — do not invent
- * a second offset.
+ * using the same titlebar height as the CSS, minus the measured macOS draw
+ * offset (`MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX`). If the titlebar height
+ * changes, `trafficLightYPx(height)` / `traffic_light_y_px` follow it — do
+ * not invent a second offset.
  */
 
 const tsLayout = readFileSync(
@@ -54,7 +55,8 @@ describe('desktop-alt overlay traffic lights share the titlebar centre line', ()
   const gutter = tsNumberConst('TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX');
   const trafficX = tsNumberConst('TITLEBAR_TRAFFIC_LIGHT_X_PX');
   const buttonHeight = tsNumberConst('MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX');
-  const trafficY = titleBarHeight / 2;
+  const centerOffset = tsNumberConst('MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX');
+  const trafficY = titleBarHeight / 2 - centerOffset;
 
   it('keeps one titlebar height across CSS, TS, and Rust', () => {
     const tokens = readRepoFile('../../packages/ui/src/home/tokens.css');
@@ -81,10 +83,14 @@ describe('desktop-alt overlay traffic lights share the titlebar centre line', ()
     expect(titleBar).not.toMatch(/padding-left:\s*78px/);
   });
 
-  it('computes trafficLightPosition.y as the titlebar content centre', () => {
-    expect(trafficY).toBe(24);
+  it('computes trafficLightPosition.y as the titlebar content centre minus the macOS draw offset', () => {
+    expect(centerOffset).toBe(5);
+    expect(trafficY).toBe(19);
     expect(trafficX).toBe(20);
     expect(buttonHeight).toBe(14);
+    expect(rustF64Const('MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX')).toBe(centerOffset);
+    expect(tsLayout).toContain('MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX');
+    expect(rustLayout).toContain('- MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX');
     expect(rustF64Const('TITLEBAR_TRAFFIC_LIGHT_X_PX')).toBe(trafficX);
     expect(rustF64Const('MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX')).toBe(buttonHeight);
     expect(tsLayout).toContain('titleBarHeightPx / 2');
