@@ -377,7 +377,11 @@
         {:else if tab === "goals"}
           <CompanyGoalsPage {adapter} slug={company.slug} />
         {:else if tab === "projects"}
-          <CompanyProjectsPage {adapter} slug={company.slug} />
+          <CompanyProjectsPage
+            {adapter}
+            slug={company.slug}
+            companyUid={company.cloudUid}
+          />
         {:else if tab === "skills"}
           <CompanyLibraryPanel
             slug={company.slug}

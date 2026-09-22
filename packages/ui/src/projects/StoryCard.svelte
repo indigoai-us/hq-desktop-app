@@ -3,6 +3,8 @@
   import { relativeActivity } from "../common/relative-activity.js";
   import LabelChip from "../common/LabelChip.svelte";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
+  import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import { identityAvatarSrc } from "./project-view.js";
 
   /**
    * StoryCard — a single project task as a movable work object (DESKTOP-005).
@@ -54,6 +56,8 @@
     typeof story.priority === "number" ? `P${story.priority}` : null,
   );
   const modelHint = $derived(story.model_hint ?? null);
+  const assignee = $derived(story.assignee ?? null);
+  const assigneeLabel = $derived(assignee?.displayName ?? "Unassigned");
 
   function activate(): void {
     onselect?.(story);
@@ -74,7 +78,7 @@
   class:has-live-run={liveRun !== null}
   data-priority={priorityLabel}
   data-testid="story-card"
-  aria-label={`Story ${story.id}: ${story.title}`}
+  aria-label={`Story ${story.id}: ${story.title}. Assignee ${assigneeLabel}`}
   onclick={activate}
   onkeydown={handleKeydown}
 >
@@ -96,6 +100,19 @@
 
   <div class="title-stack">
     <h4 class="story-title" title={story.title}>{story.title}</h4>
+  </div>
+
+  <div class="assignee-row" data-testid="story-assignee">
+    {#if assignee}
+      <IdentityMark
+        size="small"
+        kind={assignee.kind}
+        label={assignee.displayName}
+        avatarUrl={identityAvatarSrc(assignee)}
+        agentUid={assignee.kind === "agent" ? assignee.uid : null}
+      />
+    {/if}
+    <span class="assignee-name">{assigneeLabel}</span>
   </div>
 
   <ProvenanceLine
@@ -233,7 +250,7 @@
     color: var(--v4-text-2);
     font-family: var(--font-mono);
     font-size: var(--type-secondary, var(--text-base));
-    font-weight: 600;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -286,6 +303,22 @@
     flex-direction: column;
     gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
+  }
+
+  .assignee-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .assignee-name {
+    overflow: hidden;
+    color: var(--v4-text-2);
+    font-size: var(--text-micro, 11px);
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .story-title {

@@ -39,6 +39,42 @@ export interface Story {
   model_hint?: string | null;
   /** Explicit task owner/assignee/creator/source metadata, when declared. */
   provenance?: WorkProvenance;
+  /** Live ProjectView assignee uid. Null when the story is unassigned. */
+  assigneeUid?: string | null;
+  /** `actor` is inferred from a status change; `explicit` is a chosen assignee. */
+  assigneeSource?: StoryAssigneeSource;
+  assignedAt?: string | null;
+  assignedBy?: string | null;
+  lastActorUid?: string | null;
+  lastActorAt?: string | null;
+  /** Bounded status history from the server. Empty when the producer omitted it. */
+  changes?: StoryChange[];
+  /** Hydrated assignee. Null means unassigned, including when the uid is null. */
+  assignee?: StoryIdentity | null;
+  /** Hydrated last actor. Null when the server has no actor yet. */
+  lastActor?: StoryIdentity | null;
+}
+
+/** How the current assignee was chosen. Null on legacy stories and after a clear. */
+export type StoryAssigneeSource = "actor" | "explicit" | null;
+
+/** One status transition recorded by the server. */
+export interface StoryChange {
+  at: string;
+  actorUid: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Person or agent shown on a story. Display fields only; the raw avatar
+ * storage key never appears here.
+ */
+export interface StoryIdentity {
+  uid: string;
+  kind: "person" | "agent";
+  displayName: string;
+  avatarRef: { url?: string; base64?: string } | null;
 }
 
 /** A project, as surfaced by the get_company_projects Rust command. */
