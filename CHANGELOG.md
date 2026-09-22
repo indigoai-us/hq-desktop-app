@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When the onboarding window is replaced during startup, HQ no longer counts the brief screen teardown as an abandoned sign-in attempt. Longer stays still record how long the step was visible.
+
 ## [0.10.305] — 2026-09-22
 
 - On macOS, the window buttons and the Back button in Library and Settings stay lined up when the Interface size is set to Compact or Large. Before, Compact slid the Back button under the green window button and shifted the title bar off centre.
