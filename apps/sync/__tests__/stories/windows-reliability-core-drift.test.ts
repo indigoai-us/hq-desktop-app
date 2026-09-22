@@ -20,8 +20,8 @@ describe('US-008: fail-closed Core Drift baselines', () => {
     expect(scope).toContain('normalized_blobs: BTreeMap<String, String>');
     expect(scope).toContain('source_repo: source_repo.to_string()');
     expect(scope).toContain('commit: commit.to_string()');
-    expect(update).toContain('persist_remote_baseline(');
-    expect(staging).toContain('persist_remote_baseline(');
+    expect(update).toContain('persist_applied_rescue_baseline(');
+    expect(staging).toContain('persist_applied_rescue_baseline(');
     expect(update).toContain('if exit_code == 0');
     expect(staging).toContain('if exit_code == 0');
   });
