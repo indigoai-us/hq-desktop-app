@@ -41,6 +41,12 @@ export type EmbeddedNavigationTarget =
   | { kind: 'setup-checkout'; companyUid: string; checkout?: string | null }
   | { kind: 'meetings'; meetingId?: string | null }
   | { kind: 'atlas' }
+  | { kind: 'shared-files' }
+  | {
+      kind: 'company';
+      slug: string;
+      tab?: string | null;
+    }
   | {
       kind: 'library';
       tab: 'skills' | 'workers' | 'installed' | 'marketplace' | 'submit' | 'profile';

@@ -136,6 +136,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   closeSettings: "replace",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
+  applyCompanyDeepLink: "push",
   onKey: "push",
   onOpenChannel: "push",
   onMessagePerson: "push",
@@ -394,6 +395,17 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
     notes:
       "Resolves inbox:dm / inbox:channel onto a conversation, or Inbox + notice.",
+  },
+  {
+    id: "apply-company-deep-link",
+    file: SHARED_SHELL_FILE,
+    needle: "async function applyCompanyDeepLink(",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes:
+      "Resolves company:<slug> onto the company channel, or an in-app error.",
   },
   {
     id: "event-open-channel",

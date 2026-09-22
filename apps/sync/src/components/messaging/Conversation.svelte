@@ -187,6 +187,9 @@
   }
 
   function openAttachmentInFiles(attachment: MessageAttachment): void {
+    if (!(attachment.companyUid ?? '').trim()) {
+      return;
+    }
     const route = filesRouteForAttachment(attachment);
     if (onnavigatefiles) {
       onnavigatefiles(route);

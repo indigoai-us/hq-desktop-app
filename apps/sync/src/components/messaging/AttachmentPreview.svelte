@@ -10,6 +10,7 @@
     type MessageAttachment,
   } from '../../lib/messageAttachments';
   import {
+    ATTACHMENT_MISSING_COMPANY,
     loadAttachmentPreview,
     type AttachmentPreviewView,
   } from '../../lib/attachmentPresign';
@@ -118,6 +119,16 @@
 
   function onBackdropClick(event: MouseEvent): void {
     if (event.target === event.currentTarget) onclose();
+  }
+
+  function openInFiles(): void {
+    if (!current) return;
+    if (!(current.companyUid ?? '').trim()) {
+      revoke(view);
+      view = { kind: 'error', message: ATTACHMENT_MISSING_COMPANY };
+      return;
+    }
+    onopeninfiles(current);
   }
 
   function revoke(payload: AttachmentPreviewView | null): void {
@@ -259,7 +270,7 @@
               type="button"
               class="preview-open-files"
               data-testid="attachment-preview-open-in-files"
-              onclick={() => current && onopeninfiles(current)}
+              onclick={openInFiles}
             >
               Open in Files
             </button>

@@ -9,7 +9,10 @@ vi.mock('svelte', async () => {
 
 import { flushSync, mount, unmount } from 'svelte';
 import type { MessageAttachment } from '../../lib/messageAttachments';
-import type { AttachmentPreviewView } from '../../lib/attachmentPresign';
+import {
+  ATTACHMENT_MISSING_COMPANY,
+  type AttachmentPreviewView,
+} from '../../lib/attachmentPresign';
 import AttachmentPreview from './AttachmentPreview.svelte';
 
 let host: HTMLElement;
@@ -136,5 +139,45 @@ describe('AttachmentPreview', () => {
     expect(open).not.toBeNull();
     open.click();
     expect(onopeninfiles).toHaveBeenCalledWith(files[2]);
+  });
+
+  it('shows an in-app notice and skips Open in Files when companyUid is missing', async () => {
+    const onopeninfiles = vi.fn();
+    const missing: MessageAttachment = {
+      vaultPath: 'indigo/files/archive.zip',
+      name: 'archive.zip',
+      sizeBytes: 4096,
+    };
+    component = mount(AttachmentPreview, {
+      target: host,
+      props: {
+        attachments: [missing],
+        index: 0,
+        onclose: vi.fn(),
+        onindex: vi.fn(),
+        onopeninfiles,
+        loadPreview: async () => ({
+          kind: 'error',
+          message: ATTACHMENT_MISSING_COMPANY,
+        }),
+      },
+    });
+    flushSync();
+    await Promise.resolve();
+    flushSync();
+
+    const fallback = document.querySelector('[data-testid="attachment-preview-fallback"]');
+    expect(fallback?.textContent).toContain('archive.zip');
+    expect(fallback?.textContent).toContain(ATTACHMENT_MISSING_COMPANY);
+    const open = document.querySelector(
+      '[data-testid="attachment-preview-open-in-files"]',
+    ) as HTMLButtonElement;
+    expect(open).not.toBeNull();
+    open.click();
+    flushSync();
+    expect(onopeninfiles).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="attachment-preview-fallback"]')?.textContent,
+    ).toContain(ATTACHMENT_MISSING_COMPANY);
   });
 });

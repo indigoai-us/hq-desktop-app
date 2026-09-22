@@ -377,6 +377,18 @@ describe("native/host destination conversion", () => {
     });
     expect(
       destinationFromEmbeddedTarget({
+        kind: "shared-files",
+      }),
+    ).toEqual({ kind: "shared-files" });
+    expect(
+      destinationFromEmbeddedTarget({
+        kind: "company",
+        slug: "indigo",
+        tab: "activity",
+      }),
+    ).toBeNull();
+    expect(
+      destinationFromEmbeddedTarget({
         kind: "unsupported",
         route: "company:indigo:activity",
         reason: "Unsupported embedded destination",

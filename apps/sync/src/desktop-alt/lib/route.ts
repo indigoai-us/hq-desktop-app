@@ -206,19 +206,13 @@ export function desktopRouteToEmbeddedTarget(
     case 'meetings':
       return { kind: 'meetings' };
     case 'files':
-      return {
-        kind: 'extra',
-        page: 'files',
-        param: route.path,
-        companyUid: route.slug,
-      };
+      // The Work shell has no extra `files` page. Shared files is the Files
+      // destination it already navigates to (share notifications, inbox).
+      return { kind: 'shared-files' };
     case 'company':
-      return {
-        kind: 'extra',
-        page: 'company',
-        param: route.tab ?? null,
-        companyUid: route.slug,
-      };
+      return route.tab
+        ? { kind: 'company', slug: route.slug, tab: route.tab }
+        : { kind: 'company', slug: route.slug };
     case 'atlas':
       return { kind: 'home' };
     case 'library':

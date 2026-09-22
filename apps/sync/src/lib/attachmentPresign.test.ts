@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MessageAttachment } from './messageAttachments';
 import {
+  ATTACHMENT_MISSING_COMPANY,
   companySlugForAttachment,
   filesRouteForAttachment,
   isInlineAttachmentPreview,
@@ -26,6 +27,11 @@ describe('companySlugForAttachment', () => {
         { cloudUid: 'cmp_indigo', slug: 'indigo' },
       ]),
     ).toBe('indigo');
+  });
+
+  it('does not throw when companyUid is missing and falls back to the vault path', () => {
+    expect(companySlugForAttachment(att('a.md', { companyUid: undefined }))).toBe('indigo');
+    expect(companySlugForAttachment(att('a.md', { companyUid: null }))).toBe('indigo');
   });
 
   it('uses an already-friendly slug and HQ-relative vault paths', () => {
@@ -61,6 +67,15 @@ describe('isInlineAttachmentPreview', () => {
 });
 
 describe('presignAttachmentGet', () => {
+  it('returns an error and skips the hop when companyUid is missing', async () => {
+    const invoke = vi.fn();
+    await expect(presignAttachmentGet('', 'indigo/files/shot.png', { invoke })).resolves.toEqual({
+      ok: false,
+      message: ATTACHMENT_MISSING_COMPANY,
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('requests a GET presign through the native hop and never throws the URL', async () => {
     const invoke = vi.fn(async () => ({
       status: 200,
@@ -82,6 +97,23 @@ describe('presignAttachmentGet', () => {
 });
 
 describe('loadAttachmentPreview', () => {
+  it('returns an in-app error when companyUid is absent', async () => {
+    const invoke = vi.fn();
+    await expect(
+      loadAttachmentPreview(att('shot.png', { companyUid: undefined }), { invoke }),
+    ).resolves.toEqual({
+      kind: 'error',
+      message: ATTACHMENT_MISSING_COMPANY,
+    });
+    await expect(
+      loadAttachmentPreview(att('notes.md', { companyUid: '  ' }), { invoke }),
+    ).resolves.toEqual({
+      kind: 'error',
+      message: ATTACHMENT_MISSING_COMPANY,
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('skips the network for unsupported types such as zip', async () => {
     const invoke = vi.fn();
     await expect(loadAttachmentPreview(att('archive.zip'), { invoke })).resolves.toEqual({

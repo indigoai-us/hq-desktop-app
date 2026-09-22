@@ -563,15 +563,6 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
     expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
 
-    // company:<slug>[:<tab>] is a first-class route (US-004). Without a
-    // registered extra page the shell still surfaces an error rather than
-    // silently keeping the previous destination.
-    warmRoute('company:indigo:activity');
-    await flush();
-    expect(host.querySelector('[data-testid="embedded-navigation-error"]')?.textContent).toContain(
-      'Unknown destination: company',
-    );
-
     warmRoute('settings:appearance:untrusted');
     await flush();
     expect(host.querySelector('[data-testid="embedded-navigation-error"]')?.textContent).toContain(
@@ -658,6 +649,37 @@ describe('embedded Work navigation and lifecycle', () => {
     });
     expect(host.querySelector('[data-conversation-id="ch:chn_missing"]')).toBeNull();
     expect(host.querySelector('[data-testid="channel-header"]')).toBeNull();
+  });
+
+  it('routes files:<slug>:<path> onto Shared files and company:<slug> onto the company channel', async () => {
+    await mountShell({
+      directoryResponse: {
+        channels: [
+          {
+            channelId: 'chn_engineering',
+            id: 'chn_engineering',
+            name: 'engineering',
+            scope: 'company',
+            companyUid: 'cmp_indigo',
+          },
+        ],
+      },
+    });
+
+    warmRoute('files:indigo:companies:indigo:knowledge:foo.md');
+    await flush(64);
+    expect(host.querySelector('[data-testid="shared-files-overlay"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="embedded-navigation-error"]')).toBeNull();
+
+    warmRoute('company:indigo');
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toMatch(
+        /engineering/i,
+      );
+    });
+    expect(host.querySelector('[data-testid="shared-files-overlay"]')).toBeNull();
+    expect(host.querySelector('[data-testid="embedded-navigation-error"]')).toBeNull();
   });
 
   it('routes a real Sync-host file-share notification to its scoped file surface', async () => {

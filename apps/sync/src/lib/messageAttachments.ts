@@ -9,13 +9,16 @@
 export const ATTACHMENT_STACK_VISIBLE = 4;
 
 export interface MessageAttachment {
-  id: string;
+  /** Client-generated id. Absent on older rows. */
+  id?: string | null;
   vaultPath: string;
   name: string;
   sizeBytes?: number;
   kind?: string;
-  contentType?: string;
-  companyUid: string;
+  /** MIME type when distinct from `kind`. Absent on older rows. */
+  contentType?: string | null;
+  /** Company vault the bytes live in. Absent on older rows. */
+  companyUid?: string | null;
 }
 
 /** True when a message should render as the file-share card stack. */

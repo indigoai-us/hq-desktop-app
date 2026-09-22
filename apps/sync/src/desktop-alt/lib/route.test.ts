@@ -88,10 +88,7 @@ describe('desktop route grammar', () => {
       'files:indigo:companies:indigo:knowledge:foo.md',
     );
     expect(desktopRouteToEmbeddedTarget(files!)).toEqual({
-      kind: 'extra',
-      page: 'files',
-      param: 'companies:indigo:knowledge:foo.md',
-      companyUid: 'indigo',
+      kind: 'shared-files',
     });
 
     const company = parseDesktopRoute('company:indigo');
@@ -104,11 +101,14 @@ describe('desktop route grammar', () => {
       tab: 'activity',
     });
     expect(serializeDesktopRoute(withTab!)).toBe('company:indigo:activity');
+    expect(desktopRouteToEmbeddedTarget(company!)).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+    });
     expect(desktopRouteToEmbeddedTarget(withTab!)).toEqual({
-      kind: 'extra',
-      page: 'company',
-      param: 'activity',
-      companyUid: 'indigo',
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'activity',
     });
     expect(parseDesktopRoute('files:indigo')).toEqual({
       kind: 'unsupported',

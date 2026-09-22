@@ -144,6 +144,7 @@
   import CompanyHero from "../chat/CompanyHero.svelte";
   import {
     companyChannelTabsFor,
+    isCompanyChannelTabId,
     parseCompanyTab,
     type CompanyChannelTabId,
     type CompanyTabModel,
@@ -7110,6 +7111,107 @@
     void navigate({ kind: "messages" });
   }
 
+  function companyWorkspaceForSlug(slug: string) {
+    const needle = slug.trim();
+    if (!needle) return null;
+    const lower = needle.toLowerCase();
+    return (
+      (companies ?? []).find((company) => {
+        const companySlug = (company.slug ?? "").trim();
+        const uid = (company.cloudUid ?? "").trim();
+        return (
+          companySlug === needle ||
+          companySlug.toLowerCase() === lower ||
+          uid === needle
+        );
+      }) ?? null
+    );
+  }
+
+  function companyChannelRowForSlug(slug: string): ConversationRow | null {
+    const workspace = companyWorkspaceForSlug(slug);
+    const uid = (workspace?.cloudUid ?? "").trim();
+    const needle = slug.trim();
+    if (!uid && !needle) return null;
+    return (
+      railRows.find((row) => {
+        if (row.kind !== "channel" || row.browseOnly) return false;
+        if ((row.channelScope ?? "") !== "company") return false;
+        const rowUid = (row.companyUid ?? "").trim();
+        if (!rowUid) return false;
+        return rowUid === uid || rowUid === needle;
+      }) ?? null
+    );
+  }
+
+  async function waitForCompanyChannel(
+    slug: string,
+    context: { isStale: () => boolean },
+  ): Promise<ConversationRow | null> {
+    const attempts = 16;
+    const delayMs = 50;
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = (): void => {
+        if (context.isStale()) {
+          resolve(null);
+          return;
+        }
+        const row = companyChannelRowForSlug(slug);
+        if (row) {
+          resolve(row);
+          return;
+        }
+        tries += 1;
+        if (tries >= attempts) {
+          resolve(null);
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      tick();
+    });
+  }
+
+  async function applyCompanyDeepLink(
+    target: Extract<EmbeddedNavigationTarget, { kind: "company" }>,
+  ): Promise<void> {
+    inboxRouteNotice = null;
+    embeddedNavigationError = null;
+    const generation = navigation.generation();
+    const slug = target.slug.trim();
+    const rawTab = target.tab?.trim() ?? "";
+    const nextCompanyTab: CompanyChannelTabId = isCompanyChannelTabId(rawTab)
+      ? rawTab
+      : "chat";
+    const isCurrent = () => navigation.generation() === generation;
+    let row = companyChannelRowForSlug(slug);
+    if (!row) {
+      if (directorySettled && companies != null) {
+        embeddedNavigationError = `Unknown company: ${slug}`;
+        return;
+      }
+      row = await waitForCompanyChannel(slug, {
+        isStale: () => !isCurrent(),
+      });
+      if (!isCurrent()) return;
+      if (!row) {
+        embeddedNavigationError = `Unknown company: ${slug}`;
+        return;
+      }
+    }
+    const channelId = row.channelId?.trim() ?? "";
+    if (!isCurrent() || !channelId) {
+      if (!channelId) embeddedNavigationError = `Unknown company: ${slug}`;
+      return;
+    }
+    void navigate({
+      kind: "channel",
+      channelId,
+      companyTab: nextCompanyTab,
+    });
+  }
+
   async function applyInboxDeepLink(
     target: Extract<EmbeddedNavigationTarget, { kind: "inbox" }>,
   ): Promise<void> {
@@ -7148,6 +7250,10 @@
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
   function applyEmbeddedNavigation(target: EmbeddedNavigationTarget): void {
+    if (target.kind === "company") {
+      void applyCompanyDeepLink(target);
+      return;
+    }
     if (
       target.kind === "inbox" &&
       (target.dm?.trim() || target.channelId?.trim())

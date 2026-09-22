@@ -675,6 +675,11 @@ export function destinationFromEmbeddedTarget(
       return { kind: "meetings", meetingId: target.meetingId ?? null };
     case "atlas":
       return { kind: "atlas" };
+    case "shared-files":
+      return { kind: "shared-files" };
+    case "company":
+      // Resolved in DesktopApp against the membership roster + company channel.
+      return null;
     case "library":
       return { kind: "library", tab: target.tab };
     case "settings":

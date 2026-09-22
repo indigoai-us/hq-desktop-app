@@ -19,6 +19,9 @@ import type { MessageAttachment } from './messageAttachments';
 
 export const MAX_ATTACHMENT_PREVIEW_BYTES = MAX_CHANNEL_FILE_PREVIEW_BYTES;
 
+/** Shown when an older attachment row has no company vault to presign against. */
+export const ATTACHMENT_MISSING_COMPANY = 'This file has no company assigned.';
+
 export type InvokeFn = (
   command: string,
   args?: Record<string, unknown>,
@@ -77,7 +80,7 @@ export function companySlugForAttachment(
     slug: string;
   }> = [],
 ): string {
-  const uid = attachment.companyUid.trim();
+  const uid = (attachment.companyUid ?? '').trim();
   const match = companies.find((row) => row.uid === uid || row.cloudUid === uid);
   if (match?.slug) return match.slug;
   if (uid && !looksLikeCompanyUid(uid)) return uid;
@@ -101,7 +104,7 @@ export function filesRouteForAttachment(
   }>,
 ): string {
   const slug = companySlugForAttachment(attachment, companies);
-  const path = attachment.vaultPath.trim().replace(/\\/g, '/');
+  const path = (attachment.vaultPath ?? '').trim().replace(/\\/g, '/');
   return `files:${slug}:${path}`;
 }
 
@@ -121,13 +124,18 @@ export async function presignAttachmentGet(
   vaultPath: string,
   deps?: AttachmentPresignDeps,
 ): Promise<{ ok: true; url: string } | { ok: false; message: string }> {
+  const company = companyUid.trim();
+  const key = vaultPath.trim();
+  if (!company || !key) {
+    return { ok: false, message: ATTACHMENT_MISSING_COMPANY };
+  }
   const invoke = invokeFn(deps);
   let response: NativeHqProResponse;
   try {
     response = (await invoke('hq_pro_fetch', {
       url: '/v1/files/presign',
       method: 'POST',
-      body: JSON.stringify({ company: companyUid, op: 'get', key: vaultPath }),
+      body: JSON.stringify({ company, op: 'get', key }),
     })) as NativeHqProResponse;
   } catch {
     return { ok: false, message: "Couldn't reach the file service." };
@@ -163,11 +171,13 @@ export async function loadAttachmentPreview(
 ): Promise<AttachmentPreviewView> {
   if (!isInlineAttachmentPreview(attachment)) return { kind: 'unsupported' };
 
-  const signed = await presignAttachmentGet(
-    attachment.companyUid,
-    attachment.vaultPath,
-    deps,
-  );
+  const companyUid = (attachment.companyUid ?? '').trim();
+  const vaultPath = (attachment.vaultPath ?? '').trim();
+  if (!companyUid || !vaultPath) {
+    return { kind: 'error', message: ATTACHMENT_MISSING_COMPANY };
+  }
+
+  const signed = await presignAttachmentGet(companyUid, vaultPath, deps);
   if (!signed.ok) return { kind: 'error', message: signed.message };
 
   const invoke = invokeFn(deps);
