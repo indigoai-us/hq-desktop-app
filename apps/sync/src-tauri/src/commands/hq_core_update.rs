@@ -478,7 +478,7 @@ async fn install_hq_core_update_inner(
         return Ok(CoreUpdateRescueRun {
             result: crate::commands::hq_core_staging::RescueRunResult {
                 exit_code: 1,
-                log_tail: diagnostic,
+                log_tail: diagnostic.clone(),
                 log_path: log_path.display().to_string(),
                 rescue_stderr_tail,
                 rescue_telemetry:
