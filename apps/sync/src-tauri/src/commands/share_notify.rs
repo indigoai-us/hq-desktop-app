@@ -52,7 +52,8 @@ use crate::util::logfile::log;
 pub use hq_desktop_core::share_notify::{
     clear_in_flight, cursor_path, notification_body, notification_title, partition_unnotified,
     poll_lock, read_cursor_entry, read_cursor_store, share_notifications_enabled, share_path_title,
-    try_set_in_flight, write_cursor_entry, BlockingNotifyGuard, CursorEntry, CursorEntryCompat,
+    share_represented_by_dm, try_set_in_flight, write_cursor_entry, BlockingNotifyGuard,
+    CursorEntry, CursorEntryCompat,
     CursorStore, NotificationShareActionEvent, PendingShareEvents, ShareEvent,
     SharedWithMeResponse, EVENT_NOTIFICATION_SHARE_ACTION, EVENT_SHARE_EVENTS_LIST,
     EVENT_SHARE_NEW_EVENTS, LOG_TAG, NOTIFIED_CAP, SHARE_DETAIL_LABEL, SHARE_POLL_INTERVAL_SECS,
@@ -261,20 +262,41 @@ async fn do_poll(app: &AppHandle) {
                         return;
                     }
 
+                    // A share that already wrote a DM must not fire a second
+                    // native/banner notification — the DM is the one surface.
+                    let notify_events: Vec<ShareEvent> = fresh
+                        .iter()
+                        .filter(|e| !share_represented_by_dm(e))
+                        .cloned()
+                        .collect();
+                    let linked = fresh.len().saturating_sub(notify_events.len());
+
                     log(
                         LOG_TAG,
                         &format!(
-                            "SHARE_NOTIFY_POLL_OK {} event(s) ({} new), cursor→{}",
+                            "SHARE_NOTIFY_POLL_OK {} event(s) ({} new, {} linked-dm suppressed), cursor→{}",
                             body.events.len(),
                             fresh.len(),
+                            linked,
                             newest
                         ),
                     );
 
+                    if notify_events.is_empty() {
+                        log(
+                            LOG_TAG,
+                            &format!(
+                                "SHARE_NOTIFY_SUPPRESSED {} event(s) already represented by dmEventId",
+                                fresh.len()
+                            ),
+                        );
+                        return;
+                    }
+
                     // Windows parity: persist exactly the shares whose
                     // notifications are emitted so dismissed toasts remain
                     // visible in local notification history.
-                    crate::commands::notification_history::record_share_events(&fresh);
+                    crate::commands::notification_history::record_share_events(&notify_events);
 
                     #[cfg(target_os = "macos")]
                     {
@@ -288,9 +310,9 @@ async fn do_poll(app: &AppHandle) {
                         if crate::commands::banner::custom_banner_enabled() {
                             log(
                                 LOG_TAG,
-                                &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", fresh.len()),
+                                &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", notify_events.len()),
                             );
-                            for evt in &fresh {
+                            for evt in &notify_events {
                                 if let Err(e) = crate::commands::banner::show_share_banner(
                                     app.clone(),
                                     evt.clone(),
@@ -317,13 +339,11 @@ async fn do_poll(app: &AppHandle) {
                             // the root cause of "native share notifications don't
                             // appear".
                             //
-                            // Trade-off (same one meetings already made): the
-                            // banner loses its inline "Actions" dropdown (Copy
-                            // prompt / Open details). Clicking the banner body
-                            // opens the desktop-alt window (routed by `kind` in
-                            // the UN delegate); the richer per-action surface
-                            // remains available in the in-app custom banner,
-                            // which is the default for everyone.
+                            // Dropdown actions (Copy prompt / Open details /
+                            // Open in Claude) are registered as UN categories
+                            // on the same path; the delegate emits the existing
+                            // `notification:share-action` events. The in-app
+                            // custom banner remains the default surface.
                             // Native-banner gate (Settings → Notifications):
                             // master switch, the per-event Shares toggle, and
                             // the "only when unfocused" rule, read fresh from
@@ -342,17 +362,31 @@ async fn do_poll(app: &AppHandle) {
                                     LOG_TAG,
                                     &format!(
                                         "SHARE_NOTIFY_NATIVE_SUPPRESSED {} event(s) (settings gate, focused={app_focused})",
-                                        fresh.len()
+                                        notify_events.len()
                                     ),
                                 );
                             }
-                            for evt in fresh.iter().filter(|_| native_allowed) {
+                            for evt in notify_events.iter().filter(|_| native_allowed) {
                                 let body_text = notification_body(evt.note.as_deref(), &evt.paths);
                                 let title = notification_title(&evt.issuer_display_name);
+                                let issuer_uid = evt.issuer_person_uid.clone();
+                                let event_id = evt.event_id.clone();
+                                let payload_json =
+                                    crate::commands::un_notify::encode_action_payload(evt);
 
                                 std::thread::spawn(move || {
                                     crate::commands::un_notify::deliver_message(
-                                        &title, &body_text, "share",
+                                        &title,
+                                        &body_text,
+                                        "share",
+                                        &crate::commands::un_notify::MessageUserInfo {
+                                            from_person_uid: String::new(),
+                                            channel_id: String::new(),
+                                            event_id,
+                                            issuer_uid,
+                                            payload_json,
+                                            ..Default::default()
+                                        },
                                     );
                                 });
                             }
@@ -362,7 +396,7 @@ async fn do_poll(app: &AppHandle) {
                     #[cfg(not(target_os = "macos"))]
                     {
                         use tauri_plugin_notification::NotificationExt;
-                        for evt in &fresh {
+                        for evt in &notify_events {
                             let body_text = notification_body(evt.note.as_deref(), &evt.paths);
                             let title = notification_title(&evt.issuer_display_name);
                             match app
@@ -383,11 +417,11 @@ async fn do_poll(app: &AppHandle) {
                     }
 
                     // Badge the tray icon with the count of newly-notified events.
-                    crate::tray::set_share_badge(app, fresh.len());
+                    crate::tray::set_share_badge(app, notify_events.len());
 
                     // Emit to frontend — US-005 listens here (currently no-op
                     // after the eager-open removal, kept for future popover UI).
-                    let _ = app.emit(EVENT_SHARE_NEW_EVENTS, &fresh);
+                    let _ = app.emit_to("main", EVENT_SHARE_NEW_EVENTS, &notify_events);
                 }
             }
         }

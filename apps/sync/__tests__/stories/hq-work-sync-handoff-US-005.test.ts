@@ -142,13 +142,16 @@ describe('US-005 reroute desktop-alt opens to HQ Work', () => {
   });
 
   describe('call sites stay on existing Tauri commands', () => {
-    it('Svelte still invokes open_desktop_alt_window / dm_detail', () => {
+    it('Svelte still invokes open_desktop_alt_window for desktop and inbox', () => {
       // PL-07 deleted Popover.svelte and NotificationFeed.svelte, which held
       // the other call sites (`open_desktop_alt_window` with a route, and
-      // `open_communications_window`). The commands themselves stay — the
-      // Rust seam assertions above are what guard them.
+      // `open_communications_window`). Notification clicks (US-002) now
+      // front the main window on an inbox route instead of `open_dm_detail`.
+      // The command itself stays — the Rust seam assertions above guard it —
+      // and the tray "Open Inbox" item is the remaining explicit Inbox entry.
       expect(app).toContain("invoke('open_desktop_alt_window')");
-      expect(app).toContain("invoke('open_dm_detail'");
+      expect(app).toContain("listen('tray:open-inbox'");
+      expect(app).toContain("route: 'inbox'");
     });
 
     it('retains desktop-alt window code for flag-off rollback', () => {

@@ -426,6 +426,13 @@ fn main() {
                 crate::deep_link::spawn_open_hq_desktop_url(app, url);
                 return;
             }
+            // US-004: hq://inbox/dm/… (and the other mapped forms) front the
+            // desktop window on the parsed route. Malformed hq:// still fronts
+            // the landing route.
+            if let Some(url) = crate::deep_link::hq_url_from_argv(&argv) {
+                crate::deep_link::spawn_open_hq_url(app, url);
+                return;
+            }
 
             // US-004 WindowRouter: taskbar / second-process activation always
             // shows the compact notification popover — never auto-focuses the
@@ -1084,27 +1091,32 @@ fn main() {
             if let Some(url) = crate::deep_link::hq_desktop_url_from_argv(&startup_args) {
                 crate::deep_link::spawn_open_hq_desktop_url(app.handle(), url);
             }
+            if let Some(url) = crate::deep_link::hq_url_from_argv(&startup_args) {
+                crate::deep_link::spawn_open_hq_url(app.handle(), url);
+            }
 
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 #[cfg(any(windows, target_os = "linux"))]
                 {
-                    if let Err(error) = app.deep_link().register("hq-desktop") {
-                        util::logfile::log(
-                            "deep-link",
-                            &format!("HQ_DESKTOP_REGISTER_FAIL {error}"),
-                        );
+                    for scheme in ["hq-desktop", "hq"] {
+                        if let Err(error) = app.deep_link().register(scheme) {
+                            util::logfile::log(
+                                "deep-link",
+                                &format!("HQ_DESKTOP_REGISTER_FAIL {error}"),
+                            );
+                        }
                     }
                 }
                 let handle = app.handle().clone();
                 let _ = app.deep_link().on_open_url(move |event| {
                     for url in event.urls() {
-                        crate::deep_link::spawn_open_hq_desktop_url(&handle, url.to_string());
+                        crate::deep_link::spawn_open_delivered_url(&handle, url.to_string());
                     }
                 });
                 if let Ok(Some(urls)) = app.deep_link().get_current() {
                     for url in urls {
-                        crate::deep_link::spawn_open_hq_desktop_url(
+                        crate::deep_link::spawn_open_delivered_url(
                             app.handle(),
                             url.to_string(),
                         );

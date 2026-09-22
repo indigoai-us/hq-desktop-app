@@ -7,6 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::messages::MessageAttachment;
 use crate::paths;
 
 /// A single inbound DM as returned by `GET /v1/notify/inbox`.
@@ -34,6 +35,13 @@ pub struct DmEvent {
     /// thread pane instead of appending them to the main conversation list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_event_id: Option<String>,
+    /// `"file_share"` for a share written as a DM. Absent on ordinary messages
+    /// and on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
+    /// Vault-path file cards on a `file_share` DM. Absent-safe for old servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<MessageAttachment>>,
 }
 
 /// Per-counterparty DM unread rollup from `GET /v1/notify/inbox` (hq-pro
@@ -542,6 +550,12 @@ pub struct ThreadMessage {
     /// payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_count: Option<u32>,
+    /// `"file_share"` for a share written as a DM. Absent on ordinary rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
+    /// Vault-path file cards. Absent-safe for old servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<MessageAttachment>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1005,7 +1019,54 @@ mod tests {
             prompt: None,
             created_at: created_at.to_string(),
             root_event_id: None,
+            message_kind: None,
+            attachments: None,
         }
+    }
+
+    #[test]
+    fn dm_event_deserializes_without_attachments_or_kind() {
+        let json = r#"{
+            "eventId": "evt_1",
+            "fromPersonUid": "prs_a",
+            "fromEmail": "a@b.com",
+            "fromDisplayName": "Ada",
+            "body": "hi",
+            "createdAt": "2026-09-21T00:00:00Z"
+        }"#;
+        let evt: DmEvent = serde_json::from_str(json).unwrap();
+        assert!(evt.attachments.is_none());
+        assert!(evt.message_kind.is_none());
+    }
+
+    #[test]
+    fn dm_event_deserializes_file_share_attachments_and_ignores_unknown_fields() {
+        let json = r#"{
+            "eventId": "evt_share",
+            "fromPersonUid": "prs_a",
+            "fromEmail": "a@b.com",
+            "fromDisplayName": "Ada",
+            "body": "Shared 2 file(s) with you.",
+            "createdAt": "2026-09-21T00:00:00Z",
+            "messageKind": "file_share",
+            "unknownServerField": true,
+            "attachments": [{
+                "id": "att_1",
+                "vaultPath": "indigo/reports/q1.md",
+                "name": "q1.md",
+                "sizeBytes": 1200,
+                "kind": "file",
+                "contentType": "text/markdown",
+                "companyUid": "cmp_indigo"
+            }]
+        }"#;
+        let evt: DmEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(evt.message_kind.as_deref(), Some("file_share"));
+        let attachments = evt.attachments.expect("attachments");
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].name, "q1.md");
+        assert_eq!(attachments[0].vault_path, "indigo/reports/q1.md");
+        assert_eq!(attachments[0].company_uid.as_deref(), Some("cmp_indigo"));
     }
 
     #[test]

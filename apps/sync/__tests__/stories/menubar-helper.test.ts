@@ -40,6 +40,8 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(swift).toContain('writeCommand("quit")');
     expect(swift).toContain('writeCommand("updates")');
     expect(swift).toContain('writeCommand("recovery")');
+    expect(swift).toContain('writeCommand("inbox")');
+    expect(swift).toContain('Open Inbox');
     expect(swift).toContain('Check for updates…');
     expect(swift).toContain('Recovery…');
     // Self-exits when the main app (argv[1] PID) dies — no orphan icon.

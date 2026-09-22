@@ -39,6 +39,8 @@ export interface ShareEvent {
   note: string | null;
   permission: string;
   createdAt: string;
+  /** Inbox DM written for this share. When set, the thread merge skips this row. */
+  dmEventId?: string | null;
 }
 
 export interface UpdateInfo {
