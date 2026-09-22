@@ -2447,10 +2447,11 @@ mod tests {
     #[test]
     fn core_update_diagnostic_tail_keeps_only_known_rescue_failure_kind_markers() {
         let diagnostic = redact_core_update_diagnostic_tail(
-            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\nHQ_RESCUE_FAILURE_KIND=untrusted-value\nHQ_RESCUE_SKIPPED_KIND=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_FAILURE_KIND=rsync-missing\nHQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\nHQ_RESCUE_FAILURE_KIND=untrusted-value\nHQ_RESCUE_SKIPPED_KIND=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
         );
 
         assert!(diagnostic.contains("HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable"));
+        assert!(diagnostic.contains("HQ_RESCUE_FAILURE_KIND=rsync-missing"));
         assert!(diagnostic.contains("HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed"));
         assert!(!diagnostic.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
         assert!(!diagnostic.contains("HQ_RESCUE_FAILURE_KIND=untrusted-value"));
