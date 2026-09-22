@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core update failures now report their cause, and a finished update no longer runs the installer again when saving its drift baseline fails.
+- Windows Core updates now install a real rsync executable before the rescue runs, and show a clear message when rsync cannot be installed.
+- If a Core rescue applied the release but could not restore preserved files, automatic checks stop retrying that target and show where the preserved bytes were kept.
+
 ## [0.10.302] — 2026-09-22
 
 - Story cards and the story detail pane now show who a story is assigned to. A person shows their photo or initials, an agent shows its mark, and a story with nobody assigned says Unassigned. The detail pane also shows who last changed the story. This uses the live project from HQ, so a name written only in the local plan does not override the assignment HQ has.

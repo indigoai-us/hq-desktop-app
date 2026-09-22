@@ -72,10 +72,13 @@ static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 const MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES: u8 = 3;
 const CONSECUTIVE_FAILURE_CAP_SKIP_REASON: &str = "consecutive_failure_cap_reached";
 const RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON: &str = "retry_interval_not_elapsed";
-/// Per-channel target marker in `~/.hq/menubar.json`. This intentionally uses
-/// the established untyped, atomic menubar merge path: typed preferences would
-/// discard this update-bookkeeping key on an unrelated settings save.
-const BASELINE_RETRY_TARGETS_KEY: &str = "coreBaselineRetryTargets";
+const BASELINE_REFRESH_PENDING_SKIP_REASON: &str = "baseline_refresh_pending";
+const APPLIED_RESCUE_NO_RETRY_SKIP_REASON: &str = "rescue_applied_preserve_restore_failed";
+/// Per-channel applied-commit marker in `~/.hq/menubar.json`. This intentionally
+/// uses the established untyped, atomic menubar merge path: typed preferences
+/// would discard this update-bookkeeping key on an unrelated settings save.
+const BASELINE_REFRESH_PENDING_KEY: &str = "coreBaselineRefreshPending";
+const AUTOMATIC_NO_RETRY_TARGETS_KEY: &str = "coreAutomaticNoRetryTargets";
 
 /// Automatic retry eligibility is intentionally separate from the update run
 /// guard. The guard prevents overlapping Core writes; this state remembers a
@@ -298,6 +301,11 @@ pub(crate) enum RescueFailureCategory {
     NpxResolveFailed,
     Timeout,
     LockContention,
+    SnapshotRecoveryRequired,
+    RsyncPartialTransfer,
+    DirectoryNotEmpty,
+    RsyncBroken,
+    PreserveRestoreFailed,
     Unknown,
 }
 
@@ -318,6 +326,11 @@ impl RescueFailureCategory {
         Self::NpxResolveFailed,
         Self::Timeout,
         Self::LockContention,
+        Self::SnapshotRecoveryRequired,
+        Self::RsyncPartialTransfer,
+        Self::DirectoryNotEmpty,
+        Self::RsyncBroken,
+        Self::PreserveRestoreFailed,
         Self::Unknown,
     ];
 
@@ -338,6 +351,11 @@ impl RescueFailureCategory {
             Self::NpxResolveFailed => "npx-resolve-failed",
             Self::Timeout => "timeout",
             Self::LockContention => "lock-contention",
+            Self::SnapshotRecoveryRequired => "snapshot-recovery-required",
+            Self::RsyncPartialTransfer => "rsync-partial-transfer",
+            Self::DirectoryNotEmpty => "directory-not-empty",
+            Self::RsyncBroken => "rsync-broken",
+            Self::PreserveRestoreFailed => "preserve-restore-failed",
             Self::Unknown => "unknown",
         }
     }
@@ -353,6 +371,22 @@ struct RescueStderrPattern {
 // unsuccessfully. Keep every recognized stderr phrase in this one ordered
 // table: specific causes must precede their broader counterparts.
 const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::RsyncBroken,
+        needle: "rsync found at",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::SnapshotRecoveryRequired,
+        needle: "safety snapshot circuit breaker is open",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::RsyncPartialTransfer,
+        needle: "some files/attrs were not transferred",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::DirectoryNotEmpty,
+        needle: "enotempty",
+    },
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
         needle: "rsync preflight failed",
@@ -434,6 +468,10 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         needle: "connection timed out",
     },
     RescueStderrPattern {
+        category: RescueFailureCategory::Timeout,
+        needle: "ssl connection timeout",
+    },
+    RescueStderrPattern {
         category: RescueFailureCategory::Network,
         needle: "failed to connect",
     },
@@ -446,20 +484,65 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         needle: "connection reset",
     },
     RescueStderrPattern {
-        category: RescueFailureCategory::MissingDependency,
-        needle: "is not a git command",
-    },
-    RescueStderrPattern {
-        category: RescueFailureCategory::MissingDependency,
+        category: RescueFailureCategory::Network,
         needle: "remote helper 'https' aborted session",
     },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "was not closed cleanly",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "bytes of body are still expected",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "unexpected disconnect while reading sideband packet",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "early eof",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "invalid index-pack output",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "from promisor remote",
+    },
 ];
+
+const CLONE_CHECKOUT_FAILURE_NEEDLE: &str = "clone succeeded, but checkout failed";
+const CLONE_CHECKOUT_TRANSPORT_NEEDLES: &[&str] = &[
+    "rpc failed",
+    "curl 92",
+    "curl 56",
+    "early eof",
+    "unexpected disconnect",
+    "remote helper 'https' aborted session",
+];
+
+fn clone_checkout_failure_is_network(stderr: &str) -> bool {
+    stderr.contains(CLONE_CHECKOUT_FAILURE_NEEDLE)
+        && (CLONE_CHECKOUT_TRANSPORT_NEEDLES
+            .iter()
+            .any(|needle| stderr.contains(needle))
+            || (stderr.contains("could not fetch") && stderr.contains("promisor remote")))
+}
 
 // These are OS-error renderings emitted before the rescue process can start or
 // while its update baseline is being persisted. They intentionally do not
 // participate in rescue-exit classification. Keep specific causes before their
 // broader counterparts so an actionable diagnosis is not shadowed.
+const NPM_CACHE_OTHER_WINDOW_NEEDLE: &str =
+    "hq sync is still preparing its npm cache in another window. wait a moment, then try sync again.";
+
 const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::LockContention,
+        needle: NPM_CACHE_OTHER_WINDOW_NEEDLE,
+    },
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
         needle: "no such file or directory",
@@ -512,10 +595,31 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
         match line.strip_prefix("hq_rescue_failure_kind=").map(str::trim) {
             Some("snapshot-copy-unreadable") => Some(RescueFailureCategory::SnapshotUnreadable),
             Some("snapshot-copy-failed") => Some(RescueFailureCategory::SnapshotFailed),
+            Some("snapshot-recovery-circuit-breaker") => {
+                Some(RescueFailureCategory::SnapshotRecoveryRequired)
+            }
+            Some("rsync-partial") => Some(RescueFailureCategory::RsyncPartialTransfer),
+            Some("rsync-failed") => Some(RescueFailureCategory::RsyncBroken),
+            Some("rsync-found-but-broken") => Some(RescueFailureCategory::RsyncBroken),
+            Some("network-unreachable") => Some(RescueFailureCategory::Network),
+            Some("missing-dependency") => Some(RescueFailureCategory::MissingDependency),
+            Some("rsync-missing") => Some(RescueFailureCategory::MissingDependency),
+            Some("preserve-restore-failed") => Some(RescueFailureCategory::PreserveRestoreFailed),
             _ => None,
         }
     }) {
         return category;
+    }
+
+    if clone_checkout_failure_is_network(&stderr) {
+        return RescueFailureCategory::Network;
+    }
+
+    if stderr.contains("remote-https")
+        && stderr.contains("is not a git command")
+        && stderr.contains("remote helper 'https' aborted session")
+    {
+        return RescueFailureCategory::MissingDependency;
     }
 
     RESCUE_STDERR_PATTERNS
@@ -541,6 +645,57 @@ pub(crate) fn classify_rescue_exit_failure(
         return RescueFailureCategory::NpxResolveFailed;
     }
     classify_rescue_stderr_failure(stderr)
+}
+
+fn rescue_failure_requires_no_automatic_retry(stderr: &str) -> bool {
+    stderr.contains("HQ_RESCUE_FAILURE_KIND=preserve-restore-failed")
+        || stderr.contains("HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker")
+}
+
+/// Build the sentence shown after an automatic rescue applied the release but
+/// could not restore preserved paths. Every path and the snapshot location
+/// comes from the rescue output.
+pub(crate) fn preserve_restore_failure_notice(rescue_output: &str) -> Option<String> {
+    let mut in_restore_section = false;
+    let mut paths = Vec::new();
+    let mut snapshot = None;
+
+    for line in rescue_output.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("==> Could not restore these preserved paths after the update:")
+        {
+            in_restore_section = true;
+            continue;
+        }
+        if let Some(path) = trimmed.strip_prefix("Safety snapshot:") {
+            let path = path.trim();
+            if !path.is_empty() {
+                snapshot = Some(path.to_string());
+            }
+            continue;
+        }
+        if in_restore_section {
+            if trimmed.starts_with("The updated HQ release files are already in place") {
+                in_restore_section = false;
+                continue;
+            }
+            if let Some((path, _reason)) = trimmed.split_once(": ") {
+                let path = path.trim();
+                if !path.is_empty() {
+                    paths.push(path.to_string());
+                }
+            }
+        }
+    }
+
+    if paths.is_empty() {
+        return None;
+    }
+    let snapshot = snapshot?;
+    let joined_paths = paths.join(", ");
+    Some(format!(
+        "The rescue could not restore preserved path(s) {joined_paths}; it kept the bytes in {snapshot}."
+    ))
 }
 
 pub(crate) fn classify_core_update_error(
@@ -676,38 +831,24 @@ fn channel_label(channel: Channel) -> &'static str {
     }
 }
 
-/// Read the durable baseline-repair target for one channel from the untyped
-/// menubar map. The target is diagnostic context; a pending repair is scoped
-/// to the channel so that a newer remote target can still repair a baseline
-/// left behind by the previously installed target.
-fn baseline_retry_target_from_menubar(
-    menubar: &Map<String, Value>,
-    channel: Channel,
-) -> Option<String> {
-    menubar
-        .get(BASELINE_RETRY_TARGETS_KEY)
-        .and_then(Value::as_object)
-        .and_then(|targets| targets.get(channel_label(channel)))
-        .and_then(Value::as_str)
-        .filter(|target| !target.trim().is_empty())
-        .map(str::to_string)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BaselineRefreshTarget {
+    pub(crate) source: String,
+    pub(crate) commit: String,
 }
 
-fn baseline_retry_menubar_path() -> Result<Option<std::path::PathBuf>, String> {
-    // Tests that do not exercise persistence deliberately leave this unset so
-    // they cannot write the developer's real menubar.json. Persistence tests
-    // set HQ_TEST_HOME and exercise the same atomic path against a temp home.
+fn baseline_refresh_menubar_path(
+    injected_path: Option<&std::path::Path>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if let Some(path) = injected_path {
+        return Ok(Some(path.to_path_buf()));
+    }
+
     #[cfg(test)]
     {
-        let Some(home) = std::env::var_os("HQ_TEST_HOME") else {
-            return Ok(None);
-        };
-        if home.is_empty() {
-            return Ok(None);
-        }
-        return Ok(Some(
-            std::path::PathBuf::from(home).join(".hq/menubar.json"),
-        ));
+        // Unit tests that touch persisted Core state must inject their own
+        // file. Never derive it from process-global HOME variables.
+        Ok(None)
     }
 
     #[cfg(not(test))]
@@ -716,19 +857,96 @@ fn baseline_retry_menubar_path() -> Result<Option<std::path::PathBuf>, String> {
     }
 }
 
-fn persisted_baseline_retry_target(channel: Channel) -> Option<String> {
-    let path = baseline_retry_menubar_path().ok().flatten()?;
+fn persisted_baseline_refresh_target(
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+) -> Option<BaselineRefreshTarget> {
+    let path = baseline_refresh_menubar_path(injected_path).ok().flatten()?;
     let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
-    baseline_retry_target_from_menubar(&menubar, channel)
+    let value = menubar
+        .get(BASELINE_REFRESH_PENDING_KEY)
+        .and_then(Value::as_object)
+        .and_then(|targets| targets.get(channel_label(channel)))?
+        .as_object()?;
+    let source = value.get("source")?.as_str()?.trim();
+    let commit = value.get("commit")?.as_str()?.trim();
+    (!source.is_empty() && !commit.is_empty()).then(|| BaselineRefreshTarget {
+        source: source.to_string(),
+        commit: commit.to_string(),
+    })
 }
 
-fn persist_baseline_retry_target(channel: Channel, target: &str) -> Result<(), String> {
-    let Some(path) = baseline_retry_menubar_path()? else {
+fn persist_baseline_refresh_target(
+    channel: Channel,
+    source: &str,
+    commit: &str,
+    injected_path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let Some(path) = baseline_refresh_menubar_path(injected_path)? else {
         return Ok(());
     };
     let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
     let mut targets = menubar
-        .get(BASELINE_RETRY_TARGETS_KEY)
+        .get(BASELINE_REFRESH_PENDING_KEY)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    targets.insert(
+        channel_label(channel).to_string(),
+        json!({"source": source, "commit": commit}),
+    );
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(BASELINE_REFRESH_PENDING_KEY, Value::Object(targets))],
+    )
+}
+
+fn clear_persisted_baseline_refresh_target(
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let Some(path) = baseline_refresh_menubar_path(injected_path)? else {
+        return Ok(());
+    };
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    let mut targets = menubar
+        .get(BASELINE_REFRESH_PENDING_KEY)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    targets.remove(channel_label(channel));
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(BASELINE_REFRESH_PENDING_KEY, Value::Object(targets))],
+    )
+}
+
+fn persisted_automatic_no_retry_target(
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+) -> Option<String> {
+    let path = baseline_refresh_menubar_path(injected_path).ok().flatten()?;
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    menubar
+        .get(AUTOMATIC_NO_RETRY_TARGETS_KEY)
+        .and_then(Value::as_object)
+        .and_then(|targets| targets.get(channel_label(channel)))
+        .and_then(Value::as_str)
+        .filter(|target| !target.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn persist_automatic_no_retry_target(
+    channel: Channel,
+    target: &str,
+    injected_path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let Some(path) = baseline_refresh_menubar_path(injected_path)? else {
+        return Ok(());
+    };
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    let mut targets = menubar
+        .get(AUTOMATIC_NO_RETRY_TARGETS_KEY)
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
@@ -738,24 +956,27 @@ fn persist_baseline_retry_target(channel: Channel, target: &str) -> Result<(), S
     );
     hq_desktop_core::first_run::merge_menubar_flags(
         &path,
-        &[(BASELINE_RETRY_TARGETS_KEY, Value::Object(targets))],
+        &[(AUTOMATIC_NO_RETRY_TARGETS_KEY, Value::Object(targets))],
     )
 }
 
-fn clear_persisted_baseline_retry_target(channel: Channel) -> Result<(), String> {
-    let Some(path) = baseline_retry_menubar_path()? else {
+fn clear_persisted_automatic_no_retry_target(
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let Some(path) = baseline_refresh_menubar_path(injected_path)? else {
         return Ok(());
     };
     let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
     let mut targets = menubar
-        .get(BASELINE_RETRY_TARGETS_KEY)
+        .get(AUTOMATIC_NO_RETRY_TARGETS_KEY)
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
     targets.remove(channel_label(channel));
     hq_desktop_core::first_run::merge_menubar_flags(
         &path,
-        &[(BASELINE_RETRY_TARGETS_KEY, Value::Object(targets))],
+        &[(AUTOMATIC_NO_RETRY_TARGETS_KEY, Value::Object(targets))],
     )
 }
 
@@ -764,7 +985,8 @@ struct AutomaticTargetState {
     target: String,
     consecutive_failures: u8,
     completed_without_version_move: bool,
-    baseline_retry_pending: bool,
+    baseline_refresh_pending: bool,
+    no_retry_after_applied_failure: bool,
     last_failure_at: Option<Instant>,
 }
 
@@ -772,12 +994,14 @@ struct AutomaticTargetState {
 enum AutomaticTargetEligibility {
     Eligible,
     CompletedWithoutVersionMove,
+    BaselineRefreshPending,
+    NoRetryAfterAppliedFailure,
     ConsecutiveFailureCapReached,
     RetryIntervalNotElapsed,
 }
 
 fn automatic_target_eligibility(channel: Channel, target: &str) -> AutomaticTargetEligibility {
-    automatic_target_eligibility_at(channel, target, Instant::now())
+    automatic_target_eligibility_with_path(channel, target, Instant::now(), None)
 }
 
 fn automatic_target_eligibility_at(
@@ -785,26 +1009,42 @@ fn automatic_target_eligibility_at(
     target: &str,
     attempted_at: Instant,
 ) -> AutomaticTargetEligibility {
-    let persisted_baseline_retry_pending = persisted_baseline_retry_target(channel).is_some();
+    automatic_target_eligibility_with_path(channel, target, attempted_at, None)
+}
+
+fn automatic_target_eligibility_with_path(
+    channel: Channel,
+    target: &str,
+    attempted_at: Instant,
+    injected_path: Option<&std::path::Path>,
+) -> AutomaticTargetEligibility {
+    let persisted_baseline_refresh_pending =
+        persisted_baseline_refresh_target(channel, injected_path).is_some();
+    let persisted_no_retry_target =
+        persisted_automatic_no_retry_target(channel, injected_path);
     let states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(state) = states.get(&channel) else {
+        if persisted_no_retry_target.as_deref() == Some(target) {
+            return AutomaticTargetEligibility::NoRetryAfterAppliedFailure;
+        }
+        if persisted_baseline_refresh_pending {
+            return AutomaticTargetEligibility::BaselineRefreshPending;
+        }
         return AutomaticTargetEligibility::Eligible;
     };
     if state.target != target {
-        // State belongs to a single target per channel, so observing a newer
-        // target starts a fresh retry budget and drops old non-convergence. A
-        // baseline repair is different: it is an outstanding channel-level
-        // obligation, and the newer target's rescue can establish that floor.
+        if persisted_baseline_refresh_pending {
+            return AutomaticTargetEligibility::BaselineRefreshPending;
+        }
         return AutomaticTargetEligibility::Eligible;
     }
-    if state.baseline_retry_pending || persisted_baseline_retry_pending {
-        // A baseline-repair run must keep trying until it actually persists a
-        // baseline. It is not an update failure, so neither the update retry
-        // interval nor its failure cap may strand it.
-        AutomaticTargetEligibility::Eligible
+    if state.no_retry_after_applied_failure || persisted_no_retry_target.as_deref() == Some(target) {
+        AutomaticTargetEligibility::NoRetryAfterAppliedFailure
+    } else if state.baseline_refresh_pending || persisted_baseline_refresh_pending {
+        AutomaticTargetEligibility::BaselineRefreshPending
     } else if state.completed_without_version_move {
         AutomaticTargetEligibility::CompletedWithoutVersionMove
     } else if state.consecutive_failures >= MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
@@ -818,21 +1058,31 @@ fn automatic_target_eligibility_at(
     }
 }
 
-fn automatic_target_baseline_retry_pending(channel: Channel) -> bool {
+fn automatic_target_baseline_refresh_pending_with_path(
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+) -> bool {
     AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(&channel)
-        .is_some_and(|state| state.baseline_retry_pending)
-        || persisted_baseline_retry_target(channel).is_some()
+        .is_some_and(|state| state.baseline_refresh_pending)
+        || persisted_baseline_refresh_target(channel, injected_path).is_some()
 }
 
 fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_at: Instant) {
-    // A failed repair is not proof that the prior successful rescue wrote its
-    // baseline. Preserve the marker until a run explicitly reports that it
-    // persisted one, including when this invocation is for a newer target.
-    let baseline_retry_pending = automatic_target_baseline_retry_pending(channel);
+    record_automatic_target_failure_at_with_path(channel, target, attempted_at, None);
+}
+
+fn record_automatic_target_failure_at_with_path(
+    channel: Channel,
+    target: &str,
+    attempted_at: Instant,
+    injected_path: Option<&std::path::Path>,
+) {
+    let baseline_refresh_pending =
+        automatic_target_baseline_refresh_pending_with_path(channel, injected_path);
     let mut states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -843,7 +1093,8 @@ fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_
             target: target.to_string(),
             consecutive_failures: 0,
             completed_without_version_move: false,
-            baseline_retry_pending,
+            baseline_refresh_pending,
+            no_retry_after_applied_failure: false,
             last_failure_at: None,
         });
     if state.target != target {
@@ -851,20 +1102,24 @@ fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_
             target: target.to_string(),
             consecutive_failures: 0,
             completed_without_version_move: false,
-            baseline_retry_pending,
+            baseline_refresh_pending,
+            no_retry_after_applied_failure: false,
             last_failure_at: None,
         };
     }
-    state.baseline_retry_pending = baseline_retry_pending;
+    state.baseline_refresh_pending = baseline_refresh_pending;
+    state.no_retry_after_applied_failure = false;
     state.consecutive_failures = state.consecutive_failures.saturating_add(1);
     state.last_failure_at = Some(attempted_at);
 }
 
-fn record_automatic_target_baseline_persistence_failure_at(
+fn record_automatic_target_no_retry_after_applied_failure_with_path(
     channel: Channel,
     target: &str,
-    _attempted_at: Instant,
+    injected_path: Option<&std::path::Path>,
 ) {
+    let baseline_refresh_pending =
+        automatic_target_baseline_refresh_pending_with_path(channel, injected_path);
     let mut states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -875,7 +1130,8 @@ fn record_automatic_target_baseline_persistence_failure_at(
             target: target.to_string(),
             consecutive_failures: 0,
             completed_without_version_move: false,
-            baseline_retry_pending: false,
+            baseline_refresh_pending,
+            no_retry_after_applied_failure: false,
             last_failure_at: None,
         });
     if state.target != target {
@@ -883,21 +1139,19 @@ fn record_automatic_target_baseline_persistence_failure_at(
             target: target.to_string(),
             consecutive_failures: 0,
             completed_without_version_move: false,
-            baseline_retry_pending: false,
+            baseline_refresh_pending,
+            no_retry_after_applied_failure: false,
             last_failure_at: None,
         };
     }
-    state.baseline_retry_pending = true;
-    // The rescue already moved the version. This is degraded bookkeeping, not
-    // another failed update attempt, so start its repair with a fresh budget.
+    state.no_retry_after_applied_failure = true;
     state.consecutive_failures = 0;
-    state.completed_without_version_move = false;
     state.last_failure_at = None;
-    if let Err(error) = persist_baseline_retry_target(channel, target) {
+    if let Err(error) = persist_automatic_no_retry_target(channel, target, injected_path) {
         log(
             "hq-core-state",
             &format!(
-                "could not persist pending Core baseline repair for {} target {}: {error}",
+                "could not persist automatic Core no-retry target for {} target {}: {error}",
                 channel_label(channel),
                 target
             ),
@@ -905,7 +1159,42 @@ fn record_automatic_target_baseline_persistence_failure_at(
     }
 }
 
+pub(crate) fn clear_automatic_no_retry_for_manual(channel: Channel) {
+    clear_automatic_no_retry_for_manual_with_path(channel, None);
+}
+
+fn clear_automatic_no_retry_for_manual_with_path(
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+) {
+    if let Some(states) = AUTO_TARGET_STATES.get() {
+        let mut states = states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(state) = states.get_mut(&channel) {
+            state.no_retry_after_applied_failure = false;
+        }
+    }
+    if let Err(error) = clear_persisted_automatic_no_retry_target(channel, injected_path) {
+        log(
+            "hq-core-state",
+            &format!(
+                "could not clear automatic Core no-retry target for manual {} update: {error}",
+                channel_label(channel)
+            ),
+        );
+    }
+}
+
 fn record_automatic_target_completed(channel: Channel, target: &str) {
+    record_automatic_target_completed_with_path(channel, target, None);
+}
+
+fn record_automatic_target_completed_with_path(
+    channel: Channel,
+    target: &str,
+    injected_path: Option<&std::path::Path>,
+) {
     AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -916,11 +1205,12 @@ fn record_automatic_target_completed(channel: Channel, target: &str) {
                 target: target.to_string(),
                 consecutive_failures: 0,
                 completed_without_version_move: true,
-                baseline_retry_pending: false,
+                baseline_refresh_pending: false,
+                no_retry_after_applied_failure: false,
                 last_failure_at: None,
             },
         );
-    if let Err(error) = clear_persisted_baseline_retry_target(channel) {
+    if let Err(error) = clear_persisted_baseline_refresh_target(channel, injected_path) {
         log(
             "hq-core-state",
             &format!(
@@ -930,20 +1220,27 @@ fn record_automatic_target_completed(channel: Channel, target: &str) {
             ),
         );
     }
+    if let Err(error) = clear_persisted_automatic_no_retry_target(channel, injected_path) {
+        log(
+            "hq-core-state",
+            &format!(
+                "could not clear automatic Core no-retry target for {} target {}: {error}",
+                channel_label(channel),
+                target
+            ),
+        );
+    }
 }
 
-/// Both manual wrappers and the automatic executor call this after a zero-exit
-/// rescue result. Keeping the decision here makes a baseline failure retryable
-/// regardless of who initiated the successful update.
+/// Kept as a compatibility hook for both rescue wrappers. Baseline refresh
+/// state is recorded by the applied-rescue baseline writer, so this hook never
+/// schedules another installer run after a successful rescue.
 pub(crate) fn arm_baseline_retry_after_successful_core_update(
-    channel: Channel,
-    target: &str,
-    exit_code: i32,
-    baseline_persisted: bool,
+    _channel: Channel,
+    _target: &str,
+    _exit_code: i32,
+    _baseline_persisted: bool,
 ) {
-    if exit_code == 0 && !baseline_persisted {
-        record_automatic_target_baseline_persistence_failure_at(channel, target, Instant::now());
-    }
 }
 
 #[cfg(test)]
@@ -1205,6 +1502,7 @@ fn core_update_sentry_exit_code(exit_code: Option<i32>) -> &'static str {
         Some(3) => "3",
         Some(4) => "4",
         Some(5) => "5",
+        Some(23) => "23",
         Some(126) => "126",
         Some(127) => "127",
         Some(-1) => "signal_or_unknown",
@@ -1702,22 +2000,6 @@ async fn fetch_tree(
     Ok(out)
 }
 
-pub(crate) async fn persist_remote_baseline(
-    hq_folder: &std::path::Path,
-    client: &reqwest::Client,
-    repo: &str,
-    git_ref: &str,
-) -> Result<String, String> {
-    let commit = fetch_commit_sha(client, repo, git_ref).await?;
-    let blobs = fetch_tree(client, repo, &commit)
-        .await?
-        .into_iter()
-        .map(|(path, (sha, _))| (path, sha))
-        .collect();
-    hq_desktop_core::drift_scope::persist_core_drift_baseline(hq_folder, repo, &commit, blobs)?;
-    Ok(commit)
-}
-
 // ─── Floor SHA reader ────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1752,6 +2034,375 @@ fn local_source_stamp(hq_folder: &std::path::Path) -> Option<(String, String)> {
     let source = stamp.source?.trim().to_string();
     let commit = stamp.last_sync_sha?.trim().to_string();
     (!source.is_empty() && !commit.is_empty()).then_some((source, commit))
+}
+
+/// Capture the paths known to the last successful baseline before rescue
+/// rewrites `core/core.yaml`. Rescue leaves user-only paths in locked scopes;
+/// normal runs log only their count, so the previous baseline path set is the
+/// safe local boundary for the next baseline. Paths introduced by the new
+/// source remain absent from the floor and are compared with the target tree
+/// by the drift classifier.
+pub(crate) fn core_drift_baseline_paths_before_rescue(
+    hq_folder: &std::path::Path,
+    source_repo: &str,
+) -> BTreeSet<String> {
+    core_drift_baseline_before_rescue(hq_folder, source_repo).unwrap_or_default()
+}
+
+/// Return the previous baseline membership, preserving the distinction between
+/// an absent baseline and a valid empty baseline for the post-rescue refresh.
+pub(crate) fn core_drift_baseline_before_rescue(
+    hq_folder: &std::path::Path,
+    source_repo: &str,
+) -> Option<BTreeSet<String>> {
+    let Some((source, commit)) = local_source_stamp(hq_folder) else {
+        return None;
+    };
+    if source != source_repo {
+        return None;
+    }
+    hq_desktop_core::drift_scope::load_core_drift_baseline(hq_folder, &source, &commit).map(
+        |baseline| {
+            baseline
+                .normalized_blobs
+                .into_keys()
+                .collect()
+        },
+    )
+}
+
+fn normalize_rescue_path_relative(
+    hq_folder: &std::path::Path,
+    skipped_path: &str,
+) -> Option<String> {
+    let root = hq_folder.to_string_lossy().replace('\\', "/");
+    let candidate = skipped_path.trim().replace('\\', "/");
+    let root = root.trim_end_matches('/');
+
+    if candidate.len() <= root.len()
+        || !candidate[..root.len()].eq_ignore_ascii_case(root)
+        || candidate.as_bytes().get(root.len()) != Some(&b'/')
+    {
+        return None;
+    }
+
+    let relative = candidate[root.len() + 1..].trim_matches('/');
+    if relative.is_empty()
+        || relative.split('/').any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return None;
+    }
+    Some(relative.to_string())
+}
+
+/// Parse the rescue's explicit snapshot-skip diagnostics. A marker without a
+/// following absolute warning path makes the local fallback unsafe because its
+/// bytes may still be from before the applied release.
+fn skipped_rescue_paths(
+    hq_folder: &std::path::Path,
+    rescue_output: &str,
+) -> Result<BTreeSet<String>, String> {
+    let mut skipped = BTreeSet::new();
+    let mut awaiting_path = false;
+
+    for line in rescue_output.lines() {
+        let line = line.trim();
+        if line.starts_with("HQ_RESCUE_SKIPPED_KIND=") {
+            if awaiting_path {
+                return Err("rescue snapshot skip marker had no parseable path".to_string());
+            }
+            awaiting_path = true;
+            continue;
+        }
+        if !awaiting_path {
+            continue;
+        }
+        let Some(path) = line.strip_prefix("warning: snapshot skipped ") else {
+            continue;
+        };
+        let Some(path) = path.strip_suffix(
+            ". It was not backed up and was left untouched. The update continued.",
+        ) else {
+            continue;
+        };
+        let Some(relative) = normalize_rescue_path_relative(hq_folder, path.trim()) else {
+            return Err("rescue snapshot skip path was not under the HQ root".to_string());
+        };
+        skipped.insert(relative);
+        awaiting_path = false;
+    }
+
+    if awaiting_path {
+        return Err("rescue snapshot skip marker had no parseable path".to_string());
+    }
+    Ok(skipped)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AppliedRescueBaseline {
+    pub(crate) commit: String,
+    pub(crate) baseline_persisted: bool,
+    pub(crate) refresh_pending: bool,
+}
+
+fn optional_core_tree_client(token: Option<&str>) -> Result<reqwest::Client, String> {
+    let mut headers = crate::util::client_info::client_headers();
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
+    );
+    if let Some(token) = token {
+        let bearer = format!("Bearer {token}");
+        let value = reqwest::header::HeaderValue::from_str(&bearer)
+            .map_err(|error| format!("build GitHub authorization header: {error}"))?;
+        headers.insert(reqwest::header::AUTHORIZATION, value);
+    }
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| format!("build Core baseline client: {error}"))
+}
+
+fn persist_applied_rescue_baseline_from_tree_with_path(
+    hq_folder: &std::path::Path,
+    previous_baseline_paths: Option<&BTreeSet<String>>,
+    rescue_output: &str,
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+    remote_tree: Result<BTreeMap<String, (String, u64)>, String>,
+) -> Result<AppliedRescueBaseline, String> {
+    let (source, commit) = local_source_stamp(hq_folder).ok_or_else(|| {
+        "rescue completed without a replaced_from_source.last_sync_sha stamp".to_string()
+    })?;
+
+    match remote_tree {
+        Ok(tree) => {
+            let blobs = tree
+                .into_iter()
+                .map(|(path, (sha, _))| (path, sha))
+                .collect();
+            if let Err(error) = hq_desktop_core::drift_scope::persist_core_drift_baseline(
+                hq_folder, &source, &commit, blobs,
+            ) {
+                log(
+                    "hq-core-state",
+                    &format!(
+                        "could not persist authoritative Core baseline {source}@{commit}: {error}; keeping refresh pending"
+                    ),
+                );
+                persist_baseline_refresh_target(
+                    channel,
+                    &source,
+                    &commit,
+                    injected_path,
+                )?;
+                return Ok(AppliedRescueBaseline {
+                    commit,
+                    baseline_persisted: false,
+                    refresh_pending: true,
+                });
+            }
+            let mut refresh_pending = false;
+            if let Err(error) =
+                clear_persisted_baseline_refresh_target(channel, injected_path)
+            {
+                log(
+                    "hq-core-state",
+                    &format!(
+                        "persisted Core baseline {source}@{commit}, but could not clear its pending refresh marker: {error}; retrying the tree fetch"
+                    ),
+                );
+                if let Err(persist_error) =
+                    persist_baseline_refresh_target(
+                        channel,
+                        &source,
+                        &commit,
+                        injected_path,
+                    )
+                {
+                    log(
+                        "hq-core-state",
+                        &format!(
+                            "could not retain the pending Core baseline refresh marker: {persist_error}"
+                        ),
+                    );
+                } else {
+                    refresh_pending = true;
+                }
+            }
+            Ok(AppliedRescueBaseline {
+                commit,
+                baseline_persisted: true,
+                refresh_pending,
+            })
+        }
+        Err(fetch_error) => {
+            log(
+                "hq-core-state",
+                &format!(
+                    "GitHub tree fetch failed for applied Core baseline {source}@{commit}: {fetch_error}; using local fallback"
+                ),
+            );
+            let local_blobs = match previous_baseline_paths {
+                Some(previous_paths) => match skipped_rescue_paths(hq_folder, rescue_output) {
+                    Ok(skipped) => {
+                        let locked = read_locked_paths(hq_folder);
+                        Some(
+                            walk_local_under_scope(hq_folder, &locked)
+                                .into_iter()
+                                .filter(|(path, _)| {
+                                    previous_paths.contains(path) && !skipped.contains(path)
+                                })
+                                .map(|(path, (sha, _))| (path, sha))
+                                .collect::<BTreeMap<_, _>>(),
+                        )
+                    }
+                    Err(parse_error) => {
+                        log(
+                            "hq-core-state",
+                            &format!(
+                                "cannot derive a local Core baseline for {source}@{commit}: {parse_error}"
+                            ),
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
+
+            let mut baseline_persisted = false;
+            if let Some(blobs) = local_blobs {
+                match hq_desktop_core::drift_scope::persist_core_drift_baseline(
+                    hq_folder, &source, &commit, blobs,
+                ) {
+                    Ok(()) => baseline_persisted = true,
+                    Err(error) => log(
+                        "hq-core-state",
+                        &format!(
+                            "could not persist the local fallback Core baseline {source}@{commit}: {error}"
+                        ),
+                    ),
+                }
+            }
+            persist_baseline_refresh_target(
+                channel,
+                &source,
+                &commit,
+                injected_path,
+            )?;
+            Ok(AppliedRescueBaseline {
+                commit,
+                baseline_persisted,
+                refresh_pending: true,
+            })
+        }
+    }
+}
+
+fn refresh_pending_baseline_from_tree_with_path(
+    hq_folder: &std::path::Path,
+    channel: Channel,
+    pending: &BaselineRefreshTarget,
+    injected_path: Option<&std::path::Path>,
+    remote_tree: Result<BTreeMap<String, (String, u64)>, String>,
+) -> Result<(), String> {
+    let Some((source, commit)) = local_source_stamp(hq_folder) else {
+        return Err("pending baseline refresh has no local stamp".to_string());
+    };
+    if source != pending.source || commit != pending.commit {
+        return Err(format!(
+            "pending baseline stamp changed from {}@{} to {source}@{commit}",
+            pending.source, pending.commit
+        ));
+    }
+    let tree = remote_tree?;
+    let blobs = tree
+        .into_iter()
+        .map(|(path, (sha, _))| (path, sha))
+        .collect();
+    hq_desktop_core::drift_scope::persist_core_drift_baseline(
+        hq_folder, &source, &commit, blobs,
+    )?;
+    clear_persisted_baseline_refresh_target(channel, injected_path)?;
+    Ok(())
+}
+
+async fn persist_applied_rescue_baseline_with_fetcher<F, Fut>(
+    hq_folder: &std::path::Path,
+    previous_baseline_paths: Option<&BTreeSet<String>>,
+    rescue_output: &str,
+    channel: Channel,
+    token: Option<&str>,
+    fetcher: F,
+) -> Result<AppliedRescueBaseline, String>
+where
+    F: FnOnce(String, String, Option<String>) -> Fut,
+    Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
+{
+    persist_applied_rescue_baseline_with_fetcher_and_path(
+        hq_folder,
+        previous_baseline_paths,
+        rescue_output,
+        channel,
+        token,
+        None,
+        fetcher,
+    )
+    .await
+}
+
+async fn persist_applied_rescue_baseline_with_fetcher_and_path<F, Fut>(
+    hq_folder: &std::path::Path,
+    previous_baseline_paths: Option<&BTreeSet<String>>,
+    rescue_output: &str,
+    channel: Channel,
+    token: Option<&str>,
+    injected_path: Option<&std::path::Path>,
+    fetcher: F,
+) -> Result<AppliedRescueBaseline, String>
+where
+    F: FnOnce(String, String, Option<String>) -> Fut,
+    Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
+{
+    let (source, commit) = local_source_stamp(hq_folder).ok_or_else(|| {
+        "rescue completed without a replaced_from_source.last_sync_sha stamp".to_string()
+    })?;
+    let remote_tree = fetcher(source, commit, token.map(str::to_string)).await;
+    persist_applied_rescue_baseline_from_tree_with_path(
+        hq_folder,
+        previous_baseline_paths,
+        rescue_output,
+        channel,
+        injected_path,
+        remote_tree,
+    )
+}
+
+/// Persist the authoritative GitHub tree for the commit the rescue stamped.
+/// When GitHub cannot be reached, preserve only the previous local membership
+/// after removing rescue-skipped paths and leave a durable refresh marker.
+pub(crate) async fn persist_applied_rescue_baseline(
+    hq_folder: &std::path::Path,
+    previous_baseline_paths: Option<&BTreeSet<String>>,
+    rescue_output: &str,
+    channel: Channel,
+    token: Option<&str>,
+) -> Result<AppliedRescueBaseline, String> {
+    persist_applied_rescue_baseline_with_fetcher(
+        hq_folder,
+        previous_baseline_paths,
+        rescue_output,
+        channel,
+        token,
+        |source, commit, token| async move {
+            match optional_core_tree_client(token.as_deref()) {
+                Ok(client) => fetch_tree(&client, &source, &commit).await,
+                Err(error) => Err(error),
+            }
+        },
+    )
+    .await
 }
 
 // ─── Version compare ─────────────────────────────────────────────────────────
@@ -2381,6 +3032,8 @@ enum NativeCoreAutoUpdateOutcome {
     DeferredForSync,
     SkippedAlreadyInProgress,
     SkippedAlreadyAttempted,
+    SkippedBaselineRefreshPending,
+    SkippedNoRetryAfterAppliedFailure,
     SkippedConsecutiveFailureCap,
     SkippedRetryInterval,
     Succeeded,
@@ -2392,10 +3045,12 @@ enum NativeCoreAutoUpdateOutcome {
 /// The rescue exit code is the user-facing update result. The baseline bit is
 /// deliberately separate so automatic bookkeeping can retry degraded drift
 /// setup without relabeling an applied update as a failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CoreUpdateAutoInstall {
     exit_code: i32,
     baseline_persisted: bool,
+    baseline_refresh_pending: bool,
+    rescue_stderr_tail: String,
 }
 
 impl CoreUpdateAutoInstall {
@@ -2403,8 +3058,42 @@ impl CoreUpdateAutoInstall {
         Self {
             exit_code,
             baseline_persisted,
+            baseline_refresh_pending: false,
+            rescue_stderr_tail: String::new(),
         }
     }
+
+    fn from_run(run: &crate::commands::hq_core_staging::RescueRunResult) -> Self {
+        Self {
+            exit_code: run.exit_code,
+            baseline_persisted: run.baseline_persisted,
+            baseline_refresh_pending: run.baseline_refresh_pending,
+            rescue_stderr_tail: run.rescue_stderr_tail.clone(),
+        }
+    }
+}
+
+fn core_update_auto_install_from_run(
+    app: &AppHandle,
+    run: &crate::commands::hq_core_staging::RescueRunResult,
+) -> CoreUpdateAutoInstall {
+    if run.exit_code != 0 && rescue_failure_requires_no_automatic_retry(&run.rescue_stderr_tail) {
+        let detail = preserve_restore_failure_notice(&run.log_tail);
+        let message = match detail {
+            Some(detail) => format!("Update failed. Full log: {}. {detail}", run.log_path),
+            None => format!("Update failed. Full log: {}.", run.log_path),
+        };
+        let _ = app.emit(
+            "hq-core-update:automatic-failed",
+            json!({
+                "title": "Update failed",
+                "logPath": run.log_path,
+                "message": message,
+            }),
+        );
+        log("hq-core-update", &message);
+    }
+    CoreUpdateAutoInstall::from_run(run)
 }
 
 async fn execute_native_core_auto_update<F, Fut>(
@@ -2422,6 +3111,7 @@ where
         auto_updates,
         sync_in_progress,
         Instant::now,
+        None,
         install,
     )
     .await
@@ -2432,6 +3122,7 @@ async fn execute_native_core_auto_update_with_clock<F, Fut, Now>(
     auto_updates: bool,
     sync_in_progress: bool,
     now: Now,
+    injected_path: Option<&std::path::Path>,
     install: F,
 ) -> NativeCoreAutoUpdateOutcome
 where
@@ -2439,10 +3130,11 @@ where
     Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
     Now: Fn() -> Instant,
 {
-    let baseline_retry_pending = automatic_target_baseline_retry_pending(candidate.channel);
+    let baseline_refresh_pending =
+        automatic_target_baseline_refresh_pending_with_path(candidate.channel, injected_path);
     match core_auto_update_decision(
         auto_updates,
-        candidate.version_behind || baseline_retry_pending,
+        candidate.version_behind || baseline_refresh_pending,
         sync_in_progress,
     ) {
         CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
@@ -2519,10 +3211,11 @@ where
                     return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
                 }
             };
-            match automatic_target_eligibility_at(
+            match automatic_target_eligibility_with_path(
                 candidate.channel,
                 candidate.target_version,
                 now(),
+                injected_path,
             ) {
                 AutomaticTargetEligibility::Eligible => {}
                 AutomaticTargetEligibility::CompletedWithoutVersionMove => {
@@ -2546,6 +3239,50 @@ where
                         Some("already_attempted_this_session"),
                     );
                     return NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted;
+                }
+                AutomaticTargetEligibility::BaselineRefreshPending => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: applied Core baseline refresh is pending",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some(BASELINE_REFRESH_PENDING_SKIP_REASON),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedBaselineRefreshPending;
+                }
+                AutomaticTargetEligibility::NoRetryAfterAppliedFailure => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: rescue applied the target but could not restore preserved files",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some(APPLIED_RESCUE_NO_RETRY_SKIP_REASON),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedNoRetryAfterAppliedFailure;
                 }
                 AutomaticTargetEligibility::ConsecutiveFailureCapReached => {
                     log(
@@ -2604,30 +3341,41 @@ where
             let observation = CoreUpdateTelemetryContext::automatic(candidate.version_behind);
             let result = install(candidate.channel, run_guard, observation).await;
             match result {
-                Ok(result) if result.exit_code == 0 && result.baseline_persisted => {
-                    record_automatic_target_completed(candidate.channel, candidate.target_version);
+                Ok(result)
+                    if result.exit_code == 0
+                        && result.baseline_persisted
+                        && !result.baseline_refresh_pending =>
+                {
+                    record_automatic_target_completed_with_path(
+                        candidate.channel,
+                        candidate.target_version,
+                        injected_path,
+                    );
                     log("hq-core-update", "native auto-update succeeded");
                     NativeCoreAutoUpdateOutcome::Succeeded
                 }
                 Ok(result) if result.exit_code == 0 => {
-                    arm_baseline_retry_after_successful_core_update(
-                        candidate.channel,
-                        candidate.target_version,
-                        result.exit_code,
-                        result.baseline_persisted,
-                    );
                     log(
                         "hq-core-update",
-                        "native auto-update applied; drift baseline persistence will retry on the next scheduled Core check",
+                        "native auto-update applied; the stamped Core baseline will refresh on a later scheduled check",
                     );
                     NativeCoreAutoUpdateOutcome::SucceededWithBaselinePersistenceFailure
                 }
                 Ok(result) => {
-                    record_automatic_target_failure_at(
-                        candidate.channel,
-                        candidate.target_version,
-                        now(),
-                    );
+                    if rescue_failure_requires_no_automatic_retry(&result.rescue_stderr_tail) {
+                        record_automatic_target_no_retry_after_applied_failure_with_path(
+                            candidate.channel,
+                            candidate.target_version,
+                            injected_path,
+                        );
+                    } else {
+                        record_automatic_target_failure_at_with_path(
+                            candidate.channel,
+                            candidate.target_version,
+                            now(),
+                            injected_path,
+                        );
+                    }
                     log(
                         "hq-core-update",
                         &format!(
@@ -2638,10 +3386,11 @@ where
                     NativeCoreAutoUpdateOutcome::FailedExit(result.exit_code)
                 }
                 Err(error) => {
-                    record_automatic_target_failure_at(
+                    record_automatic_target_failure_at_with_path(
                         candidate.channel,
                         candidate.target_version,
                         now(),
+                        injected_path,
                     );
                     log(
                         "hq-core-update",
@@ -2674,33 +3423,190 @@ where
         auto_updates,
         sync_in_progress,
         || attempted_at,
+        None,
         install,
     )
     .await
 }
 
+#[cfg(test)]
+async fn execute_native_core_auto_update_at_with_path<F, Fut>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    attempted_at: Instant,
+    injected_path: &std::path::Path,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
+{
+    execute_native_core_auto_update_with_clock(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        || attempted_at,
+        Some(injected_path),
+        install,
+    )
+    .await
+}
+
+async fn retry_pending_baseline_refresh_at<F, Fut>(
+    channel: Channel,
+    hq_folder: &std::path::Path,
+    token: Option<String>,
+    fetcher: F,
+) -> bool
+where
+    F: FnOnce(String, String, Option<String>) -> Fut,
+    Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
+{
+    retry_pending_baseline_refresh_at_with_path(channel, hq_folder, token, None, fetcher).await
+}
+
+async fn retry_pending_baseline_refresh_at_with_path<F, Fut>(
+    channel: Channel,
+    hq_folder: &std::path::Path,
+    token: Option<String>,
+    injected_path: Option<&std::path::Path>,
+    fetcher: F,
+) -> bool
+where
+    F: FnOnce(String, String, Option<String>) -> Fut,
+    Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
+{
+    let Some(pending) = persisted_baseline_refresh_target(channel, injected_path) else {
+        return false;
+    };
+    let Some((source, stamped_commit)) = local_source_stamp(hq_folder) else {
+        log(
+            "hq-core-state",
+            "pending Core baseline refresh has no local stamp; keeping the scheduled installer suppressed",
+        );
+        return true;
+    };
+    if source != pending.source || stamped_commit != pending.commit {
+        log(
+            "hq-core-state",
+            &format!(
+                "clearing stale Core baseline refresh for {}@{}; stamp is {}@{}",
+                pending.source, pending.commit, source, stamped_commit
+            ),
+        );
+        if let Err(error) = clear_persisted_baseline_refresh_target(channel, injected_path) {
+            log(
+                "hq-core-state",
+                &format!("could not clear stale Core baseline refresh: {error}"),
+            );
+        }
+        return false;
+    }
+
+    let remote_tree = fetcher(
+        source.clone(),
+        stamped_commit.clone(),
+        token,
+    )
+    .await;
+    match remote_tree {
+        Ok(tree) => match refresh_pending_baseline_from_tree_with_path(
+            hq_folder,
+            channel,
+            &pending,
+            injected_path,
+            Ok(tree),
+        ) {
+            Ok(()) => {
+                if let Err(error) =
+                    clear_persisted_baseline_refresh_target(channel, injected_path)
+                {
+                    log(
+                        "hq-core-state",
+                        &format!("could not clear refreshed Core baseline marker: {error}"),
+                    );
+                }
+                log(
+                    "hq-core-state",
+                    &format!("refreshed authoritative Core baseline {source}@{stamped_commit}"),
+                );
+                true
+            }
+            Err(error) => {
+                record_core_update_baseline_persistence_failure(
+                    "automatic",
+                    channel,
+                    "hq-core-state",
+                    &format!(
+                        "Core baseline refresh failed after tree fetch for {source}@{stamped_commit}: {error}"
+                    ),
+                );
+                true
+            }
+        },
+        Err(error) => {
+            record_core_update_baseline_persistence_failure(
+                "automatic",
+                channel,
+                "hq-core-state",
+                &format!(
+                    "Core baseline refresh pending for {source}@{stamped_commit}: {error}"
+                ),
+            );
+            true
+        }
+    }
+}
+
+/// Retry only the GitHub tree request for a completed rescue whose local
+/// fallback baseline is waiting for authoritative membership. The installer is
+/// deliberately outside this path.
+async fn retry_pending_baseline_refresh(state: &CoreState) -> bool {
+    let hq_folder = hq_core_staging::resolve_hq_folder();
+    retry_pending_baseline_refresh_at(
+        state.channel,
+        &hq_folder,
+        hq_core_staging::resolve_gh_token(),
+        |source, commit, token| async move {
+            match optional_core_tree_client(token.as_deref()) {
+                Ok(client) => fetch_tree(&client, &source, &commit).await,
+                Err(error) => Err(error),
+            }
+        },
+    )
+    .await
+}
+
 async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
+    if retry_pending_baseline_refresh(state).await {
+        return;
+    }
+    let app_for_install = (*app).clone();
     let outcome = execute_native_core_auto_update(
         CoreAutoUpdateCandidate::from(state),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
         crate::updater::sync_in_progress(),
-        |channel, run_guard, observation| async move {
-            match channel {
-                Channel::Release => {
-                    crate::commands::hq_core_update::install_hq_core_update_automatic(
-                        run_guard,
-                        observation,
-                    )
-                    .await
-                    .map(|run| CoreUpdateAutoInstall::new(run.exit_code, run.baseline_persisted))
-                }
-                Channel::Staging => {
-                    crate::commands::hq_core_staging::run_replace_from_staging_automatic(
-                        run_guard,
-                        observation,
-                    )
-                    .await
-                    .map(|run| CoreUpdateAutoInstall::new(run.exit_code, run.baseline_persisted))
+        move |channel, run_guard, observation| {
+            let app_for_install = app_for_install.clone();
+            async move {
+                match channel {
+                    Channel::Release => {
+                        crate::commands::hq_core_update::install_hq_core_update_automatic(
+                            run_guard,
+                            observation,
+                        )
+                        .await
+                        .map(|run| core_update_auto_install_from_run(&app_for_install, &run))
+                    }
+                    Channel::Staging => {
+                        crate::commands::hq_core_staging::run_replace_from_staging_automatic(
+                            run_guard,
+                            observation,
+                        )
+                        .await
+                        .map(|run| core_update_auto_install_from_run(&app_for_install, &run))
+                    }
                 }
             }
         },
@@ -2761,7 +3667,6 @@ pub fn setup_core_state_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -2899,96 +3804,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_apply_baseline_failure_keeps_update_successful_and_retries_the_next_attempt() {
+    async fn pending_baseline_refresh_survives_restart_without_spawning_installer() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
-        reset_automatic_target_states_for_test();
-        let target = "15.0.117-baseline-retry-contract";
-        let candidate = |version_behind| CoreAutoUpdateCandidate {
-            channel: Channel::Release,
-            local_version: Some("15.0.4"),
-            target_version: target,
-            is_eligible: true,
-            version_behind,
-        };
-        let calls = Arc::new(AtomicUsize::new(0));
-        let first_attempt_at = Instant::now();
-
-        let first_calls = Arc::clone(&calls);
-        let first = execute_native_core_auto_update_at(
-            candidate(true),
-            true,
-            false,
-            first_attempt_at,
-            move |_, run_guard, _| async move {
-                let _run_guard = run_guard;
-                first_calls.fetch_add(1, Ordering::AcqRel);
-                Ok(CoreUpdateAutoInstall::new(0, false))
-            },
-        )
-        .await;
-
-        let retry_calls = Arc::clone(&calls);
-        let retry = execute_native_core_auto_update_at(
-            // The rescue already applied, so the next check no longer sees a
-            // version update. The pending baseline state must still schedule
-            // this repair attempt.
-            candidate(false),
-            true,
-            false,
-            first_attempt_at + CHECK_INTERVAL,
-            move |_, run_guard, _| async move {
-                let _run_guard = run_guard;
-                retry_calls.fetch_add(1, Ordering::AcqRel);
-                Ok(CoreUpdateAutoInstall::new(0, true))
-            },
-        )
-        .await;
-
-        assert_eq!(
-            first,
-            NativeCoreAutoUpdateOutcome::SucceededWithBaselinePersistenceFailure,
-            "the completed rescue remains successful when only its baseline write fails"
-        );
-        assert_eq!(retry, NativeCoreAutoUpdateOutcome::Succeeded);
-        assert_eq!(
-            calls.load(Ordering::Acquire),
-            2,
-            "a failed baseline must not mark the target completed and suppress its retry"
-        );
-    }
-
-    #[tokio::test]
-    async fn pending_baseline_repair_survives_restart_and_arms_the_next_check() {
-        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
-        let _env_lock = ENV_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = TempDir::new().unwrap();
         std::fs::create_dir_all(home.path().join(".hq")).unwrap();
-        std::fs::write(
-            home.path().join(".hq/menubar.json"),
-            r#"{"futureKey":"must-survive"}"#,
+        let menubar_path = home.path().join(".hq/menubar.json");
+        std::fs::write(&menubar_path, r#"{"futureKey":"must-survive"}"#).unwrap();
+        let target = "15.0.117-baseline-refresh-restart-contract";
+        persist_baseline_refresh_target(
+            Channel::Release,
+            "indigoai-us/hq-core",
+            &"a".repeat(40),
+            Some(&menubar_path),
         )
         .unwrap();
-        let _home = scoped_home(home.path());
-        let target = "15.0.117-baseline-repair-restart-contract";
 
         reset_automatic_target_states_for_test();
-        arm_baseline_retry_after_successful_core_update(Channel::Release, target, 0, false);
-        assert_eq!(
-            persisted_baseline_retry_target(Channel::Release).as_deref(),
-            Some(target),
-            "the marker is written before this process can exit"
-        );
-
-        // Clearing the process-local map models a fresh desktop process. The
-        // local version is already current, so only the durable marker can
-        // cause this scheduled check to repair the baseline.
-        reset_automatic_target_states_for_test();
-        assert!(automatic_target_baseline_retry_pending(Channel::Release));
         let calls = Arc::new(AtomicUsize::new(0));
         let retry_calls = Arc::clone(&calls);
-        let retry = execute_native_core_auto_update_at(
+        let retry = execute_native_core_auto_update_at_with_path(
             CoreAutoUpdateCandidate {
                 channel: Channel::Release,
                 local_version: Some(target),
@@ -2999,6 +3833,7 @@ mod tests {
             true,
             false,
             Instant::now(),
+            &menubar_path,
             move |_, run_guard, _| async move {
                 let _run_guard = run_guard;
                 retry_calls.fetch_add(1, Ordering::AcqRel);
@@ -3007,14 +3842,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(retry, NativeCoreAutoUpdateOutcome::Succeeded);
-        assert_eq!(calls.load(Ordering::Acquire), 1);
-        assert!(
-            !automatic_target_baseline_retry_pending(Channel::Release),
-            "only a run that persisted the baseline clears the durable marker"
-        );
-        let menubar =
-            hq_desktop_core::first_run::read_menubar_obj(&home.path().join(".hq/menubar.json"));
+        assert_eq!(retry, NativeCoreAutoUpdateOutcome::SkippedBaselineRefreshPending);
+        assert_eq!(calls.load(Ordering::Acquire), 0);
+        let menubar = hq_desktop_core::first_run::read_menubar_obj(&menubar_path);
         assert_eq!(
             menubar.get("futureKey"),
             Some(&Value::String("must-survive".into()))
@@ -3022,105 +3852,227 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_success_with_missing_baseline_arms_the_same_durable_repair() {
+    async fn baseline_refresh_scheduled_retry_fetches_tree_without_installer() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
-        let _env_lock = ENV_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = TempDir::new().unwrap();
-        let _home = scoped_home(home.path());
-
-        // Both manual wrappers call this shared post-result hook. The IPC
-        // result remains a successful zero-exit update, while the next native
-        // check is now armed to repair the missing baseline.
-        for (channel, target) in [
-            (Channel::Release, "15.0.117-manual-baseline-repair-contract"),
-            (Channel::Staging, "main"),
-        ] {
-            reset_automatic_target_states_for_test();
-            arm_baseline_retry_after_successful_core_update(channel, target, 0, false);
-
-            assert!(automatic_target_baseline_retry_pending(channel));
-            assert_eq!(
-                persisted_baseline_retry_target(channel).as_deref(),
-                Some(target)
-            );
-            assert_eq!(
-                core_auto_update_decision(true, true, false),
-                CoreAutoUpdateDecision::Install
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn failed_baseline_retry_keeps_the_pending_repair_marker() {
-        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
-        reset_automatic_target_states_for_test();
-        let target = "15.0.117-baseline-retry-failure-contract";
-
-        arm_baseline_retry_after_successful_core_update(Channel::Release, target, 0, false);
-        record_automatic_target_failure_at(Channel::Release, target, Instant::now());
-
-        assert!(
-            automatic_target_baseline_retry_pending(Channel::Release),
-            "a failed retry has not established a baseline and must not clear the repair"
-        );
-        assert_eq!(
-            automatic_target_eligibility(Channel::Release, target),
-            AutomaticTargetEligibility::Eligible,
-            "a pending baseline repair is not blocked by ordinary update retry gates"
-        );
-    }
-
-    #[tokio::test]
-    async fn post_apply_baseline_failure_resets_the_update_failure_budget() {
-        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
-        reset_automatic_target_states_for_test();
-        let target = "15.0.117-baseline-budget-reset-contract";
-        let first_failure_at = Instant::now();
-
-        for failure_number in 0..(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1) {
-            record_automatic_target_failure_at(
-                Channel::Release,
-                target,
-                first_failure_at + CHECK_INTERVAL * u32::from(failure_number),
-            );
-        }
-        assert_eq!(
-            automatic_target_eligibility_at(
-                Channel::Release,
-                target,
-                first_failure_at
-                    + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1),
+        let menubar_path = home.path().join("menubar.json");
+        std::fs::write(&menubar_path, "{}").unwrap();
+        let root = TempDir::new().unwrap();
+        let source = "indigoai-us/hq-core";
+        let commit = "b".repeat(40);
+        let old_path = "core/policies/old.md";
+        std::fs::create_dir_all(root.path().join("core/policies")).unwrap();
+        std::fs::write(root.path().join(old_path), b"local\n").unwrap();
+        std::fs::write(
+            root.path().join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {commit}\n"
             ),
-            AutomaticTargetEligibility::Eligible
-        );
+        )
+        .unwrap();
+        let previous_paths = [old_path.to_string()].into_iter().collect::<BTreeSet<_>>();
 
-        // This represents the next rescue applying the update but failing its
-        // post-apply baseline write. It must not turn the prior two update
-        // failures into a capped, permanently stranded repair.
-        record_automatic_target_baseline_persistence_failure_at(
+        let first = persist_applied_rescue_baseline_from_tree_with_path(
+            root.path(),
+            Some(&previous_paths),
+            "",
             Channel::Release,
-            target,
-            first_failure_at
-                + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1),
+            Some(&menubar_path),
+            Err("HTTP 403".to_string()),
+        )
+        .unwrap();
+        assert!(first.baseline_persisted);
+        assert!(first.refresh_pending);
+        assert_eq!(
+            persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)),
+            Some(BaselineRefreshTarget {
+                source: source.to_string(),
+                commit: commit.clone()
+            })
         );
 
-        let state = AUTO_TARGET_STATES
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&Channel::Release)
-            .cloned()
-            .unwrap();
-        assert_eq!(state.consecutive_failures, 0);
-        assert!(state.baseline_retry_pending);
-        assert_eq!(
-            automatic_target_eligibility(Channel::Release, target),
-            AutomaticTargetEligibility::Eligible,
-            "the repaired update gets another baseline attempt instead of the old failure cap"
+        let mut remote = BTreeMap::new();
+        remote.insert(old_path.to_string(), ("remote-old-blob".to_string(), 1));
+        remote.insert(
+            "core/policies/new.md".to_string(),
+            ("remote-new-blob".to_string(), 1),
         );
+        let fetch_calls = Arc::new(AtomicUsize::new(0));
+        let failed_fetch_calls = Arc::clone(&fetch_calls);
+        assert!(retry_pending_baseline_refresh_at_with_path(
+            Channel::Release,
+            root.path(),
+            None,
+            Some(&menubar_path),
+            move |_, _, _| async move {
+                failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
+                Err("HTTP 403".to_string())
+            },
+        )
+        .await);
+
+        let installer_calls = Arc::new(AtomicUsize::new(0));
+        let installer_calls_for_attempt = Arc::clone(&installer_calls);
+        let skipped = execute_native_core_auto_update_at_with_path(
+            CoreAutoUpdateCandidate {
+                channel: Channel::Release,
+                local_version: Some("15.0.4"),
+                target_version: "15.0.117-baseline-refresh-scheduled",
+                is_eligible: true,
+                version_behind: true,
+            },
+            true,
+            false,
+            Instant::now(),
+            &menubar_path,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                installer_calls_for_attempt.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+        assert_eq!(
+            skipped,
+            NativeCoreAutoUpdateOutcome::SkippedBaselineRefreshPending
+        );
+        assert_eq!(installer_calls.load(Ordering::Acquire), 0);
+
+        let successful_fetch_calls = Arc::clone(&fetch_calls);
+        assert!(retry_pending_baseline_refresh_at_with_path(
+            Channel::Release,
+            root.path(),
+            None,
+            Some(&menubar_path),
+            move |_, _, _| async move {
+                successful_fetch_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(remote)
+            },
+        )
+        .await);
+        assert_eq!(fetch_calls.load(Ordering::Acquire), 2);
+        assert!(
+            persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)).is_none()
+        );
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root.path(), source, &commit)
+                .unwrap();
+        assert_eq!(
+            baseline.normalized_blobs.get("core/policies/new.md"),
+            Some(&"remote-new-blob".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn applied_preserve_restore_failure_is_persisted_as_no_retry_across_restart() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let menubar_path = home.path().join("menubar.json");
+        std::fs::write(&menubar_path, "{}").unwrap();
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-preserve-restore-no-retry-contract";
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_calls = Arc::clone(&calls);
+        let transcript = "==> Could not restore these preserved paths after the update:\n  personal/settings.json: restore failed\nThe updated HQ release files are already in place.\nSafety snapshot: /tmp/hq-snapshot-123\nHQ_RESCUE_FAILURE_KIND=preserve-restore-failed";
+        let first = execute_native_core_auto_update_at_with_path(
+            CoreAutoUpdateCandidate {
+                channel: Channel::Release,
+                local_version: Some("15.0.4"),
+                target_version: target,
+                is_eligible: true,
+                version_behind: true,
+            },
+            true,
+            false,
+            Instant::now(),
+            &menubar_path,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                first_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall {
+                    exit_code: 1,
+                    baseline_persisted: true,
+                    baseline_refresh_pending: false,
+                    rescue_stderr_tail: "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed"
+                        .to_string(),
+                })
+            },
+        )
+        .await;
+        assert_eq!(first, NativeCoreAutoUpdateOutcome::FailedExit(1));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            persisted_automatic_no_retry_target(Channel::Release, Some(&menubar_path)).as_deref(),
+            Some(target)
+        );
+        assert_eq!(
+            preserve_restore_failure_notice(transcript).as_deref(),
+            Some(
+                "The rescue could not restore preserved path(s) personal/settings.json; it kept the bytes in /tmp/hq-snapshot-123."
+            )
+        );
+
+        reset_automatic_target_states_for_test();
+        let second = execute_native_core_auto_update_at_with_path(
+            CoreAutoUpdateCandidate {
+                channel: Channel::Release,
+                local_version: Some("15.0.4"),
+                target_version: target,
+                is_eligible: true,
+                version_behind: true,
+            },
+            true,
+            false,
+            Instant::now(),
+            &menubar_path,
+            |_, _run_guard, _| async move {
+                panic!("a persisted no-retry target must not spawn the automatic installer");
+            },
+        )
+        .await;
+        assert_eq!(
+            second,
+            NativeCoreAutoUpdateOutcome::SkippedNoRetryAfterAppliedFailure
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        clear_automatic_no_retry_for_manual_with_path(Channel::Release, Some(&menubar_path));
+        assert!(
+            persisted_automatic_no_retry_target(Channel::Release, Some(&menubar_path)).is_none()
+        );
+        assert_eq!(
+            automatic_target_eligibility_with_path(
+                Channel::Release,
+                target,
+                Instant::now(),
+                Some(&menubar_path),
+            ),
+            AutomaticTargetEligibility::Eligible,
+            "a manual Update or Restore clears the automatic no-retry target before spawning",
+        );
+        let manual_calls = Arc::new(AtomicUsize::new(0));
+        let manual_calls_for_run = Arc::clone(&manual_calls);
+        let manual = execute_native_core_auto_update_at_with_path(
+            CoreAutoUpdateCandidate {
+                channel: Channel::Release,
+                local_version: Some("15.0.4"),
+                target_version: target,
+                is_eligible: true,
+                version_behind: true,
+            },
+            true,
+            false,
+            Instant::now(),
+            &menubar_path,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                manual_calls_for_run.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+        assert_eq!(manual, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(manual_calls.load(Ordering::Acquire), 1);
     }
 
     #[tokio::test]
@@ -3462,10 +4414,254 @@ error: clone failed";
     }
 
     #[test]
+    fn rescue_https_missing_helper_without_abort_is_not_missing_dependency() {
+        assert_eq!(
+            classify_rescue_stderr_failure("git: 'remote-https' is not a git command"),
+            RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
     fn rescue_generic_clone_failure_remains_unknown() {
         assert_eq!(
             classify_rescue_stderr_failure("error: clone failed"),
             RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn fixture_1_http2_clone_disconnect_is_network() {
+        let stderr = concat!(
+            "error: RPC failed; curl 92 HTTP/2 stream 3 was not closed cleanly: CANCEL (err 8)\n",
+            "error: 625 bytes of body are still expected\n",
+            "fetch-pack: unexpected disconnect while reading sideband packet\n",
+            "fatal: early EOF\n",
+            "fatal: fetch-pack: invalid index-pack output\n",
+            "fatal: could not fetch 454b8427cd757f30dc7fdb9a325d19c399770417 from promisor remote\n",
+            "warning: Clone succeeded, but checkout failed.\n",
+            "error: clone failed",
+        );
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn local_checkout_failure_without_transport_diagnostic_is_unknown() {
+        let stderr = concat!(
+            "warning: Clone succeeded, but checkout failed.\n",
+            "error: invalid path 'aux.txt'\n",
+        );
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn fixture_2_ssl_connection_timeout_is_timeout() {
+        let stderr =
+            "fatal: unable to access '[Filtered]': SSL connection timeout\nerror: clone failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Timeout
+        );
+    }
+
+    #[test]
+    fn fixture_3_https_helper_abort_without_missing_helper_is_network() {
+        let stderr = "fatal: remote helper 'https' aborted session\nerror: clone failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn fixture_4_curl_receive_timeout_is_timeout() {
+        let stderr = concat!(
+            "error: RPC failed; curl 56 Recv failure: Operation timed out\n",
+            "fatal: expected 'packfile'\n",
+            "error: clone failed",
+        );
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::Timeout
+        );
+    }
+
+    #[test]
+    fn fixture_5_snapshot_circuit_breaker_is_recovery_required() {
+        let stderr =
+            "error: safety snapshot circuit breaker is open: two interrupted updates still need recovery proof.";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::SnapshotRecoveryRequired
+        );
+    }
+
+    #[test]
+    fn fixture_6_rsync_code_23_is_partial_transfer() {
+        let stderr = "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1306) [sender=3.4.1]";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::RsyncPartialTransfer
+        );
+        assert_eq!(core_update_sentry_exit_code(Some(23)), "23");
+    }
+
+    #[test]
+    fn fixture_7_enotempty_is_directory_not_empty() {
+        let stderr = "Error: ENOTEMPTY, Directory not empty: '[Filtered]' '[Filtered]'";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::DirectoryNotEmpty
+        );
+    }
+
+    #[test]
+    fn fixture_8_npm_cache_other_window_is_lock_contention() {
+        let detail = "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.";
+
+        assert_eq!(
+            classify_core_update_error(CoreUpdateErrorKind::RescueSpawn, detail, None),
+            RescueFailureCategory::LockContention
+        );
+    }
+
+    #[test]
+    fn fixture_9_found_rsync_that_exits_is_rsync_broken() {
+        let stderr = concat!(
+            "error: rsync preflight failed before any safety snapshot was allocated.\n",
+            "rsync exited with status 1.\n",
+            r#"rsync found at: [Filtered]\AppData\Local\IndigoHQ\toolchain\npm-prefix\rsync.cmd"#,
+            "\nInstall or repair rsync, then retry the HQ update.",
+        );
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::RsyncBroken
+        );
+    }
+
+    #[test]
+    fn fixture_10_network_unreachable_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=network-unreachable";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=network-unreachable\nerror: clone failed",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn fixture_10_missing_dependency_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=missing-dependency";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=missing-dependency\nerror: clone failed",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn rsync_missing_marker_survives_redaction_and_classifies_as_missing_dependency() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=rsync-missing";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ could not install rsync, which the update needs.\nHQ_RESCUE_FAILURE_KIND=rsync-missing",
+        );
+
+        assert!(redacted.ends_with(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn fixture_11_preserve_restore_failed_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed\nerror: restore failed",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::PreserveRestoreFailed
+        );
+    }
+
+    #[test]
+    fn snapshot_recovery_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker\nerror: rescue failed",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::SnapshotRecoveryRequired
+        );
+    }
+
+    #[test]
+    fn rsync_partial_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=rsync-partial";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=rsync-partial\nrsync exited with status 23",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::RsyncPartialTransfer
+        );
+    }
+
+    #[test]
+    fn rsync_failed_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=rsync-failed";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=rsync-failed\nrsync exited with status 1",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::RsyncBroken
+        );
+    }
+
+    #[test]
+    fn rsync_found_but_broken_marker_survives_redaction_and_classifies() {
+        let marker = "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken";
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken\nrsync exited with status 1",
+        );
+
+        assert!(redacted.contains(marker));
+        assert_eq!(
+            classify_rescue_stderr_failure(&redacted),
+            RescueFailureCategory::RsyncBroken
         );
     }
 
@@ -3830,6 +5026,7 @@ error: clone failed";
         assert_eq!(core_update_sentry_exit_code(Some(3)), "3");
         assert_eq!(core_update_sentry_exit_code(Some(-1)), "signal_or_unknown");
         assert_eq!(core_update_sentry_exit_code(None), "not_available");
+        assert_eq!(core_update_sentry_exit_code(Some(23)), "23");
         assert_eq!(core_update_sentry_exit_code(Some(42)), "other");
     }
 
@@ -3842,6 +5039,17 @@ error: clone failed";
                 label.bytes().all(|byte| byte.is_ascii_alphanumeric()
                     || matches!(byte, b'_' | b'.' | b':' | b'-')),
                 "{label:?} violates hq-pro SAFE_MARKETING_LABEL_RE"
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_failure_categories_are_admitted_by_the_closed_error_vocabulary() {
+        for category in RescueFailureCategory::ALL {
+            assert!(
+                crate::commands::telemetry::ERROR_CATEGORY_VALUES.contains(&category.label()),
+                "{} must be present in ERROR_CATEGORY_VALUES",
+                category.label()
             );
         }
     }
@@ -4120,6 +5328,223 @@ error: clone failed";
         assert_eq!(
             events[0].message.as_deref(),
             Some("Desktop Core update applied but baseline persistence failed")
+        );
+    }
+
+    #[test]
+    fn applied_rescue_baseline_uses_prior_floor_paths_and_the_new_local_stamp() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let menubar_path = temp.path().join("menubar.json");
+        std::fs::write(&menubar_path, "{}").unwrap();
+        let source = "indigoai-us/hq-core";
+        let old_commit = "0".repeat(40);
+        let new_commit = "1".repeat(40);
+        let tracked_path = "core/policies/example.md";
+        let tracked_file = root.join(tracked_path);
+        std::fs::create_dir_all(tracked_file.parent().unwrap()).unwrap();
+        std::fs::write(&tracked_file, b"old\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {old_commit}\n"
+            ),
+        )
+        .unwrap();
+
+        let mut old_blobs = BTreeMap::new();
+        old_blobs.insert(
+            tracked_path.to_string(),
+            hq_desktop_core::drift_scope::drift_blob_sha(b"old\n"),
+        );
+        hq_desktop_core::drift_scope::persist_core_drift_baseline(
+            root,
+            source,
+            &old_commit,
+            old_blobs,
+        )
+        .unwrap();
+        let previous_paths = core_drift_baseline_paths_before_rescue(root, source);
+        assert!(previous_paths.contains(tracked_path));
+
+        // Simulate the successful rescue overlay and its stamp. The new file
+        // represents an upstream addition; the local-only file represents a
+        // path rescue left in place outside the upstream tree.
+        std::fs::write(&tracked_file, b"new upstream content\n").unwrap();
+        std::fs::write(root.join("core/policies/added-by-update.md"), b"new\n").unwrap();
+        std::fs::write(root.join("core/policies/local-only.md"), b"mine\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {new_commit}\n"
+            ),
+        )
+        .unwrap();
+
+        let persisted = persist_applied_rescue_baseline_from_tree_with_path(
+            root,
+            Some(&previous_paths),
+            "",
+            Channel::Release,
+            Some(&menubar_path),
+            Err("HTTP 403".to_string()),
+        )
+        .unwrap();
+        assert_eq!(persisted.commit, new_commit);
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &new_commit)
+                .unwrap();
+        assert_eq!(
+            baseline.normalized_blobs.get(tracked_path),
+            Some(&hq_desktop_core::drift_scope::drift_blob_sha(
+                b"new upstream content\n"
+            ))
+        );
+        assert!(!baseline
+            .normalized_blobs
+            .contains_key("core/policies/added-by-update.md"));
+        assert!(!baseline
+            .normalized_blobs
+            .contains_key("core/policies/local-only.md"));
+    }
+
+    #[test]
+    fn applied_rescue_baseline_excludes_paths_the_rescue_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let menubar_path = temp.path().join("menubar.json");
+        std::fs::write(&menubar_path, "{}").unwrap();
+        let source = "indigoai-us/hq-core";
+        let new_commit = "4".repeat(40);
+        let kept = "core/policies/kept.md";
+        let skipped = "core/policies/skipped.md";
+        std::fs::create_dir_all(root.join("core/policies")).unwrap();
+        std::fs::write(root.join(kept), b"new kept\n").unwrap();
+        std::fs::write(root.join(skipped), b"old skipped\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {new_commit}\n"
+            ),
+        )
+        .unwrap();
+        let previous_paths = [kept.to_string(), skipped.to_string()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+
+        let output = format!(
+            "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EACCES\nwarning: snapshot skipped {}. It was not backed up and was left untouched. The update continued.",
+            root.join(skipped).display()
+        );
+        persist_applied_rescue_baseline_from_tree_with_path(
+            root,
+            Some(&previous_paths),
+            &output,
+            Channel::Release,
+            Some(&menubar_path),
+            Err("HTTP 403".to_string()),
+        )
+        .unwrap();
+
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &new_commit)
+                .unwrap();
+        assert!(baseline.normalized_blobs.contains_key(kept));
+        assert!(!baseline.normalized_blobs.contains_key(skipped));
+    }
+
+    #[tokio::test]
+    async fn applied_rescue_baseline_uses_the_stamped_commit_tree_when_fetch_succeeds() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let menubar_path = temp.path().join("menubar.json");
+        std::fs::write(&menubar_path, "{}").unwrap();
+        let source = "indigoai-us/hq-core";
+        let commit = "5".repeat(40);
+        std::fs::create_dir_all(root.join("core/policies")).unwrap();
+        std::fs::write(root.join("core/policies/local.md"), b"local\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {commit}\n"
+            ),
+        )
+        .unwrap();
+        let mut remote = BTreeMap::new();
+        remote.insert(
+            "core/policies/release.md".to_string(),
+            ("github-release-blob".to_string(), 20),
+        );
+        let expected_commit = commit.clone();
+
+        let result = persist_applied_rescue_baseline_with_fetcher_and_path(
+            root,
+            None,
+            "",
+            Channel::Release,
+            Some("github-token"),
+            Some(&menubar_path),
+            move |fetched_source, fetched_commit, token| async move {
+                assert_eq!(fetched_source, source);
+                assert_eq!(fetched_commit, expected_commit);
+                assert_eq!(token.as_deref(), Some("github-token"));
+                Ok(remote)
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.commit, commit);
+        assert!(result.baseline_persisted);
+        assert!(!result.refresh_pending);
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &commit)
+                .unwrap();
+        assert_eq!(
+            baseline.normalized_blobs,
+            BTreeMap::from([(
+                "core/policies/release.md".to_string(),
+                "github-release-blob".to_string()
+            )])
+        );
+    }
+
+    #[test]
+    fn applied_rescue_baseline_succeeds_with_no_prior_floor() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let menubar_path = temp.path().join("menubar.json");
+        std::fs::write(&menubar_path, "{}").unwrap();
+        let source = "indigoai-us/hq-core";
+        let commit = "2".repeat(40);
+        std::fs::create_dir_all(root.join("core/policies")).unwrap();
+        std::fs::write(root.join("core/policies/example.md"), b"new\n").unwrap();
+        std::fs::write(root.join("core/policies/local-only.md"), b"mine\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {commit}\n"
+            ),
+        )
+        .unwrap();
+
+        let previous_paths = core_drift_baseline_before_rescue(root, source);
+        assert!(previous_paths.is_none());
+        let persisted = persist_applied_rescue_baseline_from_tree_with_path(
+            root,
+            previous_paths.as_ref(),
+            "",
+            Channel::Release,
+            Some(&menubar_path),
+            Err("HTTP 403".to_string()),
+        )
+        .unwrap();
+
+        assert!(!persisted.baseline_persisted);
+        assert!(persisted.refresh_pending);
+        assert!(
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &commit)
+                .is_none()
         );
     }
 

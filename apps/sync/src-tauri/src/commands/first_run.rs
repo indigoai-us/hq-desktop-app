@@ -27,6 +27,7 @@
 //! drop unknown / future top-level keys.
 
 use serde_json::Value;
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::util::{logfile::log, paths};
@@ -36,6 +37,11 @@ pub use hq_desktop_core::first_run::{
     notice_shown_in_map, read_menubar, read_menubar_obj, should_autoshow_on_launch, LaunchKind,
     MenubarRead,
 };
+
+/// `ensure_install_attempt_id` reads and, on the first call, writes the shared
+/// menubar settings file. Serialize this wrapper because receipt preparation
+/// intentionally runs several blocking workers concurrently.
+static INSTALL_ATTEMPT_ID_IO: Mutex<()> = Mutex::new(());
 
 /// Stable, path-free marker for settings files that prove this is not a fresh
 /// install but cannot safely supply their contents.
@@ -87,6 +93,9 @@ fn report_settings_file_read_failure(read: &MenubarRead) {
 /// partition and quietly inflate the counts. The caller treats absence as "do
 /// not report", which is honest.
 pub fn install_attempt_id() -> Option<String> {
+    let _guard = INSTALL_ATTEMPT_ID_IO
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = paths::menubar_json_path().ok()?;
     ensure_install_attempt_id(&path, || uuid::Uuid::new_v4().to_string()).ok()
 }

@@ -851,7 +851,7 @@ const FAILED_DEPENDENCY_VALUES: &[&str] = &[
     "unknown",
 ];
 
-const ERROR_CATEGORY_VALUES: &[&str] = &[
+pub(crate) const ERROR_CATEGORY_VALUES: &[&str] = &[
     "missing-dependency",
     "snapshot-unreadable",
     "snapshot-external-symlink",
@@ -867,6 +867,12 @@ const ERROR_CATEGORY_VALUES: &[&str] = &[
     "not-found",
     "npx-resolve-failed",
     "timeout",
+    "lock-contention",
+    "snapshot-recovery-required",
+    "rsync-partial-transfer",
+    "directory-not-empty",
+    "rsync-broken",
+    "preserve-restore-failed",
     "spawn-failed",
     "exit-nonzero",
     "unsupported-platform",

@@ -481,6 +481,13 @@ pub struct RescueRunResult {
     /// arm the same durable repair path without re-resolving the target.
     #[serde(skip_serializing)]
     pub(crate) baseline_retry_target: String,
+    /// A failed GitHub refresh can keep the local fallback while a scheduled
+    /// check retries only the tree request.
+    #[serde(skip_serializing)]
+    pub(crate) baseline_refresh_pending: bool,
+    /// Closed error kind for a pre-rescue failure that never spawned hq-rescue.
+    #[serde(skip_serializing)]
+    pub(crate) rescue_error_kind: Option<&'static str>,
 }
 
 /// Resolve the user's HQ folder using the same 4-tier resolver the rest of
@@ -653,6 +660,11 @@ async fn run_replace_from_staging_observed(
     _run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
 ) -> Result<RescueRunResult, crate::commands::hq_core_state::CoreUpdateError> {
     let started = std::time::Instant::now();
+    if observation.source() == "manual" {
+        crate::commands::hq_core_state::clear_automatic_no_retry_for_manual(
+            crate::commands::hq_core_state::Channel::Staging,
+        );
+    }
     let local_before = crate::commands::hq_core_update::get_local_version();
     let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
     let eligible = is_eligible_email(signed_in_email().as_deref());
@@ -708,7 +720,7 @@ async fn run_replace_from_staging_observed(
             observation.version_behind(),
             started.elapsed(),
             Some(run.exit_code),
-            "rescue_exit",
+            run.rescue_error_kind.unwrap_or("rescue_exit"),
             crate::commands::hq_core_state::CoreUpdateFailureDetails {
                 rescue_stderr_tail: Some(&run.rescue_stderr_tail),
                 rescue_failure_category:
@@ -782,6 +794,8 @@ async fn run_replace_from_staging_inner(
             ),
         ));
     }
+    let previous_baseline_paths =
+        crate::commands::hq_core_state::core_drift_baseline_before_rescue(&hq_folder, &repo);
     // Stream the combined output to a per-invocation log file so the user
     // can `tail -f` it during the multi-minute scan and so we have a
     // post-mortem on failures. The popover gets a 40-line tail.
@@ -816,6 +830,26 @@ async fn run_replace_from_staging_inner(
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so a rescue can't race prewarm/sync into a corrupt `_npx` tree.
     let (mut cmd, npx_resolution) = rescue_command();
+
+    #[cfg(windows)]
+    if let Err(reason) =
+        crate::commands::hq_core_update::ensure_managed_rsync_for_core_update_rescue().await
+    {
+        let diagnostic = crate::commands::hq_core_update::rsync_missing_rescue_diagnostic(&reason);
+        let _ = std::fs::write(&log_path, &diagnostic);
+        return Ok(RescueRunResult {
+            exit_code: 1,
+            log_tail: diagnostic.clone(),
+            log_path: log_path.display().to_string(),
+            rescue_stderr_tail: hq_telemetry::redact_core_update_diagnostic_tail(&diagnostic),
+            npx_resolution,
+            baseline_persisted: true,
+            baseline_retry_target: "main".to_string(),
+            baseline_refresh_pending: false,
+            rescue_error_kind: Some("rescue_spawn"),
+        });
+    }
+
     materialize_rescue_cache().await.map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
             crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
@@ -851,47 +885,59 @@ async fn run_replace_from_staging_inner(
     })?;
 
     let exit_code = status.code().unwrap_or(-1);
-    let baseline_persisted = if exit_code == 0 {
-        match authed_client(&token) {
-            Ok(client) => match crate::commands::hq_core_state::persist_remote_baseline(
-                &hq_folder, &client, &repo, "main",
-            )
-            .await
-            {
-                Ok(commit) => {
-                    log(
-                        "hq-core-staging",
-                        &format!("persisted normalized drift baseline {repo}@{commit}"),
-                    );
-                    true
-                }
-                Err(error) => {
+    let log_tail =
+        tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+    let rescue_output_for_baseline =
+        read_raw_rescue_diagnostic_tail(&log_path).unwrap_or_else(|_| log_tail.clone());
+    let (baseline_persisted, baseline_refresh_pending) = if exit_code == 0 {
+        match crate::commands::hq_core_state::persist_applied_rescue_baseline(
+            &hq_folder,
+            previous_baseline_paths.as_ref(),
+            &rescue_output_for_baseline,
+            crate::commands::hq_core_state::Channel::Staging,
+            Some(&token),
+        )
+        .await
+        {
+            Ok(result) => {
+                log(
+                    "hq-core-staging",
+                    &format!(
+                        "persisted normalized drift baseline {repo}@{} from the applied rescue tree{}",
+                        result.commit,
+                        if result.refresh_pending {
+                            "; GitHub baseline refresh pending"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+                if result.refresh_pending {
                     crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
                         update_source,
                         crate::commands::hq_core_state::Channel::Staging,
                         "hq-core-staging",
-                        &format!("staging update applied but baseline persistence failed: {error}"),
+                        &format!(
+                            "staging update applied; baseline refresh pending for {repo}@{}",
+                            result.commit
+                        ),
                     );
-                    false
                 }
-            },
+                (result.baseline_persisted, result.refresh_pending)
+            }
             Err(error) => {
                 crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
                     update_source,
                     crate::commands::hq_core_state::Channel::Staging,
                     "hq-core-staging",
-                    &format!(
-                        "staging update applied but baseline persistence failed: build baseline client: {error}"
-                    ),
+                    &format!("staging update applied but baseline persistence failed: {error}"),
                 );
-                false
+                (false, true)
             }
         }
     } else {
-        true
+        (true, false)
     };
-    let log_tail =
-        tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
     let rescue_stderr_tail = read_rescue_diagnostic_tail(&log_path).unwrap_or_default();
 
     log(
@@ -909,6 +955,8 @@ async fn run_replace_from_staging_inner(
         // The staged rescue follows `main`; the durable marker is channel
         // scoped, so a later resolved main SHA can perform the repair.
         baseline_retry_target: "main".to_string(),
+        baseline_refresh_pending,
+        rescue_error_kind: None,
     })
 }
 
@@ -917,6 +965,11 @@ async fn run_replace_from_staging_inner(
 /// telemetry, and this bounded read avoids making a maliciously large log part
 /// of the update reporting path.
 pub(crate) fn read_rescue_diagnostic_tail(path: &Path) -> Result<String, String> {
+    let raw = read_raw_rescue_diagnostic_tail(path)?;
+    Ok(hq_telemetry::redact_core_update_diagnostic_tail(&raw))
+}
+
+pub(crate) fn read_raw_rescue_diagnostic_tail(path: &Path) -> Result<String, String> {
     let mut file =
         std::fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
     let length = file
@@ -930,9 +983,7 @@ pub(crate) fn read_rescue_diagnostic_tail(path: &Path) -> Result<String, String>
     file.take(limit)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("read {}: {error}", path.display()))?;
-    Ok(hq_telemetry::redact_core_update_diagnostic_tail(
-        &String::from_utf8_lossy(&bytes),
-    ))
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Read the last N lines of a log file. Pure stdlib so we don't pull in
