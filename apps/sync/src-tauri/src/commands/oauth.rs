@@ -670,7 +670,7 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // continuation cohort. Persist before background delivery so a transient
     // telemetry failure cannot make its completed sign-in disappear.
     if let Some(account_id) = state.account_id.as_deref() {
-        crate::commands::desktop_auth::record_desktop_login_completed(
+        let _ = crate::commands::desktop_auth::record_desktop_login_completed(
             &app,
             account_id,
             "manual_oauth",

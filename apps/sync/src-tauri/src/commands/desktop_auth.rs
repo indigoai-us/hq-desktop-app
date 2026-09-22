@@ -422,7 +422,7 @@ pub async fn desktop_continuation_confirm(
     // durable writer runs, so quitting after a completed write preserves its
     // original event id and timestamp for a later retry.
     if let Some(account_id) = state.account_id.as_deref() {
-        record_desktop_login_completed(
+        let _ = record_desktop_login_completed(
             &app,
             account_id,
             "browser_continuation",
@@ -802,38 +802,52 @@ pub(crate) fn record_desktop_login_completed<R: tauri::Runtime>(
     flow: &str,
     variant: &str,
     identity_provider: Option<&str>,
-) {
+) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     let authorized_account_id = authorized_account_id.to_string();
     let flow = flow.to_string();
     let variant = variant.to_string();
     let identity_provider = identity_provider.map(str::to_owned);
     tauri::async_runtime::spawn(async move {
-        let result = async {
-            let mut body = desktop_receipt_base_in_background(app).await?;
-            let object = body
-                .as_object_mut()
-                .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
-            object.insert("flow".to_string(), serde_json::json!(flow));
-            object.insert("variant".to_string(), serde_json::json!(variant));
-            object.insert(
-                "provider".to_string(),
-                serde_json::json!(identity_provider.as_deref().unwrap_or("cognito")),
-            );
-            schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
-                endpoint: AuthenticatedReceiptEndpoint::SessionActivated,
-                body,
-                authorized_account_id: Some(authorized_account_id),
-                attempts: 0,
-                next_attempt_at_ms: 0,
-            });
-            Ok::<(), String>(())
-        }
+        let result = record_desktop_login_completed_inner(
+            app,
+            authorized_account_id,
+            flow,
+            variant,
+            identity_provider,
+        )
         .await;
         if let Err(error) = result {
             eprintln!("[desktop-onboarding] login_completed receipt queue failed: {error}");
         }
+    })
+}
+
+async fn record_desktop_login_completed_inner<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    authorized_account_id: String,
+    flow: String,
+    variant: String,
+    identity_provider: Option<String>,
+) -> Result<(), String> {
+    let mut body = desktop_receipt_base_in_background(app).await?;
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
+    object.insert("flow".to_string(), serde_json::json!(flow));
+    object.insert("variant".to_string(), serde_json::json!(variant));
+    object.insert(
+        "provider".to_string(),
+        serde_json::json!(identity_provider.as_deref().unwrap_or("cognito")),
+    );
+    schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
+        endpoint: AuthenticatedReceiptEndpoint::SessionActivated,
+        body,
+        authorized_account_id: Some(authorized_account_id),
+        attempts: 0,
+        next_attempt_at_ms: 0,
     });
+    Ok(())
 }
 
 /// Record the company the person explicitly connected from the desktop shell.
@@ -1183,30 +1197,35 @@ mod authenticated_receipt_tests {
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
 
-        record_desktop_login_completed(
-            &handle,
-            "person-a",
-            "manual_oauth",
-            "control",
-            Some("Google"),
-        );
-        record_desktop_login_completed(
-            &handle,
-            "person-a",
-            "manual_oauth",
-            "control",
-            Some("MicrosoftPersonal"),
-        );
-        record_desktop_login_completed(
-            &handle,
-            "person-a",
-            "browser_continuation",
-            "continuation",
-            None,
-        );
-
         let path = authenticated_receipt_queue_path_from_home(home.path());
         let receipts = tauri::async_runtime::block_on(async {
+            let handles = [
+                record_desktop_login_completed(
+                    &handle,
+                    "person-a",
+                    "manual_oauth",
+                    "control",
+                    Some("Google"),
+                ),
+                record_desktop_login_completed(
+                    &handle,
+                    "person-a",
+                    "manual_oauth",
+                    "control",
+                    Some("MicrosoftPersonal"),
+                ),
+                record_desktop_login_completed(
+                    &handle,
+                    "person-a",
+                    "browser_continuation",
+                    "continuation",
+                    None,
+                ),
+            ];
+            for handle in handles {
+                handle.await.expect("build login receipt task");
+            }
+            persist_authenticated_receipt_custody().await;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 let receipts = read_authenticated_receipt_queue(&path).expect("read receipt queue");
