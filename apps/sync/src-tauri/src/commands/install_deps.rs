@@ -5495,10 +5495,11 @@ fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
 #[cfg(windows)]
 const RSYNC_BUNDLE_URL: &str = "https://github.com/small-tech/portable-rsync-with-ssh-for-windows/archive/0fc67b2e08ac0b1740982bcec16b3f2eb26151fa.zip";
 
-/// Result of the best-effort rsync preflight that precedes a Core rescue.
+/// Result of the rsync preflight that precedes a Core rescue.
 ///
-/// The rescue remains the authoritative gate: every variant lets its spawn
-/// proceed, while callers log the exact unavailable state for diagnosis.
+/// `AlreadyRescueReady` and `Provisioned` permit the rescue to spawn. The
+/// remaining variants are hard pre-rescue failures and keep the rescue from
+/// starting.
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RsyncRescueProvisioning {
@@ -5521,39 +5522,30 @@ pub(crate) enum RsyncRescueProvisioningAttempt {
     TimedOut,
 }
 
-/// Ensure an optional rescue dependency without making its provisioning a new
-/// failure gate. A usable existing dependency avoids all installer work only
-/// when HQ's path-translation shim is also present; a successful installer
-/// must leave both requirements ready before it is trusted.
+/// Apply the rescue dependency provisioning policy with injected probes. The
+/// production Windows path supplies a probe for a real `rsync.exe` on the
+/// rescue child PATH; tests use temporary fake executable state.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) async fn ensure_rsync_for_core_update_rescue_with<P, S, F, Fut, B, BFut>(
-    mut is_resolvable: P,
-    mut has_shim: S,
+pub(crate) async fn ensure_rsync_for_core_update_rescue_with<P, F, Fut, B, BFut>(
+    mut is_rescue_ready: P,
     provision: F,
     provision_deadline: Duration,
     provision_within_deadline: B,
 ) -> RsyncRescueProvisioning
 where
     P: FnMut() -> bool,
-    S: FnMut() -> bool,
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), String>>,
     B: FnOnce(Fut, Duration) -> BFut,
     BFut: Future<Output = RsyncRescueProvisioningAttempt>,
 {
-    let initially_resolvable = is_resolvable();
-    let shim_was_missing = initially_resolvable && !has_shim();
-    if initially_resolvable && !shim_was_missing {
+    if is_rescue_ready() {
         return RsyncRescueProvisioning::AlreadyRescueReady;
     }
 
     match provision_within_deadline(provision(), provision_deadline).await {
-        RsyncRescueProvisioningAttempt::Completed(Ok(())) if is_resolvable() && has_shim() => {
-            if shim_was_missing {
-                RsyncRescueProvisioning::ShimRefreshed
-            } else {
-                RsyncRescueProvisioning::Provisioned
-            }
+        RsyncRescueProvisioningAttempt::Completed(Ok(())) if is_rescue_ready() => {
+            RsyncRescueProvisioning::Provisioned
         }
         RsyncRescueProvisioningAttempt::Completed(Ok(())) => {
             RsyncRescueProvisioning::ProvisionedButNotRescueReady
@@ -5590,11 +5582,10 @@ mod rsync_core_update_rescue_tests {
     }
 
     #[test]
-    fn already_rescue_ready_skips_provisioning() {
+    fn healthy_real_executable_skips_download_and_allows_rescue() {
         let provision_calls = Cell::new(0);
 
         let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
-            || true,
             || true,
             || {
                 provision_calls.set(provision_calls.get() + 1);
@@ -5610,12 +5601,12 @@ mod rsync_core_update_rescue_tests {
         assert_eq!(
             provision_calls.get(),
             0,
-            "a usable rsync must not download a bundle"
+            "a healthy real rsync must not download a bundle"
         );
     }
 
     #[test]
-    fn successful_provisioning_requires_a_second_successful_probe() {
+    fn shim_only_state_downloads_then_allows_rescue_after_a_second_probe() {
         let probe_calls = Cell::new(0);
 
         let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
@@ -5623,7 +5614,6 @@ mod rsync_core_update_rescue_tests {
                 probe_calls.set(probe_calls.get() + 1);
                 probe_calls.get() == 2
             },
-            || true,
             || async { Ok(()) },
             Duration::ZERO,
             |provision, _deadline| async move {
@@ -5643,7 +5633,6 @@ mod rsync_core_update_rescue_tests {
     fn successful_provisioning_that_does_not_resolve_rsync_is_reported() {
         let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
             || false,
-            || true,
             || async { Ok(()) },
             Duration::ZERO,
             |provision, _deadline| async move {
@@ -5663,7 +5652,6 @@ mod rsync_core_update_rescue_tests {
 
         let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
             || false,
-            || false,
             move || async move { Err(reason) },
             Duration::ZERO,
             |provision, _deadline| async move {
@@ -5680,44 +5668,12 @@ mod rsync_core_update_rescue_tests {
     }
 
     #[test]
-    fn resolvable_rsync_without_a_shim_refreshes_the_shim() {
-        let provision_calls = Cell::new(0);
-        let shim_present = Cell::new(false);
-
-        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
-            || true,
-            || shim_present.get(),
-            || {
-                provision_calls.set(provision_calls.get() + 1);
-                shim_present.set(true);
-                async { Ok(()) }
-            },
-            Duration::ZERO,
-            |provision, _deadline| async move {
-                RsyncRescueProvisioningAttempt::Completed(provision.await)
-            },
-        ));
-
-        assert_eq!(
-            outcome,
-            RsyncRescueProvisioning::ShimRefreshed,
-            "a usable external rsync still needs HQ's path shim"
-        );
-        assert_eq!(
-            provision_calls.get(),
-            1,
-            "a missing shim must run the installer path that owns shim writes"
-        );
-    }
-
-    #[test]
-    fn provisioning_that_never_completes_before_the_deadline_times_out() {
+    fn failed_download_blocks_rescue_and_preserves_the_reason() {
         let provision_calls = Cell::new(0);
         let deadline_calls = Cell::new(0);
         let deadline_seen = Cell::new(None);
 
         let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
-            || false,
             || false,
             || {
                 provision_calls.set(provision_calls.get() + 1);
@@ -5742,42 +5698,45 @@ mod rsync_core_update_rescue_tests {
     }
 }
 
-/// Best-effort Windows preflight for the Core-update rescue.
-///
-/// `check_dep_impl` is deliberately used both before and after provisioning:
-/// its successful `rsync --version` probe is the existing definition of a
-/// usable executable for HQ's extended child PATH. The paired shim translates
-/// Windows drive-letter arguments for cwRsync, so both are required for a
-/// rescue-ready executable.
+/// Windows preflight for the Core-update rescue. The child receives
+/// `child_path()`, so the check must inspect that exact PATH and must reject
+/// the npm-prefix shims when no real `rsync.exe` is present.
 #[cfg(windows)]
 pub(crate) async fn ensure_rsync_for_core_update_rescue() -> RsyncRescueProvisioning {
-    ensure_rsync_for_core_update_rescue_with(
-        || check_dep_impl("rsync", None).installed,
-        rsync_shim_is_present,
-        || async {
-            install_rsync_with_progress(|message| {
-                crate::util::logfile::log(
-                    "hq-core-update",
-                    &format!("rsync provisioning: {message}"),
-                );
-            })
-            .await
-            .map(|_| ())
-        },
+    if rescue_rsync_is_ready().await.is_ok() {
+        return RsyncRescueProvisioning::AlreadyRescueReady;
+    }
+
+    match tokio::time::timeout(
         CORE_UPDATE_RSYNC_PROVISION_TIMEOUT,
-        provision_rsync_for_core_update_within_deadline,
+        install_rsync_with_progress_for_core_update(|message| {
+            crate::util::logfile::log(
+                "hq-core-update",
+                &format!("rsync provisioning: {message}"),
+            );
+        }),
     )
     .await
+    {
+        Ok(Ok(())) if rescue_rsync_is_ready().await.is_ok() => {
+            RsyncRescueProvisioning::Provisioned
+        }
+        Ok(Ok(())) => RsyncRescueProvisioning::ProvisionedButNotRescueReady,
+        Ok(Err(reason)) => RsyncRescueProvisioning::ProvisioningFailed(reason),
+        Err(_) => RsyncRescueProvisioning::ProvisioningTimedOut,
+    }
 }
 
-/// Bounds the optional Core-update preflight instead of inheriting setup's
-/// three 180-second download attempts. The pinned rsync archive is 4.68 MB,
-/// so 45 seconds allows roughly 0.83 Mbit/s plus checksum and extraction while
-/// keeping a stalled best-effort preflight from holding the update run guard.
+/// Bounds the required Core-update preflight instead of inheriting setup's
+/// three 180-second download attempts.
 #[cfg(windows)]
-const CORE_UPDATE_RSYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(45);
+pub(crate) const CORE_UPDATE_RSYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[cfg(windows)]
+const CORE_UPDATE_RSYNC_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(windows)]
+#[allow(dead_code)]
 async fn provision_rsync_for_core_update_within_deadline<Fut>(
     provision: Fut,
     deadline: Duration,
@@ -5792,9 +5751,24 @@ where
 }
 
 #[cfg(windows)]
-fn rsync_shim_is_present() -> bool {
-    let bin_dir = managed_npm_bin();
-    bin_dir.join("rsync.cmd").is_file() && bin_dir.join("rsync.ps1").is_file()
+fn rescue_rsync_executable() -> Option<PathBuf> {
+    std::env::split_paths(&hq_desktop_core::paths::child_path())
+        .map(|dir| dir.join("rsync.exe"))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(windows)]
+async fn rescue_rsync_is_ready() -> Result<(), String> {
+    let executable = rescue_rsync_executable()
+        .ok_or_else(|| "no real rsync.exe exists on the rescue child PATH".to_string())?;
+    let result = tokio::time::timeout(
+        CORE_UPDATE_RSYNC_VERSION_TIMEOUT,
+        tokio::task::spawn_blocking(move || ensure_rsync_version(&executable)),
+    )
+    .await
+    .map_err(|_| "rsync --version timed out after 10 seconds".to_string())?
+    .map_err(|error| format!("rsync version probe task failed: {error}"))?;
+    result
 }
 
 #[cfg(windows)]
@@ -5805,9 +5779,26 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
 
 #[cfg(windows)]
 async fn install_rsync_with_progress(mut progress: impl FnMut(&str)) -> Result<String, String> {
+    install_rsync_with_progress_inner(&mut progress, false).await
+}
+
+#[cfg(windows)]
+async fn install_rsync_with_progress_for_core_update(
+    mut progress: impl FnMut(&str),
+) -> Result<(), String> {
+    install_rsync_with_progress_inner(&mut progress, true)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(windows)]
+async fn install_rsync_with_progress_inner(
+    progress: &mut impl FnMut(&str),
+    force_bundle_install: bool,
+) -> Result<String, String> {
     let managed_rsync = managed_toolchain_dir().join("bin").join("rsync.exe");
     let probe = check_dep_impl("rsync", None);
-    if probe.installed && !managed_rsync.exists() {
+    if !force_bundle_install && probe.installed && !managed_rsync.exists() {
         progress("rsync already installed");
         write_rsync_shim()?;
         return Ok("rsync already present; path shim refreshed".to_string());

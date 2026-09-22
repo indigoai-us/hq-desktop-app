@@ -847,6 +847,7 @@ fn is_known_core_rescue_failure_kind_marker(line: &str) -> bool {
             | "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken"
             | "HQ_RESCUE_FAILURE_KIND=network-unreachable"
             | "HQ_RESCUE_FAILURE_KIND=missing-dependency"
+            | "HQ_RESCUE_FAILURE_KIND=rsync-missing"
             | "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed"
             | "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable"
             | "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed"
@@ -979,9 +980,7 @@ fn is_watcher_fault_binary_token_set(value: &str) -> bool {
 /// The ordered key set MUST match the producer's `tag_value` exactly, or a
 /// recurrence's counters tag degrades to `[Filtered]` on the wire.
 fn is_watcher_fault_read_counters(value: &str) -> bool {
-    const KEYS: &[&str] = &[
-        "seen", "parsed", "stale", "rej_win", "rej_code", "sweeps", "ms",
-    ];
+    const KEYS: &[&str] = &["seen", "parsed", "stale", "rej_win", "rej_code", "sweeps", "ms"];
     !value.is_empty()
         && value.len() <= 128
         && value.split(',').enumerate().all(|(index, entry)| {
@@ -2448,10 +2447,11 @@ mod tests {
     #[test]
     fn core_update_diagnostic_tail_keeps_only_known_rescue_failure_kind_markers() {
         let diagnostic = redact_core_update_diagnostic_tail(
-            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\nHQ_RESCUE_FAILURE_KIND=untrusted-value\nHQ_RESCUE_SKIPPED_KIND=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_FAILURE_KIND=rsync-missing\nHQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\nHQ_RESCUE_FAILURE_KIND=untrusted-value\nHQ_RESCUE_SKIPPED_KIND=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
         );
 
         assert!(diagnostic.contains("HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable"));
+        assert!(diagnostic.contains("HQ_RESCUE_FAILURE_KIND=rsync-missing"));
         assert!(diagnostic.contains("HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed"));
         assert!(!diagnostic.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
         assert!(!diagnostic.contains("HQ_RESCUE_FAILURE_KIND=untrusted-value"));

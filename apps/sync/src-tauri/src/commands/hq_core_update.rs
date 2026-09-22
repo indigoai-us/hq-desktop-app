@@ -258,6 +258,11 @@ async fn install_hq_core_update_observed(
     _run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
 ) -> Result<CoreUpdateRescueRun, crate::commands::hq_core_state::CoreUpdateError> {
     let started = Instant::now();
+    if observation.source() == "manual" {
+        crate::commands::hq_core_state::clear_automatic_no_retry_for_manual(
+            crate::commands::hq_core_state::Channel::Release,
+        );
+    }
     let local_before = get_local_version();
     let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
     crate::commands::hq_core_state::emit_core_update_event(
@@ -313,7 +318,7 @@ async fn install_hq_core_update_observed(
             observation.version_behind(),
             started.elapsed(),
             Some(run.result.exit_code),
-            "rescue_exit",
+            run.result.rescue_error_kind.unwrap_or("rescue_exit"),
             crate::commands::hq_core_state::CoreUpdateFailureDetails {
                 rescue_stderr_tail: Some(&run.result.rescue_stderr_tail),
                 rescue_failure_category:
@@ -355,7 +360,7 @@ async fn install_hq_core_update_inner(
         ));
     }
     let previous_baseline_paths =
-        crate::commands::hq_core_state::core_drift_baseline_paths_before_rescue(
+        crate::commands::hq_core_state::core_drift_baseline_before_rescue(
             &hq_folder,
             PROD_HQ_CORE_REPO,
         );
@@ -458,17 +463,36 @@ async fn install_hq_core_update_inner(
         ),
     );
 
-    // Materialize the pinned hq-cloud npx cache under the shared lock before
-    // spawning, so this prod Update can't race prewarm/sync into a corrupt
-    // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
-    #[cfg(windows)]
-    ensure_managed_rsync_for_core_update_rescue().await;
-
     let CoreUpdateRescueCommand {
         command,
         npx_resolution,
         managed_git_healthy,
     } = core_update_rescue_command(false);
+
+    #[cfg(windows)]
+    if let Err(reason) = ensure_managed_rsync_for_core_update_rescue().await {
+        let diagnostic = rsync_missing_rescue_diagnostic(&reason);
+        let _ = std::fs::write(&log_path, &diagnostic);
+        let rescue_stderr_tail = hq_telemetry::redact_core_update_diagnostic_tail(&diagnostic);
+        return Ok(CoreUpdateRescueRun {
+            result: crate::commands::hq_core_staging::RescueRunResult {
+                exit_code: 1,
+                log_tail: diagnostic,
+                log_path: log_path.display().to_string(),
+                rescue_stderr_tail,
+                npx_resolution,
+                baseline_persisted: true,
+                baseline_retry_target: latest,
+                baseline_refresh_pending: false,
+                rescue_error_kind: Some("rescue_spawn"),
+            },
+            managed_git_retry: crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
+        });
+    }
+
+    // Materialize the pinned hq-cloud npx cache under the shared lock before
+    // spawning, so this prod Update can't race prewarm/sync into a corrupt
+    // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
     crate::commands::hq_core_staging::materialize_rescue_cache()
         .await
         .map_err(|error| {
@@ -602,20 +626,45 @@ async fn install_hq_core_update_inner(
         retry.outcome,
         &log_path,
     );
+    let rescue_output_for_baseline =
+        crate::commands::hq_core_staging::read_raw_rescue_diagnostic_tail(&log_path)
+            .unwrap_or_else(|_| log_tail.clone());
 
-    let baseline_persisted = if exit_code == 0 {
+    let (baseline_persisted, baseline_refresh_pending) = if exit_code == 0 {
         match crate::commands::hq_core_state::persist_applied_rescue_baseline(
             &hq_folder,
-            &previous_baseline_paths,
-        ) {
-            Ok(commit) => {
+            previous_baseline_paths.as_ref(),
+            &rescue_output_for_baseline,
+            crate::commands::hq_core_state::Channel::Release,
+            gh_token.as_deref(),
+        )
+        .await
+        {
+            Ok(result) => {
                 log(
                     "hq-core-update",
                     &format!(
-                        "persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit} from the applied rescue tree"
+                        "persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{} from the applied rescue tree{}",
+                        result.commit,
+                        if result.refresh_pending {
+                            "; GitHub baseline refresh pending"
+                        } else {
+                            ""
+                        }
                     ),
                 );
-                true
+                if result.refresh_pending {
+                    crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                        update_source,
+                        crate::commands::hq_core_state::Channel::Release,
+                        "hq-core-update",
+                        &format!(
+                            "core update applied; baseline refresh pending for {PROD_HQ_CORE_REPO}@{}",
+                            result.commit
+                        ),
+                    );
+                }
+                (result.baseline_persisted, result.refresh_pending)
             }
             Err(error) => {
                 crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
@@ -624,11 +673,11 @@ async fn install_hq_core_update_inner(
                     "hq-core-update",
                     &format!("core update applied but baseline persistence failed: {error}"),
                 );
-                false
+                (false, true)
             }
         }
     } else {
-        true
+        (true, false)
     };
     log(
         "hq-core-update",
@@ -649,6 +698,8 @@ async fn install_hq_core_update_inner(
             npx_resolution,
             baseline_persisted,
             baseline_retry_target: latest,
+            baseline_refresh_pending,
+            rescue_error_kind: None,
         },
         managed_git_retry: retry.outcome,
     })
@@ -812,53 +863,52 @@ fn rescue_result_after_managed_git_retry(
     )
 }
 
-/// Best-effort managed-rsync preflight for the Windows Core-update rescue.
+/// Managed-rsync preflight for the Windows Core-update rescue.
 ///
-/// The rescue's own rsync preflight remains authoritative. Provisioning is
-/// intentionally non-fatal so a transient network, checksum, or filesystem
-/// failure cannot turn an otherwise runnable rescue into an earlier failure.
+/// The rescue cannot start until a real, healthy `rsync.exe` is available on
+/// the exact child PATH. Provisioning failures are returned to the caller so
+/// the app can report them without starting a rescue that will fail its own
+/// dependency check.
 #[cfg(windows)]
-async fn ensure_managed_rsync_for_core_update_rescue() {
+pub(crate) async fn ensure_managed_rsync_for_core_update_rescue() -> Result<(), String> {
     match crate::commands::install_deps::ensure_rsync_for_core_update_rescue().await {
         crate::commands::install_deps::RsyncRescueProvisioning::AlreadyRescueReady => {
             log(
                 "hq-core-update",
                 "rsync and its path shim already ready before rescue",
             );
+            Ok(())
         }
         crate::commands::install_deps::RsyncRescueProvisioning::ShimRefreshed => {
             log(
                 "hq-core-update",
                 "rsync was resolvable but its path shim was refreshed before rescue",
             );
+            Ok(())
         }
         crate::commands::install_deps::RsyncRescueProvisioning::Provisioned => {
             log(
                 "hq-core-update",
                 "managed rsync provisioned and resolvable before rescue",
             );
+            Ok(())
         }
         crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningTimedOut => {
-            log(
-                "hq-core-update",
-                "managed rsync preflight timed out before rescue; continuing with current rsync resolution",
-            );
+            Err("managed rsync preflight timed out after 120 seconds".to_string())
         }
         crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningFailed(reason) => {
-            log(
-                "hq-core-update",
-                &format!(
-                    "managed rsync unavailable before rescue ({reason}); continuing with current rsync resolution"
-                ),
-            );
+            Err(reason)
         }
         crate::commands::install_deps::RsyncRescueProvisioning::ProvisionedButNotRescueReady => {
-            log(
-                "hq-core-update",
-                "managed rsync installer completed but rsync or its path shim remained unavailable before rescue; continuing with current rsync resolution",
-            );
+            Err("managed rsync installer completed, but rsync.exe failed its rescue PATH version check".to_string())
         }
     }
+}
+
+pub(crate) fn rsync_missing_rescue_diagnostic(reason: &str) -> String {
+    format!(
+        "HQ could not install rsync, which the update needs. Check your network and antivirus settings, then try Update again.\nrsync preflight: {reason}\nHQ_RESCUE_FAILURE_KIND=rsync-missing"
+    )
 }
 
 #[cfg(test)]
@@ -1219,6 +1269,22 @@ mod tests {
                 "original log tail".to_string(),
                 "original clone failure".to_string(),
             )
+        );
+    }
+
+    #[test]
+    fn rsync_missing_preflight_diagnostic_is_a_rescue_spawn_failure() {
+        let diagnostic = rsync_missing_rescue_diagnostic("download failed");
+        assert!(diagnostic.ends_with("HQ_RESCUE_FAILURE_KIND=rsync-missing"));
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(&diagnostic);
+        assert!(redacted.ends_with("HQ_RESCUE_FAILURE_KIND=rsync-missing"));
+        assert_eq!(
+            crate::commands::hq_core_state::classify_core_update_error(
+                crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
+                &redacted,
+                None,
+            ),
+            crate::commands::hq_core_state::RescueFailureCategory::MissingDependency
         );
     }
 }
