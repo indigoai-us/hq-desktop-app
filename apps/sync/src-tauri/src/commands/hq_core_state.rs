@@ -1785,22 +1785,6 @@ async fn fetch_tree(
     Ok(out)
 }
 
-pub(crate) async fn persist_remote_baseline(
-    hq_folder: &std::path::Path,
-    client: &reqwest::Client,
-    repo: &str,
-    git_ref: &str,
-) -> Result<String, String> {
-    let commit = fetch_commit_sha(client, repo, git_ref).await?;
-    let blobs = fetch_tree(client, repo, &commit)
-        .await?
-        .into_iter()
-        .map(|(path, (sha, _))| (path, sha))
-        .collect();
-    hq_desktop_core::drift_scope::persist_core_drift_baseline(hq_folder, repo, &commit, blobs)?;
-    Ok(commit)
-}
-
 // ─── Floor SHA reader ────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1835,6 +1819,57 @@ fn local_source_stamp(hq_folder: &std::path::Path) -> Option<(String, String)> {
     let source = stamp.source?.trim().to_string();
     let commit = stamp.last_sync_sha?.trim().to_string();
     (!source.is_empty() && !commit.is_empty()).then_some((source, commit))
+}
+
+/// Capture the paths known to the last successful baseline before rescue
+/// rewrites `core/core.yaml`. Rescue leaves user-only paths in locked scopes;
+/// normal runs log only their count, so the previous baseline path set is the
+/// safe local boundary for the next baseline. Paths introduced by the new
+/// source remain absent from the floor and are compared with the target tree
+/// by the drift classifier.
+pub(crate) fn core_drift_baseline_paths_before_rescue(
+    hq_folder: &std::path::Path,
+    source_repo: &str,
+) -> BTreeSet<String> {
+    let Some((source, commit)) = local_source_stamp(hq_folder) else {
+        return BTreeSet::new();
+    };
+    if source != source_repo {
+        return BTreeSet::new();
+    }
+    hq_desktop_core::drift_scope::load_core_drift_baseline(hq_folder, &source, &commit)
+        .map(|baseline| {
+            baseline
+                .normalized_blobs
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist the drift baseline from the tree the rescue just wrote.
+///
+/// The rescue stamps `replaced_from_source.last_sync_sha` with the commit it
+/// applied. Hashing the local locked scope avoids a second GitHub REST call
+/// after a successful clone and overlay. Keeping only paths from the prior
+/// baseline prevents user-only files left by rescue from becoming floor files;
+/// paths absent from that prior floor are classified against the new target.
+pub(crate) fn persist_applied_rescue_baseline(
+    hq_folder: &std::path::Path,
+    previous_baseline_paths: &BTreeSet<String>,
+) -> Result<String, String> {
+    let (source, commit) = local_source_stamp(hq_folder).ok_or_else(|| {
+        "rescue completed without a replaced_from_source.last_sync_sha stamp".to_string()
+    })?;
+    let locked = read_locked_paths(hq_folder);
+    let blobs = walk_local_under_scope(hq_folder, &locked)
+        .into_iter()
+        .filter(|(path, _)| previous_baseline_paths.contains(path))
+        .map(|(path, (sha, _))| (path, sha))
+        .collect();
+    hq_desktop_core::drift_scope::persist_core_drift_baseline(hq_folder, &source, &commit, blobs)?;
+    Ok(commit)
 }
 
 // ─── Version compare ─────────────────────────────────────────────────────────
@@ -4433,6 +4468,99 @@ error: clone failed";
             events[0].message.as_deref(),
             Some("Desktop Core update applied but baseline persistence failed")
         );
+    }
+
+    #[test]
+    fn applied_rescue_baseline_uses_prior_floor_paths_and_the_new_local_stamp() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let source = "indigoai-us/hq-core";
+        let old_commit = "0".repeat(40);
+        let new_commit = "1".repeat(40);
+        let tracked_path = "core/policies/example.md";
+        let tracked_file = root.join(tracked_path);
+        std::fs::create_dir_all(tracked_file.parent().unwrap()).unwrap();
+        std::fs::write(&tracked_file, b"old\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {old_commit}\n"
+            ),
+        )
+        .unwrap();
+
+        let mut old_blobs = BTreeMap::new();
+        old_blobs.insert(
+            tracked_path.to_string(),
+            hq_desktop_core::drift_scope::drift_blob_sha(b"old\n"),
+        );
+        hq_desktop_core::drift_scope::persist_core_drift_baseline(
+            root,
+            source,
+            &old_commit,
+            old_blobs,
+        )
+        .unwrap();
+        let previous_paths = core_drift_baseline_paths_before_rescue(root, source);
+        assert!(previous_paths.contains(tracked_path));
+
+        // Simulate the successful rescue overlay and its stamp. The new file
+        // represents an upstream addition; the local-only file represents a
+        // path rescue left in place outside the upstream tree.
+        std::fs::write(&tracked_file, b"new upstream content\n").unwrap();
+        std::fs::write(root.join("core/policies/added-by-update.md"), b"new\n").unwrap();
+        std::fs::write(root.join("core/policies/local-only.md"), b"mine\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {new_commit}\n"
+            ),
+        )
+        .unwrap();
+
+        let persisted = persist_applied_rescue_baseline(root, &previous_paths).unwrap();
+        assert_eq!(persisted, new_commit);
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &new_commit)
+                .unwrap();
+        assert_eq!(
+            baseline.normalized_blobs.get(tracked_path),
+            Some(&hq_desktop_core::drift_scope::drift_blob_sha(
+                b"new upstream content\n"
+            ))
+        );
+        assert!(!baseline
+            .normalized_blobs
+            .contains_key("core/policies/added-by-update.md"));
+        assert!(!baseline
+            .normalized_blobs
+            .contains_key("core/policies/local-only.md"));
+    }
+
+    #[test]
+    fn applied_rescue_baseline_succeeds_with_no_prior_floor() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let source = "indigoai-us/hq-core";
+        let commit = "2".repeat(40);
+        std::fs::create_dir_all(root.join("core/policies")).unwrap();
+        std::fs::write(root.join("core/policies/example.md"), b"new\n").unwrap();
+        std::fs::write(root.join("core/policies/local-only.md"), b"mine\n").unwrap();
+        std::fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {commit}\n"
+            ),
+        )
+        .unwrap();
+
+        let previous_paths = core_drift_baseline_paths_before_rescue(root, source);
+        assert!(previous_paths.is_empty());
+        persist_applied_rescue_baseline(root, &previous_paths).unwrap();
+
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &commit).unwrap();
+        assert!(baseline.normalized_blobs.is_empty());
     }
 
     fn sentry_user_tokens(id_token: Option<String>) -> crate::commands::cognito::CognitoTokens {

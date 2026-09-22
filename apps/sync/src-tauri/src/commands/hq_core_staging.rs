@@ -782,6 +782,8 @@ async fn run_replace_from_staging_inner(
             ),
         ));
     }
+    let previous_baseline_paths =
+        crate::commands::hq_core_state::core_drift_baseline_paths_before_rescue(&hq_folder, &repo);
     // Stream the combined output to a per-invocation log file so the user
     // can `tail -f` it during the multi-minute scan and so we have a
     // post-mortem on failures. The popover gets a 40-line tail.
@@ -852,37 +854,25 @@ async fn run_replace_from_staging_inner(
 
     let exit_code = status.code().unwrap_or(-1);
     let baseline_persisted = if exit_code == 0 {
-        match authed_client(&token) {
-            Ok(client) => match crate::commands::hq_core_state::persist_remote_baseline(
-                &hq_folder, &client, &repo, "main",
-            )
-            .await
-            {
-                Ok(commit) => {
-                    log(
-                        "hq-core-staging",
-                        &format!("persisted normalized drift baseline {repo}@{commit}"),
-                    );
-                    true
-                }
-                Err(error) => {
-                    crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
-                        update_source,
-                        crate::commands::hq_core_state::Channel::Staging,
-                        "hq-core-staging",
-                        &format!("staging update applied but baseline persistence failed: {error}"),
-                    );
-                    false
-                }
-            },
+        match crate::commands::hq_core_state::persist_applied_rescue_baseline(
+            &hq_folder,
+            &previous_baseline_paths,
+        ) {
+            Ok(commit) => {
+                log(
+                    "hq-core-staging",
+                    &format!(
+                        "persisted normalized drift baseline {repo}@{commit} from the applied rescue tree"
+                    ),
+                );
+                true
+            }
             Err(error) => {
                 crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
                     update_source,
                     crate::commands::hq_core_state::Channel::Staging,
                     "hq-core-staging",
-                    &format!(
-                        "staging update applied but baseline persistence failed: build baseline client: {error}"
-                    ),
+                    &format!("staging update applied but baseline persistence failed: {error}"),
                 );
                 false
             }

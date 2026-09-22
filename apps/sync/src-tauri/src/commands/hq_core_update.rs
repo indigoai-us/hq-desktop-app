@@ -354,6 +354,11 @@ async fn install_hq_core_update_inner(
             ),
         ));
     }
+    let previous_baseline_paths =
+        crate::commands::hq_core_state::core_drift_baseline_paths_before_rescue(
+            &hq_folder,
+            PROD_HQ_CORE_REPO,
+        );
 
     let latest = fetch_latest().await.map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
@@ -599,46 +604,25 @@ async fn install_hq_core_update_inner(
     );
 
     let baseline_persisted = if exit_code == 0 {
-        match reqwest::Client::builder()
-            .default_headers(crate::util::client_info::client_headers())
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-        {
-            Ok(client) => match crate::commands::hq_core_state::persist_remote_baseline(
-                &hq_folder,
-                &client,
-                PROD_HQ_CORE_REPO,
-                &git_ref,
-            )
-            .await
-            {
-                Ok(commit) => {
-                    log(
-                        "hq-core-update",
-                        &format!(
-                            "persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"
-                        ),
-                    );
-                    true
-                }
-                Err(error) => {
-                    crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
-                        update_source,
-                        crate::commands::hq_core_state::Channel::Release,
-                        "hq-core-update",
-                        &format!("core update applied but baseline persistence failed: {error}"),
-                    );
-                    false
-                }
-            },
+        match crate::commands::hq_core_state::persist_applied_rescue_baseline(
+            &hq_folder,
+            &previous_baseline_paths,
+        ) {
+            Ok(commit) => {
+                log(
+                    "hq-core-update",
+                    &format!(
+                        "persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit} from the applied rescue tree"
+                    ),
+                );
+                true
+            }
             Err(error) => {
                 crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
                     update_source,
                     crate::commands::hq_core_state::Channel::Release,
                     "hq-core-update",
-                    &format!(
-                        "core update applied but baseline persistence failed: build baseline client: {error}"
-                    ),
+                    &format!("core update applied but baseline persistence failed: {error}"),
                 );
                 false
             }
