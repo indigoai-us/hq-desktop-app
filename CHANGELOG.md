@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On macOS, the close, minimise and zoom buttons now line up with the toolbar. They were sitting about five pixels low.
+- Back from Settings now always returns to the main Messages view, instead of whatever page you were on before you opened Settings. The titlebar arrows still walk back through your history.
 - Core update failures now report their cause, and a finished update no longer runs the installer again when saving its drift baseline fails.
 - Windows Core updates now install a real rsync executable before the rescue runs, and show a clear message when rsync cannot be installed.
 - If a Core rescue applied the release but could not restore preserved files, automatic checks stop retrying that target and show where the preserved bytes were kept.
