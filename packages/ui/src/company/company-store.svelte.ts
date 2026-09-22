@@ -126,6 +126,11 @@ export function setActiveCompanyResource(
   active = slug && resource ? { slug, resource } : null;
 }
 
+/** Drop every cached company board so a work.changed push reloads the list. */
+export function invalidateCompanyBoards(): void {
+  cache.invalidate((cacheKey) => cacheKey.endsWith(":board"));
+}
+
 export function invalidateCompanyResources(
   slug: string,
   resources?: CompanyResource[],

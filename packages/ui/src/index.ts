@@ -141,6 +141,11 @@ export {
   type RosterSettledOutcome,
   type RosterStatus,
 } from "./identity/roster-refresh.js";
+export {
+  WORK_PUSH_EVENTS,
+  dispatchWorkPush,
+  onWorkPush,
+} from "./projects/work-push.js";
 export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {
