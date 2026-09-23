@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - When someone @mentions you in a channel, HQ now shows a notification that opens that message. Mentions only count when they are structured (not just the word @YourName), and they stay quiet if you already have that channel open. Shared folders show a folder tile that opens Files instead of a file preview.
+
+## [0.10.309] — 2026-09-23
+
 - A private folder shared as `foo/` now appears as `foo/` in the app and its
   notification instead of looking like a file.
 
