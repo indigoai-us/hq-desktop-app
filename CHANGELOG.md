@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- A private folder shared as `foo/` now appears as `foo/` in the app and its
+  notification instead of looking like a file.
+
 ## [0.10.306] — 2026-09-22
 
 - When the onboarding window is replaced during startup, HQ no longer counts the brief screen teardown as an abandoned sign-in attempt. Longer stays still record how long the step was visible.
