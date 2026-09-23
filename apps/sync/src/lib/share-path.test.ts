@@ -18,8 +18,8 @@ describe('shareTitle', () => {
     expect(shareTitle('README.md')).toBe('README.md');
   });
 
-  it('ignores a trailing slash on a directory path without a wildcard', () => {
-    expect(shareTitle('projects/foo/')).toBe('foo');
+  it('renders a trailing-slash private folder with the folder affordance', () => {
+    expect(shareTitle('projects/foo/')).toBe('foo/');
   });
 
   it('falls back to "All files" for a whole-vault wildcard', () => {
