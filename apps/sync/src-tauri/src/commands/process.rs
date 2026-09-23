@@ -30,6 +30,9 @@ use nix::{
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+// Bound queued output events so slow callbacks backpressure the child's pipes.
+const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 64;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
@@ -2981,7 +2984,7 @@ where
         },
     }
 
-    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+    let (tx, rx) = mpsc::sync_channel::<ReaderMsg>(PROCESS_EVENT_CHANNEL_CAPACITY);
 
     let tx_stdout = tx.clone();
     thread::spawn(move || {
@@ -3230,7 +3233,7 @@ where
         },
     }
 
-    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+    let (tx, rx) = mpsc::sync_channel::<ReaderMsg>(PROCESS_EVENT_CHANNEL_CAPACITY);
 
     let tx_stdout = tx.clone();
     thread::spawn(move || {

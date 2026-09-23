@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Large sync-output bursts no longer build up in HQ's memory. If the app falls
+  behind, the runner waits for the app to process more output.
 - A private folder shared as `foo/` now appears as `foo/` in the app and its
   notification instead of looking like a file.
 
