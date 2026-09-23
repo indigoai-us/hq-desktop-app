@@ -7449,3 +7449,7 @@ mod child_env_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "process_output_backpressure_tests.rs"]
+mod process_output_backpressure_tests;
