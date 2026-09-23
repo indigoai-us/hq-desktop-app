@@ -305,6 +305,12 @@ export interface DmContactInput {
    * activity nor lights an unread badge.
    */
   agentJoinOnly?: boolean;
+  /**
+   * Audience of the last message: "human" | "agent" | "both". Absent on
+   * older servers. US-006 reads this to decide whether to show or suppress
+   * the preview in the DM rail (default: hide agent-only previews).
+   */
+  lastMessageAudience?: string | null;
 }
 
 export interface InboxEventInput {

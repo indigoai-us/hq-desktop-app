@@ -52,11 +52,11 @@ use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    build_channel_messages_url, build_create_payload, build_create_payload_with_project,
-    build_ensure_project_channel_payload, build_group_payload, build_reaction_payload,
-    build_reactions_url, esc_query, esc_seg,
-    invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
-    ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
+    apply_contact_preview_filter, build_channel_messages_url, build_create_payload,
+    build_create_payload_with_project, build_ensure_project_channel_payload, build_group_payload,
+    build_reaction_payload, build_reactions_url, esc_query, esc_seg, invite_member_payload,
+    Channel, ChannelDetail, ChannelMember, ChannelMembersResponse, ChannelMessage,
+    ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     EnsureProjectChannelResponse, MessageReactions, ReactionAggregate, RequestsResponse,
     UnreadSummary,
 };
@@ -408,11 +408,19 @@ async fn parse_body<T: serde::de::DeserializeOwned>(
 
 /// Tauri command: list everyone the caller can DM (active connections + company
 /// teammates). `GET /v1/notify/contacts`.
+///
+/// `show_bot_messages` is the US-006 "Show bot messages" toggle (default off).
+/// When false (the default), preview fields on contacts whose last message is
+/// agent-only are cleared before returning, so the DM rail never shows an
+/// agent-only snippet to a user who hasn't opted in.
 #[tauri::command]
-pub async fn list_contacts() -> Result<ContactsResponse, String> {
+pub async fn list_contacts(
+    show_bot_messages: Option<bool>,
+) -> Result<ContactsResponse, String> {
     let (base, token) = auth_and_base("MESSAGES_CONTACTS").await?;
     let url = format!("{base}/v1/notify/contacts");
-    let out: ContactsResponse = get_json(&url, &token, "MESSAGES_CONTACTS").await?;
+    let mut out: ContactsResponse = get_json(&url, &token, "MESSAGES_CONTACTS").await?;
+    apply_contact_preview_filter(&mut out.contacts, show_bot_messages.unwrap_or(false));
     log(
         LOG_TAG,
         &format!("MESSAGES_CONTACTS_OK count={}", out.contacts.len()),
@@ -423,15 +431,21 @@ pub async fn list_contacts() -> Result<ContactsResponse, String> {
 /// Tauri command: list the teammates in one company. `GET
 /// /v1/notify/contacts?companyUid=…` — the company-scoped slice of the contacts
 /// surface, used by the (later) compose flow's company picker.
+///
+/// `show_bot_messages` mirrors the US-006 toggle; default off.
 #[tauri::command]
-pub async fn list_company_members(company_uid: String) -> Result<ContactsResponse, String> {
+pub async fn list_company_members(
+    company_uid: String,
+    show_bot_messages: Option<bool>,
+) -> Result<ContactsResponse, String> {
     let target = company_uid.trim();
     if target.is_empty() {
         return Err("companyUid must not be empty".to_string());
     }
     let (base, token) = auth_and_base("MESSAGES_MEMBERS").await?;
     let url = format!("{base}/v1/notify/contacts?companyUid={target}");
-    let out: ContactsResponse = get_json(&url, &token, "MESSAGES_MEMBERS").await?;
+    let mut out: ContactsResponse = get_json(&url, &token, "MESSAGES_MEMBERS").await?;
+    apply_contact_preview_filter(&mut out.contacts, show_bot_messages.unwrap_or(false));
     log(
         LOG_TAG,
         &format!(

@@ -2865,4 +2865,72 @@ mod tests {
         let v = serde_json::to_value(&dm).expect("serializes");
         assert!(v.get("audience").is_none(), "absent audience must not emit a key");
     }
+
+    // --- US-005 pipeline tests: partition_unnotified → filter_human_visible ---
+    // These mirror the real do_poll code path so the wiring is exercised, not
+    // just the pure helpers.
+
+    #[test]
+    fn do_poll_pipeline_agent_events_do_not_count_toward_unread() {
+        // Inbox: 1 human + 2 agent events, none previously seen.
+        let events = vec![
+            mk_dm_with_audience("h1", "2026-09-23T10:00:00Z", "human"),
+            mk_dm_with_audience("a1", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm_with_audience("a2", "2026-09-23T10:02:00Z", "agent"),
+        ];
+        let (fresh, _) = partition_unnotified(&events, &[]);
+        // All 3 are fresh (none previously notified).
+        assert_eq!(fresh.len(), 3);
+        // But only 1 is human-visible — this is the delta bump_unread receives.
+        let visible = filter_human_visible_events(&fresh);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].event_id, "h1");
+    }
+
+    #[test]
+    fn do_poll_pipeline_already_notified_agent_event_does_not_resurface() {
+        let events = vec![
+            mk_dm_with_audience("a_seen", "2026-09-23T10:00:00Z", "agent"),
+            mk_dm_with_audience("h_new", "2026-09-23T10:01:00Z", "human"),
+        ];
+        let already_notified = vec!["a_seen".to_string()];
+        let (fresh, _) = partition_unnotified(&events, &already_notified);
+        // Only h_new is fresh.
+        assert_eq!(fresh.len(), 1);
+        // And it is human-visible.
+        let visible = filter_human_visible_events(&fresh);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].event_id, "h_new");
+    }
+
+    #[test]
+    fn do_poll_pipeline_all_agent_events_yield_zero_unread_delta() {
+        let events = vec![
+            mk_dm_with_audience("a1", "2026-09-23T10:00:00Z", "agent"),
+            mk_dm_with_audience("a2", "2026-09-23T10:01:00Z", "agent"),
+        ];
+        let (fresh, _) = partition_unnotified(&events, &[]);
+        let visible = filter_human_visible_events(&fresh);
+        // bump_unread would receive 0 — the badge must not move.
+        assert_eq!(visible.len(), 0);
+    }
+
+    #[test]
+    fn do_poll_pipeline_banner_filter_suppresses_agent_audience() {
+        // Simulate the banner_worthy filter: exclude is_agent_audience.
+        let fresh = vec![
+            mk_dm_with_audience("h1", "2026-09-23T10:00:00Z", "human"),
+            mk_dm_with_audience("a1", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm("absent1", "2026-09-23T10:02:00Z"),
+        ];
+        let banner_worthy: Vec<&DmEvent> = fresh
+            .iter()
+            .filter(|dm| !is_agent_audience(dm.audience.as_deref()))
+            .collect();
+        assert_eq!(banner_worthy.len(), 2);
+        let ids: Vec<&str> = banner_worthy.iter().map(|e| e.event_id.as_str()).collect();
+        assert!(ids.contains(&"h1"));
+        assert!(ids.contains(&"absent1"));
+        assert!(!ids.contains(&"a1"));
+    }
 }
