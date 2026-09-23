@@ -232,7 +232,7 @@ describe('watcher fault deferred attribution — source contracts', () => {
       '\n    ];',
       'watcher fault read-counter egress keys',
     ).replace(/\s/g, '');
-    expect(readCounterKeys).toBe('"seen","parsed","stale","rej_win","rej_code","sweeps","ms",');
+    expect(readCounterKeys).toBe('constKEYS:&[&str]=&["seen","parsed","stale","rej_win","rej_code","sweeps","ms",];');
   });
 });
 
