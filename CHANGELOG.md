@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.308] — 2026-09-23
+
 - First-run setup now retries npm dependency installs after stale caches, interrupted installs, and registry metadata that has not propagated yet.
 - Core updates now report clearer failure details when rescue fails, including the failed stage, tool versions, and available disk space, without sending local paths.
 
