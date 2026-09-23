@@ -660,7 +660,7 @@ pub fn resolve_bin_on_child_path(name: &str) -> Option<ResolvedProgram> {
     #[cfg(target_os = "windows")]
     {
         let dirs: Vec<PathBuf> = std::env::split_paths(&child_path()).collect();
-        return select_program_in_dirs(&dirs, &candidate_filenames(name), &is_runnable_shim);
+        return select_child_program_in_dirs(&dirs, &candidate_filenames(name));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1703,6 +1703,17 @@ pub fn select_program_in_dirs(
     exists: &dyn Fn(&Path) -> bool,
 ) -> Option<ResolvedProgram> {
     select_program_in_dirs_rejecting(dirs, candidates, exists, &|_| false)
+}
+
+/// Resolve a child-PATH candidate with the same runnable-file predicate used by
+/// the Windows child resolver. Keeping this seam platform-independent lets the
+/// resolver's cross-directory precedence run in every CI environment.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn select_child_program_in_dirs(
+    dirs: &[PathBuf],
+    candidates: &[String],
+) -> Option<ResolvedProgram> {
+    select_program_in_dirs(dirs, candidates, &is_runnable_shim)
 }
 
 /// [`select_program_in_dirs`] with an extra `reject` predicate that skips any
@@ -2857,9 +2868,20 @@ mod tests {
         std::fs::create_dir_all(&later).unwrap();
         std::fs::write(early.join("git"), "posix shim\n").unwrap();
         std::fs::write(later.join("git.exe"), "native executable\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(early.join("git"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            std::fs::set_permissions(
+                later.join("git.exe"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
 
         let windows_candidates = ["git.exe".to_string(), "git".to_string()];
-        let selected = select_program_on_disk(&[early, later.clone()], &windows_candidates)
+        let selected = select_child_program_in_dirs(&[early, later.clone()], &windows_candidates)
             .expect("a candidate exists");
         assert_eq!(selected.path, later.join("git.exe").to_string_lossy());
         assert_eq!(selected.kind, ResolvedProgramKind::Exe);
