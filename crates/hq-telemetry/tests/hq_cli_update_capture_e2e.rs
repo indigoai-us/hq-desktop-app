@@ -54,7 +54,8 @@ fn install_failure_fingerprint(class: &str, signature: &str) -> Vec<String> {
     vec![
         "hq-cli-update".to_string(),
         "install-failed".to_string(),
-        format!("{class}:{signature}"),
+        class.to_string(),
+        signature.to_string(),
     ]
 }
 

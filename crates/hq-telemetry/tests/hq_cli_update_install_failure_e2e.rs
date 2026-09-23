@@ -33,7 +33,8 @@ fn install_failure_fingerprint(class: &str, signature: &str) -> Vec<String> {
     vec![
         "hq-cli-update".to_string(),
         "install-failed".to_string(),
-        format!("{class}:{signature}"),
+        class.to_string(),
+        signature.to_string(),
     ]
 }
 
@@ -1510,12 +1511,10 @@ fn npm_logger_markerless_failure_is_a_distinct_attributed_subclass() {
     }));
     assert_eq!(event.level, sentry::Level::Error);
     assert_eq!(tag(&event, "npm_stderr_origin"), Some("npm-logger"));
-    assert!(
-        fingerprint(&event)
-            .last()
-            .is_some_and(|class| class.starts_with("unexpected:unattributed:npm-logger:")),
-        "npm-logger origin must group under its own attributed class: {:?}",
-        fingerprint(&event)
+    assert_eq!(
+        fingerprint(&event),
+        install_failure_fingerprint("unexpected", "unattributed:npm-logger:other"),
+        "npm-logger origin must group under its own attributed class"
     );
     assert_path_safe(&event, &["npm error", "JSON input"]);
 }
