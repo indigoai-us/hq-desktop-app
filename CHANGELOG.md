@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First-run setup now retries npm dependency installs after stale caches, interrupted installs, and registry metadata that has not propagated yet.
+
 ## [0.10.306] — 2026-09-22
 
 - When the onboarding window is replaced during startup, HQ no longer counts the brief screen teardown as an abandoned sign-in attempt. Longer stays still record how long the step was visible.
