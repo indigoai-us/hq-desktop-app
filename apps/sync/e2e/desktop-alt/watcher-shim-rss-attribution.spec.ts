@@ -229,8 +229,8 @@ function renderLastRss(scope: 'shim' | 'tree', kb: number, ageSecs: number): str
  * Model one 0xFFFFFFFF watcher exit whose registered child is the npx.cmd shim.
  * `pre-fix` reproduces the shipped HQ-DESKTOP-4M envelope — a single-PID shim
  * sample whose number is withheld as `unattributed:shim`. `post-fix` reports the
- * runner-inclusive job-summed working set, tree-scoped. Only the MEASURED footprint
- * changes; capture policy, grouping, and the registered child kind are untouched.
+ * runner-inclusive job-summed working set, tree-scoped. The candidate also uses
+ * the stable exit-class grouping contract introduced for c061.
  */
 function simulateShimExitEnvelope(policy: Policy, rss: ShimRssSample): SentryEnvelopeEvent {
   const scope: 'shim' | 'tree' = policy === 'pre-fix' ? 'shim' : 'tree';
@@ -243,6 +243,7 @@ function simulateShimExitEnvelope(policy: Policy, rss: ShimRssSample): SentryEnv
     windows_exit_class: 'indeterminate_status',
     rss_scope: scope,
   };
+  if (policy === 'post-fix') tags.exit_class = 'minus_one';
   const extras: Record<string, string | boolean | number> = {
     watcher_lifecycle_state: 'running',
     watcher_job_peak_commit_bucket: '128mb_to_512mb',
@@ -255,9 +256,11 @@ function simulateShimExitEnvelope(policy: Policy, rss: ShimRssSample): SentryEnv
     message:
       'auto-sync watcher exited unexpectedly (with Windows status 0xFFFFFFFF (origin unknown)), ' +
       `consecutive failure #1${suffix}`,
-    // Grouping is driven by the termination fingerprint token, NOT the diagnostic
-    // suffix — so the tree number never regroups this cluster.
-    fingerprint: ['sync', 'auto-sync-watcher-termination', 'windows:status-ffffffff', 'none'],
+    // Grouping is independent of the RSS diagnostic suffix in both versions.
+    fingerprint:
+      policy === 'pre-fix'
+        ? ['sync', 'auto-sync-watcher-termination', 'windows:status-ffffffff', 'none']
+        : ['sync-watcher-exit', 'minus_one'],
     tags,
     extras,
   };
@@ -303,16 +306,20 @@ describe('watcher shim RSS attribution — shipped Sentry envelope', () => {
     assertContentSafeDiagnostics(event);
   });
 
-  it('never regroups: the fingerprint is suffix-independent across both directions', () => {
+  it('keeps RSS suffixes out of grouping and uses the stable candidate exit class', () => {
     const pre = simulateShimExitEnvelope('pre-fix', OBSERVED);
     const post = simulateShimExitEnvelope('post-fix', OBSERVED);
-    expect(post.fingerprint).toEqual(pre.fingerprint);
-    expect(post.fingerprint).toEqual([
+    expect(pre.fingerprint).toEqual([
       'sync',
       'auto-sync-watcher-termination',
       'windows:status-ffffffff',
       'none',
     ]);
+    expect(post.fingerprint).toEqual([
+      'sync-watcher-exit',
+      'minus_one',
+    ]);
+    expect(post.tags.exit_class).toBe('minus_one');
     // Capture policy is untouched: 0xFFFFFFFF stays classed indeterminate_status.
     expect(post.tags.windows_exit_class).toBe('indeterminate_status');
     expect(pre.tags.windows_exit_class).toBe('indeterminate_status');

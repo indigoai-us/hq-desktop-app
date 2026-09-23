@@ -92,14 +92,10 @@ describe('macOS SIGKILL alerting cap — source contracts', () => {
     // longer reports "consecutive failure #1" as its whole story.
     expect(daemonSource).toContain('(episode failure #{policy_consecutive})');
     expect(daemonSource).toContain('consecutive failure #{consecutive}{episode_suffix}{diag}');
-    // The fingerprint inputs are untouched by the episode-message work (message
-    // text is not a fingerprint input), so grouping does not move. The token is
-    // computed by the evidence-gated helper, which for an evidence-free SIGKILL
-    // falls through to the host token unchanged (a force-quit stays signal:9).
-    expect(daemonSource).toContain('let fingerprint = [');
-    expect(daemonSource).toContain(
-      'watcher_termination_fingerprint_token(code, signal, host, memory_evidence)',
-    );
+    // The stable class fingerprint is independent of the episode message and
+    // remains SIGKILL-specific when no memory evidence proves a different cause.
+    expect(daemonSource).toContain('let fingerprint = ["sync-watcher-exit", exit_class];');
+    expect(daemonSource).toContain('watcher_exit_class(');
   });
 
   it('leaves the respawn cadence — consecutive, backoff, supervisor interval — unchanged', () => {
@@ -190,8 +186,8 @@ interface Envelope {
   fingerprint: string[];
 }
 
-/** The signal:9 Capture fingerprint — identical pre- and post-fix. */
-const SIGKILL_FINGERPRINT = ['sync', 'auto-sync-watcher-termination', 'signal:9', 'none'];
+/** The evidence-free SIGKILL stable class fingerprint emitted by the app. */
+const SIGKILL_FINGERPRINT = ['sync-watcher-exit', 'sigkill'];
 
 /** Pre-fix: the slow arm pins `consecutive` to 1, so the gate reads 1 forever. */
 function simulateUncapped(deaths: number): Envelope[] {

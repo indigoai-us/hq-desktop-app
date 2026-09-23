@@ -90,7 +90,6 @@ use hq_desktop_core::sync_outcome::{
     watcher_exit_capture_policy,
     watcher_exit_capture_policy_with_attribution,
     watcher_exit_signal_class,
-    watcher_termination_fingerprint_token,
     windows_exit_status_hex,
     windows_fault_symbol,
     windows_teardown_verdict,
@@ -2667,9 +2666,9 @@ fn resolve_deferred_session_end_capture(id: u64) {
         DeferredSessionEndOutcome::Capture => {
             // Escalation: a second-or-later unconfirmed session-terminate exit
             // within one app run. The app is demonstrably alive to observe it, so
-            // it cannot be a session end. Re-fingerprint and re-title so it never
-            // merges with the benign sign-out issue, then send with the full
-            // teardown diagnostics attached by the finalizer.
+            // it cannot be a session end. Re-title and send with the full teardown
+            // diagnostics attached by the finalizer; the stable exit-class
+            // fingerprint is unchanged.
             let payload = escalated_session_terminate_payload(payload, unconfirmed_run_count);
             send_deferred_session_end_capture(
                 payload,
@@ -4173,7 +4172,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         || last_stderr.is_some_and(|line| {
             classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal
         });
-    let exit_class = hq_desktop_core::sync_outcome::watcher_exit_class(code, signal, node_fatal);
+    let exit_class = hq_desktop_core::sync_outcome::watcher_exit_class(
+        code,
+        signal,
+        node_fatal,
+        memory_attributed,
+    );
     let fingerprint = ["sync-watcher-exit", exit_class];
     let windows_termination = code
         .map(classify_windows_exit_status)
@@ -5698,7 +5702,7 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
     // crash exit would — the suppressed pre-empt exit never will.
     let consecutive = effects.note_watcher_crashed();
     let heap_ceiling = hq_desktop_core::daemon::effective_runner_heap_ceiling();
-    let fingerprint = ["sync-watcher-exit", "other"];
+    let fingerprint = ["sync-watcher-exit", "runner_memory"];
     let message = format!(
         "auto-sync watcher pre-empted at declared footprint ceiling \
          (runner memory exhausted), consecutive failure #{consecutive} \
@@ -5752,7 +5756,7 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
         .map(|total| footprint_mb.saturating_sub(total));
     let lifecycle = crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
     let tags = [
-        ("exit_class", "other".to_string()),
+        ("exit_class", "runner_memory".to_string()),
         ("sync_route", "watcher".to_string()),
         (
             "app_quitting",
@@ -7616,11 +7620,8 @@ mod tests {
         );
         assert_eq!(recorded_tag(capture, "watcher_exit_signal_class"), "hangup");
         assert_eq!(recorded_number_extra(capture, "watcher_exit_signal"), 1);
-        assert!(
-            capture.fingerprint.iter().any(|part| part == "signal:1"),
-            "fingerprint no longer contains signal:1: {:?}",
-            capture.fingerprint
-        );
+        assert_eq!(capture.fingerprint, vec!["sync-watcher-exit", "other"]);
+        assert_eq!(recorded_tag(capture, "exit_class"), "other");
     }
 
     #[test]
@@ -8057,8 +8058,9 @@ mod tests {
         let windows_capture = windows.captures.first().expect("Windows abort captures");
         assert_eq!(
             windows_capture.fingerprint,
-            vec!["sync-watcher-exit", "other"]
+            vec!["sync-watcher-exit", "node_fatal"]
         );
+        assert_eq!(recorded_tag(windows_capture, "exit_class"), "node_fatal");
         assert!(windows_capture.message.starts_with(
             "auto-sync watcher exited unexpectedly (aborted (Node abort exit code 134)), consecutive failure #"
         ));
@@ -8703,12 +8705,10 @@ mod tests {
         assert_eq!(recorded_tag(held, "runner_fatal_class"), "heap_oom");
         assert_eq!(recorded_tag(held, "runner_fatal_source"), "node_report");
         assert_eq!(recorded_tag(held, "runner_stack_signature").len(), 16);
-        // Grouping continuity: the deferred event keeps the indeterminate-status
-        // fingerprint element and message text an immediate capture would have used.
-        assert!(held
-            .fingerprint
-            .iter()
-            .any(|part| part == "windows:status-ffffffff"));
+        // The stable class is computed before the deferred report read; the raw
+        // Windows status remains in the message and windows_exit_status tag.
+        assert_eq!(held.fingerprint, vec!["sync-watcher-exit", "minus_one"]);
+        assert_eq!(recorded_tag(held, "exit_class"), "minus_one");
         assert!(held.message.contains("0xFFFFFFFF (origin unknown)"));
         // The deferred reader OWNS the directory and removed it after reading.
         assert_eq!(
@@ -10372,12 +10372,9 @@ mod tests {
     }
 
     #[test]
-    fn the_watcher_termination_fingerprint_appends_the_dominant_cause() {
-        // Both-seams parity (HQ-DESKTOP-4T r3): the watcher route carries the
-        // dominant cause token as its fifth fingerprint element, exactly like the
-        // manual seam. Driving the recurrence shape (an AUTH class + a
-        // vault_permission_denied cause) through the real watcher capture builder
-        // yields the five tokens the manual seam produces for the same fault.
+    fn the_watcher_termination_fingerprint_stays_stable_when_cause_tags_change() {
+        // Watcher grouping uses only the exit class. Runner-error cause remains
+        // available as an aggregatable diagnostic tag, without splitting issues.
         let context = WatcherExitCaptureContext {
             runner_error_rollup: Some("AUTH:1".to_string()),
             runner_error_class: "auth",
@@ -10406,12 +10403,10 @@ mod tests {
     }
 
     #[test]
-    fn the_watcher_termination_fingerprint_appends_the_dominant_site() {
+    fn the_watcher_termination_fingerprint_stays_stable_when_site_tags_change() {
         use crate::events::SyncErrorEvent;
-        // Both-seams parity (HQ-DESKTOP-5M): the watcher route carries the dominant
-        // runner failure SITE as its sixth fingerprint element, exactly like the
-        // manual seam. Driving a (local-state) exit through the real watcher capture
-        // builder from the shared RunTotals source names the site instead of "none".
+        // Runner failure SITE remains available as an aggregatable tag, without
+        // adding a path-shaped grouping axis to watcher events.
         let mut totals = RunTotals::default();
         totals.record_error(&SyncErrorEvent {
             company: None,
@@ -10442,7 +10437,7 @@ mod tests {
         );
         assert_eq!(effects.captures.len(), 1);
         let event = &effects.captures[0];
-        // Same site tag, scope segment, and sixth fingerprint element as the manual seam.
+        // Site and scope diagnostics remain available outside the stable fingerprint.
         assert_eq!(recorded_tag(event, "runner_error_sites"), "local_state:1");
         assert_eq!(
             recorded_string_extra(event, "runner_error_scope"),
@@ -11163,7 +11158,7 @@ mod tests {
     /// (DBG_TERMINATE_PROCESS, observer alive but saw nothing, probe verifiably
     /// absent, no latch) DROPS on its first per-run occurrence — the ordinary
     /// Windows sign-out — and ESCALATES only on a repeat within the same app run,
-    /// onto a NEW fingerprint with a re-titled message.
+    /// under the same stable exit-class fingerprint with a re-titled message.
     #[test]
     fn an_unconfirmed_session_terminate_drops_first_then_escalates_within_a_run() {
         let reading = SessionEndReading {
@@ -12284,7 +12279,11 @@ mod tests {
             1,
             "the LocalLogOnly burst must not capture and must not mute the SIGKILL"
         );
-        assert_eq!(effects.captures[0].fingerprint[2], "signal:9");
+        assert_eq!(
+            effects.captures[0].fingerprint,
+            vec!["sync-watcher-exit", "sigkill"]
+        );
+        assert_eq!(recorded_tag(&effects.captures[0], "exit_class"), "sigkill");
         assert!(effects.captures[0]
             .message
             .contains("consecutive failure #1"));
@@ -12330,7 +12329,11 @@ mod tests {
             1,
             "the 126/127 exits must not capture (streak < 4) nor mute the SIGKILL"
         );
-        assert_eq!(effects.captures[0].fingerprint[2], "signal:9");
+        assert_eq!(
+            effects.captures[0].fingerprint,
+            vec!["sync-watcher-exit", "sigkill"]
+        );
+        assert_eq!(recorded_tag(&effects.captures[0], "exit_class"), "sigkill");
         assert!(effects.captures[0]
             .message
             .contains("consecutive failure #1"));
@@ -13614,6 +13617,37 @@ mod tests {
         assert_eq!(
             recorded_tag(event, "windows_fault_symbol"),
             "STATUS_STACK_BUFFER_OVERRUN"
+        );
+    }
+
+    #[test]
+    fn access_violation_watcher_exit_uses_its_stable_class_fingerprint() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0005u32 as i32),
+            None,
+            false,
+            false,
+            r"C:\Program Files\HQ\node.exe",
+            None,
+            TerminationHost::Windows,
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let event = effects
+            .captures
+            .first()
+            .expect("a Windows access violation remains visible");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync-watcher-exit", "access_violation"]
+        );
+        assert_eq!(recorded_tag(event, "exit_class"), "access_violation");
+        assert_eq!(recorded_tag(event, "windows_exit_status"), "0xC0000005");
+        assert_eq!(
+            recorded_tag(event, "windows_fault_symbol"),
+            "ACCESS_VIOLATION"
         );
     }
 

@@ -1495,7 +1495,9 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // the general Sentry egress scrubber.
         "exit_class" => Some(matches!(
             value,
-            "stack_buffer_overrun"
+            "access_violation"
+                | "runner_memory"
+                | "stack_buffer_overrun"
                 | "dbg_terminate"
                 | "minus_one"
                 | "sigterm"
@@ -3308,6 +3310,8 @@ mod tests {
     #[test]
     fn watcher_exit_diagnostics_have_closed_vocabularies() {
         for value in [
+            "access_violation",
+            "runner_memory",
             "stack_buffer_overrun",
             "dbg_terminate",
             "minus_one",

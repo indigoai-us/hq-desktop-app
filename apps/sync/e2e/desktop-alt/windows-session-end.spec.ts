@@ -423,9 +423,16 @@ describe('Windows session-end reporting boundary — source contracts (HQ-DESKTO
     );
   });
 
-  it('escalates onto a NEW fingerprint, never the benign session-terminate one', () => {
-    expect(daemonSource).toContain('fn escalated_session_terminate_payload(');
-    expect(daemonSource).toContain('"windows:session-terminate-external-killer"');
+  it('retitles repeated unconfirmed exits without changing the stable fingerprint', () => {
+    const escalation = sliceBetween(
+      daemonSource,
+      'fn escalated_session_terminate_payload(',
+      '\n}\n',
+      'escalated session-terminate payload',
+    );
+    expect(escalation).toContain('payload.message = format!(');
+    expect(escalation).not.toContain('fingerprint');
+    expect(daemonSource).toContain('let fingerprint = ["sync-watcher-exit", exit_class];');
     // The escalation reuses ONLY already-allow-listed teardown/latch tokens, so no
     // new telemetry vocabulary is introduced and nothing degrades to [Filtered].
     for (const token of [
@@ -475,7 +482,7 @@ function escalates(runCount: number): boolean {
  * The fixed part of the envelope the supervisor builds for the reported
  * HQ-DESKTOP-5J 0.10.108 shape, before the reporting-boundary decision. Matches
  * the shipped fingerprint/message/tags so the both-directions comparison proves
- * ONLY the send decision (and, on escalation, the fingerprint/title) differs.
+ * ONLY the send decision (and, on escalation, the stable-class title) differs.
  */
 function baseSessionTerminateEnvelope(): SentryEnvelope {
   return {
@@ -507,10 +514,14 @@ function baseSessionTerminateEnvelope(): SentryEnvelope {
 /**
  * Render the emitted envelope under a policy. The ONLY differences between the
  * two policies are (a) whether an unconfirmed exit is sent at all and (b), on the
- * post-fix escalation, the distinct fingerprint + re-titled message.
+ * post-fix escalation, the stable exit-class fingerprint + re-titled message.
  */
 function renderEnvelope(scenario: Scenario, policy: Policy): SentryEnvelope {
   const env = baseSessionTerminateEnvelope();
+  if (policy === 'post-fix') {
+    env.fingerprint = ['sync-watcher-exit', 'dbg_terminate'];
+    env.tags.exit_class = 'dbg_terminate';
+  }
 
   // Positive evidence suppresses under BOTH policies (unchanged behaviour).
   if (scenario.positiveEvidence) {
@@ -537,12 +548,10 @@ function renderEnvelope(scenario: Scenario, policy: Policy): SentryEnvelope {
     return env;
   }
 
-  // A repeat within the run: escalate onto a DISTINCT fingerprint with a re-titled
-  // message; the teardown diagnostics ride along as already-allow-listed tokens.
+  // A repeat within the run: emit one stable exit-class fingerprint with a re-titled
+  // message; the first unconfirmed exit was suppressed, so no benign issue exists.
   env.sent = true;
   env.level = 'error';
-  env.fingerprint = [...env.fingerprint];
-  env.fingerprint[2] = 'windows:session-terminate-external-killer';
   env.message =
     'auto-sync watcher externally terminated (Windows status 0x40010004 ' +
     `(session terminate)) ${scenario.unconfirmedRunCount} times in one app run ` +
@@ -576,18 +585,18 @@ describe('Windows session-end reporting boundary — envelope simulator (HQ-DESK
     const env = renderEnvelope(signOut, 'post-fix');
     expect(env.sent).toBe(false);
     expect(env.level).not.toBe('error');
-    // Grouping continuity: the benign fingerprint is untouched (it just no longer
-    // sends), so existing saved searches and alert rules do not move.
-    expect(env.fingerprint[2]).toBe('windows:session-terminate');
+    // The exit class is still computed consistently even though this event is
+    // suppressed as a sign-out and therefore never reaches Sentry.
+    expect(env.fingerprint).toEqual(['sync-watcher-exit', 'dbg_terminate']);
+    expect(env.tags.exit_class).toBe('dbg_terminate');
   });
 
-  it('post-fix escalates a SECOND unconfirmed exit onto a distinct fingerprint', () => {
+  it('post-fix captures a repeated unconfirmed exit under the stable class fingerprint', () => {
     const env = renderEnvelope(repeatKiller, 'post-fix');
     expect(env.sent).toBe(true);
     expect(env.level).toBe('error');
-    // A NEW fingerprint, never a reuse of the benign sign-out one.
-    expect(env.fingerprint[2]).toBe('windows:session-terminate-external-killer');
-    expect(env.fingerprint[2]).not.toBe('windows:session-terminate');
+    expect(env.fingerprint).toEqual(['sync-watcher-exit', 'dbg_terminate']);
+    expect(env.tags.exit_class).toBe('dbg_terminate');
     expect(env.message).toContain('not a sign-out');
     expect(env.message).not.toContain('consecutive failure');
     // The escalation carries the teardown diagnostics for the next investigation.

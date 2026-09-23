@@ -2753,17 +2753,22 @@ pub fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
     }
 }
 
-/// Stable, content-safe class for grouping auto-sync watcher exits. Specific
-/// Windows statuses and POSIX termination signals retain their distinct cause;
-/// a Node fatal takes the class only when no more specific supervisor/OS status
-/// is present. All remaining exits use `other` rather than embedding a raw code
-/// in the Sentry fingerprint.
+/// Stable, content-safe class for grouping auto-sync watcher exits. Evidence-backed
+/// memory deaths converge across host-specific exit encodings; otherwise specific
+/// Windows statuses and POSIX termination signals retain their class, a Node fatal
+/// takes the class when no more specific OS status is present, and remaining exits
+/// use `other` rather than embedding a raw code in the Sentry fingerprint.
 pub fn watcher_exit_class(
     code: Option<i32>,
     signal: Option<i32>,
     node_fatal: bool,
+    memory_attributed: bool,
 ) -> &'static str {
-    if code == Some(0xC000_0409u32 as i32) {
+    if memory_attributed {
+        "runner_memory"
+    } else if code == Some(0xC000_0005u32 as i32) {
+        "access_violation"
+    } else if code == Some(0xC000_0409u32 as i32) {
         "stack_buffer_overrun"
     } else if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) {
         "dbg_terminate"
@@ -4720,35 +4725,69 @@ mod tests {
     #[test]
     fn watcher_exit_class_groups_known_native_and_node_fatal_exits() {
         assert_eq!(
-            watcher_exit_class(Some(0xC000_0409u32 as i32), None, false),
+            watcher_exit_class(Some(0xC000_0005u32 as i32), None, false, false),
+            "access_violation"
+        );
+        assert_eq!(
+            watcher_exit_class(Some(0xC000_0409u32 as i32), None, false, false),
             "stack_buffer_overrun"
         );
         assert_eq!(
-            watcher_exit_class(Some(WINDOWS_SESSION_TERMINATE_EXIT), None, false),
+            watcher_exit_class(Some(WINDOWS_SESSION_TERMINATE_EXIT), None, false, false),
             "dbg_terminate"
         );
-        assert_eq!(watcher_exit_class(Some(-1), None, false), "minus_one");
         assert_eq!(
-            watcher_exit_class(None, Some(SIGTERM_SIGNAL), false),
+            watcher_exit_class(Some(-1), None, false, false),
+            "minus_one"
+        );
+        assert_eq!(
+            watcher_exit_class(None, Some(SIGTERM_SIGNAL), false, false),
             "sigterm"
         );
         assert_eq!(
-            watcher_exit_class(None, Some(SIGKILL_SIGNAL), false),
+            watcher_exit_class(None, Some(SIGKILL_SIGNAL), false, false),
             "sigkill"
         );
-        assert_eq!(watcher_exit_class(Some(1), None, true), "node_fatal");
-        assert_eq!(watcher_exit_class(Some(127), None, false), "other");
+        assert_eq!(watcher_exit_class(Some(1), None, true, false), "node_fatal");
+        assert_eq!(watcher_exit_class(Some(127), None, false, false), "other");
+    }
+
+    #[test]
+    fn watcher_exit_class_converges_only_evidence_backed_memory_deaths() {
+        let memory_deaths = [
+            (None, Some(SIGKILL_SIGNAL), false, "sigkill"),
+            (None, Some(SIGABRT_SIGNAL), false, "other"),
+            (
+                Some(0xC000_0409u32 as i32),
+                None,
+                false,
+                "stack_buffer_overrun",
+            ),
+        ];
+
+        for (code, signal, node_fatal, unproven_class) in memory_deaths {
+            assert_eq!(
+                watcher_exit_class(code, signal, node_fatal, false),
+                unproven_class,
+                "without memory evidence the host exit class stays distinct"
+            );
+            assert_eq!(
+                watcher_exit_class(code, signal, node_fatal, true),
+                "runner_memory",
+                "evidence-backed memory deaths converge across host encodings"
+            );
+        }
     }
 
     #[test]
     fn watcher_exit_fingerprint_groups_variable_unknown_statuses_by_class() {
         let first = [
             "sync-watcher-exit",
-            watcher_exit_class(Some(127), None, false),
+            watcher_exit_class(Some(127), None, false, false),
         ];
         let second = [
             "sync-watcher-exit",
-            watcher_exit_class(Some(143), None, false),
+            watcher_exit_class(Some(143), None, false, false),
         ];
         assert_eq!(first, second);
     }
