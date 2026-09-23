@@ -5,7 +5,9 @@ import {
   changeNotifyLevel,
   isMutedLevel,
   normalizeNotifyLevel,
-  notifyBellLabel,
+  muteToggleLabel,
+  toggledMuteLevel,
+  unmuteLevel,
   notifyLevelErrorMessage,
   notifyLevelFromWire,
   type NotifyLevel,
@@ -48,8 +50,9 @@ describe("notify level parsing", () => {
   });
 
   it("labels the bell", () => {
-    expect(notifyBellLabel("muted")).toBe("Notifications: Muted");
-    expect(notifyBellLabel(null)).toBe("Notifications");
+    expect(muteToggleLabel("muted")).toBe("Unmute channel");
+    expect(muteToggleLabel("all")).toBe("Mute channel");
+    expect(muteToggleLabel(null)).toBe("Mute channel");
     expect(isMutedLevel("muted")).toBe(true);
     expect(isMutedLevel("all")).toBe(false);
   });
@@ -59,6 +62,19 @@ describe("notify level parsing", () => {
     expect(notifyLevelErrorMessage({ code: "INVALID_NOTIFY_LEVEL" })).toMatch(/isn't supported/);
     expect(notifyLevelErrorMessage({ code: "http-404" })).toMatch(/doesn't support/);
     expect(notifyLevelErrorMessage({ code: "http-500", message: "boom" })).toBe("boom");
+  });
+});
+
+describe("one-click mute toggle", () => {
+  it("mutes any non-muted level", () => {
+    expect(toggledMuteLevel("all", null)).toBe("muted");
+    expect(toggledMuteLevel(null, null)).toBe("muted");
+  });
+
+  it("restores the remembered level, else mentions", () => {
+    expect(toggledMuteLevel("muted", "files")).toBe("files");
+    expect(toggledMuteLevel("muted", null)).toBe("mentions");
+    expect(unmuteLevel("muted")).toBe("mentions");
   });
 });
 

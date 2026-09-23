@@ -192,7 +192,7 @@
   } from "../settings/update-store.svelte";
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
-  import ChannelNotifyBell from "../chat/ChannelNotifyBell.svelte";
+  import ChannelMuteControl from "../chat/ChannelMuteControl.svelte";
   import {
     changeNotifyLevel,
     type NotifyLevel,
@@ -4238,8 +4238,18 @@
     }
   }
 
-  // ── Channel notification level (header bell) ─────────────────────────────
+  // ── Channel notification level (header mute control) ─────────────────────
   let notifyLevelBusy = $state(false);
+  /** channelId → last non-muted level, restored by a one-click unmute. */
+  let rememberedNotifyLevels = $state<Record<string, NotifyLevel>>({});
+
+  $effect(() => {
+    const channelId = selectedRow?.channelId?.trim() ?? "";
+    const level = selectedRow?.notifyLevel;
+    if (!channelId || !level || level === "muted") return;
+    if (rememberedNotifyLevels[channelId] === level) return;
+    rememberedNotifyLevels = { ...rememberedNotifyLevels, [channelId]: level };
+  });
 
   const showNotifyBell = $derived(
     !!selectedRow &&
@@ -7991,6 +8001,7 @@
             }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
+            onopensettings={() => openSettings("notifications")}
           />
         </div>
         {#if view === "shared-files"}
@@ -8292,8 +8303,11 @@
               {/if}
 
               {#if showNotifyBell && selectedRow}
-                <ChannelNotifyBell
+                <ChannelMuteControl
                   level={selectedRow.notifyLevel ?? null}
+                  rememberedLevel={rememberedNotifyLevels[
+                    selectedRow.channelId?.trim() ?? ""
+                  ] ?? null}
                   busy={notifyLevelBusy}
                   onchange={(level) => void changeSelectedNotifyLevel(level)}
                 />

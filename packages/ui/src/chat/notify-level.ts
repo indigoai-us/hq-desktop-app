@@ -83,11 +83,25 @@ export function isMutedLevel(level: NotifyLevel | null | undefined): boolean {
   return level === "muted";
 }
 
-/** Accessible name for the header bell. */
-export function notifyBellLabel(level: NotifyLevel | null | undefined): string {
-  return level
-    ? `Notifications: ${notifyLevelLabel(level)}`
-    : "Notifications";
+/** Accessible name for the header mute toggle. */
+export function muteToggleLabel(level: NotifyLevel | null | undefined): string {
+  return level === "muted" ? "Unmute channel" : "Mute channel";
+}
+
+/**
+ * The level a one-click unmute restores: the channel's last non-muted level,
+ * else "mentions" (the server's default for a member).
+ */
+export function unmuteLevel(remembered: NotifyLevel | null | undefined): NotifyLevel {
+  return remembered && remembered !== "muted" ? remembered : "mentions";
+}
+
+/** Target of a one-click toggle: mute, or restore the remembered level. */
+export function toggledMuteLevel(
+  current: NotifyLevel | null | undefined,
+  remembered: NotifyLevel | null | undefined,
+): NotifyLevel {
+  return current === "muted" ? unmuteLevel(remembered) : "muted";
 }
 
 /** Human copy for a failed level change. */

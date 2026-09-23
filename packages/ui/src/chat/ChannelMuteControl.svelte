@@ -1,34 +1,50 @@
 <script lang="ts">
   /**
-   * Channel-header bell: pick this channel's notification level (all / files
-   * and mentions / mentions only / muted). The host owns the optimistic paint,
-   * the server write, and the rollback (`changeNotifyLevel`); this component
-   * only renders the current level and reports a pick.
+   * Channel-header mute control. A speaker icon (speaker-slash when muted)
+   * toggles Muted against the channel's last non-muted level; the chevron (or
+   * a right-click on the speaker) opens the four levels with a check on the
+   * current one. It uses a speaker glyph so it is never confused with the
+   * titlebar inbox icon. The host owns the optimistic paint, the server write,
+   * and the rollback (`changeNotifyLevel`).
    */
   import {
     NOTIFY_LEVEL_OPTIONS,
-    notifyBellLabel,
+    muteToggleLabel,
+    notifyLevelLabel,
+    toggledMuteLevel,
     type NotifyLevel,
   } from "./notify-level";
 
   interface Props {
     level: NotifyLevel | null;
-    /** True while a change is in flight; picks are ignored. */
+    /** Last non-muted level for this channel; a one-click unmute restores it. */
+    rememberedLevel?: NotifyLevel | null;
+    /** True while a change is in flight; clicks are ignored. */
     busy?: boolean;
     onchange: (level: NotifyLevel) => void;
   }
 
-  let { level, busy = false, onchange }: Props = $props();
+  let { level, rememberedLevel = null, busy = false, onchange }: Props = $props();
 
   let open = $state(false);
   let root = $state<HTMLDivElement | null>(null);
-  let trigger = $state<HTMLButtonElement | null>(null);
+  let chevron = $state<HTMLButtonElement | null>(null);
 
   const muted = $derived(level === "muted");
 
-  function close(focusTrigger = false): void {
+  function close(focusChevron = false): void {
     open = false;
-    if (focusTrigger) trigger?.focus();
+    if (focusChevron) chevron?.focus();
+  }
+
+  function toggleMute(): void {
+    if (busy) return;
+    onchange(toggledMuteLevel(level, rememberedLevel));
+  }
+
+  function openMenu(event?: MouseEvent): void {
+    event?.preventDefault();
+    open = true;
   }
 
   function pick(next: NotifyLevel): void {
@@ -68,43 +84,51 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="notify-bell-wrap"
+  class="mute-wrap"
+  class:muted
   bind:this={root}
   onkeydown={onKeydown}
   onmousedown={(e) => e.stopPropagation()}
 >
   <button
     type="button"
-    class="notify-bell"
-    class:muted
-    bind:this={trigger}
-    data-testid="channel-notify-bell"
+    class="mute-toggle"
+    data-testid="channel-mute-toggle"
     data-level={level ?? ""}
-    aria-haspopup="menu"
-    aria-expanded={open}
-    aria-label={notifyBellLabel(level)}
-    title={notifyBellLabel(level)}
-    onclick={() => (open = !open)}
+    aria-pressed={muted}
+    aria-label={muteToggleLabel(level)}
+    title={level ? `${muteToggleLabel(level)} (now: ${notifyLevelLabel(level)})` : muteToggleLabel(level)}
+    disabled={busy}
+    onclick={toggleMute}
+    oncontextmenu={openMenu}
   >
     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+      <path
+        d="M2.75 6.25h2.2L8.25 3.5v9L4.95 9.75h-2.2v-3.5Z"
+        stroke="currentColor"
+        stroke-width="1.2"
+        stroke-linejoin="round"
+      />
       {#if muted}
-        <path
-          d="M5.2 3.6A3.6 3.6 0 0 1 11.6 6v2.6l1.2 2H5.4M3.9 10.6l.5-.9V6.9"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-        <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+        <path d="M10.5 6.25l3 3.5M13.5 6.25l-3 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
       {:else}
-        <path
-          d="M4.4 6a3.6 3.6 0 0 1 7.2 0v2.6l1.2 2H3.2l1.2-2V6Z"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linejoin="round"
-        />
+        <path d="M10.4 6a2.8 2.8 0 0 1 0 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+        <path d="M12.1 4.4a5.1 5.1 0 0 1 0 7.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
       {/if}
-      <path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+    </svg>
+  </button>
+  <button
+    type="button"
+    class="mute-chevron"
+    bind:this={chevron}
+    data-testid="channel-notify-menu-toggle"
+    aria-haspopup="menu"
+    aria-expanded={open}
+    aria-label="Channel notification level"
+    onclick={() => (open = !open)}
+  >
+    <svg viewBox="0 0 16 16" width="10" height="10" fill="none" aria-hidden="true">
+      <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
     </svg>
   </button>
 
@@ -150,34 +174,58 @@
 </div>
 
 <style>
-  .notify-bell-wrap {
+  .mute-wrap {
     position: relative;
     z-index: 21;
+    display: inline-flex;
+    align-items: stretch;
     flex: 0 0 auto;
-  }
-
-  .notify-bell {
-    appearance: none;
-    -webkit-appearance: none;
-    display: inline-grid;
-    place-items: center;
-    width: 30px;
-    height: 28px;
-    padding: 0;
     border: 1px solid transparent;
     border-radius: 8px;
     background: var(--btn-bg);
     color: var(--t2);
+  }
+
+  .mute-wrap:hover {
+    border-color: var(--line2);
+  }
+
+  .mute-wrap.muted {
+    color: var(--t3);
+  }
+
+  .mute-toggle,
+  .mute-chevron {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-grid;
+    place-items: center;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
     cursor: pointer;
   }
 
-  .notify-bell:hover {
-    border-color: var(--line2);
+  .mute-toggle {
+    width: 28px;
+    border-radius: 8px 0 0 8px;
+  }
+
+  .mute-chevron {
+    width: 18px;
+    border-radius: 0 8px 8px 0;
+  }
+
+  .mute-toggle:hover,
+  .mute-chevron:hover {
     color: var(--t1);
   }
 
-  .notify-bell.muted {
-    color: var(--t3);
+  .mute-toggle:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .notify-menu {
