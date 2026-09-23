@@ -81,4 +81,80 @@ describe('AttachmentStack', () => {
     (more as HTMLButtonElement).click();
     expect(onopen).toHaveBeenCalledOnce();
   });
+
+  it('renders a folder tile with a FOLDER badge', () => {
+    component = mount(AttachmentStack, {
+      target: host,
+      props: {
+        attachments: [
+          {
+            id: 'att_folder',
+            vaultPath: 'indigo/briefs/',
+            name: 'briefs',
+            kind: 'folder',
+            companyUid: 'cmp_indigo',
+          },
+        ],
+        senderName: 'Ada Lovelace',
+      },
+    });
+
+    const tile = host.querySelector('[data-testid="attachment-tile"]');
+    expect(tile?.getAttribute('data-kind')).toBe('folder');
+    expect(tile?.textContent).toContain('FOLDER');
+    expect(tile?.textContent).toContain('briefs');
+  });
+
+  it('renders a mixed stack with one folder badge and one file badge', () => {
+    component = mount(AttachmentStack, {
+      target: host,
+      props: {
+        attachments: [
+          {
+            id: 'att_folder',
+            vaultPath: 'indigo/briefs/',
+            name: 'briefs',
+            kind: 'folder',
+            companyUid: 'cmp_indigo',
+          },
+          att('q1.md'),
+        ],
+        senderName: 'Ada Lovelace',
+      },
+    });
+
+    const tiles = host.querySelectorAll('[data-testid="attachment-tile"]');
+    expect(tiles).toHaveLength(2);
+    expect(tiles[0]?.getAttribute('data-kind')).toBe('folder');
+    expect(tiles[0]?.textContent).toContain('FOLDER');
+    expect(tiles[1]?.getAttribute('data-kind')).toBe('file');
+    expect(tiles[1]?.textContent).toContain('MD');
+  });
+
+  it('opens Files for a folder tile instead of the picker', () => {
+    const onopen = vi.fn();
+    const onfolder = vi.fn();
+    component = mount(AttachmentStack, {
+      target: host,
+      props: {
+        attachments: [
+          {
+            id: 'att_folder',
+            vaultPath: 'indigo/briefs/',
+            name: 'briefs',
+            kind: 'folder',
+            companyUid: 'cmp_indigo',
+          },
+        ],
+        senderName: 'Ada Lovelace',
+        onopen,
+        onfolder,
+      },
+    });
+
+    (host.querySelector('[data-testid="attachment-tile"]') as HTMLButtonElement).click();
+    expect(onfolder).toHaveBeenCalledOnce();
+    expect(onfolder.mock.calls[0]?.[0]?.kind).toBe('folder');
+    expect(onopen).not.toHaveBeenCalled();
+  });
 });

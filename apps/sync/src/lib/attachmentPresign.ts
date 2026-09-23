@@ -15,7 +15,7 @@ import {
   presignUrlFromResult,
   files as filesUi,
 } from '@hq/ui';
-import type { MessageAttachment } from './messageAttachments';
+import { isFolderAttachment, type MessageAttachment } from './messageAttachments';
 
 export const MAX_ATTACHMENT_PREVIEW_BYTES = MAX_CHANNEL_FILE_PREVIEW_BYTES;
 
@@ -56,6 +56,7 @@ function invokeFn(deps?: AttachmentPresignDeps): InvokeFn {
 
 /** True when this attachment should render inline (image / pdf / text / markdown). */
 export function isInlineAttachmentPreview(attachment: MessageAttachment): boolean {
+  if (isFolderAttachment(attachment)) return false;
   const name = attachment.name;
   if (filesUi.filePreviewKind(name) === 'unknown') return false;
   const kind = attachmentPreviewKind({

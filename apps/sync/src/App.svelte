@@ -729,6 +729,14 @@
         });
         return;
       }
+    } else if (kind === 'mention') {
+      if (action === 'open') {
+        if (!data) throw new Error('Mention event is unavailable');
+        await invoke('open_desktop_alt_window', {
+          route: bannerOpenRoute('mention', data) ?? 'inbox',
+        });
+        return;
+      }
     } else if (kind === 'share') {
       if (action === 'claude') {
         const folder = config?.hqFolderPath ?? '';

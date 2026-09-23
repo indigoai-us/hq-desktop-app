@@ -15,6 +15,18 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+describe('bannerOpenRoute', () => {
+  it('maps a mention banner onto inbox:channel:<channelId>:<messageId>', () => {
+    expect(
+      bannerOpenRoute('mention', {
+        channelId: 'chn_eng',
+        eventId: 'evt_mention',
+        fromPersonUid: 'prs_ada',
+      }),
+    ).toBe('inbox:channel:chn_eng:evt_mention');
+  });
+});
+
 describe('shouldSuppressShareNotification', () => {
   it('suppresses share banners that already point at a DM event', () => {
     expect(shouldSuppressShareNotification({ dmEventId: 'evt_dm' })).toBe(true);

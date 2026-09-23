@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::messages::MessageAttachment;
+use crate::messages::{ChannelMessage, MessageAttachment};
 use crate::paths;
 
 /// A single inbound DM as returned by `GET /v1/notify/inbox`.
@@ -228,6 +228,199 @@ impl SeenChannelState {
     pub fn new() -> Self {
         SeenChannelState(Mutex::new(SeenChannelsInner::default()))
     }
+}
+
+/// Per-session mention watch: last-seen message cursor per channel plus a
+/// bounded set of message ids already considered, so a poll never re-notifies.
+pub const MENTION_SEEN_CAP: usize = 500;
+/// Notification body cap. Truncate with `chars()`, never a byte slice.
+pub const MENTION_BODY_MAX_CHARS: usize = 180;
+
+#[derive(Default)]
+pub struct MentionWatchInner {
+    pub initialized: bool,
+    /// channelId → newest event_id already considered this session.
+    pub last_event_by_channel: HashMap<String, String>,
+    /// Bounded FIFO of message ids already considered this session.
+    pub seen_message_ids: Vec<String>,
+}
+
+impl MentionWatchInner {
+    pub fn reset_for_session(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn has_seen(&self, event_id: &str) -> bool {
+        let id = event_id.trim();
+        !id.is_empty() && self.seen_message_ids.iter().any(|seen| seen == id)
+    }
+}
+
+pub struct MentionWatchState(pub Mutex<MentionWatchInner>);
+
+impl MentionWatchState {
+    pub fn new() -> Self {
+        MentionWatchState(Mutex::new(MentionWatchInner::default()))
+    }
+}
+
+/// True when `mentions[]` contains the signed-in person as `participantUid`.
+/// Text that merely contains `@Name` does not count. Empty person uid never
+/// matches.
+pub fn message_mentions_person(message: &ChannelMessage, person_uid: &str) -> bool {
+    let me = person_uid.trim();
+    if me.is_empty() {
+        return false;
+    }
+    message
+        .mentions
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .any(|mention| mention.participant_uid.trim() == me)
+}
+
+/// Own messages never count, even when they mention me. `fromPersonUid` on
+/// the wire may be the `prs_` person uid *or* the Cognito subject.
+pub fn is_self_authored(from_person_uid: &str, person_uid: &str, cognito_sub: &str) -> bool {
+    let from = from_person_uid.trim();
+    if from.is_empty() {
+        return false;
+    }
+    let person = person_uid.trim();
+    let sub = cognito_sub.trim();
+    (!person.is_empty() && from == person) || (!sub.is_empty() && from == sub)
+}
+
+/// A mention of me: structured `participantUid` match, not authored by me.
+pub fn is_mention_of_me(message: &ChannelMessage, person_uid: &str, cognito_sub: &str) -> bool {
+    !is_self_authored(&message.from_person_uid, person_uid, cognito_sub)
+        && message_mentions_person(message, person_uid)
+}
+
+pub fn newest_event_id(messages_newest_first: &[ChannelMessage]) -> Option<String> {
+    messages_newest_first
+        .iter()
+        .map(|message| message.event_id.trim())
+        .find(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+/// First poll after launch: cursor starts at the newest message so opening
+/// the app does not replay old mentions.
+pub fn seed_mention_cursor(messages_newest_first: &[ChannelMessage]) -> Option<String> {
+    newest_event_id(messages_newest_first)
+}
+
+/// Messages newer than `last_seen_event_id` in a newest-first page.
+pub fn messages_newer_than<'a>(
+    messages_newest_first: &'a [ChannelMessage],
+    last_seen_event_id: &str,
+) -> Vec<&'a ChannelMessage> {
+    let seen = last_seen_event_id.trim();
+    if seen.is_empty() {
+        return Vec::new();
+    }
+    messages_newest_first
+        .iter()
+        .take_while(|message| message.event_id != seen)
+        .collect()
+}
+
+/// Advance the per-channel last-seen cursor.
+///
+/// * `first_poll`: seed at newest, return no messages (no replay).
+/// * Known cursor: messages strictly newer than that id.
+/// * No cursor after launch (unread grew): the newest `unread_delta` rows.
+pub fn advance_mention_cursor<'a>(
+    messages_newest_first: &'a [ChannelMessage],
+    last_seen_event_id: Option<&str>,
+    unread_delta: u32,
+    first_poll: bool,
+) -> (Option<String>, Vec<&'a ChannelMessage>) {
+    let newest = newest_event_id(messages_newest_first);
+    if first_poll {
+        return (newest, Vec::new());
+    }
+    if let Some(seen) = last_seen_event_id.map(str::trim).filter(|id| !id.is_empty()) {
+        return (
+            newest.or_else(|| Some(seen.to_string())),
+            messages_newer_than(messages_newest_first, seen),
+        );
+    }
+    let n = (unread_delta as usize)
+        .max(1)
+        .min(messages_newest_first.len());
+    (newest, messages_newest_first.iter().take(n).collect())
+}
+
+/// Consider each message id at most once per session. Bounded FIFO.
+pub fn take_unseen_message_ids(event_ids: &[String], seen: &[String]) -> (Vec<String>, Vec<String>) {
+    let known: HashSet<&str> = seen.iter().map(String::as_str).collect();
+    let fresh: Vec<String> = event_ids
+        .iter()
+        .filter(|id| !id.trim().is_empty() && !known.contains(id.as_str()))
+        .cloned()
+        .collect();
+    let mut updated = seen.to_vec();
+    updated.extend(fresh.iter().cloned());
+    if updated.len() > MENTION_SEEN_CAP {
+        updated.drain(0..updated.len() - MENTION_SEEN_CAP);
+    }
+    (fresh, updated)
+}
+
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
+pub fn mention_notification_title(author: &str, channel_name: &str) -> String {
+    let author = author.trim();
+    let author = if author.is_empty() { "Someone" } else { author };
+    let channel = channel_name.trim().trim_start_matches('#');
+    let channel = if channel.is_empty() { "channel" } else { channel };
+    format!("{author} mentioned you in #{channel}")
+}
+
+pub fn mention_notification_body(body: &str) -> String {
+    truncate_chars(body.trim(), MENTION_BODY_MAX_CHARS)
+}
+
+pub fn mention_route(channel_id: &str, message_id: &str) -> String {
+    let channel = channel_id.trim();
+    let message = message_id.trim();
+    if channel.is_empty() {
+        return "inbox".to_string();
+    }
+    if message.is_empty() {
+        format!("inbox:channel:{channel}")
+    } else {
+        format!("inbox:channel:{channel}:{message}")
+    }
+}
+
+/// No notification when that channel is open and focused in the main window.
+pub fn should_suppress_mention_for_open_channel(
+    active_scope: Option<&str>,
+    channel_id: &str,
+    main_window_focused: bool,
+) -> bool {
+    if !main_window_focused {
+        return false;
+    }
+    let channel = channel_id.trim();
+    if channel.is_empty() {
+        return false;
+    }
+    let expected = format!("chan:{channel}");
+    active_scope
+        .map(str::trim)
+        .is_some_and(|scope| scope == expected)
+}
+
+pub fn should_suppress_duplicate_event(event_id: &str, already_notified: &[String]) -> bool {
+    let id = event_id.trim();
+    !id.is_empty() && already_notified.iter().any(|seen| seen == id)
 }
 
 // ── In-flight guard (separate from share-notify's so they never contend) ────────
@@ -1730,5 +1923,150 @@ mod tests {
         assert_eq!(dm.root_event_id.as_deref(), Some("evt_root"));
         let out = serde_json::to_value(&dm).expect("DmEvent serializes");
         assert_eq!(out["rootEventId"], "evt_root");
+    }
+
+    const ME: &str = "prs_01KQ2RY9VB1S105X2GZ2EPHKWY";
+    const MY_SUB: &str = "94b82448-aaaa-bbbb-cccc-ddddeeeeffff";
+
+    fn mk_channel_msg(json: &str) -> ChannelMessage {
+        serde_json::from_str(json).expect("ChannelMessage parses")
+    }
+
+    fn live_mention_json(event_id: &str, from: &str) -> String {
+        format!(
+            r#"{{
+                "eventId": "{event_id}",
+                "fromPersonUid": "{from}",
+                "fromDisplayName": "Ada",
+                "body": "hey @Stefan look at this",
+                "createdAt": "2026-09-23T12:00:00Z",
+                "direction": "in",
+                "mentions": [{{
+                    "participantUid": "prs_01KQ2RY9VB1S105X2GZ2EPHKWY",
+                    "participantType": "human",
+                    "displayName": "Stefan Johnson"
+                }}]
+            }}"#
+        )
+    }
+
+    #[test]
+    fn mention_detection_matches_participant_uid_live_shape() {
+        let mentioned = mk_channel_msg(&live_mention_json("evt_1", "prs_ada"));
+        assert!(is_mention_of_me(&mentioned, ME, MY_SUB));
+        assert!(message_mentions_person(&mentioned, ME));
+    }
+
+    #[test]
+    fn mention_detection_ignores_at_name_text_without_structured_mention() {
+        let text_only = mk_channel_msg(
+            r#"{
+                "eventId": "evt_text",
+                "fromPersonUid": "prs_ada",
+                "body": "hey @Stefan without a structured mention",
+                "createdAt": "2026-09-23T12:00:00Z",
+                "direction": "in"
+            }"#,
+        );
+        assert!(!message_mentions_person(&text_only, ME));
+        assert!(!is_mention_of_me(&text_only, ME, MY_SUB));
+    }
+
+    #[test]
+    fn mention_detection_skips_self_authored_even_when_mentions_me() {
+        let as_person = mk_channel_msg(&live_mention_json("evt_self_prs", ME));
+        assert!(!is_mention_of_me(&as_person, ME, MY_SUB));
+        assert!(is_self_authored(ME, ME, MY_SUB));
+
+        let as_sub = mk_channel_msg(&live_mention_json("evt_self_sub", MY_SUB));
+        assert!(is_self_authored(MY_SUB, ME, MY_SUB));
+        assert!(!is_mention_of_me(&as_sub, ME, MY_SUB));
+    }
+
+    #[test]
+    fn mention_cursor_first_poll_seeds_newest_without_replay() {
+        let older = mk_channel_msg(&live_mention_json("evt_old", "prs_ada"));
+        let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
+        let page = vec![newest, older];
+        let (cursor, consider) = advance_mention_cursor(&page, None, 2, true);
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert!(consider.is_empty());
+        assert_eq!(seed_mention_cursor(&page).as_deref(), Some("evt_new"));
+    }
+
+    #[test]
+    fn mention_cursor_advance_returns_messages_newer_than_last_seen() {
+        let oldest = mk_channel_msg(&live_mention_json("evt_old", "prs_ada"));
+        let mid = mk_channel_msg(&live_mention_json("evt_mid", "prs_ada"));
+        let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
+        let page = vec![newest, mid, oldest];
+        let (cursor, consider) = advance_mention_cursor(&page, Some("evt_old"), 2, false);
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert_eq!(
+            consider.iter().map(|m| m.event_id.as_str()).collect::<Vec<_>>(),
+            vec!["evt_new", "evt_mid"]
+        );
+    }
+
+    #[test]
+    fn mention_seen_set_drops_duplicate_ids() {
+        let (fresh, updated) = take_unseen_message_ids(
+            &["evt_1".into(), "evt_2".into(), "evt_1".into()],
+            &["evt_1".into()],
+        );
+        assert_eq!(fresh, vec!["evt_2".to_string()]);
+        assert_eq!(updated, vec!["evt_1".to_string(), "evt_2".to_string()]);
+        let (again, _) = take_unseen_message_ids(&["evt_2".into()], &updated);
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn mention_payload_title_body_and_route() {
+        assert_eq!(
+            mention_notification_title("Ada Lovelace", "engineering"),
+            "Ada Lovelace mentioned you in #engineering"
+        );
+        assert_eq!(
+            mention_route("chn_eng", "evt_1"),
+            "inbox:channel:chn_eng:evt_1"
+        );
+        let long: String = "é".repeat(MENTION_BODY_MAX_CHARS + 8);
+        let body = mention_notification_body(&long);
+        assert_eq!(body.chars().count(), MENTION_BODY_MAX_CHARS);
+        assert!(!body.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn mention_suppressed_when_channel_open_and_focused() {
+        assert!(should_suppress_mention_for_open_channel(
+            Some("chan:chn_eng"),
+            "chn_eng",
+            true,
+        ));
+        assert!(!should_suppress_mention_for_open_channel(
+            Some("chan:chn_eng"),
+            "chn_eng",
+            false,
+        ));
+        assert!(!should_suppress_mention_for_open_channel(
+            Some("chan:chn_other"),
+            "chn_eng",
+            true,
+        ));
+        assert!(!should_suppress_mention_for_open_channel(
+            Some("dm:prs_ada"),
+            "chn_eng",
+            true,
+        ));
+    }
+
+    #[test]
+    fn mention_duplicate_event_id_is_suppressed() {
+        assert!(should_suppress_duplicate_event(
+            "evt_1",
+            &["evt_0".into(), "evt_1".into()]
+        ));
+        assert!(!should_suppress_duplicate_event("evt_2", &["evt_1".into()]));
+        assert!(!should_suppress_duplicate_event("", &["evt_1".into()]));
     }
 }

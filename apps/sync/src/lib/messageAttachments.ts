@@ -42,8 +42,16 @@ export function attachmentStackItems<T>(items: T[]): {
   };
 }
 
-/** Short type badge for a tile (PDF, MD, PNG, FILE). */
+/** True when this attachment is a folder share (kind, or a vaultPath ending in '/'). */
+export function isFolderAttachment(attachment: MessageAttachment): boolean {
+  if ((attachment.kind ?? '').trim().toLowerCase() === 'folder') return true;
+  const path = (attachment.vaultPath ?? '').replace(/\\/g, '/');
+  return path.endsWith('/');
+}
+
+/** Short type badge for a tile (FOLDER, PDF, MD, PNG, FILE). */
 export function attachmentTypeBadge(attachment: MessageAttachment): string {
+  if (isFolderAttachment(attachment)) return 'FOLDER';
   const fromName = attachment.name.split('.').pop()?.toUpperCase() ?? '';
   if (fromName && fromName.length <= 5 && fromName !== attachment.name.toUpperCase()) {
     return fromName;

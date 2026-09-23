@@ -4,6 +4,7 @@ import { routeForNotificationPayload } from './notificationRoutes';
 export type NotificationActionKind =
   | 'dm'
   | 'share'
+  | 'mention'
   | 'update'
   | 'meeting'
   | 'session';
@@ -17,7 +18,7 @@ export function bannerOpenRoute(
   kind: NotificationActionKind,
   data: unknown,
 ): string | null {
-  if (kind === 'dm' || kind === 'share') {
+  if (kind === 'dm' || kind === 'share' || kind === 'mention') {
     return routeForNotificationPayload(data);
   }
   return null;

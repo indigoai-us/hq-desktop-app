@@ -63,6 +63,9 @@ describe('isInlineAttachmentPreview', () => {
     expect(isInlineAttachmentPreview(att('notes.md'))).toBe(true);
     expect(isInlineAttachmentPreview(att('readme.txt'))).toBe(true);
     expect(isInlineAttachmentPreview(att('archive.zip'))).toBe(false);
+    expect(
+      isInlineAttachmentPreview(att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/' })),
+    ).toBe(false);
   });
 });
 

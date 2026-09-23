@@ -271,6 +271,22 @@ pub struct ChannelMessage {
     /// payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_count: Option<u32>,
+    /// Structured @-mentions stored on the message. Match on
+    /// `participantUid`, never a `personUid` key. Absent-safe for older rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<MessageMention>>,
+}
+
+/// One structured mention on a channel message. Live wire shape:
+/// `{ "participantUid", "participantType", "displayName" }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageMention {
+    pub participant_uid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participant_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// The full channel view: its metadata + a page of messages (newest-first).
@@ -312,6 +328,20 @@ pub fn esc_query(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Build `GET /v1/notify/channels/{id}/messages` (newest-first history).
+/// Pure so the poll path and unit tests share one URL shape.
+pub fn build_channel_messages_url(base_url: &str, channel_id: &str, limit: Option<u32>) -> String {
+    let mut url = format!(
+        "{}/v1/notify/channels/{}/messages",
+        base_url.trim_end_matches('/'),
+        esc_seg(channel_id),
+    );
+    if let Some(n) = limit {
+        url.push_str(&format!("?limit={n}"));
+    }
+    url
 }
 
 pub fn esc_seg(s: &str) -> String {
@@ -682,6 +712,44 @@ mod tests {
         let v = serde_json::to_value(&m).expect("serialize");
         assert_eq!(v["rootEventId"], "evt_root");
         assert_eq!(v["replyCount"], 4);
+        assert!(m.mentions.is_none());
+    }
+
+    #[test]
+    fn channel_message_mentions_use_participant_uid_live_shape() {
+        let json = r#"{
+            "eventId": "evt_live",
+            "fromPersonUid": "94b82448-aaaa-bbbb-cccc-ddddeeeeffff",
+            "body": "hey @Stefan",
+            "createdAt": "2026-09-23T00:00:00Z",
+            "direction": "in",
+            "mentions": [{
+                "participantUid": "prs_01KQ2RY9VB1S105X2GZ2EPHKWY",
+                "participantType": "human",
+                "displayName": "Stefan Johnson"
+            }]
+        }"#;
+        let m: ChannelMessage = serde_json::from_str(json).expect("live mentions shape");
+        let mentions = m.mentions.expect("mentions present");
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(
+            mentions[0].participant_uid,
+            "prs_01KQ2RY9VB1S105X2GZ2EPHKWY"
+        );
+        assert_eq!(mentions[0].participant_type.as_deref(), Some("human"));
+        assert_eq!(mentions[0].display_name.as_deref(), Some("Stefan Johnson"));
+    }
+
+    #[test]
+    fn build_channel_messages_url_uses_existing_history_path() {
+        assert_eq!(
+            build_channel_messages_url("https://api.example.com/", "chn_eng", Some(50)),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?limit=50"
+        );
+        assert_eq!(
+            build_channel_messages_url("https://api.example.com", "chn_eng", None),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages"
+        );
     }
 
     #[test]

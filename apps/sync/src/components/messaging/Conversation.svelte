@@ -32,6 +32,7 @@
   import { filesRouteForAttachment } from '../../lib/attachmentPresign';
   import {
     isFileShareMessage,
+    isFolderAttachment,
     type MessageAttachment,
   } from '../../lib/messageAttachments';
 
@@ -187,7 +188,7 @@
   }
 
   function openAttachmentInFiles(attachment: MessageAttachment): void {
-    if (!(attachment.companyUid ?? '').trim()) {
+    if (!isFolderAttachment(attachment) && !(attachment.companyUid ?? '').trim()) {
       return;
     }
     const route = filesRouteForAttachment(attachment);
@@ -620,6 +621,7 @@
             attachments={msg.attachments ?? []}
             senderName={messageAuthor(msg)}
             onopen={() => openAttachmentPicker(msg.attachments ?? [])}
+            onfolder={openAttachmentInFiles}
           />
           {#if msg.body?.trim()}
             <p class="share-card-note">{msg.body}</p>
@@ -842,6 +844,7 @@
     attachments={pickerAttachments}
     onclose={closeAttachmentPicker}
     onselect={(index) => (previewIndex = index)}
+    onfolder={openAttachmentInFiles}
   />
 {/if}
 {#if pickerAttachments && previewIndex !== null}
