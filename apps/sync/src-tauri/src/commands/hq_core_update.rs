@@ -482,10 +482,11 @@ async fn install_hq_core_update_inner(
                 log_path: log_path.display().to_string(),
                 rescue_stderr_tail,
                 rescue_telemetry:
-                    crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
+                    crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw_with_probes(
                         &diagnostic,
                         1,
-                    ),
+                    )
+                    .await,
                 npx_resolution,
                 baseline_persisted: true,
                 baseline_retry_target: latest,
@@ -550,6 +551,9 @@ async fn install_hq_core_update_inner(
     let initial_rescue_stderr_tail =
         crate::commands::hq_core_staging::read_rescue_diagnostic_tail(&log_path)
             .unwrap_or_default();
+    let initial_rescue_output_for_telemetry =
+        crate::commands::hq_core_staging::read_raw_rescue_diagnostic_tail(&log_path)
+            .unwrap_or_else(|_| initial_log_tail.clone());
 
     let retry_requested =
         rescue_needs_managed_git_retry(initial_exit_code, &initial_rescue_stderr_tail);
@@ -636,10 +640,17 @@ async fn install_hq_core_update_inner(
         crate::commands::hq_core_staging::read_raw_rescue_diagnostic_tail(&log_path)
             .unwrap_or_else(|_| log_tail.clone());
     let rescue_attempt_number = rescue_attempt_number(retry.outcome);
-    let rescue_telemetry = crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
-        &rescue_stderr_tail,
-        rescue_attempt_number,
+    let rescue_output_for_telemetry = selected_rescue_output_for_telemetry(
+        &initial_rescue_output_for_telemetry,
+        &rescue_output_for_baseline,
+        retry.outcome,
     );
+    let rescue_telemetry =
+        crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw_with_probes(
+            rescue_output_for_telemetry,
+            rescue_attempt_number,
+        )
+        .await;
 
     let (baseline_persisted, baseline_refresh_pending) = if exit_code == 0 {
         match crate::commands::hq_core_state::persist_applied_rescue_baseline(
@@ -881,6 +892,19 @@ fn rescue_attempt_number(
     match outcome {
         crate::commands::hq_core_state::ManagedGitRetryOutcome::Succeeded => 2,
         _ => 1,
+    }
+}
+
+fn selected_rescue_output_for_telemetry<'a>(
+    initial_output: &'a str,
+    final_output: &'a str,
+    outcome: crate::commands::hq_core_state::ManagedGitRetryOutcome,
+) -> &'a str {
+    match outcome {
+        crate::commands::hq_core_state::ManagedGitRetryOutcome::Succeeded => final_output,
+        crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded
+        | crate::commands::hq_core_state::ManagedGitRetryOutcome::ManagedGitUnavailable
+        | crate::commands::hq_core_state::ManagedGitRetryOutcome::Failed => initial_output,
     }
 }
 
@@ -1304,6 +1328,28 @@ mod tests {
         );
         assert_eq!(rescue_attempt_number(ManagedGitRetryOutcome::Failed), 1);
         assert_eq!(rescue_attempt_number(ManagedGitRetryOutcome::Succeeded), 2);
+    }
+
+    #[test]
+    fn failed_managed_git_retry_telemetry_uses_first_attempt_output() {
+        use crate::commands::hq_core_state::ManagedGitRetryOutcome;
+
+        assert_eq!(
+            selected_rescue_output_for_telemetry(
+                "first attempt",
+                "second attempt",
+                ManagedGitRetryOutcome::Failed,
+            ),
+            "first attempt"
+        );
+        assert_eq!(
+            selected_rescue_output_for_telemetry(
+                "first attempt",
+                "second attempt",
+                ManagedGitRetryOutcome::Succeeded,
+            ),
+            "second attempt"
+        );
     }
 
     #[test]
