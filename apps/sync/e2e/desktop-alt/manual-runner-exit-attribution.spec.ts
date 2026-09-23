@@ -524,20 +524,31 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     expect(shapeSource).toContain('dominant.map(RunnerErrorCause::as_str).unwrap_or("none")');
   });
 
-  it('appends the dominant cause as the fifth fingerprint element at BOTH seams', () => {
-    // Manual seam (commands::sync).
-    expect(syncSource).toContain(
-      'let error_cause = totals.runner_error_causes.fingerprint_token();',
-    );
-    const manualFp = sliceBetween(
+  it('groups code-2 manual exits by termination and class while preserving other attribution', () => {
+    // Exit code 2 is the per-file-error outcome, so cause differences must not split
+    // one class into separate issues. Other termination shapes retain their original
+    // cause/site fingerprint axes.
+    const code2Fingerprint = sliceBetween(
       syncSource,
-      'let error_cause = totals.runner_error_causes.fingerprint_token();',
-      '];',
-      'manual runner-termination fingerprint',
+      'if code == Some(2) && signal.is_none() {',
+      '} else {',
+      'manual code-2 runner-termination fingerprint',
     );
-    expect(manualFp).toContain('"runner-termination"');
-    expect(manualFp).toContain('error_class,');
-    expect(manualFp).toContain('error_cause,');
+    expect(code2Fingerprint).toContain(
+      'vec!["sync-runner-exit", termination.as_str(), error_class]',
+    );
+    expect(code2Fingerprint).not.toContain('runner_error_causes.fingerprint_token()');
+    expect(code2Fingerprint).not.toContain('runner_error_sites.fingerprint_token()');
+    const otherTerminationFingerprint = sliceBetween(
+      syncSource,
+      '} else {\n        // Other termination shapes retain their existing cause/site separation.',
+      '};\n    let (tags, extras)',
+      'non-code-2 runner-termination fingerprint',
+    );
+    expect(otherTerminationFingerprint).toContain('"runner-termination"');
+    expect(otherTerminationFingerprint).toContain('error_class,');
+    expect(otherTerminationFingerprint).toContain('totals.runner_error_causes.fingerprint_token()');
+    expect(otherTerminationFingerprint).toContain('totals.runner_error_sites.fingerprint_token()');
     // Watcher seam (commands::daemon): the token is carried on the context from the
     // SAME shared rollup and validated before it enters the fingerprint.
     expect(daemonSource).toContain(
@@ -674,7 +685,7 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
     expect(identity).toContain('has_inner_upper');
   });
 
-  it('emits the site tag and the sixth fingerprint element at the manual seam', () => {
+  it('keeps the site tag while grouping code-2 exits at the manual seam', () => {
     const telemetryContext = sliceBetween(
       syncSource,
       'fn runner_exit_telemetry_context(',
@@ -683,16 +694,25 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
     );
     expect(telemetryContext).toContain('totals.runner_error_sites.tag_value()');
     expect(telemetryContext).toContain('"runner_error_sites"');
-    // The sixth fingerprint element is the dominant site token, appended after cause.
-    expect(syncSource).toContain('let error_site = totals.runner_error_sites.fingerprint_token();');
-    const manualFp = sliceBetween(
+    // Site remains available for diagnosis as a tag, but does not split code-2
+    // events. Cause and site continue to split other termination shapes.
+    const code2Fingerprint = sliceBetween(
       syncSource,
-      'let error_site = totals.runner_error_sites.fingerprint_token();',
-      '];',
-      'manual runner-termination fingerprint',
+      'if code == Some(2) && signal.is_none() {',
+      '} else {',
+      'manual code-2 runner-termination fingerprint',
     );
-    expect(manualFp).toContain('error_cause,');
-    expect(manualFp).toContain('error_site,');
+    expect(code2Fingerprint).toContain('"sync-runner-exit"');
+    expect(code2Fingerprint).not.toContain('runner_error_causes.fingerprint_token()');
+    expect(code2Fingerprint).not.toContain('runner_error_sites.fingerprint_token()');
+    const otherTerminationFingerprint = sliceBetween(
+      syncSource,
+      '} else {\n        // Other termination shapes retain their existing cause/site separation.',
+      '};\n    let (tags, extras)',
+      'non-code-2 runner-termination fingerprint',
+    );
+    expect(otherTerminationFingerprint).toContain('totals.runner_error_causes.fingerprint_token()');
+    expect(otherTerminationFingerprint).toContain('totals.runner_error_sites.fingerprint_token()');
   });
 
   it('emits the site tag and the sixth fingerprint element at the watcher seam, enum-validated', () => {
