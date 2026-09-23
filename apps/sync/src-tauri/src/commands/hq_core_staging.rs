@@ -846,10 +846,12 @@ async fn run_replace_from_staging_inner(
             log_tail: diagnostic.clone(),
             log_path: log_path.display().to_string(),
             rescue_stderr_tail: hq_telemetry::redact_core_update_diagnostic_tail(&diagnostic),
-            rescue_telemetry: crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
-                &diagnostic,
-                1,
-            ),
+            rescue_telemetry:
+                crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw_with_probes(
+                    &diagnostic,
+                    1,
+                )
+                .await,
             npx_resolution,
             baseline_persisted: true,
             baseline_retry_target: "main".to_string(),
@@ -949,10 +951,12 @@ async fn run_replace_from_staging_inner(
     let raw_rescue_diagnostic = read_raw_rescue_diagnostic_tail(&log_path).unwrap_or_default();
     let rescue_stderr_tail =
         hq_telemetry::redact_core_update_diagnostic_tail(&raw_rescue_diagnostic);
-    let rescue_telemetry = crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
-        &raw_rescue_diagnostic,
-        1,
-    );
+    let rescue_telemetry =
+        crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw_with_probes(
+            &raw_rescue_diagnostic,
+            1,
+        )
+        .await;
 
     log(
         "hq-core-staging",

@@ -405,6 +405,47 @@ impl Default for CoreUpdateRescueTelemetry {
 
 impl CoreUpdateRescueTelemetry {
     pub(crate) fn from_raw(raw: &str, attempt_number: u32) -> Self {
+        Self::from_raw_with_probe_results(
+            raw,
+            attempt_number,
+            CoreUpdateToolProbeResults::default(),
+        )
+    }
+
+    pub(crate) async fn from_raw_with_probes(raw: &str, attempt_number: u32) -> Self {
+        let initial = Self::from_raw(raw, attempt_number);
+        let child_path = paths::child_path();
+        let git = (initial.git_version == "unknown")
+            .then(|| paths::resolve_bin_on_child_path("git"))
+            .flatten();
+        let rsync = (initial.rsync_version == "unknown")
+            .then(|| paths::resolve_bin_on_child_path("rsync"))
+            .flatten();
+        let node = (initial.node_version == "unknown")
+            .then(|| paths::resolve_bin_on_child_path("node"))
+            .flatten();
+        let (git_version, rsync_version, node_version) = tokio::join!(
+            core_update_probe_tool_version(git, child_path.clone(), "git"),
+            core_update_probe_tool_version(rsync, child_path.clone(), "rsync"),
+            core_update_probe_tool_version(node, child_path, "node"),
+        );
+
+        Self::from_raw_with_probe_results(
+            raw,
+            attempt_number,
+            CoreUpdateToolProbeResults {
+                git_version,
+                rsync_version,
+                node_version,
+            },
+        )
+    }
+
+    fn from_raw_with_probe_results(
+        raw: &str,
+        attempt_number: u32,
+        probe_results: CoreUpdateToolProbeResults,
+    ) -> Self {
         let rescue_error_class = raw
             .lines()
             .find_map(core_update_rescue_error_class)
@@ -415,11 +456,16 @@ impl CoreUpdateRescueTelemetry {
             .and_then(|marker| marker.split('|').nth(1))
             .map(core_update_rescue_step_from_marker)
             .unwrap_or("unknown");
+        let rescue_step = if rescue_step == "unknown" {
+            core_update_rescue_step_from_raw(raw, rescue_error_class)
+        } else {
+            rescue_step
+        };
         let first_error_line = raw.lines().find_map(|line| {
             core_update_rescue_error_class(line).map(|_| line.trim().chars().take(240).collect())
         });
 
-        Self {
+        let mut telemetry = Self {
             rescue_step,
             rescue_error_class,
             git_source: core_update_tool_source("git"),
@@ -434,15 +480,71 @@ impl CoreUpdateRescueTelemetry {
             attempt_number: core_update_attempt_number(raw, attempt_number),
             first_error_line,
             stage_markers,
+        };
+        if telemetry.git_version == "unknown" {
+            if let Some(version) = probe_results.git_version {
+                telemetry.git_version = version;
+            }
         }
+        if telemetry.rsync_version == "unknown" {
+            if let Some(version) = probe_results.rsync_version {
+                telemetry.rsync_version = version;
+            }
+        }
+        if telemetry.node_version == "unknown" {
+            if let Some(version) = probe_results.node_version {
+                telemetry.node_version = version;
+            }
+        }
+        telemetry
     }
 }
 
-fn core_update_tool_source(name: &str) -> &'static str {
-    let resolved = paths::resolve_bin_with_kind(name);
-    if !resolved.is_resolved() {
-        return "none";
+#[derive(Debug, Default)]
+struct CoreUpdateToolProbeResults {
+    git_version: Option<String>,
+    rsync_version: Option<String>,
+    node_version: Option<String>,
+}
+
+const CORE_UPDATE_TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn core_update_probe_tool_version(
+    resolved: Option<paths::ResolvedProgram>,
+    child_path: String,
+    tool: &'static str,
+) -> Option<String> {
+    let resolved = resolved?;
+    if !resolved.is_spawnable() {
+        return None;
     }
+    let mut command = paths::tokio_spawn_command(&resolved.path, &["--version"]);
+    command.env("PATH", child_path).kill_on_drop(true);
+    let output = tokio::time::timeout(CORE_UPDATE_TOOL_PROBE_TIMEOUT, command.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut raw = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !output.stderr.is_empty() {
+        raw.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    let key = match tool {
+        "git" => "git_version",
+        "rsync" => "rsync_version",
+        "node" => "node_version",
+        _ => return None,
+    };
+    let version = core_update_probe_version(&raw, tool, key);
+    (version != "unknown").then_some(version)
+}
+
+fn core_update_tool_source(name: &str) -> &'static str {
+    let Some(resolved) = paths::resolve_bin_on_child_path(name) else {
+        return "none";
+    };
     core_update_tool_source_for_path(std::path::Path::new(&resolved.path))
 }
 
@@ -462,32 +564,66 @@ fn core_update_node_source() -> &'static str {
 }
 
 fn core_update_tool_version(raw: &str, tool: &str, key: &str) -> String {
-    if let Some(value) = raw.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix(key)
-            .and_then(|value| value.strip_prefix('='))
-            .map(str::trim)
+    core_update_tool_version_inner(raw, tool, key, false)
+}
+
+fn core_update_probe_version(raw: &str, tool: &str, key: &str) -> String {
+    core_update_tool_version_inner(raw, tool, key, true)
+}
+
+fn core_update_tool_version_inner(
+    raw: &str,
+    tool: &str,
+    key: &str,
+    allow_bare_node: bool,
+) -> String {
+    if let Some(version) = raw.lines().find_map(|line| {
+        core_update_key_value(line, key)
+            .map(core_update_safe_version)
+            .filter(|version| version != "unknown")
     }) {
-        return core_update_safe_version(value);
+        return version;
     }
 
     raw.lines()
         .find_map(|line| {
-            let line = line.trim();
-            let value = match tool {
-                "git" => line.strip_prefix("git version "),
-                "rsync" => line.strip_prefix("rsync version "),
-                "node" => line
-                    .strip_prefix("node version ")
-                    .or_else(|| line.strip_prefix("node --version"))
-                    .map(|value| value.trim_start_matches(|character: char| {
-                        matches!(character, ':' | '=' | ' ' | '\t')
-                    })),
-                _ => None,
-            }?;
-            value.split_whitespace().next().map(core_update_safe_version)
+            core_update_tool_version_token(line, tool, allow_bare_node)
+                .map(core_update_safe_version)
+                .filter(|version| version != "unknown")
         })
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn core_update_key_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let (candidate, value) = line.trim().split_once('=')?;
+    candidate
+        .trim()
+        .eq_ignore_ascii_case(key)
+        .then_some(value.trim())
+}
+
+fn core_update_tool_version_token<'a>(
+    line: &'a str,
+    tool: &str,
+    allow_bare_node: bool,
+) -> Option<&'a str> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    match tool {
+        "git" if tokens.len() >= 3 && tokens[0].eq_ignore_ascii_case("git") => tokens[1]
+            .eq_ignore_ascii_case("version")
+            .then_some(tokens[2]),
+        "rsync" if tokens.len() >= 3 && tokens[0].eq_ignore_ascii_case("rsync") => tokens[1]
+            .eq_ignore_ascii_case("version")
+            .then_some(tokens[2]),
+        "node" if tokens.len() >= 3 && tokens[0].eq_ignore_ascii_case("node") => (tokens[1]
+            .eq_ignore_ascii_case("version")
+            || tokens[1].eq_ignore_ascii_case("--version"))
+        .then_some(tokens[2]),
+        "node" if allow_bare_node && tokens.len() == 1 && tokens[0].starts_with('v') => {
+            Some(tokens[0])
+        }
+        _ => None,
+    }
 }
 
 fn core_update_safe_version(value: &str) -> String {
@@ -506,7 +642,8 @@ fn core_update_safe_version(value: &str) -> String {
 
 fn core_update_stage_markers(raw: &str) -> Vec<String> {
     let observed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    raw.lines()
+    let mut markers: Vec<String> = raw
+        .lines()
         .filter_map(|line| {
             let marker = line.trim().strip_prefix("==>")?.trim();
             let stage = core_update_stage_token(marker);
@@ -516,8 +653,11 @@ fn core_update_stage_markers(raw: &str) -> Vec<String> {
                 .unwrap_or(&observed_at);
             Some(format!("{timestamp}|{stage}"))
         })
-        .take(32)
-        .collect()
+        .collect();
+    if markers.len() > 32 {
+        markers.drain(..markers.len() - 32);
+    }
+    markers
 }
 
 fn core_update_stage_token(marker: &str) -> &'static str {
@@ -525,6 +665,8 @@ fn core_update_stage_token(marker: &str) -> &'static str {
     if marker.contains("clone") || marker.contains("cloning") {
         "clone"
     } else if marker.contains("rsync") {
+        "rsync"
+    } else if marker.contains("overlay") {
         "rsync"
     } else if marker.contains("npm") || marker.contains("npx") {
         "npm-install"
@@ -552,12 +694,43 @@ fn core_update_rescue_step_from_marker(stage: &str) -> &'static str {
     }
 }
 
+fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static str {
+    match error_class {
+        "rsync_missing" | "rsync_failed" | "rsync_partial" => return "rsync",
+        "npx_resolve_failed" | "npm_enoent" => return "npm-install",
+        _ => {}
+    }
+    if raw.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("npx failed")
+            || lower.contains("npx could not be spawned")
+            || lower.contains("npm err")
+    }) {
+        "npm-install"
+    } else if raw.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("rsync preflight failed")
+            || lower.contains("rsync status 23")
+            || lower.contains("hq_rescue_failure_kind=rsync-")
+            || lower.contains("rsync error")
+            || lower.contains("rsync failed")
+            || lower.contains("rsync broken")
+            || lower.contains("rsync partial")
+            || lower.contains("rsync exited")
+    }) {
+        "rsync"
+    } else {
+        "unknown"
+    }
+}
+
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
     let lower = line.to_ascii_lowercase();
     let trimmed = lower.trim_start();
     let diagnostic_line = trimmed.starts_with("error")
         || trimmed.starts_with("fatal")
         || trimmed.starts_with("npm err")
+        || trimmed.starts_with("npx")
         || trimmed.starts_with("hq_rescue_failure_kind=")
         || trimmed.starts_with("rsync")
         || trimmed.starts_with("could not resolve host")
@@ -569,12 +742,21 @@ fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
     if !diagnostic_line {
         return None;
     }
-    if lower.contains("clone succeeded, but checkout failed") || lower.contains("checkout failed") {
+    if lower.contains("hq_rescue_failure_kind=rsync-partial") || lower.contains("rsync status 23") {
+        Some("rsync_partial")
+    } else if lower.contains("npx failed") || lower.contains("npx could not be spawned") {
+        Some("npx_resolve_failed")
+    } else if lower.contains("clone succeeded, but checkout failed")
+        || lower.contains("checkout failed")
+    {
         Some("checkout_failed")
     } else if lower.contains("clone failed") {
         Some("clone_failed")
     } else if lower.contains("rsync-missing")
         || lower.contains("rsync preflight failed")
+            && (lower.contains("missing")
+                || lower.contains("not installed")
+                || lower.contains("not found"))
         || lower.contains("rsync is not installed")
     {
         Some("rsync_missing")
@@ -596,6 +778,14 @@ fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
         Some("tls")
     } else if lower.contains("timed out") || lower.contains("timeout") {
         Some("timeout")
+    } else if lower.contains("hq_rescue_failure_kind=rsync-failed")
+        || lower.contains("hq_rescue_failure_kind=rsync-found-but-broken")
+        || lower.contains("rsync preflight failed")
+            && !lower.contains("missing")
+            && !lower.contains("not installed")
+            && !lower.contains("not found")
+    {
+        Some("rsync_failed")
     } else {
         None
     }
@@ -604,36 +794,84 @@ fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
 fn core_update_disk_free_bucket(raw: &str) -> &'static str {
     for line in raw.lines() {
         let lower = line.to_ascii_lowercase();
-        if !(lower.contains("disk") || lower.contains("space")) || !lower.contains("free") {
+        if let Some(bucket) = core_update_explicit_disk_bucket(&lower) {
+            return bucket;
+        }
+        if !(lower.contains("disk") || lower.contains("space") || lower.contains("available"))
+            || !lower.contains("free") && !lower.contains("available")
+        {
             continue;
         }
         let tokens: Vec<&str> = lower
             .split(|character: char| !character.is_ascii_alphanumeric() && character != '.')
             .filter(|token| !token.is_empty())
             .collect();
-        for window in tokens.windows(2) {
-            let Ok(value) = window[0].parse::<f64>() else {
-                continue;
-            };
-            let gib = match window[1] {
-                "b" => value / 1024.0 / 1024.0 / 1024.0,
-                "kb" | "kib" => value / 1024.0 / 1024.0,
-                "mb" | "mib" => value / 1024.0,
-                "gb" | "gib" => value,
-                _ => continue,
-            };
-            return if gib < 1.0 {
-                "<1G"
-            } else if gib < 5.0 {
-                "1-5G"
-            } else if gib < 20.0 {
-                "5-20G"
-            } else {
-                ">20G"
-            };
+        for anchor in ["have", "available", "avail", "free"] {
+            if let Some(index) = tokens.iter().position(|token| *token == anchor) {
+                if let Some(bucket) = core_update_disk_bucket_at(&tokens, index + 1) {
+                    return bucket;
+                }
+            }
+        }
+        for index in 0..tokens.len() {
+            if let Some(bucket) = core_update_disk_bucket_at(&tokens, index) {
+                return bucket;
+            }
         }
     }
     "unknown"
+}
+
+fn core_update_explicit_disk_bucket(line: &str) -> Option<&'static str> {
+    for key in ["disk_free_bytes", "free_bytes", "available_bytes"] {
+        let Some((candidate, value)) = line.split_once('=') else {
+            continue;
+        };
+        if candidate.trim() != key {
+            continue;
+        }
+        let Ok(bytes) = value.trim().parse::<f64>() else {
+            return None;
+        };
+        return core_update_disk_bucket_from_gib(bytes / 1024.0 / 1024.0 / 1024.0);
+    }
+    None
+}
+
+fn core_update_disk_bucket_at(tokens: &[&str], index: usize) -> Option<&'static str> {
+    let token = tokens.get(index)?;
+    if let Some(split) = token.find(|character: char| character.is_ascii_alphabetic()) {
+        let (number, unit) = token.split_at(split);
+        if let Ok(value) = number.parse::<f64>() {
+            return core_update_disk_bucket_from_unit(value, unit);
+        }
+    }
+    let value = token.parse::<f64>().ok()?;
+    let unit = tokens.get(index + 1)?;
+    core_update_disk_bucket_from_unit(value, unit)
+}
+
+fn core_update_disk_bucket_from_unit(value: f64, unit: &str) -> Option<&'static str> {
+    let gib = match unit {
+        "b" | "byte" | "bytes" => value / 1024.0 / 1024.0 / 1024.0,
+        "kb" | "kib" => value / 1024.0 / 1024.0,
+        "mb" | "mib" => value / 1024.0,
+        "gb" | "gib" => value,
+        _ => return None,
+    };
+    core_update_disk_bucket_from_gib(gib)
+}
+
+fn core_update_disk_bucket_from_gib(gib: f64) -> Option<&'static str> {
+    Some(if gib < 1.0 {
+        "<1G"
+    } else if gib < 5.0 {
+        "1-5G"
+    } else if gib < 20.0 {
+        "5-20G"
+    } else {
+        ">20G"
+    })
 }
 
 fn core_update_synced_folder(raw: &str) -> &'static str {
@@ -2010,6 +2248,23 @@ fn core_update_sentry_fingerprint(
     ["desktop-core-update-failed"]
 }
 
+fn core_update_rescue_step_for_category(category: RescueFailureCategory) -> &'static str {
+    match category {
+        RescueFailureCategory::RsyncBroken | RescueFailureCategory::RsyncPartialTransfer => "rsync",
+        RescueFailureCategory::NpxResolveFailed => "npm-install",
+        _ => "unknown",
+    }
+}
+
+fn core_update_rescue_error_class_for_category(category: RescueFailureCategory) -> &'static str {
+    match category {
+        RescueFailureCategory::RsyncBroken => "rsync_failed",
+        RescueFailureCategory::RsyncPartialTransfer => "rsync_partial",
+        RescueFailureCategory::NpxResolveFailed => "npx_resolve_failed",
+        _ => "unknown",
+    }
+}
+
 fn core_update_sentry_failure_report(
     source: &'static str,
     channel: Channel,
@@ -2017,12 +2272,25 @@ fn core_update_sentry_failure_report(
     error_kind: &'static str,
     details: CoreUpdateFailureDetails<'_>,
 ) -> CoreUpdateSentryFailureReport {
-    let rescue_telemetry = details.rescue_telemetry.cloned().unwrap_or_else(|| {
+    let mut rescue_telemetry = details.rescue_telemetry.cloned().unwrap_or_else(|| {
         CoreUpdateRescueTelemetry::from_raw(
             details.rescue_stderr_tail.unwrap_or_default(),
             1 + u32::from(details.managed_git_retry.attempted()),
         )
     });
+    if rescue_telemetry.rescue_step == "unknown" {
+        let step = core_update_rescue_step_for_category(details.rescue_failure_category);
+        if step != "unknown" {
+            rescue_telemetry.rescue_step = step;
+        }
+    }
+    if rescue_telemetry.rescue_error_class == "unknown" {
+        let error_class =
+            core_update_rescue_error_class_for_category(details.rescue_failure_category);
+        if error_class != "unknown" {
+            rescue_telemetry.rescue_error_class = error_class;
+        }
+    }
     CoreUpdateSentryFailureReport {
         source,
         channel,
@@ -5656,7 +5924,7 @@ error: clone failed";
     #[test]
     fn rescue_telemetry_does_not_infer_versions_from_unstructured_output() {
         let telemetry = CoreUpdateRescueTelemetry::from_raw(
-            "source=https://github.com/indigoai-us/hq-core/releases/tag/v0.10.302\n",
+            "source=https://github.com/indigoai-us/hq-core/releases/tag/v0.10.302\nv22.17.0\n",
             1,
         );
 
@@ -5664,6 +5932,18 @@ error: clone failed";
         assert_eq!(telemetry.rsync_version, "unknown");
         assert_eq!(telemetry.node_version, "unknown");
         assert_eq!(telemetry.root_on_synced_folder, "unknown");
+    }
+
+    #[test]
+    fn rescue_version_probe_accepts_bare_node_version_output() {
+        assert_eq!(
+            core_update_tool_version("v22.17.0\n", "node", "node_version"),
+            "unknown"
+        );
+        assert_eq!(
+            core_update_probe_version("v22.17.0\n", "node", "node_version"),
+            "22.17.0"
+        );
     }
 
     #[test]
@@ -5690,7 +5970,28 @@ error: clone failed";
                 "rsync",
                 "rsync_missing",
             ),
+            (
+                "==> Rsync\nrsync preflight failed: ENOSPC",
+                "rsync",
+                "enospc",
+            ),
+            (
+                "==> Rsync\nrsync preflight failed: EACCES",
+                "rsync",
+                "eacces",
+            ),
+            (
+                "==> Rsync\nrsync preflight failed: timed out",
+                "rsync",
+                "timeout",
+            ),
             ("==> npm install\nnpm ERR! code ENOENT", "npm-install", "npm_enoent"),
+            (
+                "rsync version 3.2.7 protocol version 31\nnpm ERR! code EACCES",
+                "npm-install",
+                "eacces",
+            ),
+            ("rsync version 3.2.7 protocol version 31", "unknown", "unknown"),
             ("error: EACCES", "unknown", "eacces"),
             ("error: ENOSPC", "unknown", "enospc"),
             ("fatal: Could not resolve host", "unknown", "dns"),
@@ -5721,6 +6022,122 @@ error: clone failed";
             .stage_markers
             .iter()
             .all(|marker| !marker.contains("/Users/ada")));
+    }
+
+    #[test]
+    fn rescue_telemetry_real_output_shapes_populate_diagnostic_dimensions() {
+        let fixtures = [
+            (
+                concat!(
+                    "==> HQ root:    C:\\Users\\alice\\HQ\r\n",
+                    "==> Mode:       preserve-list (default)\r\n",
+                    "error: insufficient free space for safety snapshot (need 32 GiB, have 3 GiB).\r\n",
+                    "rsync preflight failed before any safety snapshot was allocated.\r\n",
+                    "       rsync exited with status 1.\r\n",
+                    "       rsync found at: C:\\Users\\alice\\AppData\\Local\\IndigoHQ\\toolchain\\npm-prefix\\rsync.exe\r\n",
+                    "git version 2.44.0.windows.1\r\n",
+                    "rsync version 3.2.7 protocol version 31\r\n",
+                    "node_version=22.17.0\r\n",
+                    "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken\r\n",
+                ),
+                RescueFailureCategory::RsyncBroken,
+                "rsync",
+                "rsync_failed",
+                "1-5G",
+                "2.44.0.windows.1",
+            ),
+            (
+                concat!(
+                    "==> HQ root:    C:\\Users\\alice\\HQ\r\n",
+                    "==> Mode:       preserve-list (default)\r\n",
+                    "==> Overlaying source onto HQ root ...\r\n",
+                    "rsync status 23 during overlay\r\n",
+                    "HQ_RESCUE_FAILURE_KIND=rsync-partial\r\n",
+                    "free space check: need 32 GiB, have 8 GiB\r\n",
+                    "git version 2.44.0.windows.1\r\n",
+                    "rsync version 3.2.7 protocol version 31\r\n",
+                    "node_version=22.17.0\r\n",
+                ),
+                RescueFailureCategory::RsyncPartialTransfer,
+                "rsync",
+                "rsync_partial",
+                "5-20G",
+                "2.44.0.windows.1",
+            ),
+            (
+                concat!(
+                    "==> HQ root:    /Users/alice/HQ\n",
+                    "==> Mode:       preserve-list (default)\n",
+                    "npx failed to resolve hq-rescue\n",
+                    "error: npx could not be spawned\n",
+                    "free disk: 24 GiB\n",
+                    "git version 2.44.0\n",
+                    "rsync version 3.2.7 protocol version 31\n",
+                    "node_version=22.17.0\n",
+                ),
+                RescueFailureCategory::NpxResolveFailed,
+                "npm-install",
+                "npx_resolve_failed",
+                ">20G",
+                "2.44.0",
+            ),
+        ];
+
+        for (
+            raw,
+            category,
+            expected_step,
+            expected_error_class,
+            expected_disk,
+            expected_git_version,
+        ) in fixtures
+        {
+            let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
+            assert_eq!(telemetry.rescue_step, expected_step, "raw={raw:?}");
+            assert_eq!(telemetry.git_version, expected_git_version, "raw={raw:?}");
+            assert_eq!(telemetry.rsync_version, "3.2.7", "raw={raw:?}");
+            assert_eq!(telemetry.node_version, "22.17.0", "raw={raw:?}");
+            assert_eq!(telemetry.disk_free_bucket, expected_disk, "raw={raw:?}");
+
+            let report = core_update_sentry_failure_report(
+                "automatic",
+                Channel::Release,
+                Some(1),
+                "rescue_exit",
+                CoreUpdateFailureDetails {
+                    rescue_stderr_tail: Some(raw),
+                    rescue_telemetry: Some(&telemetry),
+                    rescue_failure_category: category,
+                    npx_resolution: None,
+                    managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                },
+            );
+            assert_eq!(
+                report.rescue_telemetry.rescue_error_class, expected_error_class,
+                "raw={raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_category_fills_missing_telemetry_dimensions() {
+        let telemetry = CoreUpdateRescueTelemetry::from_raw("==> Mode: preserve-list\n", 1);
+        let report = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            Some(1),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: None,
+                rescue_telemetry: Some(&telemetry),
+                rescue_failure_category: RescueFailureCategory::RsyncBroken,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+
+        assert_eq!(report.rescue_telemetry.rescue_step, "rsync");
+        assert_eq!(report.rescue_telemetry.rescue_error_class, "rsync_failed");
     }
 
     #[test]
