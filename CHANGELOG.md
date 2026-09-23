@@ -11,6 +11,8 @@ The release moves it under the version it ships in.
 - A private folder shared as `foo/` now appears as `foo/` in the app and its
   notification instead of looking like a file.
 
+## [0.10.308] — 2026-09-23
+
 - First-run setup now retries npm dependency installs after stale caches, interrupted installs, and registry metadata that has not propagated yet.
 
 ## [0.10.307] — 2026-09-23
