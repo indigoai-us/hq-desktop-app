@@ -3475,7 +3475,14 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                 "settings_path_repair",
                 report.settings_path.repair.telemetry_value(),
             );
-            scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
+            // The class is the existing closed `non_convergence_kind` tag, so a
+            // foreign-managed shadow has one stable group independent of paths,
+            // versions, or the installer binary that happened to run.
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "install-non-convergent",
+                report.kind.telemetry_value(),
+            ]));
             // Home-redacted: the install LAYOUT is the diagnostic
             // (`~/Library/pnpm/hq` says everything); the account name in front
             // of it is personal data. The shared `before_send` scrubber only
@@ -6274,11 +6281,13 @@ pub fn report_install_failure_with_environment(
             }
             // Group on the failure's bounded signature, never on npm's exit
             // status — see `install_failure_signature`.
+            // Keep the prior failure-kind/signature distinction as one bounded
+            // class component, under the shared product + event-kind prefix.
+            let fingerprint_class = format!("{}:{}", kind.fingerprint_component(), signature);
             let fingerprint = [
                 "hq-cli-update",
                 "install-failed",
-                kind.fingerprint_component(),
-                signature.as_str(),
+                fingerprint_class.as_str(),
             ];
             scope.set_fingerprint(Some(&fingerprint));
             scope.set_extra("npm_diagnostics", npm_diagnostics.into());

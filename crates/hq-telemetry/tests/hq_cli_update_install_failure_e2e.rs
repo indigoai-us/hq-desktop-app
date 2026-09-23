@@ -29,6 +29,21 @@ fn fingerprint(event: &sentry::protocol::Event<'_>) -> Vec<String> {
         .collect()
 }
 
+fn install_failure_fingerprint(class: &str, signature: &str) -> Vec<String> {
+    vec![
+        "hq-cli-update".to_string(),
+        "install-failed".to_string(),
+        format!("{class}:{signature}"),
+    ]
+}
+
+fn assert_non_convergent_fingerprint(event: &sentry::protocol::Event<'_>, class: &str) {
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent", class]
+    );
+}
+
 fn assert_path_safe(event: &sentry::protocol::Event<'_>, forbidden: &[&str]) {
     let message = event.message.as_deref().unwrap_or_default();
     let fingerprint = fingerprint(event);
@@ -71,12 +86,7 @@ fn assert_unexpected_install_event(
     );
     assert_eq!(
         fingerprint(event),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "unexpected",
-            expected_signature
-        ]
+        install_failure_fingerprint("unexpected", expected_signature)
     );
     assert_eq!(
         event.tags.get("hq_cli_update_kind").map(String::as_str),
@@ -263,12 +273,10 @@ fn the_same_lifecycle_failure_groups_identically_across_npm_exit_statuses() {
     );
     assert_eq!(
         fingerprint(&exit_one),
-        [
-            "hq-cli-update",
-            "install-failed",
+        install_failure_fingerprint(
             "unexpected-lifecycle",
             "lifecycle:better-sqlite3:prebuild-unavailable"
-        ]
+        )
     );
     assert_eq!(
         exit_one.message.as_deref(),
@@ -381,12 +389,10 @@ fn genuinely_different_causes_keep_distinct_fingerprints() {
     );
     assert_eq!(
         fingerprint(&node_llama_cpp),
-        [
-            "hq-cli-update",
-            "install-failed",
+        install_failure_fingerprint(
             "unexpected-lifecycle",
             "lifecycle:node-llama-cpp:prebuild-unavailable"
-        ]
+        )
     );
 
     // HQ-DESKTOP-4J stays its own issue on its structured classification alone.
@@ -404,12 +410,7 @@ fn genuinely_different_causes_keep_distinct_fingerprints() {
     assert_eq!(tag(&enotdir, "exit_code"), Some("236"));
     assert_eq!(
         fingerprint(&enotdir),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "unexpected",
-            "ENOTDIR:mkdir:global-lib-node-modules"
-        ]
+        install_failure_fingerprint("unexpected", "ENOTDIR:mkdir:global-lib-node-modules")
     );
     assert_ne!(fingerprint(&enotdir), fingerprint(&better_sqlite3));
     assert_path_safe(&enotdir, &["/usr/local", "npm error"]);
@@ -547,12 +548,10 @@ fn missing_global_install_target_captures_a_path_safe_warning_with_the_diagnosti
     // Its OWN bounded fingerprint — it has left the `unexpected` catch-all group.
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
+        install_failure_fingerprint(
             "missing-global-install-target",
             "missing-global-install-target:global-lib-node-modules"
-        ]
+        )
     );
     for (key, value) in [
         ("install_failure_kind", "missing-global-install-target"),
@@ -792,12 +791,7 @@ fn errno_backed_exit_without_npm_evidence_stays_captured_for_diagnosis() {
     // arriving as a different libuv status must not open a new Sentry issue.
     assert_eq!(
         fingerprint(event),
-        vec![
-            "hq-cli-update".to_string(),
-            "install-failed".to_string(),
-            "unexpected".to_string(),
-            "none:unknown:none".to_string(),
-        ]
+        install_failure_fingerprint("unexpected", "none:unknown:none")
     );
     // HQ-DESKTOP-45 verbatim: exit 202, eacces=false, install_failure_kind
     // "unexpected", and an `npm_stderr` the org scrubber replaced with
@@ -863,10 +857,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
 
     let event = &events[0];
     assert_eq!(event.level, sentry::Level::Warning);
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
+    assert_non_convergent_fingerprint(event, "foreign-managed");
     let (hq_source, npm_source) = if cfg!(target_os = "windows") {
         ("unknown", "unknown")
     } else {
@@ -913,12 +904,7 @@ fn force_exhausted_structured_bin_collision_stays_visible_as_a_warning() {
     );
     assert_eq!(
         fingerprint(event),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "expected-bin-collision",
-            "EEXIST:unknown:bin-hq"
-        ]
+        install_failure_fingerprint("expected-bin-collision", "EEXIST:unknown:bin-hq")
     );
     assert_eq!(
         event.tags.get("install_failure_kind").map(String::as_str),
@@ -1011,12 +997,7 @@ fn second_shim_collision_is_recognized_and_names_the_shim() {
     );
     assert_eq!(
         fingerprint(&forced),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "expected-bin-collision",
-            "EEXIST:unknown:bin-hq"
-        ]
+        install_failure_fingerprint("expected-bin-collision", "EEXIST:unknown:bin-hq")
     );
     assert_eq!(
         tag(&forced, "install_failure_kind"),
@@ -1042,12 +1023,7 @@ fn third_party_lifecycle_failure_is_separately_grouped_while_owned_and_unknown_a
     assert_eq!(event.level, sentry::Level::Error);
     assert_eq!(
         fingerprint(event),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "unexpected-lifecycle",
-            "lifecycle:better-sqlite3:unknown"
-        ]
+        install_failure_fingerprint("unexpected-lifecycle", "lifecycle:better-sqlite3:unknown")
     );
     assert_eq!(
         event.tags.get("install_failure_kind").map(String::as_str),
@@ -1088,12 +1064,7 @@ fn third_party_lifecycle_failure_is_separately_grouped_while_owned_and_unknown_a
         assert_eq!(events[0].level, sentry::Level::Error);
         assert_eq!(
             fingerprint(&events[0]),
-            [
-                "hq-cli-update",
-                "install-failed",
-                "unexpected",
-                expected_signature
-            ]
+            install_failure_fingerprint("unexpected", expected_signature)
         );
         assert_ne!(
             fingerprint(&events[0]),
@@ -1173,12 +1144,10 @@ fn environment_aware_capture_carries_the_previously_missing_provenance() {
     );
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
+        install_failure_fingerprint(
             "unexpected-lifecycle",
             "lifecycle:better-sqlite3:prebuild-unavailable"
-        ]
+        )
     );
     for (key, value) in [
         ("npm_lifecycle_package", "better-sqlite3"),
@@ -1247,6 +1216,22 @@ fn malformed_probe_values_are_rejected_to_unknown_before_tagging() {
     assert_path_safe(&event, &["/Users/", "alice", "rm -rf", "nightly"]);
 }
 
+#[test]
+fn install_failure_fingerprint_groups_variable_paths_under_stable_class() {
+    let first = single_event(captured_events(|| {
+        report_install_failure(Some(1), NODE_SIX_STDERR, Some("/usr/local"))
+    }));
+    let alternate_stderr = NODE_SIX_STDERR.replace("/usr/local", "/opt/homebrew");
+    let second = single_event(captured_events(|| {
+        report_install_failure(Some(1), &alternate_stderr, Some("/opt/homebrew"))
+    }));
+
+    assert_eq!(tag(&first, "install_failure_kind"), Some("unexpected"));
+    let expected = install_failure_fingerprint("unexpected", "unattributed:non-npm:stack_frame");
+    assert_eq!(fingerprint(&first), expected);
+    assert_eq!(fingerprint(&first), fingerprint(&second));
+}
+
 /// HQ-DESKTOP-56 reconstructed end to end through the real `before_send`
 /// pipeline: the Node-6 markerless install, probed as Node 6.17.1 (ABI 48) on the
 /// user's own PATH. It must now group as `unsupported-node:6` at WARNING —
@@ -1279,12 +1264,7 @@ fn unsupported_node_capture_groups_by_major_at_warning_with_retained_provenance(
     );
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "unsupported-node",
-            "unsupported-node:6"
-        ]
+        install_failure_fingerprint("unsupported-node", "unsupported-node:6")
     );
     for (key, value) in [
         ("install_failure_kind", "unsupported-node"),
@@ -1361,12 +1341,7 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
     );
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "unexpected",
-            "unattributed:non-npm:stack_frame"
-        ]
+        install_failure_fingerprint("unexpected", "unattributed:non-npm:stack_frame")
     );
     for (key, value) in [
         ("node_version", "22.17.0"),
@@ -1431,12 +1406,7 @@ fn reported_windows_markerless_occurrence_groups_attributed_and_path_safe() {
     );
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "unexpected",
-            "unattributed:non-npm:path_like"
-        ]
+        install_failure_fingerprint("unexpected", "unattributed:non-npm:path_like")
     );
     assert_eq!(tag(&event, "npm_stderr_origin"), Some("non-npm"));
     assert_eq!(tag(&event, "npm_stderr_shapes"), Some("path_like:2"));
@@ -1543,8 +1513,8 @@ fn npm_logger_markerless_failure_is_a_distinct_attributed_subclass() {
     assert!(
         fingerprint(&event)
             .last()
-            .is_some_and(|sig| sig.starts_with("unattributed:npm-logger:")),
-        "npm-logger origin must group under its own attributed signature: {:?}",
+            .is_some_and(|class| class.starts_with("unexpected:unattributed:npm-logger:")),
+        "npm-logger origin must group under its own attributed class: {:?}",
         fingerprint(&event)
     );
     assert_path_safe(&event, &["npm error", "JSON input"]);
@@ -1571,12 +1541,10 @@ fn node_llama_cpp_missing_compiler_groups_by_toolchain_missing_cause() {
     );
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
+        install_failure_fingerprint(
             "unexpected-lifecycle",
             "lifecycle:node-llama-cpp:toolchain-missing"
-        ]
+        )
     );
     assert_eq!(tag(&event, "npm_lifecycle_package"), Some("node-llama-cpp"));
     assert_eq!(
@@ -1895,12 +1863,10 @@ fn a_lifecycle_failure_carrying_enospc_still_captures() {
     );
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
+        install_failure_fingerprint(
             "unexpected-lifecycle",
             "lifecycle:better-sqlite3:disk-space"
-        ]
+        )
     );
     assert_eq!(tag(&event, "npm_lifecycle_cause"), Some("disk-space"));
     assert_eq!(
@@ -1991,12 +1957,10 @@ fn hq_desktop_5e_postinstall_failure_carries_the_managed_retry_outcome() {
     );
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
+        install_failure_fingerprint(
             "unexpected-lifecycle",
             "lifecycle:node-llama-cpp:postinstall-script"
-        ]
+        )
     );
     // Every pre-existing 5E tag byte-identical, plus the NEW evidence-gap tag.
     for (key, value) in [
@@ -2192,12 +2156,7 @@ fn foreign_registry_e404_captures_a_path_safe_attributed_warning() {
     // Its OWN bounded fingerprint — it has left the `E404:unknown:none` catch-all.
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "foreign-registry-404",
-            "foreign-registry-404:packument"
-        ]
+        install_failure_fingerprint("foreign-registry-404", "foreign-registry-404:packument")
     );
     for (key, value) in [
         ("install_failure_kind", "foreign-registry-404"),
@@ -2256,12 +2215,7 @@ fn npmjs_origin_e404_stays_a_loud_error_under_an_attributed_signature() {
     );
     assert_eq!(
         fingerprint(&event),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "unexpected",
-            "E404:npmjs:packument"
-        ]
+        install_failure_fingerprint("unexpected", "E404:npmjs:packument")
     );
     assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
     assert_eq!(tag(&event, "npm_registry_origin"), Some("npmjs"));
@@ -2490,12 +2444,7 @@ fn an_npmjs_tarball_404_outside_the_pinned_window_stays_a_loud_attributed_error(
         );
         assert_eq!(
             fingerprint(&event),
-            [
-                "hq-cli-update",
-                "install-failed",
-                "unexpected",
-                "E404:npmjs:tarball"
-            ],
+            install_failure_fingerprint("unexpected", "E404:npmjs:tarball"),
             "{label}"
         );
         assert_eq!(
