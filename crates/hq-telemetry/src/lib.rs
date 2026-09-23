@@ -1330,7 +1330,10 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             "clone_failed"
                 | "checkout_failed"
                 | "rsync_missing"
+                | "rsync_failed"
+                | "rsync_partial"
                 | "npm_enoent"
+                | "npx_resolve_failed"
                 | "eacces"
                 | "enospc"
                 | "dns"
@@ -2603,6 +2606,9 @@ mod tests {
         for (key, value) in [
             ("rescue_step", "clone"),
             ("rescue_error_class", "clone_failed"),
+            ("rescue_error_class", "rsync_failed"),
+            ("rescue_error_class", "rsync_partial"),
+            ("rescue_error_class", "npx_resolve_failed"),
             ("exit_code", "5"),
             ("git_source", "managed"),
             ("rsync_source", "system"),

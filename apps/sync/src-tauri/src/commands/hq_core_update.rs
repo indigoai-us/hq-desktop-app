@@ -482,10 +482,11 @@ async fn install_hq_core_update_inner(
                 log_path: log_path.display().to_string(),
                 rescue_stderr_tail,
                 rescue_telemetry:
-                    crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
+                    crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw_with_probes(
                         &diagnostic,
                         1,
-                    ),
+                    )
+                    .await,
                 npx_resolution,
                 baseline_persisted: true,
                 baseline_retry_target: latest,
@@ -636,10 +637,12 @@ async fn install_hq_core_update_inner(
         crate::commands::hq_core_staging::read_raw_rescue_diagnostic_tail(&log_path)
             .unwrap_or_else(|_| log_tail.clone());
     let rescue_attempt_number = rescue_attempt_number(retry.outcome);
-    let rescue_telemetry = crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw(
-        &rescue_stderr_tail,
-        rescue_attempt_number,
-    );
+    let rescue_telemetry =
+        crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw_with_probes(
+            &rescue_output_for_baseline,
+            rescue_attempt_number,
+        )
+        .await;
 
     let (baseline_persisted, baseline_refresh_pending) = if exit_code == 0 {
         match crate::commands::hq_core_state::persist_applied_rescue_baseline(
