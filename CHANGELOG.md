@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core updates now report clearer failure details when rescue fails, including the failed stage, tool versions, and available disk space, without sending local paths.
+
 ## [0.10.306] — 2026-09-22
 
 - When the onboarding window is replaced during startup, HQ no longer counts the brief screen teardown as an abandoned sign-in attempt. Longer stays still record how long the step was visible.
