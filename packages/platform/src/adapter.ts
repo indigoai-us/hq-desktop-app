@@ -354,6 +354,8 @@ export type DmRequestAction = "accept" | "decline" | "block";
 export interface ListContactsOptions {
   /** Restrict the roster to one company (`GET /v1/notify/contacts?companyUid=`). */
   companyUid?: string | null;
+  /** US-006: when true, contacts with an agent-only last message show their preview. */
+  showBotMessages?: boolean;
 }
 
 /** Optional owner/admin scope for channel-directory listings. */

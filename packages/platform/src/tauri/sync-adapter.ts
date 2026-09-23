@@ -488,9 +488,10 @@ export function createSyncPlatformAdapter(
       // list_company_members command (GET /v1/notify/contacts?companyUid=…).
       listContacts: async (opts) => {
         const companyUid = opts?.companyUid?.trim();
+        const showBotMessages = opts?.showBotMessages ?? null;
         const result = companyUid
-          ? await call<unknown>('list_company_members', { companyUid })
-          : await call<unknown>('list_contacts');
+          ? await call<unknown>('list_company_members', { companyUid, showBotMessages })
+          : await call<unknown>('list_contacts', { showBotMessages });
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['contacts']));
       },

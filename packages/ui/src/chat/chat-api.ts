@@ -33,7 +33,7 @@ export interface ChatSidebarApi {
   /** the desktop `fetch_channel_directory` command in the desktop source. */
   fetchChannelDirectory(cursor: string | null): Promise<ChannelDirectoryFeed>;
   /** the desktop `list_contacts` command. */
-  listContacts(): Promise<ContactsResponse>;
+  listContacts(opts?: { companyUid?: string; showBotMessages?: boolean }): Promise<ContactsResponse>;
   /**
    * the desktop `list_company_members` command
    * (`GET /v1/notify/contacts?companyUid=…`) — the roster for ONE workspace.

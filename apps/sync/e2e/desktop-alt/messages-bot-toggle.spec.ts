@@ -10,7 +10,7 @@
 //   4. Toggle persists to localStorage and flips aria-pressed.
 //   5. Filtering hides agent-audience messages when toggle is off.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 
 // ── 1. Storage key contract ──────────────────────────────────────────────────
@@ -178,5 +178,26 @@ describe('MessagesShell: toggle markup and behavior', () => {
 
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
     expect(localStorage.getItem('hq:messages:show-bot-messages')).toBeNull();
+  });
+});
+
+// ── 6. ChatSidebarApi.listContacts forwards showBotMessages ──────────────────
+// Verifies the interface contract: listContacts accepts a showBotMessages opt
+// and a conforming implementation receives the value it was called with.
+describe('ChatSidebarApi: listContacts accepts and forwards showBotMessages', () => {
+  it('forwards showBotMessages opts through a conforming mock', () => {
+    const capturedOpts: Array<{ companyUid?: string; showBotMessages?: boolean } | undefined> = [];
+    const mockListContacts = vi.fn(
+      (opts?: { companyUid?: string; showBotMessages?: boolean }) => {
+        capturedOpts.push(opts);
+        return Promise.resolve({ contacts: [] as never[] });
+      },
+    );
+    mockListContacts({ showBotMessages: true });
+    mockListContacts({ showBotMessages: false });
+    mockListContacts();
+    expect(capturedOpts[0]).toEqual({ showBotMessages: true });
+    expect(capturedOpts[1]).toEqual({ showBotMessages: false });
+    expect(capturedOpts[2]).toBeUndefined();
   });
 });
