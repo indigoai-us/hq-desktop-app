@@ -54,6 +54,41 @@ describe('filesRouteForAttachment', () => {
       'files:indigo:indigo/files/archive.zip',
     );
   });
+
+  it('rejects folder open with missing companyUid, unknown company, and a parent path', () => {
+    const companies = [{ uid: 'cmp_indigo', slug: 'indigo' }];
+    expect(
+      filesRouteForAttachment(
+        att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/', companyUid: undefined }),
+        companies,
+      ),
+    ).toBeNull();
+    expect(
+      filesRouteForAttachment(
+        att('briefs', {
+          kind: 'folder',
+          vaultPath: 'indigo/briefs/',
+          companyUid: 'cmp_unknown',
+        }),
+        companies,
+      ),
+    ).toBeNull();
+    expect(
+      filesRouteForAttachment(
+        att('briefs', { kind: 'folder', vaultPath: 'indigo/../secret/' }),
+        companies,
+      ),
+    ).toBeNull();
+  });
+
+  it('maps the root folder / onto the company Files root', () => {
+    expect(
+      filesRouteForAttachment(
+        att('root', { kind: 'folder', vaultPath: '/' }),
+        [{ uid: 'cmp_indigo', slug: 'indigo' }],
+      ),
+    ).toBe('files:indigo:indigo');
+  });
 });
 
 describe('isInlineAttachmentPreview', () => {

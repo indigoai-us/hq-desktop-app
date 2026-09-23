@@ -11,6 +11,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import Conversation, { type ConversationMessage } from './Conversation.svelte';
+import { ATTACHMENT_MISSING_COMPANY } from '../../lib/attachmentPresign';
 import type { MessageAttachment } from '../../lib/messageAttachments';
 
 let host: HTMLElement;
@@ -29,13 +30,16 @@ afterEach(async () => {
   host.remove();
 });
 
-function folderAtt(): MessageAttachment {
+const COMPANIES = [{ uid: 'cmp_indigo', slug: 'indigo' }];
+
+function folderAtt(over: Partial<MessageAttachment> = {}): MessageAttachment {
   return {
     id: 'att_briefs',
     vaultPath: 'indigo/briefs/',
     name: 'briefs',
     kind: 'folder',
     companyUid: 'cmp_indigo',
+    ...over,
   };
 }
 
@@ -61,6 +65,7 @@ describe('US-004: folder tiles open Files', () => {
         messages: [shareDm([folderAtt()])],
         onsend: vi.fn(),
         onnavigatefiles,
+        companies: COMPANIES,
       },
     });
     flushSync();
@@ -71,5 +76,37 @@ describe('US-004: folder tiles open Files', () => {
     expect(onnavigatefiles).toHaveBeenCalledWith('files:indigo:indigo/briefs/');
     expect(document.querySelector('[data-testid="attachment-picker"]')).toBeNull();
     expect(document.querySelector('[data-testid="attachment-preview"]')).toBeNull();
+  });
+
+  it('shows an in-app notice and does not navigate for missing company, unknown company, or parent path', async () => {
+    const cases: MessageAttachment[] = [
+      folderAtt({ companyUid: undefined }),
+      folderAtt({ companyUid: 'cmp_unknown' }),
+      folderAtt({ vaultPath: 'indigo/../secret/' }),
+    ];
+    for (const attachment of cases) {
+      if (component) {
+        await unmount(component);
+        component = null;
+        host.replaceChildren();
+      }
+      const onnavigatefiles = vi.fn();
+      component = mount(Conversation, {
+        target: host,
+        props: {
+          messages: [shareDm([attachment])],
+          onsend: vi.fn(),
+          onnavigatefiles,
+          companies: COMPANIES,
+        },
+      });
+      flushSync();
+      (host.querySelector('[data-testid="attachment-tile"]') as HTMLButtonElement).click();
+      flushSync();
+      expect(onnavigatefiles).not.toHaveBeenCalled();
+      expect(host.querySelector('[data-testid="attachment-files-notice"]')?.textContent).toBe(
+        ATTACHMENT_MISSING_COMPANY,
+      );
+    }
   });
 });

@@ -95,18 +95,49 @@ export function companySlugForAttachment(
   return uid;
 }
 
+export type AttachmentCompany = {
+  uid?: string;
+  cloudUid?: string | null;
+  slug: string;
+};
+
+function vaultPathHasParentSegment(path: string): boolean {
+  return path.split('/').some((segment) => segment === '..');
+}
+
+function folderCompanySlug(
+  attachment: MessageAttachment,
+  companies?: ReadonlyArray<AttachmentCompany>,
+): string {
+  const uid = (attachment.companyUid ?? '').trim();
+  if (!uid) return '';
+  if (companies && companies.length > 0) {
+    const match = companies.find(
+      (row) => row.uid === uid || row.cloudUid === uid || row.slug === uid,
+    );
+    return (match?.slug ?? '').trim();
+  }
+  return companySlugForAttachment(attachment, companies).trim();
+}
+
 /** Wire string consumed by `parseDesktopRoute` / `open_desktop_alt_window`. */
 export function filesRouteForAttachment(
   attachment: MessageAttachment,
-  companies?: ReadonlyArray<{
-    uid?: string;
-    cloudUid?: string | null;
-    slug: string;
-  }>,
-): string {
-  const slug = companySlugForAttachment(attachment, companies);
+  companies?: ReadonlyArray<AttachmentCompany>,
+): string | null {
   const path = (attachment.vaultPath ?? '').trim().replace(/\\/g, '/');
-  return `files:${slug}:${path}`;
+  const folder = isFolderAttachment(attachment);
+  if (!(attachment.companyUid ?? '').trim()) return null;
+  const slug = folder
+    ? folderCompanySlug(attachment, companies)
+    : companySlugForAttachment(attachment, companies).trim();
+  if (!slug) return null;
+  if (vaultPathHasParentSegment(path)) return null;
+  if (path.startsWith('/') && path !== '/') return null;
+  if (folder && !path) return null;
+  const filesPath = folder && path === '/' ? slug : path;
+  if (!filesPath) return null;
+  return `files:${slug}:${filesPath}`;
 }
 
 function failureMessage(status: number): string {
