@@ -10131,8 +10131,8 @@ mod npm_setup_recovery_tests {
 
         assert_eq!(
             source.matches(call).count(),
-            1,
-            "setup installs must pass the resolved app-owned cache to the runner"
+            2,
+            "macOS and Windows setup installs must pass the resolved app-owned cache to the runner"
         );
     }
 
