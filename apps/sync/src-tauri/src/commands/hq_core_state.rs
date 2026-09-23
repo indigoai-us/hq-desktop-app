@@ -700,11 +700,25 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
         "npx_resolve_failed" | "npm_enoent" => return "npm-install",
         _ => {}
     }
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains("rsync") {
-        "rsync"
-    } else if lower.contains("npx") || lower.contains("npm err") {
+    if raw.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("npx failed")
+            || lower.contains("npx could not be spawned")
+            || lower.contains("npm err")
+    }) {
         "npm-install"
+    } else if raw.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("rsync preflight failed")
+            || lower.contains("rsync status 23")
+            || lower.contains("hq_rescue_failure_kind=rsync-")
+            || lower.contains("rsync error")
+            || lower.contains("rsync failed")
+            || lower.contains("rsync broken")
+            || lower.contains("rsync partial")
+            || lower.contains("rsync exited")
+    }) {
+        "rsync"
     } else {
         "unknown"
     }
@@ -730,14 +744,6 @@ fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
     }
     if lower.contains("hq_rescue_failure_kind=rsync-partial") || lower.contains("rsync status 23") {
         Some("rsync_partial")
-    } else if lower.contains("hq_rescue_failure_kind=rsync-failed")
-        || lower.contains("hq_rescue_failure_kind=rsync-found-but-broken")
-        || lower.contains("rsync preflight failed")
-            && !lower.contains("missing")
-            && !lower.contains("not installed")
-            && !lower.contains("not found")
-    {
-        Some("rsync_failed")
     } else if lower.contains("npx failed") || lower.contains("npx could not be spawned") {
         Some("npx_resolve_failed")
     } else if lower.contains("clone succeeded, but checkout failed")
@@ -772,6 +778,14 @@ fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
         Some("tls")
     } else if lower.contains("timed out") || lower.contains("timeout") {
         Some("timeout")
+    } else if lower.contains("hq_rescue_failure_kind=rsync-failed")
+        || lower.contains("hq_rescue_failure_kind=rsync-found-but-broken")
+        || lower.contains("rsync preflight failed")
+            && !lower.contains("missing")
+            && !lower.contains("not installed")
+            && !lower.contains("not found")
+    {
+        Some("rsync_failed")
     } else {
         None
     }
@@ -5956,7 +5970,28 @@ error: clone failed";
                 "rsync",
                 "rsync_missing",
             ),
+            (
+                "==> Rsync\nrsync preflight failed: ENOSPC",
+                "rsync",
+                "enospc",
+            ),
+            (
+                "==> Rsync\nrsync preflight failed: EACCES",
+                "rsync",
+                "eacces",
+            ),
+            (
+                "==> Rsync\nrsync preflight failed: timed out",
+                "rsync",
+                "timeout",
+            ),
             ("==> npm install\nnpm ERR! code ENOENT", "npm-install", "npm_enoent"),
+            (
+                "rsync version 3.2.7 protocol version 31\nnpm ERR! code EACCES",
+                "npm-install",
+                "eacces",
+            ),
+            ("rsync version 3.2.7 protocol version 31", "unknown", "unknown"),
             ("error: EACCES", "unknown", "eacces"),
             ("error: ENOSPC", "unknown", "enospc"),
             ("fatal: Could not resolve host", "unknown", "dns"),

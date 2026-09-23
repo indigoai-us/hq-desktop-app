@@ -659,17 +659,8 @@ pub fn resolve_bin(name: &str) -> String {
 pub fn resolve_bin_on_child_path(name: &str) -> Option<ResolvedProgram> {
     #[cfg(target_os = "windows")]
     {
-        for dir in std::env::split_paths(&child_path()) {
-            for candidate_name in candidate_filenames(name) {
-                let candidate = dir.join(candidate_name);
-                if is_runnable_shim(&candidate) {
-                    return Some(ResolvedProgram {
-                        path: candidate.to_string_lossy().into_owned(),
-                        kind: program_kind(candidate.to_string_lossy().as_ref()),
-                    });
-                }
-            }
-        }
+        let dirs: Vec<PathBuf> = std::env::split_paths(&child_path()).collect();
+        return select_program_in_dirs(&dirs, &candidate_filenames(name), &is_runnable_shim);
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2855,6 +2846,23 @@ mod tests {
             select_program_on_disk(&dirs, &windows_candidates("hq")),
             None
         );
+    }
+
+    #[test]
+    fn child_path_selection_prefers_a_later_spawnable_candidate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let early = tmp.path().join("early");
+        let later = tmp.path().join("later");
+        std::fs::create_dir_all(&early).unwrap();
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(early.join("git"), "posix shim\n").unwrap();
+        std::fs::write(later.join("git.exe"), "native executable\n").unwrap();
+
+        let windows_candidates = ["git.exe".to_string(), "git".to_string()];
+        let selected = select_program_on_disk(&[early, later.clone()], &windows_candidates)
+            .expect("a candidate exists");
+        assert_eq!(selected.path, later.join("git.exe").to_string_lossy());
+        assert_eq!(selected.kind, ResolvedProgramKind::Exe);
     }
 
     #[test]
