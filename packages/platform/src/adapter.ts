@@ -544,7 +544,47 @@ export function normalizeReplyThreadValue(value: unknown): ReplyThreadValue {
 export const DELETE_CHANNEL_UNSUPPORTED_MESSAGE =
   "This server doesn't support deleting channels yet.";
 
+/** Per-channel notification level (`PUT /v1/notify/channels/{id}/notify-level`). */
+export type NotifyLevel = "all" | "mentions" | "files" | "muted";
+
+/**
+ * Per-person notification preferences (`GET/PUT /v1/notify/prefs`).
+ * `pausedUntil` is an ISO-8601 instant (Z), `"forever"`, or null.
+ */
+export interface NotifyPrefs {
+  pausedUntil: string | null;
+  dmsDuringPause: boolean;
+  dms: boolean;
+  mentions: boolean;
+  files: boolean;
+  allActivity: boolean;
+  addedToChannel: boolean;
+  updatedAt?: string | null;
+}
+
+/** Envelope of both prefs routes. */
+export interface NotifyPrefsResponse {
+  prefs: NotifyPrefs;
+  paused: boolean;
+}
+
+/** Partial PUT body; the server merges it onto the stored row. */
+export type NotifyPrefsPatch = Partial<Omit<NotifyPrefs, "updatedAt">>;
+
 export interface MessagingApi {
+  /**
+   * GET /v1/notify/prefs. Optional: hosts without it hide the fine-grained
+   * notification settings. A server that predates the route answers 404
+   * (`code: "http-404"`), which callers treat as "not available yet".
+   */
+  getNotifyPrefs?(): AdapterPromise<NotifyPrefsResponse>;
+  /** PUT /v1/notify/prefs with a partial body. */
+  updateNotifyPrefs?(patch: NotifyPrefsPatch): AdapterPromise<NotifyPrefsResponse>;
+  /**
+   * PUT /v1/notify/channels/{id}/notify-level `{ level }`. Errors:
+   * 400 INVALID_NOTIFY_LEVEL, 403 CHANNEL_NOT_JOINED, 404 on older servers.
+   */
+  setChannelNotifyLevel?(channelId: string, level: NotifyLevel): AdapterPromise<Json>;
   listChannels(opts?: ListChannelsOptions): AdapterPromise<ChannelSummary[]>;
   fetchChannelDirectory(cursor?: string): AdapterPromise<Json>;
   createChannel(payload: Json): AdapterPromise<Json>;

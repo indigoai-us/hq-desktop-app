@@ -247,3 +247,22 @@ it('renders known senders and neutral unattributed channel/file activity', async
     expect(host.querySelectorAll('[data-testid="notifications-row"]')).toHaveLength(3);
   } finally { await unmount(component); host.remove(); }
 });
+
+it('links to Settings > Notifications when the host wires it', async () => {
+  const api = {
+    fetchNotifications: async () => ({notifications: []}),
+    ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}),
+  };
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const onopensettings = vi.fn();
+  const component = mount(NotificationsView, {target: host, props: {api, onopensettings}});
+  const bare = document.createElement('div'); document.body.appendChild(bare);
+  const without = mount(NotificationsView, {target: bare, props: {api}});
+  try {
+    const link = host.querySelector<HTMLButtonElement>('[data-testid="notifications-open-settings"]');
+    expect(link?.textContent?.trim()).toBe('Notification settings');
+    link!.click();
+    expect(onopensettings).toHaveBeenCalledTimes(1);
+    expect(bare.querySelector('[data-testid="notifications-open-settings"]')).toBeNull();
+  } finally {await unmount(component); await unmount(without); host.remove(); bare.remove();}
+});

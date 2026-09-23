@@ -254,6 +254,7 @@ export const PERSONAS: Record<PersonaId, ShellPersona> = {
       {
         channelId: 'chn_1',
         id: 'chn_1',
+        notifyLevel: 'all',
         name: 'general',
         scope: 'company',
         companyUid: 'cmp_indigo',

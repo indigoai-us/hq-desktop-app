@@ -81,6 +81,11 @@ export const WEB_PATHS = {
     `/v1/notify/connections/${action}`,
   markChannelRead: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/read`,
+  /** GET/PUT the caller's fine-grained notification prefs. */
+  notifyPrefs: "/v1/notify/prefs",
+  /** PUT `{ level }` — the caller's notification level for one channel. */
+  channelNotifyLevel: (id: string) =>
+    `/v1/notify/channels/${encodeURIComponent(id)}/notify-level`,
   /** GET two-way DM history. */
   dmThread: "/v1/notify/thread",
   /** POST body `{ withPersonUid }` — pair lastReadAt (US-010). */
@@ -675,6 +680,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       return this.post(WEB_PATHS.dmRequestRespond(action), { pairKey: key });
     },
     markChannelRead: (id) => this.post(WEB_PATHS.markChannelRead(id), {}),
+    getNotifyPrefs: () => this.request("GET", WEB_PATHS.notifyPrefs),
+    updateNotifyPrefs: (patch) =>
+      this.request("PUT", WEB_PATHS.notifyPrefs, patch),
+    setChannelNotifyLevel: (id, level) =>
+      this.request("PUT", WEB_PATHS.channelNotifyLevel(id), { level }),
     markDmThreadRead: async (uid) => {
       const withPersonUid = uid.trim();
       if (!withPersonUid)

@@ -23,6 +23,7 @@ import { automatedAgentJoinNoticeKey } from "../inbox/automated-notices";
 import { agentAvatarFor } from "./messaging/agent-avatars";
 import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
 import { isSetupChannel } from "./setup-channel";
+import type { NotifyLevel } from "./notify-level";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
 
@@ -83,6 +84,14 @@ export interface ConversationRow {
    * the member directory only returns the caller's own channels).
    */
   membership?: ChannelMembership;
+  /**
+   * Caller's notification level for the underlying channel. Drives the header
+   * bell and the sidebar muted indicator. Absent on DM rows, browse-only rows,
+   * and older payloads.
+   */
+  notifyLevel?: NotifyLevel | null;
+  /** Channel creator uid, when known. */
+  createdBy?: string | null;
 }
 
 /**
@@ -635,6 +644,8 @@ export function normalizeChannel(
       ? { iconUrl: channel.iconUrl }
       : {}),
     ...(channel.membership != null ? { membership: channel.membership } : {}),
+    ...(channel.notifyLevel != null ? { notifyLevel: channel.notifyLevel } : {}),
+    ...(channel.createdBy ? { createdBy: channel.createdBy } : {}),
   };
 }
 
@@ -976,7 +987,28 @@ export function directoryRowToChannel(
     memberCount: row.memberCount,
     mentionFlag: row.mentionFlag === true,
     subtitle: row.subtitle ?? null,
+    ...(row.createdBy || prev?.createdBy
+      ? { createdBy: row.createdBy ?? prev?.createdBy }
+      : {}),
+    // A row without a level keeps the one we already knew (an optimistic
+    // change, or a richer earlier payload); an explicit null clears it.
+    ...(row.notifyLevel !== undefined
+      ? { notifyLevel: row.notifyLevel }
+      : prev?.notifyLevel !== undefined
+        ? { notifyLevel: prev.notifyLevel }
+        : {}),
   };
+}
+
+/** Set one channel's notification level (optimistic change or rollback). */
+export function applyChannelNotifyLevel(
+  channels: ReadonlyArray<Channel>,
+  channelId: string,
+  level: NotifyLevel | null,
+): Channel[] {
+  return channels.map((channel) =>
+    channel.channelId === channelId ? { ...channel, notifyLevel: level } : channel,
+  );
 }
 
 /**

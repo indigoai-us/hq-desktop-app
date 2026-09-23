@@ -10,6 +10,9 @@ The release moves it under the version it ships in.
 
 - Large sync-output bursts no longer build up in HQ's memory. If the app falls
   behind, the runner waits for the app to process more output.
+- Mute a channel from the speaker icon in the channel header, or open the menu next to it to choose all messages, files and mentions, mentions only, or muted. Muted channels show a muted icon in the sidebar.
+- Settings > Notifications can pause notifications (1 hour, 8 hours, until tomorrow 8am, or indefinitely) and turn DMs, mentions, shared files, all activity, and "added to a channel" alerts on or off. You can also let DMs through while paused. These settings follow your HQ account to every device.
+- You get a notification when someone adds you to a channel. Clicking it opens the channel.
 
 ## [0.10.310] — 2026-09-23
 

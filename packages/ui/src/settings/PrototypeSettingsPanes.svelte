@@ -31,7 +31,21 @@
     startJitteredPoll,
     type MeetingPermissionsSnapshot,
   } from "@hq/platform";
-  import type { PlatformAdapter } from "@hq/platform";
+  import type { NotifyPrefs, NotifyPrefsPatch, PlatformAdapter } from "@hq/platform";
+  import {
+    PAUSE_CHOICES,
+    PREF_TOGGLES,
+    applyPrefsPatch,
+    describePause,
+    isPauseActive,
+    normalizeNotifyPrefs,
+    pausedUntilFor,
+    prefsFailureState,
+    prefsSaveErrorMessage,
+    type PauseChoice,
+    type PrefToggleKey,
+    type PrefsLoadState,
+  } from "./notify-prefs-model";
   import type { Workspace } from "../chat/workspaces.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import {
@@ -371,6 +385,89 @@
     } else if (dockAuthoritativeValue !== undefined) {
       patch({ showInDock: dockAuthoritativeValue });
     }
+  }
+
+  // ── Server notification prefs (GET/PUT /v1/notify/prefs) ──────────────────
+  // The local `dmNotifications` switch above stays the master override for
+  // this Mac; these prefs follow the account across devices.
+  let notifyPrefsState = $state<PrefsLoadState>({ kind: "loading" });
+  let notifyPrefsSaving = $state(false);
+  let notifyPrefsError = $state<string | null>(null);
+  let notifyPrefsLoadSeq = 0;
+
+  async function loadNotifyPrefs(): Promise<void> {
+    const seq = ++notifyPrefsLoadSeq;
+    const get = adapter?.messaging?.getNotifyPrefs;
+    if (!get) {
+      notifyPrefsState = { kind: "unavailable" };
+      return;
+    }
+    notifyPrefsState = { kind: "loading" };
+    try {
+      const res = await get();
+      if (seq !== notifyPrefsLoadSeq) return;
+      if (!res.ok) {
+        notifyPrefsState = prefsFailureState(res);
+        return;
+      }
+      const prefs = normalizeNotifyPrefs(res.value);
+      notifyPrefsState = prefs
+        ? { kind: "ready", prefs }
+        : { kind: "error", message: "Couldn't read notification settings." };
+    } catch (err) {
+      if (seq !== notifyPrefsLoadSeq) return;
+      notifyPrefsState = {
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  $effect(() => {
+    if (section !== "notifications") return;
+    void sessionGeneration;
+    void adapter;
+    void loadNotifyPrefs();
+  });
+
+  /** Optimistic PUT: paint the patch, roll back on failure. */
+  async function saveNotifyPrefs(patch: NotifyPrefsPatch): Promise<void> {
+    const put = adapter?.messaging?.updateNotifyPrefs;
+    if (notifyPrefsState.kind !== "ready" || !put || notifyPrefsSaving) return;
+    const previous: NotifyPrefs = notifyPrefsState.prefs;
+    notifyPrefsState = { kind: "ready", prefs: applyPrefsPatch(previous, patch) };
+    notifyPrefsSaving = true;
+    notifyPrefsError = null;
+    try {
+      const res = await put(patch);
+      if (!res.ok) {
+        notifyPrefsState = { kind: "ready", prefs: previous };
+        notifyPrefsError = prefsSaveErrorMessage(res);
+        return;
+      }
+      const saved = normalizeNotifyPrefs(res.value);
+      if (saved) notifyPrefsState = { kind: "ready", prefs: saved };
+    } catch (err) {
+      notifyPrefsState = { kind: "ready", prefs: previous };
+      notifyPrefsError = err instanceof Error ? err.message : String(err);
+    } finally {
+      notifyPrefsSaving = false;
+    }
+  }
+
+  function toggleNotifyPref(key: PrefToggleKey): void {
+    if (notifyPrefsState.kind !== "ready") return;
+    void saveNotifyPrefs({ [key]: !notifyPrefsState.prefs[key] });
+  }
+
+  function choosePause(choice: PauseChoice): void {
+    void saveNotifyPrefs({ pausedUntil: pausedUntilFor(choice) });
+  }
+
+  function pauseChoiceSelected(choice: PauseChoice, pausedUntil: string | null): boolean {
+    if (choice === "off") return !isPauseActive(pausedUntil);
+    if (choice === "forever") return pausedUntil === "forever";
+    return false;
   }
 
   function pending(control: string): boolean {
@@ -1143,6 +1240,42 @@
     {/if}
     <div class="set-row"><div><div class="sn">Share notifications</div><div class="sd">Show file-share activity from teammates</div></div><button type="button" class="toggle" class:on={native.shareNotifications} role="switch" aria-checked={native.shareNotifications} aria-label="Share notifications" disabled={!nativeLoaded || pending("share-notifications")} onclick={() => void toggleNativeBoolean("share-notifications", "shareNotifications")}></button></div>
     <div class="set-row"><div><div class="sn">DM notifications</div><div class="sd">Show direct-message activity in the native HQ surfaces</div></div><button type="button" class="toggle" class:on={native.dmNotifications} role="switch" aria-checked={native.dmNotifications} aria-label="DM notifications" disabled={!nativeLoaded || pending("dm-notifications")} onclick={() => void toggleNativeBoolean("dm-notifications", "dmNotifications")}></button></div>
+    {#if native.dmNotifications === false}
+      <p class="settings-note" data-testid="notify-prefs-master-off">DM notifications are off on this Mac, so HQ shows no message notifications here. The settings below still apply on your other devices.</p>
+    {/if}
+    <div class="set-subhead" data-testid="notify-prefs-section">
+      <div class="sn">Notify me about</div>
+      <div class="sd">Saved to your HQ account and used on every device</div>
+    </div>
+    {#if notifyPrefsState.kind === "loading"}
+      <p class="settings-note" data-testid="notify-prefs-loading">Loading notification settings…</p>
+    {:else if notifyPrefsState.kind === "unavailable"}
+      <p class="settings-note" data-testid="notify-prefs-unavailable">Notification settings aren't available on this server yet.</p>
+    {:else if notifyPrefsState.kind === "error"}
+      <div class="set-row">
+        <div><div class="sn">Notification settings</div><div class="sd" role="alert" data-testid="notify-prefs-error">{notifyPrefsState.message}</div></div>
+        <button type="button" class="chip quiet" onclick={() => void loadNotifyPrefs()}>Try again</button>
+      </div>
+    {:else}
+      {@const current = notifyPrefsState.prefs}
+      <div class="set-row">
+        <div><div class="sn">Pause notifications</div><div class="sd" data-testid="notify-prefs-pause-status">{describePause(current.pausedUntil)}</div></div>
+        <div class="theme-pills pause-pills" role="radiogroup" aria-label="Pause notifications">
+          {#each PAUSE_CHOICES as choice (choice.id)}
+            <button type="button" class="chip" class:on={pauseChoiceSelected(choice.id, current.pausedUntil)} role="radio" aria-checked={pauseChoiceSelected(choice.id, current.pausedUntil)} data-testid={`notify-pause-${choice.id}`} disabled={notifyPrefsSaving} onclick={() => choosePause(choice.id)}>{choice.label}</button>
+          {/each}
+        </div>
+      </div>
+      {#each PREF_TOGGLES as toggle (toggle.key)}
+        <div class="set-row">
+          <div><div class="sn">{toggle.label}</div><div class="sd">{toggle.description}</div></div>
+          <button type="button" class="toggle" class:on={current[toggle.key]} role="switch" aria-checked={current[toggle.key]} aria-label={toggle.label} data-testid={`notify-pref-${toggle.key}`} disabled={notifyPrefsSaving} onclick={() => toggleNotifyPref(toggle.key)}></button>
+        </div>
+      {/each}
+      {#if notifyPrefsError}
+        <p class="settings-error" role="alert" data-testid="notify-prefs-save-error">{notifyPrefsError}</p>
+      {/if}
+    {/if}
     {#if canTray && notifPermission && notifPermission !== "unknown" && notifPermission !== "unsupported"}
       <div class="set-row">
         <div><div class="sn">System permission</div><div class="sd">{notifPermission === "granted" ? "Your system is allowing notifications from HQ" : notifPermission === "denied" ? "Blocked by system settings — open Notification Settings to allow" : "Not enabled yet — allow to see message alerts"}{#if notifPermissionError}<div class="sd" role="alert" data-testid="settings-notification-permission-error">{notifPermissionError}</div>{/if}</div></div>
@@ -1704,6 +1837,13 @@
     gap: 6px;
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+  .pause-pills {
+    max-width: 60%;
+  }
+  .set-subhead {
+    padding: 18px 16px 6px;
+    border-top: 1px solid var(--line);
   }
 
   .update-row-end {

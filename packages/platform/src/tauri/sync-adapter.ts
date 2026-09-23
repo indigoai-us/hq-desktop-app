@@ -11,6 +11,7 @@ import {
   type AdapterPromise,
   type ChannelSummary,
   type Json,
+  type NotifyPrefsResponse,
   type PlatformAdapter,
   type VersionProbe,
   type WhoAmI,
@@ -504,6 +505,30 @@ export function createSyncPlatformAdapter(
       respondDmRequest: ({ pairKey, action }) =>
         call('respond_dm_request', { pairKey, action }),
       markChannelRead: (id) => call('mark_channel_read', { channelId: id }),
+      // Fine-grained notification prefs go straight to hq-pro through the
+      // authenticated fetch seam. A successful write also drops the native
+      // poller's cached copy so a new pause applies on the next poll.
+      getNotifyPrefs: () => hqProJson('GET', WEB_PATHS.notifyPrefs),
+      updateNotifyPrefs: async (patch) => {
+        const result = await hqProJson<NotifyPrefsResponse>(
+          'PUT',
+          WEB_PATHS.notifyPrefs,
+          patch,
+        );
+        if (result.ok) {
+          // Best-effort: the write already landed, so a failed cache drop
+          // (older native build, IPC error) must not turn it into a failure.
+          // The native cache expires on its own within 30s.
+          try {
+            await call('invalidate_notify_prefs_cache');
+          } catch {
+            /* ignore */
+          }
+        }
+        return result;
+      },
+      setChannelNotifyLevel: (channelId, level) =>
+        hqProJson('PUT', WEB_PATHS.channelNotifyLevel(channelId), { level }),
       markDmThreadRead: (personUid) =>
         call('mark_dm_thread_read', { withPersonUid: personUid }),
       searchMessages: async (q, opts) => {

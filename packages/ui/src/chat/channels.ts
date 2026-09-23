@@ -7,6 +7,8 @@
 // components) makes it unit-testable without a DOM — mirrors lib/dmRequests.ts
 // and lib/recipientPicker.ts. The components own the invoke calls + rendering.
 
+import type { NotifyLevel } from "./notify-level";
+
 /** A channel's posting policy — who may post into it. Tolerant of server
  * additions: the UI only branches on the values it knows. */
 export type ChannelPostPolicy = "all" | "owner" | string;
@@ -44,6 +46,9 @@ export interface Channel {
   postPolicy?: ChannelPostPolicy;
   visibility?: ChannelVisibility;
   membership?: ChannelMembership;
+  /** Caller's resolved notification level (`membership.notifyLevel`). Null
+   * for browse-only rows; absent on older servers. */
+  notifyLevel?: NotifyLevel | null;
   /** Unread message count for this channel (drives the left-rail badge). */
   unread?: number;
   /** Member count (shown on the header member-count button). */
@@ -64,6 +69,8 @@ export interface Channel {
    * payload for every scope; used as a fallback ordering signal for group DMs,
    * which ship no activity timestamp (`mergeConversations`). */
   createdAt?: string | null;
+  /** Channel creator uid, when the server sent it. */
+  createdBy?: string | null;
   /** Group-DM participant roster (the OTHER members — caller excluded),
    * server-supplied on the list endpoint so an unnamed group DM can be named by
    * its people ("Stefan, Hassaan"). Absent for named scopes and on older server

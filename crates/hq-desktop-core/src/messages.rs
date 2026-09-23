@@ -73,7 +73,7 @@ pub struct RequestsResponse {
 /// fields are ignored. `company_uid` is present only for company/project-scoped
 /// channels. Mirrors the TS `Channel` shape in `src/lib/channels.ts`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "ChannelWire")]
 pub struct Channel {
     pub channel_id: String,
     #[serde(default)]
@@ -97,13 +97,9 @@ pub struct Channel {
     /// Caller's membership: "joined" | "invited" | "none".
     ///
     /// Newer servers send a membership object while older ones sent this
-    /// string directly. Normalize both wire shapes here so all desktop
-    /// consumers retain the existing string contract.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_membership"
-    )]
+    /// string directly. `ChannelWire` normalizes both wire shapes so all
+    /// desktop consumers retain the existing string contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership: Option<String>,
     #[serde(
         default,
@@ -129,27 +125,114 @@ pub struct Channel {
     /// unnamed group DM by its people. Present only for group-scoped channels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ChannelParticipant>>,
+    /// Caller's resolved notification level ("all" | "mentions" | "files" |
+    /// "muted"), read from `membership.notifyLevel`. `None` for browse-only
+    /// rows and older servers. Serialized flat so the webview sees it as
+    /// `notifyLevel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_level: Option<String>,
+    /// How the caller joined (`membership.source`): "explicit" |
+    /// "company-auto" | "company". Company joins never raise an "added"
+    /// notification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_source: Option<String>,
+    /// Channel creator uid, so a channel the caller made is never announced
+    /// to them as "added".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
-fn deserialize_membership<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum MembershipWire {
-        Legacy(String),
-        Current {
-            #[serde(default)]
-            joined: bool,
-        },
-    }
+/// Deserialization shape for [`Channel`]. The server's `membership` is either
+/// a legacy string or an object (`{ joined, notifyLevel, source, ... }`); the
+/// object's extra fields are lifted onto the channel here. The flat
+/// `notifyLevel` / `membershipSource` keys are what [`Channel`] serializes, so
+/// a round-trip through the webview keeps them.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelWire {
+    channel_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    scope: String,
+    #[serde(default)]
+    company_uid: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    company_name: Option<String>,
+    #[serde(default)]
+    post_policy: Option<String>,
+    #[serde(default)]
+    visibility: Option<String>,
+    #[serde(default)]
+    membership: Option<serde_json::Value>,
+    #[serde(default, alias = "unreadCount")]
+    unread: Option<u32>,
+    #[serde(default)]
+    member_count: Option<u32>,
+    #[serde(default)]
+    last_activity_at: Option<String>,
+    #[serde(default)]
+    last_message_at: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    members: Option<Vec<ChannelParticipant>>,
+    #[serde(default)]
+    notify_level: Option<String>,
+    #[serde(default)]
+    membership_source: Option<String>,
+    #[serde(default)]
+    created_by: Option<String>,
+}
 
-    let membership = Option::<MembershipWire>::deserialize(deserializer)?;
-    Ok(membership.map(|membership| match membership {
-        MembershipWire::Legacy(value) => value,
-        MembershipWire::Current { joined } => if joined { "joined" } else { "invited" }.to_string(),
-    }))
+impl From<ChannelWire> for Channel {
+    fn from(wire: ChannelWire) -> Self {
+        let object = wire.membership.as_ref().and_then(|m| m.as_object());
+        let object_str = |key: &str| {
+            object
+                .and_then(|o| o.get(key))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let membership = match &wire.membership {
+            Some(serde_json::Value::String(value)) => Some(value.clone()),
+            Some(serde_json::Value::Object(o)) => Some(
+                if o.get("joined").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    "joined"
+                } else {
+                    "invited"
+                }
+                .to_string(),
+            ),
+            _ => None,
+        };
+        let notify_level = object_str("notifyLevel").or(wire.notify_level);
+        let membership_source = object_str("source").or(wire.membership_source);
+        Channel {
+            channel_id: wire.channel_id,
+            name: wire.name,
+            scope: wire.scope,
+            company_uid: wire.company_uid,
+            project_id: wire.project_id,
+            company_name: wire.company_name,
+            post_policy: wire.post_policy,
+            visibility: wire.visibility,
+            membership,
+            unread: wire.unread,
+            member_count: wire.member_count,
+            last_activity_at: wire.last_activity_at,
+            last_message_at: wire.last_message_at,
+            created_at: wire.created_at,
+            members: wire.members,
+            notify_level,
+            membership_source,
+            created_by: wire.created_by,
+        }
+    }
 }
 
 /// A group-DM participant as returned on the channels list — enough to label the
@@ -811,6 +894,51 @@ mod tests {
         assert_eq!(c.scope, "company");
         assert!(c.company_uid.is_none());
         assert!(c.unread.is_none());
+    }
+
+    #[test]
+    fn channel_lifts_notify_level_and_source_from_membership_object() {
+        // Live /v1/notify/channels row shape (2026-09-23).
+        let json = r#"{
+            "channelId": "chn_1", "name": "hq-sentry", "scope": "company",
+            "createdBy": "prs_owner",
+            "membership": {
+                "joined": true, "following": true, "muted": false,
+                "notifyLevel": "mentions", "role": "member",
+                "source": "explicit", "lastReadAt": null
+            }
+        }"#;
+        let c: Channel = serde_json::from_str(json).expect("Channel parses");
+        assert_eq!(c.membership.as_deref(), Some("joined"));
+        assert_eq!(c.notify_level.as_deref(), Some("mentions"));
+        assert_eq!(c.membership_source.as_deref(), Some("explicit"));
+        assert_eq!(c.created_by.as_deref(), Some("prs_owner"));
+
+        // Serialized flat for the webview, and a round-trip keeps the fields.
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["notifyLevel"], "mentions");
+        assert_eq!(v["membership"], "joined");
+        assert_eq!(v["membershipSource"], "explicit");
+        let back: Channel = serde_json::from_value(v).unwrap();
+        assert_eq!(back.notify_level.as_deref(), Some("mentions"));
+        assert_eq!(back.membership_source.as_deref(), Some("explicit"));
+    }
+
+    #[test]
+    fn channel_notify_level_absent_for_browse_only_and_legacy_rows() {
+        let browse =
+            r#"{ "channelId": "chn_2", "membership": { "joined": false, "notifyLevel": null } }"#;
+        let c: Channel = serde_json::from_str(browse).unwrap();
+        assert_eq!(c.membership.as_deref(), Some("invited"));
+        assert!(c.notify_level.is_none());
+        let v = serde_json::to_value(&c).unwrap();
+        assert!(v.get("notifyLevel").is_none());
+
+        let legacy = r#"{ "channelId": "chn_3", "membership": "joined" }"#;
+        let c: Channel = serde_json::from_str(legacy).unwrap();
+        assert_eq!(c.membership.as_deref(), Some("joined"));
+        assert!(c.notify_level.is_none());
+        assert!(c.membership_source.is_none());
     }
 
     #[test]
