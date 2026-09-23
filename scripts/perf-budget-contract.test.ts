@@ -156,6 +156,7 @@ beforeAll(async () => {
 const BACKDROP_FILTER_ALLOWLIST = new Set([
   // Popovers and cursor-anchored menus: open on click, closed again in seconds.
   "packages/ui/src/chat/ChannelStatusPopover.svelte::.status-popover",
+  "packages/ui/src/chat/ChannelNotifyBell.svelte::.notify-menu",
   "packages/ui/src/chat/ChatSidebar.svelte::.chat-popover",
   "packages/ui/src/chat/ChatSidebar.svelte::.chat-context-menu",
   "packages/ui/src/common/LinkContextMenu.svelte::.link-context-menu",
