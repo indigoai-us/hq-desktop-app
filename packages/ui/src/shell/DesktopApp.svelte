@@ -195,6 +195,9 @@
   import ChannelMuteControl from "../chat/ChannelMuteControl.svelte";
   import {
     changeNotifyLevel,
+    defaultNotifyLevel,
+    loadRememberedNotifyLevels,
+    saveRememberedNotifyLevels,
     type NotifyLevel,
   } from "../chat/notify-level";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
@@ -4241,7 +4244,31 @@
   // ── Channel notification level (header mute control) ─────────────────────
   let notifyLevelBusy = $state(false);
   /** channelId → last non-muted level, restored by a one-click unmute. */
-  let rememberedNotifyLevels = $state<Record<string, NotifyLevel>>({});
+  // Persisted so a one-click unmute after a reload still restores the level.
+  const notifyLevelStorage: Storage | null = (() => {
+    try {
+      return typeof window !== "undefined" ? window.localStorage : null;
+    } catch {
+      return null;
+    }
+  })();
+  let rememberedNotifyLevels = $state<Record<string, NotifyLevel>>(
+    loadRememberedNotifyLevels(notifyLevelStorage),
+  );
+
+  /** Level a one-click unmute restores: remembered, else the server default. */
+  const unmuteTarget = $derived.by((): NotifyLevel => {
+    const channelId = selectedRow?.channelId?.trim() ?? "";
+    return (
+      rememberedNotifyLevels[channelId] ??
+      defaultNotifyLevel({
+        scope: selectedRow?.channelScope,
+        kind: selectedRow?.kind,
+        createdBy: selectedRow?.createdBy,
+        selfUid: self?.uid,
+      })
+    );
+  });
 
   $effect(() => {
     const channelId = selectedRow?.channelId?.trim() ?? "";
@@ -4249,6 +4276,7 @@
     if (!channelId || !level || level === "muted") return;
     if (rememberedNotifyLevels[channelId] === level) return;
     rememberedNotifyLevels = { ...rememberedNotifyLevels, [channelId]: level };
+    saveRememberedNotifyLevels(notifyLevelStorage, rememberedNotifyLevels);
   });
 
   const showNotifyBell = $derived(
@@ -8305,9 +8333,7 @@
               {#if showNotifyBell && selectedRow}
                 <ChannelMuteControl
                   level={selectedRow.notifyLevel ?? null}
-                  rememberedLevel={rememberedNotifyLevels[
-                    selectedRow.channelId?.trim() ?? ""
-                  ] ?? null}
+                  rememberedLevel={unmuteTarget}
                   busy={notifyLevelBusy}
                   onchange={(level) => void changeSelectedNotifyLevel(level)}
                 />

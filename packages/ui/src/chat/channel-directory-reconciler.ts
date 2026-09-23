@@ -60,6 +60,8 @@ export interface ChannelDirectoryRow {
   lastActivityAt: string | null;
   /** Notify-channel created stamp — sidebar fallback when activity is a provision clone. */
   createdAt?: string | null;
+  /** Channel creator uid (drives the default notification level). */
+  createdBy?: string | null;
   /** Notify-channel updated stamp — used to detect doctor/ensure "now" clones. */
   updatedAt?: string | null;
   unreadCount?: number;

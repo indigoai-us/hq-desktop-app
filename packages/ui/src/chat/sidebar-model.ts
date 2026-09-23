@@ -90,6 +90,8 @@ export interface ConversationRow {
    * and older payloads.
    */
   notifyLevel?: NotifyLevel | null;
+  /** Channel creator uid, when known. */
+  createdBy?: string | null;
 }
 
 /**
@@ -643,6 +645,7 @@ export function normalizeChannel(
       : {}),
     ...(channel.membership != null ? { membership: channel.membership } : {}),
     ...(channel.notifyLevel != null ? { notifyLevel: channel.notifyLevel } : {}),
+    ...(channel.createdBy ? { createdBy: channel.createdBy } : {}),
   };
 }
 
@@ -984,6 +987,9 @@ export function directoryRowToChannel(
     memberCount: row.memberCount,
     mentionFlag: row.mentionFlag === true,
     subtitle: row.subtitle ?? null,
+    ...(row.createdBy || prev?.createdBy
+      ? { createdBy: row.createdBy ?? prev?.createdBy }
+      : {}),
     // A row without a level keeps the one we already knew (an optimistic
     // change, or a richer earlier payload); an explicit null clears it.
     ...(row.notifyLevel !== undefined

@@ -267,6 +267,42 @@ pub fn activity_summary_title(extra_count: usize) -> String {
     }
 }
 
+/// How one poll's "added to a channel" notifications are delivered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddedPlan {
+    /// Within the cap: one notification per channel (indices into the input).
+    Each(Vec<usize>),
+    /// Over the cap: a single "Added to N channels" notification that opens
+    /// the first channel.
+    Summary { count: usize, channel_id: String },
+}
+
+/// Route "added" notifications through the shared mention cap planner
+/// ([`crate::dm_notify::plan_mention_cap`]). A burst over the cap (a bulk
+/// invite, a new project with many channels) collapses into one summary.
+pub fn plan_added_notifications(channel_ids: &[String]) -> AddedPlan {
+    let items: Vec<crate::dm_notify::MentionCapItem> = channel_ids
+        .iter()
+        .map(|id| crate::dm_notify::MentionCapItem {
+            created_at: String::new(),
+            channel_id: id.clone(),
+        })
+        .collect();
+    let plan = crate::dm_notify::plan_mention_cap(&items);
+    if plan.summary.is_none() {
+        return AddedPlan::Each(plan.deliver_indices);
+    }
+    AddedPlan::Summary {
+        count: channel_ids.len(),
+        channel_id: channel_ids.first().cloned().unwrap_or_default(),
+    }
+}
+
+/// Title for the over-cap summary.
+pub fn added_summary_title(count: usize) -> String {
+    format!("Added to {count} channels")
+}
+
 /// True when a channel that newly appeared in the caller's list should raise
 /// an "added" notification: joined, added explicitly by someone else (company
 /// auto-joins are silent), and not created by the caller.
@@ -599,6 +635,26 @@ mod tests {
         assert_eq!(channel_activity_title(" ", ""), "Someone in #channel");
         assert_eq!(activity_summary_title(1), "1 more new message");
         assert_eq!(activity_summary_title(4), "4 more new messages");
+    }
+
+    #[test]
+    fn added_notifications_use_the_cap() {
+        let ids = |n: usize| (0..n).map(|i| format!("chn_{i}")).collect::<Vec<_>>();
+        assert_eq!(plan_added_notifications(&[]), AddedPlan::Each(vec![]));
+        assert_eq!(plan_added_notifications(&ids(1)), AddedPlan::Each(vec![0]));
+        let cap = crate::dm_notify::MENTION_NOTIFY_CAP;
+        assert_eq!(
+            plan_added_notifications(&ids(cap)),
+            AddedPlan::Each((0..cap).collect())
+        );
+        assert_eq!(
+            plan_added_notifications(&ids(cap + 4)),
+            AddedPlan::Summary {
+                count: cap + 4,
+                channel_id: "chn_0".to_string()
+            }
+        );
+        assert_eq!(added_summary_title(7), "Added to 7 channels");
     }
 
     #[test]

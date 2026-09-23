@@ -69,6 +69,8 @@ export interface Channel {
    * payload for every scope; used as a fallback ordering signal for group DMs,
    * which ship no activity timestamp (`mergeConversations`). */
   createdAt?: string | null;
+  /** Channel creator uid, when the server sent it. */
+  createdBy?: string | null;
   /** Group-DM participant roster (the OTHER members — caller excluded),
    * server-supplied on the list endpoint so an unnamed group DM can be named by
    * its people ("Stefan, Hassaan"). Absent for named scopes and on older server

@@ -2658,7 +2658,20 @@ async fn deliver_added_notifications(
         );
         return;
     }
-    for (channel_id, channel_name) in added {
+    let ids: Vec<String> = added.iter().map(|(id, _)| id.clone()).collect();
+    let deliveries: Vec<(String, String, Option<usize>)> =
+        match hq_desktop_core::notify_prefs::plan_added_notifications(&ids) {
+            hq_desktop_core::notify_prefs::AddedPlan::Each(indices) => indices
+                .into_iter()
+                .filter_map(|index| added.get(index).cloned())
+                .map(|(id, name)| (id, name, None))
+                .collect(),
+            hq_desktop_core::notify_prefs::AddedPlan::Summary { count, channel_id } => {
+                log(LOG_TAG, &format!("DM_NOTIFY_ADDED_SUMMARY count={count}"));
+                vec![(channel_id, String::new(), Some(count))]
+            }
+        };
+    for (channel_id, channel_name, summary_count) in deliveries {
         log(LOG_TAG, &format!("DM_NOTIFY_ADDED channel={channel_id}"));
         deliver_mention_notification(
             app,
@@ -2671,7 +2684,7 @@ async fn deliver_added_notifications(
                 from_display_name: String::new(),
                 body: String::new(),
                 created_at: String::new(),
-                summary_extra: None,
+                summary_extra: summary_count,
                 kind: ChannelDeliveryKind::Added,
             },
         )
@@ -3080,7 +3093,12 @@ async fn deliver_mention_notification(
     mention: MentionDelivery,
 ) {
     let (title, body) = if let Some(extra) = mention.summary_extra {
-        if mention.kind == ChannelDeliveryKind::Mention {
+        if mention.kind == ChannelDeliveryKind::Added {
+            (
+                hq_desktop_core::notify_prefs::added_summary_title(extra),
+                String::new(),
+            )
+        } else if mention.kind == ChannelDeliveryKind::Mention {
             (mention_summary_title(extra), String::new())
         } else {
             (

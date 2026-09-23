@@ -65,6 +65,20 @@ describe("sync adapter notification prefs", () => {
     expect(calls[1]?.cmd).toBe("invalidate_notify_prefs_cache");
   });
 
+  it("returns the saved prefs even when the cache drop throws", async () => {
+    const calls: string[] = [];
+    const invoke = async (cmd: string) => {
+      calls.push(cmd);
+      if (cmd === "hq_pro_fetch") return { status: 200, body: JSON.stringify(PREFS) };
+      throw new Error("command invalidate_notify_prefs_cache not found");
+    };
+    const adapter = createSyncPlatformAdapter({ invoke });
+    const res = await adapter.messaging.updateNotifyPrefs!({ dms: false });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.prefs.dms).toBe(true);
+    expect(calls).toEqual(["hq_pro_fetch", "invalidate_notify_prefs_cache"]);
+  });
+
   it("does not drop the cache when the PUT fails", async () => {
     const { calls, invoke } = recordingInvoke(
       { error: "bad", code: "INVALID_NOTIFY_PREFS" },

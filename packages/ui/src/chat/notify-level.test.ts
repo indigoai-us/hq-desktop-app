@@ -182,3 +182,44 @@ describe("notify level through the channel directory", () => {
     expect(channels[1]!.notifyLevel).toBe("all");
   });
 });
+
+describe("unmute default and persistence", () => {
+  it("defaults to all for group DMs and channels you created, else mentions", async () => {
+    const { defaultNotifyLevel } = await import("./notify-level");
+    expect(defaultNotifyLevel({ scope: "group" })).toBe("all");
+    expect(defaultNotifyLevel({ kind: "group" })).toBe("all");
+    expect(defaultNotifyLevel({ scope: "company", createdBy: "prs_me", selfUid: "prs_me" })).toBe("all");
+    expect(defaultNotifyLevel({ scope: "company", createdBy: "prs_other", selfUid: "prs_me" })).toBe("mentions");
+    expect(defaultNotifyLevel({ scope: "project" })).toBe("mentions");
+  });
+
+  it("persists remembered levels, dropping muted and junk", async () => {
+    const {
+      loadRememberedNotifyLevels,
+      saveRememberedNotifyLevels,
+      REMEMBERED_NOTIFY_LEVELS_KEY,
+    } = await import("./notify-level");
+    const map = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+    };
+    saveRememberedNotifyLevels(storage, { chn_a: "files", chn_b: "all" });
+    expect(loadRememberedNotifyLevels(storage)).toEqual({ chn_a: "files", chn_b: "all" });
+    map.set(REMEMBERED_NOTIFY_LEVELS_KEY, JSON.stringify({ chn_a: "muted", chn_b: "loud", chn_c: "all" }));
+    expect(loadRememberedNotifyLevels(storage)).toEqual({ chn_c: "all" });
+    map.set(REMEMBERED_NOTIFY_LEVELS_KEY, "not json");
+    expect(loadRememberedNotifyLevels(storage)).toEqual({});
+    expect(loadRememberedNotifyLevels(null)).toEqual({});
+    const throwing = { getItem: () => null, setItem: () => { throw new Error("quota"); } };
+    expect(() => saveRememberedNotifyLevels(throwing, { chn_a: "all" })).not.toThrow();
+  });
+
+  it("carries createdBy from list rows onto sidebar rows", () => {
+    const feed = normalizeDirectoryFeed({
+      channels: [{ channelId: "chn_mine", name: "mine", scope: "company", createdBy: "prs_me" }],
+    });
+    const row = normalizeChannel(directoryRowToChannel(feed.rows![0]!));
+    expect(row.createdBy).toBe("prs_me");
+  });
+});

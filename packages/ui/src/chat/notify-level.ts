@@ -96,6 +96,61 @@ export function unmuteLevel(remembered: NotifyLevel | null | undefined): NotifyL
   return remembered && remembered !== "muted" ? remembered : "mentions";
 }
 
+/**
+ * The server's default level for a member without an explicit choice
+ * (hq-pro `resolveNotifyLevel`): "all" for a group DM or a channel the caller
+ * created, else "mentions". A one-click unmute with nothing remembered
+ * restores this.
+ */
+export function defaultNotifyLevel(args: {
+  scope?: string | null;
+  kind?: string | null;
+  createdBy?: string | null;
+  selfUid?: string | null;
+}): NotifyLevel {
+  if (args.scope === "group" || args.kind === "group") return "all";
+  const creator = args.createdBy?.trim();
+  const self = args.selfUid?.trim();
+  if (creator && self && creator === self) return "all";
+  return "mentions";
+}
+
+/** localStorage key for the per-channel pre-mute levels. */
+export const REMEMBERED_NOTIFY_LEVELS_KEY = "hq.chat.notify-level.remembered.v1";
+
+type LevelStorage = Pick<Storage, "getItem" | "setItem">;
+
+/** Read the persisted channelId → last non-muted level map. */
+export function loadRememberedNotifyLevels(
+  storage: LevelStorage | null | undefined,
+): Record<string, NotifyLevel> {
+  try {
+    const raw = storage?.getItem(REMEMBERED_NOTIFY_LEVELS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, NotifyLevel> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      const level = normalizeNotifyLevel(value);
+      if (level && level !== "muted") out[id] = level;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Persist the map; storage failures are ignored (memory copy still works). */
+export function saveRememberedNotifyLevels(
+  storage: LevelStorage | null | undefined,
+  levels: Record<string, NotifyLevel>,
+): void {
+  try {
+    storage?.setItem(REMEMBERED_NOTIFY_LEVELS_KEY, JSON.stringify(levels));
+  } catch {
+    /* private mode / quota: keep the in-memory copy */
+  }
+}
+
 /** Target of a one-click toggle: mute, or restore the remembered level. */
 export function toggledMuteLevel(
   current: NotifyLevel | null | undefined,

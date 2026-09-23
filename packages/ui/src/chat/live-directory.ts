@@ -119,6 +119,9 @@ function asRow(value: unknown): ChannelDirectoryRow | null {
       nested?.lastActivityAt ?? nested?.last_activity_at,
     ),
     createdAt: pickActivity(rec.createdAt ?? rec.created_at, nested?.createdAt),
+    ...(asString(rec.createdBy ?? rec.created_by).trim()
+      ? { createdBy: asString(rec.createdBy ?? rec.created_by).trim() }
+      : {}),
     updatedAt: pickActivity(rec.updatedAt ?? rec.updated_at, nested?.updatedAt),
     unreadCount:
       typeof rec.unreadCount === "number"

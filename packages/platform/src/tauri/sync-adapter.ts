@@ -515,7 +515,16 @@ export function createSyncPlatformAdapter(
           WEB_PATHS.notifyPrefs,
           patch,
         );
-        if (result.ok) await call('invalidate_notify_prefs_cache');
+        if (result.ok) {
+          // Best-effort: the write already landed, so a failed cache drop
+          // (older native build, IPC error) must not turn it into a failure.
+          // The native cache expires on its own within 30s.
+          try {
+            await call('invalidate_notify_prefs_cache');
+          } catch {
+            /* ignore */
+          }
+        }
         return result;
       },
       setChannelNotifyLevel: (channelId, level) =>
