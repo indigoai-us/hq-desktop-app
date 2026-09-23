@@ -10054,6 +10054,11 @@ mod npm_setup_recovery_tests {
         )
         .await;
 
+        drop(run);
+        drop(cleanup);
+        drop(emit_preflight);
+        drop(clear_failure);
+
         FakeNpmRun {
             result,
             attempts: Rc::try_unwrap(attempts).unwrap().into_inner(),
