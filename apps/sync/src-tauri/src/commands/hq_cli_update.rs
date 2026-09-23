@@ -340,8 +340,8 @@ pub(crate) fn is_partial_install_failure(detail: &str) -> bool {
 }
 
 /// npm's registry metadata can briefly lag a just-published dependency. Keep
-/// this classifier separate from the broader registry/network fallback: the
-/// setup path's remedy is specifically `--prefer-online`, not a registry swap.
+/// this classifier narrow: retry with --prefer-online first, and use the
+/// public-registry fallback only when the next attempt still reports ETARGET.
 pub(crate) fn is_etarget_failure(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
     detail.contains("etarget") || detail.contains("notarget")
@@ -674,31 +674,24 @@ pub(crate) fn app_npm_cache<R: Runtime>(
     prepare_app_npm_cache(app_cache_dir).map_err(|e| ("create", e))
 }
 
-async fn run_npm_install_with_retries(
+fn npm_install_attempted(ledger: &[NpmInstallAttempt], rung: &str) -> bool {
+    ledger.iter().any(|attempt| attempt.rung == rung)
+}
+
+fn npm_install_attempted_any(ledger: &[NpmInstallAttempt], rungs: &[&str]) -> bool {
+    rungs.iter().any(|rung| npm_install_attempted(ledger, rung))
+}
+
+async fn run_npm_install_local_recovery_ladder(
+    mut output: std::process::Output,
     npm: &str,
     path: &str,
     npm_cache: &Path,
     prefix: Option<&str>,
     base_args: Vec<String>,
-) -> Result<NpmInstallRun, String> {
-    let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
-    // Set by the mkdir remedy below (HQ-DESKTOP-5K) and carried out to the caller so
-    // it can tag the reported event. `Unknown` whenever that remedy did not run.
-    let mut missing_target_state = MissingTargetState::Unknown;
-
-    // First attempt: a plain (non-forced) global install.
-    let mut output = run_recorded_npm_install_attempt(
-        npm,
-        path,
-        npm_cache,
-        prefix,
-        base_args.clone(),
-        "plain",
-        false,
-        &mut ledger,
-    )
-    .await?;
-
+    ledger: &mut Vec<NpmInstallAttempt>,
+    missing_target_state: &mut MissingTargetState,
+) -> Result<std::process::Output, String> {
     // EEXIST bin collision: an existing `<prefix>/bin/hq` npm didn't create
     // blocks the bin-link, so npm bails rather than clobber it. Retry ONCE with
     // --force to overwrite the stale CLI the user is updating (HQ-SYNC-B) —
@@ -706,7 +699,17 @@ async fn run_npm_install_with_retries(
     // retry; every other failure falls straight through to the error below.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_bin_exists_failure(&detail, prefix) && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS {
+        if is_bin_exists_failure(&detail, prefix)
+            && !npm_install_attempted_any(
+                ledger,
+                &[
+                    "forced-bin-collision",
+                    "cleanup-forced-bin-collision",
+                    "mkdir-forced-bin-collision",
+                ],
+            )
+            && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
+        {
             log(
                 "hq-cli-update",
                 &format!("install hit EEXIST bin collision; retrying with --force: {detail}"),
@@ -721,7 +724,7 @@ async fn run_npm_install_with_retries(
                 forced,
                 "forced-bin-collision",
                 true,
-                &mut ledger,
+                ledger,
             )
             .await?;
         }
@@ -742,7 +745,9 @@ async fn run_npm_install_with_retries(
     // is the failure left untouched.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_partial_install_failure(&detail) {
+        if is_partial_install_failure(&detail)
+            && !npm_install_attempted_any(ledger, &["cleanup-plain", "cleanup-plain-npm-path"])
+        {
             // Resolve the cleanup scope. Prefer the resolved install prefix; when
             // no prefix resolved — the HQ-DESKTOP-5B state, where `hq` is bare or
             // non-npm-shaped so `hq_cli_install_prefix` returned None (true in
@@ -773,7 +778,7 @@ async fn run_npm_install_with_retries(
                     base_args.clone(),
                     rung,
                     false,
-                    &mut ledger,
+                    ledger,
                 )
                 .await?;
 
@@ -785,6 +790,7 @@ async fn run_npm_install_with_retries(
                 // directly produce that final output.
                 if !output.status.success()
                     && is_bin_exists_failure(&npm_output_detail(&output), prefix)
+                    && !npm_install_attempted(ledger, "cleanup-forced-bin-collision")
                     && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
                 {
                     let mut forced = base_args.clone();
@@ -797,7 +803,7 @@ async fn run_npm_install_with_retries(
                         forced,
                         "cleanup-forced-bin-collision",
                         true,
-                        &mut ledger,
+                        ledger,
                     )
                     .await?;
                 }
@@ -823,7 +829,9 @@ async fn run_npm_install_with_retries(
     // fails, nothing changes and the failure is reported exactly as today.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_missing_global_install_target(&detail, prefix) {
+        if is_missing_global_install_target(&detail, prefix)
+            && !npm_install_attempted_any(ledger, &["mkdir-plain", "mkdir-plain-npm-path"])
+        {
             if let Some((scope, rung)) =
                 missing_install_target_scope(prefix, &detail, cfg!(target_os = "windows"))
             {
@@ -838,7 +846,7 @@ async fn run_npm_install_with_retries(
                 })
                 .await
                 .unwrap_or(MissingTargetState::CreateFailed);
-                missing_target_state = state;
+                *missing_target_state = state;
                 if state == MissingTargetState::CreateFailed {
                     log(
                         "hq-cli-update",
@@ -863,7 +871,7 @@ async fn run_npm_install_with_retries(
                         base_args.clone(),
                         rung,
                         false,
-                        &mut ledger,
+                        ledger,
                     )
                     .await?;
 
@@ -875,6 +883,7 @@ async fn run_npm_install_with_retries(
                     // attempt cap.
                     if !output.status.success()
                         && is_bin_exists_failure(&npm_output_detail(&output), prefix)
+                        && !npm_install_attempted(ledger, "mkdir-forced-bin-collision")
                         && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
                     {
                         let mut forced = base_args.clone();
@@ -887,7 +896,7 @@ async fn run_npm_install_with_retries(
                             forced,
                             "mkdir-forced-bin-collision",
                             true,
-                            &mut ledger,
+                            ledger,
                         )
                         .await?;
                     }
@@ -913,6 +922,7 @@ async fn run_npm_install_with_retries(
     if !output.status.success() {
         let detail = npm_output_detail(&output);
         if is_windows_locked_binary_failure(output.status.code(), &detail)
+            && !npm_install_attempted(ledger, "windows-backoff-plain")
             && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
         {
             log(
@@ -927,13 +937,120 @@ async fn run_npm_install_with_retries(
                 path,
                 npm_cache,
                 prefix,
-                base_args,
+                base_args.clone(),
                 "windows-backoff-plain",
                 false,
-                &mut ledger,
+                ledger,
             )
             .await?;
         }
+    }
+
+    Ok(output)
+}
+
+async fn run_npm_install_with_retries(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: Option<&str>,
+    base_args: Vec<String>,
+) -> Result<NpmInstallRun, String> {
+    let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
+    let mut missing_target_state = MissingTargetState::Unknown;
+    let mut output = run_recorded_npm_install_attempt(
+        npm,
+        path,
+        npm_cache,
+        prefix,
+        base_args.clone(),
+        "plain",
+        false,
+        &mut ledger,
+    )
+    .await?;
+
+    let spec = base_args
+        .last()
+        .expect("npm install argv must end with the package spec");
+    let prefer_online_args =
+        crate::commands::install_deps::npm_args_with_option(&base_args, spec, "--prefer-online");
+    let public_registry_args =
+        crate::commands::install_deps::npm_args_with_public_registry(&prefer_online_args);
+    let mut local_recovery_due = true;
+
+    loop {
+        if output.status.success() || ledger.len() >= MAX_NPM_INSTALL_ATTEMPTS {
+            break;
+        }
+
+        let detail = npm_output_detail(&output);
+        if is_etarget_failure(&detail) {
+            if !npm_install_attempted(&ledger, "etarget-prefer-online") {
+                log(
+                    "hq-cli-update",
+                    "install hit ETARGET/notarget; retrying once with --prefer-online",
+                );
+                output = run_recorded_npm_install_attempt(
+                    npm,
+                    path,
+                    npm_cache,
+                    prefix,
+                    prefer_online_args.clone(),
+                    "etarget-prefer-online",
+                    false,
+                    &mut ledger,
+                )
+                .await?;
+                local_recovery_due = true;
+                continue;
+            }
+
+            if !npm_install_attempted(&ledger, "etarget-public-registry") {
+                log(
+                    "hq-cli-update",
+                    "ETARGET/notarget persisted after --prefer-online; retrying once with the public npm registry",
+                );
+                output = run_recorded_npm_install_attempt(
+                    npm,
+                    path,
+                    npm_cache,
+                    prefix,
+                    public_registry_args.clone(),
+                    "etarget-public-registry",
+                    false,
+                    &mut ledger,
+                )
+                .await?;
+                local_recovery_due = true;
+                continue;
+            }
+        }
+
+        if !local_recovery_due {
+            break;
+        }
+        let attempts_before_local_recovery = ledger.len();
+        output = run_npm_install_local_recovery_ladder(
+            output,
+            npm,
+            path,
+            npm_cache,
+            prefix,
+            base_args.clone(),
+            &mut ledger,
+            &mut missing_target_state,
+        )
+        .await?;
+        local_recovery_due = false;
+
+        if output.status.success() || is_etarget_failure(&npm_output_detail(&output)) {
+            continue;
+        }
+        if ledger.len() == attempts_before_local_recovery {
+            break;
+        }
+        break;
     }
 
     log_npm_install_attempt_ledger(&ledger);
@@ -4418,6 +4535,350 @@ exit 0
                 );
             }
         }
+    }
+
+    #[test]
+    fn etarget_classifier_matches_codes_and_excludes_other_errors() {
+        assert!(is_etarget_failure("npm error code ETARGET"));
+        assert!(is_etarget_failure(
+            "npm error notarget No matching version found"
+        ));
+        assert!(!is_etarget_failure(
+            "npm error code EACCES permission denied"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn etarget_retries_once_with_prefer_online() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "prefer-online should recover ETARGET"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 2, "ETARGET gets exactly one online retry");
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(lines[1].contains("--prefer-online"));
+        assert_eq!(run.rungs, vec!["plain", "etarget-prefer-online"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repeated_etarget_uses_public_registry_once_after_prefer_online() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -le 2 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "public registry should recover repeated ETARGET"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            lines.len(),
+            3,
+            "one plain, one online, and one public-registry attempt"
+        );
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(lines[1].contains("--prefer-online"));
+        assert!(lines[2].contains("--prefer-online"));
+        assert!(lines[2].contains("--registry=https://registry.npmjs.org/"));
+        assert!(lines[2].contains("--@indigoai-us:registry=https://registry.npmjs.org/"));
+        assert_eq!(
+            run.rungs,
+            vec!["plain", "etarget-prefer-online", "etarget-public-registry"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prefer_online_output_uses_existing_bin_collision_recovery() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let prefix = temp.path().join("npm-prefix");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+prefix="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+if [ "$count" -eq 2 ]; then
+  printf '%s\n' 'npm error code EEXIST' "npm error path $prefix/bin/hq" >&2
+  exit 1
+fi
+case "$*" in
+  *--force*) exit 0 ;;
+esac
+exit 2
+"#,
+            state.display(),
+            attempts.display(),
+            prefix.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "the force retry should recover EEXIST"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 3);
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(lines[1].contains("--prefer-online"));
+        assert!(lines[2].contains("--force"));
+        assert_eq!(
+            run.rungs,
+            vec!["plain", "etarget-prefer-online", "forced-bin-collision"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn public_registry_output_uses_existing_bin_collision_recovery() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let prefix = temp.path().join("npm-prefix");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+prefix="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -le 2 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+if [ "$count" -eq 3 ]; then
+  printf '%s\n' 'npm error code EEXIST' "npm error path $prefix/bin/hq" >&2
+  exit 1
+fi
+case "$*" in
+  *--force*) exit 0 ;;
+esac
+exit 2
+"#,
+            state.display(),
+            attempts.display(),
+            prefix.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "the force retry should recover EEXIST"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 4);
+        assert!(lines[1].contains("--prefer-online"));
+        assert!(lines[2].contains("--prefer-online"));
+        assert!(lines[2].contains("--registry=https://registry.npmjs.org/"));
+        assert!(lines[3].contains("--force"));
+        assert_eq!(
+            run.rungs,
+            vec![
+                "plain",
+                "etarget-prefer-online",
+                "etarget-public-registry",
+                "forced-bin-collision"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unrelated_npm_failure_does_not_trigger_etarget_retries() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+printf '%s\n' 'npm error code EACCES' 'npm error permission denied' >&2
+exit 1
+"#,
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 1, "unrelated failures get no ETARGET retry");
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(!lines[0].contains("--registry=https://registry.npmjs.org/"));
+        assert_eq!(run.rungs, vec!["plain"]);
     }
 
     #[cfg(unix)]
