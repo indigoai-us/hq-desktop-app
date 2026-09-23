@@ -3395,13 +3395,35 @@ fn npm_package_name_from_spec(spec: &str) -> Option<String> {
     (!package_name.is_empty() && package_name != "@").then(|| package_name.to_string())
 }
 
-fn npm_args_with_option(args: &[String], spec: &str, option: &str) -> Vec<String> {
+pub(crate) fn npm_args_with_option(args: &[String], spec: &str, option: &str) -> Vec<String> {
     let mut retry = args.to_vec();
     let insert_at = retry
         .iter()
         .rposition(|arg| arg == spec)
         .unwrap_or(retry.len());
     retry.insert(insert_at, option.to_string());
+    retry
+}
+
+/// Add the configured public-registry overrides before the final package spec.
+/// Shared by setup installs and the HQ CLI updater so both recover from the
+/// same stale or incomplete npm registry metadata.
+pub(crate) fn npm_args_with_public_registry(args: &[String]) -> Vec<String> {
+    let mut retry = args.to_vec();
+    let insert_at = retry.len().saturating_sub(1);
+    retry.splice(
+        insert_at..insert_at,
+        [
+            "--registry=https://registry.npmjs.org/",
+            "--@indigoai-us:registry=https://registry.npmjs.org/",
+            "--@tobilu:registry=https://registry.npmjs.org/",
+            "--@anthropic-ai:registry=https://registry.npmjs.org/",
+            "--@openai:registry=https://registry.npmjs.org/",
+            "--@xai-official:registry=https://registry.npmjs.org/",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
     retry
 }
 
@@ -3519,25 +3541,8 @@ fn npm_install_args(prefix: &str, spec: &str, extra_args: &[&str]) -> Vec<String
 }
 
 fn npm_public_registry_args(prefix: &str, spec: &str, extra_args: &[&str]) -> Vec<String> {
-    let mut args = vec![
-        "install".to_string(),
-        "-g".to_string(),
-        "--prefix".to_string(),
-        prefix.to_string(),
-    ];
-    args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
-    args.extend([
-        "--registry=https://registry.npmjs.org/",
-        "--@indigoai-us:registry=https://registry.npmjs.org/",
-        "--@tobilu:registry=https://registry.npmjs.org/",
-        "--@anthropic-ai:registry=https://registry.npmjs.org/",
-        "--@openai:registry=https://registry.npmjs.org/",
-        "--@xai-official:registry=https://registry.npmjs.org/",
-    ]
-    .into_iter()
-    .map(str::to_string));
-    args.push(spec.to_string());
-    args
+    let args = npm_install_args(prefix, spec, extra_args);
+    npm_args_with_public_registry(&args)
 }
 
 async fn run_managed_npm_install<R: tauri::Runtime>(

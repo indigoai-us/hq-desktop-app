@@ -340,8 +340,8 @@ pub(crate) fn is_partial_install_failure(detail: &str) -> bool {
 }
 
 /// npm's registry metadata can briefly lag a just-published dependency. Keep
-/// this classifier separate from the broader registry/network fallback: the
-/// setup path's remedy is specifically `--prefer-online`, not a registry swap.
+/// this classifier narrow: retry with --prefer-online first, and use the
+/// public-registry fallback only when the next attempt still reports ETARGET.
 pub(crate) fn is_etarget_failure(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
     detail.contains("etarget") || detail.contains("notarget")
@@ -927,12 +927,68 @@ async fn run_npm_install_with_retries(
                 path,
                 npm_cache,
                 prefix,
-                base_args,
+                base_args.clone(),
                 "windows-backoff-plain",
                 false,
                 &mut ledger,
             )
             .await?;
+        }
+    }
+
+    // npm's cached registry metadata may lag after a dependency publish. Retry
+    // that specific error once with --prefer-online, then once with the public
+    // registry if npm still reports ETARGET/notarget. These rungs stay inside
+    // the existing attempt cap and record path-free labels in the ledger.
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        if is_etarget_failure(&detail) && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS {
+            log(
+                "hq-cli-update",
+                "install hit ETARGET/notarget; retrying once with --prefer-online",
+            );
+            let spec = base_args
+                .last()
+                .expect("npm install argv must end with the package spec");
+            let prefer_online_args = crate::commands::install_deps::npm_args_with_option(
+                &base_args,
+                spec,
+                "--prefer-online",
+            );
+            output = run_recorded_npm_install_attempt(
+                npm,
+                path,
+                npm_cache,
+                prefix,
+                prefer_online_args,
+                "etarget-prefer-online",
+                false,
+                &mut ledger,
+            )
+            .await?;
+
+            if !output.status.success()
+                && is_etarget_failure(&npm_output_detail(&output))
+                && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
+            {
+                log(
+                    "hq-cli-update",
+                    "ETARGET/notarget persisted after --prefer-online; retrying once with the public npm registry",
+                );
+                let public_registry_args =
+                    crate::commands::install_deps::npm_args_with_public_registry(&base_args);
+                output = run_recorded_npm_install_attempt(
+                    npm,
+                    path,
+                    npm_cache,
+                    prefix,
+                    public_registry_args,
+                    "etarget-public-registry",
+                    false,
+                    &mut ledger,
+                )
+                .await?;
+            }
         }
     }
 
@@ -4418,6 +4474,195 @@ exit 0
                 );
             }
         }
+    }
+
+    #[test]
+    fn etarget_classifier_matches_codes_and_excludes_other_errors() {
+        assert!(is_etarget_failure("npm error code ETARGET"));
+        assert!(is_etarget_failure(
+            "npm error notarget No matching version found"
+        ));
+        assert!(!is_etarget_failure(
+            "npm error code EACCES permission denied"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn etarget_retries_once_with_prefer_online() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "prefer-online should recover ETARGET"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 2, "ETARGET gets exactly one online retry");
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(lines[1].contains("--prefer-online"));
+        assert_eq!(run.rungs, vec!["plain", "etarget-prefer-online"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repeated_etarget_uses_public_registry_once_after_prefer_online() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -le 2 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "public registry should recover repeated ETARGET"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            lines.len(),
+            3,
+            "one plain, one online, and one public-registry attempt"
+        );
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(lines[1].contains("--prefer-online"));
+        assert!(lines[2].contains("--registry=https://registry.npmjs.org/"));
+        assert!(lines[2].contains("--@indigoai-us:registry=https://registry.npmjs.org/"));
+        assert_eq!(
+            run.rungs,
+            vec!["plain", "etarget-prefer-online", "etarget-public-registry"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unrelated_npm_failure_does_not_trigger_etarget_retries() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+printf '%s\n' 'npm error code EACCES' 'npm error permission denied' >&2
+exit 1
+"#,
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 1, "unrelated failures get no ETARGET retry");
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(!lines[0].contains("--registry=https://registry.npmjs.org/"));
+        assert_eq!(run.rungs, vec!["plain"]);
     }
 
     #[cfg(unix)]

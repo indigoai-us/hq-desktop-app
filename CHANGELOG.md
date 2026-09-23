@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When npm's metadata has not caught up to a new dependency version, HQ refreshes
+  it and retries the CLI update. If needed, it tries npm's public registry.
+
 - Large sync-output bursts no longer build up in HQ's memory. If the app falls
   behind, the runner waits for the app to process more output.
 - Mute a channel from the speaker icon in the channel header, or open the menu next to it to choose all messages, files and mentions, mentions only, or muted. Muted channels show a muted icon in the sidebar.
