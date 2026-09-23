@@ -298,14 +298,18 @@ pub fn notification_title(issuer_display_name: &str) -> String {
 /// Human-facing title for a single shared path.
 ///
 /// Directory shares arrive as a wildcard path like `projects/foo/*` (or `/**`
-/// for a recursive share). Naively taking the last segment surfaces the literal
-/// `*`, which is meaningless. Strip the wildcard suffix and name the directory
-/// with a trailing slash (`foo/`) so a folder share reads as a folder; plain
-/// file shares keep their filename. Mirrors `shareTitle` in
+/// for a recursive share), or as a private-folder ACL path `projects/foo/`.
+/// Naively taking the last segment surfaces the literal `*`, which is
+/// meaningless. Strip the wildcard suffix and name the directory with a
+/// trailing slash (`foo/`) so a folder share reads as a folder; plain file
+/// shares keep their filename. Mirrors `shareTitle` in
 /// `src/lib/share-path.ts`.
 pub fn share_path_title(path: &str) -> String {
-    let is_wildcard_dir =
-        path.ends_with("/*") || path.ends_with("/**") || path == "*" || path == "**";
+    let is_wildcard_dir = path.ends_with("/*")
+        || path.ends_with("/**")
+        || path.ends_with('/')
+        || path == "*"
+        || path == "**";
     let cleaned = path
         .trim_end_matches("/**")
         .trim_end_matches("/*")
