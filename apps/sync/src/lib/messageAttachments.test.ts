@@ -4,6 +4,7 @@ import {
   attachmentTypeBadge,
   formatAttachmentSize,
   isFileShareMessage,
+  isFolderAttachment,
   type MessageAttachment,
 } from './messageAttachments';
 
@@ -41,6 +42,16 @@ describe('attachmentStackItems', () => {
   });
 });
 
+describe('isFolderAttachment', () => {
+  it('detects kind folder and a trailing slash on vaultPath', () => {
+    expect(isFolderAttachment(att('docs', { kind: 'folder', vaultPath: 'indigo/docs' }))).toBe(
+      true,
+    );
+    expect(isFolderAttachment(att('docs', { vaultPath: 'indigo/docs/' }))).toBe(true);
+    expect(isFolderAttachment(att('q1.md'))).toBe(false);
+  });
+});
+
 describe('attachmentTypeBadge', () => {
   it('prefers a short file extension', () => {
     expect(attachmentTypeBadge(att('q1.md'))).toBe('MD');
@@ -51,6 +62,11 @@ describe('attachmentTypeBadge', () => {
     expect(attachmentTypeBadge(att('noext', { contentType: 'application/pdf' }))).toBe('PDF');
     expect(attachmentTypeBadge(att('noext', { kind: 'image/png' }))).toBe('IMG');
     expect(attachmentTypeBadge(att('noext'))).toBe('FILE');
+  });
+
+  it('labels a folder as FOLDER instead of FILE', () => {
+    expect(attachmentTypeBadge(att('briefs', { kind: 'folder' }))).toBe('FOLDER');
+    expect(attachmentTypeBadge(att('briefs', { vaultPath: 'indigo/briefs/' }))).toBe('FOLDER');
   });
 });
 

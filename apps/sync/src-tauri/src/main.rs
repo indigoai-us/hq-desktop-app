@@ -531,6 +531,7 @@ fn main() {
         .manage(commands::dm_notify::PairUnreadState::new())
         .manage(commands::dm_notify::SeenRequestState::new())
         .manage(commands::dm_notify::SeenChannelState::new())
+        .manage(commands::dm_notify::MentionWatchState::new())
         .manage(commands::dm_notify::ActiveThreadState::new())
         .manage(commands::dm_notify::ActiveConversationState::new())
         .manage(commands::dm_notify::WatchedSharesState::new())

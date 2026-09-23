@@ -379,7 +379,7 @@ unsafe fn ns_to_string(value: *mut AnyObject) -> String {
 /// preserving the pre-existing meeting-click behaviour.
 fn click_route_for_kind(kind: &str) -> Option<&'static str> {
     match kind {
-        "dm" | "share" => None,
+        "dm" | "share" | "mention" => None,
         _ => Some("meetings"),
     }
 }
@@ -440,7 +440,7 @@ fn click_destination_route(
     issuer_uid: &str,
 ) -> Option<String> {
     match kind {
-        "dm" | "share" => Some(thread_route_from_ids(
+        "dm" | "share" | "mention" => Some(thread_route_from_ids(
             from_person_uid,
             channel_id,
             event_id,
@@ -804,8 +804,9 @@ pub fn deliver_clickable(title: &str, body: &str, window_id: &str, platform: &st
 ///     NotificationCenter's scripting bridge and is not subject to the
 ///     per-process legacy/modern gate, so it still shows a banner.
 ///
-/// `kind` must be `"dm"` or `"share"` — it rides along in `userInfo` so a click
-/// opens the right desktop-alt surface. Thread ids in `info` name the inbox
+/// `kind` must be `"dm"`, `"share"`, or `"mention"` — it rides along in
+/// `userInfo` so a click opens the right desktop-alt surface. Thread ids in
+/// `info` name the inbox
 /// route; `info.route` (or a route computed from those ids) is written as
 /// `userInfo["route"]` so a cold click does not have to rebuild it. No-op-safe
 /// on every path.
@@ -953,6 +954,7 @@ mod tests {
     fn dm_and_share_clicks_carry_no_action() {
         assert_eq!(click_action_for_kind("dm", "WIN-1"), None);
         assert_eq!(click_action_for_kind("share", "WIN-1"), None);
+        assert_eq!(click_action_for_kind("mention", "WIN-1"), None);
     }
 
     #[test]
@@ -961,6 +963,7 @@ mod tests {
         // destination is built from payload ids (see click_destination_route).
         assert_eq!(click_route_for_kind("dm"), None);
         assert_eq!(click_route_for_kind("share"), None);
+        assert_eq!(click_route_for_kind("mention"), None);
     }
 
     #[test]
@@ -977,6 +980,26 @@ mod tests {
             click_destination_route("dm", "prs_ada", "chn_eng", "evt_root", ""),
             Some("inbox:channel:chn_eng:evt_root".to_string())
         );
+    }
+
+    #[test]
+    fn mention_kind_opens_the_named_channel_message() {
+        assert_eq!(
+            click_destination_route("mention", "prs_ada", "chn_eng", "evt_1", ""),
+            Some("inbox:channel:chn_eng:evt_1".to_string())
+        );
+        assert_eq!(
+            resolve_click_route(
+                "mention",
+                "inbox:channel:chn_eng:evt_1",
+                "prs_ada",
+                "chn_eng",
+                "evt_1",
+                "",
+            ),
+            Some("inbox:channel:chn_eng:evt_1".to_string())
+        );
+        assert_eq!(category_id_for_kind("mention"), None);
     }
 
     #[test]

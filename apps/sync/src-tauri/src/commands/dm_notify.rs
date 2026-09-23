@@ -38,7 +38,7 @@
 //!   `_NETWORK_FAIL` / `_ERROR` — mirror the `SHARE_NOTIFY_*` codes.
 //!   `DM_NOTIFY_SEND_OK` / `_SEND_FAIL` — outbound send result.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -52,13 +52,18 @@ use crate::util::logfile::log;
 pub use hq_desktop_core::dm_notify::{
     build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
     build_threads_url, classify_send_response, clear_in_flight, diff_requests,
-    dm_notifications_enabled, effective_reply_count, esc_thread_seg, normalize_scope,
-    partition_unnotified, read_cursor_entry_for_account, respond_action_path, respond_action_state,
+    dm_notifications_enabled, effective_reply_count, enqueue_mention_fetches, esc_thread_seg,
+    filter_mentions_by_age, is_mention_of_me, mention_cursor_after_fetch,
+    mention_notification_body, mention_notification_title, mention_route, mention_summary_title,
+    normalize_scope, partition_unnotified, plan_mention_cap, read_cursor_entry_for_account,
+    requeue_failed_mention_fetches, respond_action_path, respond_action_state,
+    should_spawn_mention_detect, should_suppress_duplicate_event,
+    should_suppress_mention_for_open_channel, take_mention_fetch_batch, take_unseen_message_ids,
     try_set_in_flight, write_cursor_entry_for_account, ActiveConversationInner,
     ActiveConversationState, ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent,
-    InboxResponse, PairUnread, PairUnreadState, RequestsListResponse,
-    SeenChannelState, SeenRequestState, SendDmOutcome, ThreadReply, ThreadResponse, ThreadView,
-    UnreadDmState,
+    InboxResponse, MentionCapItem, MentionWatchState, PairUnread, PairUnreadState,
+    RequestsListResponse, SeenChannelState, SeenRequestState, SendDmOutcome, ThreadReply,
+    ThreadResponse, ThreadView, UnreadDmState, MENTION_FETCH_PER_CYCLE, MENTION_FRESH_MAX_AGE,
 };
 
 const LOG_TAG: &str = "dm-notify";
@@ -343,6 +348,13 @@ async fn transition_notification_session_if_generation_expected<R: Runtime>(
                 ids
             })
             .unwrap_or_default();
+        if let Some(state) = app.try_state::<MentionWatchState>() {
+            state
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .reset_for_session();
+        }
         if let Some(state) = app.try_state::<ActiveThreadState>() {
             state.0.lock().unwrap_or_else(|p| p.into_inner()).clear();
         }
@@ -2303,10 +2315,25 @@ fn diff_channels(
     diff
 }
 
+/// One channel whose unread grew this poll: id and name.
+#[derive(Clone, Debug)]
+struct ChannelUnreadGrowth {
+    channel_id: String,
+    name: String,
+}
+
+enum ChannelPollCommit {
+    Stale,
+    Seeded,
+    Growth(Vec<ChannelUnreadGrowth>),
+}
+
 /// Poll the channels list and emit channel events off the diff. Folded into the
 /// SINGLE `do_poll` path (NOT a parallel poller). Best-effort: any failure logs
 /// and returns without disturbing the DM-inbox poll. The first poll seeds the
-/// unread map silently (no events for the pre-launch backlog).
+/// unread map silently (no events for the pre-launch backlog). When unread
+/// grows (`DM_NOTIFY_CHAN_NEW_MESSAGE`), fetch that channel's history and
+/// detect structured @mentions of the signed-in person.
 async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot) {
     let Some(state) = app.try_state::<SeenChannelState>() else {
         return;
@@ -2354,7 +2381,7 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
     let committed = with_current_notification_auth_snapshot(app, auth, || {
         let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
         if !guard.snapshot_is_current(snapshot_revision) {
-            return false;
+            return ChannelPollCommit::Stale;
         }
         let first_run = !guard.initialized;
         let diff = diff_channels(&guard.unread_by_id, &list.channels);
@@ -2368,11 +2395,18 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
         drop(guard);
 
         if first_run {
+            if let Some(mentions) = app.try_state::<MentionWatchState>() {
+                mentions
+                    .0
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .initialized = true;
+            }
             log(
                 LOG_TAG,
                 &format!("DM_NOTIFY_CHAN_POLL_SEED count={}", list.channels.len()),
             );
-            return true;
+            return ChannelPollCommit::Seeded;
         }
 
         // Emit `channel:updated` for brand-new channels/invites (full payload so
@@ -2390,6 +2424,7 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
             let _ = app.emit(EVENT_CHANNEL_UNREAD_CHANGED, &payload);
         }
         // Emit `channel:new-message` for channels whose unread grew.
+        let mut growth = Vec::new();
         for (channel_id, unread) in &diff.new_messages {
             log(
                 LOG_TAG,
@@ -2397,17 +2432,459 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
             );
             let payload = serde_json::json!({ "channelId": channel_id, "unread": unread });
             let _ = app.emit(EVENT_CHANNEL_NEW_MESSAGE, &payload);
+            let name = list
+                .channels
+                .iter()
+                .find(|c| &c.channel_id == channel_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            growth.push(ChannelUnreadGrowth {
+                channel_id: channel_id.clone(),
+                name,
+            });
         }
-        true
+        ChannelPollCommit::Growth(growth)
     })
-    .await
-    .unwrap_or(false);
+    .await;
 
-    if !committed {
-        log(
-            LOG_TAG,
-            "DM_NOTIFY_CHAN_POLL_STALE auth generation or local unread revision changed",
-        );
+    match committed {
+        None | Some(ChannelPollCommit::Stale) => {
+            log(
+                LOG_TAG,
+                "DM_NOTIFY_CHAN_POLL_STALE auth generation or local unread revision changed",
+            );
+        }
+        Some(ChannelPollCommit::Seeded) => {
+            spawn_mention_detection_if_pending(app, base_url, auth, &[]);
+        }
+        Some(ChannelPollCommit::Growth(growth)) => {
+            spawn_mention_detection_if_pending(app, base_url, auth, &growth);
+        }
+    }
+}
+
+fn spawn_mention_detection_if_pending(
+    app: &AppHandle,
+    base_url: &str,
+    auth: &NotificationAuthSnapshot,
+    growth: &[ChannelUnreadGrowth],
+) {
+    let incoming: Vec<(String, String)> = growth
+        .iter()
+        .map(|channel| (channel.channel_id.clone(), channel.name.clone()))
+        .collect();
+    let should_spawn = {
+        let Some(watch) = app.try_state::<MentionWatchState>() else {
+            return;
+        };
+        let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
+        enqueue_mention_fetches(&mut guard.pending_fetches, &incoming);
+        should_spawn_mention_detect(guard.pending_fetches.len(), guard.detect_in_flight)
+    };
+    if should_spawn {
+        spawn_mention_detection(app.clone(), base_url.to_string(), auth.clone());
+    }
+}
+
+fn spawn_mention_detection(app: AppHandle, base_url: String, auth: NotificationAuthSnapshot) {
+    tauri::async_runtime::spawn(async move {
+        detect_and_deliver_mentions(&app, &base_url, &auth).await;
+    });
+}
+
+fn signed_in_person_uid() -> Option<String> {
+    hq_desktop_core::config::read_hq_config_lenient()
+        .ok()
+        .flatten()
+        .map(|config| config.person_uid)
+        .filter(|uid| !uid.trim().is_empty())
+}
+
+fn desktop_alt_focused(app: &AppHandle) -> bool {
+    app.get_webview_window(crate::commands::desktop_alt::WINDOW_LABEL)
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false)
+}
+
+async fn fetch_channel_history(
+    base_url: &str,
+    token: &str,
+    channel_id: &str,
+) -> Option<crate::commands::messages::ChannelDetail> {
+    let url = hq_desktop_core::messages::build_channel_messages_url(base_url, channel_id, Some(50));
+    let resp = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await;
+    match resp {
+        Err(e) => {
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_MENTION_FETCH_FAIL id={channel_id} err={e}"),
+            );
+            None
+        }
+        Ok(r) => {
+            let status = r.status();
+            if !status.is_success() {
+                log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_MENTION_FETCH_ERROR id={channel_id} status={status}"),
+                );
+                return None;
+            }
+            match r.json::<crate::commands::messages::ChannelDetail>().await {
+                Ok(detail) => Some(detail),
+                Err(e) => {
+                    log(
+                        LOG_TAG,
+                        &format!("DM_NOTIFY_MENTION_FETCH_PARSE id={channel_id} err={e}"),
+                    );
+                    None
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MentionDelivery {
+    channel_id: String,
+    channel_name: String,
+    event_id: String,
+    from_person_uid: String,
+    from_display_name: String,
+    body: String,
+    created_at: String,
+    summary_extra: Option<usize>,
+}
+
+const MENTION_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn fetch_channel_history_timed(
+    base_url: &str,
+    token: &str,
+    channel_id: &str,
+) -> Option<crate::commands::messages::ChannelDetail> {
+    match tokio::time::timeout(
+        MENTION_FETCH_TIMEOUT,
+        fetch_channel_history(base_url, token, channel_id),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_MENTION_FETCH_TIMEOUT id={channel_id}"),
+            );
+            None
+        }
+    }
+}
+
+fn read_active_scope(app: &AppHandle) -> Option<String> {
+    app.try_state::<ActiveConversationState>()
+        .and_then(|state| {
+            state
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .scope
+                .clone()
+        })
+}
+
+async fn detect_and_deliver_mentions(
+    app: &AppHandle,
+    base_url: &str,
+    auth: &NotificationAuthSnapshot,
+) {
+    let Some(person_uid) = signed_in_person_uid() else {
+        log(LOG_TAG, "DM_NOTIFY_MENTION_SKIP no personUid");
+        return;
+    };
+    let cognito_sub = auth.identity.clone();
+    let machine_id = crate::commands::config::ensure_machine_id().unwrap_or_default();
+    let dm_notified = read_cursor_entry_for_account(&machine_id, &auth.identity).notified;
+    let now = chrono::Utc::now();
+
+    let mut to_deliver = Vec::new();
+    let mut retried: HashSet<String> = HashSet::new();
+    let mut failed_last: Vec<(String, String)> = Vec::new();
+    let mut owns_detect = false;
+
+    loop {
+        let batch = {
+            let Some(watch) = app.try_state::<MentionWatchState>() else {
+                if owns_detect {
+                    clear_mention_detect_in_flight(app);
+                }
+                return;
+            };
+            let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
+            requeue_failed_mention_fetches(&mut guard.pending_fetches, &failed_last, &mut retried);
+            failed_last.clear();
+            if guard.detect_in_flight && !owns_detect {
+                return;
+            }
+            if guard.pending_fetches.is_empty() {
+                if owns_detect {
+                    guard.detect_in_flight = false;
+                }
+                break;
+            }
+            guard.detect_in_flight = true;
+            owns_detect = true;
+            take_mention_fetch_batch(&mut guard.pending_fetches, MENTION_FETCH_PER_CYCLE)
+        };
+        if batch.is_empty() {
+            break;
+        }
+
+        for (channel_id, channel_name) in &batch {
+            let fetched =
+                fetch_channel_history_timed(base_url, &auth.access_token, channel_id).await;
+            if with_current_notification_auth_snapshot(app, auth, || ())
+                .await
+                .is_none()
+            {
+                log(LOG_TAG, "DM_NOTIFY_MENTION_STALE auth snapshot changed");
+                clear_mention_detect_in_flight(app);
+                return;
+            }
+            let Some(watch) = app.try_state::<MentionWatchState>() else {
+                continue;
+            };
+            let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
+            let last_seen = guard.last_event_by_channel.get(channel_id).cloned();
+            let messages = fetched.as_ref().map(|detail| detail.messages.as_slice());
+            let (cursor, newer) = mention_cursor_after_fetch(
+                last_seen.as_deref(),
+                fetched.is_some(),
+                messages.unwrap_or(&[]),
+                now,
+            );
+            if fetched.is_none() {
+                failed_last.push((channel_id.clone(), channel_name.clone()));
+                continue;
+            }
+            if let Some(event_id) = cursor {
+                guard
+                    .last_event_by_channel
+                    .insert(channel_id.clone(), event_id);
+            }
+            guard.initialized = true;
+            let newer = filter_mentions_by_age(newer, now, MENTION_FRESH_MAX_AGE);
+            let mention_ids: Vec<String> = newer
+                .iter()
+                .filter(|message| is_mention_of_me(message, &person_uid, &cognito_sub))
+                .map(|message| message.event_id.clone())
+                .collect();
+            let (fresh_ids, updated_seen) =
+                take_unseen_message_ids(&mention_ids, &guard.seen_message_ids);
+            guard.seen_message_ids = updated_seen;
+            drop(guard);
+
+            let active_scope = read_active_scope(app);
+            let focused = desktop_alt_focused(app);
+
+            for message in newer {
+                if !fresh_ids.iter().any(|id| id == &message.event_id) {
+                    continue;
+                }
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "DM_NOTIFY_MENTION_DETECTED channel={} event={}",
+                        channel_id, message.event_id
+                    ),
+                );
+                if should_suppress_duplicate_event(&message.event_id, &dm_notified) {
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "DM_NOTIFY_MENTION_SUPPRESSED_DUP event={}",
+                            message.event_id
+                        ),
+                    );
+                    continue;
+                }
+                if should_suppress_mention_for_open_channel(
+                    active_scope.as_deref(),
+                    channel_id,
+                    focused,
+                ) {
+                    log(
+                        LOG_TAG,
+                        &format!("DM_NOTIFY_MENTION_SUPPRESSED_OPEN channel={channel_id}"),
+                    );
+                    continue;
+                }
+                to_deliver.push(MentionDelivery {
+                    channel_id: channel_id.clone(),
+                    channel_name: channel_name.clone(),
+                    event_id: message.event_id.clone(),
+                    from_person_uid: message.from_person_uid.clone(),
+                    from_display_name: message.from_display_name.clone(),
+                    body: message.body.clone(),
+                    created_at: message.created_at.clone(),
+                    summary_extra: None,
+                });
+            }
+        }
+    }
+
+    let cap_items: Vec<MentionCapItem> = to_deliver
+        .iter()
+        .map(|mention| MentionCapItem {
+            created_at: mention.created_at.clone(),
+            channel_id: mention.channel_id.clone(),
+        })
+        .collect();
+    let plan = plan_mention_cap(&cap_items);
+    let mut deliver = plan
+        .deliver_indices
+        .into_iter()
+        .filter_map(|index| to_deliver.get(index).cloned())
+        .collect::<Vec<_>>();
+    if let Some(summary) = plan.summary {
+        let name = to_deliver
+            .iter()
+            .find(|mention| mention.channel_id == summary.channel_id)
+            .map(|mention| mention.channel_name.clone())
+            .unwrap_or_default();
+        deliver.push(MentionDelivery {
+            channel_id: summary.channel_id,
+            channel_name: name,
+            event_id: String::new(),
+            from_person_uid: String::new(),
+            from_display_name: String::new(),
+            body: String::new(),
+            created_at: String::new(),
+            summary_extra: Some(summary.extra_count),
+        });
+    }
+
+    for mention in deliver {
+        deliver_mention_notification(app, auth, mention).await;
+    }
+}
+
+fn clear_mention_detect_in_flight(app: &AppHandle) {
+    if let Some(watch) = app.try_state::<MentionWatchState>() {
+        watch
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .detect_in_flight = false;
+    }
+}
+
+async fn deliver_mention_notification(
+    app: &AppHandle,
+    auth: &NotificationAuthSnapshot,
+    mention: MentionDelivery,
+) {
+    let (title, body) = if let Some(extra) = mention.summary_extra {
+        (mention_summary_title(extra), String::new())
+    } else {
+        (
+            mention_notification_title(&mention.from_display_name, &mention.channel_name),
+            mention_notification_body(&mention.body),
+        )
+    };
+    let route = mention_route(&mention.channel_id, &mention.event_id);
+    let payload = serde_json::json!({
+        "channelId": mention.channel_id,
+        "eventId": mention.event_id,
+        "fromPersonUid": mention.from_person_uid,
+        "fromDisplayName": mention.from_display_name,
+    });
+    log(
+        LOG_TAG,
+        &format!(
+            "DM_NOTIFY_MENTION_DELIVER event={} channel={}",
+            mention.event_id, mention.channel_id
+        ),
+    );
+
+    if crate::commands::banner::custom_banner_enabled() {
+        if let Some(Err(e)) = with_current_notification_auth_snapshot_async(app, auth, || {
+            crate::commands::banner::show_mention_banner(app.clone(), title, body, payload)
+        })
+        .await
+        {
+            log(LOG_TAG, &format!("DM_NOTIFY_MENTION_BANNER_FAIL err={e}"));
+        }
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_focused = crate::commands::notifications::app_is_focused(app);
+        let native_allowed =
+            hq_desktop_core::native_notify::should_native_notify("mention", app_focused);
+        if !native_allowed {
+            log(
+                LOG_TAG,
+                &format!(
+                    "DM_NOTIFY_MENTION_NATIVE_SUPPRESSED event={} focused={app_focused}",
+                    mention.event_id
+                ),
+            );
+            return;
+        }
+        let from_person_uid = mention.from_person_uid.clone();
+        let channel_id = mention.channel_id.clone();
+        let event_id = mention.event_id.clone();
+        let payload_json = crate::commands::un_notify::encode_action_payload(&payload);
+        let dispatched = with_current_notification_mutation(app, auth, || async move {
+            tokio::task::spawn_blocking(move || {
+                crate::commands::un_notify::deliver_message(
+                    &title,
+                    &body,
+                    "mention",
+                    &crate::commands::un_notify::MessageUserInfo {
+                        from_person_uid,
+                        channel_id,
+                        event_id,
+                        issuer_uid: String::new(),
+                        route,
+                        payload_json,
+                    },
+                );
+            })
+            .await
+        })
+        .await;
+        if dispatched.is_none() {
+            log(
+                LOG_TAG,
+                "DM_NOTIFY_MENTION_TOAST_STALE auth session changed",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = (route, payload);
+        let dispatched = with_current_notification_mutation(app, auth, || async {
+            app.notification()
+                .builder()
+                .title(&title)
+                .body(&body)
+                .show()
+        })
+        .await;
+        if dispatched.is_none() {
+            log(
+                LOG_TAG,
+                "DM_NOTIFY_MENTION_TOAST_STALE auth session changed",
+            );
+        }
     }
 }
 
@@ -2605,6 +3082,17 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
     // agents rings thirty banners on a teammate's Mac for something they never
     // asked for. Keep them out of every banner path; they are still ACKed,
     // still counted, and still emitted to the in-app feed, which bundles them.
+    let mention_notified = app
+        .try_state::<MentionWatchState>()
+        .map(|state| {
+            state
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .seen_message_ids
+                .clone()
+        })
+        .unwrap_or_default();
     let banner_worthy: Vec<DmEvent> = fresh
         .iter()
         .filter(|dm| {
@@ -2615,7 +3103,7 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
                 &dm.body,
                 dm.details.as_deref(),
                 dm.prompt.as_deref(),
-            )
+            ) && !should_suppress_duplicate_event(&dm.event_id, &mention_notified)
         })
         .cloned()
         .collect();
@@ -2935,6 +3423,35 @@ mod tests {
         let diff = diff_channels(&seen, &current);
         assert_eq!(diff.new_channels, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(diff.new_messages, vec![("b".to_string(), 4)]);
+    }
+
+    #[test]
+    fn mention_payload_maps_to_channel_message_route() {
+        assert_eq!(
+            mention_route("chn_eng", "evt_mention"),
+            "inbox:channel:chn_eng:evt_mention"
+        );
+        assert_eq!(
+            mention_notification_title("Ada", "engineering"),
+            "Ada mentioned you in #engineering"
+        );
+        assert!(should_suppress_mention_for_open_channel(
+            Some("chan:chn_eng"),
+            "chn_eng",
+            true,
+        ));
+        assert!(!should_suppress_mention_for_open_channel(
+            Some("chan:chn_eng"),
+            "chn_eng",
+            false,
+        ));
+    }
+
+    #[test]
+    fn mention_poll_spawns_when_pending_even_without_growth() {
+        assert!(should_spawn_mention_detect(3, false));
+        assert!(!should_spawn_mention_detect(3, true));
+        assert!(!should_spawn_mention_detect(0, false));
     }
 
     #[test]

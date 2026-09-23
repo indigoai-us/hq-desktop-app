@@ -15,7 +15,7 @@ import {
   presignUrlFromResult,
   files as filesUi,
 } from '@hq/ui';
-import type { MessageAttachment } from './messageAttachments';
+import { isFolderAttachment, type MessageAttachment } from './messageAttachments';
 
 export const MAX_ATTACHMENT_PREVIEW_BYTES = MAX_CHANNEL_FILE_PREVIEW_BYTES;
 
@@ -56,6 +56,7 @@ function invokeFn(deps?: AttachmentPresignDeps): InvokeFn {
 
 /** True when this attachment should render inline (image / pdf / text / markdown). */
 export function isInlineAttachmentPreview(attachment: MessageAttachment): boolean {
+  if (isFolderAttachment(attachment)) return false;
   const name = attachment.name;
   if (filesUi.filePreviewKind(name) === 'unknown') return false;
   const kind = attachmentPreviewKind({
@@ -94,18 +95,72 @@ export function companySlugForAttachment(
   return uid;
 }
 
+export type AttachmentCompany = {
+  uid?: string;
+  cloudUid?: string | null;
+  slug: string;
+};
+
+export function attachmentCompaniesFromWorkspaces(
+  workspaces: ReadonlyArray<{ slug: string; cloudUid?: string | null }>,
+): AttachmentCompany[] {
+  return workspaces
+    .map((row) => ({
+      uid: row.cloudUid?.trim() || undefined,
+      cloudUid: row.cloudUid ?? null,
+      slug: row.slug.trim(),
+    }))
+    .filter((row) => row.slug);
+}
+
+export async function loadAttachmentCompanies(
+  invoke: InvokeFn = invokeFn(),
+): Promise<AttachmentCompany[]> {
+  try {
+    const result = (await invoke('list_syncable_workspaces')) as {
+      workspaces?: Array<{ slug: string; cloudUid?: string | null }>;
+    } | null;
+    return attachmentCompaniesFromWorkspaces(result?.workspaces ?? []);
+  } catch {
+    return [];
+  }
+}
+
+function vaultPathHasParentSegment(path: string): boolean {
+  return path.split('/').some((segment) => segment === '..');
+}
+
+function folderCompanySlug(
+  attachment: MessageAttachment,
+  companies?: ReadonlyArray<AttachmentCompany>,
+): string | null {
+  const uid = (attachment.companyUid ?? '').trim();
+  if (!uid) return null;
+  const match = (companies ?? []).find(
+    (row) => row.uid === uid || row.cloudUid === uid || row.slug === uid,
+  );
+  const slug = (match?.slug ?? '').trim();
+  return slug || null;
+}
+
 /** Wire string consumed by `parseDesktopRoute` / `open_desktop_alt_window`. */
 export function filesRouteForAttachment(
   attachment: MessageAttachment,
-  companies?: ReadonlyArray<{
-    uid?: string;
-    cloudUid?: string | null;
-    slug: string;
-  }>,
-): string {
-  const slug = companySlugForAttachment(attachment, companies);
+  companies?: ReadonlyArray<AttachmentCompany>,
+): string | null {
   const path = (attachment.vaultPath ?? '').trim().replace(/\\/g, '/');
-  return `files:${slug}:${path}`;
+  const folder = isFolderAttachment(attachment);
+  if (!(attachment.companyUid ?? '').trim()) return null;
+  const slug = folder
+    ? folderCompanySlug(attachment, companies)
+    : companySlugForAttachment(attachment, companies).trim();
+  if (!slug) return null;
+  if (vaultPathHasParentSegment(path)) return null;
+  if (path.startsWith('/') && path !== '/') return null;
+  if (folder && !path) return null;
+  const filesPath = folder && path === '/' ? slug : path;
+  if (!filesPath) return null;
+  return `files:${slug}:${filesPath}`;
 }
 
 function failureMessage(status: number): string {

@@ -138,6 +138,8 @@ describe('HQ-DESKTOP-4F: share-detail shell:allow-open capability', () => {
     expect(shareDetail).toMatch(/<DmThreadPane\b/);
     expect(dmThreadPane).toMatch(/import\s+Conversation[\s\S]*?from\s+'\.\/messaging\/Conversation\.svelte'/);
     expect(dmThreadPane).toMatch(/<Conversation\b/);
+    expect(dmThreadPane).toContain('loadAttachmentCompanies');
+    expect(dmThreadPane).toContain('{companies}');
     expect(conversation).toMatch(/renderMessageBodyMarkdown/);
   });
 

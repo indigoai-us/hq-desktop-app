@@ -10,6 +10,17 @@ The release moves it under the version it ships in.
 
 - Large sync-output bursts no longer build up in HQ's memory. If the app falls
   behind, the runner waits for the app to process more output.
+
+- When sync finishes with per-file errors, events with the same exit code and
+  dominant error class now share a Sentry issue. The cause and failure site stay
+  attached for diagnosis.
+
+## [0.10.310] — 2026-09-23
+
+- When someone @mentions you in a channel, HQ now shows a notification that opens that message. Mentions only count when they are structured (not just the word @YourName), and they stay quiet if you already have that channel open. Shared folders show a folder tile that opens Files instead of a file preview.
+
+## [0.10.309] — 2026-09-23
+
 - A private folder shared as `foo/` now appears as `foo/` in the app and its
   notification instead of looking like a file.
 

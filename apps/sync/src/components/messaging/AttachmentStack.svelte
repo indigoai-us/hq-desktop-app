@@ -7,6 +7,7 @@
   import {
     attachmentStackItems,
     attachmentTypeBadge,
+    isFolderAttachment,
     type MessageAttachment,
   } from '../../lib/messageAttachments';
 
@@ -15,9 +16,11 @@
     /** Resolved sender display name for the group label. */
     senderName?: string;
     onopen?: () => void;
+    /** Folder tiles skip the preview and open Files. */
+    onfolder?: (attachment: MessageAttachment) => void;
   }
 
-  let { attachments, senderName = '', onopen }: Props = $props();
+  let { attachments, senderName = '', onopen, onfolder }: Props = $props();
 
   const layout = $derived(attachmentStackItems(attachments));
   const sender = $derived(senderName.trim() || 'Someone');
@@ -29,6 +32,14 @@
 
   function open(): void {
     onopen?.();
+  }
+
+  function openTile(item: MessageAttachment): void {
+    if (isFolderAttachment(item) && onfolder) {
+      onfolder(item);
+      return;
+    }
+    open();
   }
 </script>
 
@@ -42,20 +53,33 @@
     <button
       type="button"
       class="attachment-tile"
+      class:attachment-tile-folder={isFolderAttachment(item)}
       data-testid="attachment-tile"
+      data-kind={isFolderAttachment(item) ? 'folder' : 'file'}
       aria-label={item.name}
-      onclick={open}
+      onclick={() => openTile(item)}
     >
       <span class="tile-icon" aria-hidden="true">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path
-            d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-          <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-        </svg>
+        {#if isFolderAttachment(item)}
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M2.5 4.5A1.5 1.5 0 0 1 4 3h2.2c.3 0 .58.16.73.42L7.5 4.5H12A1.5 1.5 0 0 1 13.5 6v5.5A1.5 1.5 0 0 1 12 13H4A1.5 1.5 0 0 1 2.5 11.5V4.5Z"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linejoin="round"
+            />
+          </svg>
+        {:else}
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linejoin="round"
+            />
+            <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+          </svg>
+        {/if}
         <span class="tile-badge">{attachmentTypeBadge(item)}</span>
       </span>
       <span class="tile-name">{item.name}</span>

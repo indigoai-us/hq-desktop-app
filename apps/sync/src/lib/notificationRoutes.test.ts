@@ -27,6 +27,16 @@ describe('routeForNotificationPayload', () => {
     ).toBe('inbox:channel:chn_eng');
   });
 
+  it('maps a mention payload to inbox:channel:<channelId>:<messageId>', () => {
+    expect(
+      routeForNotificationPayload({
+        channelId: 'chn_eng',
+        eventId: 'evt_mention',
+        fromPersonUid: 'prs_ada',
+      }),
+    ).toBe('inbox:channel:chn_eng:evt_mention');
+  });
+
   it('maps a share event to inbox:dm:<issuerUid>', () => {
     expect(
       routeForNotificationPayload({

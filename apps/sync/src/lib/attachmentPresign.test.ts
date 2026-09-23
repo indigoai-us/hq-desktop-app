@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MessageAttachment } from './messageAttachments';
 import {
   ATTACHMENT_MISSING_COMPANY,
+  attachmentCompaniesFromWorkspaces,
   companySlugForAttachment,
   filesRouteForAttachment,
   isInlineAttachmentPreview,
+  loadAttachmentCompanies,
   loadAttachmentPreview,
   presignAttachmentGet,
 } from './attachmentPresign';
@@ -54,6 +56,75 @@ describe('filesRouteForAttachment', () => {
       'files:indigo:indigo/files/archive.zip',
     );
   });
+
+  it('rejects folder open with missing companyUid, unknown company, and a parent path', () => {
+    const companies = [{ uid: 'cmp_indigo', slug: 'indigo' }];
+    expect(
+      filesRouteForAttachment(
+        att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/', companyUid: undefined }),
+        companies,
+      ),
+    ).toBeNull();
+    expect(
+      filesRouteForAttachment(
+        att('briefs', {
+          kind: 'folder',
+          vaultPath: 'indigo/briefs/',
+          companyUid: 'cmp_unknown',
+        }),
+        companies,
+      ),
+    ).toBeNull();
+    expect(
+      filesRouteForAttachment(
+        att('briefs', { kind: 'folder', vaultPath: 'indigo/../secret/' }),
+        companies,
+      ),
+    ).toBeNull();
+  });
+
+  it('maps the root folder / onto the company Files root', () => {
+    expect(
+      filesRouteForAttachment(
+        att('root', { kind: 'folder', vaultPath: '/' }),
+        [{ uid: 'cmp_indigo', slug: 'indigo' }],
+      ),
+    ).toBe('files:indigo:indigo');
+  });
+
+  it('returns null for a folder when no membership matches instead of falling back to the vault path', () => {
+    expect(
+      filesRouteForAttachment(att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/' })),
+    ).toBeNull();
+    expect(
+      filesRouteForAttachment(att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/' }), []),
+    ).toBeNull();
+    expect(
+      filesRouteForAttachment(
+        att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/', companyUid: 'cmp_unknown' }),
+        [{ uid: 'cmp_other', slug: 'other' }],
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('loadAttachmentCompanies', () => {
+  it('maps membership workspaces to the Conversation companies list', async () => {
+    expect(
+      attachmentCompaniesFromWorkspaces([
+        { slug: 'indigo', cloudUid: 'cmp_indigo' },
+        { slug: '  ', cloudUid: 'cmp_skip' },
+      ]),
+    ).toEqual([{ uid: 'cmp_indigo', cloudUid: 'cmp_indigo', slug: 'indigo' }]);
+
+    const invoke = vi.fn(async () => ({
+      workspaces: [{ slug: 'indigo', cloudUid: 'cmp_indigo' }],
+    }));
+    await expect(loadAttachmentCompanies(invoke)).resolves.toEqual([
+      { uid: 'cmp_indigo', cloudUid: 'cmp_indigo', slug: 'indigo' },
+    ]);
+    expect(invoke).toHaveBeenCalledWith('list_syncable_workspaces');
+  });
 });
 
 describe('isInlineAttachmentPreview', () => {
@@ -63,6 +134,9 @@ describe('isInlineAttachmentPreview', () => {
     expect(isInlineAttachmentPreview(att('notes.md'))).toBe(true);
     expect(isInlineAttachmentPreview(att('readme.txt'))).toBe(true);
     expect(isInlineAttachmentPreview(att('archive.zip'))).toBe(false);
+    expect(
+      isInlineAttachmentPreview(att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/' })),
+    ).toBe(false);
   });
 });
 

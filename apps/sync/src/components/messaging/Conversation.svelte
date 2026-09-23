@@ -29,7 +29,11 @@
   import AttachmentStack from './AttachmentStack.svelte';
   import AttachmentPicker from './AttachmentPicker.svelte';
   import AttachmentPreview from './AttachmentPreview.svelte';
-  import { filesRouteForAttachment } from '../../lib/attachmentPresign';
+  import {
+    ATTACHMENT_MISSING_COMPANY,
+    filesRouteForAttachment,
+    type AttachmentCompany,
+  } from '../../lib/attachmentPresign';
   import {
     isFileShareMessage,
     type MessageAttachment,
@@ -115,6 +119,8 @@
     onopenattachments?: () => void;
     /** Navigate to `files:<slug>:<path>` (tests inject; default opens the desktop). */
     onnavigatefiles?: (route: string) => void;
+    /** Membership list used to resolve a folder's companyUid to a known slug. */
+    companies?: ReadonlyArray<AttachmentCompany>;
     // When true, the reply composer is hidden and a static note renders in its
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
@@ -147,6 +153,7 @@
     onopenshareinclaude,
     onopenattachments,
     onnavigatefiles,
+    companies = [],
     readonly = false,
     composer = true,
     belowMessages,
@@ -170,6 +177,7 @@
   let linkMenu = $state<LinkMenuAnchor | null>(null);
   let pickerAttachments = $state<MessageAttachment[] | null>(null);
   let previewIndex = $state<number | null>(null);
+  let filesNotice = $state<string | null>(null);
 
   function openAttachmentPicker(attachments: MessageAttachment[]): void {
     pickerAttachments = attachments;
@@ -187,10 +195,12 @@
   }
 
   function openAttachmentInFiles(attachment: MessageAttachment): void {
-    if (!(attachment.companyUid ?? '').trim()) {
+    const route = filesRouteForAttachment(attachment, companies);
+    if (!route) {
+      filesNotice = ATTACHMENT_MISSING_COMPANY;
       return;
     }
-    const route = filesRouteForAttachment(attachment);
+    filesNotice = null;
     if (onnavigatefiles) {
       onnavigatefiles(route);
       return;
@@ -620,6 +630,7 @@
             attachments={msg.attachments ?? []}
             senderName={messageAuthor(msg)}
             onopen={() => openAttachmentPicker(msg.attachments ?? [])}
+            onfolder={openAttachmentInFiles}
           />
           {#if msg.body?.trim()}
             <p class="share-card-note">{msg.body}</p>
@@ -837,11 +848,16 @@
 
 <svelte:window onkeydown={onAttachmentDialogKey} />
 
+{#if filesNotice}
+  <p class="dm-files-notice" data-testid="attachment-files-notice" role="status">{filesNotice}</p>
+{/if}
+
 {#if pickerAttachments}
   <AttachmentPicker
     attachments={pickerAttachments}
     onclose={closeAttachmentPicker}
     onselect={(index) => (previewIndex = index)}
+    onfolder={openAttachmentInFiles}
   />
 {/if}
 {#if pickerAttachments && previewIndex !== null}
@@ -1697,6 +1713,13 @@
   .dm-reply-error {
     font-size: var(--text-base);
     color: var(--red, var(--popover-danger));
+    word-break: break-word;
+  }
+
+  .dm-files-notice {
+    margin: 0 1.25rem 0.75rem;
+    font-size: var(--text-base);
+    color: var(--pop-muted);
     word-break: break-word;
   }
 
