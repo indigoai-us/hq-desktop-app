@@ -68,7 +68,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::commands::install_deps::MANAGED_NODE_ABI;
 use crate::commands::sync::ToolchainRepair;
@@ -329,61 +329,97 @@ fn is_bin_exists_failure(detail: &str, prefix: Option<&str>) -> bool {
 
 /// An `ENOTEMPTY` partial/interrupted-install failure. npm updates a package by
 /// renaming the existing package dir aside to a `.<name>-<rand>` staging dir;
-/// when a prior install was interrupted it leaves a partial `hq-cli` package dir
-/// (and/or an orphan `.hq-cli-*` staging dir) under
-/// `<prefix>/lib/node_modules/@indigoai-us`, so that rename fails
-/// `ENOTEMPTY: directory not empty`. Unlike the `EEXIST` bin collision, `--force`
-/// does NOT clear this — the leftover partial state must be removed first (see
-/// `clean_partial_hq_cli_install`). Left unhandled, every 6-hourly auto-update
-/// wedges on the same error and the user's `hq` stays broken (ENOENT) until a
-/// human runs `hq-heal` (field report feedback_44061f91).
-fn is_partial_install_failure(detail: &str) -> bool {
+/// when a prior install was interrupted it leaves a partial package dir (and/or
+/// an orphan staging dir) under the package's npm global scope, so that rename
+/// fails `ENOTEMPTY: directory not empty`. Unlike the `EEXIST` bin collision,
+/// `--force` does NOT clear this — the leftover partial state must be removed
+/// first (see `clean_partial_install_scope`). The updater's hq-cli path retains
+/// the existing hq-specific diagnostics around this classifier.
+pub(crate) fn is_partial_install_failure(detail: &str) -> bool {
     detail.contains("ENOTEMPTY")
 }
 
-/// The npm global scope dir that holds the `@indigoai-us/hq-cli` package for a
-/// given prefix. Unix uses `<prefix>/lib/node_modules`; Windows uses
-/// `<prefix>\node_modules`. Partial-install debris — the `hq-cli` package dir
-/// and its `.hq-cli-*` temp staging dirs — lives directly under the resulting
-/// `@indigoai-us` dir. Factored out so cleanup stays strictly scoped and both
-/// path shapes are unit-testable without touching the filesystem.
-fn partial_install_scope_dir_for(prefix: &str, windows_layout: bool) -> PathBuf {
+/// npm's registry metadata can briefly lag a just-published dependency. Keep
+/// this classifier separate from the broader registry/network fallback: the
+/// setup path's remedy is specifically `--prefer-online`, not a registry swap.
+pub(crate) fn is_etarget_failure(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("etarget") || detail.contains("notarget")
+}
+
+/// The npm global scope dir that holds a package for a given prefix. Unix uses
+/// `<prefix>/lib/node_modules`; Windows uses `<prefix>\node_modules`.
+/// Factored out so setup and updater cleanup use the same path rules and both
+/// layouts are unit-testable without touching the filesystem.
+pub(crate) fn npm_global_package_scope_dir_for(
+    prefix: &str,
+    windows_layout: bool,
+    package_name: &str,
+) -> PathBuf {
     let root = Path::new(prefix);
     let node_modules = if windows_layout {
         root.join("node_modules")
     } else {
         root.join("lib").join("node_modules")
     };
-    node_modules.join("@indigoai-us")
+    package_name
+        .strip_prefix('@')
+        .and_then(|name| name.split_once('/'))
+        .map(|(scope, _)| node_modules.join(format!("@{scope}")))
+        .unwrap_or(node_modules)
+}
+
+fn partial_install_scope_dir_for(prefix: &str, windows_layout: bool) -> PathBuf {
+    npm_global_package_scope_dir_for(prefix, windows_layout, "@indigoai-us/hq-cli")
 }
 
 fn partial_install_scope_dir(prefix: &str) -> PathBuf {
     partial_install_scope_dir_for(prefix, cfg!(target_os = "windows"))
 }
 
-/// Remove partial `@indigoai-us/hq-cli` install debris left by an interrupted
-/// npm install so a fresh `npm install -g` can lay the package down cleanly.
-/// Scoped strictly to `<prefix>/lib/node_modules/@indigoai-us`: deletes the
-/// `hq-cli` package dir and any `.hq-cli-*` temp staging dir, and touches
-/// nothing else — sibling packages under the scope, and everything outside it,
-/// are left intact. Best-effort: every removal is logged, but a failure does not
-/// abort the caller's retry, since the subsequent install surfaces the real
-/// error. Mirrors the manual remedy `hq-heal` applies (back up the partial
-/// state, then reinstall).
+/// Remove partial package install debris left by an interrupted npm install so
+/// a fresh `npm install -g` can lay the package down cleanly. Best-effort:
+/// every removal is logged, but a failure does not abort the caller's retry,
+/// since the subsequent install surfaces the real error.
 fn clean_partial_hq_cli_install(prefix: &str) {
     clean_partial_hq_cli_install_scope(&partial_install_scope_dir(prefix));
 }
 
-/// Remove partial `hq-cli` install debris from an already-derived
-/// `@indigoai-us` scope directory. Split out of [`clean_partial_hq_cli_install`]
-/// so BOTH scope sources — the resolved install prefix and, when no prefix
-/// resolved, the absolute path npm itself named
-/// ([`partial_install_scope_from_npm_path`]) — share ONE deletion routine with
-/// one blast radius. The deletion set is exactly as before: the `hq-cli` child
-/// directory and any `.hq-cli-*` child directory, and nothing else — never the
-/// scope directory itself, never a sibling package.
-fn clean_partial_hq_cli_install_scope(scope: &Path) {
-    let pkg = scope.join("hq-cli");
+/// Remove partial package install debris from an already-derived npm scope
+/// directory. Split out of [`clean_partial_hq_cli_install`] so BOTH scope
+/// sources — the resolved install prefix and, when no prefix resolved, the
+/// absolute path npm itself named ([`partial_install_scope_from_npm_path`]) —
+/// share ONE deletion routine with one blast radius. The deletion set is the
+/// named package child directory and matching staging children, and nothing
+/// else — never the scope directory itself, never a sibling package.
+pub(crate) fn clean_partial_install_scope(scope: &Path, package_name: &str) {
+    let valid_package_name = if let Some((scope_name, package)) = package_name.split_once('/') {
+        package_name.starts_with('@')
+            && !scope_name.is_empty()
+            && !package.is_empty()
+            && !package.contains('/')
+            && !package.contains('\\')
+            && scope_name != "."
+            && scope_name != ".."
+            && package != "."
+            && package != ".."
+    } else {
+        !package_name.is_empty()
+            && !package_name.contains('/')
+            && !package_name.contains('\\')
+            && package_name != "."
+            && package_name != ".."
+    };
+    if !valid_package_name {
+        log(
+            "hq-cli-update",
+            &format!("skipping partial npm cleanup with invalid package name {package_name:?}"),
+        );
+        return;
+    }
+    let package_name = package_name.rsplit('/').next().unwrap_or(package_name);
+
+    let pkg = scope.join(package_name);
     if pkg.exists() {
         match std::fs::remove_dir_all(&pkg) {
             Ok(()) => log(
@@ -400,14 +436,18 @@ fn clean_partial_hq_cli_install_scope(scope: &Path) {
         }
     }
 
-    // Sweep orphan `.hq-cli-*` staging dirs npm left behind mid-rename. Reading
-    // the scope dir may fail (e.g. it doesn't exist yet) — that's fine, there is
-    // simply nothing to sweep.
+    // Sweep orphan `.<package>-*` staging dirs npm left behind mid-rename.
+    // Reading the scope dir may fail (e.g. it does not exist yet), which means
+    // there is simply nothing to sweep.
     let Ok(entries) = std::fs::read_dir(scope) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(".hq-cli-") {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&format!(".{package_name}-"))
+        {
             let staging = entry.path();
             match std::fs::remove_dir_all(&staging) {
                 Ok(()) => log(
@@ -424,6 +464,10 @@ fn clean_partial_hq_cli_install_scope(scope: &Path) {
             }
         }
     }
+}
+
+fn clean_partial_hq_cli_install_scope(scope: &Path) {
+    clean_partial_install_scope(scope, "@indigoai-us/hq-cli");
 }
 
 /// Resolve the `@indigoai-us` install-scope directory to CREATE for an ENOENT
@@ -598,7 +642,7 @@ fn log_npm_install_attempt_ledger(ledger: &[NpmInstallAttempt]) {
 /// Build the npm child with the exact PATH and app-owned cache the updater
 /// needs. Keeping this at the process boundary means every retry inherits the
 /// same cache instead of falling back to a potentially root-owned `~/.npm`.
-fn npm_install_command(
+pub(crate) fn npm_install_command(
     npm: &str,
     path: &str,
     npm_cache: &Path,
@@ -614,13 +658,15 @@ fn npm_install_command(
 /// Create the stable cache directory owned by this app rather than inheriting
 /// npm's user-global cache. This deliberately never repairs, deletes, or
 /// changes ownership of the user's existing npm cache.
-fn prepare_app_npm_cache(app_cache_dir: PathBuf) -> Result<PathBuf, String> {
+pub(crate) fn prepare_app_npm_cache(app_cache_dir: PathBuf) -> Result<PathBuf, String> {
     let npm_cache = app_cache_dir.join("npm");
     std::fs::create_dir_all(&npm_cache).map_err(|e| format!("prepare app-owned npm cache: {e}"))?;
     Ok(npm_cache)
 }
 
-fn app_npm_cache(app: &AppHandle) -> Result<PathBuf, (&'static str, String)> {
+pub(crate) fn app_npm_cache<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<PathBuf, (&'static str, String)> {
     let app_cache_dir = app
         .path()
         .app_cache_dir()

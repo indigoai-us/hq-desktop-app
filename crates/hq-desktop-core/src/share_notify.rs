@@ -298,14 +298,18 @@ pub fn notification_title(issuer_display_name: &str) -> String {
 /// Human-facing title for a single shared path.
 ///
 /// Directory shares arrive as a wildcard path like `projects/foo/*` (or `/**`
-/// for a recursive share). Naively taking the last segment surfaces the literal
-/// `*`, which is meaningless. Strip the wildcard suffix and name the directory
-/// with a trailing slash (`foo/`) so a folder share reads as a folder; plain
-/// file shares keep their filename. Mirrors `shareTitle` in
+/// for a recursive share), or as a private-folder ACL path `projects/foo/`.
+/// Naively taking the last segment surfaces the literal `*`, which is
+/// meaningless. Strip the wildcard suffix and name the directory with a
+/// trailing slash (`foo/`) so a folder share reads as a folder; plain file
+/// shares keep their filename. Mirrors `shareTitle` in
 /// `src/lib/share-path.ts`.
 pub fn share_path_title(path: &str) -> String {
-    let is_wildcard_dir =
-        path.ends_with("/*") || path.ends_with("/**") || path == "*" || path == "**";
+    let is_wildcard_dir = path.ends_with("/*")
+        || path.ends_with("/**")
+        || path.ends_with('/')
+        || path == "*"
+        || path == "**";
     let cleaned = path
         .trim_end_matches("/**")
         .trim_end_matches("/*")
@@ -667,12 +671,26 @@ mod tests {
     }
 
     #[test]
+    fn test_notification_body_names_private_trailing_slash_share_as_a_folder() {
+        // `foo/` is a private-by-default creation folder, not a file named
+        // `foo`. Its notification must use the same folder affordance as a
+        // legacy `foo/*` share.
+        let paths = vec!["projects/private-brief/".to_string()];
+        let body = notification_body(None, &paths);
+        assert_eq!(body, "private-brief/");
+    }
+
+    #[test]
     fn test_share_path_title_variants() {
         assert_eq!(
             share_path_title("projects/client-stats-redesign/*"),
             "client-stats-redesign/"
         );
         assert_eq!(share_path_title("projects/foo/**"), "foo/");
+        assert_eq!(
+            share_path_title("projects/private-brief/"),
+            "private-brief/"
+        );
         assert_eq!(share_path_title("docs/a.md"), "a.md");
         assert_eq!(share_path_title("standalone.md"), "standalone.md");
         assert_eq!(share_path_title("*"), "All files");

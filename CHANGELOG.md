@@ -9,6 +9,16 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - When someone @mentions you in a channel, HQ now shows a notification that opens that message. Mentions only count when they are structured (not just the word @YourName), and they stay quiet if you already have that channel open. Shared folders show a folder tile that opens Files instead of a file preview.
+- A private folder shared as `foo/` now appears as `foo/` in the app and its
+  notification instead of looking like a file.
+
+## [0.10.308] — 2026-09-23
+
+- First-run setup now retries npm dependency installs after stale caches, interrupted installs, and registry metadata that has not propagated yet.
+
+## [0.10.307] — 2026-09-23
+
+- Core updates now report clearer failure details when rescue fails, including the failed stage, tool versions, and available disk space, without sending local paths.
 
 ## [0.10.306] — 2026-09-22
 
