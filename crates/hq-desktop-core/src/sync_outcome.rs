@@ -2753,6 +2753,33 @@ pub fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
     }
 }
 
+/// Stable, content-safe class for grouping auto-sync watcher exits. Specific
+/// Windows statuses and POSIX termination signals retain their distinct cause;
+/// a Node fatal takes the class only when no more specific supervisor/OS status
+/// is present. All remaining exits use `other` rather than embedding a raw code
+/// in the Sentry fingerprint.
+pub fn watcher_exit_class(
+    code: Option<i32>,
+    signal: Option<i32>,
+    node_fatal: bool,
+) -> &'static str {
+    if code == Some(0xC000_0409u32 as i32) {
+        "stack_buffer_overrun"
+    } else if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) {
+        "dbg_terminate"
+    } else if signal == Some(SIGTERM_SIGNAL) {
+        "sigterm"
+    } else if signal == Some(SIGKILL_SIGNAL) {
+        "sigkill"
+    } else if code == Some(-1) {
+        "minus_one"
+    } else if node_fatal {
+        "node_fatal"
+    } else {
+        "other"
+    }
+}
+
 /// Closed, content-safe vocabulary naming the DISPOSITION of the signal that
 /// terminated an auto-sync watcher, so a signal-only termination is filterable in
 /// Sentry without parsing the message text. Every arm returns a fixed token that
@@ -4688,6 +4715,42 @@ mod tests {
                 "fault-arm drift from is_crash_signal at signal {sig}"
             );
         }
+    }
+
+    #[test]
+    fn watcher_exit_class_groups_known_native_and_node_fatal_exits() {
+        assert_eq!(
+            watcher_exit_class(Some(0xC000_0409u32 as i32), None, false),
+            "stack_buffer_overrun"
+        );
+        assert_eq!(
+            watcher_exit_class(Some(WINDOWS_SESSION_TERMINATE_EXIT), None, false),
+            "dbg_terminate"
+        );
+        assert_eq!(watcher_exit_class(Some(-1), None, false), "minus_one");
+        assert_eq!(
+            watcher_exit_class(None, Some(SIGTERM_SIGNAL), false),
+            "sigterm"
+        );
+        assert_eq!(
+            watcher_exit_class(None, Some(SIGKILL_SIGNAL), false),
+            "sigkill"
+        );
+        assert_eq!(watcher_exit_class(Some(1), None, true), "node_fatal");
+        assert_eq!(watcher_exit_class(Some(127), None, false), "other");
+    }
+
+    #[test]
+    fn watcher_exit_fingerprint_groups_variable_unknown_statuses_by_class() {
+        let first = [
+            "sync-watcher-exit",
+            watcher_exit_class(Some(127), None, false),
+        ];
+        let second = [
+            "sync-watcher-exit",
+            watcher_exit_class(Some(143), None, false),
+        ];
+        assert_eq!(first, second);
     }
 
     #[test]

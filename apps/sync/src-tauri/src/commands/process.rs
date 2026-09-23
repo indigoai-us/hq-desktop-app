@@ -386,10 +386,7 @@ pub fn note_app_initiated_exit() {
     APP_INITIATED_EXIT.store(true, Ordering::Release);
 }
 
-/// Read by the Windows-only `RunEvent::Exit` arm (and by this crate's tests on
-/// every host); gated so a macOS/Linux release build does not carry it as dead
-/// code.
-#[cfg(any(target_os = "windows", test))]
+/// Read by the watcher exit capture and platform lifecycle adapters on every host.
 pub fn app_initiated_exit() -> bool {
     APP_INITIATED_EXIT.load(Ordering::Acquire)
 }

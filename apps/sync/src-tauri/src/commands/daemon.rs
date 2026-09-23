@@ -4,7 +4,7 @@
 //! Behind `AUTOSTART_DAEMON` feature flag in ~/.hq/menubar.json (default false).
 //! Svelte UI does NOT expose these V1 — invocable only via Tauri devtools.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -36,6 +36,7 @@ use crate::util::logfile::log;
 use crate::util::paths;
 use hq_desktop_core::daemon::{
     derive_watch_daemon_state, is_daemon_alive_for_supervisor, should_terminate_job_on_path,
+    watcher_stop_attribution, WatcherStopAttribution, WatcherStopInitiator,
 };
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::runner_error_shape::{
@@ -578,6 +579,9 @@ fn terminate_daemon_generation_once_with_delay(
     if !should_terminate_job_on_path(already, category) {
         return false;
     }
+    if !already {
+        remember_watcher_stop(generation, watcher_stop_attribution(category));
+    }
     // Only the heartbeat-stall watchdog stamps a durable cause: it is the one
     // daemon teardown the watcher's terminal boundary may later attribute to the
     // app. The cause is published before any OS call, so an ESRCH/lost-publication
@@ -596,6 +600,9 @@ fn terminate_daemon_generation_once_with_delay(
         }
         _ => cancel_process_generation_impl(DAEMON_HANDLE, generation, sigkill_delay),
     };
+    if !cancelled && !already {
+        forget_watcher_stop(generation);
+    }
     if cancelled {
         match category {
             DaemonFailureCategory::HeartbeatStall => {
@@ -625,6 +632,135 @@ fn terminate_daemon_generation_once_with_delay(
         }
     }
     cancelled
+}
+
+static LAST_WATCHER_STOP: OnceLock<Mutex<HashMap<u64, WatcherStopAttribution>>> = OnceLock::new();
+
+fn remember_watcher_stop(generation: u64, attribution: WatcherStopAttribution) {
+    LAST_WATCHER_STOP
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(generation, attribution);
+}
+
+fn take_watcher_stop(generation: u64) -> Option<WatcherStopAttribution> {
+    LAST_WATCHER_STOP
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&generation)
+}
+
+fn forget_watcher_stop(generation: u64) {
+    if let Some(stops) = LAST_WATCHER_STOP.get() {
+        stops
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&generation);
+    }
+}
+
+fn exit_stop_attribution(
+    process_generation: u64,
+    cancellation_record: Option<CancellationRecord>,
+    app_quitting: bool,
+    updater_installing: bool,
+    session_ending: &str,
+) -> WatcherStopAttribution {
+    take_watcher_stop(process_generation).unwrap_or_else(|| {
+        if app_quitting {
+            WatcherStopAttribution {
+                reason: "app_quit",
+                initiator: WatcherStopInitiator::App,
+            }
+        } else if updater_installing {
+            WatcherStopAttribution {
+                reason: "updater_install",
+                initiator: WatcherStopInitiator::Updater,
+            }
+        } else if matches!(
+            session_ending,
+            "wm_end_session" | "wts_logoff" | "macos_will_power_off"
+        ) {
+            WatcherStopAttribution {
+                reason: "session_ending",
+                initiator: WatcherStopInitiator::OperatingSystem,
+            }
+        } else {
+            match cancellation_record.and_then(|record| record.cause) {
+                Some(SyncCancelCause::HeartbeatStall) => WatcherStopAttribution {
+                    reason: "heartbeat_stall",
+                    initiator: WatcherStopInitiator::WatcherSupervisor,
+                },
+                Some(SyncCancelCause::TimeoutWatchdog) => WatcherStopAttribution {
+                    reason: "timeout_watchdog",
+                    initiator: WatcherStopInitiator::WatcherSupervisor,
+                },
+                Some(SyncCancelCause::UserStop) => WatcherStopAttribution {
+                    reason: "user_stop",
+                    initiator: WatcherStopInitiator::User,
+                },
+                Some(SyncCancelCause::AppQuit) => WatcherStopAttribution {
+                    reason: "app_quit",
+                    initiator: WatcherStopInitiator::App,
+                },
+                None => WatcherStopAttribution {
+                    reason: "none",
+                    initiator: WatcherStopInitiator::None,
+                },
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+mod watcher_stop_attribution_tests {
+    use super::*;
+
+    #[test]
+    fn exit_stop_attribution_prefers_generation_cause_then_os_lifecycle() {
+        let generation = u64::MAX - 11;
+        remember_watcher_stop(
+            generation,
+            watcher_stop_attribution(DaemonFailureCategory::HeartbeatStall),
+        );
+        let supervisor = exit_stop_attribution(generation, None, false, false, "unavailable");
+        assert_eq!(supervisor.reason, "heartbeat_stall");
+        assert_eq!(supervisor.initiator, WatcherStopInitiator::WatcherSupervisor);
+
+        let app = exit_stop_attribution(0, None, true, false, "none");
+        assert_eq!(app.reason, "app_quit");
+        assert_eq!(app.initiator, WatcherStopInitiator::App);
+
+        let updater = exit_stop_attribution(0, None, false, true, "none");
+        assert_eq!(updater.reason, "updater_install");
+        assert_eq!(updater.initiator, WatcherStopInitiator::Updater);
+
+        let operating_system = exit_stop_attribution(0, None, false, false, "wm_end_session");
+        assert_eq!(operating_system.reason, "session_ending");
+        assert_eq!(
+            operating_system.initiator,
+            WatcherStopInitiator::OperatingSystem
+        );
+
+        let query_only = exit_stop_attribution(0, None, false, false, "wm_query_end_session");
+        assert_eq!(query_only.reason, "none");
+        assert_eq!(query_only.initiator, WatcherStopInitiator::None);
+
+        let user_stop = exit_stop_attribution(
+            0,
+            Some(CancellationRecord {
+                cause: Some(SyncCancelCause::UserStop),
+                termination_effected: true,
+            }),
+            false,
+            false,
+            "none",
+        );
+        assert_eq!(user_stop.reason, "user_stop");
+        assert_eq!(user_stop.initiator, WatcherStopInitiator::User);
+    }
 }
 
 /// Observe app-owned registry + optional inherited PID file.
@@ -1551,6 +1687,14 @@ struct WatcherFaultDeferredRead {
 struct WatcherExitCaptureContext {
     lifecycle_state: String,
     app_quit_in_progress: bool,
+    app_quitting: bool,
+    updater_installing: bool,
+    session_ending: String,
+    system_sleep_resume_within_120_seconds: String,
+    system_power_observer: String,
+    last_stop_reason: String,
+    stop_initiator: String,
+    runner_fatal_lines: Vec<String>,
     supervisor_respawn_in_flight: bool,
     heartbeat_stall_termination_in_flight: bool,
     cancelled: bool,
@@ -1796,6 +1940,14 @@ impl Default for WatcherExitCaptureContext {
         Self {
             lifecycle_state: "unknown".to_string(),
             app_quit_in_progress: false,
+            app_quitting: false,
+            updater_installing: false,
+            session_ending: "unavailable".to_string(),
+            system_sleep_resume_within_120_seconds: "unavailable".to_string(),
+            system_power_observer: "unavailable".to_string(),
+            last_stop_reason: "none".to_string(),
+            stop_initiator: "none".to_string(),
+            runner_fatal_lines: Vec::new(),
             supervisor_respawn_in_flight: false,
             heartbeat_stall_termination_in_flight: false,
             cancelled: false,
@@ -1961,10 +2113,31 @@ fn watcher_exit_capture_context(
         DAEMON_HANDLE,
         process_generation,
     );
+    let app_quitting = crate::commands::process::app_initiated_exit();
+    let updater_installing = crate::updater::update_install_in_progress();
+    let lifecycle = crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
+    let stop = exit_stop_attribution(
+        process_generation,
+        cancellation_record,
+        app_quitting,
+        updater_installing,
+        lifecycle.session_ending,
+    );
+    let runner_fatal_lines = node_fatal_stderr_lines(stderr_tail);
     finish_watcher_generation(generation);
     WatcherExitCaptureContext {
         lifecycle_state: current_lifecycle_state().as_str().to_string(),
         app_quit_in_progress: app_exit_requested(),
+        app_quitting,
+        updater_installing,
+        session_ending: lifecycle.session_ending.to_string(),
+        system_sleep_resume_within_120_seconds: lifecycle
+            .system_sleep_resume_within_120_seconds
+            .to_string(),
+        system_power_observer: lifecycle.system_power_observer.to_string(),
+        last_stop_reason: stop.reason.to_string(),
+        stop_initiator: stop.initiator.as_str().to_string(),
+        runner_fatal_lines,
         supervisor_respawn_in_flight: SUPERVISOR_RESPAWN_IN_FLIGHT.load(Ordering::Acquire),
         heartbeat_stall_termination_in_flight: HEARTBEAT_STALL_TERMINATION_IN_FLIGHT
             .load(Ordering::Acquire),
@@ -2088,6 +2261,26 @@ fn watcher_exit_capture_context(
         // through the fault deferred worker instead).
         runner_report_deferred_dir: None,
     }
+}
+
+fn node_fatal_stderr_lines(stderr_tail: &[String]) -> Vec<String> {
+    const MAX_LINES: usize = hq_telemetry::RUNNER_FATAL_LINE_COUNT_LIMIT;
+    const MAX_INPUT_BYTES: usize = 1_024;
+    stderr_tail
+        .iter()
+        .filter(|line| {
+            classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal
+        })
+        .take(MAX_LINES)
+        .map(|line| {
+            let line = line.split(['\r', '\n']).next().unwrap_or_default();
+            let mut end = line.len().min(MAX_INPUT_BYTES);
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            line[..end].to_string()
+        })
+        .collect()
 }
 
 // The Windows session-end attribution readers (`current_windows_terminator_
@@ -2492,23 +2685,13 @@ fn resolve_deferred_session_end_capture(id: u64) {
     }
 }
 
-/// A distinct fingerprint shape token for the escalation event, so a repeated
-/// external killer never groups with the benign `windows:session-terminate`
-/// sign-out issue (whose fingerprint is unchanged and which now drops on its
-/// first per-run occurrence). Content-safe fixed vocabulary.
-const SESSION_TERMINATE_ESCALATION_FINGERPRINT: &str = "windows:session-terminate-external-killer";
-
-/// Re-shape a held session-terminate payload into the escalation event: a NEW
-/// fingerprint (never a reuse of the benign one) and a re-titled message naming
-/// the anomaly. Every tag/extra — including the teardown diagnostics the
-/// finalizer adds — is preserved, so the escalation carries the full context.
+/// Re-title a held session-terminate payload when repeated evidence shows an
+/// unexplained external termination. Keep the stable exit-class fingerprint;
+/// the refreshed `windows_terminator` tag and message carry the escalation detail.
 fn escalated_session_terminate_payload(
     mut payload: DeferredSessionEndCapture,
     run_count: u32,
 ) -> DeferredSessionEndCapture {
-    if payload.fingerprint.len() > 2 {
-        payload.fingerprint[2] = SESSION_TERMINATE_ESCALATION_FINGERPRINT.to_string();
-    }
     payload.message = format!(
         "auto-sync watcher externally terminated (Windows status 0x40010004 \
          (session terminate)) {run_count} times in one app run with no confirmed \
@@ -3986,26 +4169,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let memory_evidence =
         watcher_memory_exhaustion_evidence(&*effects, last_stderr, watcher_command, context);
     let memory_attributed = memory_evidence.is_attributed();
-    let fingerprint_token =
-        watcher_termination_fingerprint_token(code, signal, host, memory_evidence);
-    let runner_error_class = safe_runner_error_fingerprint_token(context.runner_error_class);
-    // Fifth element, mirroring the manual seam (HQ-DESKTOP-4T r3): the dominant
-    // cause token, validated against the enum so a plumbing slip can never place a
-    // runner byte in the fingerprint (and never silently degrade to "none" the way
-    // the hand-written class allow-list once did for enoent/eexist/enotempty/exdev).
-    let runner_error_cause = safe_runner_error_cause_fingerprint_token(context.runner_error_cause);
-    // Sixth element, mirroring the manual seam (HQ-DESKTOP-5M): the dominant runner
-    // failure SITE, validated against the enum so a plumbing slip can never place a
-    // runner byte in the fingerprint (and never silently degrade to "none").
-    let runner_error_site = safe_runner_error_site_fingerprint_token(context.runner_error_site);
-    let fingerprint = [
-        "sync",
-        "auto-sync-watcher-termination",
-        fingerprint_token.as_str(),
-        runner_error_class,
-        runner_error_cause,
-        runner_error_site,
-    ];
+    let node_fatal = context.runner_fatal_class == RunnerFatalClass::NodeFatal.as_str()
+        || last_stderr.is_some_and(|line| {
+            classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal
+        });
+    let exit_class = hq_desktop_core::sync_outcome::watcher_exit_class(code, signal, node_fatal);
+    let fingerprint = ["sync-watcher-exit", exit_class];
     let windows_termination = code
         .map(classify_windows_exit_status)
         .filter(|termination| termination.is_windows_status());
@@ -4100,8 +4269,22 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         };
 
     let mut tags = vec![
+        ("exit_class", exit_class.to_string()),
         ("runner_fatal_class", runner_fatal_class),
         ("sync_route", "watcher".to_string()),
+        ("app_quitting", context.app_quitting.to_string()),
+        ("updater_installing", context.updater_installing.to_string()),
+        ("session_ending", context.session_ending.clone()),
+        (
+            "system_sleep_resume_within_120_seconds",
+            context.system_sleep_resume_within_120_seconds.clone(),
+        ),
+        (
+            "system_power_observer",
+            context.system_power_observer.clone(),
+        ),
+        ("last_stop_reason", context.last_stop_reason.clone()),
+        ("stop_initiator", context.stop_initiator.clone()),
         ("runner_stack_shape", context.runner_stack_shape.clone()),
         (
             "runner_stack_signature",
@@ -4309,6 +4492,19 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    if !context.runner_fatal_lines.is_empty() {
+        let lines = hq_telemetry::redact_runner_fatal_lines(&context.runner_fatal_lines);
+        if !lines.is_empty() {
+            extras.push((
+                "runner_fatal_line_count",
+                sentry::protocol::Value::Number(lines.lines().count().into()),
+            ));
+            extras.push((
+                "runner_fatal_lines",
+                sentry::protocol::Value::String(lines),
+            ));
+        }
+    }
     // Carry the bare terminating signal integer alongside its content-safe class
     // tag, so a signal-only watcher exit is filterable both by disposition and by
     // exact signal number. Absent for a signal-free exit; a bare integer, so it is
@@ -5502,24 +5698,7 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
     // crash exit would — the suppressed pre-empt exit never will.
     let consecutive = effects.note_watcher_crashed();
     let heap_ceiling = hq_desktop_core::daemon::effective_runner_heap_ceiling();
-    let memory_evidence = MemoryExhaustionEvidence {
-        heap_oom_class: false,
-        footprint_at_or_above_ceiling: true,
-        supervisor_preempt: true,
-    };
-    let fingerprint_token = watcher_termination_fingerprint_token(
-        None,
-        None,
-        current_termination_host(),
-        memory_evidence,
-    );
-    let fingerprint = [
-        "sync",
-        "auto-sync-watcher-termination",
-        fingerprint_token.as_str(),
-        "none",
-        "none",
-    ];
+    let fingerprint = ["sync-watcher-exit", "other"];
     let message = format!(
         "auto-sync watcher pre-empted at declared footprint ceiling \
          (runner memory exhausted), consecutive failure #{consecutive} \
@@ -5571,8 +5750,29 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
     let inferred_non_heap_mb = mc
         .js_heap_total_mb
         .map(|total| footprint_mb.saturating_sub(total));
+    let lifecycle = crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
     let tags = [
+        ("exit_class", "other".to_string()),
         ("sync_route", "watcher".to_string()),
+        (
+            "app_quitting",
+            crate::commands::process::app_initiated_exit().to_string(),
+        ),
+        (
+            "updater_installing",
+            crate::updater::update_install_in_progress().to_string(),
+        ),
+        ("session_ending", lifecycle.session_ending.to_string()),
+        (
+            "system_sleep_resume_within_120_seconds",
+            lifecycle.system_sleep_resume_within_120_seconds.to_string(),
+        ),
+        (
+            "system_power_observer",
+            lifecycle.system_power_observer.to_string(),
+        ),
+        ("last_stop_reason", "runner_memory".to_string()),
+        ("stop_initiator", "watcher_supervisor".to_string()),
         ("rss_scope", "tree".to_string()),
         (
             "runner_heap_ceiling_source",
@@ -7857,14 +8057,7 @@ mod tests {
         let windows_capture = windows.captures.first().expect("Windows abort captures");
         assert_eq!(
             windows_capture.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "abort:sigabrt",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         assert!(windows_capture.message.starts_with(
             "auto-sync watcher exited unexpectedly (aborted (Node abort exit code 134)), consecutive failure #"
@@ -7974,14 +8167,7 @@ mod tests {
         let unknown_capture = posix_unknown.captures.first().expect("exit 221 captures");
         assert_eq!(
             unknown_capture.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:221",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         // Post-fix: the plain exit code is named by describe_exit rather than
         // dumped as a raw Debug tuple. Grouping is unchanged (fingerprint above).
@@ -8010,14 +8196,7 @@ mod tests {
             .expect("Windows fault captures");
         assert_eq!(
             windows_capture.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:fault:0xC0000409",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "stack_buffer_overrun"]
         );
         assert!(windows_capture.message.contains("0xC0000409 (fault)"));
         assert_eq!(
@@ -8044,14 +8223,7 @@ mod tests {
         let posix_134_capture = posix_134.captures.first().expect("POSIX 134 captures");
         assert_eq!(
             posix_134_capture.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:134",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         // Post-fix: named by describe_exit (a bare exit 134 is only a Node abort
         // on Windows; on POSIX it stays a plain exit code). Grouping unchanged.
@@ -8096,14 +8268,7 @@ mod tests {
         // new tokens may enter it, or the six-week history fragments again.
         assert_eq!(
             capture.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:fault:0xC0000409",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "stack_buffer_overrun"]
         );
         assert_eq!(
             recorded_tag(capture, "runner_fatal_class"),
@@ -8224,14 +8389,7 @@ mod tests {
         // Grouping continuity: the new fields never enter the family fingerprint.
         assert_eq!(
             capture.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:fault:0xC0000409",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "stack_buffer_overrun"]
         );
     }
 
@@ -8820,14 +8978,7 @@ mod tests {
         // to what an immediate capture for the same inputs would have produced.
         assert_eq!(
             held.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:fault:0xC0000409",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "stack_buffer_overrun"]
         );
         // Lifecycle recovery ran synchronously and is unaffected by the deferral.
         assert!(effects.lifecycle.iter().any(|(state, _)| matches!(
@@ -8847,10 +8998,8 @@ mod tests {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
                 &[
-                    "sync",
-                    "auto-sync-watcher-termination",
-                    "windows:fault:0xC0000409",
-                    "none",
+                    "sync-watcher-exit",
+                    "stack_buffer_overrun",
                 ],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
@@ -8896,10 +9045,8 @@ mod tests {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
                 &[
-                    "sync",
-                    "auto-sync-watcher-termination",
-                    "windows:fault:0xC0000409",
-                    "none",
+                    "sync-watcher-exit",
+                    "stack_buffer_overrun",
                 ],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
@@ -8942,10 +9089,8 @@ mod tests {
         let base = DeferredWatcherFaultCapture::new(
             "auto-sync watcher exited unexpectedly",
             &[
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:fault:0xC0000409",
-                "none",
+                "sync-watcher-exit",
+                "stack_buffer_overrun",
             ],
             &[
                 ("watcher_fault_provenance", "deferred".to_string()),
@@ -9607,14 +9752,7 @@ mod tests {
             .expect("external SIGKILL event remains sendable");
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "signal:9",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "sigkill"]
         );
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(
@@ -9864,14 +10002,7 @@ mod tests {
             .expect("external SIGKILL event remains sendable");
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "signal:9",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "sigkill"]
         );
         assert_eq!(
             event.extra["cancellation_record_present"],
@@ -9995,14 +10126,7 @@ mod tests {
             .contains("auto-sync watcher exited unexpectedly"));
         assert_eq!(
             external_kill.captures[0].fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "signal:9",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "sigkill"]
         );
         assert!(external_kill.captures[0]
             .tags
@@ -10183,14 +10307,7 @@ mod tests {
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:status-ffffffff",
-                "eperm",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "minus_one"]
         );
         assert!(event.message.contains("0xFFFFFFFF (origin unknown)"));
         assert!(!event.message.contains("code=Some(-1)"));
@@ -10284,14 +10401,7 @@ mod tests {
         assert_eq!(effects.captures.len(), 1);
         assert_eq!(
             effects.captures[0].fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:status-ffffffff",
-                "auth",
-                "vault_permission_denied",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "minus_one"]
         );
     }
 
@@ -10340,14 +10450,7 @@ mod tests {
         );
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:status-ffffffff",
-                "other",
-                "unknown_unnamed",
-                "local_state"
-            ]
+            vec!["sync-watcher-exit", "minus_one"]
         );
     }
 
@@ -10379,14 +10482,7 @@ mod tests {
         assert_eq!(effects.captures.len(), 1);
         assert_eq!(
             effects.captures[0].fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:status-ffffffff",
-                "enoent",
-                "enoent",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "minus_one"]
         );
     }
 
@@ -10432,25 +10528,11 @@ mod tests {
         assert_eq!(effects.captures.len(), 2);
         assert_eq!(
             effects.captures[0].fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:status-ffffffff",
-                "eperm",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "minus_one"]
         );
         assert_eq!(
             effects.captures[1].fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:status-ffffffff",
-                "auth",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "minus_one"]
         );
         assert_eq!(
             recorded_tag(&effects.captures[0], "runner_error_ops"),
@@ -10535,14 +10617,7 @@ mod tests {
         );
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:session-terminate",
-                "eperm",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "dbg_terminate"]
         );
         assert!(event.message.contains("0x40010004 (session terminate)"));
         assert!(!event.message.contains("1073807364"));
@@ -10726,7 +10801,7 @@ mod tests {
         let payload = || {
             DeferredSessionEndCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &["sync", "auto-sync-watcher-termination"],
+                &["sync-watcher-exit", "dbg_terminate"],
                 &[(
                     "windows_terminator",
                     WindowsTerminatorAttribution::UnattributedNoSignal
@@ -11060,7 +11135,7 @@ mod tests {
         // The finalized payload carries the honest latch extra alongside it.
         let payload = DeferredSessionEndCapture::new(
             "auto-sync watcher exited unexpectedly",
-            &["sync", "auto-sync-watcher-termination"],
+            &["sync-watcher-exit", "dbg_terminate"],
             &[("windows_terminator", "observer_failed".to_string())],
             &[],
         );
@@ -11111,42 +11186,27 @@ mod tests {
             Some(WindowsTerminatorAttribution::UnattributedNoTeardown)
         );
 
-        // Second unconfirmed exit this run: ESCALATE.
+        // Second unconfirmed exit this run: ESCALATE in the message and tags,
+        // while preserving the stable two-part fingerprint.
         let second =
             resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Absent, 2);
         assert_eq!(second.outcome, DeferredSessionEndOutcome::Capture);
 
-        // The escalation re-shapes the held payload onto a NEW fingerprint (never
-        // the benign windows:session-terminate one) and a re-titled message, while
-        // preserving every other fingerprint element.
+        // The escalation re-titles the held payload but leaves the stable exit
+        // class grouping key unchanged.
         let held = DeferredSessionEndCapture::new(
             "auto-sync watcher exited unexpectedly (0x40010004 (session terminate)), \
              consecutive failure #1",
-            &[
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:session-terminate",
-                "none",
-                "none",
-                "none",
-            ],
+            &["sync-watcher-exit", "dbg_terminate"],
             &[("windows_terminator", "unattributed_no_signal".to_string())],
             &[],
         );
         let escalated = escalated_session_terminate_payload(held, 2);
         assert_eq!(
             escalated.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:session-terminate-external-killer",
-                "none",
-                "none",
-                "none",
-            ],
-            "the escalation must not reuse the benign session-terminate fingerprint"
+            vec!["sync-watcher-exit", "dbg_terminate"],
+            "the escalation retains the stable exit-class fingerprint"
         );
-        assert_ne!(escalated.fingerprint[2], "windows:session-terminate");
         assert!(escalated.message.contains("2 times in one app run"));
         assert!(escalated.message.contains("not a sign-out"));
         assert!(!escalated.message.contains("consecutive failure"));
@@ -11257,7 +11317,7 @@ mod tests {
         let payload = || {
             DeferredSessionEndCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &["sync", "auto-sync-watcher-termination"],
+                &["sync-watcher-exit", "dbg_terminate"],
                 &[("windows_terminator", "unattributed_no_signal".to_string())],
                 &[],
             )
@@ -11322,7 +11382,7 @@ mod tests {
         let private_marker = r"C:\Users\Ada\hq-private-marker";
         let payload = DeferredSessionEndCapture::new(
             "auto-sync watcher exited unexpectedly",
-            &["sync", "auto-sync-watcher-termination"],
+            &["sync-watcher-exit", "dbg_terminate"],
             &[("windows_terminator", "unattributed_query_only".to_string())],
             &[],
         );
@@ -11394,11 +11454,7 @@ mod tests {
     fn a_deferral_reports_the_attribution_read_after_the_grace() {
         let payload = DeferredSessionEndCapture::new(
             "auto-sync watcher exited unexpectedly",
-            &[
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:session-terminate",
-            ],
+            &["sync-watcher-exit", "dbg_terminate"],
             &[
                 ("sync_route", "watcher".to_string()),
                 ("windows_terminator", "unattributed_no_signal".to_string()),
@@ -11607,14 +11663,7 @@ mod tests {
         assert_eq!(effects.captures.len(), 1);
         assert_eq!(
             effects.captures[0].fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:session-terminate",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "dbg_terminate"]
         );
         assert!(effects.captures[0]
             .tags
@@ -11740,14 +11789,7 @@ mod tests {
         );
         assert_eq!(
             scrubbed.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:session-terminate",
-                "eperm",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "dbg_terminate"]
         );
     }
 
@@ -11791,14 +11833,7 @@ mod tests {
         assert!(!serialized.contains("UV_HANDLE_CLOSING"));
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:fault:0xC0000409",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "stack_buffer_overrun"]
         );
     }
 
@@ -11846,14 +11881,7 @@ mod tests {
         assert!(!serialized.contains(private_path));
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:126",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
     }
 
@@ -12020,14 +12048,7 @@ mod tests {
         );
         assert_eq!(
             first.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:190",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         assert_eq!(
             recorded_string_extra(first, "runner_exec_resolution"),
@@ -12053,14 +12074,7 @@ mod tests {
         );
         assert_eq!(
             fifth.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:127",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         assert_eq!(recorded_number_extra(fifth, "exec_not_runnable_streak"), 4);
         assert_eq!(
@@ -12076,14 +12090,7 @@ mod tests {
         );
         assert_eq!(
             ninth.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:127",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         assert_eq!(recorded_number_extra(ninth, "exec_not_runnable_streak"), 8);
     }
@@ -12153,14 +12160,7 @@ mod tests {
         for capture in &effects.captures {
             assert_eq!(
                 capture.fingerprint,
-                vec![
-                    "sync",
-                    "auto-sync-watcher-termination",
-                    "signal:9",
-                    "none",
-                    "none",
-                    "none"
-                ]
+                vec!["sync-watcher-exit", "sigkill"]
             );
         }
     }
@@ -12399,14 +12399,7 @@ mod tests {
             .expect("a 190 launcher fast-fail captures at #1");
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:190",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         assert_eq!(
             recorded_string_extra(event, "runner_exec_resolution"),
@@ -12447,14 +12440,7 @@ mod tests {
         let direct_event = direct.captures.first().expect("still captured at #1");
         assert_eq!(
             direct_event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:190",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         assert!(
             !direct_event
@@ -12511,14 +12497,7 @@ mod tests {
         let exec_event = exec.captures.first().expect("127 captures at streak 4");
         assert_eq!(
             exec_event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "exit:127",
-                "none",
-                "none",
-                "none"
-            ]
+            vec!["sync-watcher-exit", "other"]
         );
         assert_eq!(
             recorded_string_extra(exec_event, "runner_exec_target_exists"),
@@ -13247,9 +13226,10 @@ mod tests {
         // Grouping is message-independent: the fingerprint is byte-identical with
         // and without heap evidence (the retitled RSS/heap lines cannot regroup).
         assert_eq!(heap_capture.fingerprint, base_capture.fingerprint);
-        assert_eq!(heap_capture.fingerprint.len(), 6);
-        assert_eq!(heap_capture.fingerprint[0], "sync");
-        assert_eq!(heap_capture.fingerprint[1], "auto-sync-watcher-termination");
+        assert_eq!(
+            heap_capture.fingerprint,
+            vec!["sync-watcher-exit", "other"]
+        );
     }
 
     fn assert_signed_out_entry_point_records_origin(
@@ -13540,15 +13520,8 @@ mod tests {
         );
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "auto-sync-watcher-termination",
-                "windows:fault:0xC0000409",
-                "none",
-                "none",
-                "none",
-            ],
-            "grouping continuity: neither cluster issue may regroup"
+            vec!["sync-watcher-exit", "stack_buffer_overrun"],
+            "the native exit class is the sole grouping dimension"
         );
         assert!(event
             .message
@@ -13633,9 +13606,51 @@ mod tests {
         );
         assert_eq!(recorded_string_extra(event, "runner_phase"), "idle");
         assert_eq!(recorded_tag(event, "windows_exit_status"), "0xC0000409");
+        assert_eq!(recorded_tag(event, "exit_class"), "stack_buffer_overrun");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync-watcher-exit", "stack_buffer_overrun"]
+        );
         assert_eq!(
             recorded_tag(event, "windows_fault_symbol"),
             "STATUS_STACK_BUFFER_OVERRUN"
         );
+    }
+
+    #[test]
+    fn node_fatal_exit_has_stable_grouping_and_redacted_bounded_stderr_context() {
+        let private_path = "/Users/ada/private/workspace/cache";
+        let context = WatcherExitCaptureContext {
+            runner_fatal_class: "node_fatal".to_string(),
+            runner_fatal_lines: vec![format!(
+                "FATAL ERROR: Reached heap limit at {private_path}"
+            )],
+            ..WatcherExitCaptureContext::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut effects,
+            Some(7),
+            None,
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &context,
+        );
+
+        let event = effects.captures.first().expect("Node fatal remains visible");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync-watcher-exit", "node_fatal"]
+        );
+        assert_eq!(recorded_tag(event, "exit_class"), "node_fatal");
+        assert_eq!(recorded_number_extra(event, "runner_fatal_line_count"), 1);
+        let fatal_lines = recorded_string_extra(event, "runner_fatal_lines");
+        assert!(fatal_lines.contains("FATAL ERROR: Reached heap limit"));
+        assert!(fatal_lines.contains("[Filtered]"));
+        assert!(!fatal_lines.contains(private_path));
     }
 }

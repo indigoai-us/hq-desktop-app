@@ -566,10 +566,13 @@ mod windows_observer {
         match message {
             WM_QUERYENDSESSION => {
                 context.tracker.note_query_end_session();
+                crate::commands::watcher_exit_lifecycle::note_windows_query_end_session();
                 LRESULT(1)
             }
             WM_ENDSESSION => {
-                context.tracker.note_end_session(wparam.0 != 0);
+                let ending = wparam.0 != 0;
+                context.tracker.note_end_session(ending);
+                crate::commands::watcher_exit_lifecycle::note_windows_end_session(ending);
                 LRESULT(0)
             }
             WM_WTSSESSION_CHANGE => {
@@ -577,11 +580,38 @@ mod windows_observer {
                     && context.session_id == Some(lparam.0 as u32)
                 {
                     context.tracker.note_wts_logoff_same_session();
+                    crate::commands::watcher_exit_lifecycle::note_windows_logoff();
                 }
                 LRESULT(0)
             }
+            0x0218 => {
+                const PBT_APMSUSPEND: usize = 0x0004;
+                const PBT_APMRESUMECRITICAL: usize = 0x0006;
+                const PBT_APMRESUMESUSPEND: usize = 0x0007;
+                const PBT_APMRESUMESTANDBY: usize = 0x0008;
+                const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
+                match wparam.0 {
+                    PBT_APMSUSPEND => {
+                        crate::commands::watcher_exit_lifecycle::note_system_sleep();
+                    }
+                    PBT_APMRESUMECRITICAL
+                    | PBT_APMRESUMESUSPEND
+                    | PBT_APMRESUMESTANDBY
+                    | PBT_APMRESUMEAUTOMATIC => {
+                        crate::commands::watcher_exit_lifecycle::note_system_resume();
+                    }
+                    _ => {}
+                }
+                LRESULT(1)
+            }
             WM_CLOSE => LRESULT(0),
             WM_DESTROY => {
+                crate::commands::watcher_exit_lifecycle::set_system_power_observer_available(
+                    false,
+                );
+                crate::commands::watcher_exit_lifecycle::set_session_end_observer_available(
+                    false,
+                );
                 context.destroyed.store(true, Ordering::Release);
                 PostQuitMessage(0);
                 LRESULT(0)
@@ -684,6 +714,8 @@ mod windows_observer {
             );
         }
         shared.hwnd.store(hwnd.0 as isize, Ordering::Release);
+        crate::commands::watcher_exit_lifecycle::set_system_power_observer_available(true);
+        crate::commands::watcher_exit_lifecycle::set_session_end_observer_available(true);
         if let Some(hook) = seams.after_window_created.take() {
             hook(hwnd);
         }

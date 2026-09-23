@@ -1037,6 +1037,9 @@ fn main() {
             if commands::headless_install::maybe_run(app.handle()) {
                 return Ok(());
             }
+            commands::watcher_exit_lifecycle::initialize_watcher_exit_lifecycle();
+            #[cfg(target_os = "macos")]
+            commands::watcher_exit_lifecycle::initialize_macos_power_observer();
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.
