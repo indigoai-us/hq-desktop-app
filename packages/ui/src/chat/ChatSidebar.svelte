@@ -102,6 +102,7 @@
   } from "./channel-directory-reconciler";
   import {
     applyDirectoryFeed,
+    applyChannelNotifyLevel,
     applyDirectoryRows,
     applyPairUnreads,
     incrementPairUnread,
@@ -2032,6 +2033,14 @@
         }),
       );
 
+      // Header bell: optimistic level change (or its rollback). Local only —
+      // the server write is the shell's; the next directory read confirms it.
+      track(
+        wakes.on("channel:notify-level", ({ channelId, level }) => {
+          channels = applyChannelNotifyLevel(channels, channelId, level);
+        }),
+      );
+
       // A deleted channel leaves the rail at once (the deleting client emits
       // this optimistically; the server's directory-feed change follows). The
       // shell owns selection — if this was the open row, it clears it itself.
@@ -3364,6 +3373,7 @@
         data-conversation-id={row.id}
         class:selected={selectionMode && selection.selected.includes(row.id)}
         class:archived={archivedSet.has(row.id)}
+        class:muted={row.notifyLevel === "muted"}
         role={selectionMode ? "option" : undefined}
         aria-selected={selectionMode
           ? selection.selected.includes(row.id)
@@ -3465,6 +3475,27 @@
             aria-hidden="true"
             use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
           >
+        {/if}
+        {#if row.notifyLevel === "muted"}
+          <span
+            class="chat-row-muted"
+            data-testid="chat-row-muted"
+            role="img"
+            aria-label="Muted"
+            title="Notifications muted"
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
+              <path
+                d="M5.2 3.6A3.6 3.6 0 0 1 11.6 6v2.6l1.2 2H5.4M3.9 10.6l.5-.9V6.9"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+              <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            </svg>
+          </span>
         {/if}
         {#if row.unreadCount != null && row.unreadCount > 0}
           <span
@@ -4087,6 +4118,18 @@
   .chat-row.unread .chat-row-title {
     color: var(--t1);
     font-weight: 500;
+  }
+
+  /* Muted channels read quieter; unread still shows as a count. */
+  .chat-row.muted .chat-row-title {
+    color: var(--t3);
+  }
+
+  .chat-row-muted {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    color: var(--t3);
   }
 
   .chat-row-title {

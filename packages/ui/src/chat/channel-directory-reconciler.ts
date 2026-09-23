@@ -33,6 +33,7 @@
  * with no durable messages — never fabricate a timestamp for it (an empty
  * channel must NEVER bucket under "today"). */
 import { startJitteredPoll } from "@hq/platform";
+import type { NotifyLevel } from "./notify-level";
 
 export interface ChannelDirectoryRow {
   channelId: string;
@@ -63,6 +64,8 @@ export interface ChannelDirectoryRow {
   updatedAt?: string | null;
   unreadCount?: number;
   mentionFlag?: boolean;
+  /** Caller's notification level; absent when the source did not carry one. */
+  notifyLevel?: NotifyLevel | null;
   memberCount?: number;
   /** Group-DM roster (caller excluded) so the rail can name unnamed chats. */
   members?: Array<{ personUid: string; displayName: string }>;

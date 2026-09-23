@@ -7,6 +7,7 @@ import type {
   ChannelDirectoryFeed,
   ChannelDirectoryRow,
 } from "./channel-directory-reconciler.js";
+import { notifyLevelFromWire } from "./notify-level.js";
 
 export type { ChannelDirectoryRow };
 
@@ -131,6 +132,10 @@ function asRow(value: unknown): ChannelDirectoryRow | null {
       rec.mentionFlag === true || nested?.mentionFlag === true
         ? true
         : undefined,
+    // Flat `notifyLevel` (desktop list_channels) or the server's
+    // `membership.notifyLevel`. Only set when the source carried a level so a
+    // row without one never clears a known level during reconciliation.
+    ...(notifyLevelFromWire(rec) ? { notifyLevel: notifyLevelFromWire(rec) } : {}),
     memberCount:
       typeof rec.memberCount === "number"
         ? rec.memberCount

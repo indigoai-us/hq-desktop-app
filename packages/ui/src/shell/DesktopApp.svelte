@@ -192,6 +192,11 @@
   } from "../settings/update-store.svelte";
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
+  import ChannelNotifyBell from "../chat/ChannelNotifyBell.svelte";
+  import {
+    changeNotifyLevel,
+    type NotifyLevel,
+  } from "../chat/notify-level";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
@@ -4233,6 +4238,51 @@
     }
   }
 
+  // ── Channel notification level (header bell) ─────────────────────────────
+  let notifyLevelBusy = $state(false);
+
+  const showNotifyBell = $derived(
+    !!selectedRow &&
+      (selectedRow.kind === "channel" || selectedRow.kind === "group") &&
+      !selectedRow.browseOnly &&
+      (selectedRow.membership ?? "joined") === "joined" &&
+      (selectedRow.channelId?.trim() ?? "").startsWith("chn_") &&
+      typeof adapter?.messaging?.setChannelNotifyLevel === "function",
+  );
+
+  /** Paint a level on the open row and the sidebar rail. */
+  function paintNotifyLevel(channelId: string, level: NotifyLevel | null): void {
+    if (selectedRow?.channelId?.trim() === channelId) {
+      selectedRow = { ...selectedRow, notifyLevel: level };
+    }
+    wakes?.emit?.("channel:notify-level", { channelId, level });
+  }
+
+  async function changeSelectedNotifyLevel(next: NotifyLevel): Promise<void> {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() ?? "";
+    const setLevel = adapter?.messaging?.setChannelNotifyLevel;
+    if (!row || !channelId || !setLevel || notifyLevelBusy) return;
+    notifyLevelBusy = true;
+    channelActionError = null;
+    try {
+      const outcome = await changeNotifyLevel({
+        previous: row.notifyLevel ?? null,
+        next,
+        apply: (level) => paintNotifyLevel(channelId, level),
+        persist: async (level) => {
+          const res = await setLevel(channelId, level);
+          return res.ok
+            ? { ok: true }
+            : { ok: false, code: res.code, message: res.message };
+        },
+      });
+      if (!outcome.ok) channelActionError = outcome.error;
+    } finally {
+      notifyLevelBusy = false;
+    }
+  }
+
   async function deleteSelectedChannel(): Promise<void> {
     const row = selectedRow;
     const channelId = row?.channelId?.trim() ?? "";
@@ -8239,6 +8289,14 @@
                     </button>
                   {/each}
                 </nav>
+              {/if}
+
+              {#if showNotifyBell && selectedRow}
+                <ChannelNotifyBell
+                  level={selectedRow.notifyLevel ?? null}
+                  busy={notifyLevelBusy}
+                  onchange={(level) => void changeSelectedNotifyLevel(level)}
+                />
               {/if}
 
               {#if showMemberPill}

@@ -17,6 +17,7 @@ import type { ChannelDirectoryFeed } from "./channel-directory-reconciler";
 import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
 import type { AgentStatusWake } from "./agent-thinking";
+import type { NotifyLevel } from "./notify-level";
 
 export interface ContactsResponse {
   contacts: DmContactInput[];
@@ -453,6 +454,11 @@ export interface ChatWakeEvents {
   };
   /** A channel row changed shape. */
   "channel:updated": Channel;
+  /**
+   * The caller's notification level for a channel changed (the header bell's
+   * optimistic update, or its rollback). Rails repaint the muted indicator.
+   */
+  "channel:notify-level": { channelId: string; level: NotifyLevel | null };
   /** A channel was deleted (by this client, optimistically, or by its owner) — drop the row. */
   "channel:removed": { channelId: string };
   /** Unread rollup changed — reconcile the directory. */

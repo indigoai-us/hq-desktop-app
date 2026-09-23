@@ -7,6 +7,8 @@
 // components) makes it unit-testable without a DOM — mirrors lib/dmRequests.ts
 // and lib/recipientPicker.ts. The components own the invoke calls + rendering.
 
+import type { NotifyLevel } from "./notify-level";
+
 /** A channel's posting policy — who may post into it. Tolerant of server
  * additions: the UI only branches on the values it knows. */
 export type ChannelPostPolicy = "all" | "owner" | string;
@@ -44,6 +46,9 @@ export interface Channel {
   postPolicy?: ChannelPostPolicy;
   visibility?: ChannelVisibility;
   membership?: ChannelMembership;
+  /** Caller's resolved notification level (`membership.notifyLevel`). Null
+   * for browse-only rows; absent on older servers. */
+  notifyLevel?: NotifyLevel | null;
   /** Unread message count for this channel (drives the left-rail badge). */
   unread?: number;
   /** Member count (shown on the header member-count button). */

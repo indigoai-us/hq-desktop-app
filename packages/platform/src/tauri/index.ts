@@ -23,6 +23,7 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
+import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { createCallsApi } from "../calls/api.js";
 import {
@@ -284,6 +285,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     respondDmRequest: ({ pairKey, action }) =>
       this.call("respond_dm_request", { pairKey, action }),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
+    getNotifyPrefs: () => this.hqProJson("GET", WEB_PATHS.notifyPrefs),
+    updateNotifyPrefs: (patch) =>
+      this.hqProJson("PUT", WEB_PATHS.notifyPrefs, patch),
+    setChannelNotifyLevel: (id, level) =>
+      this.hqProJson("PUT", WEB_PATHS.channelNotifyLevel(id), { level }),
     markDmThreadRead: (personUid) =>
       this.call("mark_dm_thread_read", { personUid }),
     searchMessages: (q, opts) =>

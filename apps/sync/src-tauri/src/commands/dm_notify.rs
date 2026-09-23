@@ -68,6 +68,147 @@ pub use hq_desktop_core::dm_notify::{
 
 const LOG_TAG: &str = "dm-notify";
 
+// ── Fine-grained notification prefs (GET /v1/notify/prefs) ──────────────────
+//
+// The server stores per-person prefs and a per-channel level and applies them
+// to push and to the `notify` hint on channel wakes. The poller mirrors those
+// rules (see `hq_desktop_core::notify_prefs`). The local `dmNotifications`
+// switch in menubar.json stays a master override: when it is off `do_poll`
+// returns before any of this runs.
+
+/// How long a fetched prefs row is reused before the next poll refetches it.
+const NOTIFY_PREFS_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Default)]
+struct NotifyPrefsCache {
+    /// Cognito identity the cached value belongs to.
+    identity: String,
+    /// `None` = route unavailable (404 / old server) or never fetched; the
+    /// poller keeps its pre-prefs behaviour.
+    prefs: Option<hq_desktop_core::notify_prefs::NotifyPrefs>,
+    fetched_at: Option<std::time::Instant>,
+}
+
+fn notify_prefs_cache() -> &'static Mutex<NotifyPrefsCache> {
+    static CACHE: OnceLock<Mutex<NotifyPrefsCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(NotifyPrefsCache::default()))
+}
+
+/// eventId → `notify` hints read off realtime channel/thread wakes.
+fn wake_notify_hints() -> &'static Mutex<hq_desktop_core::notify_prefs::WakeNotifyHints> {
+    static HINTS: OnceLock<Mutex<hq_desktop_core::notify_prefs::WakeNotifyHints>> = OnceLock::new();
+    HINTS.get_or_init(|| Mutex::new(Default::default()))
+}
+
+/// channelId → resolved `membership.notifyLevel` from the latest channel poll.
+fn channel_notify_levels() -> &'static Mutex<HashMap<String, String>> {
+    static LEVELS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    LEVELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record the `notify` hint of a realtime wake payload (called by the MQTT
+/// receiver before it wakes the poll). Wakes without the flag are ignored, so
+/// older producers keep the computed rule.
+pub fn record_wake_notify_hint(payload: &[u8]) {
+    if let Some((event_id, notify)) = hq_desktop_core::notify_prefs::parse_wake_notify_hint(payload)
+    {
+        wake_notify_hints()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .record(event_id, notify);
+    }
+}
+
+fn wake_notify_hint(event_id: &str) -> Option<bool> {
+    wake_notify_hints()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(event_id)
+}
+
+fn channel_notify_level(channel_id: &str) -> Option<hq_desktop_core::notify_prefs::NotifyLevel> {
+    channel_notify_levels()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(channel_id)
+        .and_then(|level| hq_desktop_core::notify_prefs::NotifyLevel::parse(level))
+}
+
+/// Prefs for `identity`, or `None` when unavailable.
+fn cached_notify_prefs(identity: &str) -> Option<hq_desktop_core::notify_prefs::NotifyPrefs> {
+    let guard = notify_prefs_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if guard.identity != identity {
+        return None;
+    }
+    guard.prefs.clone()
+}
+
+/// Refresh the prefs cache when stale. 404 → unavailable (legacy behaviour).
+/// A transient failure keeps the last good value for the same identity.
+async fn refresh_notify_prefs(base_url: &str, auth: &NotificationAuthSnapshot) {
+    {
+        let guard = notify_prefs_cache()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if guard.identity == auth.identity
+            && guard
+                .fetched_at
+                .is_some_and(|at| at.elapsed() < NOTIFY_PREFS_TTL)
+        {
+            return;
+        }
+    }
+    let url = format!("{base_url}/v1/notify/prefs");
+    let resp = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", auth.access_token))
+        .send()
+        .await;
+    let fetched: Result<Option<hq_desktop_core::notify_prefs::NotifyPrefs>, String> = match resp {
+        Err(e) => Err(format!("network: {e}")),
+        Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => Ok(None),
+        Ok(r) if !r.status().is_success() => Err(format!("status={}", r.status())),
+        Ok(r) => match r.text().await {
+            Ok(body) => hq_desktop_core::notify_prefs::parse_prefs_body(&body)
+                .map(Some)
+                .ok_or_else(|| "parse".to_string()),
+            Err(e) => Err(format!("body: {e}")),
+        },
+    };
+    let mut guard = notify_prefs_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let same_identity = guard.identity == auth.identity;
+    match fetched {
+        Ok(prefs) => {
+            if prefs.is_none() {
+                log(LOG_TAG, "DM_NOTIFY_PREFS_UNAVAILABLE 404 (legacy rules)");
+            }
+            guard.prefs = prefs;
+        }
+        Err(e) => {
+            log(LOG_TAG, &format!("DM_NOTIFY_PREFS_FETCH_FAIL {e}"));
+            if !same_identity {
+                guard.prefs = None;
+            }
+        }
+    }
+    guard.identity = auth.identity.clone();
+    guard.fetched_at = Some(std::time::Instant::now());
+}
+
+/// Tauri command: drop the cached prefs so the next poll refetches them.
+/// Called by Settings after a successful PUT so a pause applies immediately.
+#[tauri::command]
+pub fn invalidate_notify_prefs_cache() {
+    notify_prefs_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .fetched_at = None;
+}
+
 /// Tauri event emitted when new DMs are found (frontend may surface a badge
 /// or inbox view; currently informational, mirrors `share:new-events`).
 pub const EVENT_DM_NEW_EVENTS: &str = "dm:new-events";
@@ -2325,7 +2466,11 @@ struct ChannelUnreadGrowth {
 enum ChannelPollCommit {
     Stale,
     Seeded,
-    Growth(Vec<ChannelUnreadGrowth>),
+    Growth {
+        growth: Vec<ChannelUnreadGrowth>,
+        /// (channelId, name) of channels the caller was just added to.
+        added: Vec<(String, String)>,
+    },
 }
 
 /// Poll the channels list and emit channel events off the diff. Folded into the
@@ -2378,6 +2523,23 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
         }
     };
 
+    // Refresh the per-channel levels the notification rule reads.
+    {
+        let mut levels = channel_notify_levels()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *levels = list
+            .channels
+            .iter()
+            .filter_map(|c| {
+                c.notify_level
+                    .as_ref()
+                    .map(|level| (c.channel_id.clone(), level.clone()))
+            })
+            .collect();
+    }
+    let self_person_uid = signed_in_person_uid().unwrap_or_default();
+
     let committed = with_current_notification_auth_snapshot(app, auth, || {
         let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
         if !guard.snapshot_is_current(snapshot_revision) {
@@ -2411,10 +2573,19 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
 
         // Emit `channel:updated` for brand-new channels/invites (full payload so
         // the rail can render the row without a separate fetch).
+        let mut added = Vec::new();
         for channel_id in &diff.new_channels {
             if let Some(ch) = list.channels.iter().find(|c| &c.channel_id == channel_id) {
                 log(LOG_TAG, &format!("DM_NOTIFY_CHAN_UPDATED id={channel_id}"));
                 let _ = app.emit(EVENT_CHANNEL_UPDATED, ch);
+                if hq_desktop_core::notify_prefs::is_notifiable_added_channel(
+                    ch.membership.as_deref().unwrap_or("joined") == "joined",
+                    ch.membership_source.as_deref(),
+                    ch.created_by.as_deref(),
+                    &[self_person_uid.as_str(), auth.identity.as_str()],
+                ) {
+                    added.push((ch.channel_id.clone(), ch.name.clone()));
+                }
             }
         }
         // Publish every exact unread transition (increase, decrease, or removal)
@@ -2443,7 +2614,7 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
                 name,
             });
         }
-        ChannelPollCommit::Growth(growth)
+        ChannelPollCommit::Growth { growth, added }
     })
     .await;
 
@@ -2457,9 +2628,54 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
         Some(ChannelPollCommit::Seeded) => {
             spawn_mention_detection_if_pending(app, base_url, auth, &[]);
         }
-        Some(ChannelPollCommit::Growth(growth)) => {
+        Some(ChannelPollCommit::Growth { growth, added }) => {
             spawn_mention_detection_if_pending(app, base_url, auth, &growth);
+            deliver_added_notifications(app, auth, added).await;
         }
+    }
+}
+
+/// "Added to #name" OS notifications for channels that newly appeared in the
+/// caller's list (explicit adds only; see `is_notifiable_added_channel`),
+/// gated by the `addedToChannel` pref and a global pause. Clicking opens the
+/// channel.
+async fn deliver_added_notifications(
+    app: &AppHandle,
+    auth: &NotificationAuthSnapshot,
+    added: Vec<(String, String)>,
+) {
+    if added.is_empty() {
+        return;
+    }
+    let prefs = cached_notify_prefs(&auth.identity);
+    if !hq_desktop_core::notify_prefs::added_allowed(prefs.as_ref(), chrono::Utc::now()) {
+        log(
+            LOG_TAG,
+            &format!(
+                "DM_NOTIFY_ADDED_SUPPRESSED {} channel(s) (pref off, paused, or prefs unavailable)",
+                added.len()
+            ),
+        );
+        return;
+    }
+    for (channel_id, channel_name) in added {
+        log(LOG_TAG, &format!("DM_NOTIFY_ADDED channel={channel_id}"));
+        deliver_mention_notification(
+            app,
+            auth,
+            MentionDelivery {
+                channel_id,
+                channel_name,
+                event_id: String::new(),
+                from_person_uid: String::new(),
+                from_display_name: String::new(),
+                body: String::new(),
+                created_at: String::new(),
+                summary_extra: None,
+                kind: ChannelDeliveryKind::Added,
+            },
+        )
+        .await;
     }
 }
 
@@ -2548,6 +2764,17 @@ async fn fetch_channel_history(
     }
 }
 
+/// Which channel notification a [`MentionDelivery`] renders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChannelDeliveryKind {
+    /// "{author} mentioned you in #channel".
+    Mention,
+    /// "{author} in #channel" (file or other activity the prefs allow).
+    Activity,
+    /// "Added to #channel".
+    Added,
+}
+
 #[derive(Clone)]
 struct MentionDelivery {
     channel_id: String,
@@ -2558,6 +2785,7 @@ struct MentionDelivery {
     body: String,
     created_at: String,
     summary_extra: Option<usize>,
+    kind: ChannelDeliveryKind,
 }
 
 const MENTION_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -2609,6 +2837,7 @@ async fn detect_and_deliver_mentions(
     let machine_id = crate::commands::config::ensure_machine_id().unwrap_or_default();
     let dm_notified = read_cursor_entry_for_account(&machine_id, &auth.identity).notified;
     let now = chrono::Utc::now();
+    let notify_prefs = cached_notify_prefs(&auth.identity);
 
     let mut to_deliver = Vec::new();
     let mut retried: HashSet<String> = HashSet::new();
@@ -2677,9 +2906,60 @@ async fn detect_and_deliver_mentions(
             }
             guard.initialized = true;
             let newer = filter_mentions_by_age(newer, now, MENTION_FRESH_MAX_AGE);
+            // Decide each fresh message: the wake's `notify` hint when one
+            // arrived, else the prefs + channel level rule, else (prefs route
+            // unavailable) the legacy mentions-only rule.
+            let level = channel_notify_level(channel_id);
+            let mut kinds: HashMap<String, ChannelDeliveryKind> = HashMap::new();
+            for message in &newer {
+                if hq_desktop_core::dm_notify::is_self_authored(
+                    &message.from_person_uid,
+                    &person_uid,
+                    &cognito_sub,
+                ) {
+                    continue;
+                }
+                let mentioned = is_mention_of_me(message, &person_uid, &cognito_sub);
+                // System rows (joins, renames) are not activity; they only
+                // notify as mentions.
+                let is_system = message.message_kind.as_deref() == Some("system");
+                if is_system && !mentioned {
+                    continue;
+                }
+                let (notify, source) = hq_desktop_core::notify_prefs::decide_channel_notify(
+                    wake_notify_hint(&message.event_id),
+                    notify_prefs.as_ref(),
+                    level,
+                    mentioned,
+                    message.attachment.is_some(),
+                    now,
+                );
+                if !notify {
+                    if mentioned
+                        || source != hq_desktop_core::notify_prefs::ChannelNotifySource::Legacy
+                    {
+                        log(
+                            LOG_TAG,
+                            &format!(
+                                "DM_NOTIFY_CHAN_PREFS_SUPPRESSED channel={} event={} source={source:?}",
+                                channel_id, message.event_id
+                            ),
+                        );
+                    }
+                    continue;
+                }
+                kinds.insert(
+                    message.event_id.clone(),
+                    if mentioned {
+                        ChannelDeliveryKind::Mention
+                    } else {
+                        ChannelDeliveryKind::Activity
+                    },
+                );
+            }
             let mention_ids: Vec<String> = newer
                 .iter()
-                .filter(|message| is_mention_of_me(message, &person_uid, &cognito_sub))
+                .filter(|message| kinds.contains_key(&message.event_id))
                 .map(|message| message.event_id.clone())
                 .collect();
             let (fresh_ids, updated_seen) =
@@ -2731,6 +3011,10 @@ async fn detect_and_deliver_mentions(
                     body: message.body.clone(),
                     created_at: message.created_at.clone(),
                     summary_extra: None,
+                    kind: kinds
+                        .get(&message.event_id)
+                        .copied()
+                        .unwrap_or(ChannelDeliveryKind::Mention),
                 });
             }
         }
@@ -2764,6 +3048,14 @@ async fn detect_and_deliver_mentions(
             body: String::new(),
             created_at: String::new(),
             summary_extra: Some(summary.extra_count),
+            kind: if to_deliver
+                .iter()
+                .all(|item| item.kind == ChannelDeliveryKind::Mention)
+            {
+                ChannelDeliveryKind::Mention
+            } else {
+                ChannelDeliveryKind::Activity
+            },
         });
     }
 
@@ -2788,12 +3080,32 @@ async fn deliver_mention_notification(
     mention: MentionDelivery,
 ) {
     let (title, body) = if let Some(extra) = mention.summary_extra {
-        (mention_summary_title(extra), String::new())
+        if mention.kind == ChannelDeliveryKind::Mention {
+            (mention_summary_title(extra), String::new())
+        } else {
+            (
+                hq_desktop_core::notify_prefs::activity_summary_title(extra),
+                String::new(),
+            )
+        }
     } else {
-        (
-            mention_notification_title(&mention.from_display_name, &mention.channel_name),
-            mention_notification_body(&mention.body),
-        )
+        match mention.kind {
+            ChannelDeliveryKind::Mention => (
+                mention_notification_title(&mention.from_display_name, &mention.channel_name),
+                mention_notification_body(&mention.body),
+            ),
+            ChannelDeliveryKind::Activity => (
+                hq_desktop_core::notify_prefs::channel_activity_title(
+                    &mention.from_display_name,
+                    &mention.channel_name,
+                ),
+                mention_notification_body(&mention.body),
+            ),
+            ChannelDeliveryKind::Added => (
+                hq_desktop_core::notify_prefs::added_notification_title(&mention.channel_name),
+                String::new(),
+            ),
+        }
     };
     let route = mention_route(&mention.channel_id, &mention.event_id);
     let payload = serde_json::json!({
@@ -2918,6 +3230,10 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
     // empty body). Best-effort: any failure logs and returns without disturbing
     // the DM-inbox poll below.
     poll_requests(app, &base_url, auth).await;
+
+    // Server-side notification prefs gate every OS notification below (DMs,
+    // channel activity, "added to channel"). Cached for NOTIFY_PREFS_TTL.
+    refresh_notify_prefs(&base_url, auth).await;
 
     // Fold channel-activity polling into the SAME single path (US-018) — a
     // "channel" wake on the person topic routes here. Best-effort; emits
@@ -3117,6 +3433,24 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
             ),
         );
     }
+
+    // Fine-grained prefs: the DMs toggle and a global pause (DMs pass a pause
+    // only with "Let DMs through while paused"). Suppressed DMs still count,
+    // ACK and reach the in-app feed; only the OS notification is skipped.
+    let notify_prefs = cached_notify_prefs(&auth.identity);
+    let banner_worthy: Vec<DmEvent> =
+        if hq_desktop_core::notify_prefs::dm_allowed(notify_prefs.as_ref(), chrono::Utc::now()) {
+            banner_worthy
+        } else {
+            log(
+                LOG_TAG,
+                &format!(
+                    "DM_NOTIFY_PREFS_SUPPRESSED {} DM(s) (dms off or paused)",
+                    banner_worthy.len()
+                ),
+            );
+            Vec::new()
+        };
 
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
@@ -3375,7 +3709,39 @@ mod tests {
             last_message_at: None,
             created_at: None,
             members: None,
+            notify_level: None,
+            membership_source: None,
+            created_by: None,
         }
+    }
+
+    #[test]
+    fn wake_notify_hints_round_trip_by_event_id() {
+        record_wake_notify_hint(
+            br#"{"type":"channel","channelId":"chn_h","eventId":"evt_hint_off","notify":false}"#,
+        );
+        record_wake_notify_hint(
+            br#"{"type":"thread","scope":"channel","rootEventId":"r","eventId":"evt_hint_on","notify":true}"#,
+        );
+        // An old producer's wake carries no flag and records nothing.
+        record_wake_notify_hint(br#"{"type":"channel","eventId":"evt_no_hint"}"#);
+        assert_eq!(wake_notify_hint("evt_hint_off"), Some(false));
+        assert_eq!(wake_notify_hint("evt_hint_on"), Some(true));
+        assert_eq!(wake_notify_hint("evt_no_hint"), None);
+    }
+
+    #[test]
+    fn notify_prefs_cache_is_scoped_to_identity() {
+        {
+            let mut guard = notify_prefs_cache().lock().unwrap();
+            guard.identity = "sub_cache_a".to_string();
+            guard.prefs = Some(hq_desktop_core::notify_prefs::NotifyPrefs::default());
+            guard.fetched_at = Some(std::time::Instant::now());
+        }
+        assert!(cached_notify_prefs("sub_cache_a").is_some());
+        assert!(cached_notify_prefs("sub_cache_b").is_none());
+        invalidate_notify_prefs_cache();
+        assert!(notify_prefs_cache().lock().unwrap().fetched_at.is_none());
     }
 
     #[test]
@@ -3514,6 +3880,9 @@ mod tests {
             last_message_at: None,
             created_at: None,
             members: None,
+            notify_level: None,
+            membership_source: None,
+            created_by: None,
         }
     }
 
