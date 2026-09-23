@@ -480,7 +480,7 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('fn clean_partial_hq_cli_install_scope(scope: &Path)');
     expect(cliUpdate).toContain('clean_partial_hq_cli_install_scope(&scope)');
     expect(cliUpdate).toContain('scope.join("hq-cli")');
-    expect(cliUpdate).toContain('.starts_with(".hq-cli-")');
+    expect(cliUpdate).toContain('.starts_with(&format!(".{package_name}-"))');
     // 5C: EIDLETIMEOUT joins the transient-registry allow-list so a registry idle
     // timeout is absorbed like its siblings instead of paging at Error.
     expect(cliUpdateCore).toContain('"EIDLETIMEOUT"');

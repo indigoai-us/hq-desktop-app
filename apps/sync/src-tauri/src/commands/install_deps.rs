@@ -2317,21 +2317,46 @@ pub fn cancel_install(handle: String) -> bool {
 /// of macOS locations a GUI-launched Tauri app does NOT inherit.
 ///
 /// Returns `Ok(handle)` on success or `Err(message)` on failure.
+fn setup_npm_command(program: &str, search_path: &str, npm_cache: &Path, args: &[&str]) -> Command {
+    let owned_args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    crate::commands::hq_cli_update::npm_install_command(
+        program,
+        search_path,
+        npm_cache,
+        &owned_args,
+    )
+}
+
 #[cfg(not(windows))]
 async fn run_streaming<R: tauri::Runtime>(
     app: &AppHandle<R>,
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
+    run_streaming_with_npm_cache(app, program, args, None).await
+}
+
+#[cfg(not(windows))]
+async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+    npm_cache: Option<&Path>,
+) -> Result<String, String> {
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .env("PATH", extended_search_path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut command = if let Some(npm_cache) = npm_cache {
+        setup_npm_command(program, &extended_search_path(), npm_cache, args)
+    } else {
+        let mut command = Command::new(program);
+        command.args(args).env("PATH", extended_search_path());
+        command
+    };
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     command.process_group(0);
 
     let mut child = match command.spawn() {
@@ -3303,7 +3328,15 @@ async fn install_claude_code_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg.to_string());
         }
     };
-    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, "@anthropic-ai/claude-code", "claude").await
+    npm_install_global_managed(
+        &app,
+        npm.to_str().unwrap_or("npm"),
+        &prefix,
+        "@anthropic-ai/claude-code",
+        "@anthropic-ai/claude-code",
+        "claude",
+    )
+    .await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3342,6 +3375,128 @@ pub fn looks_like_registry_failure(err: &str) -> bool {
         .any(|k| e.contains(k))
 }
 
+fn npm_package_name_from_spec(spec: &str) -> Option<String> {
+    if spec.starts_with('/')
+        || spec.starts_with('.')
+        || spec.contains('\\')
+        || spec.contains("://")
+    {
+        return None;
+    }
+    let end = if spec.starts_with('@') {
+        spec[1..]
+            .find('@')
+            .map(|index| index + 1)
+            .unwrap_or(spec.len())
+    } else {
+        spec.find('@').unwrap_or(spec.len())
+    };
+    let package_name = &spec[..end];
+    (!package_name.is_empty() && package_name != "@").then(|| package_name.to_string())
+}
+
+fn npm_args_with_option(args: &[String], spec: &str, option: &str) -> Vec<String> {
+    let mut retry = args.to_vec();
+    let insert_at = retry
+        .iter()
+        .rposition(|arg| arg == spec)
+        .unwrap_or(retry.len());
+    retry.insert(insert_at, option.to_string());
+    retry
+}
+
+/// Run one setup-path npm install and apply each setup-specific recovery at
+/// most once. The runner and side effects are injected so the exact retry
+/// ladder can be tested without a Tauri runtime or a real npm registry.
+async fn run_setup_npm_install_with_retries<Run, RunFuture, Cleanup, Preflight, Clear>(
+    run: &mut Run,
+    cleanup: &mut Cleanup,
+    preflight: &mut Preflight,
+    clear_failure: &mut Clear,
+    prefix: &str,
+    windows_layout: bool,
+    spec: &str,
+    package_name: &str,
+    tag: &str,
+    base_args: Vec<String>,
+    public_registry_args: Option<Vec<String>>,
+) -> Result<String, String>
+where
+    Run: FnMut(Vec<String>) -> RunFuture,
+    RunFuture: Future<Output = Result<String, String>>,
+    Cleanup: FnMut(&Path, &str),
+    Preflight: FnMut(String),
+    Clear: FnMut(),
+{
+    let first_error = match run(base_args.clone()).await {
+        Ok(output) => return Ok(output),
+        Err(error) => error,
+    };
+
+    if crate::commands::hq_cli_update::is_partial_install_failure(&first_error) {
+        let scope = crate::commands::hq_cli_update::npm_global_package_scope_dir_for(
+            prefix,
+            windows_layout,
+            package_name,
+        );
+        preflight(format!(
+            "[{tag}] npm reported ENOTEMPTY for {package_name}; cleaning {} and retrying once",
+            scope.display()
+        ));
+        cleanup(&scope, package_name);
+        clear_failure();
+        return run(base_args).await.map_err(|second_error| {
+            format!(
+                "{first_error}\n[{tag}] ENOTEMPTY cleanup retry also failed: {second_error}"
+            )
+        });
+    }
+
+    if crate::commands::hq_cli_update::is_etarget_failure(&first_error) {
+        preflight(format!(
+            "[{tag}] npm reported ETARGET/notarget; retrying once with --prefer-online to refresh registry metadata"
+        ));
+        clear_failure();
+        let retry = npm_args_with_option(&base_args, spec, "--prefer-online");
+        let second_error = match run(retry).await {
+            Ok(output) => return Ok(output),
+            Err(error) => error,
+        };
+
+        if let Some(public_registry_args) = public_registry_args {
+            preflight(format!(
+                "[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"
+            ));
+            clear_failure();
+            return run(public_registry_args).await.map_err(|third_error| {
+                format!(
+                    "{first_error}\n[{tag}] --prefer-online retry also failed: {second_error}\n[{tag}] retry with the public registry also failed: {third_error}"
+                )
+            });
+        }
+
+        return Err(format!(
+            "{first_error}\n[{tag}] --prefer-online retry also failed: {second_error}"
+        ));
+    }
+
+    if let Some(public_registry_args) = public_registry_args {
+        if looks_like_registry_failure(&first_error) {
+            preflight(format!(
+                "[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"
+            ));
+            clear_failure();
+            return run(public_registry_args).await.map_err(|second_error| {
+                format!(
+                    "{first_error}\n[{tag}] retry with the public registry also failed: {second_error}"
+                )
+            });
+        }
+    }
+
+    Err(first_error)
+}
+
 /// `npm install -g --prefix <managed> <spec>` honouring the user's npm config
 /// first, then retrying with the public registry forced if that fails.
 ///
@@ -3351,46 +3506,97 @@ pub fn looks_like_registry_failure(err: &str) -> bool {
 /// matrix `corporate-npmrc` profile). Windows already forces the public
 /// registry for hq-cli; macOS now tries the user's registry, then falls back
 /// and says so, so the failure is attributed and usually recovered.
-#[cfg(not(windows))]
-async fn npm_install_global_managed(
-    app: &AppHandle,
+fn npm_install_args(prefix: &str, spec: &str, extra_args: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "install".to_string(),
+        "-g".to_string(),
+        "--prefix".to_string(),
+        prefix.to_string(),
+    ];
+    args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
+    args.push(spec.to_string());
+    args
+}
+
+fn npm_public_registry_args(prefix: &str, spec: &str, extra_args: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "install".to_string(),
+        "-g".to_string(),
+        "--prefix".to_string(),
+        prefix.to_string(),
+    ];
+    args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
+    args.extend([
+        "--registry=https://registry.npmjs.org/",
+        "--@indigoai-us:registry=https://registry.npmjs.org/",
+        "--@tobilu:registry=https://registry.npmjs.org/",
+        "--@anthropic-ai:registry=https://registry.npmjs.org/",
+        "--@openai:registry=https://registry.npmjs.org/",
+        "--@xai-official:registry=https://registry.npmjs.org/",
+    ]
+    .into_iter()
+    .map(str::to_string));
+    args.push(spec.to_string());
+    args
+}
+
+async fn run_managed_npm_install<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     npm: &str,
     prefix: &str,
     spec: &str,
+    package_name: &str,
+    tag: &str,
+    extra_args: &[&str],
+    retry_public_registry: bool,
+) -> Result<String, String> {
+    let npm_cache = crate::commands::hq_cli_update::app_npm_cache(app).map_err(|(_, error)| {
+        emit_install_line(
+            app,
+            &format!("[{tag}] failed to prepare the app-owned npm cache: {error}"),
+        );
+        error
+    })?;
+    let base_args = npm_install_args(prefix, spec, extra_args);
+    let public_registry_args = retry_public_registry
+        .then(|| npm_public_registry_args(prefix, spec, extra_args));
+    let npm_cache = npm_cache.as_path();
+    let mut run = |args: Vec<String>| async move {
+        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await
+    };
+    let mut cleanup = |scope: &Path, package_name: &str| {
+        crate::commands::hq_cli_update::clean_partial_install_scope(scope, package_name);
+    };
+    let mut preflight = |line: String| emit_install_line(app, &line);
+    let mut clear_failure = || clear_recovered_setup_command_failure();
+
+    run_setup_npm_install_with_retries(
+        &mut run,
+        &mut cleanup,
+        &mut preflight,
+        &mut clear_failure,
+        prefix,
+        cfg!(target_os = "windows"),
+        spec,
+        package_name,
+        tag,
+        base_args,
+        public_registry_args,
+    )
+    .await
+}
+
+#[cfg(not(windows))]
+async fn npm_install_global_managed<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    npm: &str,
+    prefix: &str,
+    spec: &str,
+    package_name: &str,
     tag: &str,
 ) -> Result<String, String> {
-    match run_streaming(app, npm, &["install", "-g", "--prefix", prefix, spec]).await {
-        Ok(out) => Ok(out),
-        Err(first) if !looks_like_registry_failure(&first) => Err(first),
-        Err(first) => {
-            emit_preflight_line(
-                app,
-                &format!("[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"),
-            );
-            clear_recovered_setup_command_failure();
-            run_streaming(
-                app,
-                npm,
-                &[
-                    "install",
-                    "-g",
-                    "--prefix",
-                    prefix,
-                    "--registry=https://registry.npmjs.org/",
-                    "--@indigoai-us:registry=https://registry.npmjs.org/",
-                    "--@tobilu:registry=https://registry.npmjs.org/",
-                    "--@anthropic-ai:registry=https://registry.npmjs.org/",
-                    "--@openai:registry=https://registry.npmjs.org/",
-                    "--@xai-official:registry=https://registry.npmjs.org/",
-                    spec,
-                ],
-            )
-            .await
-            .map_err(|second| {
-                format!("{first}\n[{tag}] retry with the public registry also failed: {second}")
-            })
-        }
-    }
+    run_managed_npm_install(app, npm, prefix, spec, package_name, tag, &[], true).await
 }
 
 /// Pinned qmd version. MUST match `core/scripts/setup.sh` (`QMD_VERSION`),
@@ -3420,7 +3626,15 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg);
         }
     };
-    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"), "qmd").await
+    npm_install_global_managed(
+        &app,
+        npm.to_str().unwrap_or("npm"),
+        &prefix,
+        &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"),
+        "@tobilu/qmd",
+        "qmd",
+    )
+    .await
 }
 
 /// Prefer HQ's managed npm so qmd's native addons compile against the same
@@ -3555,6 +3769,7 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
                     npm.to_str().unwrap_or("npm"),
                     &prefix,
                     &install_spec,
+                    "@indigoai-us/hq-cli",
                     "hq",
                 )
                 .await
@@ -3692,7 +3907,17 @@ async fn install_npm_cli_macos(
         );
     }
     let npm = npm_bin_or_install_node(&app, tag).await?;
-    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, spec, tag).await
+    let package_name = npm_package_name_from_spec(spec)
+        .ok_or_else(|| format!("[{tag}] npm package spec is not a registry package: {spec}"))?;
+    npm_install_global_managed(
+        &app,
+        npm.to_str().unwrap_or("npm"),
+        &prefix,
+        spec,
+        &package_name,
+        tag,
+    )
+    .await
 }
 
 #[cfg(windows)]
@@ -3704,16 +3929,19 @@ async fn install_npm_cli_windows(
 ) -> Result<String, String> {
     emit_progress(&app, &format!("Installing {tag} via npm..."));
     let _ = npm_bin_or_install_node(&app, tag).await?;
-    let result = run_streaming(
+    let prefix = managed_npm_prefix();
+    let prefix = prefix.to_string_lossy().into_owned();
+    let package_name = npm_package_name_from_spec(spec)
+        .ok_or_else(|| format!("[{tag}] npm package spec is not a registry package: {spec}"))?;
+    let result = run_managed_npm_install(
         &app,
         "npm",
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &managed_npm_prefix().to_string_lossy(),
-            spec,
-        ],
+        &prefix,
+        spec,
+        &package_name,
+        tag,
+        &[],
+        false,
     )
     .await?;
     append_user_path(&managed_npm_bin())?;
@@ -4506,6 +4734,16 @@ async fn run_streaming<R: tauri::Runtime>(
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
+    run_streaming_with_npm_cache(app, program, args, None).await
+}
+
+#[cfg(windows)]
+async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+    npm_cache: Option<&Path>,
+) -> Result<String, String> {
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
@@ -4530,10 +4768,19 @@ async fn run_streaming<R: tauri::Runtime>(
         }
     };
 
-    let mut command = Command::new(&resolved);
+    let mut command = if let Some(npm_cache) = npm_cache {
+        setup_npm_command(
+            resolved.to_str().unwrap_or(program),
+            &search_path,
+            npm_cache,
+            args,
+        )
+    } else {
+        let mut command = Command::new(&resolved);
+        command.args(args).env("PATH", &search_path);
+        command
+    };
     command
-        .args(args)
-        .env("PATH", &search_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
@@ -5214,17 +5461,17 @@ fn managed_node_arch() -> Option<&'static str> {
 #[tauri::command]
 pub async fn install_pnpm(app: AppHandle) -> Result<String, String> {
     emit_progress(&app, "Installing pnpm via npm...");
-
-    let result = run_streaming(
+    let prefix = managed_npm_prefix();
+    let prefix = prefix.to_string_lossy().into_owned();
+    let result = run_managed_npm_install(
         &app,
         "npm",
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &managed_npm_prefix().to_string_lossy(),
-            "pnpm@9",
-        ],
+        &prefix,
+        "pnpm@9",
+        "pnpm",
+        "pnpm",
+        &[],
+        false,
     )
     .await?;
 
@@ -5364,16 +5611,17 @@ where
 #[cfg(windows)]
 async fn install_claude_code_windows(app: AppHandle) -> Result<String, String> {
     emit_progress(&app, "Installing Claude Code via npm...");
-    let result = run_streaming(
+    let prefix = managed_npm_prefix();
+    let prefix = prefix.to_string_lossy().into_owned();
+    let result = run_managed_npm_install(
         &app,
         "npm",
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &managed_npm_prefix().to_string_lossy(),
-            "@anthropic-ai/claude-code",
-        ],
+        &prefix,
+        "@anthropic-ai/claude-code",
+        "@anthropic-ai/claude-code",
+        "claude",
+        &[],
+        false,
     )
     .await?;
     append_user_path(&managed_npm_bin())?;
@@ -5383,19 +5631,19 @@ async fn install_claude_code_windows(app: AppHandle) -> Result<String, String> {
 #[cfg(windows)]
 async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
     emit_progress(&app, "Installing qmd via npm (@tobilu/qmd)...");
-    remove_managed_qmd_package(&managed_npm_prefix());
-    let result = run_streaming(
+    let prefix = managed_npm_prefix();
+    remove_managed_qmd_package(&prefix);
+    let prefix = prefix.to_string_lossy().into_owned();
+    let qmd_spec = format!("@tobilu/qmd@{MANAGED_QMD_VERSION}");
+    let result = run_managed_npm_install(
         &app,
         "npm",
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &managed_npm_prefix().to_string_lossy(),
-            "--no-audit",
-            "--no-fund",
-            &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"),
-        ],
+        &prefix,
+        &qmd_spec,
+        "@tobilu/qmd",
+        "qmd",
+        &["--no-audit", "--no-fund"],
+        false,
     )
     .await?;
     append_user_path(&managed_npm_bin())?;
@@ -6052,18 +6300,20 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                     return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
                 }
                 emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
-                let result_inner = run_streaming(
+                let prefix = managed_npm_prefix();
+                let prefix = prefix.to_string_lossy().into_owned();
+                let result_inner = run_managed_npm_install(
                     &app,
                     "npm",
+                    &prefix,
+                    "@indigoai-us/hq-cli",
+                    "@indigoai-us/hq-cli",
+                    "hq",
                     &[
-                        "install",
-                        "-g",
-                        "--prefix",
-                        &managed_npm_prefix().to_string_lossy(),
                         "--@indigoai-us:registry=https://registry.npmjs.org/",
                         "--registry=https://registry.npmjs.org/",
-                        "@indigoai-us/hq-cli",
                     ],
+                    false,
                 )
                 .await?;
                 append_user_path(&managed_npm_bin())?;
@@ -9745,6 +9995,336 @@ mod registry_failure_classifier_tests {
         assert!(looks_like_registry_failure("npm error network In most cases you are behind a proxy"));
         assert!(!looks_like_registry_failure("npm error code EACCES permission denied, mkdir '/usr/local/lib/node_modules'"));
         assert!(!looks_like_registry_failure("npm error code ENOSPC no space left on device"));
+    }
+}
+
+#[cfg(test)]
+mod npm_setup_recovery_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::ffi::OsStr;
+    use std::rc::Rc;
+
+    struct FakeNpmRun {
+        result: Result<String, String>,
+        attempts: Vec<Vec<String>>,
+        cleanup_scopes: Vec<(PathBuf, String)>,
+        preflight: Vec<String>,
+        cleared_failures: usize,
+    }
+
+    async fn run_fake_npm(
+        prefix: &str,
+        windows_layout: bool,
+        spec: &str,
+        outcomes: Vec<Result<String, String>>,
+        public_registry_args: Option<Vec<String>>,
+    ) -> FakeNpmRun {
+        let attempts = Rc::new(RefCell::new(Vec::new()));
+        let cleanup_scopes = Rc::new(RefCell::new(Vec::new()));
+        let preflight = Rc::new(RefCell::new(Vec::new()));
+        let cleared_failures = Rc::new(RefCell::new(0));
+
+        let attempts_for_run = Rc::clone(&attempts);
+        let mut outcomes = outcomes;
+        let mut run = move |args: Vec<String>| {
+            attempts_for_run.borrow_mut().push(args);
+            let outcome = outcomes
+                .drain(..1)
+                .next()
+                .expect("fake npm received more attempts than expected");
+            async move { outcome }
+        };
+
+        let cleanup_for_run = Rc::clone(&cleanup_scopes);
+        let mut cleanup = move |scope: &Path, package_name: &str| {
+            cleanup_for_run
+                .borrow_mut()
+                .push((scope.to_path_buf(), package_name.to_string()));
+        };
+
+        let preflight_for_run = Rc::clone(&preflight);
+        let mut emit_preflight = move |line: String| {
+            preflight_for_run.borrow_mut().push(line);
+        };
+
+        let cleared_for_run = Rc::clone(&cleared_failures);
+        let mut clear_failure = move || {
+            *cleared_for_run.borrow_mut() += 1;
+        };
+
+        let base_args = vec![
+            "install".to_string(),
+            "-g".to_string(),
+            "--prefix".to_string(),
+            prefix.to_string(),
+            spec.to_string(),
+        ];
+        let package_name = npm_package_name_from_spec(spec).expect("registry package fixture");
+        let result = run_setup_npm_install_with_retries(
+            &mut run,
+            &mut cleanup,
+            &mut emit_preflight,
+            &mut clear_failure,
+            prefix,
+            windows_layout,
+            spec,
+            &package_name,
+            "test",
+            base_args,
+            public_registry_args,
+        )
+        .await;
+
+        drop(run);
+        drop(cleanup);
+        drop(emit_preflight);
+        drop(clear_failure);
+
+        FakeNpmRun {
+            result,
+            attempts: Rc::try_unwrap(attempts).unwrap().into_inner(),
+            cleanup_scopes: Rc::try_unwrap(cleanup_scopes).unwrap().into_inner(),
+            preflight: Rc::try_unwrap(preflight).unwrap().into_inner(),
+            cleared_failures: Rc::try_unwrap(cleared_failures).unwrap().into_inner(),
+        }
+    }
+
+    #[test]
+    fn setup_npm_command_carries_the_app_owned_cache_for_both_layouts() {
+        for (layout, prefix, cache_path) in [
+            ("macOS", "/tmp/setup-prefix", "/tmp/app-cache/npm"),
+            (
+                "Windows",
+                "C:/Users/test/AppData/Local/IndigoHQ/npm-prefix",
+                "C:/Users/test/AppData/Local/IndigoHQ/cache/npm",
+            ),
+        ] {
+            let args = ["install", "-g", "--prefix", prefix, "@tobilu/qmd"];
+            let command =
+                setup_npm_command("npm", "/test/child-path", Path::new(cache_path), &args);
+            let cache = command
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new("NPM_CONFIG_CACHE"))
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned());
+            assert_eq!(
+                cache.as_deref(),
+                Some(cache_path),
+                "{layout} setup must pass its resolved app-owned npm cache"
+            );
+            assert_eq!(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+                args,
+                "{layout} setup must preserve npm argv"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_npm_install_wires_the_resolved_cache_into_the_runner() {
+        let source = include_str!("install_deps.rs");
+        let call = "run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await";
+
+        assert_eq!(
+            source.matches(call).count(),
+            2,
+            "macOS and Windows setup installs must pass the resolved app-owned cache to the runner"
+        );
+    }
+
+    #[tokio::test]
+    async fn enotempty_cleans_once_and_retries_once_on_unix_layout() {
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![
+                Err("npm error code ENOTEMPTY".into()),
+                Ok("recovered".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("recovered".into()));
+        assert_eq!(run.attempts.len(), 2);
+        assert_eq!(run.cleanup_scopes.len(), 1);
+        assert_eq!(
+            run.cleanup_scopes[0],
+            (
+                PathBuf::from("/tmp/setup-prefix/lib/node_modules/@indigoai-us"),
+                "@indigoai-us/hq-cli".to_string(),
+            )
+        );
+        assert_eq!(run.cleared_failures, 1);
+        assert_eq!(run.preflight.len(), 1);
+        assert!(run.preflight[0].contains("ENOTEMPTY"));
+    }
+
+    #[tokio::test]
+    async fn etarget_retries_once_with_prefer_online() {
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@tobilu/qmd@2.5.3",
+            vec![
+                Err("npm error code ETARGET\nnpm error notarget".into()),
+                Ok("recovered".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("recovered".into()));
+        assert_eq!(run.attempts.len(), 2);
+        assert!(!run.attempts[0].contains(&"--prefer-online".to_string()));
+        assert!(run.attempts[1].contains(&"--prefer-online".to_string()));
+        assert!(run.cleanup_scopes.is_empty());
+        assert_eq!(run.cleared_failures, 1);
+        assert_eq!(run.preflight.len(), 1);
+        assert!(run.preflight[0].contains("prefer-online"));
+    }
+
+    #[tokio::test]
+    async fn etarget_falls_through_to_public_registry_after_prefer_online_fails() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@tobilu/qmd@2.5.3";
+        let public_registry_args = vec![
+            "install".to_string(),
+            "-g".to_string(),
+            "--prefix".to_string(),
+            prefix.to_string(),
+            "--registry=https://registry.npmjs.org/".to_string(),
+            spec.to_string(),
+        ];
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![
+                Err("first ETARGET".into()),
+                Err("prefer-online ETARGET".into()),
+                Ok("public registry recovered".into()),
+            ],
+            Some(public_registry_args.clone()),
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("public registry recovered".into()));
+        assert_eq!(
+            run.attempts,
+            vec![
+                vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "--prefix".to_string(),
+                    prefix.to_string(),
+                    spec.to_string(),
+                ],
+                vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "--prefix".to_string(),
+                    prefix.to_string(),
+                    "--prefer-online".to_string(),
+                    spec.to_string(),
+                ],
+                public_registry_args,
+            ]
+        );
+        assert!(run.cleanup_scopes.is_empty());
+        assert_eq!(run.cleared_failures, 2);
+        assert_eq!(run.preflight.len(), 2);
+        assert!(run.preflight[0].contains("prefer-online"));
+        assert!(run.preflight[1].contains("public registry"));
+    }
+
+    #[tokio::test]
+    async fn etarget_public_registry_failure_preserves_all_attempt_errors() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@tobilu/qmd@2.5.3";
+        let public_registry_args = vec![
+            "install".to_string(),
+            "-g".to_string(),
+            "--prefix".to_string(),
+            prefix.to_string(),
+            "--registry=https://registry.npmjs.org/".to_string(),
+            spec.to_string(),
+        ];
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![
+                Err("first ETARGET".into()),
+                Err("prefer-online ETARGET".into()),
+                Err("public registry ETARGET".into()),
+            ],
+            Some(public_registry_args.clone()),
+        )
+        .await;
+
+        let error = run.result.expect_err("all three attempts should fail");
+        assert!(error.contains("first ETARGET"));
+        assert!(error.contains("prefer-online ETARGET"));
+        assert!(error.contains("public registry ETARGET"));
+        assert_eq!(run.attempts.len(), 3);
+        assert_eq!(run.attempts[2], public_registry_args);
+        assert!(run.attempts[1].contains(&"--prefer-online".to_string()));
+        assert!(run.cleanup_scopes.is_empty());
+        assert_eq!(run.cleared_failures, 2);
+        assert_eq!(run.preflight.len(), 2);
+        assert!(run.preflight[0].contains("prefer-online"));
+        assert!(run.preflight[1].contains("public registry"));
+    }
+
+    #[tokio::test]
+    async fn unrelated_failure_does_not_arm_setup_recoveries() {
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@private/package",
+            vec![Err("npm error code E404 private package".into())],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Err("npm error code E404 private package".into()));
+        assert_eq!(run.attempts.len(), 1);
+        assert!(run.cleanup_scopes.is_empty());
+        assert!(run.preflight.is_empty());
+        assert_eq!(run.cleared_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn windows_layout_gets_the_same_enotempty_recovery() {
+        let run = run_fake_npm(
+            "C:/Users/test/AppData/Local/IndigoHQ/npm-prefix",
+            true,
+            "@indigoai-us/hq-cli",
+            vec![
+                Err("npm error code ENOTEMPTY".into()),
+                Ok("recovered".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("recovered".into()));
+        assert_eq!(run.attempts.len(), 2);
+        assert_eq!(run.cleanup_scopes.len(), 1);
+        assert_eq!(
+            run.cleanup_scopes[0].0,
+            PathBuf::from(
+                "C:/Users/test/AppData/Local/IndigoHQ/npm-prefix/node_modules/@indigoai-us"
+            )
+        );
+        assert_eq!(run.cleanup_scopes[0].1, "@indigoai-us/hq-cli");
+        assert_eq!(run.cleared_failures, 1);
     }
 }
 
