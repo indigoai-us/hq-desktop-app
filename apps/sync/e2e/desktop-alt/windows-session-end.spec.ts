@@ -37,6 +37,20 @@ import {
 } from './windows-reliability-harness';
 import { readRepoFile } from './harness';
 
+const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
+
+function sliceBetween(source: string, startAnchor: string, endAnchor: string, label: string): string {
+  const start = source.indexOf(startAnchor);
+  if (start === -1) {
+    throw new Error(`${label}: start anchor not found: ${startAnchor}`);
+  }
+  const end = source.indexOf(endAnchor, start + startAnchor.length);
+  if (end === -1) {
+    throw new Error(`${label}: end anchor not found after start: ${endAnchor}`);
+  }
+  return source.slice(start, end + endAnchor.length);
+}
+
 const live = resolveSessionEndLiveMode();
 
 describe('Windows session-end exit decision (HQ-DESKTOP-44)', () => {
@@ -374,7 +388,6 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
 // Two layers run on Linux/macOS CI (no Windows host required): source contracts
 // over the shipping Rust, and a bidirectional envelope simulator.
 
-const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
 const coreSource = readRepoFile('../../crates/hq-desktop-core/src/sync_outcome.rs');
 const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
 

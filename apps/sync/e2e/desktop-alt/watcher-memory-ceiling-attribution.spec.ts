@@ -184,10 +184,11 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
       '\n}\n',
       'record_supervisor_memory_preempt',
     );
-    // Establishes respawn backoff, emits the attributed event, and marks the
-    // evidence source as a supervisor pre-empt (so the exit class converges).
+    // Establishes respawn backoff, emits the attributed event, and tags the
+    // supervisor as the stop initiator with the measured projection arm reason.
     expect(recorder).toContain('note_watcher_crashed()');
-    expect(recorder).toContain('supervisor_preempt: true');
+    expect(recorder).toContain('("stop_initiator", "watcher_supervisor".to_string())');
+    expect(recorder).toContain('"watcher_projection_arm_reason"');
     expect(recorder).toContain('.capture(');
     expect(recorder).toContain('["sync-watcher-exit", "runner_memory"]');
     expect(recorder).toContain('("exit_class", "runner_memory".to_string())');

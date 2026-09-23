@@ -4168,9 +4168,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let memory_evidence =
         watcher_memory_exhaustion_evidence(&*effects, last_stderr, watcher_command, context);
     let memory_attributed = memory_evidence.is_attributed();
+    // A Node check-abort is a concrete Node fatal subclass: keep its specific
+    // runner_fatal_class tag while grouping the watcher exit as node_fatal.
     let node_fatal = context.runner_fatal_class == RunnerFatalClass::NodeFatal.as_str()
+        || context.runner_fatal_class == RunnerFatalClass::NodeCheckAbort.as_str()
         || last_stderr.is_some_and(|line| {
-            classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal
+            matches!(
+                classify_runner_fatal_signature(line).class,
+                RunnerFatalClass::NodeFatal | RunnerFatalClass::NodeCheckAbort
+            )
         });
     let exit_class = hq_desktop_core::sync_outcome::watcher_exit_class(
         code,

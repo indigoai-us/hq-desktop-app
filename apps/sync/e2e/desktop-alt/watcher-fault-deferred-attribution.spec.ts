@@ -49,6 +49,18 @@ const sessionEndInterceptSource = readRepoFile(
 const coreSource = readRepoFile('../../crates/hq-desktop-core/src/watcher_fault.rs');
 const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
 
+function sliceBetween(source: string, startAnchor: string, endAnchor: string, label: string): string {
+  const start = source.indexOf(startAnchor);
+  if (start === -1) {
+    throw new Error(`${label}: start anchor not found: ${startAnchor}`);
+  }
+  const end = source.indexOf(endAnchor, start + startAnchor.length);
+  if (end === -1) {
+    throw new Error(`${label}: end anchor not found after start: ${endAnchor}`);
+  }
+  return source.slice(start, end + endAnchor.length);
+}
+
 describe('watcher fault deferred attribution — source contracts', () => {
   it('takes the fault read OFF the terminal exit callback entirely', () => {
     // The old blocking, exit-path read is gone: no on-exit-path 4.5s wait, and no
