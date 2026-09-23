@@ -33,6 +33,11 @@ describe('channel conversation lifecycle and hierarchy', () => {
     expect(source).toContain('disposed = true');
   });
 
+  it('passes the membership list into Conversation so folder routes can resolve a slug', () => {
+    expect(source).toContain('loadAttachmentCompanies');
+    expect(source).toMatch(/companyUid=\{current\.companyUid\}\s+\{companies\}/);
+  });
+
   it('uses flat inline metadata and announces the visible member count', () => {
     expect(source).toContain('`View ${memberCount}');
     expect(source).toMatch(

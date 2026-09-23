@@ -6,6 +6,7 @@
   import {
     attachmentTypeBadge,
     formatAttachmentSize,
+    isFolderAttachment,
     type MessageAttachment,
   } from '../../lib/messageAttachments';
 
@@ -13,9 +14,18 @@
     attachments: MessageAttachment[];
     onclose: () => void;
     onselect: (index: number) => void;
+    onfolder?: (attachment: MessageAttachment) => void;
   }
 
-  let { attachments, onclose, onselect }: Props = $props();
+  let { attachments, onclose, onselect, onfolder }: Props = $props();
+
+  function pick(item: MessageAttachment, index: number): void {
+    if (isFolderAttachment(item) && onfolder) {
+      onfolder(item);
+      return;
+    }
+    onselect(index);
+  }
 
   const FOCUSABLE =
     'a[href],button:not([disabled]),textarea,input,select,[tabindex]:not([tabindex="-1"])';
@@ -124,7 +134,8 @@
             class="picker-item"
             data-testid="attachment-picker-item"
             aria-label={item.name}
-            onclick={() => onselect(index)}
+            data-kind={isFolderAttachment(item) ? 'folder' : 'file'}
+            onclick={() => pick(item, index)}
           >
             <span class="picker-badge" aria-hidden="true">{attachmentTypeBadge(item)}</span>
             <span class="picker-name">{item.name}</span>

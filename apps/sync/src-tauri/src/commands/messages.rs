@@ -52,8 +52,9 @@ use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    build_create_payload, build_create_payload_with_project, build_ensure_project_channel_payload,
-    build_group_payload, build_reaction_payload, build_reactions_url, esc_query, esc_seg,
+    build_channel_messages_url, build_create_payload, build_create_payload_with_project,
+    build_ensure_project_channel_payload, build_group_payload, build_reaction_payload,
+    build_reactions_url, esc_query, esc_seg,
     invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
     ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     EnsureProjectChannelResponse, MessageReactions, ReactionAggregate, RequestsResponse,

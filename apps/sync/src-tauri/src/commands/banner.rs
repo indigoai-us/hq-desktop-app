@@ -355,6 +355,30 @@ pub async fn show_dm_banner(
     show_banner(app, payload).await
 }
 
+/// Channel @mention → banner. Body-click opens the named channel message.
+pub async fn show_mention_banner(
+    app: AppHandle,
+    title: String,
+    body: String,
+    data: serde_json::Value,
+) -> Result<(), String> {
+    let icon = data
+        .get("fromDisplayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let payload = BannerPayload {
+        kind: "mention".to_string(),
+        title,
+        body,
+        icon_text: Some(initials(icon)),
+        action_label: Some("Open".to_string()),
+        action_id: Some("open".to_string()),
+        click_action_id: "open".to_string(),
+        data,
+    };
+    show_banner(app, payload).await
+}
+
 /// Share ("shared with me") → banner. Body-click opens the issuer's DM thread.
 pub async fn show_share_banner(
     app: AppHandle,

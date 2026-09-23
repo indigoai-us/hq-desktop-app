@@ -7,6 +7,10 @@
   import { ReactionController } from '../lib/reactionController.svelte';
   import { mergeHydratedThread, shouldAppendInbound } from '../lib/dmThread';
   import type { MessageAttachment } from '../lib/messageAttachments';
+  import {
+    loadAttachmentCompanies,
+    type AttachmentCompany,
+  } from '../lib/attachmentPresign';
 
   // Wire type for a DM event — same fields as notificationGroups.DmEvent /
   // Item.dm (structural match; keep fields in lockstep). Exported so shells
@@ -58,6 +62,17 @@
   // Reactions (US-025) for this DM conversation. Created when the DM event
   // arrives (its peer is the scope), kept in step with the visible messages.
   let reactionsCtl = $state<ReactionController | null>(null);
+  let companies = $state<AttachmentCompany[]>([]);
+
+  $effect(() => {
+    let cancelled = false;
+    void loadAttachmentCompanies().then((list) => {
+      if (!cancelled) companies = list;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   $effect(() => {
     const peer = event.fromPersonUid;
@@ -285,4 +300,5 @@
   onsend={sendReply}
   reactions={reactionsCtl?.map ?? {}}
   ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
+  {companies}
 />
