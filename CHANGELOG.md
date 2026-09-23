@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Large sync-output bursts no longer build up in HQ's memory. If the app falls
+  behind, the runner waits for the app to process more output.
+
 ## [0.10.310] — 2026-09-23
 
 - When sync finishes with per-file errors, events with the same exit code and

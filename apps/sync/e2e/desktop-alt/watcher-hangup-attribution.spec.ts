@@ -188,8 +188,8 @@ function signalClass(signal: number | null): string {
   return 'other';
 }
 
-/** Mirrors watcher_termination_fingerprint_token with NO memory evidence. */
-function fingerprintToken(code: number | null, signal: number | null, host: Host): string {
+/** Historical host-derived token, retained only for the pre-fix envelope. */
+function hostFingerprintToken(code: number | null, signal: number | null, host: Host): string {
   if (normalizedAbort(code, signal, host) !== null) return 'abort:sigabrt';
   if (code !== null && signal !== null) return `invalid:exit:${code}+signal:${signal}`;
   if (signal !== null) return `signal:${signal}`;
@@ -199,6 +199,16 @@ function fingerprintToken(code: number | null, signal: number | null, host: Host
     return `exit:${code}`;
   }
   return 'unknown';
+}
+
+/** Mirrors the stable watcher exit class for evidence-free exits. */
+function watcherExitClass(code: number | null, signal: number | null): string {
+  if (code !== null && windowsFaultHex(code) !== null) return 'stack_buffer_overrun';
+  if (code === 0x40010004) return 'dbg_terminate';
+  if (signal === 15) return 'sigterm';
+  if (signal === 9) return 'sigkill';
+  if (code === -1) return 'minus_one';
+  return 'other';
 }
 
 /** The parenthesised rendering the message carries, per build. */
@@ -227,11 +237,15 @@ function simulate(scenario: Scenario, build: Build): SimEnvelope {
     // The fix adds a queryable class tag; the pre-fix build has neither field, so
     // the signal-only exit was unfilterable except by parsing the title.
     tags.watcher_exit_signal_class = signalClass(scenario.signal);
+    tags.exit_class = watcherExitClass(scenario.code, scenario.signal);
     if (scenario.signal !== null) extras.watcher_exit_signal = scenario.signal;
   }
   return {
     message,
-    fingerprintToken: fingerprintToken(scenario.code, scenario.signal, scenario.host),
+    fingerprintToken:
+      build === 'fixed'
+        ? watcherExitClass(scenario.code, scenario.signal)
+        : hostFingerprintToken(scenario.code, scenario.signal, scenario.host),
     tags,
     extras,
   };
@@ -252,7 +266,8 @@ describe('watcher hangup attribution — shipped Sentry envelope', () => {
     expect(envelope.message).not.toContain('signal=Some(1)');
     expect(envelope.tags.watcher_exit_signal_class).toBe('hangup');
     expect(envelope.extras.watcher_exit_signal).toBe(1);
-    expect(envelope.fingerprintToken).toBe('signal:1');
+    expect(envelope.fingerprintToken).toBe('other');
+    expect(envelope.tags.exit_class).toBe('other');
   });
 
   it('reproduces the exact HQ-DESKTOP-5Y title under the pre-fix renderer', () => {
@@ -266,14 +281,14 @@ describe('watcher hangup attribution — shipped Sentry envelope', () => {
     expect(envelope.tags.watcher_exit_signal_class).toBeUndefined();
   });
 
-  it('changes the SIGHUP message but not its grouping', () => {
+  it('emits SIGHUP under the stable other class and retains the signal tag', () => {
     const fixed = simulate(SIGHUP, 'fixed');
     const preFix = simulate(SIGHUP, 'pre-fix');
     expect(fixed.message).not.toBe(preFix.message);
-    // Grouping is by fingerprint, which is message-independent: SIGHUP stays
-    // signal:1 across the change, so no issue regroups or splits.
-    expect(fixed.fingerprintToken).toBe(preFix.fingerprintToken);
-    expect(fixed.fingerprintToken).toBe('signal:1');
+    expect(preFix.fingerprintToken).toBe('signal:1');
+    expect(fixed.fingerprintToken).toBe('other');
+    expect(fixed.tags.watcher_exit_signal_class).toBe('hangup');
+    expect(fixed.extras.watcher_exit_signal).toBe(1);
   });
 
   it('leaves already-named SIGABRT and Windows-fault renderings byte-identical', () => {
@@ -281,12 +296,11 @@ describe('watcher hangup attribution — shipped Sentry envelope', () => {
       const fixed = simulate(scenario, 'fixed');
       const preFix = simulate(scenario, 'pre-fix');
       expect(fixed.message).toBe(preFix.message);
-      expect(fixed.fingerprintToken).toBe(preFix.fingerprintToken);
     }
     expect(simulate(SIGABRT, 'fixed').message).toContain('aborted with SIGABRT');
-    expect(simulate(SIGABRT, 'fixed').fingerprintToken).toBe('abort:sigabrt');
+    expect(simulate(SIGABRT, 'fixed').fingerprintToken).toBe('other');
     expect(simulate(WINDOWS_FAULT, 'fixed').message).toContain('with Windows status 0xC0000409');
-    expect(simulate(WINDOWS_FAULT, 'fixed').fingerprintToken).toBe('windows:fault:0xC0000409');
+    expect(simulate(WINDOWS_FAULT, 'fixed').fingerprintToken).toBe('stack_buffer_overrun');
   });
 
   it('carries only content-safe diagnostics', () => {

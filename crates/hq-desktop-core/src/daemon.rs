@@ -1490,6 +1490,98 @@ impl DaemonFailureCategory {
     }
 }
 
+/// Closed initiator vocabulary for watcher shutdown attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherStopInitiator {
+    None,
+    WatcherSupervisor,
+    User,
+    App,
+    Updater,
+    OperatingSystem,
+}
+
+impl WatcherStopInitiator {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::WatcherSupervisor => "watcher_supervisor",
+            Self::User => "user",
+            Self::App => "app",
+            Self::Updater => "updater",
+            Self::OperatingSystem => "operating_system",
+        }
+    }
+}
+
+/// Content-safe reason/initiator pair derived from the supervisor action that
+/// requested a watcher termination. Natural exits intentionally return `none`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatcherStopAttribution {
+    pub reason: &'static str,
+    pub initiator: WatcherStopInitiator,
+}
+
+pub fn watcher_stop_attribution(category: DaemonFailureCategory) -> WatcherStopAttribution {
+    let (reason, initiator) = match category {
+        DaemonFailureCategory::HeartbeatStall => {
+            ("heartbeat_stall", WatcherStopInitiator::WatcherSupervisor)
+        }
+        DaemonFailureCategory::RunnerMemory => {
+            ("runner_memory", WatcherStopInitiator::WatcherSupervisor)
+        }
+        DaemonFailureCategory::ForceClear => ("force_clear", WatcherStopInitiator::User),
+        DaemonFailureCategory::Cancelled => ("cancelled", WatcherStopInitiator::User),
+        DaemonFailureCategory::Backoff => ("backoff", WatcherStopInitiator::WatcherSupervisor),
+        DaemonFailureCategory::None
+        | DaemonFailureCategory::SpawnFailed
+        | DaemonFailureCategory::Crash
+        | DaemonFailureCategory::Preflight => ("none", WatcherStopInitiator::None),
+    };
+    WatcherStopAttribution { reason, initiator }
+}
+
+/// Power-state evidence accumulated from native OS suspend/resume callbacks.
+/// Times are monotonic milliseconds supplied by the host so this state remains
+/// deterministic and independent of wall-clock adjustments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SystemPowerLifecycle {
+    observer_available: bool,
+    sleeping: bool,
+    last_resume_at_ms: Option<u64>,
+}
+
+impl SystemPowerLifecycle {
+    pub fn set_observer_available(&mut self, available: bool) {
+        self.observer_available = available;
+    }
+
+    pub fn note_sleep(&mut self, _at_ms: u64) {
+        self.sleeping = true;
+        self.last_resume_at_ms = None;
+    }
+
+    pub fn note_resume(&mut self, at_ms: u64) {
+        if self.sleeping {
+            self.sleeping = false;
+            self.last_resume_at_ms = Some(at_ms);
+        }
+    }
+
+    /// `None` means native power notifications were unavailable; otherwise the
+    /// answer is true only for a real observed sleep/resume within the window.
+    pub fn resume_within_seconds(&self, now_ms: u64, seconds: u64) -> Option<bool> {
+        if !self.observer_available {
+            return None;
+        }
+        let window_ms = seconds.saturating_mul(1_000);
+        Some(
+            self.last_resume_at_ms
+                .is_some_and(|resumed_at| now_ms >= resumed_at && now_ms - resumed_at <= window_ms),
+        )
+    }
+}
+
 /// Derive the supervisor lifecycle state from app-owned registration, the
 /// registered child's liveness, an inherited PID-file runner, and backoff.
 ///
@@ -1970,6 +2062,44 @@ mod tests {
             false,
             DaemonFailureCategory::Preflight
         ));
+    }
+
+    #[test]
+    fn watcher_stop_attribution_names_supervisor_and_user_causes() {
+        let heartbeat = watcher_stop_attribution(DaemonFailureCategory::HeartbeatStall);
+        assert_eq!(heartbeat.reason, "heartbeat_stall");
+        assert_eq!(heartbeat.initiator.as_str(), "watcher_supervisor");
+
+        let memory = watcher_stop_attribution(DaemonFailureCategory::RunnerMemory);
+        assert_eq!(memory.reason, "runner_memory");
+        assert_eq!(memory.initiator.as_str(), "watcher_supervisor");
+
+        let force_clear = watcher_stop_attribution(DaemonFailureCategory::ForceClear);
+        assert_eq!(force_clear.reason, "force_clear");
+        assert_eq!(force_clear.initiator.as_str(), "user");
+
+        let natural_crash = watcher_stop_attribution(DaemonFailureCategory::Crash);
+        assert_eq!(natural_crash.reason, "none");
+        assert_eq!(natural_crash.initiator.as_str(), "none");
+    }
+
+    #[test]
+    fn system_power_lifecycle_requires_a_real_resume_and_uses_a_bounded_window() {
+        let mut power = SystemPowerLifecycle::default();
+        assert_eq!(power.resume_within_seconds(10_000, 120), None);
+
+        power.set_observer_available(true);
+        assert_eq!(power.resume_within_seconds(10_000, 120), Some(false));
+        power.note_sleep(10_000);
+        power.note_resume(11_000);
+        assert_eq!(power.resume_within_seconds(131_000, 120), Some(true));
+        assert_eq!(power.resume_within_seconds(131_001, 120), Some(false));
+
+        // A second sleep invalidates the earlier wake until this sleep resumes.
+        power.note_sleep(140_000);
+        assert_eq!(power.resume_within_seconds(140_001, 120), Some(false));
+        power.note_resume(141_000);
+        assert_eq!(power.resume_within_seconds(141_001, 120), Some(true));
     }
 
     #[test]

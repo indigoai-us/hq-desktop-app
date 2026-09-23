@@ -292,10 +292,13 @@ function deriveCulprit(tags: Record<string, string>): string | null {
  * but the reason is still blank. This is the FIXED part; the reason axes differ by
  * policy.
  */
-function baseRecurrenceEnvelope(): SentryEnvelope {
-  return {
+function baseRecurrenceEnvelope(policy: Policy): SentryEnvelope {
+  const env: SentryEnvelope = {
     message: 'auto-sync watcher exited unexpectedly',
-    fingerprint: ['sync', 'auto-sync-watcher-termination', 'windows:fault:0xC0000409', 'none'],
+    fingerprint:
+      policy === 'pre-fix'
+        ? ['sync', 'auto-sync-watcher-termination', 'windows:fault:0xC0000409', 'none']
+        : ['sync-watcher-exit', 'stack_buffer_overrun'],
     tags: {
       sync_route: 'watcher',
       windows_exit_class: 'fault',
@@ -312,6 +315,8 @@ function baseRecurrenceEnvelope(): SentryEnvelope {
     },
     culprit: null,
   };
+  if (policy === 'post-fix') env.tags.exit_class = 'stack_buffer_overrun';
+  return env;
 }
 
 /**
@@ -321,7 +326,7 @@ function baseRecurrenceEnvelope(): SentryEnvelope {
  * runner_fatal_source to node_report and rendering the reason in the culprit.
  */
 function applyPolicy(policy: Policy, report: NodeReport | null): SentryEnvelope {
-  const env = baseRecurrenceEnvelope();
+  const env = baseRecurrenceEnvelope(policy);
 
   if (policy === 'pre-fix') {
     // The reason axes did not exist, and a valid Windows class short-circuited the
@@ -418,13 +423,20 @@ describe('windows fatal-reason attribution — envelope model (both directions)'
     expect(env.tags.runner_fatal_source).toBe('none');
   });
 
-  it('grouping continuity: message + fingerprint are identical across policies', () => {
+  it('candidate uses the stable fault class while preserving the historical base event', () => {
     const pre = applyPolicy('pre-fix', HEAP_OOM_REPORT);
     const post = applyPolicy('post-fix', HEAP_OOM_REPORT);
     expect(post.message).toBe(pre.message);
-    expect(post.fingerprint).toEqual(pre.fingerprint);
-    // Only diagnostic reason axes + the enriched attribution differ; the fixed
-    // watcher_fault_* accounting and the stderr rollup are untouched.
+    expect(pre.fingerprint).toEqual([
+      'sync',
+      'auto-sync-watcher-termination',
+      'windows:fault:0xC0000409',
+      'none',
+    ]);
+    expect(post.fingerprint).toEqual(['sync-watcher-exit', 'stack_buffer_overrun']);
+    expect(post.tags.exit_class).toBe('stack_buffer_overrun');
+    // The c061 grouping field changes alongside diagnostic reason axes; existing
+    // watcher_fault_* accounting and the stderr rollup stay untouched.
     expect(post.tags.watcher_fault_provenance).toBe(pre.tags.watcher_fault_provenance);
     expect(post.tags.watcher_fault_read).toBe(pre.tags.watcher_fault_read);
     expect(post.tags.runner_unmatched_stderr_shapes).toBe(pre.tags.runner_unmatched_stderr_shapes);
