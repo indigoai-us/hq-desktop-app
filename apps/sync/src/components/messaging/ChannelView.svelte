@@ -28,6 +28,10 @@
   import { type ReactionEvent, channelScope } from '../../lib/reactions';
   import { foldReplies } from './thread-replies';
   import { ReactionController } from '../../lib/reactionController.svelte';
+  import {
+    loadAttachmentCompanies,
+    type AttachmentCompany,
+  } from '../../lib/attachmentPresign';
 
   interface Props {
     channel: Channel;
@@ -100,6 +104,7 @@
   // Live background-task strip for the agents on this channel's roster.
   // Built and disposed alongside thinkingCtl — same roster, same lifetime.
   let taskCtl = $state<AgentTaskFeedController | null>(null);
+  let companies = $state<AttachmentCompany[]>([]);
 
   const title = $derived(channelDisplayName(current));
   const chip = $derived(scopeChipLabel(current));
@@ -107,6 +112,16 @@
   const isGroup = $derived(current.scope === 'group');
   const invited = $derived(isInvitedNotJoined(current));
   const conversationLabel = $derived(isGroup ? title : `#${title}`);
+
+  $effect(() => {
+    let cancelled = false;
+    void loadAttachmentCompanies().then((list) => {
+      if (!cancelled) companies = list;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   // Owner determination: the creator is the channel owner. The Channel wire
   // shape doesn't carry the caller's role, so the roster (which lists per-member
@@ -422,6 +437,7 @@
     readonly={true}
     onsend={() => {}}
     companyUid={current.companyUid}
+    {companies}
   />
   <div class="join-cta">
     <p class="join-text">
@@ -460,6 +476,7 @@
     reactions={reactionsCtl?.map ?? {}}
     ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
     companyUid={current.companyUid}
+    {companies}
   >
     {#snippet belowMessages()}
       <AgentThinkingRow entries={thinkingCtl?.entries ?? []} />

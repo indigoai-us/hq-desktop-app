@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -280,19 +280,24 @@ impl MentionWatchState {
 }
 
 /// True when `mentions[]` contains the signed-in person as `participantUid`.
-/// Text that merely contains `@Name` does not count. Empty person uid never
-/// matches.
-pub fn message_mentions_person(message: &ChannelMessage, person_uid: &str) -> bool {
+/// Match the person uid **or** the Cognito subject — live rows use either.
+/// Text that merely contains `@Name` does not count. Empty ids never match.
+pub fn message_mentions_person(
+    message: &ChannelMessage,
+    person_uid: &str,
+    cognito_sub: &str,
+) -> bool {
     let me = person_uid.trim();
-    if me.is_empty() {
-        return false;
-    }
+    let sub = cognito_sub.trim();
     message
         .mentions
         .as_deref()
         .unwrap_or(&[])
         .iter()
-        .any(|mention| mention.participant_uid.trim() == me)
+        .any(|mention| {
+            let uid = mention.participant_uid.trim();
+            !uid.is_empty() && ((!me.is_empty() && uid == me) || (!sub.is_empty() && uid == sub))
+        })
 }
 
 /// Own messages never count, even when they mention me. `fromPersonUid` on
@@ -310,7 +315,7 @@ pub fn is_self_authored(from_person_uid: &str, person_uid: &str, cognito_sub: &s
 /// A mention of me: structured `participantUid` match, not authored by me.
 pub fn is_mention_of_me(message: &ChannelMessage, person_uid: &str, cognito_sub: &str) -> bool {
     !is_self_authored(&message.from_person_uid, person_uid, cognito_sub)
-        && message_mentions_person(message, person_uid)
+        && message_mentions_person(message, person_uid, cognito_sub)
 }
 
 pub fn newest_event_id(messages_newest_first: &[ChannelMessage]) -> Option<String> {
@@ -329,7 +334,10 @@ pub fn seed_mention_cursor(messages_newest_first: &[ChannelMessage]) -> Option<S
 
 pub fn cursor_in_page(messages_newest_first: &[ChannelMessage], last_seen_event_id: &str) -> bool {
     let seen = last_seen_event_id.trim();
-    !seen.is_empty() && messages_newest_first.iter().any(|message| message.event_id == seen)
+    !seen.is_empty()
+        && messages_newest_first
+            .iter()
+            .any(|message| message.event_id == seen)
 }
 
 /// Messages newer than `last_seen_event_id` in a newest-first page.
@@ -350,16 +358,60 @@ pub fn messages_newer_than<'a>(
         .collect()
 }
 
+const NAIVE_CREATED_AT_FMTS: &[&str] = &[
+    "%Y-%m-%dT%H:%M:%S%.f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S%.f",
+    "%Y-%m-%d %H:%M:%S",
+];
+
+/// Parse a message `createdAt`. RFC 3339 with offset, or a naive timestamp
+/// treated as UTC. Does not log — callers that have an event id use
+/// [`parse_message_created_at_logged`].
 pub fn parse_message_created_at(created_at: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(created_at.trim())
-        .ok()
-        .map(|ts| ts.with_timezone(&Utc))
+    let raw = created_at.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(ts) = DateTime::parse_from_rfc3339(raw) {
+        return Some(ts.with_timezone(&Utc));
+    }
+    for fmt in NAIVE_CREATED_AT_FMTS {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(raw, fmt) {
+            return Some(naive.and_utc());
+        }
+    }
+    None
+}
+
+/// Like [`parse_message_created_at`], and logs `DM_NOTIFY_MENTION_BAD_TS
+/// event=<id>` (never the body) when parsing fails.
+pub fn parse_message_created_at_logged(created_at: &str, event_id: &str) -> Option<DateTime<Utc>> {
+    match parse_message_created_at(created_at) {
+        Some(ts) => Some(ts),
+        None => {
+            let id = event_id.trim();
+            if !id.is_empty() {
+                crate::logfile::log("dm-notify", &format!("DM_NOTIFY_MENTION_BAD_TS event={id}"));
+            }
+            None
+        }
+    }
 }
 
 /// True when `created_at` is at most `max_age` before `now`. Unparseable
 /// timestamps are not fresh. Future timestamps count as fresh.
 pub fn mention_created_within(created_at: &str, now: DateTime<Utc>, max_age: Duration) -> bool {
-    let Some(ts) = parse_message_created_at(created_at) else {
+    mention_created_within_for_event(created_at, now, max_age, "")
+}
+
+pub fn mention_created_within_for_event(
+    created_at: &str,
+    now: DateTime<Utc>,
+    max_age: Duration,
+    event_id: &str,
+) -> bool {
+    let Some(ts) = parse_message_created_at_logged(created_at, event_id) else {
         return false;
     };
     now.signed_duration_since(ts) <= max_age
@@ -372,7 +424,9 @@ pub fn filter_mentions_by_age<'a>(
 ) -> Vec<&'a ChannelMessage> {
     messages
         .into_iter()
-        .filter(|message| mention_created_within(&message.created_at, now, max_age))
+        .filter(|message| {
+            mention_created_within_for_event(&message.created_at, now, max_age, &message.event_id)
+        })
         .collect()
 }
 
@@ -389,7 +443,10 @@ pub fn advance_mention_cursor<'a>(
     now: DateTime<Utc>,
 ) -> (Option<String>, Vec<&'a ChannelMessage>) {
     let newest = newest_event_id(messages_newest_first);
-    let Some(seen) = last_seen_event_id.map(str::trim).filter(|id| !id.is_empty()) else {
+    let Some(seen) = last_seen_event_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
         return (newest, Vec::new());
     };
     if cursor_in_page(messages_newest_first, seen) {
@@ -399,7 +456,12 @@ pub fn advance_mention_cursor<'a>(
         );
     }
     let newest_if_recent = messages_newest_first.first().filter(|message| {
-        mention_created_within(&message.created_at, now, MENTION_CURSOR_MISSING_MAX_AGE)
+        mention_created_within_for_event(
+            &message.created_at,
+            now,
+            MENTION_CURSOR_MISSING_MAX_AGE,
+            &message.event_id,
+        )
     });
     (
         newest.or_else(|| Some(seen.to_string())),
@@ -439,6 +501,32 @@ pub fn take_mention_fetch_batch(
 ) -> Vec<(String, String)> {
     let n = cap.min(pending.len());
     pending.drain(0..n).collect()
+}
+
+/// Re-queue failed fetches at most once per detect run so a dead channel
+/// cannot spin. `retried` is the set of channel ids already re-queued.
+pub fn requeue_failed_mention_fetches(
+    pending: &mut Vec<(String, String)>,
+    failed: &[(String, String)],
+    retried: &mut HashSet<String>,
+) {
+    let mut once = Vec::new();
+    for (id, name) in failed {
+        let id = id.trim();
+        if id.is_empty() || retried.contains(id) {
+            continue;
+        }
+        retried.insert(id.to_string());
+        once.push((id.to_string(), name.clone()));
+    }
+    enqueue_mention_fetches(pending, &once);
+}
+
+/// Spawn a detect task when something is waiting and nothing owns the drain.
+/// Growth while a detect is in flight is only enqueued — the in-flight run
+/// (or the next poll) takes the next batch.
+pub fn should_spawn_mention_detect(pending_len: usize, detect_in_flight: bool) -> bool {
+    pending_len > 0 && !detect_in_flight
 }
 
 /// One mention that qualified for a notification this cycle.
@@ -504,7 +592,10 @@ pub fn mention_summary_title(extra_count: usize) -> String {
 }
 
 /// Consider each message id at most once per session. Bounded FIFO.
-pub fn take_unseen_message_ids(event_ids: &[String], seen: &[String]) -> (Vec<String>, Vec<String>) {
+pub fn take_unseen_message_ids(
+    event_ids: &[String],
+    seen: &[String],
+) -> (Vec<String>, Vec<String>) {
     let known: HashSet<&str> = seen.iter().map(String::as_str).collect();
     let fresh: Vec<String> = event_ids
         .iter()
@@ -527,7 +618,11 @@ pub fn mention_notification_title(author: &str, channel_name: &str) -> String {
     let author = author.trim();
     let author = if author.is_empty() { "Someone" } else { author };
     let channel = channel_name.trim().trim_start_matches('#');
-    let channel = if channel.is_empty() { "channel" } else { channel };
+    let channel = if channel.is_empty() {
+        "channel"
+    } else {
+        channel
+    };
     format!("{author} mentioned you in #{channel}")
 }
 
@@ -548,7 +643,8 @@ pub fn mention_route(channel_id: &str, message_id: &str) -> String {
     }
 }
 
-/// No notification when that channel is open and focused in the main window.
+/// No notification when that channel is open and focused in the desktop-alt
+/// window (`desktop-alt` webview), not the tray popover.
 pub fn should_suppress_mention_for_open_channel(
     active_scope: Option<&str>,
     channel_id: &str,
@@ -1168,6 +1264,7 @@ pub fn build_thread_reply_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn active_thread_registry_keeps_other_window_seen_reply_suppression_on_selective_cleanup() {
@@ -2113,7 +2210,8 @@ mod tests {
     fn mention_detection_matches_participant_uid_live_shape() {
         let mentioned = mk_channel_msg(&live_mention_json("evt_1", "prs_ada"));
         assert!(is_mention_of_me(&mentioned, ME, MY_SUB));
-        assert!(message_mentions_person(&mentioned, ME));
+        assert!(message_mentions_person(&mentioned, ME, MY_SUB));
+        assert!(message_mentions_person(&mentioned, ME, ""));
     }
 
     #[test]
@@ -2127,8 +2225,52 @@ mod tests {
                 "direction": "in"
             }"#,
         );
-        assert!(!message_mentions_person(&text_only, ME));
+        assert!(!message_mentions_person(&text_only, ME, MY_SUB));
         assert!(!is_mention_of_me(&text_only, ME, MY_SUB));
+    }
+
+    #[test]
+    fn mention_detection_matches_cognito_sub_as_participant_uid() {
+        let mentioned = mk_channel_msg(&format!(
+            r#"{{
+                "eventId": "evt_sub",
+                "fromPersonUid": "prs_ada",
+                "fromDisplayName": "Ada",
+                "body": "hey",
+                "createdAt": "2026-09-23T12:00:00Z",
+                "direction": "in",
+                "mentions": [{{
+                    "participantUid": "{MY_SUB}",
+                    "participantType": "human",
+                    "displayName": "Stefan Johnson"
+                }}]
+            }}"#
+        ));
+        assert!(message_mentions_person(&mentioned, ME, MY_SUB));
+        assert!(message_mentions_person(&mentioned, "", MY_SUB));
+        assert!(!message_mentions_person(&mentioned, ME, ""));
+        assert!(is_mention_of_me(&mentioned, ME, MY_SUB));
+    }
+
+    #[test]
+    fn mention_detection_empty_participant_uid_never_matches() {
+        let mentioned = mk_channel_msg(
+            r#"{
+                "eventId": "evt_empty",
+                "fromPersonUid": "prs_ada",
+                "fromDisplayName": "Ada",
+                "body": "hey",
+                "createdAt": "2026-09-23T12:00:00Z",
+                "direction": "in",
+                "mentions": [{
+                    "participantType": "human",
+                    "displayName": "Stefan Johnson"
+                }]
+            }"#,
+        );
+        assert_eq!(mentioned.mentions.as_ref().unwrap()[0].participant_uid, "");
+        assert!(!message_mentions_person(&mentioned, ME, MY_SUB));
+        assert!(!is_mention_of_me(&mentioned, ME, MY_SUB));
     }
 
     #[test]
@@ -2162,7 +2304,10 @@ mod tests {
         let (cursor, consider) = advance_mention_cursor(&page, Some("evt_old"), poll_now());
         assert_eq!(cursor.as_deref(), Some("evt_new"));
         assert_eq!(
-            consider.iter().map(|m| m.event_id.as_str()).collect::<Vec<_>>(),
+            consider
+                .iter()
+                .map(|m| m.event_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["evt_new", "evt_mid"]
         );
     }
@@ -2180,8 +2325,7 @@ mod tests {
             "2026-09-23T10:01:00Z",
         ));
         let page = vec![newest, older];
-        let (cursor, consider) =
-            advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now());
+        let (cursor, consider) = advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now());
         assert_eq!(cursor.as_deref(), Some("evt_new"));
         assert!(consider.is_empty());
     }
@@ -2199,11 +2343,13 @@ mod tests {
             "2026-09-23T11:50:00Z",
         ));
         let page = vec![newest, older];
-        let (cursor, consider) =
-            advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now());
+        let (cursor, consider) = advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now());
         assert_eq!(cursor.as_deref(), Some("evt_new"));
         assert_eq!(
-            consider.iter().map(|m| m.event_id.as_str()).collect::<Vec<_>>(),
+            consider
+                .iter()
+                .map(|m| m.event_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["evt_new"]
         );
     }
@@ -2231,7 +2377,10 @@ mod tests {
 
         let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
         let page = vec![newest];
-        let last_seen = watch.last_event_by_channel.get("chn_eng").map(String::as_str);
+        let last_seen = watch
+            .last_event_by_channel
+            .get("chn_eng")
+            .map(String::as_str);
         let (cursor, consider) = advance_mention_cursor(&page, last_seen, poll_now());
         assert_eq!(cursor.as_deref(), Some("evt_new"));
         assert!(consider.is_empty());
@@ -2257,12 +2406,18 @@ mod tests {
         let page = vec![fresh, stale, oldest];
         let (_, consider) = advance_mention_cursor(&page, Some("evt_oldest"), poll_now());
         assert_eq!(
-            consider.iter().map(|m| m.event_id.as_str()).collect::<Vec<_>>(),
+            consider
+                .iter()
+                .map(|m| m.event_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["evt_fresh", "evt_stale"]
         );
         let fresh_only = filter_mentions_by_age(consider, poll_now(), MENTION_FRESH_MAX_AGE);
         assert_eq!(
-            fresh_only.iter().map(|m| m.event_id.as_str()).collect::<Vec<_>>(),
+            fresh_only
+                .iter()
+                .map(|m| m.event_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["evt_fresh"]
         );
     }
@@ -2311,11 +2466,13 @@ mod tests {
         assert_eq!(cursor.as_deref(), Some("evt_old"));
         assert!(consider.is_empty());
 
-        let (ok_cursor, ok_consider) =
-            mention_cursor_after_fetch(current, true, &page, poll_now());
+        let (ok_cursor, ok_consider) = mention_cursor_after_fetch(current, true, &page, poll_now());
         assert_eq!(ok_cursor.as_deref(), Some("evt_new"));
         assert_eq!(
-            ok_consider.iter().map(|m| m.event_id.as_str()).collect::<Vec<_>>(),
+            ok_consider
+                .iter()
+                .map(|m| m.event_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["evt_new"]
         );
     }
@@ -2338,9 +2495,109 @@ mod tests {
             vec!["c1", "c2", "c3", "c4"]
         );
         assert_eq!(
-            pending.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            pending
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
             vec!["c5", "c6"]
         );
+    }
+
+    #[test]
+    fn mention_drain_fetches_all_six_channels_across_batches() {
+        let mut pending = vec![
+            ("c1".into(), "one".into()),
+            ("c2".into(), "two".into()),
+            ("c3".into(), "three".into()),
+            ("c4".into(), "four".into()),
+            ("c5".into(), "five".into()),
+            ("c6".into(), "six".into()),
+        ];
+        let mut fetched = Vec::new();
+        while !pending.is_empty() {
+            let batch = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+            assert!(!batch.is_empty());
+            fetched.extend(batch.into_iter().map(|(id, _)| id));
+        }
+        assert_eq!(
+            fetched,
+            vec![
+                "c1".to_string(),
+                "c2".to_string(),
+                "c3".to_string(),
+                "c4".to_string(),
+                "c5".to_string(),
+                "c6".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn mention_growth_while_in_flight_is_fetched_on_next_batch() {
+        let mut pending = vec![
+            ("c1".into(), "one".into()),
+            ("c2".into(), "two".into()),
+            ("c3".into(), "three".into()),
+            ("c4".into(), "four".into()),
+        ];
+        let detect_in_flight = true;
+        let batch1 = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        enqueue_mention_fetches(
+            &mut pending,
+            &[("c5".into(), "five".into()), ("c6".into(), "six".into())],
+        );
+        assert!(detect_in_flight);
+        assert!(!should_spawn_mention_detect(
+            pending.len(),
+            detect_in_flight
+        ));
+        let batch2 = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        assert_eq!(
+            batch1.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["c1", "c2", "c3", "c4"]
+        );
+        assert_eq!(
+            batch2.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["c5", "c6"]
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn mention_failed_fetch_is_retried_once_then_dropped() {
+        let mut pending = vec![("dead".into(), "x".into())];
+        let mut retried = HashSet::new();
+        let batch = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        requeue_failed_mention_fetches(&mut pending, &batch, &mut retried);
+        assert_eq!(pending.len(), 1);
+        let retry = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        requeue_failed_mention_fetches(&mut pending, &retry, &mut retried);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn mention_spawn_when_pending_and_idle_even_without_growth() {
+        assert!(should_spawn_mention_detect(2, false));
+        assert!(!should_spawn_mention_detect(2, true));
+        assert!(!should_spawn_mention_detect(0, false));
+        assert!(!should_spawn_mention_detect(0, true));
+    }
+
+    #[test]
+    fn mention_created_at_accepts_naive_utc_and_logs_bad_ts() {
+        let naive = parse_message_created_at("2026-09-23T12:00:00").expect("naive utc");
+        let rfc = parse_message_created_at("2026-09-23T12:00:00Z").expect("rfc3339");
+        assert_eq!(naive, rfc);
+        assert!(parse_message_created_at("not-a-timestamp").is_none());
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let log_path = tmp.path().join("hq-sync.log");
+        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        assert!(parse_message_created_at_logged("nope", "evt_bad").is_none());
+        crate::logfile::log("dm-notify", "flush");
+        let body = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(body.contains("DM_NOTIFY_MENTION_BAD_TS event=evt_bad"));
+        assert!(!body.contains("nope"));
     }
 
     #[test]

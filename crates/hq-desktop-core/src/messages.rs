@@ -282,6 +282,7 @@ pub struct ChannelMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageMention {
+    #[serde(default)]
     pub participant_uid: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub participant_type: Option<String>,
@@ -737,6 +738,31 @@ mod tests {
             "prs_01KQ2RY9VB1S105X2GZ2EPHKWY"
         );
         assert_eq!(mentions[0].participant_type.as_deref(), Some("human"));
+        assert_eq!(mentions[0].display_name.as_deref(), Some("Stefan Johnson"));
+    }
+
+    #[test]
+    fn channel_detail_parses_mention_missing_participant_uid() {
+        let json = r#"{
+            "messages": [{
+                "eventId": "evt_partial",
+                "fromPersonUid": "prs_ada",
+                "body": "hey",
+                "createdAt": "2026-09-23T00:00:00Z",
+                "direction": "in",
+                "mentions": [{
+                    "participantType": "human",
+                    "displayName": "Stefan Johnson"
+                }]
+            }]
+        }"#;
+        let detail: ChannelDetail =
+            serde_json::from_str(json).expect("missing participantUid is default");
+        let mentions = detail.messages[0]
+            .mentions
+            .as_ref()
+            .expect("mentions present");
+        assert_eq!(mentions[0].participant_uid, "");
         assert_eq!(mentions[0].display_name.as_deref(), Some("Stefan Johnson"));
     }
 

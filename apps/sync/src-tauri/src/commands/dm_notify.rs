@@ -38,7 +38,7 @@
 //!   `_NETWORK_FAIL` / `_ERROR` — mirror the `SHARE_NOTIFY_*` codes.
 //!   `DM_NOTIFY_SEND_OK` / `_SEND_FAIL` — outbound send result.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -53,16 +53,17 @@ pub use hq_desktop_core::dm_notify::{
     build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
     build_threads_url, classify_send_response, clear_in_flight, diff_requests,
     dm_notifications_enabled, effective_reply_count, enqueue_mention_fetches, esc_thread_seg,
-    filter_mentions_by_age, is_mention_of_me, mention_cursor_after_fetch, mention_notification_body,
-    mention_notification_title, mention_route, mention_summary_title, normalize_scope,
-    partition_unnotified, plan_mention_cap, read_cursor_entry_for_account, respond_action_path,
-    respond_action_state, should_suppress_duplicate_event, should_suppress_mention_for_open_channel,
-    take_mention_fetch_batch, take_unseen_message_ids, try_set_in_flight,
-    write_cursor_entry_for_account, ActiveConversationInner, ActiveConversationState,
-    ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent, InboxResponse, MentionCapItem,
-    MentionWatchState, PairUnread, PairUnreadState, RequestsListResponse, SeenChannelState,
-    SeenRequestState, SendDmOutcome, ThreadReply, ThreadResponse, ThreadView, UnreadDmState,
-    MENTION_FETCH_PER_CYCLE, MENTION_FRESH_MAX_AGE,
+    filter_mentions_by_age, is_mention_of_me, mention_cursor_after_fetch,
+    mention_notification_body, mention_notification_title, mention_route, mention_summary_title,
+    normalize_scope, partition_unnotified, plan_mention_cap, read_cursor_entry_for_account,
+    requeue_failed_mention_fetches, respond_action_path, respond_action_state,
+    should_spawn_mention_detect, should_suppress_duplicate_event,
+    should_suppress_mention_for_open_channel, take_mention_fetch_batch, take_unseen_message_ids,
+    try_set_in_flight, write_cursor_entry_for_account, ActiveConversationInner,
+    ActiveConversationState, ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent,
+    InboxResponse, MentionCapItem, MentionWatchState, PairUnread, PairUnreadState,
+    RequestsListResponse, SeenChannelState, SeenRequestState, SendDmOutcome, ThreadReply,
+    ThreadResponse, ThreadView, UnreadDmState, MENTION_FETCH_PER_CYCLE, MENTION_FRESH_MAX_AGE,
 };
 
 const LOG_TAG: &str = "dm-notify";
@@ -2453,21 +2454,41 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
                 "DM_NOTIFY_CHAN_POLL_STALE auth generation or local unread revision changed",
             );
         }
-        Some(ChannelPollCommit::Seeded) => {}
+        Some(ChannelPollCommit::Seeded) => {
+            spawn_mention_detection_if_pending(app, base_url, auth, &[]);
+        }
         Some(ChannelPollCommit::Growth(growth)) => {
-            spawn_mention_detection(app.clone(), base_url.to_string(), auth.clone(), growth);
+            spawn_mention_detection_if_pending(app, base_url, auth, &growth);
         }
     }
 }
 
-fn spawn_mention_detection(
-    app: AppHandle,
-    base_url: String,
-    auth: NotificationAuthSnapshot,
-    growth: Vec<ChannelUnreadGrowth>,
+fn spawn_mention_detection_if_pending(
+    app: &AppHandle,
+    base_url: &str,
+    auth: &NotificationAuthSnapshot,
+    growth: &[ChannelUnreadGrowth],
 ) {
+    let incoming: Vec<(String, String)> = growth
+        .iter()
+        .map(|channel| (channel.channel_id.clone(), channel.name.clone()))
+        .collect();
+    let should_spawn = {
+        let Some(watch) = app.try_state::<MentionWatchState>() else {
+            return;
+        };
+        let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
+        enqueue_mention_fetches(&mut guard.pending_fetches, &incoming);
+        should_spawn_mention_detect(guard.pending_fetches.len(), guard.detect_in_flight)
+    };
+    if should_spawn {
+        spawn_mention_detection(app.clone(), base_url.to_string(), auth.clone());
+    }
+}
+
+fn spawn_mention_detection(app: AppHandle, base_url: String, auth: NotificationAuthSnapshot) {
     tauri::async_runtime::spawn(async move {
-        detect_and_deliver_mentions(&app, &base_url, &auth, &growth).await;
+        detect_and_deliver_mentions(&app, &base_url, &auth).await;
     });
 }
 
@@ -2490,8 +2511,7 @@ async fn fetch_channel_history(
     token: &str,
     channel_id: &str,
 ) -> Option<crate::commands::messages::ChannelDetail> {
-    let url =
-        hq_desktop_core::messages::build_channel_messages_url(base_url, channel_id, Some(50));
+    let url = hq_desktop_core::messages::build_channel_messages_url(base_url, channel_id, Some(50));
     let resp = build_client()
         .get(&url)
         .header("authorization", format!("Bearer {token}"))
@@ -2564,137 +2584,157 @@ async fn fetch_channel_history_timed(
     }
 }
 
+fn read_active_scope(app: &AppHandle) -> Option<String> {
+    app.try_state::<ActiveConversationState>()
+        .and_then(|state| {
+            state
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .scope
+                .clone()
+        })
+}
+
 async fn detect_and_deliver_mentions(
     app: &AppHandle,
     base_url: &str,
     auth: &NotificationAuthSnapshot,
-    growth: &[ChannelUnreadGrowth],
 ) {
     let Some(person_uid) = signed_in_person_uid() else {
         log(LOG_TAG, "DM_NOTIFY_MENTION_SKIP no personUid");
         return;
     };
-    let incoming: Vec<(String, String)> = growth
-        .iter()
-        .map(|channel| (channel.channel_id.clone(), channel.name.clone()))
-        .collect();
-    let batch = {
-        let Some(watch) = app.try_state::<MentionWatchState>() else {
-            return;
-        };
-        let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
-        enqueue_mention_fetches(&mut guard.pending_fetches, &incoming);
-        if guard.detect_in_flight {
-            return;
-        }
-        if guard.pending_fetches.is_empty() {
-            return;
-        }
-        guard.detect_in_flight = true;
-        take_mention_fetch_batch(&mut guard.pending_fetches, MENTION_FETCH_PER_CYCLE)
-    };
-
     let cognito_sub = auth.identity.clone();
     let machine_id = crate::commands::config::ensure_machine_id().unwrap_or_default();
     let dm_notified = read_cursor_entry_for_account(&machine_id, &auth.identity).notified;
-    let active_scope = app.try_state::<ActiveConversationState>().and_then(|state| {
-        state
-            .0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .scope
-            .clone()
-    });
-    let focused = desktop_alt_focused(app);
     let now = chrono::Utc::now();
 
     let mut to_deliver = Vec::new();
-    for (channel_id, channel_name) in &batch {
-        let fetched =
-            fetch_channel_history_timed(base_url, &auth.access_token, channel_id).await;
-        if with_current_notification_auth_snapshot(app, auth, || ()).await.is_none() {
-            log(LOG_TAG, "DM_NOTIFY_MENTION_STALE auth snapshot changed");
-            clear_mention_detect_in_flight(app);
-            return;
-        }
-        let Some(watch) = app.try_state::<MentionWatchState>() else {
-            continue;
-        };
-        let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
-        let last_seen = guard.last_event_by_channel.get(channel_id).cloned();
-        let messages = fetched.as_ref().map(|detail| detail.messages.as_slice());
-        let (cursor, newer) = mention_cursor_after_fetch(
-            last_seen.as_deref(),
-            fetched.is_some(),
-            messages.unwrap_or(&[]),
-            now,
-        );
-        if fetched.is_none() {
-            enqueue_mention_fetches(
-                &mut guard.pending_fetches,
-                &[(channel_id.clone(), channel_name.clone())],
-            );
-            continue;
-        }
-        if let Some(event_id) = cursor {
-            guard
-                .last_event_by_channel
-                .insert(channel_id.clone(), event_id);
-        }
-        guard.initialized = true;
-        let newer = filter_mentions_by_age(newer, now, MENTION_FRESH_MAX_AGE);
-        let mention_ids: Vec<String> = newer
-            .iter()
-            .filter(|message| is_mention_of_me(message, &person_uid, &cognito_sub))
-            .map(|message| message.event_id.clone())
-            .collect();
-        let (fresh_ids, updated_seen) =
-            take_unseen_message_ids(&mention_ids, &guard.seen_message_ids);
-        guard.seen_message_ids = updated_seen;
-        drop(guard);
+    let mut retried: HashSet<String> = HashSet::new();
+    let mut failed_last: Vec<(String, String)> = Vec::new();
+    let mut owns_detect = false;
 
-        for message in newer {
-            if !fresh_ids.iter().any(|id| id == &message.event_id) {
-                continue;
+    loop {
+        let batch = {
+            let Some(watch) = app.try_state::<MentionWatchState>() else {
+                if owns_detect {
+                    clear_mention_detect_in_flight(app);
+                }
+                return;
+            };
+            let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
+            requeue_failed_mention_fetches(&mut guard.pending_fetches, &failed_last, &mut retried);
+            failed_last.clear();
+            if guard.detect_in_flight && !owns_detect {
+                return;
             }
-            log(
-                LOG_TAG,
-                &format!(
-                    "DM_NOTIFY_MENTION_DETECTED channel={} event={}",
-                    channel_id, message.event_id
-                ),
+            if guard.pending_fetches.is_empty() {
+                if owns_detect {
+                    guard.detect_in_flight = false;
+                }
+                break;
+            }
+            guard.detect_in_flight = true;
+            owns_detect = true;
+            take_mention_fetch_batch(&mut guard.pending_fetches, MENTION_FETCH_PER_CYCLE)
+        };
+        if batch.is_empty() {
+            break;
+        }
+
+        for (channel_id, channel_name) in &batch {
+            let fetched =
+                fetch_channel_history_timed(base_url, &auth.access_token, channel_id).await;
+            if with_current_notification_auth_snapshot(app, auth, || ())
+                .await
+                .is_none()
+            {
+                log(LOG_TAG, "DM_NOTIFY_MENTION_STALE auth snapshot changed");
+                clear_mention_detect_in_flight(app);
+                return;
+            }
+            let Some(watch) = app.try_state::<MentionWatchState>() else {
+                continue;
+            };
+            let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
+            let last_seen = guard.last_event_by_channel.get(channel_id).cloned();
+            let messages = fetched.as_ref().map(|detail| detail.messages.as_slice());
+            let (cursor, newer) = mention_cursor_after_fetch(
+                last_seen.as_deref(),
+                fetched.is_some(),
+                messages.unwrap_or(&[]),
+                now,
             );
-            if should_suppress_duplicate_event(&message.event_id, &dm_notified) {
-                log(
-                    LOG_TAG,
-                    &format!("DM_NOTIFY_MENTION_SUPPRESSED_DUP event={}", message.event_id),
-                );
+            if fetched.is_none() {
+                failed_last.push((channel_id.clone(), channel_name.clone()));
                 continue;
             }
-            if should_suppress_mention_for_open_channel(
-                active_scope.as_deref(),
-                channel_id,
-                focused,
-            ) {
+            if let Some(event_id) = cursor {
+                guard
+                    .last_event_by_channel
+                    .insert(channel_id.clone(), event_id);
+            }
+            guard.initialized = true;
+            let newer = filter_mentions_by_age(newer, now, MENTION_FRESH_MAX_AGE);
+            let mention_ids: Vec<String> = newer
+                .iter()
+                .filter(|message| is_mention_of_me(message, &person_uid, &cognito_sub))
+                .map(|message| message.event_id.clone())
+                .collect();
+            let (fresh_ids, updated_seen) =
+                take_unseen_message_ids(&mention_ids, &guard.seen_message_ids);
+            guard.seen_message_ids = updated_seen;
+            drop(guard);
+
+            let active_scope = read_active_scope(app);
+            let focused = desktop_alt_focused(app);
+
+            for message in newer {
+                if !fresh_ids.iter().any(|id| id == &message.event_id) {
+                    continue;
+                }
                 log(
                     LOG_TAG,
-                    &format!("DM_NOTIFY_MENTION_SUPPRESSED_OPEN channel={channel_id}"),
+                    &format!(
+                        "DM_NOTIFY_MENTION_DETECTED channel={} event={}",
+                        channel_id, message.event_id
+                    ),
                 );
-                continue;
+                if should_suppress_duplicate_event(&message.event_id, &dm_notified) {
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "DM_NOTIFY_MENTION_SUPPRESSED_DUP event={}",
+                            message.event_id
+                        ),
+                    );
+                    continue;
+                }
+                if should_suppress_mention_for_open_channel(
+                    active_scope.as_deref(),
+                    channel_id,
+                    focused,
+                ) {
+                    log(
+                        LOG_TAG,
+                        &format!("DM_NOTIFY_MENTION_SUPPRESSED_OPEN channel={channel_id}"),
+                    );
+                    continue;
+                }
+                to_deliver.push(MentionDelivery {
+                    channel_id: channel_id.clone(),
+                    channel_name: channel_name.clone(),
+                    event_id: message.event_id.clone(),
+                    from_person_uid: message.from_person_uid.clone(),
+                    from_display_name: message.from_display_name.clone(),
+                    body: message.body.clone(),
+                    created_at: message.created_at.clone(),
+                    summary_extra: None,
+                });
             }
-            to_deliver.push(MentionDelivery {
-                channel_id: channel_id.clone(),
-                channel_name: channel_name.clone(),
-                event_id: message.event_id.clone(),
-                from_person_uid: message.from_person_uid.clone(),
-                from_display_name: message.from_display_name.clone(),
-                body: message.body.clone(),
-                created_at: message.created_at.clone(),
-                summary_extra: None,
-            });
         }
     }
-    clear_mention_detect_in_flight(app);
 
     let cap_items: Vec<MentionCapItem> = to_deliver
         .iter()
@@ -2772,12 +2812,7 @@ async fn deliver_mention_notification(
 
     if crate::commands::banner::custom_banner_enabled() {
         if let Some(Err(e)) = with_current_notification_auth_snapshot_async(app, auth, || {
-            crate::commands::banner::show_mention_banner(
-                app.clone(),
-                title,
-                body,
-                payload,
-            )
+            crate::commands::banner::show_mention_banner(app.clone(), title, body, payload)
         })
         .await
         {
@@ -2825,7 +2860,10 @@ async fn deliver_mention_notification(
         })
         .await;
         if dispatched.is_none() {
-            log(LOG_TAG, "DM_NOTIFY_MENTION_TOAST_STALE auth session changed");
+            log(
+                LOG_TAG,
+                "DM_NOTIFY_MENTION_TOAST_STALE auth session changed",
+            );
         }
     }
 
@@ -2842,7 +2880,10 @@ async fn deliver_mention_notification(
         })
         .await;
         if dispatched.is_none() {
-            log(LOG_TAG, "DM_NOTIFY_MENTION_TOAST_STALE auth session changed");
+            log(
+                LOG_TAG,
+                "DM_NOTIFY_MENTION_TOAST_STALE auth session changed",
+            );
         }
     }
 }
@@ -3404,6 +3445,13 @@ mod tests {
             "chn_eng",
             false,
         ));
+    }
+
+    #[test]
+    fn mention_poll_spawns_when_pending_even_without_growth() {
+        assert!(should_spawn_mention_detect(3, false));
+        assert!(!should_spawn_mention_detect(3, true));
+        assert!(!should_spawn_mention_detect(0, false));
     }
 
     #[test]

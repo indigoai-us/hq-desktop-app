@@ -101,6 +101,31 @@ export type AttachmentCompany = {
   slug: string;
 };
 
+export function attachmentCompaniesFromWorkspaces(
+  workspaces: ReadonlyArray<{ slug: string; cloudUid?: string | null }>,
+): AttachmentCompany[] {
+  return workspaces
+    .map((row) => ({
+      uid: row.cloudUid?.trim() || undefined,
+      cloudUid: row.cloudUid ?? null,
+      slug: row.slug.trim(),
+    }))
+    .filter((row) => row.slug);
+}
+
+export async function loadAttachmentCompanies(
+  invoke: InvokeFn = invokeFn(),
+): Promise<AttachmentCompany[]> {
+  try {
+    const result = (await invoke('list_syncable_workspaces')) as {
+      workspaces?: Array<{ slug: string; cloudUid?: string | null }>;
+    } | null;
+    return attachmentCompaniesFromWorkspaces(result?.workspaces ?? []);
+  } catch {
+    return [];
+  }
+}
+
 function vaultPathHasParentSegment(path: string): boolean {
   return path.split('/').some((segment) => segment === '..');
 }
@@ -108,16 +133,14 @@ function vaultPathHasParentSegment(path: string): boolean {
 function folderCompanySlug(
   attachment: MessageAttachment,
   companies?: ReadonlyArray<AttachmentCompany>,
-): string {
+): string | null {
   const uid = (attachment.companyUid ?? '').trim();
-  if (!uid) return '';
-  if (companies && companies.length > 0) {
-    const match = companies.find(
-      (row) => row.uid === uid || row.cloudUid === uid || row.slug === uid,
-    );
-    return (match?.slug ?? '').trim();
-  }
-  return companySlugForAttachment(attachment, companies).trim();
+  if (!uid) return null;
+  const match = (companies ?? []).find(
+    (row) => row.uid === uid || row.cloudUid === uid || row.slug === uid,
+  );
+  const slug = (match?.slug ?? '').trim();
+  return slug || null;
 }
 
 /** Wire string consumed by `parseDesktopRoute` / `open_desktop_alt_window`. */

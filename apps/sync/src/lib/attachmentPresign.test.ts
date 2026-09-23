@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MessageAttachment } from './messageAttachments';
 import {
   ATTACHMENT_MISSING_COMPANY,
+  attachmentCompaniesFromWorkspaces,
   companySlugForAttachment,
   filesRouteForAttachment,
   isInlineAttachmentPreview,
+  loadAttachmentCompanies,
   loadAttachmentPreview,
   presignAttachmentGet,
 } from './attachmentPresign';
@@ -88,6 +90,40 @@ describe('filesRouteForAttachment', () => {
         [{ uid: 'cmp_indigo', slug: 'indigo' }],
       ),
     ).toBe('files:indigo:indigo');
+  });
+
+  it('returns null for a folder when no membership matches instead of falling back to the vault path', () => {
+    expect(
+      filesRouteForAttachment(att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/' })),
+    ).toBeNull();
+    expect(
+      filesRouteForAttachment(att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/' }), []),
+    ).toBeNull();
+    expect(
+      filesRouteForAttachment(
+        att('briefs', { kind: 'folder', vaultPath: 'indigo/briefs/', companyUid: 'cmp_unknown' }),
+        [{ uid: 'cmp_other', slug: 'other' }],
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('loadAttachmentCompanies', () => {
+  it('maps membership workspaces to the Conversation companies list', async () => {
+    expect(
+      attachmentCompaniesFromWorkspaces([
+        { slug: 'indigo', cloudUid: 'cmp_indigo' },
+        { slug: '  ', cloudUid: 'cmp_skip' },
+      ]),
+    ).toEqual([{ uid: 'cmp_indigo', cloudUid: 'cmp_indigo', slug: 'indigo' }]);
+
+    const invoke = vi.fn(async () => ({
+      workspaces: [{ slug: 'indigo', cloudUid: 'cmp_indigo' }],
+    }));
+    await expect(loadAttachmentCompanies(invoke)).resolves.toEqual([
+      { uid: 'cmp_indigo', cloudUid: 'cmp_indigo', slug: 'indigo' },
+    ]);
+    expect(invoke).toHaveBeenCalledWith('list_syncable_workspaces');
   });
 });
 
