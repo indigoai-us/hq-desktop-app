@@ -255,3 +255,7 @@ sentry = { version = "^0.35", features = ["test"] }
 tempfile = "3"
 wiremock = "0.6"
 tauri = { version = "2", features = ["test"] }
+
+[patch.crates-io]
+# Wry's AppKit binding treated a nil NSOpenPanel as a panic; handle it at the WebKit boundary.
+wry = { path = "../../../vendor/wry" }

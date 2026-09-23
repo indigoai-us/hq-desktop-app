@@ -84,6 +84,7 @@ pub mod native_notify;
 pub mod notify_authz;
 pub mod notify_prefs;
 pub mod oauth;
+pub mod panel_creation;
 pub mod paths;
 pub mod prewarm;
 pub mod process_stdio;
