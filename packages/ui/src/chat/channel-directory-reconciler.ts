@@ -71,6 +71,12 @@ export interface ChannelDirectoryRow {
   memberCount?: number;
   /** Group-DM roster (caller excluded) so the rail can name unnamed chats. */
   members?: Array<{ personUid: string; displayName: string }>;
+  /**
+   * Server-supplied "this is the one company-home channel" flag. Absent on
+   * servers that haven't rolled it out yet — see `isCompanyHomeChannel()` in
+   * channels.ts for the desktop's name-match fallback in that case.
+   */
+  isCompanyHome?: boolean;
 }
 
 /** The contractVersion-2 snapshot/delta envelope. */

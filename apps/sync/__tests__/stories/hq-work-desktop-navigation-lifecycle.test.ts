@@ -661,6 +661,7 @@ describe('embedded Work navigation and lifecycle', () => {
             name: 'engineering',
             scope: 'company',
             companyUid: 'cmp_indigo',
+            isCompanyHome: true,
           },
         ],
       },

@@ -20,6 +20,7 @@
   } from './lib/auth';
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
+  import { unexpectedSurfaceForState } from './lib/unexpected-startup-surface';
   import {
     resolveStartupState,
     type StartupPhase,
@@ -1771,6 +1772,19 @@
       });
     }
     startupPhase = 'resolved';
+
+    // Report to Sentry when a set-up machine sees the sign-in or onboarding
+    // surface. Non-blocking and fail-quiet: telemetry must never affect launch.
+    {
+      const unexpectedSurface = unexpectedSurfaceForState(lifecycleState, authenticated);
+      if (unexpectedSurface !== null) {
+        invoke('report_unexpected_startup_surface', {
+          surface: unexpectedSurface,
+          authCheckFailed: hadStoredToken && !state.authenticated,
+          probeAttempts: outcome.attempts,
+        }).catch(() => {});
+      }
+    }
 
     if (authenticated) void loadUnreadSummary();
     else resetUnreadSummary();

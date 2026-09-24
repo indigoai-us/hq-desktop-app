@@ -401,7 +401,23 @@ describe("DesktopApp company switch", () => {
     expect(rendered).not.toContain(A_CHANNEL);
     expect(rendered).not.toContain(A_DRAFT_TEXT);
     expect(rendered).not.toContain(A_PERSON);
-    expect(rendered).not.toContain(A_UID);
+    // The sidebar "Companies" section is an intentional cross-company
+    // surface (US: one company-home channel per company): it lists every
+    // company the account belongs to, regardless of which one is active, so
+    // it legitimately names A's company uid even while B is on screen. That
+    // is not a tenant-boundary leak — A's channel, draft, and roster data
+    // (asserted above and below) stay out of it. Exclude just that section.
+    const companiesSectionHtml =
+      host.querySelector('[data-testid="chat-companies-section"]')
+        ?.outerHTML ?? "";
+    // `renderedText()` concatenates `host.innerHTML` with
+    // `document.body.innerHTML`, and `host` is itself a child of `body`, so
+    // every node inside `host` — including the Companies section — appears
+    // twice in the combined string. Strip both copies.
+    const withoutCompaniesSection = companiesSectionHtml
+      ? rendered.split(companiesSectionHtml).join("")
+      : rendered;
+    expect(withoutCompaniesSection).not.toContain(A_UID);
   });
 
   // ── 3. Return trip ────────────────────────────────────────────────────────

@@ -3738,6 +3738,7 @@ mod tests {
             notify_level: None,
             membership_source: None,
             created_by: None,
+            is_company_home: false,
         }
     }
 
@@ -3910,6 +3911,7 @@ mod tests {
             notify_level: None,
             membership_source: None,
             created_by: None,
+            is_company_home: false,
         }
     }
 

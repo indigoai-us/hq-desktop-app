@@ -682,6 +682,7 @@ fn main() {
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_setup_status,
             commands::lifecycle::mark_welcome_setup_complete,
+            commands::lifecycle::report_unexpected_startup_surface,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,
             commands::session_end_latch::session_end_latch_status,
