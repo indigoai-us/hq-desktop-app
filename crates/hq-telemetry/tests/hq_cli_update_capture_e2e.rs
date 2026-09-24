@@ -43,6 +43,22 @@ fn fingerprint(event: &sentry::protocol::Event<'_>) -> Vec<String> {
     event.fingerprint.iter().map(ToString::to_string).collect()
 }
 
+fn assert_non_convergent_fingerprint(event: &sentry::protocol::Event<'_>, class: &str) {
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent", class]
+    );
+}
+
+fn install_failure_fingerprint(class: &str, signature: &str) -> Vec<String> {
+    vec![
+        "hq-cli-update".to_string(),
+        "install-failed".to_string(),
+        class.to_string(),
+        signature.to_string(),
+    ]
+}
+
 /// The npm-executor fixture context every pre-existing case in this file uses.
 fn npm_context<'a>(
     hq_bin: &'a str,
@@ -214,10 +230,7 @@ fn assert_non_convergent_shape(
         event.message.as_deref(),
         Some("[hq-cli-update] install completed but the detected CLI version did not change")
     );
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
+    assert_non_convergent_fingerprint(event, expected_kind);
     let expected_installer_source = if cfg!(target_os = "windows") {
         "unknown"
     } else {
@@ -243,6 +256,35 @@ fn assert_non_convergent_shape(
         event.extra.get("hq_bin").and_then(Value::as_str),
         Some(expected_hq_bin)
     );
+}
+
+#[test]
+fn non_convergent_fingerprint_includes_class_and_ignores_install_paths() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let homebrew_bin = home.join("Library/pnpm/hq").to_string_lossy().to_string();
+    let asdf_bin = home.join(".asdf/shims/hq").to_string_lossy().to_string();
+    let first = composed_non_convergent_events(&npm_context(&homebrew_bin, None, false), true)
+        .0
+        .into_iter()
+        .next()
+        .expect("first foreign-managed event");
+    let second = composed_non_convergent_events(&npm_context(&asdf_bin, None, false), true)
+        .0
+        .into_iter()
+        .next()
+        .expect("second foreign-managed event");
+
+    assert_eq!(
+        first.tags.get("non_convergence_kind").map(String::as_str),
+        Some("foreign-managed")
+    );
+    let expected = vec![
+        "hq-cli-update".to_string(),
+        "install-non-convergent".to_string(),
+        "foreign-managed".to_string(),
+    ];
+    assert_eq!(fingerprint(&first), expected);
+    assert_eq!(fingerprint(&first), fingerprint(&second));
 }
 
 #[test]
@@ -612,10 +654,7 @@ fn an_unrepairable_settings_path_shadow_emits_one_self_diagnosing_envelope_per_e
             "unexpected {tag} tag"
         );
     }
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
+    assert_non_convergent_fingerprint(event, "foreign-managed");
     let serialized = serde_json::to_string(event).expect("serialize event");
     assert!(!serialized.contains(&home_text));
     // The three tokens are drawn from closed vocabularies, never a path.
@@ -744,10 +783,7 @@ fn an_unresolved_hq_captures_installer_unaimed_with_no_raw_home_path() {
     assert_eq!(events.len(), 1);
     let event = &events[0];
     assert_eq!(event.level, sentry::Level::Warning);
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
+    assert_non_convergent_fingerprint(event, "installer-unaimed");
     assert_eq!(
         event.tags.get("non_convergence_kind").map(String::as_str),
         Some("installer-unaimed")
@@ -1045,11 +1081,8 @@ fn the_npx_cache_shape_captures_installer_unaimed_with_no_raw_home_path() {
     assert_eq!(record_failures, 0);
     assert_eq!(events.len(), 1);
     let event = &events[0];
-    // The group must not split — new tags/values ride the existing fingerprint.
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
+    // This unaimed class stays stable while its diagnostic tags name the mechanism.
+    assert_non_convergent_fingerprint(event, "installer-unaimed");
     for (tag, expected) in [
         ("install_executor", "npm"),
         ("non_convergence_kind", "installer-unaimed"),
@@ -1534,12 +1567,7 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
             .iter()
             .map(|value| value.to_string())
             .collect::<Vec<_>>(),
-        [
-            "hq-cli-update",
-            "install-failed",
-            "unexpected",
-            "EACCES:mkdir:other"
-        ]
+        install_failure_fingerprint("unexpected", "EACCES:mkdir:other")
     );
     assert_eq!(event.tags.get("eacces").map(String::as_str), Some("true"));
     assert_eq!(
@@ -1667,11 +1695,8 @@ fn a_resolution_shortfall_names_itself_and_does_not_render_as_a_targeted_layout_
     assert_eq!(events.len(), 1);
     let event = &events[0];
     assert_eq!(event.level, sentry::Level::Warning);
-    // Grouping does NOT split: the fingerprint is unchanged.
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
+    // This resolution-shortfall class stays stable and path-free.
+    assert_non_convergent_fingerprint(event, "resolution-shortfall");
     assert_eq!(
         event.tags.get("non_convergence_kind").map(String::as_str),
         Some("resolution-shortfall"),
@@ -1734,10 +1759,7 @@ fn true_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_block
         event.tags.get("delivered_version").map(String::as_str),
         Some("5.84.0")
     );
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
+    assert_non_convergent_fingerprint(event, "npm-targeted");
 }
 
 /// Replay the exact tag shape captured on 2026-08-09T00:47:11Z (npm executor,
@@ -2028,10 +2050,7 @@ fn true_pnpm_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_
             .map(String::as_str),
         Some("true")
     );
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
+    assert_non_convergent_fingerprint(event, "pnpm-targeted");
 }
 
 /// The managed-shadow artifact contract (HQ-DESKTOP-46): a run whose self-repair
@@ -2183,7 +2202,11 @@ fn managed_shadow_repair_outcomes_drive_the_captured_envelope() {
     );
     assert_eq!(
         fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"],
-        "the managed-shadow event never splits the existing Sentry group"
+        [
+            "hq-cli-update",
+            "install-non-convergent",
+            "managed-shadowed"
+        ],
+        "the managed-shadow event stays grouped by its closed class"
     );
 }

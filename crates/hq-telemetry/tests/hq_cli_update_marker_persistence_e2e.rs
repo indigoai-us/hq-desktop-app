@@ -60,7 +60,12 @@ fn drive_failed_marker_writes(
 fn assert_fails_closed_with_one_marker_event(events: &[sentry::protocol::Event<'static>]) {
     let non_convergent = events
         .iter()
-        .filter(|event| fingerprint(event) == ["hq-cli-update", "install-non-convergent"])
+        .filter(|event| {
+            event
+                .tags
+                .get("hq_cli_update_kind")
+                .is_some_and(|kind| kind == "install-non-convergent")
+        })
         .count();
     assert_eq!(non_convergent, 0, "a failed marker write must fail closed");
     let marker_events = events

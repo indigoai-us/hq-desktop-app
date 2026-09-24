@@ -87,7 +87,8 @@ pub use hq_desktop_core::hq_cli_update::{
     bun_install_argv, classify_install_failure, classify_install_failure_with_environment,
     classify_install_failure_with_final_attempt, cli_auto_update_enabled, cli_below_floor,
     cli_below_floor_of, cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
-    delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for, get_local_version,
+    delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for,
+    executed_copy_reaim_gate, executed_copy_reaim_outcome, get_local_version,
     get_local_version_diagnostics, hq_cli_version_under_pnpm_root, hq_version_string, install_argv,
     install_converged, install_executor_for_first_install, install_executor_for_hq_bin,
     install_failure_detail, install_failure_detail_with_environment,
@@ -95,31 +96,34 @@ pub use hq_desktop_core::hq_cli_update::{
     installed_hq_cli_version_in_bun_global, installed_hq_cli_version_in_pnpm_store,
     installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_missing_global_install_target,
     is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
-    is_windows_locked_binary_failure, launch_cli_check, launch_cli_check_with_floor,
-    legacy_marker_needs_recovery, managed_retry_start_decision, managed_retry_user_copy_detail,
-    managed_retry_user_prefix_aim, non_convergent_cli_contract, non_convergent_cli_version,
-    non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
-    non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
-    npm_lifecycle_cause, npm_prefix_from_hq_bin, partial_install_scope_from_npm_path,
-    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version,
-    pnpm_install_argv, pnpm_store_family, read_installed_version, redact_home, redact_home_in,
-    repair_managed_shadow, report_install_failure, report_install_failure_episode,
-    report_install_failure_with_environment, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_non_convergent_marker_unpersisted,
-    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    is_windows_locked_binary_failure, is_windows_locked_install_target_failure, launch_cli_check,
+    launch_cli_check_with_floor, legacy_marker_needs_recovery, managed_retry_start_decision,
+    managed_retry_user_copy_detail, managed_retry_user_prefix_aim, non_convergent_cli_contract,
+    non_convergent_cli_version, non_convergent_detail, non_convergent_episode_blocked,
+    non_convergent_episode_key, non_convergent_episode_record, non_convergent_episode_reported,
+    npm_install_attempt_summary, npm_lifecycle_cause, npm_prefix_from_hq_bin,
+    partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
+    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
+    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
+    report_install_failure_episode, report_install_failure_with_environment,
+    report_install_failure_with_final_attempt, report_non_convergent_install,
+    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
+    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version,
+    should_retry_windows_busy_install_target, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, HqCliUpdateInfo,
-    InstallEnvironment, InstallExecutor, InstallFailureEpisode, InstallFailureKind,
-    InterpreterRecovery, LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
-    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
-    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
-    PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects, PostInstallOutcome,
-    RequestedSpecKind, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
-    STDERR_ORIGIN_NON_NPM,
+    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
+    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
+    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
+    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
+    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmToolchainSource,
+    PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, SettingsPathTelemetry,
+    UserPrefixAim, VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
+    NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
+    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -651,7 +655,8 @@ pub(crate) fn npm_install_command(
     let mut cmd = paths::spawn_command(npm, &[]);
     cmd.args(args)
         .env("PATH", path)
-        .env("NPM_CONFIG_CACHE", npm_cache);
+        .env("NPM_CONFIG_CACHE", npm_cache)
+        .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
     cmd
 }
 
@@ -946,6 +951,38 @@ async fn run_npm_install_local_recovery_ladder(
         }
     }
 
+    // Windows EBUSY while renaming a package under the selected prefix means a
+    // process still holds that install target open. Give the lock time to release
+    // and retry the plain install once. Never terminate or signal the holder.
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        let attempted_rungs: Vec<_> = ledger.iter().map(|attempt| attempt.rung).collect();
+        if should_retry_windows_busy_install_target(
+            output.status.code(),
+            &detail,
+            prefix,
+            &attempted_rungs,
+            MAX_NPM_INSTALL_ATTEMPTS,
+        ) {
+            log(
+                "hq-cli-update",
+                "install hit Windows EBUSY rename on the selected prefix; retrying once after backoff",
+            );
+            tokio::time::sleep(LOCKED_BINARY_RETRY_BACKOFF).await;
+            output = run_recorded_npm_install_attempt(
+                npm,
+                path,
+                npm_cache,
+                prefix,
+                base_args,
+                WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG,
+                false,
+                ledger,
+            )
+            .await?;
+        }
+    }
+
     Ok(output)
 }
 
@@ -1172,6 +1209,7 @@ async fn probe_install_environment(
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     }
 }
 
@@ -1466,7 +1504,9 @@ async fn install_hq_cli_update_via_pnpm(
         let pnpm_home = pnpm_env.as_ref().map(|env| env.home.clone());
         tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = paths::spawn_command(&pnpm, &[]);
-            cmd.args(&args).env("PATH", &path);
+            cmd.args(&args)
+                .env("PATH", &path)
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
             // Without PNPM_HOME the child falls back to its own default, which
             // on a Dock-launched app is not necessarily the home that owns the
             // shim we are trying to replace.
@@ -1651,7 +1691,8 @@ async fn install_hq_cli_update_via_bun(
             let mut cmd = paths::spawn_command(&bun, &[]);
             cmd.args(&args)
                 .env("PATH", &path)
-                .env("BUN_INSTALL", &bun_home);
+                .env("BUN_INSTALL", &bun_home)
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
             cmd.output()
         })
         .await
@@ -2533,7 +2574,7 @@ async fn finalize_convergence(
         paths::home_dir().as_deref(),
     );
     let delivered_prefix_shim = delivered_prefix_shim_for(prefix, delivered_version.as_deref());
-    let outcome = decide_post_install(
+    let mut outcome = decide_post_install(
         &PostInstallContext::npm(
             before_bin,
             &post_install_hq,
@@ -2604,6 +2645,45 @@ async fn finalize_convergence(
         }
     }
 
+    // A foreign-managed copy may be locally repairable even when the original
+    // attempt did not identify it before installing. If the post-install copy is
+    // a drivable user prefix, make one bounded pinned install with that copy's own
+    // npm before preserving the non-blocking episode. This never edits PATH or
+    // shell settings; only a successful install that the resolver now observes at
+    // `latest` counts as convergence.
+    if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged)
+        && executed_copy_aim == ExecutedCopyAim::NotYetAimed
+    {
+        let home = paths::home_dir();
+        let user_aim =
+            select_ordinary_install_aim(&post_install_hq, &managed_roots, home.as_deref());
+        let gate = executed_copy_reaim_gate(
+            outcome.non_convergence_kind,
+            executed_copy_aim,
+            user_aim.is_some(),
+        );
+        match (gate, user_aim) {
+            (ExecutedCopyReaimGate::Attempt, Some(aim)) => {
+                return executed_copy_reaim_and_refinalize(
+                    app,
+                    before_bin,
+                    before_version,
+                    latest,
+                    already_blocked,
+                    aim,
+                    outcome,
+                )
+                .await;
+            }
+            (ExecutedCopyReaimGate::RefusedNoAim, None) => {
+                if let Some(report) = outcome.capture.as_mut() {
+                    report.executed_copy_reaim = ExecutedCopyReaim::RefusedNoAim;
+                }
+            }
+            _ => {}
+        }
+    }
+
     log("hq-cli-update", &outcome.log_line);
     let result = apply_post_install_with_app(app, &outcome);
     // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
@@ -2612,6 +2692,137 @@ async fn finalize_convergence(
     // check. Best-effort and never gates the capture (fail-loud): a failed write
     // simply means the next occurrence reports again.
     if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(error) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {error}"),
+            );
+        }
+    }
+    result
+}
+
+/// Build a one-shot re-aim using the executed user copy's own npm prefix and
+/// interpreter. Returning the args and child PATH separately keeps this
+/// selection testable without launching a package manager.
+fn executed_copy_reaim_plan(
+    aim: &UserPrefixAim,
+    latest: &str,
+    base_path: &str,
+) -> (Vec<String>, String) {
+    let args = install_argv(Some(&aim.prefix), Some(latest));
+    let path = Path::new(&aim.npm)
+        .parent()
+        .map(|npm_bin| paths::path_with_interpreter_hint(base_path, npm_bin))
+        .unwrap_or_else(|| base_path.to_string());
+    (args, path)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn executed_copy_reaim_and_refinalize(
+    app: &AppHandle,
+    before_bin: &str,
+    before_version: Option<&str>,
+    latest: &str,
+    already_blocked: bool,
+    aim: UserPrefixAim,
+    mut base_outcome: PostInstallOutcome,
+) -> Result<HqCliUpdateInfo, String> {
+    let base_path = paths::child_path();
+    let (args, path) = executed_copy_reaim_plan(&aim, latest, &base_path);
+    log(
+        "hq-cli-update",
+        &format!(
+            "re-aiming one update at the deferred executed copy (npm={})",
+            redact_home(&aim.npm)
+        ),
+    );
+
+    let reaim = match app_npm_cache(app) {
+        Err((category, error)) => {
+            report_npm_cache_setup_failure(category);
+            log(
+                "hq-cli-update",
+                &format!(
+                    "could not prepare re-aim npm cache: {}",
+                    redact_home(&error)
+                ),
+            );
+            ExecutedCopyReaim::PreparationFailed
+        }
+        Ok(npm_cache) => {
+            match run_npm_install_with_retries(&aim.npm, &path, &npm_cache, Some(&aim.prefix), args)
+                .await
+            {
+                Err(error) => {
+                    log(
+                        "hq-cli-update",
+                        &format!("re-aim npm install could not run: {}", redact_home(&error)),
+                    );
+                    ExecutedCopyReaim::SpawnFailed
+                }
+                Ok(run) => {
+                    let install_exit_ok = run.output.status.success();
+                    let resolved = if install_exit_ok {
+                        let hq = paths::resolve_bin("hq");
+                        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+                            .await
+                            .ok()
+                            .flatten()
+                    } else {
+                        None
+                    };
+                    let converged =
+                        install_exit_ok && install_converged(resolved.as_deref(), latest);
+                    let result = executed_copy_reaim_outcome(
+                        ExecutedCopyReaimGate::Attempt,
+                        Some(install_exit_ok),
+                        converged,
+                    );
+                    if result == ExecutedCopyReaim::Converged {
+                        return Box::pin(finalize_convergence(
+                            app,
+                            before_bin,
+                            &aim.npm,
+                            before_version,
+                            latest,
+                            Some(&aim.prefix),
+                            already_blocked,
+                        ))
+                        .await;
+                    }
+                    if !install_exit_ok {
+                        log(
+                            "hq-cli-update",
+                            &format!(
+                                "re-aim npm install exited unsuccessfully (status={:?})",
+                                run.output.status.code()
+                            ),
+                        );
+                    } else {
+                        log(
+                            "hq-cli-update",
+                            "re-aim npm install exited successfully but the executed CLI did not converge",
+                        );
+                    }
+                    result
+                }
+            }
+        }
+    };
+
+    if let Some(report) = base_outcome.capture.as_mut() {
+        report.executed_copy_reaim = reaim;
+    }
+    log(
+        "hq-cli-update",
+        &format!("executed-copy re-aim outcome: {}", reaim.telemetry_value()),
+    );
+    log("hq-cli-update", &base_outcome.log_line);
+    let result = apply_post_install_with_app(app, &base_outcome);
+    if let Some(key) = base_outcome.record_nonblocking_episode.as_deref() {
         let existing = non_convergent_episode_markers();
         let updated = non_convergent_episode_record(&existing, key, latest);
         if let Err(error) = record_non_convergent_episode_markers(&updated) {
@@ -2919,6 +3130,25 @@ fn persist_reported_episode(outcome: InstallFailureEpisode) {
             log(
                 "hq-cli-update",
                 "install-failure episode already reported for this (version, package, cause); not re-paging",
+            );
+        }
+        InstallFailureEpisode::DeferredTransient {
+            persist_keys: Some(keys),
+        } => {
+            if let Err(error) = record_install_failure_episode_markers(&keys) {
+                log(
+                    "hq-cli-update",
+                    &format!("could not persist registry serving-lag marker: {error}"),
+                );
+                report_registry_serving_lag_marker_unpersisted();
+            }
+        }
+        InstallFailureEpisode::DeferredTransient { persist_keys: None } => {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "pinned npmjs tarball 404 remains deferred within the {REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES}-minute window"
+                ),
             );
         }
         InstallFailureEpisode::Reported { persist_keys: None }
