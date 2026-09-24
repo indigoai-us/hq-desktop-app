@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - HQ Sync tells you to verify your email before it can show pending company invites.
+- HQ no longer shows the setup screen on every launch for machines that are already configured and signed in. If a previous version left the setup flag set incorrectly, the app clears it on the next start.
 
 ## [0.10.319] — 2026-09-24
 
