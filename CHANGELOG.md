@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Files and images attached in chat upload again. Since vault storage turned on
+  write protection, every attachment upload was refused, so bots and teammates
+  never received the file.
 - First-run setup now waits for activity from the initial personal-vault push
   before timing out. Template-install failures also record a bounded cause for
   diagnosis without sending local paths.

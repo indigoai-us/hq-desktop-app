@@ -19,6 +19,7 @@ import {
   unavailable,
   validateFetchReplyThread,
   validateSendReply,
+  vaultPutIntegrityFields,
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
@@ -1062,12 +1063,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
         op: "get",
         key,
       }),
-    presignVaultPut: (companyUid, key, contentType) =>
+    presignVaultPut: (companyUid, key, contentType, integrity) =>
       this.post(WEB_PATHS.filesPresign, {
         company: companyUid,
         op: "put",
         key,
         contentType,
+        ...vaultPutIntegrityFields(integrity),
       }),
     getAuthorizedPreview: async () => NO_API,
     revealInFinder: async () => DESKTOP_ONLY,
