@@ -224,6 +224,88 @@ fn native_symbols(native: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// Parse a Node diagnostic report's raw bytes into fixed-vocabulary attribution.
+/// Pure and content-safe. A truncated, oversized, hostile, or unparseable report,
+/// or a JSON document that is not a Node diagnostic report, degrades to
+/// [`RunnerReportRead::Unreadable`] — never a fabricated cause.
+pub fn parse_runner_diagnostic_report(bytes: &[u8]) -> RunnerDiagnosticReport {
+    if bytes.is_empty() || bytes.len() > RUNNER_REPORT_MAX_BYTES {
+        return RunnerDiagnosticReport::unreadable();
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes[..]) else {
+        return RunnerDiagnosticReport::unreadable();
+    };
+
+    let header = value.get("header");
+    let trigger = header
+        .and_then(|h| h.get("trigger"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let event = header
+        .and_then(|h| h.get("event"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let native = value.get("nativeStack").and_then(Value::as_array);
+
+    // Schema-drift guard: a JSON document that carries neither a header
+    // trigger/event NOR a native stack is not a Node diagnostic report. Refuse it
+    // rather than emit a `none`/`all_redacted` that looks like a real read.
+    if trigger.is_empty() && event.is_empty() && native.is_none() {
+        return RunnerDiagnosticReport::unreadable();
+    }
+
+    let fatal_class = classify_report_fatal(trigger, event);
+    let symbols = native
+        .map(|frames| native_symbols(frames))
+        .unwrap_or_default();
+    let stack = runner_stack_shape_from_native_symbols(&symbols);
+
+    RunnerDiagnosticReport {
+        fatal_class,
+        stack,
+        read: RunnerReportRead::Read,
+    }
+}
+
+/// Hard cap on libuv handle entries counted from a report, so a hostile or runaway
+/// `libuv` array cannot drive unbounded work even within the byte cap.
+const RUNNER_REPORT_LIBUV_CAP: usize = 65_536;
+
+/// Bounded, content-safe memory decomposition extracted from a Node diagnostic
+/// report's `javascriptHeap` and `libuv` sections (this reopen, HQ-DESKTOP-60). A
+/// footprint pre-empt signals the LIVE runner for a report and reads this to NAME
+/// the memory class the tree total alone could not: JS old-space total/used (so the
+/// heap-bounded portion is known, and the non-heap excess can be inferred against
+/// the tree RSS), and the count of ACTIVE libuv handles (a direct leak signal for a
+/// file watcher). Every field is a bounded integer — MB or a count — never a path,
+/// argv, env value, or handle address, so it is egress-safe by construction. `None`
+/// on any field the report did not carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RunnerReportMemoryClass {
+    /// Reported V8 JS heap total memory, in MB (`javascriptHeap.totalMemory`).
+    pub js_heap_total_mb: Option<u64>,
+    /// Reported V8 JS heap used memory, in MB (`javascriptHeap.usedMemory`).
+    pub js_heap_used_mb: Option<u64>,
+    /// Reported JS external memory, in MB (`javascriptHeap.externalMemory`).
+    pub external_memory_mb: Option<u64>,
+    /// Reported array-buffer memory, in MB when the runtime report exposes it.
+    pub array_buffers_mb: Option<u64>,
+    /// Count of libuv handles reported as active (`libuv[].is_active == true`).
+    pub libuv_active_handles: Option<u64>,
+}
+
+impl RunnerReportMemoryClass {
+    /// True when the report carried at least one bounded memory-class field, so the
+    /// caller can record `report_read` rather than a `report_unreadable` sentinel.
+    pub fn is_present(&self) -> bool {
+        self.js_heap_total_mb.is_some()
+            || self.js_heap_used_mb.is_some()
+            || self.external_memory_mb.is_some()
+            || self.array_buffers_mb.is_some()
+            || self.libuv_active_handles.is_some()
+    }
+}
+
 /// Parse a Node diagnostic report or the bounded ArrayBuffer sidecar into a
 /// content-safe memory decomposition. Pure. A truncated, oversized, non-JSON, or
 /// unrelated document yields the empty decomposition (all None); it never invents
