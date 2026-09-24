@@ -3785,6 +3785,7 @@ mod tests {
             direction: "in".to_string(),
             root_event_id: None,
             reply_count: None,
+            audience: None,
         };
 
         let payload = thread_reply_wake_payload(

@@ -142,6 +142,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   onMessagePerson: "push",
   onOpenSettingsEvent: "push",
   onEmbeddedNavigation: "push",
+  handleShowBotMessagesChange: "none",
 };
 
 export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [

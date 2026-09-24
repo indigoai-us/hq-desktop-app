@@ -1805,9 +1805,16 @@
   });
 
   // Re-fetch contacts when the bot-message toggle flips so list previews update.
+  // Skip the initial run: `onMount` already primes the roster with the current
+  // toggle value, so re-reading here would double the boot contacts fetch.
+  let botToggleSeen = false;
   $effect(() => {
     const _show = showBotMessages;
     untrack(() => {
+      if (!botToggleSeen) {
+        botToggleSeen = true;
+        return;
+      }
       void refreshLists();
     });
   });
