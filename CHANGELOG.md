@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.317] — 2026-09-24
+
 - Sync and Meetings show the server's upgrade link when a plan pauses uploads or
   meeting-bot recording.
 
