@@ -46,7 +46,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use crate::commands::cognito;
 use crate::commands::messages::Channel;
 use crate::commands::sync::resolve_vault_api_url;
-use crate::util::client_info::build_client;
+use crate::util::client_info::{build_client, describe_error_chain, HYDRATE_REQUEST_TIMEOUT};
 use crate::util::logfile::log;
 
 pub use hq_desktop_core::dm_notify::{
@@ -2491,9 +2491,14 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
         .begin_snapshot();
 
     let url = format!("{}/v1/notify/channels", base_url);
+    // Hydrate/roster fan-out route (hq-pro `notify_channels` gets a 28s route
+    // deadline) — override the blanket client timeout, which is too short
+    // once the account has enough channels to push the response past a few
+    // hundred KB. See [`HYDRATE_REQUEST_TIMEOUT`].
     let resp = build_client()
         .get(&url)
         .header("authorization", format!("Bearer {}", auth.access_token))
+        .timeout(HYDRATE_REQUEST_TIMEOUT)
         .send()
         .await;
 
@@ -2517,7 +2522,12 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
             {
                 Ok(b) => b,
                 Err(e) => {
-                    log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_ERROR parse: {e}"));
+                    let chain = describe_error_chain(&e);
+                    let kind = if e.is_timeout() { "timeout" } else { "other" };
+                    log(
+                        LOG_TAG,
+                        &format!("DM_NOTIFY_CHAN_POLL_ERROR parse: kind={kind} chain={chain}"),
+                    );
                     return;
                 }
             }
