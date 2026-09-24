@@ -581,7 +581,12 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).toContain('("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true")');
     expect(updater.match(/\.envs\(NPM_INSTALL_CHILD_ENV\.iter\(\)\.copied\(\)\)/g) ?? [])
       .toHaveLength(3);
-    expect(installer).toContain('.envs(NPM_INSTALL_CHILD_ENV.iter().copied())');
+    // First-run qmd/hq-cli installs use the same updater command builder, via
+    // the managed install's cache-aware streaming seam.
+    expect(installer).toContain('crate::commands::hq_cli_update::npm_install_command(');
+    expect(installer).toContain(
+      'run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await',
+    );
     expect(cliUpdateCore).not.toContain('NODE_LLAMA_CPP_POSTINSTALL');
   });
 
@@ -598,8 +603,8 @@ describe('master automatic-updates switch', () => {
     const core = normalize(cliUpdateCore);
     const appCli = normalize(cliUpdate);
     expect(core).toContain('WindowsLockedInstallTarget');
-    expect(core).toContain('is_windows_busy_install_target_failure(');
-    expect(appCli).toContain('is_windows_busy_install_target_failure(');
+    expect(core).toContain('is_windows_locked_install_target_failure(');
+    expect(appCli).toContain('is_windows_locked_install_target_failure(');
     expect(appCli).toContain('windows-busy-install-target-backoff-plain');
   });
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    report_install_failure, report_install_failure_episode,
+    report_install_failure, report_install_failure_episode, report_install_failure_episode_at,
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_npm_cache_setup_failure, DeliveredPrefixShim,
     InstallEnvironment, InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome,
@@ -852,6 +852,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
             hq_bin_lane: ResolutionSource::LoginShell,
             delivered_prefix_shim: DeliveredPrefixShim::Unknown,
             settings_path: SettingsPathTelemetry::default(),
+            executed_copy_reaim: hq_desktop_core::hq_cli_update::ExecutedCopyReaim::NotAttempted,
         })
     });
     assert_eq!(events.len(), 1);
@@ -1127,6 +1128,7 @@ fn environment_aware_capture_carries_the_previously_missing_provenance() {
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1320,6 +1322,7 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1684,6 +1687,7 @@ fn managed_toolchain_retry_failure_carries_managed_provenance_and_builder() {
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1938,6 +1942,7 @@ fn hq_desktop_5e_postinstall_failure_carries_the_managed_retry_outcome() {
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -2021,6 +2026,7 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     };
     let user_key = "5.103.22|node-llama-cpp|postinstall-script".to_string();
 
@@ -2076,6 +2082,7 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     };
     let managed_events = captured_events(|| {
         assert!(matches!(
@@ -2370,9 +2377,8 @@ fn e404_tarball_env() -> InstallEnvironment {
 #[test]
 fn an_npmjs_tarball_404_for_the_pinned_target_version_emits_no_event() {
     // The HQ-DESKTOP-6D reproduction: an npmjs tarball 404 for the EXACT pinned,
-    // freshly published version is the mid-publish serving transient, so the real
-    // reporter captures nothing and the repeat guard reports NotReportable — the
-    // same disposition ETARGET already earns.
+    // freshly published version is the mid-publish serving transient. The first
+    // occurrence persists its age marker without capturing an event.
     let events = captured_events(|| {
         report_install_failure_with_environment(
             Some(1),
@@ -2386,10 +2392,10 @@ fn an_npmjs_tarball_404_for_the_pinned_target_version_emits_no_event() {
         events.is_empty(),
         "an npmjs tarball 404 for the pinned version must not page: {events:?}"
     );
-    // The episode guard agrees: nothing reportable, so no key is ever persisted.
-    let episode_events = captured_events(|| {
-        assert_eq!(
-            report_install_failure_episode(
+    let (episode_events, outcome) = {
+        let mut outcome = None;
+        let events = captured_events(|| {
+            outcome = Some(report_install_failure_episode_at(
                 Some(1),
                 NPMJS_TARBALL_E404_STDERR,
                 None,
@@ -2397,90 +2403,88 @@ fn an_npmjs_tarball_404_for_the_pinned_target_version_emits_no_event() {
                 &e404_tarball_env(),
                 "5.109.6",
                 &[],
-            ),
-            InstallFailureEpisode::NotReportable,
-        );
-    });
+                1_000,
+            ));
+        });
+        (events, outcome.expect("episode outcome"))
+    };
     assert!(
         episode_events.is_empty(),
         "the episode guard must not capture either: {episode_events:?}"
     );
+    assert!(matches!(
+        outcome,
+        InstallFailureEpisode::DeferredTransient {
+            persist_keys: Some(_)
+        }
+    ));
+}
+
+fn assert_loud_npmjs_tarball_404_outside_the_pinned_window(
+    env: &InstallEnvironment,
+    expected_target_tag: Option<&str>,
+) {
+    let events = captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            NPMJS_TARBALL_E404_STDERR,
+            None,
+            false,
+            env,
+        )
+    });
+    assert_eq!(events.len(), 1, "expected exactly one capture: {events:?}");
+    let event = events.into_iter().next().expect("captured event");
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (E404:npmjs:tarball)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        install_failure_fingerprint("unexpected", "E404:npmjs:tarball")
+    );
+    assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
+    assert_eq!(tag(&event, "npm_error_code"), Some("E404"));
+    assert_eq!(tag(&event, "npm_registry_origin"), Some("npmjs"));
+    assert_eq!(tag(&event, "npm_404_resource"), Some("tarball"));
+    assert_eq!(tag(&event, "hq_cli_target_version"), expected_target_tag);
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(text)) => text.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(diagnostics.contains("registry_origin=npmjs npm_404_resource=tarball"));
+    // No registry host, full tarball URL, raw requested spec, or raw npm output
+    // crosses the Sentry boundary.
+    assert_path_safe(
+        &event,
+        &[
+            "registry.npmjs.org",
+            "https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz",
+            "@indigoai-us/hq-cli@5.109.6",
+            "npm error",
+        ],
+    );
 }
 
 #[test]
-fn an_npmjs_tarball_404_outside_the_pinned_window_stays_a_loud_attributed_error() {
-    // The HQ-DESKTOP-5Q anti-masking guard survives the HQ-DESKTOP-6D refinement:
-    // the SAME npmjs tarball stderr stays a loud Error whenever it is NOT the
-    // version the updater itself pinned — with no pin (default env) and with a pin
-    // for a DIFFERENT version. Only the version the updater just resolved is
-    // downgraded.
-    let cases = [
-        ("default env", InstallEnvironment::default(), None),
-        (
-            "mismatched pin",
-            InstallEnvironment {
-                toolchain_source: NpmToolchainSource::Managed,
-                target_version: Some("5.109.5".to_string()),
-                requested_spec_kind: RequestedSpecKind::PinnedVersion,
-                ..Default::default()
-            },
-            Some("5.109.5"),
-        ),
-    ];
-    for (label, env, expected_target_tag) in cases {
-        let event = single_event(captured_events(|| {
-            report_install_failure_with_environment(
-                Some(1),
-                NPMJS_TARBALL_E404_STDERR,
-                None,
-                false,
-                &env,
-            )
-        }));
-        assert_eq!(event.level, sentry::Level::Error, "{label}");
-        assert_eq!(
-            event.message.as_deref(),
-            Some("[hq-cli-update] install failed (E404:npmjs:tarball)"),
-            "{label}"
-        );
-        assert_eq!(
-            fingerprint(&event),
-            install_failure_fingerprint("unexpected", "E404:npmjs:tarball"),
-            "{label}"
-        );
-        assert_eq!(
-            tag(&event, "install_failure_kind"),
-            Some("unexpected"),
-            "{label}"
-        );
-        assert_eq!(tag(&event, "npm_error_code"), Some("E404"), "{label}");
-        assert_eq!(tag(&event, "npm_registry_origin"), Some("npmjs"), "{label}");
-        assert_eq!(tag(&event, "npm_404_resource"), Some("tarball"), "{label}");
-        assert_eq!(
-            tag(&event, "hq_cli_target_version"),
-            expected_target_tag,
-            "{label}"
-        );
-        let diagnostics = match event.extra.get("npm_diagnostics") {
-            Some(Value::String(text)) => text.clone(),
-            other => panic!("{label}: missing npm_diagnostics: {other:?}"),
-        };
-        assert!(
-            diagnostics.contains("registry_origin=npmjs npm_404_resource=tarball"),
-            "{label}: npm_diagnostics dropped the E404 attribution: {diagnostics}"
-        );
-        // No registry host, full tarball URL, raw requested spec, or raw npm output
-        // crosses the Sentry boundary.
-        assert_path_safe(
-            &event,
-            &[
-                "registry.npmjs.org",
-                "https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz",
-                "@indigoai-us/hq-cli@5.109.6",
-                "npm error",
-            ],
-        );
-    }
+fn an_npmjs_tarball_404_without_a_pin_stays_a_loud_attributed_error() {
+    // No pin means npm's 404 is not known to be the object for the version HQ
+    // just resolved, so it must stay visible as an unexpected install failure.
+    assert_loud_npmjs_tarball_404_outside_the_pinned_window(&InstallEnvironment::default(), None);
+}
+
+#[test]
+fn an_npmjs_tarball_404_for_a_different_pin_stays_loud_and_attributed() {
+    // HQ-DESKTOP-5Q's anti-masking guard survives the HQ-DESKTOP-6D refinement:
+    // only the exact version HQ just resolved may be deferred.
+    let mismatched_pin = InstallEnvironment {
+        toolchain_source: NpmToolchainSource::Managed,
+        target_version: Some("5.109.5".to_string()),
+        requested_spec_kind: RequestedSpecKind::PinnedVersion,
+        ..Default::default()
+    };
+    assert_loud_npmjs_tarball_404_outside_the_pinned_window(&mismatched_pin, Some("5.109.5"));
 }
 
 #[test]
@@ -2507,6 +2511,77 @@ fn a_pinned_npmjs_dependency_tarball_404_is_deferred_on_first_observation() {
 }
 
 #[test]
+fn a_pinned_npmjs_tarball_404_escalates_after_the_persisted_lag_window() {
+    const DEPENDENCY_TARBALL_404: &str = "npm error code E404\n\
+        npm error 404 Not Found - GET https://registry.npmjs.org/@types/node/-/node-22.7.3.tgz - Not found\n\
+        npm error 404\n\
+        npm error 404  '@types/node@22.7.3' is not in this registry.";
+    let env = e404_tarball_env();
+    let first = match report_install_failure_episode_at(
+        Some(1),
+        DEPENDENCY_TARBALL_404,
+        None,
+        false,
+        &env,
+        "5.109.6",
+        &[],
+        1_000,
+    ) {
+        InstallFailureEpisode::DeferredTransient {
+            persist_keys: Some(keys),
+        } => keys,
+        other => panic!("first npmjs tarball 404 must persist a deferral marker: {other:?}"),
+    };
+    assert!(first
+        .iter()
+        .any(|key| { key == "5.109.6|registry-serving-lag|@types/node|1000" }));
+
+    let (within_events, within_outcome) = {
+        let mut outcome = None;
+        let events = captured_events(|| {
+            outcome = Some(report_install_failure_episode_at(
+                Some(1),
+                DEPENDENCY_TARBALL_404,
+                None,
+                false,
+                &env,
+                "5.109.6",
+                &first,
+                1_029,
+            ));
+        });
+        (events, outcome.expect("episode outcome"))
+    };
+    assert!(within_events.is_empty());
+    assert_eq!(
+        within_outcome,
+        InstallFailureEpisode::DeferredTransient { persist_keys: None }
+    );
+
+    let (events, outcome) = {
+        let mut outcome = None;
+        let events = captured_events(|| {
+            outcome = Some(report_install_failure_episode_at(
+                Some(1),
+                DEPENDENCY_TARBALL_404,
+                None,
+                false,
+                &env,
+                "5.109.6",
+                &first,
+                1_030,
+            ));
+        });
+        (events, outcome.expect("episode outcome"))
+    };
+    let event = events.first().expect("stale tarball 404 stays visible");
+    assert_eq!(events.len(), 1);
+    assert_eq!(tag(event, "npm_registry_serving_lag"), Some("escalated"));
+    assert_eq!(tag(event, "npm_404_package"), Some("@types/node"));
+    assert!(matches!(outcome, InstallFailureEpisode::Reported { .. }));
+}
+
+#[test]
 fn windows_ebusy_selected_prefix_rename_stays_visible_under_its_own_kind() {
     let prefix = r"C:\Users\me\AppData\Roaming\npm";
     let stderr = "npm error code EBUSY\n\
@@ -2528,7 +2603,10 @@ fn windows_ebusy_selected_prefix_rename_stays_visible_under_its_own_kind() {
     );
     assert_eq!(tag(&event, "npm_error_code"), Some("EBUSY"));
     assert_eq!(tag(&event, "npm_syscall"), Some("rename"));
-    assert_eq!(tag(&event, "npm_path_shape"), Some("selected-prefix-node-modules"));
+    assert_eq!(
+        tag(&event, "npm_path_shape"),
+        Some("selected-prefix-node-modules")
+    );
     assert_eq!(
         event.message.as_deref(),
         Some("[hq-cli-update] install failed (EBUSY:rename:selected-prefix-node-modules)")
