@@ -198,6 +198,17 @@
     overflow: auto;
     padding: 8px 20px 16px;
   }
+  /* A project scrolls as one page here: its header scrolls away and the task
+     board keeps its own height, instead of the board squeezing into what is
+     left under a fixed header. */
+  .ph-body :global(.project-detail) {
+    flex: none;
+    height: auto;
+    min-height: 100%;
+  }
+  .ph-body :global(.project-detail .detail-body) {
+    overflow: visible;
+  }
   .ph-empty {
     margin: 64px auto;
     max-width: 420px;

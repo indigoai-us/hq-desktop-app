@@ -190,7 +190,7 @@
     height: 100%;
     /* Fill the space below the project header, but never shrink to a strip
        on a short window: the project page scrolls instead. */
-    min-height: 460px;
+    min-height: min(640px, 75vh);
     /* Naked canvas — no board chrome. */
     background: transparent;
   }
