@@ -123,7 +123,7 @@ pub use hq_desktop_core::hq_cli_update::{
     UserPrefixAim, VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
     NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
     NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
-    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG,
+    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG, WindowsBusyRetryOutcome,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -158,6 +158,9 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(21600);
 /// a single short, bounded wait lets it clear before the lone retry. Bounded and
 /// non-looping by design (one sleep, one retry).
 const LOCKED_BINARY_RETRY_BACKOFF: Duration = Duration::from_secs(3);
+/// Maximum wait for app-owned command processes to finish before a Windows
+/// global hq-cli package replacement. A timeout defers the background update.
+const CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn fetch_latest() -> Result<String, String> {
     // npm registry doesn't require a User-Agent but accepts one for telemetry —
@@ -604,6 +607,10 @@ struct NpmInstallRun {
     /// diagnostic to the reported event. [`MissingTargetState::Unknown`] whenever the
     /// remedy did not run.
     missing_target_state: MissingTargetState,
+    /// Present only when the final failure matched the selected-prefix Windows
+    /// EBUSY/rename shape. The value is emitted only as bounded Sentry tags.
+    windows_busy_retry_attempts: Option<u8>,
+    windows_busy_retry_outcome: WindowsBusyRetryOutcome,
 }
 
 async fn run_recorded_npm_install_attempt(
@@ -696,6 +703,8 @@ async fn run_npm_install_local_recovery_ladder(
     base_args: Vec<String>,
     ledger: &mut Vec<NpmInstallAttempt>,
     missing_target_state: &mut MissingTargetState,
+    windows_busy_retry_attempts: &mut Option<u8>,
+    windows_busy_retry_outcome: &mut WindowsBusyRetryOutcome,
 ) -> Result<std::process::Output, String> {
     // EEXIST bin collision: an existing `<prefix>/bin/hq` npm didn't create
     // blocks the bin-link, so npm bails rather than clobber it. Retry ONCE with
@@ -957,13 +966,20 @@ async fn run_npm_install_local_recovery_ladder(
     if !output.status.success() {
         let detail = npm_output_detail(&output);
         let attempted_rungs: Vec<_> = ledger.iter().map(|attempt| attempt.rung).collect();
-        if should_retry_windows_busy_install_target(
+        let is_locked_target = is_windows_locked_install_target_failure(
+            output.status.code(),
+            &detail,
+            prefix,
+        );
+        if is_locked_target && should_retry_windows_busy_install_target(
             output.status.code(),
             &detail,
             prefix,
             &attempted_rungs,
             MAX_NPM_INSTALL_ATTEMPTS,
         ) {
+            *windows_busy_retry_attempts = Some(1);
+            *windows_busy_retry_outcome = WindowsBusyRetryOutcome::Failed;
             log(
                 "hq-cli-update",
                 "install hit Windows EBUSY rename on the selected prefix; retrying once after backoff",
@@ -980,6 +996,12 @@ async fn run_npm_install_local_recovery_ladder(
                 ledger,
             )
             .await?;
+            if output.status.success() {
+                *windows_busy_retry_outcome = WindowsBusyRetryOutcome::Succeeded;
+            }
+        } else if is_locked_target {
+            *windows_busy_retry_attempts = Some(0);
+            *windows_busy_retry_outcome = WindowsBusyRetryOutcome::NotArmed;
         }
     }
 
@@ -995,6 +1017,8 @@ async fn run_npm_install_with_retries(
 ) -> Result<NpmInstallRun, String> {
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
     let mut missing_target_state = MissingTargetState::Unknown;
+    let mut windows_busy_retry_attempts = None;
+    let mut windows_busy_retry_outcome = WindowsBusyRetryOutcome::NotApplicable;
     let mut output = run_recorded_npm_install_attempt(
         npm,
         path,
@@ -1077,6 +1101,8 @@ async fn run_npm_install_with_retries(
             base_args.clone(),
             &mut ledger,
             &mut missing_target_state,
+            &mut windows_busy_retry_attempts,
+            &mut windows_busy_retry_outcome,
         )
         .await?;
         local_recovery_due = false;
@@ -1098,6 +1124,8 @@ async fn run_npm_install_with_retries(
         final_attempt_forced,
         rungs,
         missing_target_state,
+        windows_busy_retry_attempts,
+        windows_busy_retry_outcome,
     })
 }
 
@@ -1204,6 +1232,8 @@ async fn probe_install_environment(
         } else {
             ManagedRetryOutcome::NotArmed
         },
+        windows_busy_retry_attempts: None,
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
         // Defaults to `Unknown`; `install_hq_cli` overrides it with the mkdir
         // remedy's diagnostic (HQ-DESKTOP-5K) when that remedy ran.
         missing_target_state: MissingTargetState::Unknown,
@@ -2121,8 +2151,15 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             .flatten()
     };
 
+    #[cfg(target_os = "windows")]
+    let cli_process_quiescence = crate::commands::process::wait_for_cli_install_quiescence(
+        CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
+    )
+    .await?;
     let install_run =
         run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
+    #[cfg(target_os = "windows")]
+    drop(cli_process_quiescence);
 
     if !install_run.output.status.success() {
         let raw_detail = npm_output_detail(&install_run.output);
@@ -2153,6 +2190,8 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // creation went. `Unknown` (→ no tag emitted) whenever that remedy did not
         // run, so a non-missing-target failure's tag set is unchanged.
         install_env.missing_target_state = install_run.missing_target_state;
+        install_env.windows_busy_retry_attempts = install_run.windows_busy_retry_attempts;
+        install_env.windows_busy_retry_outcome = install_run.windows_busy_retry_outcome;
         // Name the EXACT version install_argv pinned into base_args (HQ-DESKTOP-5Q),
         // so a reported E404 shows WHICH version npm was asked for. `base_args` was
         // built with `Some(latest)`, a pinned spec — never the `@latest` dist-tag.

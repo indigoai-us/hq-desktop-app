@@ -7,6 +7,7 @@ use hq_desktop_core::hq_cli_update::{
     InstallEnvironment, InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome,
     ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
     NpmToolchainSource, RequestedSpecKind, ResolutionSource, SettingsPathTelemetry,
+    WindowsBusyRetryOutcome,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -1125,6 +1126,8 @@ fn environment_aware_capture_carries_the_previously_missing_provenance() {
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
+        windows_busy_retry_attempts: None,
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
@@ -1319,6 +1322,8 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
+        windows_busy_retry_attempts: None,
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
@@ -1684,6 +1689,8 @@ fn managed_toolchain_retry_failure_carries_managed_provenance_and_builder() {
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
+        windows_busy_retry_attempts: None,
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
@@ -1939,6 +1946,8 @@ fn hq_desktop_5e_postinstall_failure_carries_the_managed_retry_outcome() {
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
         managed_retry_outcome: ManagedRetryOutcome::ProvisionDeferred,
+        windows_busy_retry_attempts: None,
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
@@ -2065,6 +2074,8 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
         managed_retry_outcome: ManagedRetryOutcome::ProvisionDeferred,
+        windows_busy_retry_attempts: None,
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
@@ -2121,6 +2132,8 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
+        windows_busy_retry_attempts: None,
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
@@ -2702,5 +2715,49 @@ fn windows_ebusy_selected_prefix_rename_stays_visible_under_its_own_kind() {
             "EBUSY:rename:selected-prefix-node-modules"
         ]
     );
+    assert_path_safe(&event, &["C:\\Users\\me", "Roaming\\npm", "node-llama-cpp"]);
+}
+
+#[test]
+fn windows_ebusy_retry_reports_unknown_holder_and_bounded_retry_outcome() {
+    let prefix = r"C:\Users\me\AppData\Roaming\npm";
+    let stderr = "npm error code EBUSY\n\
+        npm error errno -4082\n\
+        npm error syscall rename\n\
+        npm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli\\node_modules\\node-llama-cpp\n\
+        npm error EBUSY: resource busy or locked, rename";
+    let env = InstallEnvironment {
+        toolchain_source: NpmToolchainSource::Managed,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
+        windows_busy_retry_attempts: Some(1),
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::Failed,
+        ..Default::default()
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(-4082), stderr, Some(prefix), false, &env)
+    }));
+
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "windows-locked-install-target",
+            "EBUSY:rename:selected-prefix-node-modules"
+        ]
+    );
+    assert_eq!(tag(&event, "npm_managed_retry_outcome"), Some("not-armed"));
+    assert_eq!(tag(&event, "npm_lock_holder_class"), Some("unknown"));
+    assert_eq!(tag(&event, "npm_windows_busy_retry_attempts"), Some("1"));
+    assert_eq!(tag(&event, "npm_windows_busy_retry_outcome"), Some("failed"));
+    let diagnostics = event
+        .extra
+        .get("npm_diagnostics")
+        .and_then(Value::as_str)
+        .expect("diagnostic summary");
+    assert!(diagnostics.contains("lock_holder_class=unknown"));
+    assert!(diagnostics.contains("windows_busy_retry_attempts=1"));
+    assert!(diagnostics.contains("windows_busy_retry_outcome=failed"));
     assert_path_safe(&event, &["C:\\Users\\me", "Roaming\\npm", "node-llama-cpp"]);
 }

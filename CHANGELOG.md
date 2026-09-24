@@ -16,6 +16,10 @@ The release moves it under the version it ships in.
   responses from the server, so the same data moves over the wire faster —
   most noticeable on the channel list for people in large companies.
 
+- On Windows, HQ waits for its own command processes to finish before replacing
+  the HQ CLI package and retries once if npm still reports a locked install
+  directory.
+
 ## [0.10.323] — 2026-09-24
 
 - Fixed the channel list failing to load for people in companies with a lot of
