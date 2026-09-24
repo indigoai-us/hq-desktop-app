@@ -8,15 +8,24 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Auto-sync memory alerts now include a bounded memory class and, for
+  multi-process trees, the largest child's process type.
+
+## [0.10.319] — 2026-09-24
+
+- The setup finish card goes away as soon as you send the setup bot another
+  message, instead of staying under the rest of the conversation.
+- Files and images attached in chat upload again. Since vault storage turned on
+  write protection, every attachment upload was refused, so bots and teammates
+  never received the file.
 - First-run setup now waits for activity from the initial personal-vault push
   before timing out. Template-install failures also record a bounded cause for
   diagnosis without sending local paths.
-- Auto-sync memory alerts now include a bounded memory class and, for
-  multi-process trees, the largest child's process type.
-- Sync and Meetings show the server's upgrade link when a plan pauses uploads or
-  meeting-bot recording.
 
 ## [0.10.317] — 2026-09-24
+
+- Sync and Meetings show the server's upgrade link when a plan pauses uploads or
+  meeting-bot recording.
 
 ## [0.10.315] — 2026-09-24
 

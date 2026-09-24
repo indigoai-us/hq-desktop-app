@@ -13,6 +13,7 @@ import {
 import {
   formatUploadServerError,
   presignUrlFromResult,
+  fileIntegrity,
   uploadChatAttachments,
 } from "./upload-chat-attachments.js";
 import { formatComposerSendError } from "./composer-send-error.js";
@@ -134,6 +135,50 @@ describe("chat attachment helpers", () => {
     ]);
     expect(uploaded[0]?.name).toBe("shot.png");
     expect(uploaded[0]?.vaultPath).toMatch(/^chat\/attachments\/chan\/chn_x\//);
+  });
+
+  // Regression: vault buckets have S3 Object Lock, which refuses any PUT
+  // without a signed content checksum ("Content-MD5 OR x-amz-checksum- HTTP
+  // header is required"). Every chat attachment upload failed until the
+  // presign carried the file's SHA-256, so bots never received a file.
+  it("sends the file's SHA-256 with every presign", async () => {
+    const file = new File([new TextEncoder().encode("abc")], "secret.pdf", {
+      type: "application/pdf",
+    });
+    const seen: unknown[] = [];
+    await uploadChatAttachments({
+      files: [file],
+      companyUid: "prs_me",
+      scope: "dm",
+      scopeId: "prs_me#agt_bot",
+      presignPut: async (_cmp, _key, _type, integrity) => {
+        seen.push(integrity);
+        return {
+          ok: true,
+          value: { results: [{ url: "https://bucket.s3.amazonaws.com/k", headers: {} }] },
+        };
+      },
+      putObject: async () => new Response(null, { status: 200 }),
+    });
+    expect(seen).toEqual([
+      {
+        checksumSha256: "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
+        contentSha256:
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      },
+    ]);
+  });
+
+  it("hashes each file on its own", async () => {
+    const a = await fileIntegrity(new Blob(["abc"]));
+    const empty = await fileIntegrity(new Blob([]));
+    expect(a.contentSha256).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+    expect(empty.contentSha256).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    expect(empty.checksumSha256).toBe("47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
   });
 
   it("prefixes the server error verbatim when presign fails", async () => {

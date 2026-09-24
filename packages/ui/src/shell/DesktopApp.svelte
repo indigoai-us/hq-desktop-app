@@ -89,7 +89,7 @@
     findSetupBot,
     findSetupBotContact,
     firstSignedInRuntime,
-    setupBotMarkedDone,
+    setupFinaleDue,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_INTRO,
@@ -2233,13 +2233,16 @@
     await loadLocalBotRuntimeReady();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
-  /** The setup bot's DM, once the bot has marked setup finished: show the finish card. */
+  /**
+   * The setup bot's DM, once the bot has marked setup finished and the person
+   * has not written since: show the finish card. A follow-up puts it away.
+   */
   const setupBotDmDone = $derived.by(() => {
     const bot = selectedLocalBot;
     const row = selectedRow;
     if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return false;
     const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
-    return setupBotMarkedDone(timeline, bot.agentUid, messageMarksSetupDone);
+    return setupFinaleDue(timeline, bot.agentUid, messageMarksSetupDone);
   });
   $effect(() => {
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
@@ -6747,8 +6750,8 @@
       scopeId: isDm
         ? conversationPairKey(selfUid, row.personUid ?? "")
         : (row.channelId?.trim() ?? ""),
-      presignPut: (cmp, key, contentType) =>
-        adapter.files.presignVaultPut(cmp, key, contentType),
+      presignPut: (cmp, key, contentType, integrity) =>
+        adapter.files.presignVaultPut(cmp, key, contentType, integrity),
       // Vault buckets have no CORS. Web hops through same-origin; desktop
       // sends bytes from Rust so WKWebView never PUTs to S3.
       putObject:
