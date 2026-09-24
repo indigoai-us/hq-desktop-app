@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.323] — 2026-09-24
+
 - Fixed the channel list failing to load for people in companies with a lot of
   channels. The app was giving that request the same short timeout as every
   other one, so once a company's channel roster got large enough, the response
