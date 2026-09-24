@@ -604,8 +604,10 @@ describe('master automatic-updates switch', () => {
     const appCli = normalize(cliUpdate);
     expect(core).toContain('WindowsLockedInstallTarget');
     expect(core).toContain('is_windows_locked_install_target_failure(');
-    expect(appCli).toContain('is_windows_locked_install_target_failure(');
-    expect(appCli).toContain('windows-busy-install-target-backoff-plain');
+    expect(core).toContain('should_retry_windows_busy_install_target(');
+    expect(appCli).toContain('should_retry_windows_busy_install_target(');
+    expect(appCli).toContain('WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG');
+    expect(core).toContain('attempted_rungs.len() < max_attempts');
   });
 
   it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {

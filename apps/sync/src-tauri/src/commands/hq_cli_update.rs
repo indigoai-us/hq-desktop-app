@@ -109,7 +109,8 @@ pub use hq_desktop_core::hq_cli_update::{
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
     report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    should_auto_install, should_report_unreadable_version,
+    should_retry_windows_busy_install_target, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
     version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
     ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
@@ -122,7 +123,7 @@ pub use hq_desktop_core::hq_cli_update::{
     UserPrefixAim, VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
     NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
     NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
-    STDERR_ORIGIN_NON_NPM,
+    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -955,10 +956,14 @@ async fn run_npm_install_local_recovery_ladder(
     // and retry the plain install once. Never terminate or signal the holder.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_windows_locked_install_target_failure(output.status.code(), &detail, prefix)
-            && !npm_install_attempted(ledger, "windows-busy-install-target-backoff-plain")
-            && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
-        {
+        let attempted_rungs: Vec<_> = ledger.iter().map(|attempt| attempt.rung).collect();
+        if should_retry_windows_busy_install_target(
+            output.status.code(),
+            &detail,
+            prefix,
+            &attempted_rungs,
+            MAX_NPM_INSTALL_ATTEMPTS,
+        ) {
             log(
                 "hq-cli-update",
                 "install hit Windows EBUSY rename on the selected prefix; retrying once after backoff",
@@ -970,7 +975,7 @@ async fn run_npm_install_local_recovery_ladder(
                 npm_cache,
                 prefix,
                 base_args,
-                "windows-busy-install-target-backoff-plain",
+                WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG,
                 false,
                 ledger,
             )

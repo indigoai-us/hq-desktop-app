@@ -2000,6 +2000,48 @@ fn hq_desktop_5e_postinstall_failure_carries_the_managed_retry_outcome() {
     assert_path_safe(&event, &["/Users/", "alice", ".npm-global", "npm error"]);
 }
 
+#[test]
+fn hq_desktop_5e_postinstall_stage_tag_covers_each_closed_stage() {
+    let cases = [
+        ("Rosetta translation is active", "rosetta"),
+        (
+            "Error: failed to load a prebuilt binary; dlopen could not open the library",
+            "prebuilt-load-failed",
+        ),
+        (
+            "Error: prebuilt binary was not found for this runtime",
+            "prebuilt-missing",
+        ),
+        (
+            "Error: Cannot find module optional-native-binary",
+            "module-load-failed",
+        ),
+        (
+            "The optional native source build was attempted",
+            "source-build-attempted",
+        ),
+        ("Error: postinstall step failed without more detail", "unknown"),
+    ];
+
+    for (evidence, expected_stage) in cases {
+        let stderr = format!(
+            "npm error code 1\n\
+             npm error path {SELECTED_PREFIX}/lib/node_modules/node-llama-cpp\n\
+             npm error command failed\n\
+             npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+             {evidence}"
+        );
+        let event = single_event(captured_events(|| {
+            report_install_failure(Some(1), &stderr, Some(SELECTED_PREFIX))
+        }));
+        assert_eq!(
+            tag(&event, "npm_lifecycle_postinstall_stage"),
+            Some(expected_stage),
+            "evidence {evidence:?}"
+        );
+    }
+}
+
 /// Adding the outcome tag must not change WHAT pages. The lifecycle repeat-guard
 /// for HQ-DESKTOP-5E still keys on `(latest | node-llama-cpp | postinstall-script)`,
 /// so a second identical user-path report is SuppressedRepeat; and a managed-retry
@@ -2508,6 +2550,46 @@ fn a_pinned_npmjs_dependency_tarball_404_is_deferred_on_first_observation() {
         events.is_empty(),
         "first pinned npmjs dependency-tarball lag should defer, not page: {events:?}"
     );
+}
+
+#[test]
+fn unsafe_npmjs_dependency_tarball_paths_are_neither_tagged_nor_deferred() {
+    let urls = [
+        "https://registry.npmjs.org/../@types/node/-/node-22.7.3.tgz",
+        "https://registry.npmjs.org/@types/node%20evil/-/node-22.7.3.tgz",
+        "https://registry.npmjs.org/%2fUsers%2falice/-/node-22.7.3.tgz",
+        "https://registry.npmjs.org/@types/node%3ftoken/-/node-22.7.3.tgz",
+    ];
+    let env = e404_tarball_env();
+
+    for url in urls {
+        let stderr = format!(
+            "npm error code E404\n\
+             npm error 404 Not Found - GET {url} - Not found\n\
+             npm error 404\n\
+             npm error 404 dependency tarball was not found"
+        );
+        let (events, outcome) = {
+            let mut outcome = None;
+            let events = captured_events(|| {
+                outcome = Some(report_install_failure_episode_at(
+                    Some(1), &stderr, None, false, &env, "5.109.6", &[], 1_000,
+                ));
+            });
+            (events, outcome.expect("episode outcome"))
+        };
+
+        assert_eq!(events.len(), 1, "unsafe URL must remain visible: {url}");
+        let event = &events[0];
+        assert_eq!(tag(event, "npm_404_resource"), Some("tarball"));
+        assert_eq!(tag(event, "npm_registry_origin"), Some("npmjs"));
+        assert_eq!(tag(event, "npm_404_package"), None, "URL {url}");
+        assert_eq!(tag(event, "npm_registry_serving_lag"), None, "URL {url}");
+        assert!(
+            matches!(outcome, InstallFailureEpisode::Reported { .. }),
+            "unsafe package paths must not enter the deferral path: {url}: {outcome:?}"
+        );
+    }
 }
 
 #[test]

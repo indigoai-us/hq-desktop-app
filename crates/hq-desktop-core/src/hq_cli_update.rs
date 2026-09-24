@@ -5082,6 +5082,27 @@ pub fn is_windows_locked_install_target_failure(
         && !npm_lifecycle_failure(detail).failed
 }
 
+/// Attempt label for the single backoff retry after npm reports EBUSY while
+/// renaming a package under the selected global prefix.
+pub const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG: &str =
+    "windows-busy-install-target-backoff-plain";
+
+/// Decide whether the app may arm its one retry for a Windows locked install
+/// target. The pure seam keeps the failure classifier, one-shot ledger guard,
+/// and attempt cap together so the app cannot accidentally retry another EBUSY
+/// shape or loop after the retry has already run.
+pub fn should_retry_windows_busy_install_target(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    attempted_rungs: &[&str],
+    max_attempts: usize,
+) -> bool {
+    is_windows_locked_install_target_failure(exit_code, detail, prefix)
+        && !attempted_rungs.contains(&WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG)
+        && attempted_rungs.len() < max_attempts
+}
+
 /// Whether a failed npm install is the EXPECTED "the machine's disk is full"
 /// condition (`ENOSPC`). npm surfaces disk exhaustion two ways: as its own
 /// structured `code ENOSPC` line when the install could not write a file (the
@@ -12367,6 +12388,76 @@ mod tests {
         let detail = install_failure_detail(Some(WINDOWS_ABORT_EXIT), "", None);
         assert!(detail.contains("Windows child process"));
         assert!(detail.contains("fresh terminal"));
+    }
+
+    #[test]
+    fn windows_busy_install_target_requires_rename_and_selected_prefix_node_modules() {
+        let prefix = r"C:\Users\me\AppData\Roaming\npm";
+        for syscall in ["unlink", "open"] {
+            let detail = format!(
+                "npm error code EBUSY\n\
+                 npm error errno -4082\n\
+                 npm error syscall {syscall}\n\
+                 npm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli"
+            );
+            assert!(!is_windows_locked_install_target_failure(
+                Some(-4082),
+                &detail,
+                Some(prefix)
+            ));
+            assert_ne!(
+                classify_install_failure(Some(-4082), &detail, Some(prefix)),
+                InstallFailureKind::WindowsLockedInstallTarget,
+                "syscall {syscall} must retain its existing failure kind"
+            );
+        }
+
+        let outside_selected_prefix = "npm error code EBUSY\n\
+            npm error errno -4082\n\
+            npm error syscall rename\n\
+            npm error path C:\\Users\\me\\.npm\\_cacache\\tmp\\node-llama-cpp";
+        assert!(!is_windows_locked_install_target_failure(
+            Some(-4082),
+            outside_selected_prefix,
+            Some(prefix)
+        ));
+        assert_eq!(
+            npm_path_shape(outside_selected_prefix, Some(prefix)),
+            NpmPathShape::NpmCache
+        );
+        assert_eq!(
+            classify_install_failure(Some(-4082), outside_selected_prefix, Some(prefix)),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn windows_busy_install_target_retry_is_one_shot_and_bounded() {
+        let prefix = r"C:\Users\me\AppData\Roaming\npm";
+        let detail = "npm error code EBUSY\n\
+            npm error errno -4082\n\
+            npm error syscall rename\n\
+            npm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
+        assert!(should_retry_windows_busy_install_target(
+            Some(-4082), detail, Some(prefix), &[], 4
+        ));
+        assert!(!should_retry_windows_busy_install_target(
+            Some(-4082),
+            detail,
+            Some(prefix),
+            &[WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG],
+            4
+        ));
+        assert!(!should_retry_windows_busy_install_target(
+            Some(1),
+            "npm error network ETIMEDOUT",
+            Some(prefix),
+            &[],
+            4
+        ));
+        assert!(!should_retry_windows_busy_install_target(
+            Some(-4082), detail, Some(prefix), &[], 0
+        ));
     }
 
     // HQ-DESKTOP-3N: a Windows `EPERM` install failure (exit -4048, the libuv
