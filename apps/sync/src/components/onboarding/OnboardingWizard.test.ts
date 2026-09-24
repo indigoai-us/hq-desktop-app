@@ -12,6 +12,10 @@ const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
   open: vi.fn(),
 }));
+const eventHarness = vi.hoisted(() => ({
+  handlers: new Map<string, (event: { payload: unknown }) => void>(),
+  listen: vi.fn(),
+}));
 const app = vi.hoisted(() => ({
   getVersion: vi.fn(),
 }));
@@ -26,7 +30,7 @@ const httpFetch = vi.hoisted(() =>
 );
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: eventHarness.listen }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
@@ -43,6 +47,7 @@ import {
 } from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
+import { stageTimeoutMs } from '../../lib/onboarding-setup';
 
 const NO_AI_TOOLS = {
   claude_cli: false,
@@ -81,6 +86,12 @@ async function flush(): Promise<void> {
   await Promise.resolve();
   await tick();
   flushSync();
+}
+
+function emitTauriEvent(name: string, payload: unknown = {}): void {
+  const handler = eventHarness.handlers.get(name);
+  if (!handler) throw new Error(`Expected a listener for ${name}.`);
+  handler({ payload });
 }
 
 async function flushUntil(predicate: () => boolean): Promise<void> {
@@ -231,6 +242,16 @@ beforeEach(() => {
   );
   tauri.invoke.mockReset();
   tauri.open.mockReset();
+  eventHarness.handlers.clear();
+  eventHarness.listen.mockReset();
+  eventHarness.listen.mockImplementation(
+    async (name: string, handler: (event: { payload: unknown }) => void) => {
+      eventHarness.handlers.set(name, handler);
+      return () => {
+        eventHarness.handlers.delete(name);
+      };
+    },
+  );
   app.getVersion.mockReset();
   app.getVersion.mockResolvedValue('0.10.271');
   tauri.open.mockResolvedValue(undefined);
@@ -651,6 +672,52 @@ describe('first-run browser session continuation', () => {
       errorCategory: 'unknown',
       failureStage: 'deps',
       failedDependency: 'unknown',
+    });
+  });
+
+  it('forwards scoped native content error kinds into setup failure telemetry', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/placeholder/HQ';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          throw new Error('template setup failed');
+        case 'take_onboarding_failure_detail':
+          return {
+            errorCategory: 'spawn-failed',
+            errorKind: 'content_symlink_helper_spawn_failed',
+          };
+        case 'emit_desktop_operational_telemetry':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string } }).properties
+            ?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'content',
+      ),
+    );
+
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+          'content',
+    )?.[1] as { properties: Record<string, unknown> };
+    expect(failure.properties).toMatchObject({
+      failureStage: 'content',
+      errorCategory: 'spawn-failed',
+      errorKind: 'content_symlink_helper_spawn_failed',
     });
   });
 
@@ -1673,6 +1740,60 @@ describe('setup progress direction', () => {
   }
 
   const BAND_RANK: Record<string, number> = { pending: 0, active: 1, done: 2 };
+
+  it('keeps initial-sync alive while the native personal first-push reports progress', async () => {
+    let resolveInitialSync: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'start_initial_cloud_sync':
+          return new Promise<void>((resolve) => {
+            resolveInitialSync = resolve;
+          });
+        case 'record_step_start':
+        case 'record_step_ok':
+        case 'record_install_complete':
+        case 'emit_desktop_operational_telemetry':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2 },
+    });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'start_initial_cloud_sync'),
+    );
+    const failedInitialSyncEvents = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string } }).properties
+            ?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'initial-sync',
+      );
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    emitTauriEvent('sync:personal-first-push-scan');
+    await vi.advanceTimersByTimeAsync(300_000);
+    emitTauriEvent('sync:personal-first-push-progress');
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flush();
+
+    expect(stageTimeoutMs('initial-sync')).toBe(390_000);
+    expect(failedInitialSyncEvents()).toHaveLength(0);
+    resolveInitialSync?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
 
   function sampleProgress(): ProgressSample {
     const panel = host.querySelector('[data-testid="onboarding-setup"]');

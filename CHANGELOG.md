@@ -8,10 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-## [0.10.317] — 2026-09-24
-
+- First-run setup now waits for activity from the initial personal-vault push
+  before timing out. Template-install failures also record a bounded cause for
+  diagnosis without sending local paths.
 - Sync and Meetings show the server's upgrade link when a plan pauses uploads or
   meeting-bot recording.
+
+## [0.10.317] — 2026-09-24
 
 ## [0.10.315] — 2026-09-24
 

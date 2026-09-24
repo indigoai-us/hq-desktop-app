@@ -31,7 +31,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,8 +46,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::install_stages::{
-    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
-    OnboardingFailureScope,
+    clear_onboarding_failure_detail, record_onboarding_failure_detail_with_kind,
+    OnboardingErrorCategory, OnboardingFailureScope,
 };
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
@@ -227,18 +227,221 @@ fn is_content_cancelled(cancel: Option<&AtomicBool>) -> bool {
         .unwrap_or(false)
 }
 
-fn content_cancelled_error() -> String {
+fn content_cancelled_error(failure_scope: Option<&OnboardingFailureScope>) -> String {
+    record_content_failure(
+        failure_scope,
+        OnboardingErrorCategory::Cancelled,
+        ContentErrorKind::Cancelled,
+    );
     "Template setup was cancelled.".to_string()
 }
 
-fn content_error_category(error: &reqwest::Error) -> OnboardingErrorCategory {
-    if error.is_timeout() {
-        OnboardingErrorCategory::Timeout
-    } else if error.is_connect() || error.is_body() {
-        OnboardingErrorCategory::Network
-    } else {
-        OnboardingErrorCategory::Unknown
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContentErrorKind {
+    HttpNotFound,
+    HttpForbidden,
+    HttpRateLimited,
+    HttpServerError,
+    HttpStatusError,
+    HttpTimeout,
+    HttpConnect,
+    HttpBody,
+    HttpRequest,
+    HttpClientBuildFailed,
+    ReleaseResponseInvalid,
+    ReleaseUnavailable,
+    InvalidReleaseReference,
+    SetupPathUnavailable,
+    StagingCredentialUnavailable,
+    ArchiveInvalid,
+    PathTooLong,
+    FileLocked,
+    MissingPath,
+    PermissionDenied,
+    DiskFull,
+    FilesystemError,
+    FileOperationTimeout,
+    SymlinkCreationFailed,
+    SymlinkHelperSpawnFailed,
+    SymlinkHelperExitNonzero,
+    Cancelled,
+}
+
+impl ContentErrorKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HttpNotFound => "content_http_not_found",
+            Self::HttpForbidden => "content_http_forbidden",
+            Self::HttpRateLimited => "content_http_rate_limited",
+            Self::HttpServerError => "content_http_server_error",
+            Self::HttpStatusError => "content_http_status_error",
+            Self::HttpTimeout => "content_http_timeout",
+            Self::HttpConnect => "content_http_connect",
+            Self::HttpBody => "content_http_body",
+            Self::HttpRequest => "content_http_request",
+            Self::HttpClientBuildFailed => "content_http_client_build_failed",
+            Self::ReleaseResponseInvalid => "content_release_response_invalid",
+            Self::ReleaseUnavailable => "content_release_unavailable",
+            Self::InvalidReleaseReference => "content_invalid_release_reference",
+            Self::SetupPathUnavailable => "content_setup_path_unavailable",
+            Self::StagingCredentialUnavailable => "content_staging_credential_unavailable",
+            Self::ArchiveInvalid => "content_archive_invalid",
+            Self::PathTooLong => "content_path_too_long",
+            Self::FileLocked => "content_file_locked",
+            Self::MissingPath => "content_missing_path",
+            Self::PermissionDenied => "content_permission_denied",
+            Self::DiskFull => "content_disk_full",
+            Self::FilesystemError => "content_filesystem_error",
+            Self::FileOperationTimeout => "content_file_operation_timeout",
+            Self::SymlinkCreationFailed => "content_symlink_creation_failed",
+            Self::SymlinkHelperSpawnFailed => "content_symlink_helper_spawn_failed",
+            Self::SymlinkHelperExitNonzero => "content_symlink_helper_exit_nonzero",
+            Self::Cancelled => "cancelled",
+        }
     }
+}
+
+fn classify_content_http_status(
+    status: reqwest::StatusCode,
+) -> (OnboardingErrorCategory, ContentErrorKind) {
+    match status.as_u16() {
+        404 => (OnboardingErrorCategory::NotFound, ContentErrorKind::HttpNotFound),
+        401 | 403 => (OnboardingErrorCategory::Permission, ContentErrorKind::HttpForbidden),
+        408 | 504 => (OnboardingErrorCategory::Timeout, ContentErrorKind::HttpTimeout),
+        429 => (OnboardingErrorCategory::Network, ContentErrorKind::HttpRateLimited),
+        500..=599 => (OnboardingErrorCategory::Network, ContentErrorKind::HttpServerError),
+        _ => (OnboardingErrorCategory::Network, ContentErrorKind::HttpStatusError),
+    }
+}
+
+fn classify_content_io_error(
+    kind: io::ErrorKind,
+    raw_os_error: Option<i32>,
+    is_windows: bool,
+) -> (OnboardingErrorCategory, ContentErrorKind) {
+    let os_classification = if is_windows {
+        match raw_os_error {
+            Some(206) => Some((OnboardingErrorCategory::Disk, ContentErrorKind::PathTooLong)),
+            Some(32 | 33) => Some((OnboardingErrorCategory::Permission, ContentErrorKind::FileLocked)),
+            Some(2 | 3) => Some((OnboardingErrorCategory::NotFound, ContentErrorKind::MissingPath)),
+            Some(5) => Some((OnboardingErrorCategory::Permission, ContentErrorKind::PermissionDenied)),
+            Some(112) => Some((OnboardingErrorCategory::Disk, ContentErrorKind::DiskFull)),
+            _ => None,
+        }
+    } else {
+        match raw_os_error {
+            Some(36) => Some((OnboardingErrorCategory::Disk, ContentErrorKind::PathTooLong)),
+            Some(16) => Some((OnboardingErrorCategory::Permission, ContentErrorKind::FileLocked)),
+            Some(2) => Some((OnboardingErrorCategory::NotFound, ContentErrorKind::MissingPath)),
+            Some(13) => Some((OnboardingErrorCategory::Permission, ContentErrorKind::PermissionDenied)),
+            Some(28) => Some((OnboardingErrorCategory::Disk, ContentErrorKind::DiskFull)),
+            _ => None,
+        }
+    };
+    if let Some(classification) = os_classification {
+        return classification;
+    }
+    match kind {
+        io::ErrorKind::NotFound => (OnboardingErrorCategory::NotFound, ContentErrorKind::MissingPath),
+        io::ErrorKind::PermissionDenied => (
+            OnboardingErrorCategory::Permission,
+            ContentErrorKind::PermissionDenied,
+        ),
+        io::ErrorKind::TimedOut => (
+            OnboardingErrorCategory::Timeout,
+            ContentErrorKind::FileOperationTimeout,
+        ),
+        _ => (OnboardingErrorCategory::Unknown, ContentErrorKind::FilesystemError),
+    }
+}
+
+#[derive(Debug)]
+struct ContentOperationFailure {
+    message: String,
+    category: OnboardingErrorCategory,
+    kind: ContentErrorKind,
+}
+
+impl ContentOperationFailure {
+    fn from_io(
+        context: &str,
+        error: io::Error,
+        is_windows: bool,
+        fallback_kind: ContentErrorKind,
+    ) -> Self {
+        let (category, classified_kind) =
+            classify_content_io_error(error.kind(), error.raw_os_error(), is_windows);
+        let kind = if classified_kind == ContentErrorKind::FilesystemError {
+            fallback_kind
+        } else {
+            classified_kind
+        };
+        Self {
+            message: format!("{context}: {error}"),
+            category,
+            kind,
+        }
+    }
+
+    fn helper_spawn(context: &str, error: io::Error) -> Self {
+        Self {
+            message: format!("{context}: {error}"),
+            category: OnboardingErrorCategory::SpawnFailed,
+            kind: ContentErrorKind::SymlinkHelperSpawnFailed,
+        }
+    }
+
+    fn with_context(mut self, context: &str) -> Self {
+        self.message = format!("{context}: {}", self.message);
+        self
+    }
+}
+
+fn record_content_failure(
+    failure_scope: Option<&OnboardingFailureScope>,
+    category: OnboardingErrorCategory,
+    kind: ContentErrorKind,
+) {
+    record_onboarding_failure_detail_with_kind(
+        "content",
+        failure_scope,
+        None,
+        category,
+        Some(kind.as_str()),
+    );
+}
+
+fn record_content_http_failure(
+    failure_scope: Option<&OnboardingFailureScope>,
+    status: reqwest::StatusCode,
+) {
+    let (category, kind) = classify_content_http_status(status);
+    record_content_failure(failure_scope, category, kind);
+}
+
+fn record_content_request_failure(
+    failure_scope: Option<&OnboardingFailureScope>,
+    error: &reqwest::Error,
+) {
+    let (category, kind) = if error.is_timeout() {
+        (OnboardingErrorCategory::Timeout, ContentErrorKind::HttpTimeout)
+    } else if error.is_connect() {
+        (OnboardingErrorCategory::Network, ContentErrorKind::HttpConnect)
+    } else if error.is_body() {
+        (OnboardingErrorCategory::Network, ContentErrorKind::HttpBody)
+    } else {
+        (OnboardingErrorCategory::Network, ContentErrorKind::HttpRequest)
+    };
+    record_content_failure(failure_scope, category, kind);
+}
+
+fn record_content_io_failure(
+    failure_scope: Option<&OnboardingFailureScope>,
+    error: &io::Error,
+) {
+    let (category, kind) =
+        classify_content_io_error(error.kind(), error.raw_os_error(), cfg!(windows));
+    record_content_failure(failure_scope, category, kind);
 }
 
 fn read_staging_source_from(path: &Path) -> bool {
@@ -343,12 +546,7 @@ async fn latest_release(
 ) -> Result<Option<ReleaseInfo>, String> {
     let url = format!("{GITHUB_API}/repos/{repo}/releases");
     let resp = client.get(&url).send().await.map_err(|error| {
-        record_onboarding_failure_detail(
-            "content",
-            failure_scope,
-            None,
-            content_error_category(&error),
-        );
+        record_content_request_failure(failure_scope, &error);
         format!("network error listing releases: {error}")
     })?;
     if !resp.status().is_success() {
@@ -369,25 +567,19 @@ async fn latest_release(
                 Err(e) => return Err(format!("{api_err}; API-free fallback also failed: {e}")),
             }
         }
-        record_onboarding_failure_detail(
-            "content",
-            failure_scope,
-            None,
-            if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                OnboardingErrorCategory::NotFound
-            } else {
-                OnboardingErrorCategory::Unknown
-            },
-        );
+        record_content_http_failure(failure_scope, resp.status());
         return Err(api_err);
     }
     let releases: Vec<ReleaseInfo> = resp.json().await.map_err(|error| {
-        record_onboarding_failure_detail(
-            "content",
-            failure_scope,
-            None,
-            content_error_category(&error),
-        );
+        if error.is_decode() {
+            record_content_failure(
+                failure_scope,
+                OnboardingErrorCategory::Unknown,
+                ContentErrorKind::ReleaseResponseInvalid,
+            );
+        } else {
+            record_content_request_failure(failure_scope, &error);
+        }
         format!("failed to parse releases response: {error}")
     })?;
     Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
@@ -407,15 +599,17 @@ async fn latest_release_via_redirect(
         .user_agent("hq-desktop-app")
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|e| format!("http client: {e}"))?;
+        .map_err(|e| {
+            record_content_failure(
+                failure_scope,
+                OnboardingErrorCategory::Network,
+                ContentErrorKind::HttpClientBuildFailed,
+            );
+            format!("http client: {e}")
+        })?;
     let url = format!("https://github.com/{repo}/releases/latest");
     let resp = client.get(&url).send().await.map_err(|error| {
-        record_onboarding_failure_detail(
-            "content",
-            failure_scope,
-            None,
-            content_error_category(&error),
-        );
+        record_content_request_failure(failure_scope, &error);
         format!("network error resolving {url}: {error}")
     })?;
     let location = resp
@@ -537,28 +731,19 @@ async fn download_tarball_with_progress(
     use futures_util::StreamExt;
 
     if is_content_cancelled(cancel) {
-        return Err(content_cancelled_error());
+        return Err(content_cancelled_error(failure_scope));
     }
 
     let resp = client.get(url).send().await.map_err(|error| {
-        record_onboarding_failure_detail(
-            "content",
-            failure_scope,
-            None,
-            content_error_category(&error),
-        );
+        record_content_request_failure(failure_scope, &error);
         format!("network error downloading template: {error}")
     })?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        record_onboarding_failure_detail(
-            "content",
-            failure_scope,
-            None,
-            OnboardingErrorCategory::NotFound,
-        );
+        record_content_http_failure(failure_scope, resp.status());
         return Err(format!("template tarball not found (404): {url}"));
     }
     if !resp.status().is_success() {
+        record_content_http_failure(failure_scope, resp.status());
         return Err(format!(
             "HTTP {} downloading template tarball",
             resp.status()
@@ -582,7 +767,7 @@ async fn download_tarball_with_progress(
 
     loop {
         if is_content_cancelled(cancel) {
-            return Err(content_cancelled_error());
+            return Err(content_cancelled_error(failure_scope));
         }
 
         match tokio::time::timeout(DOWNLOAD_SLOW_NOTICE_TIMEOUT, stream.next()).await {
@@ -600,12 +785,7 @@ async fn download_tarball_with_progress(
                 }
             }
             Ok(Some(Err(error))) => {
-                record_onboarding_failure_detail(
-                    "content",
-                    failure_scope,
-                    None,
-                    content_error_category(&error),
-                );
+                record_content_request_failure(failure_scope, &error);
                 return Err(format!("stream error downloading template: {error}"));
             }
             Ok(None) => break,
@@ -637,12 +817,7 @@ async fn download_tarball_with_progress(
                         }
                     }
                     Ok(Some(Err(error))) => {
-                        record_onboarding_failure_detail(
-                            "content",
-                            failure_scope,
-                            None,
-                            content_error_category(&error),
-                        );
+                        record_content_request_failure(failure_scope, &error);
                         return Err(format!("stream error downloading template: {error}"));
                     }
                     Ok(None) => break,
@@ -657,11 +832,10 @@ async fn download_tarball_with_progress(
                                 "Template download stalled",
                             );
                         }
-                        record_onboarding_failure_detail(
-                            "content",
+                        record_content_failure(
                             failure_scope,
-                            None,
                             OnboardingErrorCategory::Timeout,
+                            ContentErrorKind::HttpTimeout,
                         );
                         return Err(
                             "Template download stalled before receiving more data.".to_string()
@@ -809,16 +983,38 @@ fn is_under_known_symlink(relative: &str, symlink_relatives: &[String]) -> bool 
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
-pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
+fn create_symlink_with_failure(
+    target: &Path,
+    link_path: &Path,
+) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create parent dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            ContentOperationFailure::from_io(
+                "failed to create symlink parent directory",
+                error,
+                false,
+                ContentErrorKind::SymlinkCreationFailed,
+            )
+        })?;
     }
     if std::fs::symlink_metadata(link_path).is_ok() {
-        std::fs::remove_file(link_path)
-            .map_err(|e| format!("failed to replace existing entry at {link_path:?}: {e}"))?;
+        std::fs::remove_file(link_path).map_err(|error| {
+            ContentOperationFailure::from_io(
+                "failed to replace existing symlink entry",
+                error,
+                false,
+                ContentErrorKind::SymlinkCreationFailed,
+            )
+        })?;
     }
-    std::os::unix::fs::symlink(target, link_path)
-        .map_err(|e| format!("failed to create symlink {link_path:?} -> {target:?}: {e}"))
+    std::os::unix::fs::symlink(target, link_path).map_err(|error| {
+        ContentOperationFailure::from_io(
+            "failed to create symlink",
+            error,
+            false,
+            ContentErrorKind::SymlinkCreationFailed,
+        )
+    })
 }
 
 #[cfg(windows)]
@@ -852,13 +1048,19 @@ fn lexical_absolute(path: &Path) -> PathBuf {
 /// symlinks, so this succeeds for a plain non-admin user with Developer
 /// Mode off.
 #[cfg(windows)]
-fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
+fn create_junction(target: &Path, link_path: &Path) -> Result<(), ContentOperationFailure> {
     use std::os::windows::process::CommandExt as _;
     use std::process::Command;
 
     let abs_target = lexical_absolute(target);
-    std::fs::create_dir_all(&abs_target)
-        .map_err(|e| format!("failed to create junction target dir {abs_target:?}: {e}"))?;
+    std::fs::create_dir_all(&abs_target).map_err(|error| {
+        ContentOperationFailure::from_io(
+            "failed to create junction target directory",
+            error,
+            true,
+            ContentErrorKind::SymlinkCreationFailed,
+        )
+    })?;
 
     let link_arg = link_path.to_string_lossy().replace('/', "\\");
     let target_arg = abs_target.to_string_lossy().replace('/', "\\");
@@ -868,7 +1070,7 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
         .arg(&target_arg)
         .creation_flags(WINDOWS_CREATE_NO_WINDOW)
         .output()
-        .map_err(|e| format!("failed to spawn mklink: {e}"))?;
+        .map_err(|error| ContentOperationFailure::helper_spawn("failed to spawn mklink", error))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -878,10 +1080,14 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
         } else {
             detail
         };
-        return Err(format!(
-            "mklink /J {link_arg:?} -> {target_arg:?} failed ({}): {detail}",
-            out.status.code().unwrap_or(-1)
-        ));
+        return Err(ContentOperationFailure {
+            message: format!(
+                "mklink /J {link_arg:?} -> {target_arg:?} failed ({}): {detail}",
+                out.status.code().unwrap_or(-1)
+            ),
+            category: OnboardingErrorCategory::ExitNonzero,
+            kind: ContentErrorKind::SymlinkHelperExitNonzero,
+        });
     }
     Ok(())
 }
@@ -895,16 +1101,28 @@ fn fallback_uses_copy(resolved_target: &Path) -> bool {
 /// for a file symlink. Errors (rather than creating an empty file) when the
 /// target does not resolve to an existing file.
 #[cfg(windows)]
-fn copy_file_fallback(target: &Path, link_path: &Path) -> Result<(), String> {
+fn copy_file_fallback(
+    target: &Path,
+    link_path: &Path,
+) -> Result<(), ContentOperationFailure> {
     let abs_target = lexical_absolute(target);
     if !abs_target.is_file() {
-        return Err(format!(
-            "target {abs_target:?} is not an existing file (cannot copy)"
-        ));
+        return Err(ContentOperationFailure {
+            message: "symlink copy fallback target is not an existing file".to_string(),
+            category: OnboardingErrorCategory::NotFound,
+            kind: ContentErrorKind::MissingPath,
+        });
     }
     std::fs::copy(&abs_target, link_path)
         .map(|_| ())
-        .map_err(|e| format!("copy {abs_target:?} -> {link_path:?} failed: {e}"))
+        .map_err(|error| {
+            ContentOperationFailure::from_io(
+                "failed to copy symlink target",
+                error,
+                true,
+                ContentErrorKind::SymlinkCreationFailed,
+            )
+        })
 }
 
 /// Remove an entry blocking a symlink create, handling the three Windows
@@ -936,13 +1154,30 @@ fn remove_existing_windows_entry(path: &Path, md: &std::fs::Metadata) -> std::io
 }
 
 #[cfg(windows)]
-pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
+fn create_symlink_with_failure(
+    target: &Path,
+    link_path: &Path,
+) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create parent dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            ContentOperationFailure::from_io(
+                "failed to create symlink parent directory",
+                error,
+                true,
+                ContentErrorKind::SymlinkCreationFailed,
+            )
+        })?;
     }
     if let Ok(md) = std::fs::symlink_metadata(link_path) {
         remove_existing_windows_entry(link_path, &md)
-            .map_err(|e| format!("failed to replace existing entry at {link_path:?}: {e}"))?;
+            .map_err(|error| {
+                ContentOperationFailure::from_io(
+                    "failed to replace existing symlink entry",
+                    error,
+                    true,
+                    ContentErrorKind::SymlinkCreationFailed,
+                )
+            })?;
     }
 
     // Tar stores POSIX targets; Windows reparse points need backslashes or
@@ -973,16 +1208,24 @@ pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(),
                 create_junction(&resolved_target, link_path)
             };
             fallback.map_err(|fallback_err| {
-                format!(
-                    "HQ_SYMLINK_PRIVILEGE: cannot link {link_path:?} -> {win_target:?} without \
-                     Developer Mode or administrator rights (fallback failed: {fallback_err})"
+                fallback_err.with_context(
+                    "HQ_SYMLINK_PRIVILEGE: symlink fallback failed without Developer Mode or administrator rights",
                 )
             })
         }
-        Err(e) => Err(format!(
-            "failed to create symlink {link_path:?} -> {win_target:?}: {e}"
+        Err(error) => Err(ContentOperationFailure::from_io(
+            "failed to create symlink",
+            error,
+            true,
+            ContentErrorKind::SymlinkCreationFailed,
         )),
     }
+}
+
+/// Compatibility wrapper used by the legacy symlink command. The template
+/// extractor uses the typed failure so it can record bounded diagnostics.
+pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
+    create_symlink_with_failure(target, link_path).map_err(|failure| failure.message)
 }
 
 // ---------------------------------------------------------------------------
@@ -990,32 +1233,46 @@ pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(),
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
-fn set_entry_mode(path: &Path, mode: u32) -> Result<(), String> {
+fn set_entry_mode(path: &Path, mode: u32) -> Result<(), io::Error> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777))
-        .map_err(|e| format!("failed to set permissions on {path:?}: {e}"))
 }
 
 #[cfg(windows)]
-fn set_entry_mode(_path: &Path, _mode: u32) -> Result<(), String> {
+fn set_entry_mode(_path: &Path, _mode: u32) -> Result<(), io::Error> {
     Ok(())
 }
 
 #[cfg(test)]
 fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
-    extract_tarball_with_progress(compressed, target_dir, None, None)
+    extract_tarball_with_progress(compressed, target_dir, None, None, None)
 }
 
-fn archive_extract_total_bytes(compressed: &[u8]) -> Result<u64, String> {
+fn archive_extract_total_bytes(
+    compressed: &[u8],
+    failure_scope: Option<&OnboardingFailureScope>,
+) -> Result<u64, String> {
     let gz = flate2::read::GzDecoder::new(compressed);
     let mut archive = tar::Archive::new(gz);
-    let entries = archive
-        .entries()
-        .map_err(|e| format!("failed to read template archive: {e}"))?;
+    let entries = archive.entries().map_err(|e| {
+        record_content_failure(
+            failure_scope,
+            OnboardingErrorCategory::Checksum,
+            ContentErrorKind::ArchiveInvalid,
+        );
+        format!("failed to read template archive: {e}")
+    })?;
 
     let mut total = 0_u64;
     for entry in entries {
-        let entry = entry.map_err(|e| format!("failed to read template archive entry: {e}"))?;
+        let entry = entry.map_err(|e| {
+            record_content_failure(
+                failure_scope,
+                OnboardingErrorCategory::Checksum,
+                ContentErrorKind::ArchiveInvalid,
+            );
+            format!("failed to read template archive entry: {e}")
+        })?;
         let entry_type = entry.header().entry_type();
         if matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
             total = total.saturating_add(entry.size());
@@ -1029,15 +1286,18 @@ fn extract_tarball_with_progress(
     target_dir: &Path,
     progress: Option<&ContentProgressEmitter>,
     cancel: Option<&AtomicBool>,
+    failure_scope: Option<&OnboardingFailureScope>,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(target_dir)
-        .map_err(|e| format!("failed to create HQ root {target_dir:?}: {e}"))?;
+    std::fs::create_dir_all(target_dir).map_err(|e| {
+        record_content_io_failure(failure_scope, &e);
+        format!("failed to create HQ root {target_dir:?}: {e}")
+    })?;
 
     if is_content_cancelled(cancel) {
-        return Err(content_cancelled_error());
+        return Err(content_cancelled_error(failure_scope));
     }
 
-    let total_bytes = archive_extract_total_bytes(compressed)?;
+    let total_bytes = archive_extract_total_bytes(compressed, failure_scope)?;
     let total_bytes = (total_bytes > 0).then_some(total_bytes);
     let mut extracted_bytes = 0_u64;
     let mut progress_throttle = ProgressThrottle::new();
@@ -1055,21 +1315,40 @@ fn extract_tarball_with_progress(
 
     let gz = flate2::read::GzDecoder::new(compressed);
     let mut archive = tar::Archive::new(gz);
-    let entries = archive
-        .entries()
-        .map_err(|e| format!("failed to read template archive: {e}"))?;
+    let entries = archive.entries().map_err(|e| {
+        record_content_failure(
+            failure_scope,
+            OnboardingErrorCategory::Checksum,
+            ContentErrorKind::ArchiveInvalid,
+        );
+        format!("failed to read template archive: {e}")
+    })?;
 
     let mut symlink_relatives: Vec<String> = Vec::new();
 
     for entry in entries {
         if is_content_cancelled(cancel) {
-            return Err(content_cancelled_error());
+            return Err(content_cancelled_error(failure_scope));
         }
 
-        let mut entry = entry.map_err(|e| format!("failed to read template archive entry: {e}"))?;
+        let mut entry = entry.map_err(|e| {
+            record_content_failure(
+                failure_scope,
+                OnboardingErrorCategory::Checksum,
+                ContentErrorKind::ArchiveInvalid,
+            );
+            format!("failed to read template archive entry: {e}")
+        })?;
         let raw_path = entry
             .path()
-            .map_err(|e| format!("failed to read template archive entry path: {e}"))?
+            .map_err(|e| {
+                record_content_failure(
+                    failure_scope,
+                    OnboardingErrorCategory::Checksum,
+                    ContentErrorKind::ArchiveInvalid,
+                );
+                format!("failed to read template archive entry path: {e}")
+            })?
             .to_string_lossy()
             .into_owned();
 
@@ -1115,8 +1394,10 @@ fn extract_tarball_with_progress(
 
         match entry_type {
             EntryType::Directory => {
-                std::fs::create_dir_all(&dest)
-                    .map_err(|e| format!("failed to create {dest:?}: {e}"))?;
+                std::fs::create_dir_all(&dest).map_err(|e| {
+                    record_content_io_failure(failure_scope, &e);
+                    format!("failed to create {dest:?}: {e}")
+                })?;
             }
             EntryType::Symlink => {
                 let link_target = entry
@@ -1141,30 +1422,47 @@ fn extract_tarball_with_progress(
                     );
                     continue;
                 }
-                create_symlink_impl(Path::new(&link_target), &dest)?;
+                create_symlink_with_failure(Path::new(&link_target), &dest).map_err(|failure| {
+                    record_content_failure(failure_scope, failure.category, failure.kind);
+                    failure.message
+                })?;
                 symlink_relatives.push(normalized);
             }
             EntryType::Regular | EntryType::Continuous => {
                 if let Some(parent) = dest.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("failed to create {parent:?}: {e}"))?;
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        record_content_io_failure(failure_scope, &e);
+                        format!("failed to create {parent:?}: {e}")
+                    })?;
                 }
                 let mode = entry.header().mode().unwrap_or(0o644);
-                let mut file = std::fs::File::create(&dest)
-                    .map_err(|e| format!("failed to write {dest:?}: {e}"))?;
+                let mut file = std::fs::File::create(&dest).map_err(|e| {
+                    record_content_io_failure(failure_scope, &e);
+                    format!("failed to write {dest:?}: {e}")
+                })?;
                 let mut buf = [0_u8; EXTRACT_READ_CHUNK_BYTES];
                 loop {
                     if is_content_cancelled(cancel) {
-                        return Err(content_cancelled_error());
+                        return Err(content_cancelled_error(failure_scope));
                     }
                     let n = entry
                         .read(&mut buf)
-                        .map_err(|e| format!("failed to read {relative} from archive: {e}"))?;
+                        .map_err(|e| {
+                            record_content_failure(
+                                failure_scope,
+                                OnboardingErrorCategory::Checksum,
+                                ContentErrorKind::ArchiveInvalid,
+                            );
+                            format!("failed to read {relative} from archive: {e}")
+                        })?;
                     if n == 0 {
                         break;
                     }
                     file.write_all(&buf[..n])
-                        .map_err(|e| format!("failed to write {dest:?}: {e}"))?;
+                        .map_err(|e| {
+                            record_content_io_failure(failure_scope, &e);
+                            format!("failed to write {dest:?}: {e}")
+                        })?;
                     extracted_bytes = extracted_bytes.saturating_add(n as u64);
                     if progress_throttle.should_emit() {
                         if let Some(progress) = progress {
@@ -1179,7 +1477,10 @@ fn extract_tarball_with_progress(
                         }
                     }
                 }
-                set_entry_mode(&dest, mode)?;
+                set_entry_mode(&dest, mode).map_err(|e| {
+                    record_content_io_failure(failure_scope, &e);
+                    format!("failed to set file mode: {e}")
+                })?;
             }
             _ => {
                 // Hard links / device nodes / fifos etc. are not part of the
@@ -1215,7 +1516,14 @@ pub async fn fetch_and_extract_template(
     failure_scope: Option<OnboardingFailureScope>,
 ) -> Result<String, String> {
     clear_onboarding_failure_detail("content", failure_scope.as_ref());
-    let hq_root = resolve_hq_path()?;
+    let hq_root = resolve_hq_path().map_err(|error| {
+        record_content_failure(
+            failure_scope.as_ref(),
+            OnboardingErrorCategory::Unknown,
+            ContentErrorKind::SetupPathUnavailable,
+        );
+        error
+    })?;
     install_template_into(app, handle, hq_root, failure_scope).await
 }
 
@@ -1232,11 +1540,25 @@ pub(crate) async fn install_template_into(
 ) -> Result<String, String> {
     let source = template_source_for_staging_source(staging_source_enabled());
     let token = if matches!(source.channel, TemplateChannel::StagingMain) {
-        Some(get_github_token()?)
+        Some(get_github_token().map_err(|error| {
+            record_content_failure(
+                failure_scope.as_ref(),
+                OnboardingErrorCategory::Permission,
+                ContentErrorKind::StagingCredentialUnavailable,
+            );
+            error
+        })?)
     } else {
         None
     };
-    let client = github_client_with_token(token.as_deref())?;
+    let client = github_client_with_token(token.as_deref()).map_err(|error| {
+        record_content_failure(
+            failure_scope.as_ref(),
+            OnboardingErrorCategory::Network,
+            ContentErrorKind::HttpClientBuildFailed,
+        );
+        error
+    })?;
     let handle = handle.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let (cancel_flag, _cancel_registration) = register_content_cancel_handle(handle.clone());
     let progress = ContentProgressEmitter {
@@ -1245,10 +1567,25 @@ pub(crate) async fn install_template_into(
     };
 
     let (version, tarball_url) = match source.reference {
-        Some(reference) => (reference.to_string(), staging_tarball_url(reference)?),
+        Some(reference) => {
+            let tarball_url = staging_tarball_url(reference).map_err(|error| {
+                record_content_failure(
+                    failure_scope.as_ref(),
+                    OnboardingErrorCategory::Unknown,
+                    ContentErrorKind::InvalidReleaseReference,
+                );
+                error
+            })?;
+            (reference.to_string(), tarball_url)
+        }
         None => {
             let release = latest_release(&client, source.repo, failure_scope.as_ref()).await?;
             let release = release.ok_or_else(|| {
+                record_content_failure(
+                    failure_scope.as_ref(),
+                    OnboardingErrorCategory::NotFound,
+                    ContentErrorKind::ReleaseUnavailable,
+                );
                 format!(
                     "no stable release found for {}; cannot install HQ template",
                     source.repo
@@ -1280,6 +1617,7 @@ pub(crate) async fn install_template_into(
         Path::new(&hq_root),
         Some(&progress),
         Some(cancel_flag.as_ref()),
+        failure_scope.as_ref(),
     )?;
 
     // Refresh core/core.yaml checksums right after the template lands, so the
@@ -1306,7 +1644,94 @@ pub(crate) async fn install_template_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::install_stages::take_onboarding_failure_detail;
     use tempfile::tempdir;
+
+    #[test]
+    fn classifies_http_status_failures_with_a_specific_category_and_kind() {
+        assert_eq!(
+            classify_content_http_status(reqwest::StatusCode::NOT_FOUND),
+            (OnboardingErrorCategory::NotFound, ContentErrorKind::HttpNotFound),
+        );
+        assert_eq!(
+            classify_content_http_status(reqwest::StatusCode::FORBIDDEN),
+            (OnboardingErrorCategory::Permission, ContentErrorKind::HttpForbidden),
+        );
+        assert_eq!(
+            classify_content_http_status(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            (OnboardingErrorCategory::Network, ContentErrorKind::HttpRateLimited),
+        );
+    }
+
+    #[test]
+    fn classifies_windows_content_filesystem_errors_even_on_non_windows_test_hosts() {
+        assert_eq!(
+            classify_content_io_error(std::io::ErrorKind::Other, Some(206), true),
+            (OnboardingErrorCategory::Disk, ContentErrorKind::PathTooLong),
+        );
+        assert_eq!(
+            classify_content_io_error(std::io::ErrorKind::Other, Some(32), true),
+            (OnboardingErrorCategory::Permission, ContentErrorKind::FileLocked),
+        );
+        assert_eq!(
+            classify_content_io_error(std::io::ErrorKind::NotFound, Some(3), true),
+            (OnboardingErrorCategory::NotFound, ContentErrorKind::MissingPath),
+        );
+        assert_eq!(
+            classify_content_io_error(std::io::ErrorKind::PermissionDenied, Some(5), true),
+            (OnboardingErrorCategory::Permission, ContentErrorKind::PermissionDenied),
+        );
+        assert_eq!(
+            classify_content_io_error(std::io::ErrorKind::Other, Some(112), true),
+            (OnboardingErrorCategory::Disk, ContentErrorKind::DiskFull),
+        );
+    }
+
+    #[test]
+    fn classifies_windows_junction_helper_spawn_failure_for_setup_telemetry() {
+        let failure = ContentOperationFailure::helper_spawn(
+            "test spawn failure",
+            io::Error::from(io::ErrorKind::NotFound),
+        );
+
+        assert_eq!(failure.category, OnboardingErrorCategory::SpawnFailed);
+        assert_eq!(
+            failure.kind,
+            ContentErrorKind::SymlinkHelperSpawnFailed
+        );
+    }
+
+    #[test]
+    fn invalid_archive_records_scoped_content_failure_detail() {
+        let scope = OnboardingFailureScope {
+            setup_run_id: "33333333-3333-4333-8333-333333333333".to_string(),
+            attempt_count: 2,
+            flow: "first_install".to_string(),
+            frontend_session_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_string(),
+        };
+        clear_onboarding_failure_detail("content", Some(&scope));
+        let target = tempdir().unwrap();
+
+        let result = extract_tarball_with_progress(
+            b"not a gzip archive",
+            target.path(),
+            None,
+            None,
+            Some(&scope),
+        );
+
+        assert!(result.is_err());
+        let detail = take_onboarding_failure_detail(
+            "content".to_string(),
+            scope.setup_run_id,
+            scope.attempt_count,
+            scope.flow,
+            scope.frontend_session_id,
+        )
+        .expect("archive failure should have scoped diagnostic detail");
+        assert_eq!(detail.error_category, "checksum");
+        assert_eq!(detail.error_kind.as_deref(), Some("content_archive_invalid"));
+    }
 
     #[test]
     fn normalize_rejects_parent_traversal() {
