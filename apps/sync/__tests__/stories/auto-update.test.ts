@@ -562,6 +562,47 @@ describe('master automatic-updates switch', () => {
     );
   });
 
+  it('re-aims a deferred foreign-managed CLI copy into its own user prefix (HQ-DESKTOP-46)', () => {
+    const core = normalize(cliUpdateCore);
+    const appCli = normalize(cliUpdate);
+    expect(cliUpdateCore).toContain('pub enum ExecutedCopyReaim');
+    expect(core).toContain('pub fn executed_copy_reaim_gate(');
+    expect(core).toContain('pub fn executed_copy_reaim_outcome(');
+    expect(appCli).toContain('ExecutedCopyAim::NotYetAimed');
+    expect(appCli).toContain('select_ordinary_install_aim(');
+    expect(appCli).toContain('ExecutedCopyReaim::Converged');
+    expect(appCli).toContain('executed_copy_reaim');
+  });
+
+  it('passes the supported node-llama-cpp download opt-out to every CLI install child (HQ-DESKTOP-5E)', () => {
+    const updater = normalize(cliUpdate);
+    const installer = normalize(installDeps);
+    expect(cliUpdateCore).toContain('pub const NPM_INSTALL_CHILD_ENV');
+    expect(cliUpdateCore).toContain('("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true")');
+    expect(updater.match(/\.envs\(NPM_INSTALL_CHILD_ENV\.iter\(\)\.copied\(\)\)/g) ?? [])
+      .toHaveLength(3);
+    expect(installer).toContain('.envs(NPM_INSTALL_CHILD_ENV.iter().copied())');
+    expect(cliUpdateCore).not.toContain('NODE_LLAMA_CPP_POSTINSTALL');
+  });
+
+  it('bounds npmjs dependency-tarball serving lag and escalates a stale marker (HQ-DESKTOP-6D)', () => {
+    const core = normalize(cliUpdateCore);
+    const appCli = normalize(cliUpdate);
+    expect(cliUpdateCore).toContain('REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES');
+    expect(core).toContain('registry_serving_lag_recurred_for_detail(');
+    expect(appCli).toContain('InstallFailureEpisode::DeferredTransient');
+    expect(appCli).toContain('report_registry_serving_lag_marker_unpersisted()');
+  });
+
+  it('retries a Windows locked selected-prefix package rename once after release (HQ-DESKTOP-7V)', () => {
+    const core = normalize(cliUpdateCore);
+    const appCli = normalize(cliUpdate);
+    expect(core).toContain('WindowsLockedInstallTarget');
+    expect(core).toContain('is_windows_busy_install_target_failure(');
+    expect(appCli).toContain('is_windows_busy_install_target_failure(');
+    expect(appCli).toContain('windows-busy-install-target-backoff-plain');
+  });
+
   it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {
     // HQ-DESKTOP-4Y: an EEXIST on the package's second declared shim
     // (`hq-auth-refresh`) classified as `EEXIST:unknown:other` and never armed

@@ -1376,6 +1376,7 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
         // The new attribution tags, present for this subclass; the shapes render is
         // counts-only (never in the fingerprint).
         ("npm_stderr_origin", "non-npm"),
+        ("npm_failure_stage", "before-npm-logger"),
     ] {
         assert_eq!(tag(&event, key), Some(value), "tag {key}");
     }
@@ -2014,6 +2015,7 @@ fn hq_desktop_5e_postinstall_failure_carries_the_managed_retry_outcome() {
         ("eacces", "false"),
         ("exit_code", "1"),
         ("npm_managed_retry_outcome", "provision-deferred"),
+        ("npm_lifecycle_postinstall_stage", "unknown"),
     ] {
         assert_eq!(tag(&event, key), Some(value), "tag {key}");
     }
@@ -2531,4 +2533,66 @@ fn an_npmjs_tarball_404_outside_the_pinned_window_stays_a_loud_attributed_error(
             ],
         );
     }
+}
+
+#[test]
+fn a_pinned_npmjs_dependency_tarball_404_is_deferred_on_first_observation() {
+    // A dependency tarball can be listed by npmjs before its object is served.
+    // That is distinct from a packument 404 and from hq-cli's own tarball.
+    const DEPENDENCY_TARBALL_404: &str = "npm error code E404\n\
+        npm error 404 Not Found - GET https://registry.npmjs.org/@types/node/-/node-22.7.3.tgz - Not found\n\
+        npm error 404\n\
+        npm error 404  '@types/node@22.7.3' is not in this registry.";
+    let events = captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            DEPENDENCY_TARBALL_404,
+            None,
+            false,
+            &e404_tarball_env(),
+        )
+    });
+    assert!(
+        events.is_empty(),
+        "first pinned npmjs dependency-tarball lag should defer, not page: {events:?}"
+    );
+}
+
+#[test]
+fn windows_ebusy_selected_prefix_rename_stays_visible_under_its_own_kind() {
+    let prefix = r"C:\Users\me\AppData\Roaming\npm";
+    let stderr = "npm error code EBUSY\n\
+        npm error errno -4082\n\
+        npm error syscall rename\n\
+        npm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli\\node_modules\\node-llama-cpp\n\
+        npm error EBUSY: resource busy or locked, rename";
+    let env = InstallEnvironment {
+        toolchain_source: NpmToolchainSource::UserPath,
+        ..Default::default()
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(-4082), stderr, Some(prefix), false, &env)
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        tag(&event, "install_failure_kind"),
+        Some("windows-locked-install-target")
+    );
+    assert_eq!(tag(&event, "npm_error_code"), Some("EBUSY"));
+    assert_eq!(tag(&event, "npm_syscall"), Some("rename"));
+    assert_eq!(tag(&event, "npm_path_shape"), Some("selected-prefix-node-modules"));
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (EBUSY:rename:selected-prefix-node-modules)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "windows-locked-install-target",
+            "EBUSY:rename:selected-prefix-node-modules"
+        ]
+    );
+    assert_path_safe(&event, &["C:\\Users\\me", "Roaming\\npm", "node-llama-cpp"]);
 }
