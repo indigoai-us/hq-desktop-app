@@ -120,7 +120,10 @@ pub fn get_desktop_active_company(
     Ok(scope.active_company_slug())
 }
 
-fn enforce_desktop_read_scope(rel_path: &str, scope: &DesktopSessionScope) -> Result<(), String> {
+pub(crate) fn enforce_desktop_read_scope(
+    rel_path: &str,
+    scope: &DesktopSessionScope,
+) -> Result<(), String> {
     enforce_read_scope(rel_path, scope.active_company_slug().as_deref())
 }
 
@@ -1151,7 +1154,7 @@ fn vault_base() -> Result<String, String> {
     resolve_vault_api_url().map(|u| u.trim_end_matches('/').to_string())
 }
 
-fn require_company_file_read_access(
+pub(crate) fn require_company_file_read_access(
     workspaces: &[Workspace],
     rel_path: &str,
 ) -> Result<(), String> {
@@ -1165,7 +1168,7 @@ fn require_company_file_read_access(
     }
 }
 
-fn require_matching_company_scope(
+pub(crate) fn require_matching_company_scope(
     lexical_path: &str,
     canonical_path: &str,
 ) -> Result<Option<String>, String> {
@@ -1179,19 +1182,43 @@ fn require_matching_company_scope(
     Ok(lexical_company)
 }
 
-async fn hydrated_file_context() -> Result<(PathBuf, Vec<Workspace>), String> {
+/// How long a file read may rely on the last membership check. Opening a
+/// folder or note in a company vault used to re-fetch the whole cloud roster
+/// every time; a Files session makes dozens of these reads a minute. A
+/// removed membership stops granting reads within this window.
+const FILE_CONTEXT_TTL: std::time::Duration = std::time::Duration::from_secs(20);
+
+type FileContext = (PathBuf, Vec<Workspace>);
+
+/// The HQ folder and workspace roster that authorize company file reads,
+/// cached for [`FILE_CONTEXT_TTL`]. Concurrent callers share one fetch; a
+/// failed fetch is not cached.
+pub(crate) async fn hydrated_file_context() -> Result<FileContext, String> {
+    static CACHE: OnceLock<tokio::sync::Mutex<Option<(std::time::Instant, FileContext)>>> =
+        OnceLock::new();
+    let mut slot = CACHE
+        .get_or_init(|| tokio::sync::Mutex::new(None))
+        .lock()
+        .await;
+    if let Some((at, context)) = slot.as_ref() {
+        if at.elapsed() < FILE_CONTEXT_TTL {
+            return Ok(context.clone());
+        }
+    }
     let result = crate::commands::workspaces::list_syncable_workspaces().await?;
-    Ok((PathBuf::from(result.hq_folder_path), result.workspaces))
+    let context = (PathBuf::from(result.hq_folder_path), result.workspaces);
+    *slot = Some((std::time::Instant::now(), context.clone()));
+    Ok(context)
 }
 
 /// Bounded bytes returned to the renderer for passive file previews.
 const MAX_MEDIA_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug)]
-struct ResolvedFileTarget {
-    hq_root: PathBuf,
-    absolute_path: PathBuf,
-    relative_path: String,
+pub(crate) struct ResolvedFileTarget {
+    pub(crate) hq_root: PathBuf,
+    pub(crate) absolute_path: PathBuf,
+    pub(crate) relative_path: String,
     company_slug: Option<String>,
 }
 
@@ -1243,7 +1270,9 @@ fn require_matching_file_root(
     }
 }
 
-async fn resolve_authorized_file_target(path: &str) -> Result<ResolvedFileTarget, String> {
+pub(crate) async fn resolve_authorized_file_target(
+    path: &str,
+) -> Result<ResolvedFileTarget, String> {
     let normalized = validate_hq_relative_path(path, false)?;
     if company_slug_for_hq_path(&normalized)?.is_some() {
         let (hq, workspaces) = hydrated_file_context().await?;
@@ -1265,7 +1294,7 @@ fn revalidate_file_target(target: &ResolvedFileTarget) -> Result<ResolvedFileTar
     Ok(refreshed)
 }
 
-async fn revalidate_authorized_file_target(
+pub(crate) async fn revalidate_authorized_file_target(
     target: &ResolvedFileTarget,
 ) -> Result<ResolvedFileTarget, String> {
     if target.company_slug.is_some() {

@@ -475,7 +475,11 @@ function suppressUnsafeRawHtml(source: string): string {
 
   const flushOrdinary = () => {
     if (ordinary.length === 0) return;
-    output.push(...suppressUnsafeRawHtmlChunk(ordinary.join("\n")).split("\n"));
+    // Append line by line: spreading a large document into one push() call
+    // overflows the call stack (a 2 MB note threw RangeError).
+    for (const line of suppressUnsafeRawHtmlChunk(ordinary.join("\n")).split("\n")) {
+      output.push(line);
+    }
     ordinary = [];
   };
 

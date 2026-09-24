@@ -65,7 +65,7 @@ export const NAVIGATION_INVENTORY_FILES = [
 
 /** Assignments of `view` in DesktopApp.svelte. Comparisons (`view ===`) are excluded. */
 export const DESKTOP_APP_VIEW_ASSIGN_RE = /\bview = (?:view ===|"[^"]+")/g;
-export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 12;
+export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 13;
 
 /** Direct `navigation.navigate(` calls in HqWorkWorkShell (native/host seams). */
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
@@ -664,9 +664,19 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
   {
+    id: "files-explorer",
+    file: SHARED_SHELL_FILE,
+    needle: '{#if view === "explorer"}',
+    destinationKind: "explorer",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Each file or vault opened in the explorer is a history step.",
+  },
+  {
     id: "shared-files-overlay",
     file: SHARED_SHELL_FILE,
-    needle: '{#if view === "shared-files"}',
+    needle: '{:else if view === "shared-files"}',
     destinationKind: "shared-files",
     history: "push",
     host: "shared-shell",

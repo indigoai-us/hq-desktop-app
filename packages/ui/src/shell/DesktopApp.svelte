@@ -159,6 +159,7 @@
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
+  import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -1326,9 +1327,13 @@
     | "meetings"
     | "library"
     | "shared-files"
+    | "explorer"
     | "extra"
     | "dm-requests"
   >("conversation");
+  /** Files explorer location (vault id + HQ-relative file). */
+  let explorerVault = $state<string | null>(null);
+  let explorerPath = $state<string | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -2951,6 +2956,17 @@
         },
       },
     ];
+    if (adapter.kind !== "web") {
+      nav.push({
+        id: "command-go-files",
+        label: "Files",
+        detail: "Browse your personal and company vaults",
+        shortcut: shortcutLabel("view.files"),
+        action: () => {
+          void navigate({ kind: "explorer" });
+        },
+      });
+    }
     nav.push({
       id: "command-go-library",
       label: "Library",
@@ -5510,6 +5526,8 @@
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
         return { kind: "shared-files" };
+      case "explorer":
+        return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "extra":
         if (extraPageId) return extraDestination(extraPageId, extraPageParam);
         return { kind: "messages" };
@@ -5809,6 +5827,14 @@
         break;
       case "shared-files":
         view = "shared-files";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "explorer":
+        explorerVault = next.vault ?? null;
+        explorerPath = next.path ?? null;
+        view = "explorer";
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
@@ -7492,6 +7518,19 @@
       group: "Views",
       run: () => openLibrary("skills"),
     },
+    ...(adapter.kind !== "web"
+      ? [
+          {
+            id: "view.files",
+            keys: "Mod+5",
+            label: "Files",
+            group: "Views",
+            run: () => {
+              void navigate({ kind: "explorer" });
+            },
+          } satisfies ShortcutBinding,
+        ]
+      : []),
     {
       id: "conversation.next",
       keys: "Mod+Shift+]",
@@ -7790,6 +7829,9 @@
     onopenMeetings={() => {
       void navigate({ kind: "meetings" });
     }}
+    onopenFiles={isWeb ? undefined : () => {
+      void navigate({ kind: "explorer" });
+    }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
@@ -8046,7 +8088,19 @@
             onopensettings={() => openSettings("notifications")}
           />
         </div>
-        {#if view === "shared-files"}
+        {#if view === "explorer"}
+          <div class="explorer-host" data-testid="explorer-host">
+            <VaultExplorer
+              {adapter}
+              {companies}
+              vaultId={explorerVault}
+              path={explorerPath}
+              onlocationchange={(loc) => {
+                void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+              }}
+            />
+          </div>
+        {:else if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
             onback={() => {
@@ -9192,6 +9246,19 @@
     /* In-pane destinations (Meetings, Notifications) are not under the
        overlay traffic lights — don't inherit the window-chrome gutter. */
     --titlebar-leading-inset: 16px;
+  }
+
+  .explorer-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .explorer-host > :global(*) {
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .extra-page-host {

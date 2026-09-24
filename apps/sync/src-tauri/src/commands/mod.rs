@@ -83,6 +83,7 @@ pub mod sync_progress_watch;
 pub mod telemetry;
 pub mod un_notify;
 pub mod vault_client;
+pub mod vault_explorer;
 pub mod vault_s3;
 pub mod version_gate;
 pub mod windows_teardown_probe;

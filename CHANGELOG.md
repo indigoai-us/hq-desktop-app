@@ -8,6 +8,16 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- New Files page (Cmd+5, or the file icon in the title bar): browse your
+  personal vault and each company vault on this Mac. Notes open in a reading
+  view with their properties, clickable [[links]], an outline, and the notes
+  that link back to them. Cmd+O jumps to any file. Settings folders and key
+  files are never shown. Large company vaults (tens of thousands of files)
+  stay fast: search, links and counts come from an index the app keeps up to
+  date in the background, folders with thousands of files scroll smoothly,
+  and a very large note shows its first part with a button to open the rest.
+- Markdown documents of a few megabytes no longer crash the reading view.
+
 - Each company now has exactly one "company home" channel (settings,
   wallpaper). Other channels created inside a company are plain team
   channels. A new "Companies" section in the sidebar pins each company's
