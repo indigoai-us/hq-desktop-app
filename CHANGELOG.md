@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ Sync tells you to verify your email before it can show pending company invites.
+
 ## [0.10.319] — 2026-09-24
 
 - The setup finish card goes away as soon as you send the setup bot another
