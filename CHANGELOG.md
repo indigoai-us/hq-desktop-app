@@ -8,6 +8,16 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed a bug where every company in the sidebar's "Companies" section showed
+  "no home channel yet," even companies with a working home channel. The
+  fallback check that resolves a home channel while the server catches up was
+  comparing the channel's raw name (which carries a leading "#", e.g.
+  "#indigo") against the bare company slug ("indigo") — they could never
+  match. The "Companies" section rows are now compact (name only, single
+  line) and default to your 3 most active companies by recent message
+  activity; pinning any company from the header's pin menu switches the
+  section to show only your pinned companies. A company whose home channel
+  isn't loaded yet is now resolved on demand instead of staying stuck.
 - Messages now separates people from bots. A new "Show bot messages" toggle at
   the top of Messages is off by default, so your inbox, unread badge, and
   notifications only carry messages meant for you. Agent-to-agent chatter is one
