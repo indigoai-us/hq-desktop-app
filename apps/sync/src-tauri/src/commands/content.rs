@@ -983,7 +983,10 @@ fn is_under_known_symlink(relative: &str, symlink_relatives: &[String]) -> bool 
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
-fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), ContentOperationFailure> {
+fn create_symlink_with_failure(
+    target: &Path,
+    link_path: &Path,
+) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             ContentOperationFailure::from_io(
@@ -1151,7 +1154,10 @@ fn remove_existing_windows_entry(path: &Path, md: &std::fs::Metadata) -> std::io
 }
 
 #[cfg(windows)]
-fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), ContentOperationFailure> {
+fn create_symlink_with_failure(
+    target: &Path,
+    link_path: &Path,
+) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             ContentOperationFailure::from_io(
@@ -1214,6 +1220,12 @@ fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), ContentOpe
             ContentErrorKind::SymlinkCreationFailed,
         )),
     }
+}
+
+/// Compatibility wrapper used by the legacy symlink command. The template
+/// extractor uses the typed failure so it can record bounded diagnostics.
+pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
+    create_symlink_with_failure(target, link_path).map_err(|failure| failure.message)
 }
 
 // ---------------------------------------------------------------------------
@@ -1410,7 +1422,7 @@ fn extract_tarball_with_progress(
                     );
                     continue;
                 }
-                create_symlink_impl(Path::new(&link_target), &dest).map_err(|failure| {
+                create_symlink_with_failure(Path::new(&link_target), &dest).map_err(|failure| {
                     record_content_failure(failure_scope, failure.category, failure.kind);
                     failure.message
                 })?;
@@ -1632,6 +1644,7 @@ pub(crate) async fn install_template_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::install_stages::take_onboarding_failure_detail;
     use tempfile::tempdir;
 
     #[test]
