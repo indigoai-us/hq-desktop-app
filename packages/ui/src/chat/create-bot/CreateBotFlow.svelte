@@ -197,6 +197,9 @@
   const previewKindLine = $derived(scopeText ? `${kindLine} · ${scopeText}` : kindLine);
   const previewAvatar = $derived(pickedAvatarSrc);
   const cloudCompany = $derived(companies.find((c) => c.companyUid === draft.companyUid) ?? null);
+  const cloudQuoteCompanyUid = $derived(
+    draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "",
+  );
 
   onMount(() => {
     if (!loadClaudeProviderFlag) return;
@@ -221,10 +224,11 @@
   });
 
   $effect(() => {
-    const companyUid = draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "";
+    const companyUid = cloudQuoteCompanyUid;
     const reloadToken = quoteReloadToken;
     void reloadToken;
-    if (!companyUid || !loadCloudProvisionOptions) {
+    const loadOptions = loadCloudProvisionOptions;
+    if (!companyUid || !loadOptions) {
       cloudProvisionOptions = null;
       cloudQuoteStatus = companyUid ? "error" : "loading";
       return;
@@ -233,7 +237,7 @@
     let active = true;
     cloudProvisionOptions = null;
     cloudQuoteStatus = "loading";
-    void loadCloudProvisionOptions(companyUid)
+    void loadOptions(companyUid)
       .then((result) => {
         if (!active || generation !== quoteGeneration) return;
         if (!result.ok || !Array.isArray(result.value.options)) {
