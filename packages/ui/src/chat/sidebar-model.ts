@@ -1055,15 +1055,38 @@ export function applyChannelNotifyLevel(
  * Apply a reconciled directory row list onto the sidebar channel state:
  * the row set is the full authoritative list (the reconciler already folded
  * snapshot/changed/removed), each row enriched from its previous channel.
+ *
+ * Company-home channels are the one exception to "the incoming set is
+ * authoritative": an intermittent server hiccup (see
+ * `~/.hq/logs/hq-sync.log` `MESSAGES_CHANNELS_BODY_READ_FAIL` /
+ * `DM_NOTIFY_CHAN_POLL_ERROR`) can make a SNAPSHOT refresh come back missing
+ * a channel the client already resolved, even though nothing actually
+ * changed server-side. For a normal channel that just means a stale row
+ * briefly lingers — for a company's home channel it means the sidebar's
+ * "Companies" section silently reverts to "still connecting" and clicking it
+ * stops working again after having worked a moment ago (reported by Jacob:
+ * companies flip to "no home channel" after a refresh). A previously-known
+ * home channel is carried forward when it's simply absent from `rows` —
+ * never dropped for a transient/incomplete fetch. It disappears for real
+ * once the caller learns (via a row that DOES arrive) that it stopped being
+ * the home channel, or via `removeChannel` on an explicit deletion — both
+ * unaffected by this carry-forward.
  */
 export function applyDirectoryRows(
   rows: ReadonlyArray<ChannelDirectoryRow>,
   prevChannels: ReadonlyArray<Channel>,
 ): Channel[] {
   const prevById = new Map(prevChannels.map((c) => [c.channelId, c]));
-  return rows.map((row) =>
+  const seenIds = new Set(rows.map((row) => row.channelId));
+  const next = rows.map((row) =>
     directoryRowToChannel(row, prevById.get(row.channelId)),
   );
+  const strandedHomeChannels = prevChannels.filter(
+    (c) => c.isCompanyHome === true && !seenIds.has(c.channelId),
+  );
+  return strandedHomeChannels.length > 0
+    ? [...next, ...strandedHomeChannels]
+    : next;
 }
 
 /**

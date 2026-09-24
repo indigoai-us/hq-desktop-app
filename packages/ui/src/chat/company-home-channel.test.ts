@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { isCompanyHomeChannel, type Channel } from "./channels";
+import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 import {
+  applyDirectoryFeed,
+  applyDirectoryRows,
   companyActivityScore,
   findCompanyHomeRow,
   loadPinnedCompanies,
@@ -432,5 +435,86 @@ describe("loadPinnedCompanies / savePinnedCompanies", () => {
   it("tolerates corrupt JSON by falling back to null (show all)", () => {
     const storage = memoryStorage({ "hq.chat.pinned-companies": "{not-json" });
     expect(loadPinnedCompanies(storage)).toBeNull();
+  });
+});
+
+/**
+ * Regression: a resolved company home channel must survive an intermittent
+ * directory refresh that comes back missing it — reported by Jacob: some
+ * companies flip to "no home channel" after a refresh on another machine.
+ * The directory feed is a periodic full-snapshot reconciliation
+ * (`applyDirectoryRows`/`applyDirectoryFeed`); a snapshot that's incomplete
+ * because of a server hiccup (the `MESSAGES_CHANNELS_BODY_READ_FAIL` /
+ * `DM_NOTIFY_CHAN_POLL_ERROR` lines in `~/.hq/logs/hq-sync.log`) must not
+ * wipe a channel the client already knows is the company home.
+ */
+function directoryRow(over: Partial<ChannelDirectoryRow> = {}): ChannelDirectoryRow {
+  return {
+    channelId: "chn_home_acme",
+    type: "chat",
+    scope: "company",
+    companyUid: "cmp_acme",
+    name: "acme",
+    lastActivityAt: "2026-09-24T00:00:00.000Z",
+    isCompanyHome: true,
+    ...over,
+  };
+}
+
+describe("applyDirectoryRows / applyDirectoryFeed — home-channel refresh stability", () => {
+  it("keeps a known home channel when a later snapshot omits it entirely", () => {
+    const first = applyDirectoryRows([directoryRow()], []);
+    expect(first.find((c) => c.channelId === "chn_home_acme")?.isCompanyHome).toBe(
+      true,
+    );
+
+    // Next snapshot from a flaky refresh: the home channel is missing, but
+    // an unrelated team channel is present (a partial, not an empty, feed —
+    // ruling out the existing "empty feed keeps the seed" carveout).
+    const second = applyDirectoryRows(
+      [directoryRow({ channelId: "chn_team", isCompanyHome: false, name: "eng" })],
+      first,
+    );
+
+    const home = second.find((c) => c.channelId === "chn_home_acme");
+    expect(home).toBeTruthy();
+    expect(home?.isCompanyHome).toBe(true);
+    expect(second.find((c) => c.channelId === "chn_team")).toBeTruthy();
+  });
+
+  it("still drops a non-home channel that disappears from the snapshot (no blanket keep-everything)", () => {
+    const teamRowIn = directoryRow({
+      channelId: "chn_team",
+      isCompanyHome: false,
+      name: "eng",
+    });
+    const first = applyDirectoryRows([directoryRow(), teamRowIn], []);
+    const second = applyDirectoryRows([directoryRow()], first);
+
+    expect(second.find((c) => c.channelId === "chn_home_acme")).toBeTruthy();
+    expect(second.find((c) => c.channelId === "chn_team")).toBeUndefined();
+  });
+
+  it("home channel resolves again via findCompanyHomeRow after surviving a lossy refresh", () => {
+    const first = applyDirectoryRows([directoryRow()], []);
+    const second = applyDirectoryRows([], first); // total miss, non-empty seed not involved
+    const rows = second.map((c) =>
+      normalizeChannel(c, { companySlugByUid: new Map([["cmp_acme", "acme"]]) }),
+    );
+    expect(findCompanyHomeRow(rows, "cmp_acme")?.channelId).toBe("chn_home_acme");
+  });
+
+  it("applyDirectoryFeed (the caller ChatSidebar actually uses) carries the same guarantee", () => {
+    const first = applyDirectoryFeed([directoryRow()], [], null);
+    // A non-empty incoming feed that simply lacks the home channel — not the
+    // "incoming is empty" seed-restore path.
+    const second = applyDirectoryFeed(
+      [directoryRow({ channelId: "chn_team", isCompanyHome: false, name: "eng" })],
+      first,
+      null,
+    );
+    expect(
+      second.find((c) => c.channelId === "chn_home_acme")?.isCompanyHome,
+    ).toBe(true);
   });
 });

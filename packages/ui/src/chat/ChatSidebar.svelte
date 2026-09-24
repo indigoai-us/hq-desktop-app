@@ -132,6 +132,7 @@
     loadSetupPinDismissed,
     loadShowFilter,
     resolveCompanySectionRows,
+    findCompanyHomeRow,
     type CompanySectionRow,
     migratePinnedCompanySelection,
     mergeResolvedCompanyChannels,
@@ -509,6 +510,12 @@
    * is fetching) this session — never re-fetch the same company on every
    * render. */
   const attemptedCompanyHomeResolutions = new Set<string>();
+  /** companyUid → true while a click-triggered retry fetch is in flight, so
+   * a double-click doesn't fire two overlapping `listChannels` calls. */
+  let companyHomeRetrying = $state<Record<string, boolean>>({});
+  /** companyUid → last resolution-failure reason, shown on the disabled row
+   * so a click is never a silent no-op (policy: never swallow errors). */
+  let companyHomeErrors = $state<Record<string, string>>({});
   /** User unpinned #setup — sticky until they pin it again. */
   let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
   /** Rows with an unsent composer draft (Slack-style pencil marker). */
@@ -982,41 +989,106 @@
   }
 
   /**
+   * Tagged, grep-able log line for the "Companies" section's open/resolve
+   * path (policy: never fail silently). Distinct from `sidebarLog` so a
+   * failed click always leaves a `[companies] open-home-failed` line in
+   * `~/.hq/logs` / devtools, even for users who never look at `[hq-sidebar]`
+   * noise.
+   */
+  function companiesLog(event: string, fields: Record<string, unknown>): void {
+    const parts = Object.entries(fields)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(" ");
+    console.warn(`[companies] ${event}${parts ? ` ${parts}` : ""}`);
+  }
+
+  /**
+   * One `listChannels({ companyUid })` attempt for a company whose home
+   * channel isn't in the currently-loaded directory feed (e.g. the directory
+   * hasn't synced that company's channels yet, or the caller's membership in
+   * it is stale locally). Reuse the SAME lane the owner-only "All company
+   * projects" view already uses (see the `companyProjectsSeq` effect above)
+   * — this is the mechanism deep links and the company switcher rely on
+   * elsewhere in the shell to resolve a channel that isn't cached yet.
+   * Returns the resolved home row, or `null` (and logs a reason) if the
+   * company still has no discoverable home channel.
+   */
+  async function resolveCompanyHomeOnce(
+    companyUid: string,
+    label: string,
+  ): Promise<ConversationRow | null> {
+    try {
+      const resp = await api.listChannels({
+        companyUid,
+        includeCompanyProjects: false,
+      });
+      const resolved = resp?.channels ?? [];
+      if (resolved.length > 0) {
+        channels = mergeResolvedCompanyChannels(channels, resolved);
+      }
+      const row = findCompanyHomeRow(allRows, companyUid);
+      if (!row) {
+        companiesLog("open-home-failed", {
+          company: label,
+          reason:
+            resolved.length === 0
+              ? "listChannels returned no channels for this company"
+              : "listChannels returned channels but none is the company home",
+        });
+        companyHomeErrors = { ...companyHomeErrors, [companyUid]: "no-home-channel" };
+      } else if (companyHomeErrors[companyUid]) {
+        const { [companyUid]: _drop, ...rest } = companyHomeErrors;
+        companyHomeErrors = rest;
+      }
+      return row;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      companiesLog("open-home-failed", { company: label, reason });
+      companyHomeErrors = { ...companyHomeErrors, [companyUid]: reason };
+      return null;
+    }
+  }
+
+  /**
    * On-demand home-channel resolution (requirement 4): a company shown in
-   * the section with `homeRow: null` means its home channel wasn't in the
-   * currently-loaded directory feed (e.g. the directory hasn't synced that
-   * company's channels yet, or the caller's membership in it is stale
-   * locally). Reuse the SAME `listChannels({ companyUid })` lane the
-   * owner-only "All company projects" view already uses (see the
-   * `companyProjectsSeq` effect above) to fetch that company's channels
-   * directly, rather than inventing a new fetch path — this is the
-   * mechanism deep links and the company switcher rely on elsewhere in the
-   * shell to resolve a channel that isn't cached yet.
+   * the section with `homeRow: null` gets one background resolve attempt per
+   * session via `resolveCompanyHomeOnce`.
    */
   $effect(() => {
     const missing = companySectionRows
       .filter((c) => !c.homeRow)
-      .map((c) => c.companyUid)
-      .filter((uid) => !attemptedCompanyHomeResolutions.has(uid));
+      .map((c) => ({ companyUid: c.companyUid, label: c.label }))
+      .filter((c) => !attemptedCompanyHomeResolutions.has(c.companyUid));
     if (missing.length === 0) return;
-    for (const uid of missing) attemptedCompanyHomeResolutions.add(uid);
+    for (const c of missing) attemptedCompanyHomeResolutions.add(c.companyUid);
     void (async () => {
-      for (const uid of missing) {
-        try {
-          const resp = await api.listChannels({
-            companyUid: uid,
-            includeCompanyProjects: false,
-          });
-          const resolved = resp?.channels ?? [];
-          if (resolved.length > 0) {
-            channels = mergeResolvedCompanyChannels(channels, resolved);
-          }
-        } catch (err) {
-          console.warn("chat-sidebar: company home-channel resolution failed", err);
-        }
+      for (const c of missing) {
+        await resolveCompanyHomeOnce(c.companyUid, c.label);
       }
     })();
   });
+
+  /**
+   * Click handler for a disabled ("still connecting") Companies row. The
+   * background resolver already tried once; a click never silently no-ops
+   * (policy: never swallow errors) — it retries immediately and either opens
+   * the resolved home channel or leaves a `[companies] open-home-failed`
+   * line plus an inline reason on the row.
+   */
+  async function retryCompanyHome(company: {
+    companyUid: string;
+    label: string;
+  }): Promise<void> {
+    if (companyHomeRetrying[company.companyUid]) return;
+    companyHomeRetrying = { ...companyHomeRetrying, [company.companyUid]: true };
+    try {
+      const row = await resolveCompanyHomeOnce(company.companyUid, company.label);
+      if (row) void openRow(row);
+    } finally {
+      const { [company.companyUid]: _drop, ...rest } = companyHomeRetrying;
+      companyHomeRetrying = rest;
+    }
+  }
 
   let lastEmittedRows: ConversationRow[] | null = null;
   $effect(() => {
@@ -2955,11 +3027,24 @@
                 <span class="chat-row-title">{company.label}</span>
               </button>
             {:else}
-              <div
+              {@const retrying = companyHomeRetrying[company.companyUid] === true}
+              {@const failed = Boolean(companyHomeErrors[company.companyUid])}
+              <button
+                type="button"
                 class="chat-row chat-row-disabled chat-companies-row"
+                class:chat-companies-row-failed={failed}
                 data-testid={`chat-companies-row-disabled-${company.companyUid}`}
-                aria-disabled="true"
-                title="Still connecting this company's home channel…"
+                aria-busy={retrying}
+                title={retrying
+                  ? "Connecting…"
+                  : failed
+                    ? "Couldn't open this company's home channel — click to retry"
+                    : "Still connecting this company's home channel… click to retry"}
+                onclick={() =>
+                  retryCompanyHome({
+                    companyUid: company.companyUid,
+                    label: company.label,
+                  })}
               >
                 {#if company.iconUrl}
                   <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
@@ -2967,7 +3052,10 @@
                   <span class="chat-glyph" aria-hidden="true">·</span>
                 {/if}
                 <span class="chat-row-title">{company.label}</span>
-              </div>
+                <span class="chat-companies-row-status" aria-hidden="true">
+                  {retrying ? "…" : failed ? "Retry" : ""}
+                </span>
+              </button>
             {/if}
           {/each}
         {/if}
@@ -4190,7 +4278,22 @@
 
   .chat-row-disabled {
     opacity: 0.55;
+    cursor: pointer;
+  }
+
+  .chat-row-disabled[aria-busy="true"] {
     cursor: default;
+  }
+
+  .chat-companies-row-failed {
+    opacity: 0.75;
+  }
+
+  .chat-companies-row-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--ice-ink, inherit);
+    opacity: 0.8;
   }
 
 
