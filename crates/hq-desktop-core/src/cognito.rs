@@ -672,31 +672,47 @@ pub fn non_human_principal_from_tokens(tokens: &CognitoTokens) -> Option<NonHuma
 /// expired generation wins, resolution retries from that generation rather
 /// than returning an already-expired access token.
 pub async fn get_valid_tokens() -> Result<CognitoTokens, String> {
+    resolve_tokens(false, COGNITO_ENDPOINT).await
+}
+
+/// Refresh Cognito tokens even when the current access token has not expired.
+/// Use this when a token claim may have changed after a server-side account
+/// update, such as email verification.
+pub async fn refresh_tokens() -> Result<CognitoTokens, String> {
+    resolve_tokens(true, COGNITO_ENDPOINT).await
+}
+
+async fn resolve_tokens(
+    force_refresh: bool,
+    cognito_endpoint: &str,
+) -> Result<CognitoTokens, String> {
     for _ in 0..VALID_TOKEN_RESOLUTION_ATTEMPTS {
         let tokens = get_tokens()
             .await?
             .ok_or_else(|| "Not signed in".to_string())?;
-        if !is_expired(&tokens) {
+        if !force_refresh && !is_expired(&tokens) {
             return Ok(tokens);
         }
 
-        let refreshed = match refresh_access_token_classified(&tokens.refresh_token).await {
-            Ok(tokens) => tokens,
-            Err(err) => {
-                if err.requires_reauth {
-                    invalidate_tokens(&tokens).await?;
-                }
-                match get_tokens().await? {
-                    Some(current) if current != tokens => {
-                        if !is_expired(&current) {
-                            return Ok(current);
-                        }
-                        continue;
+        let refreshed =
+            match refresh_access_token_classified_at(cognito_endpoint, &tokens.refresh_token).await
+            {
+                Ok(tokens) => tokens,
+                Err(err) => {
+                    if err.requires_reauth {
+                        invalidate_tokens(&tokens).await?;
                     }
-                    _ => return Err(REAUTH_MESSAGE.to_string()),
+                    match get_tokens().await? {
+                        Some(current) if current != tokens => {
+                            if !is_expired(&current) {
+                                return Ok(current);
+                            }
+                            continue;
+                        }
+                        _ => return Err(REAUTH_MESSAGE.to_string()),
+                    }
                 }
-            }
-        };
+            };
 
         match persist_refreshed_tokens_if_current(&tokens, &refreshed)
             .await?
@@ -728,6 +744,8 @@ pub async fn get_valid_access_token() -> Result<String, String> {
 pub struct IdTokenClaims {
     pub sub: Option<String>,
     pub email: Option<String>,
+    /// Whether Cognito verified the email address on this identity.
+    pub email_verified: Option<bool>,
     pub name: Option<String>,
     pub given_name: Option<String>,
     pub family_name: Option<String>,
@@ -923,6 +941,13 @@ struct AuthenticationResult {
 pub async fn refresh_access_token_classified(
     refresh_token: &str,
 ) -> Result<CognitoTokens, CognitoRefreshError> {
+    refresh_access_token_classified_at(COGNITO_ENDPOINT, refresh_token).await
+}
+
+async fn refresh_access_token_classified_at(
+    cognito_endpoint: &str,
+    refresh_token: &str,
+) -> Result<CognitoTokens, CognitoRefreshError> {
     let client = crate::client_info::build_client();
 
     let body = serde_json::json!({
@@ -935,7 +960,7 @@ pub async fn refresh_access_token_classified(
 
     for attempt in 0..REFRESH_ATTEMPTS {
         let response = match client
-            .post(COGNITO_ENDPOINT)
+            .post(cognito_endpoint)
             .header("Content-Type", "application/x-amz-json-1.1")
             .header(
                 "X-Amz-Target",
@@ -1017,6 +1042,26 @@ mod tests {
     use std::time::Duration;
     use tempfile;
 
+    struct TestHome(Option<std::ffi::OsString>);
+
+    impl TestHome {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("HQ_TEST_HOME");
+            std::env::set_var("HQ_TEST_HOME", path);
+            Self(previous)
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            if let Some(previous) = self.0.take() {
+                std::env::set_var("HQ_TEST_HOME", previous);
+            } else {
+                std::env::remove_var("HQ_TEST_HOME");
+            }
+        }
+    }
+
     fn claims_jwt(payload: serde_json::Value) -> String {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let encoded =
@@ -1031,6 +1076,58 @@ mod tests {
             refresh_token: "refresh".to_string(),
             expires_at: i64::MAX,
         }
+    }
+
+    #[test]
+    fn decode_id_token_claims_preserves_email_verification_status() {
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "email_verified": false
+        })))
+        .expect("valid claims");
+
+        assert_eq!(claims.email_verified, Some(false));
+    }
+
+    #[tokio::test]
+    async fn resolve_tokens_force_refreshes_valid_cached_token_once() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let cached_tokens = CognitoTokens {
+            access_token: "still-valid-access-token".into(),
+            id_token: None,
+            refresh_token: "refresh-token".into(),
+            expires_at: i64::MAX,
+        };
+        set_tokens(&cached_tokens)
+            .await
+            .expect("store unexpired tokens");
+
+        let cognito = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "AuthenticationResult": {
+                    "AccessToken": "refreshed-access-token",
+                    "ExpiresIn": 3600
+                }
+            })))
+            .expect(1)
+            .mount(&cognito)
+            .await;
+
+        let refreshed = resolve_tokens(true, &cognito.uri())
+            .await
+            .expect("forced refresh succeeds");
+        assert_eq!(refreshed.access_token, "refreshed-access-token");
+
+        let reused = resolve_tokens(false, &cognito.uri())
+            .await
+            .expect("unexpired token is reused without refresh");
+        assert_eq!(reused, refreshed);
+        cognito.verify().await;
     }
 
     #[test]
@@ -1062,7 +1159,10 @@ mod tests {
             .expect("serialize"),
         )
         .expect("write");
-        assert_eq!(stored_token_presence_at(&good), StoredTokenPresence::Present);
+        assert_eq!(
+            stored_token_presence_at(&good),
+            StoredTokenPresence::Present
+        );
 
         #[cfg(unix)]
         {
