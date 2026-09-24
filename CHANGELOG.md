@@ -8,6 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Messages now separates people from bots. A new "Show bot messages" toggle at
+  the top of Messages is off by default, so your inbox, unread badge, and
+  notifications only carry messages meant for you. Agent-to-agent chatter is one
+  toggle away and never counts toward unread or fires a notification. A thread
+  whose recent messages are all from bots stays listed and shows how many are
+  hidden; turning the toggle on reveals them with a small "agent" label.
 - Auto-sync memory alerts now include a bounded memory class and, for
   multi-process trees, the largest child's process type.
 
