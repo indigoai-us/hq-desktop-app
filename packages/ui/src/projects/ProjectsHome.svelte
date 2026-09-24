@@ -60,42 +60,42 @@
       <p>No company folders on this Mac yet. Projects show up here once a company has synced.</p>
     </div>
   {:else}
-    <div class="ph-bar">
-      <div class="ph-company">
-        <button
-          type="button"
-          class="ph-company-btn"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          data-testid="projects-company-switcher"
-          onclick={() => (menuOpen = !menuOpen)}
-        >
-          <span class="ph-avatar">{initial(current)}</span>
-          <span class="ph-name">{current.displayName || current.slug}</span>
-          <svg viewBox="0 0 16 16" class="ph-caret" aria-hidden="true">
-            <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </button>
-        {#if menuOpen}
-          <div class="ph-menu" role="menu" aria-label="Companies">
-            {#each choices as c (c.slug)}
-              <button
-                type="button"
-                role="menuitemradio"
-                aria-checked={c.slug === current.slug}
-                class="ph-menu-item"
-                class:is-current={c.slug === current.slug}
-                onclick={() => choose(c.slug)}
-              >
-                <span class="ph-avatar small">{initial(c)}</span>
-                <span>{c.displayName || c.slug}</span>
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    </div>
     <div class="ph-body">
+      <div class="ph-bar">
+        <div class="ph-company">
+          <button
+            type="button"
+            class="ph-company-btn"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            data-testid="projects-company-switcher"
+            onclick={() => (menuOpen = !menuOpen)}
+          >
+            <span class="ph-avatar">{initial(current)}</span>
+            <span class="ph-name">{current.displayName || current.slug}</span>
+            <svg viewBox="0 0 16 16" class="ph-caret" aria-hidden="true">
+              <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          {#if menuOpen}
+            <div class="ph-menu" role="menu" aria-label="Companies">
+              {#each choices as c (c.slug)}
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={c.slug === current.slug}
+                  class="ph-menu-item"
+                  class:is-current={c.slug === current.slug}
+                  onclick={() => choose(c.slug)}
+                >
+                  <span class="ph-avatar small">{initial(c)}</span>
+                  <span>{c.displayName || c.slug}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      </div>
       {#key current.slug}
         <CompanyProjectsPage {adapter} slug={current.slug} companyUid={current.cloudUid ?? null} />
       {/key}
@@ -111,13 +111,22 @@
     min-height: 0;
     height: 100%;
   }
+  /* Lives inside the .ph-body scroller and scrolls away with the page, so
+     nothing slides under a fixed bar. z-index keeps its menu above the sticky
+     board column headers further down. */
   .ph-bar {
+    position: relative;
+    z-index: 3;
     display: flex;
     align-items: center;
-    padding: 12px 20px 0;
+    padding: 12px 0 8px;
+    background: transparent;
   }
   .ph-company {
     position: relative;
+    /* Pull the button's own inset back so the avatar lines up with the page
+       content's left edge; the hover fill extends outward instead. */
+    margin-left: -7px;
   }
   .ph-company-btn {
     display: inline-flex;
@@ -192,11 +201,17 @@
   .ph-menu-item.is-current {
     background: var(--v4-active-row);
   }
+  /* The one vertical scroller for the whole page: board columns and task
+     columns grow to their natural height and their headers stick to its top. */
   .ph-body {
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
-    padding: 8px 20px 16px;
+    padding: 0 24px 24px;
+  }
+  /* Content-height pages: the page scroller owns all vertical scrolling. */
+  .ph-body :global(.company-projects) {
+    height: auto;
   }
   /* A project scrolls as one page here: its header scrolls away and the task
      board keeps its own height, instead of the board squeezing into what is
@@ -204,7 +219,6 @@
   .ph-body :global(.project-detail) {
     flex: none;
     height: auto;
-    min-height: 100%;
   }
   .ph-body :global(.project-detail .detail-body) {
     overflow: visible;

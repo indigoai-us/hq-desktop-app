@@ -720,11 +720,17 @@
     <header class="projects-header">
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
-        <span>
-          {filteredCompanyProjects.length} of {companyProjects.length}
-          {companyProjects.length === 1 ? " project" : " projects"}
+        <span
+          class="projects-count"
+          title={`${filteredCompanyProjects.length} of ${companyProjects.length}${companyProjects.length === 1 ? " project" : " projects"}`}
+        >
+          {#if filteredCompanyProjects.length === companyProjects.length}
+            {companyProjects.length}
+          {:else}
+            {filteredCompanyProjects.length} of {companyProjects.length}
+          {/if}
           {#if liveCount > 0}
-            · {liveCount} live
+            <span class="projects-live">· {liveCount} live</span>
           {/if}
         </span>
       </div>
@@ -752,6 +758,10 @@
     <div class="portfolio-tools" data-testid="portfolio-tools">
       <label class="project-search">
         <span class="visually-hidden">Search projects</span>
+        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+          <path d="m10.5 10.5 3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
         <input
           type="search"
           placeholder="Search projects…"
@@ -771,6 +781,9 @@
             <option value={option.value}>{option.label}</option>
           {/each}
         </select>
+        <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
       </label>
 
       <label class="tool-select">
@@ -785,16 +798,24 @@
             <option value={owner}>{owner}</option>
           {/each}
         </select>
+        <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
       </label>
 
       <!-- Legacy cycle filter (All / Active / Needs link) for link handoff + contracts. -->
       <button
         type="button"
         class="tool-button"
+        class:is-set={projectFilter !== "all"}
         data-testid="portfolio-legacy-filter"
+        title="Cycle: All, Active, Needs link"
         onclick={cycleFilter}
       >
-        Filter: {filterLabel(projectFilter)}
+        <span>Filter: {filterLabel(projectFilter)}</span>
+        <svg class="button-caret" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5.5 5.5 8 3l2.5 2.5M5.5 10.5 8 13l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
       </button>
 
       <div class="view-toggle" role="group" aria-label="Project view">
@@ -882,20 +903,29 @@
               data-testid={`portfolio-column-${column}`}
               aria-labelledby={`portfolio-col-${column}`}
             >
-              <header class="kanban-column-head">
+              <header
+                class="kanban-column-head"
+                title={PORTFOLIO_COLUMN_CAPTION[column]}
+              >
                 <span
                   class="kanban-column-title"
                   id={`portfolio-col-${column}`}
                 >
                   {#if column === "active"}
                     <span class="live-dot" aria-hidden="true"></span>
+                  {:else}
+                    <span
+                      class="column-dot"
+                      data-column={column}
+                      aria-hidden="true"
+                    ></span>
                   {/if}
                   {PORTFOLIO_COLUMN_LABEL[column]}
                   <span class="kanban-column-count"
                     >{columnProjects.length}</span
                   >
                 </span>
-                <span class="kanban-column-caption"
+                <span class="visually-hidden"
                   >{PORTFOLIO_COLUMN_CAPTION[column]}</span
                 >
               </header>
@@ -1057,9 +1087,13 @@
 <style>
   .company-projects {
     container: company-projects / inline-size;
+    /* Shared by the sticky column headers: the page ground laid over an
+       opaque surface, so cards scrolling underneath never show through. */
+    --projects-sticky-bg: linear-gradient(var(--v4-ground), var(--v4-ground)),
+      var(--v4-surface-solid);
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-4, 12px);
+    gap: 12px;
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
@@ -1079,27 +1113,34 @@
 
   .projects-header {
     justify-content: space-between;
-    gap: var(--v4-space-5, 16px);
+    gap: var(--v4-space-4, 16px);
     flex-shrink: 0;
+    min-height: 28px;
   }
 
   .projects-heading {
     align-items: baseline;
-    gap: 9px;
+    gap: 8px;
   }
 
   .projects-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--type-detail, var(--text-lg, 18px));
+    font-size: 20px;
     font-weight: 600;
-    line-height: 1.15;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
   }
 
-  .projects-heading span {
+  .projects-count {
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base, 12px));
-    line-height: 1.25;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+
+  .projects-live {
+    color: var(--v4-ok);
   }
 
   .project-actions {
@@ -1109,10 +1150,10 @@
   }
 
   .action-status {
-    max-width: 150px;
+    max-width: 220px;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: 12px;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1126,82 +1167,153 @@
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
-    font-size: var(--type-body, 12px);
+    font-size: 12px;
     cursor: default;
   }
 
+  /* One toolbar row: search · state · person · legacy filter · Board/List. */
   .portfolio-tools {
     flex-shrink: 0;
     flex-wrap: wrap;
     gap: 8px;
-    min-height: 36px;
   }
 
+  .project-search {
+    position: relative;
+    display: flex;
+    flex: 1 1 200px;
+    min-width: 160px;
+    max-width: 340px;
+  }
+
+  .search-icon {
+    position: absolute;
+    top: 50%;
+    left: 9px;
+    width: 13px;
+    height: 13px;
+    color: var(--v4-text-3);
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+
+  /* Search, selects and the legacy filter share one control shape. */
   .project-search input,
   .tool-select select,
   .tool-button {
+    box-sizing: border-box;
     height: 28px;
-    border: 1px solid var(--v4-control-border);
+    margin: 0;
+    border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-button);
-    background: var(--v4-secondary-bg);
+    background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--type-body, 12px);
+    font-size: 12px;
+    line-height: 26px;
   }
 
   .project-search input {
-    min-width: 140px;
-    max-width: 220px;
-    padding: 0 10px;
+    width: 100%;
+    min-width: 0;
+    padding: 0 10px 0 28px;
   }
 
   .project-search input::placeholder {
     color: var(--v4-text-3);
   }
 
-  .tool-select select,
-  .tool-button {
-    padding: 0 10px;
-    color: var(--v4-secondary-fg);
+  .tool-select {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+
+  /* Native select, drawn like the other controls (own caret, no OS chrome). */
+  .tool-select select {
+    max-width: 180px;
+    padding: 0 26px 0 10px;
+    color: var(--v4-text-2);
+    appearance: none;
+    -webkit-appearance: none;
     cursor: default;
   }
 
+  .select-caret,
+  .button-caret {
+    width: 12px;
+    height: 12px;
+    color: var(--v4-text-3);
+    pointer-events: none;
+  }
+
+  .select-caret {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+  }
+
+  /* Legacy All / Active / Needs link cycle, shaped like the selects. */
+  .tool-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px 0 10px;
+    color: var(--v4-text-2);
+    white-space: nowrap;
+    cursor: default;
+  }
+
+  .tool-button.is-set {
+    border-color: var(--v4-control-border);
+    color: var(--v4-text-1);
+  }
+
+  .project-search input:hover,
+  .tool-select select:hover,
+  .tool-button:hover {
+    border-color: var(--v4-control-border);
+  }
+
+  /* Segmented Board / List control. */
   .view-toggle {
     display: inline-flex;
-    gap: var(--v4-space-2);
+    flex: 0 0 auto;
+    gap: 2px;
     margin-left: auto;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    padding: 2px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
   }
 
   .toggle-segment {
     display: inline-flex;
     align-items: center;
-    padding: 4px 10px;
+    height: 22px;
+    padding: 0 10px;
     border: 0;
-    border-bottom: 1px solid transparent;
-    border-radius: 0;
+    border-radius: 4px;
     background: transparent;
-    color: var(--v4-text-2);
+    color: var(--v4-text-3);
     font: inherit;
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
     transition:
-      border-color 140ms ease,
+      background 140ms ease,
       color 140ms ease;
   }
 
   .toggle-segment:hover {
-    border-bottom-color: var(--v4-rowline);
     color: var(--v4-text-1);
   }
 
   .toggle-segment.is-active {
-    border-bottom-color: var(--v4-text-2);
-    background: transparent;
+    background: var(--v4-raised);
+    box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-1);
   }
 
@@ -1210,8 +1322,8 @@
   .tool-button:focus-visible,
   .project-search input:focus-visible,
   .tool-select select:focus-visible {
-    outline: 2px solid var(--v4-control-border);
-    outline-offset: 2px;
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 1px;
   }
 
   .visually-hidden {
@@ -1227,101 +1339,112 @@
   }
 
   .portfolio-body {
-    flex: 1 1 auto;
-    min-height: 0;
+    /* Content height: the page (ProjectsHome .ph-body) is the only vertical
+       scroller, so nothing in here may shrink or clip. */
+    flex: 1 0 auto;
     min-width: 0;
   }
 
-  /* Naked board canvas — columns use whitespace + hairlines, not rounded wells. */
+  /* Naked board canvas — four columns that share the width. No inner
+     scrollers: columns take their natural height and the page scrolls, which
+     is also what lets the column headers stick. */
   .kanban-board {
     display: grid;
-    grid-template-columns: repeat(4, minmax(205px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
     min-width: 0;
-    height: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
     background: transparent;
   }
 
+  /* overflow-x: clip keeps cards inside the column without creating a scroll
+     container, so the sticky header still sticks to the page scroller. */
   .kanban-column {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    min-width: 205px;
-    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow-x: clip;
     border-radius: 0;
     background: transparent;
   }
 
   .kanban-column-head {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--v4-row-stack-gap, 3px);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
     min-height: 36px;
-    padding: 0 4px 8px;
+    margin-bottom: 8px;
+    padding: 0 2px;
     border-bottom: 1px solid var(--v4-hairline);
+    background: var(
+      --projects-sticky-bg,
+      var(--v4-surface-solid)
+    );
   }
 
   .kanban-column-title {
     display: flex;
     align-items: center;
-    gap: 6px;
-    color: var(--v4-text-2);
-    font-size: var(--type-secondary, 11px);
+    gap: 8px;
+    min-width: 0;
+    color: var(--v4-text-1);
+    font-size: 13px;
     font-weight: 600;
     line-height: 1.2;
+  }
+
+  .column-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--v4-text-3);
+  }
+
+  .column-dot[data-column="not-started"] {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--v4-text-3);
+  }
+
+  .column-dot[data-column="in-progress"] {
+    background: var(--v4-text-2);
+  }
+
+  .column-dot[data-column="complete"] {
+    background: color-mix(in srgb, var(--v4-ok) 70%, var(--v4-text-3));
   }
 
   .kanban-column-count {
     display: inline-grid;
     place-items: center;
-    min-width: 17px;
-    height: 17px;
-    padding: 0 5px;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 6px;
     border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
+    font-size: 11px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
 
-  .kanban-column-caption {
-    overflow: hidden;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    line-height: 1.25;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  @media (max-width: 1040px) {
+  /* Four columns share the width down to ~640px of canvas; below that the
+     board keeps a minimum width and scrolls sideways on its own (headers stop
+     sticking only in that narrow case). */
+  @container company-projects (max-width: 640px) {
     .kanban-board {
-      grid-template-columns: repeat(4, minmax(160px, 1fr));
-      gap: 8px;
-    }
-
-    .kanban-column {
-      min-width: 160px;
-    }
-  }
-
-  /* Viewport width includes the 220px primary rail. Use the actual project
-     canvas too so all four columns remain visible at the 960px native minimum. */
-  @container company-projects (max-width: 900px) {
-    .kanban-board {
-      grid-template-columns: repeat(4, minmax(160px, 1fr));
-      gap: 8px;
-    }
-
-    .kanban-column {
-      min-width: 160px;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 6px;
     }
   }
 
   .live-dot {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
     flex: 0 0 auto;
     border-radius: 999px;
     background: var(--v4-ok);
@@ -1331,24 +1454,14 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    min-height: 0;
-    margin-top: 10px;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 0 2px 4px;
+    min-width: 0;
+    padding: 0 0 12px;
   }
 
   .column-empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 64px;
-    padding: 12px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    padding: 4px 2px;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: 12px;
   }
 
   .show-more-projects {
@@ -1356,12 +1469,11 @@
     min-height: 30px;
     padding: 5px 8px;
     border: 0;
-    border-top: 1px solid var(--v4-rowline);
-    border-radius: 0;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, 11px);
+    font-size: 12px;
     text-align: left;
     cursor: pointer;
   }
@@ -1388,7 +1500,8 @@
   /* List surface — hairline table, no giant rounded well. */
   .project-list-surface {
     min-width: 0;
-    overflow: auto;
+    overflow-x: auto;
+    overflow-y: hidden;
     border-top: 1px solid var(--v4-hairline);
     background: transparent;
   }
@@ -1573,8 +1686,8 @@
 
   .board-loading {
     display: grid;
-    grid-template-columns: repeat(4, minmax(205px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
     min-width: 0;
   }
 
@@ -1585,7 +1698,7 @@
   }
 
   .skeleton-header {
-    height: 28px;
+    height: 36px;
     border-radius: 0;
     background: var(--v4-control-faint);
     opacity: 0.48;
@@ -1594,7 +1707,7 @@
   .skeleton-card {
     height: 96px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: 8px;
     background: var(--v4-control-faint);
     opacity: 0.48;
   }
@@ -1606,52 +1719,17 @@
   }
 
   @container company-projects (max-width: 820px) {
-    .projects-header {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 10px;
-    }
-
-    .projects-heading {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 4px;
-    }
-
-    .project-actions {
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
     .action-status {
-      flex: 1 1 100%;
-      max-width: 100%;
-      white-space: normal;
+      max-width: 140px;
     }
 
-    .portfolio-tools {
-      align-items: stretch;
+    .project-search {
+      flex-basis: 100%;
+      max-width: none;
     }
 
     .view-toggle {
-      margin-left: 0;
-    }
-
-    .project-search input {
-      max-width: none;
-      width: 100%;
-    }
-
-    /* Keep all four columns visible at the native minimum; the board remains
-       horizontally scrollable if content or user font scaling needs more. */
-    .kanban-board,
-    .board-loading {
-      grid-template-columns: repeat(4, minmax(160px, 1fr));
-      gap: 8px;
-    }
-
-    .kanban-column {
-      min-width: 160px;
+      margin-left: auto;
     }
 
     .project-table-head {

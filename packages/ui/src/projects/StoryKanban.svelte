@@ -39,6 +39,13 @@
     now?: number;
     /** Fired when a story card or row is activated. */
     onselect?: (story: Story) => void;
+    /**
+     * Board / List mode. Bindable so a parent can host the toggle in its own
+     * toolbar (ProjectDetailView puts it on the tabs row).
+     */
+    viewMode?: "board" | "list";
+    /** Render the built-in Board/List toggle. Off when the parent hosts it. */
+    showToolbar?: boolean;
   }
 
   let {
@@ -47,10 +54,9 @@
     loading = false,
     now = Date.now(),
     onselect,
+    viewMode = $bindable("board"),
+    showToolbar = true,
   }: Props = $props();
-
-  type ViewMode = "board" | "list";
-  let viewMode = $state<ViewMode>("board");
 
   // Per-column collapse state, keyed by TaskColumn. Collapsed hides the body.
   let collapsed = $state<Record<TaskColumn, boolean>>({
@@ -73,6 +79,7 @@
   aria-label="Task board"
   data-testid="story-kanban"
 >
+  {#if showToolbar}
   <div class="board-toolbar">
     <div class="view-toggle" role="group" aria-label="Board view mode">
       <button
@@ -97,6 +104,7 @@
       </button>
     </div>
   </div>
+  {/if}
 
   {#if loading}
     <div class="board-loading" aria-busy="true" aria-label="Loading tasks">
@@ -122,24 +130,40 @@
               type="button"
               class="column-header"
               aria-expanded={!collapsed[column]}
+              title={TASK_COLUMN_CAPTION[column]}
               onclick={() => toggleColumn(column)}
             >
               {#if column === "active"}
                 <span class="live-dot" aria-hidden="true"></span>
               {:else}
-                <span class="status-dot" data-column={column}></span>
+                <span
+                  class="status-dot"
+                  data-column={column}
+                  aria-hidden="true"
+                ></span>
               {/if}
               <span class="column-label" id={`task-col-${column}`}>
                 {TASK_COLUMN_LABEL[column]}
               </span>
               <span class="count-badge">{columnStories.length}</span>
+              <span class="visually-hidden">{TASK_COLUMN_CAPTION[column]}</span>
               <span
                 class="chevron"
                 class:is-open={!collapsed[column]}
-                aria-hidden="true">›</span
+                aria-hidden="true"
               >
+                <svg viewBox="0 0 16 16">
+                  <path
+                    d="m6 4 4 4-4 4"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </span>
             </button>
-            <span class="column-caption">{TASK_COLUMN_CAPTION[column]}</span>
 
             {#if !collapsed[column]}
               <div class="column-body">
@@ -183,13 +207,16 @@
 <style>
   .story-kanban {
     container: story-kanban / inline-size;
+    /* Page ground laid over an opaque surface for the sticky column headers,
+       so cards scrolling underneath never show through. */
+    --board-sticky-bg: linear-gradient(var(--v4-ground), var(--v4-ground)),
+      var(--v4-surface-solid);
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-3);
     min-width: 0;
-    height: 100%;
-    /* Fill the space below the project header, but never shrink to a strip
-       on a short window: the project page scrolls instead. */
+    /* Keep room on a short board, but otherwise flow with the page: the page
+       scroller (not the columns) handles long boards. */
     min-height: min(640px, 75vh);
     /* Naked canvas — no board chrome. */
     background: transparent;
@@ -201,97 +228,101 @@
     justify-content: flex-end;
   }
 
+  /* Segmented Board / List control. */
   .view-toggle {
     display: inline-flex;
-    gap: var(--v4-space-2);
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
   }
 
   .toggle-segment {
     display: inline-flex;
     align-items: center;
-    padding: var(--v4-space-1) var(--v4-space-3);
+    height: 22px;
+    padding: 0 10px;
     border: 0;
-    border-bottom: 1px solid transparent;
-    border-radius: 0;
+    border-radius: 4px;
     background: transparent;
-    color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 600;
+    color: var(--v4-text-3);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
     transition:
-      border-color 140ms ease,
+      background 140ms ease,
       color 140ms ease;
   }
 
   .toggle-segment:hover {
-    border-bottom-color: var(--v4-rowline);
     color: var(--v4-text-1);
   }
 
   .toggle-segment.is-active {
-    border-bottom-color: var(--v4-text-2);
-    background: transparent;
+    background: var(--v4-raised);
+    box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-1);
   }
 
   .toggle-segment:focus-visible {
-    outline: 2px solid var(--v4-control-border);
-    outline-offset: 2px;
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 1px;
   }
 
+  /* No overflow here on wide canvases: an overflow value would make this the
+     sticky headers' scroll container and stop them sticking to the page. */
   .board-scroll {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
+    flex: 1 0 auto;
+    min-width: 0;
     background: transparent;
   }
 
   .board-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(180px, 1fr));
-    gap: var(--v4-space-4);
-    min-width: 720px;
-    height: 100%;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+    min-width: 0;
   }
 
+  /* overflow-x: clip keeps cards inside the column without creating a scroll
+     container, so the sticky header still sticks to the page scroller. */
   .kanban-column {
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    min-width: 0;
+    overflow-x: clip;
     /* Naked columns — no rounded wells, no fills. */
     border-radius: 0;
     background: transparent;
   }
 
   .column-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
     display: flex;
     align-items: center;
-    gap: var(--v4-space-2);
+    gap: 8px;
     width: 100%;
-    padding: var(--v4-space-2) 0;
+    min-height: 36px;
+    padding: 0 2px;
     border: 0;
     border-bottom: 1px solid var(--v4-hairline);
     border-radius: 0;
-    background: transparent;
+    background: var(--board-sticky-bg, var(--v4-surface-solid));
+    color: inherit;
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
-    transition: background 140ms ease;
-  }
-
-  .column-header:hover {
-    background: var(--v4-active-row);
   }
 
   .column-header:focus-visible {
-    outline: 2px solid var(--v4-control-border);
-    outline-offset: 2px;
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: -2px;
   }
 
   .status-dot,
@@ -303,12 +334,17 @@
     background: var(--v4-text-3);
   }
 
+  .status-dot[data-column="not-started"] {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--v4-text-3);
+  }
+
   .status-dot[data-column="in-progress"] {
     background: var(--v4-text-2);
   }
 
   .status-dot[data-column="complete"] {
-    background: var(--v4-text-2);
+    background: color-mix(in srgb, var(--v4-ok) 70%, var(--v4-text-3));
   }
 
   .live-dot {
@@ -316,80 +352,94 @@
   }
 
   .column-label {
-    color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    color: var(--v4-text-1);
+    font-size: 13px;
     font-weight: 600;
-  }
-
-  .column-caption {
-    margin-top: 2px;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    line-height: 1.3;
   }
 
   .count-badge {
-    display: inline-flex;
-    align-items: center;
+    display: inline-grid;
+    place-items: center;
+    min-width: 20px;
+    height: 18px;
     padding: 0 6px;
-    border-radius: var(--v4-radius-button);
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-base));
+    font-size: 11px;
     font-variant-numeric: tabular-nums;
-    font-weight: 600;
-    line-height: 16px;
+    font-weight: 500;
   }
 
+  /* Quiet collapse affordance: faint until the header is hovered/focused. */
   .chevron {
+    display: inline-grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
     margin-left: auto;
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
-    line-height: 1;
-    transition: transform 150ms ease;
+    /* Invisible at rest; collapse stays one click away on hover / focus. */
+    opacity: 0;
+    transition:
+      transform 150ms ease,
+      opacity 150ms ease;
+  }
+
+  .chevron svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .column-header:hover .chevron,
+  .column-header:focus-visible .chevron,
+  .column-header[aria-expanded="false"] .chevron {
+    opacity: 1;
   }
 
   .chevron.is-open {
     transform: rotate(90deg);
   }
 
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .column-body {
     display: flex;
-    flex: 1 1 auto;
     flex-direction: column;
-    gap: var(--v4-space-2);
-    min-height: 0;
-    margin-top: var(--v4-space-2);
-    overflow-y: auto;
-    padding-right: var(--v4-space-1);
+    gap: 8px;
+    min-width: 0;
+    margin-top: 8px;
+    padding-bottom: 12px;
   }
 
   .column-empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--v4-space-5);
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    padding: 4px 2px;
   }
 
   .column-empty span {
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-base));
+    font-size: 12px;
   }
 
   .list-scroll {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
+    flex: 1 0 auto;
+    min-width: 0;
   }
 
   .board-loading {
     display: grid;
-    grid-template-columns: repeat(4, minmax(180px, 1fr));
-    gap: var(--v4-space-4);
-    min-width: 720px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
   }
 
   .skeleton-column {
@@ -399,7 +449,7 @@
   }
 
   .skeleton-header {
-    height: 28px;
+    height: 36px;
     border-radius: 0;
     background: var(--v4-control-faint);
   }
@@ -407,7 +457,7 @@
   .skeleton-card {
     height: 84px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: 8px;
     background: var(--v4-control-faint);
   }
 
@@ -428,7 +478,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .toggle-segment,
-    .column-header,
     .chevron {
       transition: none;
     }
@@ -439,8 +488,10 @@
     }
   }
 
-  /* Keep Board/List + column headers visible; board may horizontal-scroll. */
-  @container story-kanban (max-width: 760px) {
+  /* Four columns share the width down to ~640px of canvas; below that the
+     board keeps a minimum width and scrolls sideways on its own (headers stop
+     sticking only in that narrow case). */
+  @container story-kanban (max-width: 640px) {
     .board-toolbar {
       justify-content: flex-start;
     }
@@ -448,22 +499,11 @@
     .board-scroll {
       overflow-x: auto;
       overflow-y: hidden;
+      padding-bottom: 6px;
     }
 
-    .board-grid,
-    .board-loading {
-      grid-template-columns: repeat(4, minmax(180px, 1fr));
-      min-width: 720px;
-      height: 100%;
-    }
-
-    .kanban-column {
-      min-height: 0;
-    }
-
-    .column-body {
-      overflow-y: auto;
-      padding-right: var(--v4-space-1);
+    .board-grid {
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
     }
   }
 </style>
