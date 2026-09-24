@@ -403,3 +403,14 @@ describe("softBreak option (chat vs document)", () => {
     expect(html).not.toContain("<br />");
   });
 });
+
+describe("large documents", () => {
+  // Regression: suppressUnsafeRawHtml spread every line of a document into a
+  // single push() call, which overflowed the call stack at about 2 MB.
+  it("renders a multi-megabyte document without overflowing the stack", () => {
+    const para = "Some **bold** text and a [[link]].\n\n- item\n\n";
+    const source = para.repeat(Math.ceil((3 * 1024 * 1024) / para.length));
+    const html = renderMarkdown(source);
+    expect(html.startsWith("<p>Some <strong>bold</strong>")).toBe(true);
+  }, 60_000);
+});

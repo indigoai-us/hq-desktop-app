@@ -2,25 +2,45 @@
   /**
    * QuickSwitcher: Cmd+O jump-to-file for the open vault, fuzzy by path.
    * Enter opens, Cmd+Enter opens in a new tab, Escape closes.
+   *
+   * Matching runs in the native vault index; typing is debounced and a slow
+   * answer for an old query never replaces a newer one.
    */
-  import type { VaultIndexedFile } from "@hq/platform";
-  import { quickSwitch, vaultRelativePath, noteTitle, type Vault } from "./vault-model.js";
+  import type { VaultFileHit } from "@hq/platform";
+  import { vaultRelativePath, noteTitle, type Vault } from "./vault-model.js";
 
   interface Props {
     vault: Vault;
-    files: readonly VaultIndexedFile[];
-    indexing: boolean;
+    search: (query: string) => Promise<VaultFileHit[] | null>;
     onopen: (path: string, opts: { newTab: boolean }) => void;
     onclose: () => void;
   }
 
-  let { vault, files, indexing, onopen, onclose }: Props = $props();
+  let { vault, search, onopen, onclose }: Props = $props();
+
+  const DEBOUNCE_MS = 60;
 
   let query = $state("");
   let active = $state(0);
   let input = $state<HTMLInputElement | null>(null);
+  let results = $state<VaultFileHit[]>([]);
+  let searching = $state(true);
+  let failed = $state(false);
+  let seq = 0;
 
-  const results = $derived(quickSwitch(query, files, vault, 60));
+  $effect(() => {
+    const q = query;
+    const mine = ++seq;
+    searching = true;
+    const timer = setTimeout(async () => {
+      const hits = await search(q);
+      if (mine !== seq) return;
+      searching = false;
+      failed = hits === null;
+      results = hits ?? [];
+    }, q ? DEBOUNCE_MS : 0);
+    return () => clearTimeout(timer);
+  });
 
   $effect(() => {
     input?.focus();
@@ -73,7 +93,7 @@
 <div class="qs-scrim" onclick={onclose} data-testid="quick-switcher">
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="qs" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Open a file">
+  <div class="qs" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-modal="true" aria-label="Open a file">
     <input
       bind:this={input}
       bind:value={query}
@@ -101,7 +121,7 @@
           <span class="qs-folder">{folderOf(f.path)}</span>
         </li>
       {:else}
-        <li class="qs-empty">{indexing ? "Indexing this vault…" : "No matching files."}</li>
+        <li class="qs-empty">{searching ? "Searching…" : failed ? "Search is not available right now." : "No matching files."}</li>
       {/each}
     </ul>
     <footer class="qs-foot">

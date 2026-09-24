@@ -9,19 +9,39 @@
    */
   import { tick } from "svelte";
   import { renderMarkdown } from "../../common/markdown.js";
-  import { outlineOf, splitFrontmatter, type LinkResolver, type NoteProperty, type OutlineItem } from "./vault-model.js";
+  import { outlineOf, splitFrontmatter, plural, type NoteProperty, type OutlineItem } from "./vault-model.js";
 
   interface Props {
     path: string;
     source: string;
-    resolver: LinkResolver | null;
+    /** Only the start of the note is in `source` (it is larger than the cap). */
+    truncated?: boolean;
+    /** Full size of the note in bytes, shown when truncated. */
+    size?: number;
+    /** Where each written `[[target]]` goes; null until the vault answers. */
+    links: Record<string, string | null> | null;
     onopen: (path: string, opts: { newTab: boolean }) => void;
     onoutline?: (items: OutlineItem[]) => void;
-    /** Heading index to scroll to; bumping `scrollSeq` repeats the request. */
+    /** The `[[targets]]` this note renders, for the parent to resolve. */
+    onlinktargets?: (targets: string[]) => void;
+    /** Heading index to scroll to; bumping `seq` repeats the request. */
     scrollTo?: { index: number; seq: number } | null;
+    /** Shown on a truncated note: opens the whole file elsewhere. */
+    onopenfull?: () => void;
   }
 
-  let { path, source, resolver, onopen, onoutline, scrollTo = null }: Props = $props();
+  let {
+    path,
+    source,
+    truncated = false,
+    size = 0,
+    links,
+    onopen,
+    onoutline,
+    onlinktargets,
+    scrollTo = null,
+    onopenfull,
+  }: Props = $props();
 
   let article = $state<HTMLElement | null>(null);
 
@@ -45,24 +65,47 @@
     onoutline?.(outline);
   });
 
-  // Decorate the rendered article: heading anchors and link state.
+  // Number the headings and report the link targets once per render.
   $effect(() => {
     void html;
     const el = article;
-    const r = resolver;
     if (!el) return;
     void tick().then(() => {
       el.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((h, i) => {
         h.setAttribute("data-heading-index", String(i));
       });
+      const targets = new Set<string>();
+      el.querySelectorAll<HTMLElement>(".markdown-wikilink").forEach((link) => {
+        const target = link.getAttribute("title");
+        if (target) targets.add(target);
+      });
+      onlinktargets?.([...targets]);
+    });
+  });
+
+  // Mark each link once the vault says where it goes.
+  $effect(() => {
+    void html;
+    const el = article;
+    const map = links;
+    if (!el) return;
+    void tick().then(() => {
       el.querySelectorAll<HTMLElement>(".markdown-wikilink").forEach((link) => {
         const target = link.getAttribute("title") ?? "";
-        const resolved = r?.resolve(target, path) ?? null;
+        if (!map) {
+          delete link.dataset.resolved;
+          return;
+        }
+        const resolved = map[target] ?? null;
         link.dataset.resolved = resolved ? "true" : "false";
         if (resolved) {
           link.dataset.target = resolved;
           link.setAttribute("role", "link");
           link.setAttribute("tabindex", "0");
+        } else {
+          delete link.dataset.target;
+          link.removeAttribute("role");
+          link.removeAttribute("tabindex");
         }
       });
     });
@@ -84,6 +127,11 @@
     onopen(target, { newTab: event.metaKey || event.ctrlKey });
   }
 
+  function formatSize(bytes: number): string {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+
   function valueList(p: NoteProperty): string[] {
     return Array.isArray(p.value) ? p.value : [p.value];
   }
@@ -95,9 +143,18 @@
   <header class="note-head">
     <h1 class="note-title">{titled.title}</h1>
     <p class="note-meta">
-      {words.toLocaleString()} {words === 1 ? "word" : "words"}{outline.length ? ` · ${outline.length} ${outline.length === 1 ? "section" : "sections"}` : ""}
+      {plural(words, "word")}{outline.length ? ` · ${plural(outline.length, "section")}` : ""}
     </p>
   </header>
+
+  {#if truncated}
+    <div class="note-large" role="note" data-testid="note-truncated">
+      <span>This note is {formatSize(size)}. Showing the first part.</span>
+      {#if onopenfull}
+        <button type="button" onclick={onopenfull}>Open the whole note</button>
+      {/if}
+    </div>
+  {/if}
 
   {#if parsed.properties.length > 0}
     <dl class="props" data-testid="note-properties">
@@ -155,6 +212,30 @@
     margin: 6px 0 0;
     color: var(--v4-text-3);
     font-size: 12px;
+  }
+  .note-large {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 20px;
+    padding: 10px 14px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 10px;
+    background: var(--v4-raised);
+    color: var(--v4-text-2);
+    font-size: 13px;
+  }
+  .note-large button {
+    margin-left: auto;
+    padding: 4px 10px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    white-space: nowrap;
   }
   .props {
     display: grid;
@@ -237,6 +318,7 @@
   .markdown-body :global(a:hover) { border-bottom-color: var(--v4-link); }
   .markdown-body :global(.markdown-wikilink) {
     color: var(--v4-link);
+    transition: color 120ms ease;
     border-radius: 3px;
     cursor: default;
   }

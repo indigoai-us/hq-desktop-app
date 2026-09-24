@@ -1,13 +1,12 @@
 /**
  * Pure model for the Files explorer: which vaults a person can open, how a
- * vault's tree is filtered, and the Obsidian-style note features (wikilink
- * resolution, backlinks, outline, properties, quick-switcher matching).
+ * vault's tree is filtered, and how a note's page is read (properties,
+ * outline). Link resolution, backlinks and search live in the native vault
+ * index (`files.vault`), which answers with a few rows at a time.
  *
- * No Svelte, no Tauri. The explorer reads the local HQ folder through the
- * platform `files` seam; everything here works on the plain data it returns.
+ * No Svelte, no Tauri.
  */
 
-import type { VaultIndexedFile } from "@hq/platform";
 import type { Workspace } from "../../chat/workspaces.js";
 import { fileAccessibleCompanies } from "../file-tree.js";
 
@@ -124,13 +123,6 @@ export function toTreeEntry(raw: unknown): TreeEntry | null {
   };
 }
 
-/** True for HQ scaffold paths in the personal vault (hidden unless asked). */
-export function isSystemPath(vault: Vault, path: string): boolean {
-  if (path.split("/").some((part) => part.startsWith("."))) return true;
-  if (vault.kind !== "personal") return false;
-  return PERSONAL_SYSTEM_TOP_LEVEL.has(path.split("/")[0] ?? "");
-}
-
 /** "1 file", "3 files". */
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -173,78 +165,6 @@ export function noteTitle(path: string): string {
 
 export function isMarkdownPath(path: string): boolean {
   return /\.(md|markdown)$/i.test(path);
-}
-
-// ---- Wikilinks and backlinks ----------------------------------------------
-
-/** Lookup tables built once per index. */
-export interface LinkResolver {
-  resolve(target: string, fromPath: string): string | null;
-}
-
-function stripMdExt(p: string): string {
-  return p.replace(/\.(md|markdown)$/i, "");
-}
-
-/**
- * Resolve `[[target]]` the way Obsidian does, restricted to one vault:
- * an exact vault-relative path first (with or without `.md`), then a path
- * relative to the linking note's folder, then a unique-ish file name match
- * (shortest path wins, like Obsidian's "shortest path when possible").
- */
-export function createLinkResolver(vault: Vault, files: readonly VaultIndexedFile[]): LinkResolver {
-  const byRelPath = new Map<string, string>();
-  const byName = new Map<string, string[]>();
-  for (const f of files) {
-    const rel = vaultRelativePath(vault, f.path).toLowerCase();
-    byRelPath.set(rel, f.path);
-    byRelPath.set(stripMdExt(rel), byRelPath.get(stripMdExt(rel)) ?? f.path);
-    const name = f.name.toLowerCase();
-    for (const key of new Set([name, stripMdExt(name)])) {
-      const list = byName.get(key) ?? [];
-      list.push(f.path);
-      byName.set(key, list);
-    }
-  }
-  for (const list of byName.values()) {
-    list.sort((a, b) => a.split("/").length - b.split("/").length || a.length - b.length);
-  }
-  return {
-    resolve(target, fromPath) {
-      const clean = target.trim().replace(/^\/+/, "").replace(/\\/g, "/").toLowerCase();
-      if (!clean) return null;
-      const exact = byRelPath.get(clean);
-      if (exact) return exact;
-      const fromDir = vaultRelativePath(vault, fromPath).split("/").slice(0, -1);
-      const relParts = [...fromDir];
-      for (const part of clean.split("/")) {
-        if (part === "..") relParts.pop();
-        else if (part !== ".") relParts.push(part);
-      }
-      const relative = byRelPath.get(relParts.join("/"));
-      if (relative) return relative;
-      const last = clean.split("/").pop() ?? clean;
-      const candidates = byName.get(last) ?? [];
-      if (candidates.length === 0) return null;
-      if (clean.includes("/")) {
-        const suffix = `/${stripMdExt(clean)}`;
-        const match = candidates.find((c) => stripMdExt(c.toLowerCase()).endsWith(suffix));
-        if (match) return match;
-      }
-      return candidates[0] ?? null;
-    },
-  };
-}
-
-/** Notes that link to `path`, by title. */
-export function backlinksFor(
-  path: string,
-  files: readonly VaultIndexedFile[],
-  resolver: LinkResolver,
-): VaultIndexedFile[] {
-  return files
-    .filter((f) => f.path !== path && f.links.some((t) => resolver.resolve(t, f.path) === path))
-    .sort((a, b) => noteTitle(a.path).localeCompare(noteTitle(b.path)));
 }
 
 // ---- Note content ------------------------------------------------------------
@@ -334,65 +254,4 @@ export function outlineOf(body: string): OutlineItem[] {
     if (text) out.push({ level: m[1].length, text, index: out.length });
   }
   return out;
-}
-
-// ---- Quick switcher ---------------------------------------------------------
-
-/**
- * Fuzzy score of `query` against a file: every query character must appear in
- * order. Matches in the file name beat matches in folders; consecutive and
- * word-start matches score higher. Null when it does not match.
- */
-export function fuzzyScore(query: string, path: string): number | null {
-  const q = query.trim().toLowerCase();
-  if (!q) return 0;
-  const lower = path.toLowerCase();
-  const nameStart = lower.lastIndexOf("/") + 1;
-  let score = 0;
-  let from = 0;
-  let prev = -2;
-  for (const ch of q) {
-    if (ch === " ") continue;
-    const idx = lower.indexOf(ch, from);
-    if (idx < 0) return null;
-    score += 1;
-    if (idx >= nameStart) score += 2;
-    if (idx === prev + 1) score += 3;
-    const before = lower[idx - 1];
-    if (idx === 0 || before === "/" || before === "-" || before === "_" || before === " " || before === ".") {
-      score += 2;
-    }
-    prev = idx;
-    from = idx + 1;
-  }
-  if (lower.slice(nameStart).startsWith(q)) score += 10;
-  return score - lower.length * 0.01;
-}
-
-export function quickSwitch(
-  query: string,
-  files: readonly VaultIndexedFile[],
-  vault: Vault,
-  limit = 50,
-): VaultIndexedFile[] {
-  if (!query.trim()) {
-    return files.filter((f) => f.isMarkdown).slice(0, limit);
-  }
-  const scored: Array<{ f: VaultIndexedFile; s: number }> = [];
-  for (const f of files) {
-    const s = fuzzyScore(query, vaultRelativePath(vault, f.path));
-    if (s !== null) scored.push({ f, s: s + (f.isMarkdown ? 1 : 0) });
-  }
-  return scored.sort((a, b) => b.s - a.s).slice(0, limit).map((x) => x.f);
-}
-
-/** Counts for the vault home. */
-export function vaultStats(files: readonly VaultIndexedFile[]): { notes: number; files: number; links: number } {
-  let notes = 0;
-  let links = 0;
-  for (const f of files) {
-    if (f.isMarkdown) notes += 1;
-    links += f.links.length;
-  }
-  return { notes, files: files.length, links };
 }

@@ -922,32 +922,67 @@ export function vaultPutIntegrityFields(
   };
 }
 
-/** One file in a {@link VaultIndexWire}. */
-export interface VaultIndexedFile {
+/** A file in the Files explorer's answers (Rust `vault_index::FileHit`). */
+export interface VaultFileHit {
   /** HQ-folder-relative, forward-slash path. */
   path: string;
   name: string;
   isMarkdown: boolean;
-  /** Raw `[[target]]` values in a Markdown note (alias and heading removed). */
-  links: string[];
 }
 
-/** Result of `files.indexVault` (Rust `vault_index::VaultIndex`). */
-export interface VaultIndexWire {
+/** Vault home data (Rust `vault_index::VaultSummary`). */
+export interface VaultSummaryWire {
   root: string;
-  files: VaultIndexedFile[];
-  /** More files than the index returns; the list is incomplete. */
+  notes: number;
+  files: number;
+  links: number;
+  /** The vault has more files than the index holds. */
   truncated: boolean;
+  /** The notes the most other notes link to. */
+  hubs: Array<{ path: string; count: number }>;
+  /** Top-level folders by file count. */
+  folders: Array<{ name: string; files: number }>;
+}
+
+/** Link context for one open note (Rust `vault_index::NoteLinks`). */
+export interface VaultNoteLinks {
+  resolved: Array<{ target: string; path: string | null }>;
+  backlinks: VaultFileHit[];
+  /** Total notes linking here; `backlinks` holds at most 200. */
+  backlinkCount: number;
+  outgoing: VaultFileHit[];
+}
+
+/** A note's text, capped for rendering (Rust `vault_index::NotePreview`). */
+export interface VaultNotePreview {
+  text: string;
+  /** Full file size in bytes. */
+  size: number;
+  /** Only the start of the note is in `text`. */
+  truncated: boolean;
+}
+
+/**
+ * The Files explorer's questions about one vault. `root` is `""` (personal)
+ * or `companies/<slug>`; `includeSystem` adds HQ scaffold and dotfiles. The
+ * index lives in the native layer, so each answer is a few rows.
+ */
+export interface VaultApi {
+  summary(root: string, includeSystem: boolean): AdapterPromise<VaultSummaryWire>;
+  search(root: string, includeSystem: boolean, query: string): AdapterPromise<VaultFileHit[]>;
+  noteLinks(
+    root: string,
+    includeSystem: boolean,
+    path: string,
+    targets: string[],
+  ): AdapterPromise<VaultNoteLinks>;
+  readNote(path: string): AdapterPromise<VaultNotePreview>;
 }
 
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
-  /**
-   * Index one local vault for the Files explorer: every visible file and the
-   * `[[wikilinks]]` in each note. `root` is `""` (personal vault) or
-   * `companies/<slug>`. Desktop only; hosts without it omit the method.
-   */
-  indexVault?(root: string): AdapterPromise<VaultIndexWire>;
+  /** Files explorer vault index. Desktop only; hosts without it omit it. */
+  vault?: VaultApi;
   getFileContent(path: string): AdapterPromise<string>;
   /** ACL-filtered vault browse (hq-pro GET /v1/files/list). */
   listVaultPrefix(companyUid: string, prefix: string): AdapterPromise<Json>;

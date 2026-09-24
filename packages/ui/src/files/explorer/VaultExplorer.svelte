@@ -8,13 +8,17 @@
    * the reading view in the middle; outline and backlinks on the right.
    * Cmd+O opens the quick switcher.
    *
+   * The whole-vault work (search, link resolution, backlinks, counts) runs in
+   * the native vault index (`files.vault`), which keeps each vault in memory
+   * and answers with a few rows. The page never holds the vault's file list.
+   *
    * Reading goes through the native file commands, which canonicalize every
    * path, keep reads inside the HQ folder and recheck company membership.
    * A company vault binds the desktop read scope to that company first
    * (`appShell.setActiveCompany`), which the native company gate requires.
    */
   import { untrack } from "svelte";
-  import type { PlatformAdapter, VaultIndexWire } from "@hq/platform";
+  import type { PlatformAdapter, VaultFileHit, VaultNoteLinks, VaultSummaryWire } from "@hq/platform";
   import type { Workspace } from "../../chat/workspaces.js";
   import FilePreviewPane from "../FilePreviewPane.svelte";
   import OpenFileInClaudeCode from "../OpenFileInClaudeCode.svelte";
@@ -23,16 +27,12 @@
   import VaultTree from "./VaultTree.svelte";
   import {
     PERSONAL_VAULT,
-    backlinksFor,
     breadcrumbs,
-    createLinkResolver,
     isMarkdownPath,
-    isSystemPath,
     noteTitle,
     pathInVault,
     plural,
     vaultRelativePath,
-    vaultStats,
     vaultsFor,
     type OutlineItem,
     type Vault,
@@ -55,6 +55,8 @@
   const vaults = $derived(vaultsFor(companies));
   let currentVaultId = $state<string>(untrack(() => vaultId) ?? PERSONAL_VAULT.id);
   const vault = $derived<Vault>(vaults.find((v) => v.id === currentVaultId) ?? PERSONAL_VAULT);
+  const vaultApi = $derived(adapter.files.vault ?? null);
+  let showSystem = $state(false);
 
   // Follow navigation (back/forward) into the explorer.
   $effect(() => {
@@ -89,39 +91,48 @@
       : { ok: false as const, message: res.message };
   }
 
-  // ---- index -------------------------------------------------------------------
-  let index = $state<VaultIndexWire | null>(null);
-  let indexing = $state(false);
-  let indexError = $state<string | null>(null);
-  let indexGeneration = 0;
-  const canIndex = $derived(typeof adapter.files.indexVault === "function");
-
-  async function loadIndex(v: Vault): Promise<void> {
-    const gen = ++indexGeneration;
-    index = null;
-    indexError = null;
-    if (!adapter.files.indexVault) return;
-    indexing = true;
+  async function search(query: string): Promise<VaultFileHit[] | null> {
+    const api = vaultApi;
+    if (!api) return null;
+    const v = vault;
     await ensureScope(v);
-    const res = await adapter.files.indexVault(v.root);
-    if (gen !== indexGeneration) return;
-    indexing = false;
-    if (res.ok) index = res.value;
-    else indexError = res.message || "This vault could not be indexed.";
+    const res = await api.search(v.root, showSystem, query);
+    return res.ok ? res.value : null;
   }
 
-  let showSystem = $state(false);
-  const files = $derived(
-    (index?.files ?? []).filter((f) => showSystem || !isSystemPath(vault, f.path)),
-  );
-  const resolver = $derived(index ? createLinkResolver(vault, index.files) : null);
-  const stats = $derived(vaultStats(files));
+  // ---- vault home ----------------------------------------------------------------
+  let summary = $state<VaultSummaryWire | null>(null);
+  let summaryLoading = $state(false);
+  let summaryError = $state<string | null>(null);
+  let summaryGeneration = 0;
+
+  async function loadSummary(v: Vault, includeSystem: boolean): Promise<void> {
+    const gen = ++summaryGeneration;
+    summary = null;
+    summaryError = null;
+    const api = vaultApi;
+    if (!api) return;
+    summaryLoading = true;
+    await ensureScope(v);
+    const res = await api.summary(v.root, includeSystem);
+    if (gen !== summaryGeneration) return;
+    summaryLoading = false;
+    if (res.ok) summary = res.value;
+    else summaryError = res.message || "This vault could not be read.";
+  }
+
+  $effect(() => {
+    const v = vault;
+    const sys = showSystem;
+    void v.id;
+    untrack(() => void loadSummary(v, sys));
+  });
 
   // ---- tabs and content --------------------------------------------------------
   let tabs = $state<string[]>([]);
   let activeTab = $state(0);
   const activePath = $derived(tabs[activeTab] ?? null);
-  let content = $state<Record<string, { source?: string; error?: string }>>({});
+  let content = $state<Record<string, { text?: string; size?: number; truncated?: boolean; error?: string }>>({});
   let treeReload = $state(0);
 
   function report(): void {
@@ -129,25 +140,21 @@
   }
 
   function switchVault(id: string, opts: { report?: boolean } = {}): void {
-    if (id === currentVaultId && index) return;
+    if (id === currentVaultId) return;
     currentVaultId = id;
     tabs = [];
     activeTab = 0;
     content = {};
     outline = [];
+    noteLinks = null;
     vaultMenuOpen = false;
     treeReload += 1;
-    const v = vaults.find((x) => x.id === id) ?? PERSONAL_VAULT;
-    void loadIndex(v);
     if (opts.report !== false) report();
   }
 
-  // First load.
+  // Open the initial file once.
   $effect(() => {
     untrack(() => {
-      const initial = currentVaultId;
-      currentVaultId = "";
-      switchVault(initial, { report: false });
       if (path) openFile(path, { newTab: false, report: false });
     });
   });
@@ -163,17 +170,29 @@
     } else {
       tabs = tabs.map((t, i) => (i === activeTab ? p : t));
     }
-    if (isMarkdownPath(p) && !content[p]?.source) void loadContent(p);
+    if (isMarkdownPath(p) && content[p]?.text === undefined) void loadContent(p);
     outline = [];
     if (opts.report !== false) report();
   }
 
+  /** Note text: the native capped reader when present, else the whole file. */
   async function loadContent(p: string): Promise<void> {
     await ensureScope(vault);
+    const api = vaultApi;
+    if (api) {
+      const res = await api.readNote(p);
+      content = {
+        ...content,
+        [p]: res.ok
+          ? { text: res.value.text, size: res.value.size, truncated: res.value.truncated }
+          : { error: res.message || "This file could not be read." },
+      };
+      return;
+    }
     const res = await adapter.files.getFileContent(p);
     content = {
       ...content,
-      [p]: res.ok ? { source: String(res.value ?? "") } : { error: res.message || "This file could not be read." },
+      [p]: res.ok ? { text: String(res.value ?? "") } : { error: res.message || "This file could not be read." },
     };
   }
 
@@ -186,54 +205,43 @@
     report();
   }
 
+  // ---- links ---------------------------------------------------------------------
+  let noteLinks = $state<(VaultNoteLinks & { path: string }) | null>(null);
+  let linksSeq = 0;
+
+  /** The open note rendered its `[[targets]]`: ask the vault where they go. */
+  async function resolveLinks(p: string, targets: string[]): Promise<void> {
+    const api = vaultApi;
+    if (!api) return;
+    const mine = ++linksSeq;
+    const v = vault;
+    await ensureScope(v);
+    const res = await api.noteLinks(v.root, showSystem, p, targets);
+    if (mine !== linksSeq || !res.ok) return;
+    noteLinks = { ...res.value, path: p };
+  }
+
+  // Non-note files still get backlinks.
+  $effect(() => {
+    const p = activePath;
+    if (!p || isMarkdownPath(p)) return;
+    untrack(() => void resolveLinks(p, []));
+  });
+
+  const current = $derived(noteLinks && noteLinks.path === activePath ? noteLinks : null);
+  const linkMap = $derived(
+    current ? Object.fromEntries(current.resolved.map((r) => [r.target, r.path])) : null,
+  );
+  const backlinks = $derived(current?.backlinks ?? []);
+  const backlinkCount = $derived(current?.backlinkCount ?? 0);
+  const outgoing = $derived(current?.outgoing ?? []);
+
   // ---- side panels -------------------------------------------------------------
   let outline = $state<OutlineItem[]>([]);
   let scrollTo = $state<{ index: number; seq: number } | null>(null);
   let rightOpen = $state(true);
   let switcherOpen = $state(false);
   let vaultMenuOpen = $state(false);
-
-  const backlinks = $derived(
-    activePath && resolver && index ? backlinksFor(activePath, index.files, resolver) : [],
-  );
-  const outgoing = $derived.by(() => {
-    if (!activePath || !resolver || !index) return [] as string[];
-    const f = index.files.find((x) => x.path === activePath);
-    const out: string[] = [];
-    for (const t of f?.links ?? []) {
-      const r = resolver.resolve(t, activePath);
-      if (r && !out.includes(r)) out.push(r);
-    }
-    return out;
-  });
-
-  // Hubs: the notes the most other notes link to.
-  const hubs = $derived.by(() => {
-    if (!index || !resolver) return [] as Array<{ path: string; count: number }>;
-    const counts = new Map<string, number>();
-    for (const f of index.files) {
-      for (const t of f.links) {
-        const r = resolver.resolve(t, f.path);
-        if (r && r !== f.path) counts.set(r, (counts.get(r) ?? 0) + 1);
-      }
-    }
-    return [...counts.entries()]
-      .filter(([p]) => showSystem || !isSystemPath(vault, p))
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([p, count]) => ({ path: p, count }));
-  });
-
-  // Top-level folders with file counts, for the vault home.
-  const areas = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const f of files) {
-      const rel = vaultRelativePath(vault, f.path);
-      const top = rel.includes("/") ? rel.split("/")[0] : "";
-      if (top) counts.set(top, (counts.get(top) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 9);
-  });
 
   function onkeydown(event: KeyboardEvent): void {
     const mod = event.metaKey || event.ctrlKey;
@@ -268,7 +276,6 @@
     return v.kind === "personal" ? "P" : (v.label.trim()[0] ?? "?").toUpperCase();
   }
 </script>
-
 <svelte:window {onkeydown} />
 
 <div class="vx" data-testid="vault-explorer">
@@ -323,7 +330,7 @@
         </label>
       {/if}
       <span class="vx-count">
-        {#if indexing}Indexing…{:else if index}{plural(stats.notes, "note")} · {plural(stats.files, "file")}{index.truncated ? "+" : ""}{/if}
+        {#if summaryLoading}Indexing…{:else if summary}{plural(summary.notes, "note")} · {plural(summary.files, "file")}{summary.truncated ? "+" : ""}{/if}
       </span>
     </footer>
   </aside>
@@ -389,36 +396,36 @@
                 What {vault.label} knows. Everyone on the team, and every bot and coding tool they use, works from this same vault.
               {/if}
             </p>
-            {#if index}
+            {#if summary}
               <div class="vx-stats">
-                <div><strong>{stats.notes.toLocaleString()}</strong><span>{stats.notes === 1 ? "note" : "notes"}</span></div>
-                <div><strong>{stats.files.toLocaleString()}</strong><span>{stats.files === 1 ? "file" : "files"}</span></div>
-                <div><strong>{stats.links.toLocaleString()}</strong><span>{stats.links === 1 ? "link" : "links"}</span></div>
+                <div><strong>{summary.notes.toLocaleString()}</strong><span>{summary.notes === 1 ? "note" : "notes"}</span></div>
+                <div><strong>{summary.files.toLocaleString()}</strong><span>{summary.files === 1 ? "file" : "files"}</span></div>
+                <div><strong>{summary.links.toLocaleString()}</strong><span>{summary.links === 1 ? "link" : "links"}</span></div>
               </div>
-            {:else if indexing}
+            {:else if summaryLoading}
               <p class="vx-muted">Reading the vault…</p>
-            {:else if indexError}
-              <p class="vx-muted">{indexError}</p>
-            {:else if !canIndex}
+            {:else if summaryError}
+              <p class="vx-muted">{summaryError}</p>
+            {:else if !vaultApi}
               <p class="vx-muted">Pick a file on the left to start reading.</p>
             {/if}
 
-            {#if areas.length > 0}
+            {#if summary && summary.folders.length > 0}
               <h2>Folders</h2>
               <div class="vx-areas">
-                {#each areas as [name, count] (name)}
+                {#each summary.folders as f (f.name)}
                   <div class="vx-area">
-                    <span class="vx-area-name">{name}</span>
-                    <span class="vx-area-count">{plural(count, "file")}</span>
+                    <span class="vx-area-name">{f.name}</span>
+                    <span class="vx-area-count">{plural(f.files, "file")}</span>
                   </div>
                 {/each}
               </div>
             {/if}
 
-            {#if hubs.length > 0}
+            {#if summary && summary.hubs.length > 0}
               <h2>Most linked</h2>
               <ul class="vx-list">
-                {#each hubs as h (h.path)}
+                {#each summary.hubs as h (h.path)}
                   <li>
                     <button type="button" onclick={(e) => openFile(h.path, { newTab: e.metaKey || e.ctrlKey })}>
                       <span>{noteTitle(h.path)}</span>
@@ -431,20 +438,24 @@
           </section>
         {:else if isMarkdownPath(activePath)}
           {@const c = content[activePath]}
-          {#if c?.source !== undefined}
+          {#if c?.text !== undefined}
             {#key activePath}
               <NoteView
                 path={activePath}
-                source={c.source}
-                {resolver}
+                source={c.text}
+                truncated={c.truncated}
+                size={c.size}
+                links={linkMap}
                 onopen={(p, o) => openFile(p, o)}
                 onoutline={(items) => (outline = items)}
+                onlinktargets={(targets) => resolveLinks(activePath, targets)}
                 {scrollTo}
+                onopenfull={canReveal ? () => reveal(activePath) : undefined}
               />
             {/key}
             {#if backlinks.length > 0}
               <section class="vx-inline-links" aria-label="Linked here">
-                <h3>Linked here <span class="vx-badge">{backlinks.length}</span></h3>
+                <h3>Linked here <span class="vx-badge">{backlinkCount}</span></h3>
                 <ul class="vx-links">
                   {#each backlinks as b (b.path)}
                     <li>
@@ -487,9 +498,9 @@
             </section>
           {/if}
           <section data-testid="vault-backlinks">
-            <h3>Linked here <span class="vx-badge">{backlinks.length}</span></h3>
+            <h3>Linked here <span class="vx-badge">{backlinkCount}</span></h3>
             {#if backlinks.length === 0}
-              <p class="vx-muted small">{indexing ? "Finding links…" : "No other note links here yet."}</p>
+              <p class="vx-muted small">{current ? "No other note links here yet." : "Finding links…"}</p>
             {:else}
               <ul class="vx-links">
                 {#each backlinks as b (b.path)}
@@ -501,16 +512,19 @@
                   </li>
                 {/each}
               </ul>
+              {#if backlinkCount > backlinks.length}
+                <p class="vx-muted small">and {plural(backlinkCount - backlinks.length, "more note")}</p>
+              {/if}
             {/if}
           </section>
           {#if outgoing.length > 0}
             <section>
               <h3>Links out <span class="vx-badge">{outgoing.length}</span></h3>
               <ul class="vx-links">
-                {#each outgoing as o (o)}
+                {#each outgoing as o (o.path)}
                   <li>
-                    <button type="button" onclick={(e) => openFile(o, { newTab: e.metaKey || e.ctrlKey })}>
-                      <span>{noteTitle(o)}</span>
+                    <button type="button" onclick={(e) => openFile(o.path, { newTab: e.metaKey || e.ctrlKey })}>
+                      <span>{o.isMarkdown ? noteTitle(o.path) : o.name}</span>
                     </button>
                   </li>
                 {/each}
@@ -525,8 +539,7 @@
   {#if switcherOpen}
     <QuickSwitcher
       {vault}
-      {files}
-      {indexing}
+      {search}
       onopen={(p, o) => openFile(p, o)}
       onclose={() => (switcherOpen = false)}
     />
@@ -678,7 +691,7 @@
   .vx-tree {
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    overflow: hidden;
   }
   .vx-side-foot {
     display: grid;

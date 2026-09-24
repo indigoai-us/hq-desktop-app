@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { VaultIndexedFile } from "@hq/platform";
 import type { Workspace } from "../../chat/workspaces.js";
 import {
   PERSONAL_VAULT,
-  backlinksFor,
   breadcrumbs,
-  createLinkResolver,
-  fuzzyScore,
   isSensitiveName,
   outlineOf,
-  quickSwitch,
+  plural,
   splitFrontmatter,
   vaultsFor,
   visibleEntries,
@@ -35,11 +31,6 @@ function ws(over: Partial<Workspace>): Workspace {
 }
 
 const ACME: Vault = { id: "company:acme", kind: "company", label: "Acme", root: "companies/acme", slug: "acme" };
-
-function file(path: string, links: string[] = []): VaultIndexedFile {
-  const name = path.split("/").pop()!;
-  return { path, name, isMarkdown: /\.md$/.test(name), links };
-}
 
 describe("vaultsFor", () => {
   it("lists personal first, then readable companies with a local folder", () => {
@@ -97,34 +88,6 @@ describe("visibleEntries", () => {
   });
 });
 
-describe("wikilinks", () => {
-  const files = [
-    file("companies/acme/clients/Lumen.md", ["pricing", "../knowledge/tone"]),
-    file("companies/acme/knowledge/pricing.md", ["clients/Lumen"]),
-    file("companies/acme/knowledge/tone.md"),
-    file("companies/acme/archive/pricing.md"),
-    file("companies/acme/diagrams/flow.png"),
-  ];
-  const resolver = createLinkResolver(ACME, files);
-
-  it("resolves by vault path, relative path, then shortest name match", () => {
-    expect(resolver.resolve("clients/Lumen", "companies/acme/knowledge/pricing.md")).toBe(
-      "companies/acme/clients/Lumen.md",
-    );
-    expect(resolver.resolve("../knowledge/tone", "companies/acme/clients/Lumen.md")).toBe(
-      "companies/acme/knowledge/tone.md",
-    );
-    expect(resolver.resolve("tone", "companies/acme/clients/Lumen.md")).toBe("companies/acme/knowledge/tone.md");
-    expect(resolver.resolve("flow.png", "x")).toBe("companies/acme/diagrams/flow.png");
-    expect(resolver.resolve("nowhere", "x")).toBeNull();
-  });
-
-  it("finds backlinks", () => {
-    const back = backlinksFor("companies/acme/clients/Lumen.md", files, resolver);
-    expect(back.map((f) => f.path)).toEqual(["companies/acme/knowledge/pricing.md"]);
-  });
-});
-
 describe("splitFrontmatter", () => {
   it("reads flat keys, inline lists and block lists", () => {
     const { properties, body } = splitFrontmatter(
@@ -154,11 +117,10 @@ describe("outlineOf", () => {
   });
 });
 
-describe("quick switcher", () => {
-  it("ranks file-name matches first", () => {
-    const files = [file("companies/acme/pricing/notes.md"), file("companies/acme/knowledge/pricing.md")];
-    expect(quickSwitch("pric", files, ACME).map((f) => f.path)[0]).toBe("companies/acme/knowledge/pricing.md");
-    expect(fuzzyScore("zzz", "pricing.md")).toBeNull();
+describe("plural", () => {
+  it("says 1 file and 3 files", () => {
+    expect(plural(1, "file")).toBe("1 file");
+    expect(plural(3, "file")).toBe("3 files");
   });
 });
 

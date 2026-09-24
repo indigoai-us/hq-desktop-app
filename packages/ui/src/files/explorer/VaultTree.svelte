@@ -4,8 +4,10 @@
    *
    * Folders load their children on first expand through `listDir` (the
    * native `list_hq_dir`, which applies the HQ path, noise and company
-   * checks). Rows are rendered from one flattened list so a deep vault stays
-   * a flat DOM. Arrow keys move and open, like Obsidian's file pane.
+   * checks). Rows come from one flattened list, and only the rows in view
+   * (plus a margin) are in the DOM, so a folder with thousands of files
+   * scrolls as smoothly as a small one. Arrow keys move and open, like
+   * Obsidian's file pane.
    */
   import { untrack } from "svelte";
   import type { Vault, TreeEntry } from "./vault-model.js";
@@ -29,6 +31,26 @@
   let rootError = $state<string | null>(null);
   let focusPath = $state<string | null>(null);
   let generation = 0;
+
+  /** Every row is this tall, which is what lets the tree window its rows. */
+  const ROW_HEIGHT = 26;
+  /** Rows rendered above and below the visible ones. */
+  const OVERSCAN = 12;
+  /** Assumed viewport before the tree has been measured. */
+  const FALLBACK_VIEWPORT = 640;
+
+  let scroller = $state<HTMLDivElement | null>(null);
+  let scrollTop = $state(0);
+  let viewportHeight = $state(0);
+
+  $effect(() => {
+    const el = scroller;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => (viewportHeight = el.clientHeight));
+    ro.observe(el);
+    viewportHeight = el.clientHeight;
+    return () => ro.disconnect();
+  });
 
   async function load(path: string): Promise<void> {
     const gen = generation;
@@ -98,6 +120,34 @@
     return out;
   });
 
+  const windowed = $derived.by(() => {
+    const height = viewportHeight || FALLBACK_VIEWPORT;
+    const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+    const end = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_HEIGHT) + OVERSCAN);
+    return { start, rows: rows.slice(start, end) };
+  });
+
+  /** Scroll so row `index` is fully visible. */
+  function scrollToRow(index: number): void {
+    const el = scroller;
+    if (!el || index < 0) return;
+    const top = index * ROW_HEIGHT;
+    const height = el.clientHeight || FALLBACK_VIEWPORT;
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (top + ROW_HEIGHT > el.scrollTop + height) el.scrollTop = top + ROW_HEIGHT - height;
+    scrollTop = el.scrollTop;
+  }
+
+  // Keep the open file in view once its folders have loaded.
+  let revealed: string | null = null;
+  $effect(() => {
+    const path = activePath;
+    const index = rows.findIndex((r) => r.entry.path === path);
+    if (!path || index < 0 || revealed === path) return;
+    revealed = path;
+    untrack(() => scrollToRow(index));
+  });
+
   function toggle(entry: TreeEntry): void {
     const open = !expanded[entry.path];
     expanded = { ...expanded, [entry.path]: open };
@@ -114,12 +164,18 @@
     const idx = rows.findIndex((r) => r.entry.path === focusPath);
     const current = rows[idx]?.entry;
     const move = (to: number) => {
-      const row = rows[Math.max(0, Math.min(rows.length - 1, to))];
+      const index = Math.max(0, Math.min(rows.length - 1, to));
+      const row = rows[index];
       if (!row) return;
       focusPath = row.entry.path;
-      document
-        .querySelector<HTMLElement>(`[data-tree-path="${CSS.escape(row.entry.path)}"]`)
-        ?.focus();
+      // The row may be outside the rendered window: scroll it in, let the
+      // window re-render, then focus it.
+      scrollToRow(index);
+      requestAnimationFrame(() => {
+        scroller
+          ?.querySelector<HTMLElement>(`[data-tree-path="${CSS.escape(row.entry.path)}"]`)
+          ?.focus();
+      });
     };
     switch (event.key) {
       case "ArrowDown":
@@ -169,7 +225,16 @@
   }
 </script>
 
-<div class="vt" role="tree" aria-label={`${vault.label} files`} tabindex="-1" {onkeydown} data-testid="vault-tree">
+<div
+  class="vt"
+  role="tree"
+  aria-label={`${vault.label} files`}
+  tabindex="-1"
+  {onkeydown}
+  bind:this={scroller}
+  onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
+  data-testid="vault-tree"
+>
   {#if rootError}
     <p class="vt-note" role="status">{rootError}</p>
   {:else if loading[vault.root] && !children[vault.root]}
@@ -181,60 +246,74 @@
   {:else if rows.length === 0}
     <p class="vt-note">This vault is empty.</p>
   {:else}
-    {#each rows as row (row.entry.path)}
-      {@const entry = row.entry}
-      {@const ext = extOf(entry.name)}
-      <button
-        type="button"
-        class="vt-row"
-        class:is-active={!entry.isDir && entry.path === activePath}
-        class:is-dir={entry.isDir}
-        role="treeitem"
-        aria-selected={!entry.isDir && entry.path === activePath}
-        aria-expanded={entry.isDir ? !!expanded[entry.path] : undefined}
-        tabindex={entry.path === (focusPath ?? rows[0]?.entry.path) ? 0 : -1}
-        style={`--depth:${row.depth}`}
-        data-tree-path={entry.path}
-        data-testid="vault-tree-row"
-        title={entry.name}
-        onclick={(e) => activate(entry, e.metaKey || e.ctrlKey)}
-        onfocus={() => (focusPath = entry.path)}
-      >
-        {#each Array(row.depth) as _, g (g)}
-          <span class="vt-guide" style={`--g:${g}`} aria-hidden="true"></span>
+    <div class="vt-rows" style={`height:${rows.length * ROW_HEIGHT}px`}>
+      <div class="vt-window" style={`transform:translateY(${windowed.start * ROW_HEIGHT}px)`}>
+        {#each windowed.rows as row (row.entry.path)}
+          {@const entry = row.entry}
+          {@const ext = extOf(entry.name)}
+          <button
+            type="button"
+            class="vt-row"
+            class:is-active={!entry.isDir && entry.path === activePath}
+            class:is-dir={entry.isDir}
+            role="treeitem"
+            aria-selected={!entry.isDir && entry.path === activePath}
+            aria-expanded={entry.isDir ? !!expanded[entry.path] : undefined}
+            tabindex={entry.path === (focusPath ?? rows[0]?.entry.path) ? 0 : -1}
+            style={`--depth:${row.depth}`}
+            data-tree-path={entry.path}
+            data-testid="vault-tree-row"
+            title={entry.name}
+            onclick={(e) => activate(entry, e.metaKey || e.ctrlKey)}
+            onfocus={() => (focusPath = entry.path)}
+          >
+            {#each Array(row.depth) as _, g (g)}
+              <span class="vt-guide" style={`--g:${g}`} aria-hidden="true"></span>
+            {/each}
+            {#if entry.isDir}
+              <svg class="vt-chevron" class:open={!!expanded[entry.path]} viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            {:else}
+              <span class="vt-chevron-spacer" aria-hidden="true"></span>
+            {/if}
+            <span class="vt-name">{displayName(entry)}</span>
+            {#if !entry.isDir && ext && ext !== "md" && ext !== "markdown"}
+              <span class="vt-ext">{ext}</span>
+            {/if}
+            {#if entry.isDir && loading[entry.path]}
+              <span class="vt-spinner" aria-label="Loading"></span>
+            {/if}
+          </button>
         {/each}
-        {#if entry.isDir}
-          <svg class="vt-chevron" class:open={!!expanded[entry.path]} viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        {:else}
-          <span class="vt-chevron-spacer" aria-hidden="true"></span>
-        {/if}
-        <span class="vt-name">{displayName(entry)}</span>
-        {#if !entry.isDir && ext && ext !== "md" && ext !== "markdown"}
-          <span class="vt-ext">{ext}</span>
-        {/if}
-        {#if entry.isDir && loading[entry.path]}
-          <span class="vt-spinner" aria-label="Loading"></span>
-        {/if}
-      </button>
-    {/each}
+      </div>
+    </div>
   {/if}
 </div>
 
 <style>
   .vt {
-    display: flex;
-    flex-direction: column;
+    box-sizing: border-box;
+    height: 100%;
+    overflow-y: auto;
     padding: 4px 6px 16px;
     outline: none;
+  }
+  .vt-rows {
+    position: relative;
+  }
+  .vt-window {
+    display: flex;
+    flex-direction: column;
+    will-change: transform;
   }
   .vt-row {
     position: relative;
     display: flex;
+    flex: none;
     align-items: center;
     gap: 4px;
-    min-height: 26px;
+    height: 26px;
     padding: 0 8px 0 calc(6px + var(--depth) * 16px);
     border: 0;
     border-radius: 6px;
