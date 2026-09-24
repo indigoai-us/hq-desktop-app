@@ -8,6 +8,14 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed a bug where running the HQ installer after the desktop app was re-signed
+  (or after any macOS keychain read error such as errSecAuthFailed) deleted the
+  sign-in token file at ~/.hq/cognito-tokens.json, logging users out even though
+  the desktop app and CLI had kept them signed in. The installer now treats the
+  token file as a fallback when the keychain entry is missing, invalid, or
+  unreadable; the file is deleted only on explicit sign-out. When both the
+  keychain and the file hold valid tokens, the newer token (by expiresAt) wins.
+
 ## [0.10.323] — 2026-09-24
 
 - Fixed the channel list failing to load for people in companies with a lot of
@@ -16,7 +24,6 @@ The release moves it under the version it ships in.
   legitimately took longer to arrive and the request aborted partway through
   with a decode error. It now gets a longer timeout of its own.
 - HQ Sync tells you to verify your email before it can show pending company invites.
-
 - Fixed a bug where every company in the sidebar's "Companies" section showed
   "no home channel yet," even companies with a working home channel. The
   fallback check that resolves a home channel while the server catches up was
