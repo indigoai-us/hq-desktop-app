@@ -986,6 +986,7 @@
       dmDots,
       includeContactsWithoutConversation: true,
       companySlugByUid,
+      selfUid: self?.uid ?? null,
     }),
   );
 
