@@ -1414,6 +1414,10 @@ This release brings the new HQ interface. A rail on the left holds your companie
   home channel, and you can choose which companies show there.
 - Company home channels show Chat only — the Office tab is hidden for
   company channels for now (the underlying calling code is unchanged).
+- Notes to self: your own direct messages now show in the sidebar as
+  "<your name> (you)". Open it to read what you (and tools acting as you)
+  sent yourself, or write yourself a note. It never shows an unread badge,
+  and it appears in search.
 
 ## [0.10.321] — 2026-09-24
 

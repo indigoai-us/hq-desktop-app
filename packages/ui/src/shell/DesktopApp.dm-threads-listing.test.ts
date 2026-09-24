@@ -135,7 +135,8 @@ describe("DesktopApp DM threads listing merge", () => {
       merged.get("prs_sent_last"),
       "a pair with no inbox row still gets its stamp from the peer index",
     ).toBe(SENT_LAST_AT);
-    expect(merged.has("prs_me"), "self is never a DM peer row").toBe(false);
+    // Notes to self: the self pair keeps its stamp so the row orders by it.
+    expect(merged.get("prs_me"), "the self pair carries its own stamp").toBe(THREADS_JACOB_AT);
   });
 
   it("falls back to inbox-only when the server answers 404 (route predates it)", async () => {
