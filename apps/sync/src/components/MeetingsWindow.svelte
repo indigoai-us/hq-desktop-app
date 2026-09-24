@@ -19,7 +19,13 @@
   import { shouldShowMeetingsLoadingPlaceholder } from '../lib/meetingsLoadingGate';
   import { humanCompanyLabel } from '../lib/visible-labels';
   import { safeUnlisten, subscribeWindowFocus } from '../lib/listener-registry';
-  import { isAlreadyScheduledError } from '../lib/invite-errors';
+  import {
+    isAlreadyScheduledError,
+    isPlanRequiredError,
+    planRequiredUpgradeUrl,
+  } from '../lib/invite-errors';
+  import PlanUpgradeAction from './PlanUpgradeAction.svelte';
+  import { openApprovedExternalUrl } from '../desktop-alt/external-open';
   import {
     botForEvent,
     buildRefreshProblemReport,
@@ -192,7 +198,12 @@
   let refreshFailureCount = 0;
   let lastRefreshErrorRaw = '';
   let reportingRefreshProblem = $state(false);
-  let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
+  let toast = $state<{
+    kind: 'info' | 'warn';
+    text: string;
+    upgradeUrl?: string;
+  } | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let integrationsOpening = $state(false);
   let openingMeetingIds = $state(new Set<string>());
 
@@ -363,6 +374,20 @@
     if (/\b403\b/.test(raw)) return "You don't have permission for that.";
     if (/\b5\d{2}\b/.test(raw)) return 'Server hiccup — try again in a moment.';
     return fallback;
+  }
+
+  function flashInviteError(err: unknown, fallback: string): void {
+    if (isPlanRequiredError(err)) {
+      const link = planRequiredUpgradeUrl(err);
+      if (link.kind === 'missing' || link.kind === 'invalid') {
+        console.error('Meeting plan refusal did not include a valid server upgrade URL.');
+      }
+      flashToast('warn', 'Meeting bot recording requires a paid plan for this account.', {
+        ...(link.kind === 'available' ? { upgradeUrl: link.url } : {}),
+      });
+      return;
+    }
+    flashToast('warn', friendlyError(err, fallback));
   }
 
   let urlInput = $state('');
@@ -829,7 +854,7 @@
         flashToast('info', 'Already invited — refreshing.');
         await refresh();
       } else {
-        flashToast('warn', friendlyError(err, "Couldn't invite the bot."));
+        flashInviteError(err, "Couldn't invite the bot.");
       }
     } finally {
       const next = new Set(rowPending);
@@ -894,7 +919,7 @@
       flashToast('info', "Bot's on the way.");
       await refresh();
     } catch (err) {
-      flashToast('warn', friendlyError(err, "Couldn't tell the bot to join."));
+      flashInviteError(err, "Couldn't tell the bot to join.");
     } finally {
       const next = new Set(rowPending);
       next.delete(key);
@@ -1028,7 +1053,7 @@
         flashToast('info', 'Already invited — refreshing.');
         await refresh();
       } else {
-        flashToast('warn', friendlyError(err, "Couldn't invite the bot."));
+        flashInviteError(err, "Couldn't invite the bot.");
       }
     } finally {
       urlInviting = false;
@@ -1045,11 +1070,27 @@
     );
   }
 
-  function flashToast(kind: 'info' | 'warn', text: string) {
-    toast = { kind, text };
-    setTimeout(() => {
+  function flashToast(
+    kind: 'info' | 'warn',
+    text: string,
+    options: { upgradeUrl?: string } = {},
+  ) {
+    if (toastTimer) clearTimeout(toastTimer);
+    toast = { kind, text, ...options };
+    if (options.upgradeUrl) return;
+    toastTimer = setTimeout(() => {
       if (toast && toast.text === text) toast = null;
+      toastTimer = null;
     }, 4000);
+  }
+
+  async function openMeetingPlanUpgrade(url: string): Promise<void> {
+    try {
+      await openApprovedExternalUrl(url);
+    } catch (err) {
+      console.error('Could not open the meeting plan upgrade link.', err);
+      flashToast('warn', friendlyError(err, "Couldn't open the upgrade page."));
+    }
   }
 
   async function openIntegrations(): Promise<void> {
@@ -1554,9 +1595,16 @@
   </div>
 
   {#if toast}
-    <p class="toast" class:toast-warn={toast.kind === 'warn'} role="status">
-      {toast.text}
-    </p>
+    <div class="toast" class:toast-warn={toast.kind === 'warn'} role="status">
+      <span>{toast.text}</span>
+      {#if toast.upgradeUrl}
+        <PlanUpgradeAction
+          upgradeUrl={toast.upgradeUrl}
+          onUpgrade={openMeetingPlanUpgrade}
+          testId="meetings-plan-upgrade"
+        />
+      {/if}
+    </div>
   {/if}
 
   {#if refreshNotice}

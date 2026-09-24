@@ -85,11 +85,12 @@ function wireApi(
 
 const planRequiredFailure = failure(
   "http-402",
-  'bot/invite HTTP 402: {"requiredPlan":"agents-500","code":"MEETING_PLAN_REQUIRED"}',
+  'bot/invite HTTP 402: {"requiredPlan":"agents-500","code":"MEETING_PLAN_REQUIRED","upgradeUrl":"https://hq.computer/companies/acme/billing?upgrade=team"}',
 );
 const planRequiredToast = {
   kind: "warn" as const,
-  text: "Meetings need the $500/mo Team plan—upgrade in HQ Console to record.",
+  text: "Meetings need HQ Workforce ($500/mo) to record. Upgrade in HQ Console.",
+  upgradeUrl: "https://hq.computer/companies/acme/billing?upgrade=team",
 };
 const event: MeetingEvent = {
   id: "event-plan-required",

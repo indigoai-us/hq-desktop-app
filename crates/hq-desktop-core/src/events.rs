@@ -93,6 +93,17 @@ pub struct SyncMaintenanceProgressEvent {
     pub total_bytes: u64,
 }
 
+/// `{type: "plan-limit", company, upgradeUrl}`
+/// One server-linked notice for a company's upload pass when the current plan
+/// prevents new files from being uploaded. This is informational and does not
+/// count as a sync error.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPlanLimitEvent {
+    pub company: String,
+    pub upgrade_url: String,
+}
+
 /// `{type: "error", company?, path, message}`
 /// Per-file or per-company error. `company` is absent only for discovery-
 /// phase failures (before the fanout plan resolved).
@@ -282,6 +293,8 @@ pub enum SyncEvent {
     /// protocol — older runners (hq-cloud <5.5.0) skip it. When present,
     /// arrives before any `Progress` events for that company.
     Plan(SyncPlanEvent),
+    /// Per-pass plan limit notice emitted by hq-cloud when uploads are paused.
+    PlanLimit(SyncPlanLimitEvent),
     Progress(SyncProgressEvent),
     MaintenanceProgress(SyncMaintenanceProgressEvent),
     /// Per-file divergence. Forwarded to the renderer as `sync:conflict` so
@@ -351,6 +364,7 @@ pub const EVENT_SYNC_FANOUT_PLAN: &str = "sync:fanout-plan";
 /// Frontend uses these to refine the progress denominator established
 /// by the upstream `EVENT_SYNC_TOTALS` pre-pass.
 pub const EVENT_SYNC_PLAN: &str = "sync:plan";
+pub const EVENT_SYNC_PLAN_LIMIT: &str = "sync:plan-limit";
 pub const EVENT_SYNC_PROGRESS: &str = "sync:progress";
 pub const EVENT_SYNC_ERROR: &str = "sync:error";
 pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
@@ -807,6 +821,25 @@ mod tests {
                 author: None,
             })
         );
+    }
+
+    #[test]
+    fn test_parse_server_shaped_plan_limit_line_preserves_upgrade_url() {
+        let line = r#"{"type":"plan-limit","company":"Acme","upgradeUrl":"https://hq.computer/companies/acme/billing?upgrade=team"}"#;
+        assert_eq!(
+            parse_sync_line(line),
+            Some(SyncEvent::PlanLimit(SyncPlanLimitEvent {
+                company: "Acme".to_string(),
+                upgrade_url: "https://hq.computer/companies/acme/billing?upgrade=team".to_string(),
+            }))
+        );
+        let payload = match parse_sync_line(line).expect("server event must parse") {
+            SyncEvent::PlanLimit(payload) => payload,
+            other => panic!("expected PlanLimit, got {other:?}"),
+        };
+        let wire = serde_json::to_value(payload).expect("payload serializes");
+        assert_eq!(wire["upgradeUrl"], "https://hq.computer/companies/acme/billing?upgrade=team");
+        assert!(wire.get("upgrade_url").is_none());
     }
 
     #[test]

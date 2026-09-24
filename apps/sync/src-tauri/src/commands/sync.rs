@@ -77,7 +77,8 @@ use crate::events::{
     SyncEvent, SyncProgressEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR,
     EVENT_SYNC_COMPANY_PROVISIONED, EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT,
     EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN,
-    EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
+    EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PLAN_LIMIT, EVENT_SYNC_PROGRESS,
+    EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -1515,6 +1516,11 @@ fn handle_sync_line<R: tauri::Runtime>(
         // older runner that doesn't emit Plan, this branch is simply never
         // taken — the existing TOTALS-based denominator stays authoritative.
         SyncEvent::Plan(payload) => app.emit(EVENT_SYNC_PLAN, payload.clone()),
+        SyncEvent::PlanLimit(payload) => app.emit_to(
+            crate::commands::desktop_alt::WINDOW_LABEL,
+            EVENT_SYNC_PLAN_LIMIT,
+            payload.clone(),
+        ),
         SyncEvent::Progress(payload) => {
             // Record into the session activity log (uploaded/downloaded with a
             // timestamp) and live-append to the Recent Changes window if open.

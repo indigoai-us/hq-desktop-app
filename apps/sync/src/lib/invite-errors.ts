@@ -42,3 +42,43 @@ export function isPlanRequiredError(err: unknown): boolean {
     msg.includes('MEETING_PLAN_REQUIRED')
   );
 }
+
+export type PlanRequiredUpgradeLink =
+  | { kind: 'not-plan-error' }
+  | { kind: 'missing' }
+  | { kind: 'invalid' }
+  | { kind: 'available'; url: string };
+
+/** Extract only a credential-free HTTPS URL returned in a plan refusal. */
+export function planRequiredUpgradeUrl(err: unknown): PlanRequiredUpgradeLink {
+  if (!isPlanRequiredError(err)) return { kind: 'not-plan-error' };
+
+  const raw = String(err ?? '');
+  const jsonStart = raw.indexOf('{');
+  if (jsonStart < 0) return { kind: 'missing' };
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw.slice(jsonStart));
+  } catch {
+    return { kind: 'invalid' };
+  }
+  if (!payload || typeof payload !== 'object') return { kind: 'invalid' };
+
+  const upgradeUrl = (payload as Record<string, unknown>).upgradeUrl;
+  if (upgradeUrl === undefined || upgradeUrl === null || upgradeUrl === '') {
+    return { kind: 'missing' };
+  }
+  if (typeof upgradeUrl !== 'string' || upgradeUrl.trim() !== upgradeUrl) {
+    return { kind: 'invalid' };
+  }
+  try {
+    const url = new URL(upgradeUrl);
+    if (url.protocol !== 'https:' || url.username || url.password) {
+      return { kind: 'invalid' };
+    }
+  } catch {
+    return { kind: 'invalid' };
+  }
+  return { kind: 'available', url: upgradeUrl };
+}

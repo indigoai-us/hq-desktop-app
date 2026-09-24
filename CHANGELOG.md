@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Sync and Meetings show the server's upgrade link when a plan pauses uploads or
+  meeting-bot recording.
+
 ## [0.10.315] — 2026-09-24
 
 - Switching channels or DMs in the sidebar now shows the new conversation

@@ -42,3 +42,42 @@ export function isPlanRequiredError(err: unknown): boolean {
     msg.includes("MEETING_PLAN_REQUIRED")
   );
 }
+
+/** Extract the server's plan URL only when it is an absolute, credential-free HTTPS URL. */
+export function planRequiredUpgradeUrl(err: unknown): string | undefined {
+  if (!isPlanRequiredError(err)) return undefined;
+
+  const message = String(err ?? "");
+  const jsonStart = message.indexOf("{");
+  if (jsonStart < 0) return undefined;
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(message.slice(jsonStart));
+  } catch {
+    return undefined;
+  }
+  if (!payload || typeof payload !== "object") return undefined;
+
+  const upgradeUrl = (payload as Record<string, unknown>).upgradeUrl;
+  if (
+    typeof upgradeUrl !== "string" ||
+    upgradeUrl.trim() !== upgradeUrl
+  ) {
+    return undefined;
+  }
+  try {
+    const url = new URL(upgradeUrl);
+    if (
+      url.protocol !== "https:" ||
+      !url.hostname ||
+      url.username ||
+      url.password
+    ) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return upgradeUrl;
+}
