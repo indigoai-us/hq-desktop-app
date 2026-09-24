@@ -728,6 +728,8 @@ pub async fn get_valid_access_token() -> Result<String, String> {
 pub struct IdTokenClaims {
     pub sub: Option<String>,
     pub email: Option<String>,
+    /// Whether Cognito verified the email address on this identity.
+    pub email_verified: Option<bool>,
     pub name: Option<String>,
     pub given_name: Option<String>,
     pub family_name: Option<String>,
@@ -1031,6 +1033,16 @@ mod tests {
             refresh_token: "refresh".to_string(),
             expires_at: i64::MAX,
         }
+    }
+
+    #[test]
+    fn decode_id_token_claims_preserves_email_verification_status() {
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "email_verified": false
+        })))
+        .expect("valid claims");
+
+        assert_eq!(claims.email_verified, Some(false));
     }
 
     #[test]

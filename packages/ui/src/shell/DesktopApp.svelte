@@ -2828,6 +2828,7 @@
   let cloudReachable = $state(true);
   let cloudError = $state<string | null>(null);
   let manifestError = $state<string | null>(null);
+  let emailVerificationRequired = $state(false);
   let syncWorkspaces = $state<Record<string, unknown>[]>([]);
   let hqFolderPath = $state<string | null>(null);
 
@@ -2854,6 +2855,7 @@
     }
     const envelope = (res.value ?? {}) as unknown as Partial<WorkspacesResult>;
     cloudReachable = envelope.cloudReachable !== false;
+    emailVerificationRequired = envelope.emailVerificationRequired === true;
     cloudError =
       typeof envelope.error === "string" && envelope.error.trim()
         ? envelope.error.trim()
@@ -7869,9 +7871,10 @@
     </div>
   {/if}
 
-  {#if adapter.isAvailable("canSync") && membershipsToPull.length > 0}
+  {#if adapter.isAvailable("canSync") && (membershipsToPull.length > 0 || emailVerificationRequired)}
     <MembershipSyncBanner
       memberships={membershipsToPull}
+      emailVerificationRequired={emailVerificationRequired}
       syncing={membershipSyncPending}
       error={membershipSyncError}
       onsync={() => void syncMembership()}

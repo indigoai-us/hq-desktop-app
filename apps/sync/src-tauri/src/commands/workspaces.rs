@@ -525,10 +525,12 @@ type CloudOutcome = Result<
 /// company" even though their company already existed. The person lookup is
 /// kept only for what the Personal row needs (uid, bucket, display name).
 ///
-/// The three independent reads (persons, memberships, pending-by-email) run
+/// Person and membership reads always run. Email-keyed invites are read only
+/// when Cognito confirms the caller's email is verified. The reads run
 /// concurrently; only the entity fan-out depends on the membership list.
 pub(crate) async fn fetch_cloud_roster(
     vault: &VaultClient,
+    email_verified: Option<bool>,
 ) -> Result<
     (
         Option<EntityInfo>,
@@ -537,10 +539,17 @@ pub(crate) async fn fetch_cloud_roster(
     ),
     String,
 > {
+    let pending_by_email_request = async {
+        if email_verified == Some(false) {
+            Ok(Vec::new())
+        } else {
+            vault.list_pending_invites_by_email().await
+        }
+    };
     let (persons, my_memberships, pending_by_email) = tokio::join!(
         vault.list_entities_by_type("person"),
         vault.list_my_memberships(),
-        vault.list_pending_invites_by_email(),
+        pending_by_email_request,
     );
 
     let mut persons = persons.map_err(|e| format!("list person entities: {e}"))?;
@@ -648,11 +657,18 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_folder_path = hq_root.to_string_lossy().to_string();
     let (mut local_companies, manifest_error) = bounded_local_discovery(&hq_root).await;
 
+    let mut email_verification_required = false;
     let cloud_outcome: CloudOutcome = async {
         let vault_url = resolve_vault_api_url()?;
-        let jwt = resolve_jwt().await?;
-        let vault = VaultClient::new(&vault_url, &jwt);
-        fetch_cloud_roster(&vault).await
+        let tokens = hq_desktop_core::cognito::get_valid_tokens().await?;
+        let email_verified = tokens
+            .id_token
+            .as_deref()
+            .and_then(|token| hq_desktop_core::cognito::decode_id_token_claims(token).ok())
+            .and_then(|claims| claims.email_verified);
+        email_verification_required = email_verified == Some(false);
+        let vault = VaultClient::new(&vault_url, &tokens.access_token);
+        fetch_cloud_roster(&vault, email_verified).await
     }
     .await;
 
@@ -726,6 +742,7 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         error,
         hq_folder_path,
         manifest_error,
+        email_verification_required,
     })
 }
 
@@ -1731,7 +1748,7 @@ mod tests {
             .await;
 
         let vault = VaultClient::new(&server.uri(), "test-token");
-        let (person, memberships, entities) = fetch_cloud_roster(&vault).await.unwrap();
+        let (person, memberships, entities) = fetch_cloud_roster(&vault, Some(true)).await.unwrap();
 
         // Personal row still keys off the oldest person.
         assert_eq!(person.as_ref().map(|p| p.uid.as_str()), Some("prs_oldest"));
@@ -1754,6 +1771,40 @@ mod tests {
         assert_eq!(rows[1].slug, "acme");
         assert_eq!(rows[1].kind, WorkspaceKind::Company);
         assert_eq!(rows[1].role.as_deref(), Some("owner"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn cloud_roster_skips_pending_email_for_unverified_caller() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "entities": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "memberships": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/pending-by-email"))
+            .expect(0)
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(&server.uri(), "test-token");
+        let (person, memberships, entities) =
+            fetch_cloud_roster(&vault, Some(false)).await.unwrap();
+
+        assert!(person.is_none());
+        assert!(memberships.is_empty());
+        assert!(entities.is_empty());
         server.verify().await;
     }
 
