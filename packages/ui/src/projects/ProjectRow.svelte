@@ -223,6 +223,9 @@
 <style>
   .project-card {
     position: relative;
+    /* Cards sit in scrolling flex columns; with overflow hidden they would
+       otherwise shrink to one line instead of scrolling. */
+    flex: none;
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 8px);

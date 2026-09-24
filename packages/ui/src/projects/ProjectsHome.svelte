@@ -196,6 +196,7 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
+    padding: 8px 20px 16px;
   }
   .ph-empty {
     margin: 64px auto;
