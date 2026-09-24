@@ -194,6 +194,46 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     expect(recorder).toContain('("exit_class", "runner_memory".to_string())');
   });
 
+  it('keeps memory-class evidence non-absent when the supervisor sampled before pre-emption', () => {
+    const resolver = sliceBetween(
+      appDaemonSource,
+      'fn resolve_watcher_memory_class(',
+      '/// Windows (and any non-signal platform)',
+      'resolve_watcher_memory_class',
+    );
+    // Signal the largest Node member, not an arbitrary largest child such as git.
+    // If a fresh Node report is unavailable, the already-collected tree sample is
+    // still the source of a bounded class instead of being reported as absent.
+    const signalTarget = sliceBetween(
+      appDaemonSource,
+      'fn signal_largest_node_memory_report(',
+      '\n}\n',
+      'signal_largest_node_memory_report',
+    );
+    const targetPid = sliceBetween(
+      appDaemonSource,
+      'fn largest_node_memory_report_pid(',
+      '\n}\n',
+      'largest_node_memory_report_pid',
+    );
+    expect(resolver).toContain('signal_largest_node_memory_report(sample,');
+    expect(signalTarget).toContain('largest_node_memory_report_pid(sample)');
+    expect(targetPid).toContain('sample.tree_largest_node_member_pid.filter(|pid| *pid != 0)');
+    expect(resolver).toContain('resolve_memory_class_from_sample');
+    expect(coreDaemonSource).toContain('Self::SupervisorSample');
+
+    const recorder = sliceBetween(
+      appDaemonSource,
+      'fn record_supervisor_memory_preempt(',
+      '\n}\n',
+      'record_supervisor_memory_preempt',
+    );
+    expect(recorder).toContain('("memory_class", evidence.memory_class.as_str().to_string())');
+    expect(recorder).toContain('("largest_child_kind"');
+    expect(telemetrySource).toContain('"memory_class" =>');
+    expect(telemetrySource).toContain('"largest_child_kind" =>');
+  });
+
   // ── Footprint growth-rate projection + pre-empt decomposition (this fix) ──
 
   it('projects growth from the prior comparable sample into the hard-ceiling decision', () => {
@@ -405,7 +445,18 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     expect(loop).toContain('runner_report_is_complete(');
     expect(loop).toContain('Src::ReportNeverCompleted');
     expect(loop).toContain('Src::ReportRead');
-    expect(appDaemonSource).toContain('read_fresh_memory_class_within(&report_path, before, deadline)');
+    expect(loop).toContain('array_buffers_path.filter');
+    expect(loop).toContain('array_buffers_mb = Some(value)');
+    const resolver = sliceBetween(
+      appDaemonSource,
+      'fn resolve_watcher_memory_class(',
+      '\n}\n',
+      'resolve_watcher_memory_class',
+    );
+    expect(resolver).toContain('RUNNER_MEMORY_CLASS_FILENAME');
+    expect(resolver).toContain('Some(&array_buffers_path)');
+    expect(resolver).toContain('array_buffers_before');
+    expect(resolver).toContain('read_fresh_memory_class_within(');
   });
 
   it('registers the arm-reason + never-completed vocabulary at the telemetry egress boundary', () => {
