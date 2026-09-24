@@ -199,6 +199,7 @@
 
 <style>
   .story-card {
+    flex: none;
     display: grid;
     gap: var(--v4-space-2);
     width: 100%;

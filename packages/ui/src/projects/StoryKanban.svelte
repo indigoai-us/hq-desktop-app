@@ -188,6 +188,9 @@
     gap: var(--v4-space-3);
     min-width: 0;
     height: 100%;
+    /* Fill the space below the project header, but never shrink to a strip
+       on a short window: the project page scrolls instead. */
+    min-height: 460px;
     /* Naked canvas — no board chrome. */
     background: transparent;
   }
