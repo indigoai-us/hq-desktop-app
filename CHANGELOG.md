@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.313] — 2026-09-24
+
 - When npm's metadata has not caught up to a new dependency version, HQ refreshes
   it and retries the CLI update. If needed, it tries npm's public registry.
 
