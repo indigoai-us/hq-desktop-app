@@ -95,6 +95,9 @@ pub struct WorkspacesResult {
     /// `companies/manifest.yaml` we couldn't read — UI surfaces a soft
     /// notice and falls back to folder enumeration.
     pub manifest_error: Option<String>,
+    /// True when email-keyed invites were skipped because Cognito marks the
+    /// signed-in email as unverified.
+    pub email_verification_required: bool,
 }
 
 // ── Internal: local company discovery ─────────────────────────────────────────

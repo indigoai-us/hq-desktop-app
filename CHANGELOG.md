@@ -13,6 +13,8 @@ The release moves it under the version it ships in.
   other one, so once a company's channel roster got large enough, the response
   legitimately took longer to arrive and the request aborted partway through
   with a decode error. It now gets a longer timeout of its own.
+- HQ Sync tells you to verify your email before it can show pending company invites.
+
 - Fixed a bug where every company in the sidebar's "Companies" section showed
   "no home channel yet," even companies with a working home channel. The
   fallback check that resolves a home channel while the server catches up was

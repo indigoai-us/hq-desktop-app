@@ -60,6 +60,8 @@ export interface WorkspacesResult {
   // companies/manifest.yaml we couldn't read; UI shows a soft notice and
   // workspaces fall back to folder enumeration.
   manifestError: string | null;
+  /** True when pending invites were skipped until the caller verifies email. */
+  emailVerificationRequired?: boolean;
 }
 
 /**
