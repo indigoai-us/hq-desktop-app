@@ -607,7 +607,10 @@ describe('US-105 embedded feature-parity QA', () => {
       });
       expect(calls[0]).toEqual({
         cmd: 'list_company_members',
-        args: { companyUid: 'cmp_indigo' },
+        // showBotMessages defaults to null (US-006 preview filter): the roster
+        // command now forwards the toggle so agent-only last-message previews
+        // can be hidden. A null keeps the pre-toggle default (off).
+        args: { companyUid: 'cmp_indigo', showBotMessages: null },
       });
     });
 
