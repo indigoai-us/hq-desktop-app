@@ -272,17 +272,26 @@ export const SETUP_BOT_FINALE_COPY = {
 } as const;
 
 /**
- * Did the setup bot mark setup finished in this conversation? True when any
- * message from the bot carries the `setupDone` block. Pure.
+ * Should the setup finish card show under this conversation? Pure.
+ *
+ * True once the setup bot has sent the `setupDone` block, and only until the
+ * person writes again. The card is the close of setup; a follow-up means the
+ * conversation carried on, and the card would otherwise sit under every later
+ * message. Only the bot's first `setupDone` counts, so a bot that repeats the
+ * block later does not bring the card back.
+ *
+ * `messages` is the timeline, oldest first.
  */
-export function setupBotMarkedDone(
+export function setupFinaleDue(
   messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
   botUid: string,
   marksDone: (message: { body?: string | null; richContent?: unknown }) => boolean,
 ): boolean {
   const uid = botUid.trim();
   if (!uid) return false;
-  return messages.some((m) => (m.fromPersonUid ?? "").trim() === uid && marksDone(m));
+  const doneAt = messages.findIndex((m) => (m.fromPersonUid ?? "").trim() === uid && marksDone(m));
+  if (doneAt < 0) return false;
+  return !messages.slice(doneAt + 1).some((m) => (m.fromPersonUid ?? "").trim() !== uid);
 }
 
 /**

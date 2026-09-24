@@ -15,7 +15,7 @@ import {
   setupBotActionLabel,
   SETUP_BOT_COPY,
   SETUP_BOT_INTRO,
-  setupBotMarkedDone,
+  setupFinaleDue,
   SETUP_BOT_KICKOFF,
   SETUP_BOT_KICKOFF_PREFIX,
   SETUP_BOT_MODE,
@@ -227,18 +227,44 @@ describe("singleFlightStart", () => {
   });
 });
 
-describe("setupBotMarkedDone", () => {
+describe("setupFinaleDue", () => {
   const BOT = "agt_SETUP";
   const done = "Here's where you've landed.\n\n```hq-block\n{\"v\":1,\"blocks\":[{\"kind\":\"setupDone\"}]}\n```";
 
   it("is true once the setup bot sends the setupDone block", () => {
-    expect(setupBotMarkedDone([{ fromPersonUid: BOT, body: "hi" }, { fromPersonUid: BOT, body: done }], BOT, messageMarksSetupDone)).toBe(true);
+    expect(setupFinaleDue([{ fromPersonUid: BOT, body: "hi" }, { fromPersonUid: BOT, body: done }], BOT, messageMarksSetupDone)).toBe(true);
   });
 
   it("ignores the block from anyone but the setup bot, and plain messages", () => {
-    expect(setupBotMarkedDone([{ fromPersonUid: "prs_ME", body: done }], BOT, messageMarksSetupDone)).toBe(false);
-    expect(setupBotMarkedDone([{ fromPersonUid: BOT, body: "Setup is done!" }], BOT, messageMarksSetupDone)).toBe(false);
-    expect(setupBotMarkedDone([{ fromPersonUid: BOT, body: done }], "  ", messageMarksSetupDone)).toBe(false);
+    expect(setupFinaleDue([{ fromPersonUid: "prs_ME", body: done }], BOT, messageMarksSetupDone)).toBe(false);
+    expect(setupFinaleDue([{ fromPersonUid: BOT, body: "Setup is done!" }], BOT, messageMarksSetupDone)).toBe(false);
+    expect(setupFinaleDue([{ fromPersonUid: BOT, body: done }], "  ", messageMarksSetupDone)).toBe(false);
+  });
+
+  it("puts the card away once the person writes again", () => {
+    const thread = [
+      { fromPersonUid: BOT, body: done },
+      { fromPersonUid: "prs_ME", body: "one more thing" },
+    ];
+    expect(setupFinaleDue(thread, BOT, messageMarksSetupDone)).toBe(false);
+  });
+
+  it("keeps the card while only the bot has spoken since", () => {
+    const thread = [
+      { fromPersonUid: "prs_ME", body: "thanks" },
+      { fromPersonUid: BOT, body: done },
+      { fromPersonUid: BOT, body: "One more tip." },
+    ];
+    expect(setupFinaleDue(thread, BOT, messageMarksSetupDone)).toBe(true);
+  });
+
+  it("does not bring the card back when the bot repeats the block", () => {
+    const thread = [
+      { fromPersonUid: BOT, body: done },
+      { fromPersonUid: "prs_ME", body: "ok" },
+      { fromPersonUid: BOT, body: done },
+    ];
+    expect(setupFinaleDue(thread, BOT, messageMarksSetupDone)).toBe(false);
   });
 
   it("the block leaves only the prose as the message text", () => {
