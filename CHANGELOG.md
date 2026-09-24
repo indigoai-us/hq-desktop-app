@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Channel @mention notifications now work on installs whose local settings file does not record your person ID.
 - Auto-sync memory alerts now include a bounded memory class and, for
   multi-process trees, the largest child's process type.
 

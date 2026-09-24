@@ -94,6 +94,70 @@ fn notify_prefs_cache() -> &'static Mutex<NotifyPrefsCache> {
     CACHE.get_or_init(|| Mutex::new(NotifyPrefsCache::default()))
 }
 
+/// In-memory `prs_` uid for the signed-in person. `config.json` is the cheap
+/// first source; many installs never wrote `personUid` there, so the poller
+/// falls back to the same vault person-entity list `whoami` uses, keyed by
+/// Cognito identity. Never written back to config.json.
+#[derive(Default)]
+struct PersonUidCache {
+    identity: String,
+    uid: Option<String>,
+    /// A server resolve was already attempted for `identity`.
+    fetched: bool,
+    /// `DM_NOTIFY_MENTION_SKIP no personUid` already logged this session.
+    skip_logged: bool,
+}
+
+fn person_uid_cache() -> &'static Mutex<PersonUidCache> {
+    static CACHE: OnceLock<Mutex<PersonUidCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(PersonUidCache::default()))
+}
+
+fn clear_person_uid_cache() {
+    let mut guard = person_uid_cache().lock().unwrap_or_else(|p| p.into_inner());
+    *guard = PersonUidCache::default();
+}
+
+fn nonempty_person_uid(uid: Option<String>) -> Option<String> {
+    uid.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn cached_person_uid(identity: &str) -> Option<String> {
+    let guard = person_uid_cache().lock().unwrap_or_else(|p| p.into_inner());
+    if guard.identity != identity {
+        return None;
+    }
+    nonempty_person_uid(guard.uid.clone())
+}
+
+fn person_uid_fetched_for(identity: &str) -> bool {
+    let guard = person_uid_cache().lock().unwrap_or_else(|p| p.into_inner());
+    guard.identity == identity && guard.fetched
+}
+
+fn store_person_uid_cache(identity: &str, uid: Option<String>) {
+    let mut guard = person_uid_cache().lock().unwrap_or_else(|p| p.into_inner());
+    guard.identity = identity.to_string();
+    guard.uid = nonempty_person_uid(uid);
+    guard.fetched = true;
+}
+
+fn take_missing_person_uid_skip_log() -> bool {
+    let mut guard = person_uid_cache().lock().unwrap_or_else(|p| p.into_inner());
+    if guard.skip_logged {
+        return false;
+    }
+    guard.skip_logged = true;
+    true
+}
+
+fn log_missing_person_uid_once() {
+    if take_missing_person_uid_skip_log() {
+        log(LOG_TAG, "DM_NOTIFY_MENTION_SKIP no personUid");
+    }
+}
+
 /// eventId → `notify` hints read off realtime channel/thread wakes.
 fn wake_notify_hints() -> &'static Mutex<hq_desktop_core::notify_prefs::WakeNotifyHints> {
     static HINTS: OnceLock<Mutex<hq_desktop_core::notify_prefs::WakeNotifyHints>> = OnceLock::new();
@@ -496,6 +560,7 @@ async fn transition_notification_session_if_generation_expected<R: Runtime>(
                 .unwrap_or_else(|p| p.into_inner())
                 .reset_for_session();
         }
+        clear_person_uid_cache();
         if let Some(state) = app.try_state::<ActiveThreadState>() {
             state.0.lock().unwrap_or_else(|p| p.into_inner()).clear();
         }
@@ -2538,7 +2603,9 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
             })
             .collect();
     }
-    let self_person_uid = signed_in_person_uid().unwrap_or_default();
+    let self_person_uid = resolve_signed_in_person_uid(base_url, auth)
+        .await
+        .unwrap_or_default();
 
     let committed = with_current_notification_auth_snapshot(app, auth, || {
         let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -2721,12 +2788,94 @@ fn spawn_mention_detection(app: AppHandle, base_url: String, auth: NotificationA
     });
 }
 
-fn signed_in_person_uid() -> Option<String> {
-    hq_desktop_core::config::read_hq_config_lenient()
-        .ok()
-        .flatten()
-        .map(|config| config.person_uid)
-        .filter(|uid| !uid.trim().is_empty())
+fn person_uid_from_config() -> Option<String> {
+    nonempty_person_uid(
+        hq_desktop_core::config::read_hq_config_lenient()
+            .ok()
+            .flatten()
+            .map(|config| config.person_uid),
+    )
+}
+
+fn person_uid_from_entities(
+    mut persons: Vec<crate::commands::vault_client::EntityInfo>,
+) -> Option<String> {
+    persons.retain(|person| !person.deleted && !person.uid.trim().is_empty());
+    persons.sort_by(|a, b| match a.created_at.cmp(&b.created_at) {
+        std::cmp::Ordering::Equal => a.uid.cmp(&b.uid),
+        ord => ord,
+    });
+    persons.into_iter().next().map(|person| person.uid)
+}
+
+fn person_uid_from_memberships(
+    memberships: &[crate::commands::vault_client::MembershipInfo],
+) -> Option<String> {
+    memberships.iter().find_map(|membership| {
+        nonempty_person_uid(Some(membership.person_uid.clone())).or_else(|| {
+            membership
+                .membership_key
+                .as_deref()
+                .and_then(|key| key.split('#').next())
+                .map(str::trim)
+                .filter(|left| !left.is_empty())
+                .map(str::to_string)
+        })
+    })
+}
+
+async fn fetch_person_uid_from_vault(base_url: &str, access_token: &str) -> Option<String> {
+    let vault = crate::commands::vault_client::VaultClient::new(base_url, access_token);
+    match vault.list_entities_by_type("person").await {
+        Ok(persons) => {
+            if let Some(uid) = person_uid_from_entities(persons) {
+                return Some(uid);
+            }
+        }
+        Err(crate::commands::vault_client::VaultClientError::Http { status, .. }) => {
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_PERSON_UID_FETCH_FAIL status={status}"),
+            );
+        }
+        Err(crate::commands::vault_client::VaultClientError::Request(_)) => {
+            log(LOG_TAG, "DM_NOTIFY_PERSON_UID_FETCH_FAIL network");
+        }
+        Err(_) => log(LOG_TAG, "DM_NOTIFY_PERSON_UID_FETCH_FAIL"),
+    }
+    match vault.list_my_memberships().await {
+        Ok(memberships) => person_uid_from_memberships(&memberships),
+        Err(_) => None,
+    }
+}
+
+/// Config.json first; then the in-memory cache; then `GET /entity/by-type/person`
+/// with the auth-snapshot token (same source as `whoami`), falling back to
+/// `GET /membership/me`. Does not write `personUid` back to config.json.
+async fn resolve_signed_in_person_uid(
+    base_url: &str,
+    auth: &NotificationAuthSnapshot,
+) -> Option<String> {
+    resolve_signed_in_person_uid_with(person_uid_from_config(), base_url, auth).await
+}
+
+async fn resolve_signed_in_person_uid_with(
+    config_uid: Option<String>,
+    base_url: &str,
+    auth: &NotificationAuthSnapshot,
+) -> Option<String> {
+    if let Some(uid) = nonempty_person_uid(config_uid) {
+        return Some(uid);
+    }
+    if let Some(uid) = cached_person_uid(&auth.identity) {
+        return Some(uid);
+    }
+    if person_uid_fetched_for(&auth.identity) {
+        return None;
+    }
+    let fetched = fetch_person_uid_from_vault(base_url, &auth.access_token).await;
+    store_person_uid_cache(&auth.identity, fetched.clone());
+    nonempty_person_uid(fetched)
 }
 
 fn desktop_alt_focused(app: &AppHandle) -> bool {
@@ -2842,10 +2991,12 @@ async fn detect_and_deliver_mentions(
     base_url: &str,
     auth: &NotificationAuthSnapshot,
 ) {
-    let Some(person_uid) = signed_in_person_uid() else {
-        log(LOG_TAG, "DM_NOTIFY_MENTION_SKIP no personUid");
-        return;
-    };
+    let person_uid = resolve_signed_in_person_uid(base_url, auth)
+        .await
+        .unwrap_or_default();
+    if person_uid.is_empty() {
+        log_missing_person_uid_once();
+    }
     let cognito_sub = auth.identity.clone();
     let machine_id = crate::commands::config::ensure_machine_id().unwrap_or_default();
     let dm_notified = read_cursor_entry_for_account(&machine_id, &auth.identity).notified;
@@ -4353,5 +4504,245 @@ mod tests {
             current_notification_auth_snapshot(&handle).await,
             Some(account_b)
         );
+    }
+
+    fn person_uid_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn test_auth(identity: &str, token: &str) -> NotificationAuthSnapshot {
+        NotificationAuthSnapshot {
+            generation: 1,
+            identity: identity.to_string(),
+            access_token: token.to_string(),
+        }
+    }
+
+    fn test_person_entity(
+        uid: &str,
+        created_at: &str,
+    ) -> crate::commands::vault_client::EntityInfo {
+        serde_json::from_value(serde_json::json!({
+            "uid": uid,
+            "slug": "p",
+            "type": "person",
+            "status": "active",
+            "createdAt": created_at,
+        }))
+        .expect("person entity")
+    }
+
+    fn mention_of(participant_uid: &str) -> hq_desktop_core::messages::ChannelMessage {
+        serde_json::from_str(&format!(
+            r#"{{
+                "eventId": "evt_mention",
+                "fromPersonUid": "prs_ada",
+                "fromDisplayName": "Ada",
+                "body": "hey",
+                "createdAt": "2026-09-23T12:00:00Z",
+                "direction": "in",
+                "mentions": [{{
+                    "participantUid": "{participant_uid}",
+                    "participantType": "human",
+                    "displayName": "Stefan"
+                }}]
+            }}"#
+        ))
+        .expect("mention message")
+    }
+
+    #[test]
+    fn person_uid_from_entities_prefers_oldest_then_uid() {
+        let newer = test_person_entity("prs_a", "2025-01-01T00:00:00Z");
+        let older = test_person_entity("prs_b", "2024-01-01T00:00:00Z");
+        assert_eq!(
+            person_uid_from_entities(vec![newer, older]).as_deref(),
+            Some("prs_b")
+        );
+        let first = test_person_entity("prs_a", "2024-01-01T00:00:00Z");
+        let second = test_person_entity("prs_b", "2024-01-01T00:00:00Z");
+        assert_eq!(
+            person_uid_from_entities(vec![second, first]).as_deref(),
+            Some("prs_a")
+        );
+    }
+
+    #[test]
+    fn person_uid_from_memberships_reads_uid_or_key_prefix() {
+        let with_uid: crate::commands::vault_client::MembershipInfo =
+            serde_json::from_value(serde_json::json!({
+                "personUid": "prs_from_field",
+                "companyUid": "cmp_a",
+                "status": "active",
+            }))
+            .expect("membership");
+        assert_eq!(
+            person_uid_from_memberships(&[with_uid]).as_deref(),
+            Some("prs_from_field")
+        );
+        let from_key: crate::commands::vault_client::MembershipInfo =
+            serde_json::from_value(serde_json::json!({
+                "personUid": "",
+                "companyUid": "cmp_a",
+                "status": "active",
+                "membershipKey": "prs_from_key#cmp_a",
+            }))
+            .expect("membership key");
+        assert_eq!(
+            person_uid_from_memberships(&[from_key]).as_deref(),
+            Some("prs_from_key")
+        );
+    }
+
+    #[test]
+    fn missing_person_uid_skip_log_is_once_per_session() {
+        let _lock = person_uid_test_lock();
+        clear_person_uid_cache();
+        assert!(take_missing_person_uid_skip_log());
+        assert!(!take_missing_person_uid_skip_log());
+        assert!(!take_missing_person_uid_skip_log());
+        clear_person_uid_cache();
+        assert!(take_missing_person_uid_skip_log());
+        clear_person_uid_cache();
+    }
+
+    #[test]
+    fn detect_without_person_uid_still_matches_cognito_sub() {
+        let message = mention_of("sub_mention_me");
+        assert!(is_mention_of_me(&message, "", "sub_mention_me"));
+        assert!(hq_desktop_core::dm_notify::is_self_authored(
+            "sub_mention_me",
+            "",
+            "sub_mention_me",
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_config_over_server() {
+        let _lock = person_uid_test_lock();
+        clear_person_uid_cache();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/entity/by-type/person"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "entities": [{
+                        "uid": "prs_server",
+                        "slug": "p",
+                        "type": "person",
+                        "status": "active",
+                        "createdAt": "2024-01-01T00:00:00Z"
+                    }]
+                })),
+            )
+            .expect(0)
+            .mount(&server)
+            .await;
+        let auth = test_auth("sub_prefers_config", "tok");
+        let uid = resolve_signed_in_person_uid_with(
+            Some("prs_from_config".to_string()),
+            &server.uri(),
+            &auth,
+        )
+        .await;
+        assert_eq!(uid.as_deref(), Some("prs_from_config"));
+        clear_person_uid_cache();
+    }
+
+    #[tokio::test]
+    async fn resolver_falls_back_to_server_and_caches() {
+        let _lock = person_uid_test_lock();
+        clear_person_uid_cache();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/entity/by-type/person"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "entities": [{
+                        "uid": "prs_server_uid",
+                        "slug": "p",
+                        "type": "person",
+                        "status": "active",
+                        "createdAt": "2024-01-01T00:00:00Z"
+                    }]
+                })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let auth = test_auth("sub_server_fallback", "tok");
+        let first = resolve_signed_in_person_uid_with(None, &server.uri(), &auth).await;
+        assert_eq!(first.as_deref(), Some("prs_server_uid"));
+        assert_eq!(
+            cached_person_uid("sub_server_fallback").as_deref(),
+            Some("prs_server_uid")
+        );
+        let second = resolve_signed_in_person_uid_with(None, &server.uri(), &auth).await;
+        assert_eq!(second.as_deref(), Some("prs_server_uid"));
+        let mentioned = mention_of("prs_server_uid");
+        assert!(is_mention_of_me(
+            &mentioned,
+            first.as_deref().unwrap_or(""),
+            &auth.identity,
+        ));
+        clear_person_uid_cache();
+    }
+
+    #[tokio::test]
+    async fn resolver_uses_memberships_when_person_list_empty() {
+        let _lock = person_uid_test_lock();
+        clear_person_uid_cache();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/entity/by-type/person"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "entities": [] })),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/membership/me"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "memberships": [{
+                        "personUid": "prs_from_membership",
+                        "companyUid": "cmp_a",
+                        "status": "active",
+                        "membershipKey": "prs_from_membership#cmp_a"
+                    }]
+                })),
+            )
+            .mount(&server)
+            .await;
+        let auth = test_auth("sub_membership_fallback", "tok");
+        let uid = resolve_signed_in_person_uid_with(None, &server.uri(), &auth).await;
+        assert_eq!(uid.as_deref(), Some("prs_from_membership"));
+        clear_person_uid_cache();
+    }
+
+    #[tokio::test]
+    async fn person_uid_cache_clears_on_session_reset() {
+        let _lock = person_uid_test_lock();
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        let handle = app.handle().clone();
+        replace_notification_session(&handle, "person-a".to_string(), "access-a".to_string()).await;
+        store_person_uid_cache("person-a", Some("prs_cached".to_string()));
+        assert!(take_missing_person_uid_skip_log());
+        assert_eq!(cached_person_uid("person-a").as_deref(), Some("prs_cached"));
+
+        replace_notification_session(&handle, "person-b".to_string(), "access-b".to_string()).await;
+
+        assert!(cached_person_uid("person-a").is_none());
+        assert!(cached_person_uid("person-b").is_none());
+        assert!(
+            take_missing_person_uid_skip_log(),
+            "session reset must re-arm the missing-uid skip log"
+        );
+        clear_person_uid_cache();
     }
 }
