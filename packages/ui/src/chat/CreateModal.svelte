@@ -16,8 +16,13 @@
    */
   import type { Channel } from "./channels.js";
   import type { RuntimeStatus } from "./create-bot/runtime-status.js";
-  import type { EntryPointResult } from "./lifecycle-entry-points.js";
-  import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
+  import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
+  import type {
+    AdapterPromise,
+    AgentProvisionOptionsView,
+    LocalBotCreateInput,
+    LocalBotWorkerOption,
+  } from "@hq/platform";
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
   import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
@@ -129,9 +134,11 @@
     oncreateagent?:
       | ((
           companyUid: string,
-          draft: { name: string; handle: string; title?: string },
+          draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
+    loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
@@ -189,6 +196,8 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    loadClaudeProviderFlag = null,
+    loadCloudProvisionOptions = null,
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
@@ -465,7 +474,7 @@
    */
   function newAgentFor(
     companyUid: string,
-    draft: { name: string; handle: string; title?: string },
+    draft: CloudBotDraft,
   ): void {
     if (!oncreateagent) return;
     void runEntry("agent", () => oncreateagent!(companyUid, draft));
@@ -2501,6 +2510,8 @@
         {botCompanies}
         agentTargets={canCreateCloudBot ? agentTargets : []}
         onCloudCreate={canCreateCloudBot ? newAgentFor : null}
+        {loadClaudeProviderFlag}
+        {loadCloudProvisionOptions}
         oncreate={canCreateLocalBot ? submitLocalBot : null}
         onback={() => {
           entryError = null;

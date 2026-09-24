@@ -23,7 +23,12 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
-  import { failure, startJitteredPoll, type PlatformAdapter } from "@hq/platform";
+  import {
+    CLAUDE_PROVIDER_FLAG,
+    failure,
+    startJitteredPoll,
+    type PlatformAdapter,
+  } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -101,10 +106,12 @@
   } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
+    claudeSubscriptionSignInUrl,
     runCreateCloudBotEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
     type EntryPointTarget,
+    type CloudBotDraft,
   } from "../chat/lifecycle-entry-points.js";
   import {
     openCreateCompanyDraft,
@@ -5027,7 +5034,7 @@
    */
   async function createCloudBotEntry(
     companyUid: string,
-    draft: { name: string; handle: string; title?: string },
+    draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
     const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
     if (result.ok) {
@@ -5041,6 +5048,8 @@
         console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
       }
       navigateToEntryTarget(result.target, companyUid);
+      const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
+      if (signInUrl) onopenurl?.(signInUrl);
     }
     return result;
   }
@@ -7984,6 +7993,8 @@
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
+          loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
+          loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botRuntimeStatus={localBotRuntimeStatus}

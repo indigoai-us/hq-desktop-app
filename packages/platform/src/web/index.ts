@@ -22,6 +22,7 @@ import {
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
+  type AgentProvisionOptionsView,
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
@@ -474,7 +475,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
    * byte-for-byte.
    */
   private legacyHasFeature(flag: string): AdapterPromise<boolean> {
-    if (flag === "meetings") {
+    if (flag === "meetings" || flag === "agents.claude-provider") {
       return Promise.resolve(ok(false));
     }
     return this.get(WEB_PATHS.hasFeature(flag));
@@ -940,6 +941,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    getProvisionOptions: (companyUid) =>
+      this.get<AgentProvisionOptionsView>(AGENT_PATHS.provisionOptions(companyUid)),
     getStatus: (agentUid) => this.get(WEB_PATHS.agentStatus(agentUid)),
     listMobileRoster: (companyUid) =>
       this.get(WEB_PATHS.agentMobileRoster(companyUid)),
