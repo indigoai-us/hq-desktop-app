@@ -104,23 +104,22 @@ pub use hq_desktop_core::hq_cli_update::{
     npm_install_attempt_summary, npm_lifecycle_cause, npm_prefix_from_hq_bin,
     partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
     pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
-    redact_home, redact_home_in, registry_serving_lag_recurred_for_detail, repair_managed_shadow,
-    report_install_failure, report_install_failure_episode, report_install_failure_episode_at,
-    report_install_failure_with_environment, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_non_convergent_marker_unpersisted,
-    report_npm_cache_setup_failure, report_registry_serving_lag_marker_unpersisted,
-    report_unreadable_version, resolved_hq_version, should_auto_install,
-    should_report_unreadable_version, suppress_for_dismissal, unattributed_install_stderr_origin,
-    user_prefix_aim_decision, version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight,
-    DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim, ExecutedCopyReaimGate,
-    HqCliUpdateInfo, InstallEnvironment, InstallExecutor, InstallFailureEpisode,
-    InstallFailureKind, InterpreterRecovery, LaunchCliCheck, LocalVersionProbeDiagnostics,
-    LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
-    ManagedShadowRepairAction, ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind,
-    NonConvergentReport, NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource,
-    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
-    PostInstallOutcome, RequestedSpecKind, SettingsPathTelemetry, UserPrefixAim,
-    VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
+    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
+    report_install_failure_episode, report_install_failure_with_environment,
+    report_install_failure_with_final_attempt, report_non_convergent_install,
+    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
+    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
+    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
+    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
+    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
+    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
+    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmToolchainSource,
+    PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, SettingsPathTelemetry,
+    UserPrefixAim, VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
     NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
     NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
     STDERR_ORIGIN_NON_NPM,
@@ -1205,6 +1204,7 @@ async fn probe_install_environment(
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     }
 }
 
@@ -2777,7 +2777,7 @@ async fn executed_copy_reaim_and_refinalize(
                         converged,
                     );
                     if result == ExecutedCopyReaim::Converged {
-                        return finalize_convergence(
+                        return Box::pin(finalize_convergence(
                             app,
                             before_bin,
                             &aim.npm,
@@ -2785,7 +2785,7 @@ async fn executed_copy_reaim_and_refinalize(
                             latest,
                             Some(&aim.prefix),
                             already_blocked,
-                        )
+                        ))
                         .await;
                     }
                     if !install_exit_ok {
