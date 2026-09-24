@@ -5817,6 +5817,19 @@ fn resolve_memory_class_from_report(
         .unwrap_or(Class::Unknown)
 }
 
+#[cfg(unix)]
+fn largest_node_memory_report_pid(sample: &ScopedRssSample) -> Option<u32> {
+    sample.tree_largest_node_member_pid.filter(|pid| *pid != 0)
+}
+
+#[cfg(unix)]
+fn signal_largest_node_memory_report(
+    sample: &ScopedRssSample,
+    signal: impl FnOnce(u32) -> bool,
+) -> Option<bool> {
+    Some(signal(largest_node_memory_report_pid(sample)?))
+}
+
 /// Best-effort: signal the largest Node member for a LIVE diagnostic report and
 /// read the memory-class decomposition it writes, so a footprint pre-empt can NAME
 /// the memory class the tree total alone could not (HQ-DESKTOP-60). Strictly bounded
@@ -5847,14 +5860,14 @@ fn resolve_watcher_memory_class(
     };
     // Only a comparable tree sample yields a Node PID capable of writing the
     // diagnostic report. The largest tree member may be a helper such as git.
-    let Some(pid) = sample.tree_largest_node_member_pid.filter(|p| *p != 0) else {
+    if largest_node_memory_report_pid(sample).is_none() {
         return (
             RunnerReportMemoryClass::default(),
             sampled_class,
             sampled_source,
             Src::ReportNotRequested,
         );
-    };
+    }
     let Some(report_dir) = hq_desktop_core::daemon::runner_report_dir("watcher", generation) else {
         return (
             RunnerReportMemoryClass::default(),
@@ -5873,13 +5886,23 @@ fn resolve_watcher_memory_class(
     let array_buffers_before = std::fs::metadata(&array_buffers_path)
         .and_then(|m| m.modified())
         .ok();
-    // Send Node's report signal (default SIGUSR2) to the largest Node member.
+    // Send Node's report signal (default SIGUSR2) to the largest Node member,
+    // even when a larger non-Node tree member (such as git) cannot write the report.
     // Best-effort: ESRCH (already exited) or EPERM falls back to the tree sample.
-    let signalled = nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGUSR2,
-    )
-    .is_ok();
+    let Some(signalled) = signal_largest_node_memory_report(sample, |pid| {
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGUSR2,
+        )
+        .is_ok()
+    }) else {
+        return (
+            RunnerReportMemoryClass::default(),
+            sampled_class,
+            sampled_source,
+            Src::ReportNotRequested,
+        );
+    };
     if !signalled {
         return (
             RunnerReportMemoryClass::default(),
@@ -13444,6 +13467,127 @@ mod tests {
             ),
             Class::ChildRss
         );
+    }
+
+    #[test]
+    fn node_child_rss_does_not_override_available_report_components() {
+        use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+        use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass as Report;
+
+        let sample = ScopedRssSample {
+            kb: 1_200 * 1024,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(2),
+            tree_largest_member_kb: Some(1_000 * 1024),
+            tree_largest_node_member_pid: Some(300),
+            tree_largest_node_member_kb: Some(1_000 * 1024),
+            tree_root_member_kb: Some(200 * 1024),
+            tree_largest_child_member_kb: Some(1_000 * 1024),
+            tree_largest_child_kind: Some(WatcherProcessKind::Node),
+        };
+        let report = Report {
+            js_heap_total_mb: Some(900),
+            js_heap_used_mb: Some(800),
+            external_memory_mb: Some(100),
+            array_buffers_mb: Some(25),
+            libuv_active_handles: None,
+        };
+
+        assert_eq!(
+            resolve_memory_class_from_report(&sample, &report),
+            Class::Heap
+        );
+    }
+
+    #[test]
+    fn report_component_wins_when_non_node_child_exceeds_root_but_not_report() {
+        use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+        use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass as Report;
+
+        let sample = ScopedRssSample {
+            kb: 2_000 * 1024,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(2),
+            tree_largest_member_kb: Some(1_100 * 1024),
+            tree_largest_node_member_pid: Some(100),
+            tree_largest_node_member_kb: Some(1_000 * 1024),
+            tree_root_member_kb: Some(1_000 * 1024),
+            tree_largest_child_member_kb: Some(1_100 * 1024),
+            tree_largest_child_kind: Some(WatcherProcessKind::Git),
+        };
+        let report = Report {
+            js_heap_total_mb: None,
+            js_heap_used_mb: Some(1_200),
+            external_memory_mb: None,
+            array_buffers_mb: None,
+            libuv_active_handles: None,
+        };
+
+        assert_eq!(
+            resolve_memory_class_from_report(&sample, &report),
+            Class::Heap
+        );
+    }
+
+    #[test]
+    fn zero_report_components_classify_as_unknown() {
+        use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+        use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass as Report;
+
+        let sample = ScopedRssSample {
+            kb: 500 * 1024,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(2),
+            tree_largest_member_kb: Some(500 * 1024),
+            tree_largest_node_member_pid: Some(100),
+            tree_largest_node_member_kb: None,
+            tree_root_member_kb: Some(500 * 1024),
+            tree_largest_child_member_kb: Some(400 * 1024),
+            tree_largest_child_kind: Some(WatcherProcessKind::Git),
+        };
+        let report = Report {
+            js_heap_total_mb: None,
+            js_heap_used_mb: Some(0),
+            external_memory_mb: Some(0),
+            array_buffers_mb: Some(0),
+            libuv_active_handles: None,
+        };
+
+        assert_eq!(
+            resolve_memory_class_from_report(&sample, &report),
+            Class::Unknown
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_report_signal_targets_largest_node_when_git_child_is_larger() {
+        let tree =
+            sum_pid_tree_rss_kb("100 1 10 /opt/node\n200 100 90 git\n300 100 80 node\n", 100)
+                .expect("root is present");
+        let sample = ScopedRssSample {
+            kb: tree.total_kb,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(tree.pid_count),
+            tree_largest_member_kb: Some(tree.largest_member_kb),
+            tree_largest_node_member_pid: tree.largest_node_member_pid,
+            tree_largest_node_member_kb: tree.largest_node_member_kb,
+            tree_root_member_kb: Some(tree.root_member_kb),
+            tree_largest_child_member_kb: tree.largest_child_member_kb,
+            tree_largest_child_kind: tree.largest_child_kind,
+        };
+        assert_eq!(sample.tree_largest_member_kb, Some(90));
+        assert_eq!(sample.tree_largest_node_member_kb, Some(80));
+
+        let mut signalled_pid = None;
+        assert_eq!(
+            signal_largest_node_memory_report(&sample, |pid| {
+                signalled_pid = Some(pid);
+                true
+            }),
+            Some(true)
+        );
+        assert_eq!(signalled_pid, Some(300));
     }
 
     #[cfg(unix)]
