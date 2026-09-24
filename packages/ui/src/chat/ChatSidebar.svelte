@@ -111,6 +111,7 @@
     applyChannelNotifyLevel,
     applyDirectoryRows,
     applyPairUnreads,
+    withSelfContact,
     incrementPairUnread,
     applySidebarFilters,
     clearDmDot,
@@ -852,7 +853,10 @@
     return [...out.values()];
   });
 
-  const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
+  // The signed-in person is added so notes to self always have a row.
+  const contactsWithUnreads = $derived(
+    applyPairUnreads(withSelfContact(contacts, self), pairUnreads),
+  );
 
   /**
    * The user's own agents: local bots this machine runs, plus their own bots
@@ -920,6 +924,7 @@
       engagedAgentUids: engagedAgents,
       ownAgentUids,
       companySlugByUid,
+      selfUid: self?.uid ?? null,
     }),
   );
 
@@ -1031,8 +1036,12 @@
 
   /** US-016: open the newest rail row when the shell has no selection. */
   let autoOpenRequestedId = $state<string | null>(null);
+  /** Notes to self: always present, so it never counts as a real conversation to land on. */
+  function isSelfDmRow(row: ConversationRow): boolean {
+    return row.kind === "dm" && Boolean(self?.uid) && row.personUid === self?.uid;
+  }
   const hasNonSetupRows = $derived(
-    allRows.some((row) => !isSetupChannel(row.channelId)),
+    allRows.some((row) => !isSetupChannel(row.channelId) && !isSelfDmRow(row)),
   );
   /**
    * The roster already names a company (created on the website or another
@@ -1089,7 +1098,7 @@
     // settled (or timed out) with nothing else, open #setup so the pane is
     // never an infinite skeleton.
     const live = pickAutoOpenConversation(
-      filteredRows.filter((row) => !isSetupChannel(row.channelId)),
+      filteredRows.filter((row) => !isSetupChannel(row.channelId) && !isSelfDmRow(row)),
       selectedId,
     );
     if (live) {
@@ -1099,7 +1108,10 @@
     }
     if (!bootAttempted || loading) return;
     if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
-    const fallback = pickSettledBootConversation(filteredRows, selectedId);
+    const fallback = pickSettledBootConversation(
+      filteredRows.filter((row) => !isSelfDmRow(row)),
+      selectedId,
+    );
     if (!fallback) return;
     autoOpenRequestedId = fallback.id;
     sidebarLog("auto-open-fallback", {

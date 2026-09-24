@@ -359,17 +359,14 @@ export function buildFindResults(args: {
   companyLabel?: CompanyLabelResolver;
 }): FindResults {
   const { rows, query, canCreate, target } = args;
-  const selfUid = args.selfPersonUid?.trim() || null;
   const companyLabel = args.companyLabel ?? NO_COMPANY_LABEL;
-  // Never offer yourself as a DM target, and never offer the synthetic
-  // #setup support row: it is injected client-side and pinned first, so with
+  // Your own DM row (notes to self) is a normal result. Never offer the
+  // synthetic #setup support row: it is injected client-side and pinned first, so with
   // an empty query it would be the default first result (and a fast
   // type-then-Enter would land in support instead of the intended channel).
   // It is not a real channel either, so it must not reserve the slug.
   const visible = rows.filter(
-    (row) =>
-      !(selfUid && row.kind === "dm" && row.personUid === selfUid) &&
-      !(row.kind !== "dm" && isSetupChannel(row.channelId)),
+    (row) => !(row.kind !== "dm" && isSetupChannel(row.channelId)),
   );
   const classified = classifyFindQuery(query);
 
