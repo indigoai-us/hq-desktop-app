@@ -1793,8 +1793,8 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/membership/pending-by-email"))
-            .expect(0)
             .respond_with(ResponseTemplate::new(403))
+            .expect(0)
             .mount(&server)
             .await;
 
