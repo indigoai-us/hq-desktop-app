@@ -246,7 +246,7 @@
     type NavigationScrollState,
   } from "./navigation-history.js";
   import {
-    captureNavigationScroll,
+    createNavigationScrollTracker,
     scheduleNavigationScrollRestore,
   } from "./navigation-scroll.js";
   import {
@@ -5526,9 +5526,16 @@
     }
   }
 
+  // Sampled off the click path (see navigation-scroll.ts) so `navigate()`
+  // never forces a synchronous layout of the outgoing conversation just to
+  // remember where it was scrolled to.
+  const navigationScrollTracker = createNavigationScrollTracker(
+    () => (typeof document === "undefined" ? null : document),
+  );
+  $effect(() => () => navigationScrollTracker.stop());
+
   function readNavigationScroll(): NavigationScrollState | null {
-    if (typeof document === "undefined") return null;
-    return captureNavigationScroll(document);
+    return navigationScrollTracker.read();
   }
 
   function stopScrollRestore(): void {

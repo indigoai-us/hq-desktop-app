@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   captureNavigationScroll,
+  createNavigationScrollTracker,
   restoreNavigationScroll,
   scheduleNavigationScrollRestore,
 } from "./navigation-scroll.js";
@@ -68,5 +69,70 @@ describe("navigation scroll capture and restore", () => {
     expect(restoreNavigationScroll(document, { kind: "file", id: "readme.md", offset: 0 })).toBe(
       true,
     );
+  });
+});
+
+/**
+ * Regression coverage for the channel-switch lag: `navigate()` used to call
+ * `rememberScroll()` -> `captureNavigationScroll(document)` synchronously
+ * inside the row-click handler, which reads `scrollTop`/`offsetTop` on the
+ * outgoing conversation's DOM and forces the browser to flush a pending
+ * layout before it can answer. On a long transcript that forced layout is
+ * exactly the lag users saw between clicking a row and anything changing on
+ * screen — the click's own call stack has to finish, with that reflow
+ * inside it, before the browser can paint the new selection.
+ *
+ * `createNavigationScrollTracker` moves the read off the click path: it
+ * samples the scroller only on `scroll`/`resize`, so `navigate()` can call
+ * `read()` for free. These tests fail on the old "scan on demand" shape
+ * (no tracker, `read` calling into the DOM every time) and pass on the new
+ * one (samples only follow a scroll/resize, `read()` never touches the
+ * DOM).
+ */
+describe("navigation scroll tracker samples off the click path", () => {
+  it("never touches the DOM when read() is called without a prior scroll", () => {
+    const el = scroller("conversation-thread", "<p>hello</p>");
+    const scan = vi.spyOn(el, "querySelectorAll");
+    const tracker = createNavigationScrollTracker(() => document);
+    try {
+      // A click mid-conversation calls read() repeatedly (e.g. once per
+      // navigate()); none of those calls may scan the DOM.
+      tracker.read();
+      tracker.read();
+      tracker.read();
+      expect(scan).not.toHaveBeenCalled();
+    } finally {
+      tracker.stop();
+    }
+  });
+
+  it("samples on scroll (throttled to animation frames), and read() returns that sample without re-scanning", async () => {
+    const el = scroller("conversation-thread", "<p>hello</p>");
+    el.scrollTop = 77;
+    const scan = vi.spyOn(el, "querySelectorAll");
+    const tracker = createNavigationScrollTracker(() => document);
+    try {
+      document.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      expect(scan).toHaveBeenCalledTimes(1);
+
+      const sample = tracker.read();
+      expect(sample).toEqual({ kind: "pixel", id: null, offset: 77 });
+      // Reading the last sample again must not scan the DOM a second time.
+      tracker.read();
+      expect(scan).toHaveBeenCalledTimes(1);
+    } finally {
+      tracker.stop();
+    }
+  });
+
+  it("stop() removes its listeners so a later scroll cannot trigger another scan", async () => {
+    const el = scroller("conversation-thread", "<p>hello</p>");
+    const scan = vi.spyOn(el, "querySelectorAll");
+    const tracker = createNavigationScrollTracker(() => document);
+    tracker.stop();
+    document.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    expect(scan).not.toHaveBeenCalled();
   });
 });
