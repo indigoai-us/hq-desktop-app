@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Channel @mention notifications now work on installs whose local settings file does not record your person ID.
+
 ## [0.10.321] — 2026-09-24
 
 - Auto-sync memory alerts now include a bounded memory class and, for
