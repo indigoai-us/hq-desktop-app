@@ -196,6 +196,29 @@ describe("WorkShell company roster refresh (desktop)", () => {
     });
   });
 
+  it("re-reads the roster on the shell's request without a sync event", async () => {
+    // The setup bot creates a company server-side; its channel reaches the
+    // shell long before any sync event, and the shell asks for a fresh roster.
+    const native = makeHost([
+      () => ({ workspaces: [] }),
+      () => ({ workspaces: [ACME_ROW] }),
+    ]);
+    mountDesktopShell(native);
+    await vi.waitFor(() => {
+      expect(capturedRosterStatus()).toBe("ready");
+      expect(capturedCompanies()).toEqual([]);
+    });
+    const refresh = desktopAppProps.current?.onrefreshroster as
+      | (() => Promise<unknown>)
+      | undefined;
+    expect(typeof refresh).toBe("function");
+    await refresh!();
+    await vi.waitFor(() => {
+      expect(capturedCompanies().map((c) => c.cloudUid)).toEqual(["cmp_acme"]);
+    });
+    expect(capturedRosterStatus()).toBe("ready");
+  });
+
   it("keeps the last good roster when a later refresh fails", async () => {
     const native = makeHost([
       () => ({ workspaces: [ACME_ROW] }),
