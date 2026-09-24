@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.321] — 2026-09-24
+
 - Auto-sync memory alerts now include a bounded memory class and, for
   multi-process trees, the largest child's process type.
 
