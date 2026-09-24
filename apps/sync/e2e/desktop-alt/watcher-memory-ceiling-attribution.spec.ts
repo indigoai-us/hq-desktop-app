@@ -204,7 +204,21 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     // Signal the largest Node member, not an arbitrary largest child such as git.
     // If a fresh Node report is unavailable, the already-collected tree sample is
     // still the source of a bounded class instead of being reported as absent.
-    expect(resolver).toContain('tree_largest_node_member_pid');
+    const signalTarget = sliceBetween(
+      appDaemonSource,
+      'fn signal_largest_node_memory_report(',
+      '\n}\n',
+      'signal_largest_node_memory_report',
+    );
+    const targetPid = sliceBetween(
+      appDaemonSource,
+      'fn largest_node_memory_report_pid(',
+      '\n}\n',
+      'largest_node_memory_report_pid',
+    );
+    expect(resolver).toContain('signal_largest_node_memory_report(sample,');
+    expect(signalTarget).toContain('largest_node_memory_report_pid(sample)');
+    expect(targetPid).toContain('sample.tree_largest_node_member_pid.filter(|pid| *pid != 0)');
     expect(resolver).toContain('resolve_memory_class_from_sample');
     expect(coreDaemonSource).toContain('Self::SupervisorSample');
 
