@@ -72,6 +72,20 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// burning the whole 15s on a TCP handshake that's never going to complete.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Per-request timeout override for endpoints hq-pro documents as
+/// hydrate/fan-out routes with their own longer deadline — currently
+/// `GET /v1/notify/channels` (hq-pro `notify-channels-throttle-budget.ts`:
+/// "Concurrency of the GET /v1/notify/channels hydrate/roster fan-out",
+/// `vault-request-deadline.ts`: `notify_channels` gets a 28s route deadline).
+/// 2026-09 regression: the roster response for an account with many channels
+/// runs ~800KB and the server-side per-channel hydrate fan-out can legitimately
+/// take longer than the blanket 15s [`REQUEST_TIMEOUT`], so reqwest aborted the
+/// body read mid-stream and surfaced the opaque `error decoding response body`
+/// (wrapping a `TimedOut` source) logged as `*_BODY_READ_FAIL` /
+/// `DM_NOTIFY_CHAN_POLL_ERROR`. Set above the server's own 28s deadline with
+/// margin so the client waits at least as long as the server is willing to.
+pub const HYDRATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
+
 /// Build a HeaderMap with our standard client-attribution headers.
 ///
 /// All three header values are ASCII compile-time constants, so the
@@ -110,6 +124,21 @@ pub fn build_client() -> Client {
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .unwrap_or_else(|_| Client::new())
+}
+
+/// Walk a `reqwest::Error`'s `source()` chain into one line, so a decode
+/// failure logs the real underlying cause (e.g. `operation timed out`,
+/// a hyper body error, a serde error) instead of just reqwest's generic
+/// top-level message (`error decoding response body`). Never includes
+/// response bytes — callers pass those separately, truncated, when safe.
+pub fn describe_error_chain(err: &dyn std::error::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut cur = err.source();
+    while let Some(src) = cur {
+        parts.push(src.to_string());
+        cur = src.source();
+    }
+    parts.join(" <- ")
 }
 
 #[cfg(test)]
