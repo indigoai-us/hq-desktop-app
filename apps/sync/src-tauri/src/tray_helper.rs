@@ -152,6 +152,28 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     "sync" => {
                         let _ = app.emit("tray:sync-now", ());
                     }
+                    // Pause/Resume Sync menu item. Flips the SAME `cloudPaused`
+                    // flag the sync gates in `commands/sync.rs` /
+                    // `commands/daemon.rs` already read (see
+                    // `commands::settings::toggle_cloud_paused_sync`) — no
+                    // second pause flag. The Swift helper re-reads
+                    // `menubar.json` itself right before it shows the menu, so
+                    // there is nothing to push back to it here beyond
+                    // notifying the frontend.
+                    "toggle-pause" => {
+                        let app_main = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            match crate::commands::settings::toggle_cloud_paused_sync(&app_main) {
+                                Ok(paused) => {
+                                    let _ = app_main.emit("tray:cloud-paused-changed", paused);
+                                }
+                                Err(e) => log(
+                                    "tray",
+                                    &format!("pause-sync toggle failed: {e}"),
+                                ),
+                            }
+                        });
+                    }
                     // Right-click menu: "Open desktop view" / "Open Inbox" /
                     // "Sign Out". Relayed to the frontend, which routes them
                     // through the same guarded paths the popover uses (the

@@ -12,12 +12,14 @@
 // message count to ~/.hq/.tray-badge. No sockets, signals, or entitlements.
 // The helper exits itself when the main app's PID (argv[1]) dies.
 //
-// Interaction matches a normal menu-bar app:
-//   • LEFT-click  → open the popover (write "show" + activate the main app so
-//                   the popover reliably comes to the front — without activation
-//                   a background-launched app shows the window behind everything
-//                   / lets the click-away handler swallow it).
-//   • RIGHT-click → context menu (Sync Now / Quit).
+// Interaction:
+//   • LEFT-click  → context menu (same as right-click). "Open desktop view"
+//                   in the menu is how the app window is opened now.
+//   • RIGHT-click → the same context menu.
+// The Pause/Resume Sync item's title is refreshed from `menubar.json`
+// (`cloudPaused`) immediately before the menu is shown, so it never goes
+// stale if the flag changed from another surface (e.g. a future Settings
+// toggle) since the menu was last opened.
 //
 // Build: swiftc -O hq-tray-helper.swift -o hq-tray-helper
 
@@ -27,6 +29,22 @@ import Foundation
 let hqPid: Int32 = CommandLine.arguments.count > 1 ? (Int32(CommandLine.arguments[1]) ?? 0) : 0
 let cmdURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".hq/.tray-cmd")
 let badgeURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".hq/.tray-badge")
+let menubarURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".hq/menubar.json")
+
+/// Read the `cloudPaused` flag straight out of `menubar.json` — the SAME file
+/// `hq_desktop_core::daemon::is_cloud_paused` reads on the Rust side, and the
+/// SAME flag `commands::settings::toggle_cloud_paused_sync` flips. No second
+/// pause flag: this helper is read-only against that file, defaults to
+/// "not paused" (matching the Rust default) when the file is missing,
+/// unparsable, or the key is absent.
+func readCloudPaused() -> Bool {
+    guard let data = try? Data(contentsOf: menubarURL),
+        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        return false
+    }
+    return (obj["cloudPaused"] as? Bool) ?? false
+}
 private let hqTemplateImageBase64 = """
 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
 """
@@ -150,6 +168,8 @@ final class TrayController: NSObject {
     private let hasMark: Bool
     private let badgeView = TrayBadgeView(frame: .zero)
     private var lastBadgeSnapshot: String?
+    private var pauseSyncItem: NSMenuItem?
+    private var syncNowItem: NSMenuItem?
 
     override init() {
         let mark = makeHQTemplateImage()
@@ -166,13 +186,20 @@ final class TrayController: NSObject {
         badgeView.setAccessibilityElement(false)
         item.button?.addSubview(badgeView, positioned: .above, relativeTo: nil)
 
-        // Right-click context menu (NOT set as item.menu — that would make a
-        // plain left-click open the menu instead of the popover). Items:
-        // Sync Now / Open desktop view / Open Inbox / Check for updates /
-        // Recovery / Replay welcome intro / Sign Out / Quit HQ ⌘Q.
+        // Context menu shown on EITHER click (NOT set as item.menu — that would
+        // hand click handling to AppKit and we need to refresh the Pause/Resume
+        // label first; see `statusItemClicked`). Items: Sync Now / Pause-Resume
+        // Sync / Open desktop view / Open Inbox / Check for updates / Recovery /
+        // Replay welcome intro / Sign Out / Quit HQ ⌘Q.
         let sync = NSMenuItem(title: "Sync Now", action: #selector(syncNow), keyEquivalent: "")
         sync.target = self
         menu.addItem(sync)
+        let pauseSync = NSMenuItem(
+            title: "Pause Sync", action: #selector(togglePauseSync), keyEquivalent: "")
+        pauseSync.target = self
+        menu.addItem(pauseSync)
+        self.pauseSyncItem = pauseSync
+        self.syncNowItem = sync
         let desktop = NSMenuItem(
             title: "Open desktop view", action: #selector(openDesktop), keyEquivalent: "")
         desktop.target = self
@@ -232,27 +259,38 @@ final class TrayController: NSObject {
         button.setAccessibilityLabel(attention)
     }
 
+    /// Pull the current paused state fresh off disk and push it onto the menu
+    /// item's title + the "Sync Now" enabled state. Called immediately before
+    /// the menu is shown so it can never go stale between opens.
+    private func refreshPauseMenuItem() {
+        let paused = readCloudPaused()
+        pauseSyncItem?.title = paused ? "Resume Sync" : "Pause Sync"
+        syncNowItem?.isEnabled = !paused
+    }
+
     @objc func statusItemClicked() {
-        let event = NSApp.currentEvent
-        let isRight =
-            event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true
-        if isRight {
-            // Show the context menu, then detach it so the next left-click again
-            // triggers the action rather than re-opening the menu.
-            item.menu = menu
-            item.button?.performClick(nil)
-            item.menu = nil
-        } else {
-            // Report the icon's on-screen horizontal centre (Cocoa screen points)
-            // so the main app can anchor the popover UNDER the icon instead of
-            // guessing the top-right corner. -1 = unknown → main app falls back.
-            let anchorX = item.button?.window?.frame.midX ?? -1
-            writeCommand("show \(Int(anchorX.rounded()))")
-            activateHQ()
-        }
+        // Left-click now shows the same menu as right-click — "Open desktop
+        // view" in the menu is the way to open the app window. Refresh the
+        // Pause/Resume label first so a flag change from elsewhere (e.g. a
+        // future Settings toggle) is never stale.
+        refreshPauseMenuItem()
+        item.menu = menu
+        item.button?.performClick(nil)
+        item.menu = nil
     }
 
     @objc func syncNow() { writeCommand("sync") }
+    /// Sends "toggle-pause" to the main app over the same command file the
+    /// other menu items use; the main app flips `cloudPaused` and the next
+    /// `refreshPauseMenuItem()` (on the next menu open) picks up the new
+    /// state. Also flips the label immediately so the item doesn't look
+    /// unresponsive between click and the next open.
+    @objc func togglePauseSync() {
+        writeCommand("toggle-pause")
+        let nowPaused = !readCloudPaused()
+        pauseSyncItem?.title = nowPaused ? "Resume Sync" : "Pause Sync"
+        syncNowItem?.isEnabled = !nowPaused
+    }
     @objc func openDesktop() {
         writeCommand("desktop")
         activateHQ()

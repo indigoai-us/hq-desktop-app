@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::TrayIconBuilder,
     AppHandle, Emitter, Listener, Manager, PhysicalPosition, Rect, WindowEvent,
 };
 
@@ -102,6 +102,14 @@ static PROMPT_PENDING: AtomicUsize = AtomicUsize::new(0);
 /// gains a " · N new share(s)" suffix as a lightweight visual badge
 /// (avoids needing a new tray icon PNG for the share-notify feature).
 static SHARE_BADGE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Mirror of the `cloudPaused` flag (`hq_desktop_core::daemon::is_cloud_paused`)
+/// for the in-process (non-macOS) tray. macOS's native helper reads
+/// `menubar.json` itself right before it shows the menu, so it never
+/// consults this — this cache only exists so the tao tray's static
+/// `MenuItem` labels/enabled-state can be refreshed without a fresh file
+/// read on every redraw.
+static CLOUD_PAUSED: AtomicBool = AtomicBool::new(false);
 
 /// Count of in-app agent sessions currently parked on the human (`needsYou`).
 /// Recomputed from the session registry on every phase change by
@@ -381,11 +389,69 @@ fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, _state: Tr
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pause / Resume sync (reuses the existing `cloudPaused` gate — see
+// `hq_desktop_core::daemon::is_cloud_paused` / `ensure_cloud_sync_allowed`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Menu label for the Pause/Resume item. Pure so it's testable without a
+/// running Tauri app.
+pub(crate) fn pause_menu_label(paused: bool) -> &'static str {
+    if paused {
+        "Resume Sync"
+    } else {
+        "Pause Sync"
+    }
+}
+
+/// Whether "Sync Now" should be enabled. Pure so it's testable without a
+/// running Tauri app. Mirrors `hq_desktop_core::daemon::ensure_cloud_sync_allowed`
+/// (Cloud off => every manual/launch sync path is refused), so the menu item's
+/// enabled state never promises something the gate would then reject.
+pub(crate) fn sync_now_enabled(paused: bool) -> bool {
+    !paused
+}
+
+/// Handles to the two menu items whose text/enabled-state depend on the
+/// paused flag. Only populated on the in-process (non-macOS) tao tray; the
+/// macOS native helper (`hq-tray-helper.swift`) owns its own `NSMenuItem`s and
+/// refreshes them itself from `menubar.json` right before showing the menu.
+static PAUSE_MENU_ITEMS: OnceLock<Mutex<Option<(tauri::menu::MenuItem<tauri::Wry>, tauri::menu::MenuItem<tauri::Wry>)>>> =
+    OnceLock::new();
+
+fn pause_menu_items() -> &'static Mutex<Option<(tauri::menu::MenuItem<tauri::Wry>, tauri::menu::MenuItem<tauri::Wry>)>> {
+    PAUSE_MENU_ITEMS.get_or_init(|| Mutex::new(None))
+}
+
+/// Update the cached paused flag and (for the non-macOS tao tray) push the new
+/// label/enabled-state onto the live menu items. Also refreshes the tooltip so
+/// the paused state is visible on the icon itself, not just in the menu.
+///
+/// Call this after ANY write to `cloudPaused` — the tray toggle itself, or a
+/// future Settings UI using the same `save_settings` command — so the label
+/// stays correct regardless of where the flag changed.
+pub fn set_paused_badge(app: &AppHandle, paused: bool) {
+    CLOUD_PAUSED.store(paused, Ordering::SeqCst);
+    if let Ok(guard) = pause_menu_items().lock() {
+        if let Some((pause_item, sync_now_item)) = guard.as_ref() {
+            let _ = pause_item.set_text(pause_menu_label(paused));
+            let _ = sync_now_item.set_enabled(sync_now_enabled(paused));
+        }
+    }
+    refresh_tray_tooltip(app);
+}
+
+/// Current cached paused flag (non-macOS tao tray only — see `CLOUD_PAUSED`).
+pub fn is_paused() -> bool {
+    CLOUD_PAUSED.load(Ordering::SeqCst)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Menu IDs
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MENU_VERSION: &str = "version";
 const MENU_SYNC_NOW: &str = "sync-now";
+const MENU_PAUSE_SYNC: &str = "pause-sync";
 const MENU_OPEN_DESKTOP: &str = "open-desktop";
 const MENU_OPEN_INBOX: &str = "open-inbox";
 const MENU_CHECK_UPDATES: &str = "check-for-updates";
@@ -427,6 +493,10 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     // Sync Now / Open desktop view / Sign Out / Quit HQ. Settings stays for
     // parity with the popover's overflow menu.
     let sync_now = MenuItemBuilder::with_id(MENU_SYNC_NOW, "Sync Now").build(app)?;
+    let initially_paused = hq_desktop_core::daemon::is_cloud_paused();
+    sync_now.set_enabled(sync_now_enabled(initially_paused))?;
+    let pause_sync =
+        MenuItemBuilder::with_id(MENU_PAUSE_SYNC, pause_menu_label(initially_paused)).build(app)?;
     let open_desktop =
         MenuItemBuilder::with_id(MENU_OPEN_DESKTOP, "Open desktop view").build(app)?;
     let open_inbox = MenuItemBuilder::with_id(MENU_OPEN_INBOX, "Open Inbox").build(app)?;
@@ -443,6 +513,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .item(&version_item)
         .separator()
         .item(&sync_now)
+        .item(&pause_sync)
         .item(&open_desktop)
         .item(&open_inbox)
         .separator()
@@ -454,6 +525,11 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .item(&sign_out)
         .item(&quit)
         .build()?;
+
+    CLOUD_PAUSED.store(initially_paused, Ordering::SeqCst);
+    if let Ok(mut guard) = pause_menu_items().lock() {
+        *guard = Some((pause_sync.clone(), sync_now.clone()));
+    }
 
     // The helper process owns the real macOS menu-bar item. This in-process tray
     // is skipped on macOS, but if it is ever recreated for fallback diagnostics,
@@ -474,7 +550,12 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     let tray_builder = tray_builder
         .tooltip("HQ — Idle")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // Left-click now shows the same menu as right-click (this tray only
+        // builds on non-macOS — Windows/Linux; macOS uses the native helper,
+        // see hq-tray-helper.swift). "Open desktop view" in the menu is the
+        // way to open the app window, so there is no separate left-click
+        // window-open handler below (it would double-fire against this).
+        .show_menu_on_left_click(true)
         .on_menu_event({
             let app_handle = app.clone();
             move |_app, event| {
@@ -482,6 +563,17 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                 match id {
                     id if id == MENU_SYNC_NOW => {
                         let _ = app_handle.emit("tray:sync-now", ());
+                    }
+                    id if id == MENU_PAUSE_SYNC => {
+                        match crate::commands::settings::toggle_cloud_paused_sync(&app_handle) {
+                            Ok(paused) => {
+                                let _ = app_handle.emit("tray:cloud-paused-changed", paused);
+                            }
+                            Err(e) => crate::util::logfile::log(
+                                "tray",
+                                &format!("pause-sync toggle failed: {e}"),
+                            ),
+                        }
                     }
                     id if id == MENU_OPEN_DESKTOP => {
                         let _ = app_handle.emit("tray:open-desktop", ());
@@ -512,29 +604,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
             }
         });
 
-    let tray = tray_builder
-        .on_tray_icon_event({
-            let app_handle = app.clone();
-            move |_tray, event| {
-                if let TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                } = event
-                {
-                    // Tray left-click opens the desktop workspace; while setup
-                    // still owns `main` it brings back the installer card.
-                    let _ = crate::commands::desktop_alt::activation_policy(
-                        crate::commands::desktop_alt::ActivationSource::TrayLeftClick,
-                    );
-                    hq_telemetry::record_native_panic_seam(
-                        hq_telemetry::NativePanicSeam::TrayLeftClick,
-                    );
-                    activate_primary_surface(&app_handle);
-                }
-            }
-        })
-        .build(app)?;
+    let tray = tray_builder.build(app)?;
 
     Ok(tray)
 }
@@ -598,6 +668,12 @@ where
 /// Call this from `tauri::Builder::default().setup(...)`.
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use crate::util::logfile::log;
+
+    // Seed the cached paused flag from disk so the very first tooltip render
+    // (before any toggle happens) reflects a pause carried over from a prior
+    // session. `build_tray_icon` re-seeds it too when it actually builds the
+    // tao tray (non-macOS); harmless to set it twice.
+    CLOUD_PAUSED.store(hq_desktop_core::daemon::is_cloud_paused(), Ordering::SeqCst);
 
     // Build context menu. The version row is a disabled item — it renders
     // like a macOS "About" label (dimmed, unclickable). Sourced from the
@@ -1342,6 +1418,7 @@ fn setup_sync_listeners(app: &AppHandle) {
 fn refresh_tray_tooltip(app: &AppHandle) {
     let tooltip = compose_tray_tooltip(
         get_current_state().tooltip(),
+        CLOUD_PAUSED.load(Ordering::SeqCst),
         SHARE_BADGE_COUNT.load(Ordering::SeqCst),
         SESSION_BADGE_COUNT.load(Ordering::SeqCst),
     );
@@ -1354,8 +1431,11 @@ fn refresh_tray_tooltip(app: &AppHandle) {
 /// of `refresh_tray_tooltip` (which needs an `AppHandle`) so the composition
 /// rule is unit-testable, and written as one function so a new badge cannot be
 /// added in a way that silently replaces an existing suffix.
-fn compose_tray_tooltip(base: &str, share_count: usize, session_count: usize) -> String {
+fn compose_tray_tooltip(base: &str, paused: bool, share_count: usize, session_count: usize) -> String {
     let mut tooltip = base.to_string();
+    if paused {
+        tooltip.push_str(" · Paused");
+    }
     if share_count > 0 {
         tooltip.push_str(&format!(" · {share_count} new share(s)"));
     }
@@ -1681,13 +1761,13 @@ mod tests {
 
     #[test]
     fn test_session_badge_tooltip_suffix() {
-        assert_eq!(compose_tray_tooltip("HQ — Idle", 0, 0), "HQ — Idle");
+        assert_eq!(compose_tray_tooltip("HQ — Idle", false, 0, 0), "HQ — Idle");
         assert_eq!(
-            compose_tray_tooltip("HQ — Idle", 0, 1),
+            compose_tray_tooltip("HQ — Idle", false, 0, 1),
             "HQ — Idle · 1 session needs you"
         );
         assert_eq!(
-            compose_tray_tooltip("HQ — Idle", 0, 2),
+            compose_tray_tooltip("HQ — Idle", false, 0, 2),
             "HQ — Idle · 2 sessions need you"
         );
     }
@@ -1697,13 +1777,38 @@ mod tests {
         // Both suffixes must survive together — a new badge must never
         // overwrite the share badge that shipped first.
         assert_eq!(
-            compose_tray_tooltip("HQ — Syncing…", 3, 2),
+            compose_tray_tooltip("HQ — Syncing…", false, 3, 2),
             "HQ — Syncing… · 3 new share(s) · 2 sessions need you"
         );
         assert_eq!(
-            compose_tray_tooltip("HQ — Idle", 1, 0),
+            compose_tray_tooltip("HQ — Idle", false, 1, 0),
             "HQ — Idle · 1 new share(s)"
         );
+    }
+
+    #[test]
+    fn test_paused_tooltip_suffix() {
+        assert_eq!(
+            compose_tray_tooltip("HQ — Idle", true, 0, 0),
+            "HQ — Idle · Paused"
+        );
+        // Paused suffix composes with the other badges, in order.
+        assert_eq!(
+            compose_tray_tooltip("HQ — Idle", true, 1, 1),
+            "HQ — Idle · Paused · 1 new share(s) · 1 session needs you"
+        );
+    }
+
+    #[test]
+    fn test_pause_menu_label() {
+        assert_eq!(pause_menu_label(false), "Pause Sync");
+        assert_eq!(pause_menu_label(true), "Resume Sync");
+    }
+
+    #[test]
+    fn test_sync_now_enabled_gated_by_pause() {
+        assert!(sync_now_enabled(false));
+        assert!(!sync_now_enabled(true));
     }
 
     #[test]

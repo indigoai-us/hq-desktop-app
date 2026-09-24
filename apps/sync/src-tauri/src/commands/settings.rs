@@ -247,6 +247,49 @@ pub(crate) fn save_settings_at(path: &Path, prefs: &MenubarPrefs) -> Result<(), 
     Ok(())
 }
 
+/// Flip the `cloudPaused` flag (V2 "Cloud Off" switch, see
+/// `hq_desktop_core::daemon::is_cloud_paused` / `ensure_cloud_sync_allowed`)
+/// through the exact same read/merge/write seam the `get_settings` /
+/// `save_settings` commands use — `get_settings_at` + `save_settings_at` — so
+/// the tray toggle and any Settings UI that later calls `save_settings` agree
+/// on one on-disk flag and the native sync gates in `commands/sync.rs` /
+/// `commands/daemon.rs` see the same value regardless of which surface wrote
+/// it.
+///
+/// Callable directly from a native (non-async) context — the tao tray's menu
+/// event handler and the macOS `hq-tray-helper` IPC poll loop both call this,
+/// neither of which is an async command invocation. Notifies client-health
+/// listeners and refreshes the tray label/tooltip so the change is visible
+/// immediately, then returns the new paused state.
+pub(crate) fn toggle_cloud_paused_sync(app: &tauri::AppHandle) -> Result<bool, String> {
+    let path = paths::menubar_json_path()?;
+    let new_paused = toggle_cloud_paused_at(&path)?;
+    crate::commands::client_health::notify_client_health_state_changed();
+    crate::tray::set_paused_badge(app, new_paused);
+    Ok(new_paused)
+}
+
+/// Path-injected flip of the `cloudPaused` flag, split out from
+/// [`toggle_cloud_paused_sync`] so native tests can exercise the actual
+/// read/flip/persist logic against an isolated file instead of the user's
+/// real `menubar.json` — the app-handle side effects (client-health notify,
+/// tray label refresh) aren't relevant to what got written to disk.
+pub(crate) fn toggle_cloud_paused_at(path: &Path) -> Result<bool, String> {
+    let mut prefs = get_settings_at(path)?;
+    let new_paused = !prefs.cloud_paused.unwrap_or(false);
+    prefs.cloud_paused = Some(new_paused);
+    save_settings_at(path, &prefs)?;
+    Ok(new_paused)
+}
+
+/// Tauri command wrapper around [`toggle_cloud_paused_sync`], registered so a
+/// webview surface (e.g. a future Settings toggle) can flip the flag through
+/// the same path the tray uses, rather than a third implementation.
+#[tauri::command]
+pub fn toggle_cloud_paused(app: tauri::AppHandle) -> Result<bool, String> {
+    toggle_cloud_paused_sync(&app)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +322,37 @@ mod tests {
         );
         let raw = std::fs::read_to_string(&path).expect("persisted menubar.json");
         assert!(raw.contains("co_isolated"));
+
+        std::fs::remove_dir_all(config).expect("remove isolated config");
+    }
+
+    /// `toggle_cloud_paused_at` must flip the persisted flag, default to
+    /// pausing on a fresh (no-file) config since `get_settings_at` defaults
+    /// `cloud_paused` to `Some(false)`, and round-trip through
+    /// `get_settings_at` so the sync gates that read the same file agree.
+    #[test]
+    fn toggle_cloud_paused_flips_and_persists() {
+        let unique = format!(
+            "hq-settings-toggle-paused-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let config = std::env::temp_dir().join(unique);
+        let path = config.join("menubar.json");
+
+        // Fresh config starts unpaused, so the first toggle pauses.
+        let paused = toggle_cloud_paused_at(&path).expect("first toggle");
+        assert!(paused);
+        assert_eq!(get_settings_at(&path).unwrap().cloud_paused, Some(true));
+
+        // Toggling again resumes, and it's read back from a fresh load, not
+        // just returned by the same call.
+        let resumed = toggle_cloud_paused_at(&path).expect("second toggle");
+        assert!(!resumed);
+        assert_eq!(get_settings_at(&path).unwrap().cloud_paused, Some(false));
 
         std::fs::remove_dir_all(config).expect("remove isolated config");
     }
