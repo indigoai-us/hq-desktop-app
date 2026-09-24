@@ -12,7 +12,10 @@
   interface Props {
     adapter: PlatformAdapter;
     companies: Workspace[] | null | undefined;
-    /** Company to show; falls back to the preferred one, then the first. */
+    /**
+     * Company to show; falls back to the preferred one, then the last one
+     * picked on this Mac, then the first.
+     */
     slug?: string | null;
     /** Company the rest of the app is scoped to, used when `slug` is unset. */
     preferredSlug?: string | null;
@@ -34,9 +37,22 @@
       .sort((a, b) => (a.displayName || a.slug).localeCompare(b.displayName || b.slug)),
   );
 
+  const LAST_COMPANY_KEY = "hq.projects.lastCompany";
+
+  function readLastCompany(): string | null {
+    try {
+      return globalThis.localStorage?.getItem(LAST_COMPANY_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  let lastPicked = $state<string | null>(readLastCompany());
+
   const current = $derived(
     choices.find((c) => c.slug === slug) ??
       choices.find((c) => c.slug === preferredSlug) ??
+      choices.find((c) => c.slug === lastPicked) ??
       choices[0] ??
       null,
   );
@@ -45,7 +61,14 @@
 
   function choose(next: string): void {
     menuOpen = false;
-    if (next !== current?.slug) onslugchange?.(next);
+    const previous = current?.slug;
+    lastPicked = next;
+    try {
+      globalThis.localStorage?.setItem(LAST_COMPANY_KEY, next);
+    } catch {
+      // Storage can be unavailable; the pick still applies for this visit.
+    }
+    if (next !== previous) onslugchange?.(next);
   }
 
   function initial(c: Workspace): string {

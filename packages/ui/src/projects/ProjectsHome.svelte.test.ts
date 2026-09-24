@@ -19,6 +19,7 @@ let host: HTMLDivElement | null = null;
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(async () => {
+  localStorage.clear();
   if (component) await unmount(component);
   component = null;
   host?.remove();
@@ -86,6 +87,24 @@ describe("ProjectsHome", () => {
     expect(items.map((i) => i.textContent?.trim().replace(/^\w\s*/, ""))).toEqual(["Acme", "Zeta"]);
     items[1].click();
     expect(onslugchange).toHaveBeenCalledWith("zeta");
+  });
+
+  it("reopens on the company picked last time when the channel has none", async () => {
+    let el = await render({});
+    el.querySelector<HTMLButtonElement>('[data-testid="projects-company-switcher"]')!.click();
+    flushSync();
+    [...el.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')][1].click();
+    await unmount(component!);
+    component = null;
+    host?.remove();
+    el = await render({});
+    expect(shown(el)).toBe("zeta");
+  });
+
+  it("still prefers the channel's company over the remembered one", async () => {
+    localStorage.setItem("hq.projects.lastCompany", "zeta");
+    const el = await render({ preferredSlug: "acme" });
+    expect(shown(el)).toBe("acme");
   });
 
   it("says so when no company has synced to this Mac", async () => {
