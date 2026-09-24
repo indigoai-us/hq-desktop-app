@@ -692,10 +692,16 @@ fn fuzzy_score(q: &[char], path: &str) -> Option<f64> {
         prev = Some(idx);
         from = idx + 1;
     }
+    // The greedy walk above can scatter a query across folder names; a file
+    // whose name holds the query as written always ranks above those.
     let name: String = chars[name_start..].iter().collect();
     let query: String = q.iter().collect();
     if name.starts_with(&query) {
-        score += 10.0;
+        score += 30.0;
+    } else if name.contains(&query) {
+        score += 20.0;
+    } else if path.contains(&query) {
+        score += 8.0;
     }
     Some(score - chars.len() as f64 * 0.01)
 }
@@ -948,6 +954,28 @@ mod tests {
         assert_eq!(hits[0].path, "companies/acme/knowledge/pricing.md");
         assert!(s.search("zzz", 10).is_empty());
         assert_eq!(s.search("", 2).len(), 2);
+    }
+
+    #[test]
+    fn quick_switcher_prefers_a_name_containing_the_query_over_scattered_path_letters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Every letter of "dedup" appears in order across these folder names.
+        write(
+            root,
+            "companies/acme/data/experiments/synthetic-consumer-ad-benchmark/nanit-development/cohort-audit.private.json",
+            "{}",
+        );
+        write(
+            root,
+            "companies/acme/knowledge/captures/2026-08-03-nanit-class-media-fanout-dedup.md",
+            "",
+        );
+        let s = VaultSnapshot::build(root, "companies/acme", false, None).unwrap();
+        assert_eq!(
+            s.search("dedup", 10)[0].path,
+            "companies/acme/knowledge/captures/2026-08-03-nanit-class-media-fanout-dedup.md"
+        );
     }
 
     #[test]
