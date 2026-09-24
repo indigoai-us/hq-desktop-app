@@ -672,11 +672,22 @@ pub fn non_human_principal_from_tokens(tokens: &CognitoTokens) -> Option<NonHuma
 /// expired generation wins, resolution retries from that generation rather
 /// than returning an already-expired access token.
 pub async fn get_valid_tokens() -> Result<CognitoTokens, String> {
+    resolve_tokens(false).await
+}
+
+/// Refresh Cognito tokens even when the current access token has not expired.
+/// Use this when a token claim may have changed after a server-side account
+/// update, such as email verification.
+pub async fn refresh_tokens() -> Result<CognitoTokens, String> {
+    resolve_tokens(true).await
+}
+
+async fn resolve_tokens(force_refresh: bool) -> Result<CognitoTokens, String> {
     for _ in 0..VALID_TOKEN_RESOLUTION_ATTEMPTS {
         let tokens = get_tokens()
             .await?
             .ok_or_else(|| "Not signed in".to_string())?;
-        if !is_expired(&tokens) {
+        if !force_refresh && !is_expired(&tokens) {
             return Ok(tokens);
         }
 

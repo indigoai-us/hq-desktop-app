@@ -651,6 +651,26 @@ pub(crate) async fn fetch_cloud_roster(
     Ok((person, memberships, entities))
 }
 
+async fn refresh_tokens_if_email_unverified<F, Fut>(
+    tokens: hq_desktop_core::cognito::CognitoTokens,
+    refresh: F,
+) -> Result<hq_desktop_core::cognito::CognitoTokens, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<hq_desktop_core::cognito::CognitoTokens, String>>,
+{
+    let email_verified = tokens
+        .id_token
+        .as_deref()
+        .and_then(|token| hq_desktop_core::cognito::decode_id_token_claims(token).ok())
+        .and_then(|claims| claims.email_verified);
+    if email_verified == Some(false) {
+        refresh().await
+    } else {
+        Ok(tokens)
+    }
+}
+
 #[tauri::command]
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
@@ -661,6 +681,17 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let cloud_outcome: CloudOutcome = async {
         let vault_url = resolve_vault_api_url()?;
         let tokens = hq_desktop_core::cognito::get_valid_tokens().await?;
+        let initial_email_verified = tokens
+            .id_token
+            .as_deref()
+            .and_then(|token| hq_desktop_core::cognito::decode_id_token_claims(token).ok())
+            .and_then(|claims| claims.email_verified);
+        email_verification_required = initial_email_verified == Some(false);
+        let tokens = refresh_tokens_if_email_unverified(
+            tokens,
+            hq_desktop_core::cognito::refresh_tokens,
+        )
+        .await?;
         let email_verified = tokens
             .id_token
             .as_deref()
@@ -1470,6 +1501,62 @@ mod node_self_repair_tests {
 
 #[cfg(test)]
 mod tests {
+    fn tokens_with_email_verification(
+        email_verified: bool,
+    ) -> hq_desktop_core::cognito::CognitoTokens {
+        use base64::Engine as _;
+        let payload = serde_json::json!({
+            "sub": "sub-1",
+            "email": "member@example.com",
+            "email_verified": email_verified
+        });
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).expect("claims serialize"));
+        hq_desktop_core::cognito::CognitoTokens {
+            access_token: "access".into(),
+            id_token: Some(format!("header.{encoded}.signature")),
+            refresh_token: "refresh".into(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    #[tokio::test]
+    async fn refreshes_unverified_email_claim_before_rechecking_pending_invites() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let refresh_calls = Arc::clone(&calls);
+        let tokens = super::refresh_tokens_if_email_unverified(
+            tokens_with_email_verification(false),
+            move || async move {
+                refresh_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(tokens_with_email_verification(true))
+            },
+        )
+        .await
+        .expect("token refresh succeeds");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let email_verified = tokens
+            .id_token
+            .as_deref()
+            .and_then(|token| hq_desktop_core::cognito::decode_id_token_claims(token).ok())
+            .and_then(|claims| claims.email_verified);
+        assert_eq!(email_verified, Some(true));
+
+        let verified = tokens_with_email_verification(true);
+        let unchanged = super::refresh_tokens_if_email_unverified(verified.clone(), || async {
+            Err("verified identity must not refresh".to_string())
+        })
+        .await
+        .expect("verified token is reused");
+        assert_eq!(unchanged, verified);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test]
     async fn stalled_local_discovery_yields_and_reuses_the_pending_job() {
         use futures_util::FutureExt;
