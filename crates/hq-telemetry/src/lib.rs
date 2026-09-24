@@ -1652,6 +1652,17 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "report_unsupported_platform"
                 | "supervisor_sample"
         )),
+        // Outcome of the Node diagnostic report itself. Kept separately from the
+        // memory-class source so a supervisor sample does not hide report failure.
+        "watcher_memory_report_source" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_never_completed"
+                | "report_not_requested"
+                | "report_unsupported_platform"
+        )),
         // Bounded, fixed-vocabulary result of the Node report or the supervisor's
         // process-tree sample. No runtime names or user data are accepted.
         "memory_class" => Some(matches!(
@@ -5211,6 +5222,15 @@ mod tests {
             ("watcher_memory_class_source", "report_not_requested"),
             ("watcher_memory_class_source", "report_unsupported_platform"),
             ("watcher_memory_class_source", "supervisor_sample"),
+            ("watcher_memory_report_source", "report_read"),
+            ("watcher_memory_report_source", "report_absent"),
+            ("watcher_memory_report_source", "report_unreadable"),
+            ("watcher_memory_report_source", "report_never_completed"),
+            ("watcher_memory_report_source", "report_not_requested"),
+            (
+                "watcher_memory_report_source",
+                "report_unsupported_platform",
+            ),
             ("memory_class", "heap"),
             ("memory_class", "external"),
             ("memory_class", "array_buffers"),
@@ -5247,6 +5267,8 @@ mod tests {
                 "watcher_memory_class_source",
                 "supervisor_sample /Users/Ada",
             ),
+            ("watcher_memory_report_source", "report_read /Users/Ada"),
+            ("watcher_memory_report_source", "supervisor_sample"),
             ("memory_class", "heap /Users/Ada"),
             ("memory_class", "heap_growth"),
             ("largest_child_kind", "git /Users/Ada"),

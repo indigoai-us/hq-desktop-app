@@ -638,6 +638,13 @@ fn runner_report_argv_flags(report_dir: &Path) -> Vec<String> {
     flags.push(format!(
         "--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"
     ));
+    #[cfg(unix)]
+    flags.push(format!(
+        "--require={}",
+        report_dir
+            .join(crate::runner_diagnostic_report::RUNNER_MEMORY_CLASS_HELPER_FILENAME)
+            .display()
+    ));
     flags
 }
 
@@ -664,6 +671,16 @@ fn runner_report_node_options_flags(report_dir: &Path) -> Vec<String> {
     ));
     flags.push(format!(
         "--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"
+    ));
+    #[cfg(unix)]
+    flags.push(format!(
+        "--require={}",
+        node_options_quoted_value(
+            &report_dir
+                .join(crate::runner_diagnostic_report::RUNNER_MEMORY_CLASS_HELPER_FILENAME)
+                .display()
+                .to_string()
+        )
     ));
     flags
 }
@@ -2749,7 +2766,9 @@ mod tests {
         let node_options = flags.node_options.clone().expect("NODE_OPTIONS composed");
         assert!(node_options.contains("--report-on-fatalerror"));
         assert!(node_options.contains("--report-on-signal"));
+        assert!(node_options.contains("--require="));
         assert!(flags.node_argv.iter().any(|a| a == "--report-on-signal"));
+        assert!(flags.node_argv.iter().any(|a| a.starts_with("--require=")));
         assert_eq!(runner_report_signal_flag(), Some("--report-on-signal"));
     }
 
@@ -2844,6 +2863,14 @@ mod tests {
             .expect("composed NODE_OPTIONS carries a --report-directory token")
     }
 
+    #[cfg(unix)]
+    fn recover_memory_class_helper(node_options: &str) -> String {
+        node_options_tokenize(node_options)
+            .into_iter()
+            .find_map(|tok| tok.strip_prefix("--require=").map(str::to_string))
+            .expect("composed NODE_OPTIONS carries the bounded memory sampler")
+    }
+
     #[test]
     fn node_options_report_directory_round_trips_through_the_node_tokenizer() {
         // The assertion the prior fix's suite lacked (HQ-DESKTOP-5W): compose the ACTUAL
@@ -2872,6 +2899,14 @@ mod tests {
                 recover_report_directory(&node_options),
                 path.display().to_string(),
                 "report directory did not survive Node's NODE_OPTIONS parser for {dir:?}"
+            );
+            #[cfg(unix)]
+            assert_eq!(
+                recover_memory_class_helper(&node_options),
+                path.join(crate::runner_diagnostic_report::RUNNER_MEMORY_CLASS_HELPER_FILENAME)
+                    .display()
+                    .to_string(),
+                "memory sampler path did not survive Node's NODE_OPTIONS parser for {dir:?}"
             );
             assert!(node_options.contains("--max-old-space-size=3584"));
         }
