@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Switching channels or DMs in the sidebar now shows the new conversation
+  right away instead of pausing first, even when leaving a long conversation.
 - When npm's metadata has not caught up to a new dependency version, HQ refreshes
   it and retries the CLI update. If needed, it tries npm's public registry.
 
