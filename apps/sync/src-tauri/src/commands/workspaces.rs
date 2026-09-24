@@ -1545,16 +1545,18 @@ mod node_self_repair_tests {
 
 #[cfg(test)]
 mod tests {
-    fn tokens_with_email_verification(
+    fn tokens_with_claims(
         sub: &str,
-        email_verified: bool,
+        email_verified: Option<bool>,
     ) -> hq_desktop_core::cognito::CognitoTokens {
         use base64::Engine as _;
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "sub": sub,
-            "email": "member@example.com",
-            "email_verified": email_verified
+            "email": "member@example.com"
         });
+        if let Some(email_verified) = email_verified {
+            payload["email_verified"] = serde_json::Value::Bool(email_verified);
+        }
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&payload).expect("claims serialize"));
         hq_desktop_core::cognito::CognitoTokens {
@@ -1563,6 +1565,13 @@ mod tests {
             refresh_token: "refresh".into(),
             expires_at: i64::MAX,
         }
+    }
+
+    fn tokens_with_email_verification(
+        sub: &str,
+        email_verified: bool,
+    ) -> hq_desktop_core::cognito::CognitoTokens {
+        tokens_with_claims(sub, Some(email_verified))
     }
 
     #[tokio::test]
@@ -1599,6 +1608,20 @@ mod tests {
         assert_eq!(unchanged, verified);
         assert!(!email_verification_required);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn missing_email_verification_claim_does_not_force_refresh_or_show_notice() {
+        let tokens = tokens_with_claims("sub-missing-email-verification", None);
+        let (actual_tokens, email_verification_required) =
+            super::refresh_tokens_and_email_verification_required(tokens.clone(), || async {
+                Err("missing claim must not trigger a refresh".to_string())
+            })
+            .await
+            .expect("missing verification claim reuses the current token");
+
+        assert_eq!(actual_tokens, tokens);
+        assert!(!email_verification_required);
     }
 
     #[tokio::test]
