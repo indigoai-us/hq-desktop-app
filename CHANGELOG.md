@@ -8,7 +8,6 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- The WebKit file chooser now shows an error if macOS cannot open its panel, instead of crashing.
 - Large sync-output bursts no longer build up in HQ's memory. If the app falls
   behind, the runner waits for the app to process more output.
 - Mute a channel from the speaker icon in the channel header, or open the menu next to it to choose all messages, files and mentions, mentions only, or muted. Muted channels show a muted icon in the sidebar.
