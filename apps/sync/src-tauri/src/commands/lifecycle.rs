@@ -4,8 +4,8 @@ use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 #[cfg(not(windows))]
 use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
 use hq_desktop_core::lifecycle::{
-    classify_lifecycle, hq_root_valid, menubar_flags, probe_hq_root, HqRootProbe, LifecycleInputs,
-    LifecycleState,
+    classify_lifecycle, hq_root_valid, menubar_flags, probe_hq_root,
+    should_backfill_welcome_setup_pending, HqRootProbe, LifecycleInputs, LifecycleState,
 };
 use serde_json::{Map, Value};
 use std::sync::RwLock;
@@ -248,10 +248,53 @@ pub fn setup_lifecycle(app: &AppHandle) {
         }
     }
 
+    // A machine that is fully set up and signed in but still has
+    // welcomeSetupPending:true with no welcomeSetupCompletedAt was left in this
+    // state by the v0.10.259–v0.10.287 regression (bundled_hq_cli_ready false on
+    // every auto-update restart caused SteadyState→NeedsInstall, running the
+    // installer and arming the flag). Clear it now so welcome_setup_owed returns
+    // false on this and every subsequent launch.
+    let welcome_setup_backfill = should_backfill_welcome_setup_pending(
+        &menubar,
+        install_completed,
+        first_run_completed,
+        hq_root_valid,
+        has_auth,
+    );
+    if welcome_setup_backfill {
+        match menubar_path.as_ref() {
+            Some(path) => {
+                let now = Utc::now().to_rfc3339();
+                if let Err(e) = hq_desktop_core::first_run::merge_menubar_flags(
+                    path,
+                    &[
+                        ("welcomeSetupPending", Value::Bool(false)),
+                        ("welcomeSetupCompletedAt", Value::String(now.clone())),
+                        ("welcomeSetupBackfilledAt", Value::String(now)),
+                    ],
+                ) {
+                    log(
+                        "lifecycle",
+                        &format!("setup_lifecycle: welcome-setup backfill failed: {e}"),
+                    );
+                } else {
+                    log(
+                        "lifecycle",
+                        "setup_lifecycle: backfilled welcomeSetupPending=false for set-up machine",
+                    );
+                }
+            }
+            None => log(
+                "lifecycle",
+                "setup_lifecycle: welcome-setup backfill skipped; menubar path unavailable",
+            ),
+        }
+    }
+
     log(
         "lifecycle",
         &format!(
-            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} evidence_unreadable={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={}",
+            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} evidence_unreadable={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={} welcome_setup_backfill={}",
             lifecycle_state_str(verdict.state),
             install_completed,
             first_run_completed,
@@ -266,6 +309,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
             bundled_cli_ready,
             verdict.needs_install_backfill,
             verdict.needs_first_run_backfill,
+            welcome_setup_backfill,
         ),
     );
 
