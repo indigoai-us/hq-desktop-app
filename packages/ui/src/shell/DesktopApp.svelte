@@ -3913,6 +3913,17 @@
   let contactAvatarByUid = $state<Record<string, string>>({});
   let avatarOverridesByUid = $state<Record<string, string>>({});
   let rosterWakeSeq = $state(0);
+  const BOT_TOGGLE_KEY = 'hq:messages:show-bot-messages';
+  let showBotMessages = $state(
+    typeof localStorage !== 'undefined' && localStorage.getItem(BOT_TOGGLE_KEY) === 'true',
+  );
+  function handleShowBotMessagesChange(value: boolean) {
+    showBotMessages = value;
+    if (typeof localStorage !== 'undefined') {
+      if (value) localStorage.setItem(BOT_TOGGLE_KEY, 'true');
+      else localStorage.removeItem(BOT_TOGGLE_KEY);
+    }
+  }
   let agentAvatarSaving = $state(false);
   let agentAvatarSaveError = $state<string | null>(null);
   let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
@@ -8024,6 +8035,8 @@
           {rowExtrasLoading}
           {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
+          {showBotMessages}
+          onshowbotmessageschange={handleShowBotMessagesChange}
         />
         {/key}
         {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
