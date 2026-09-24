@@ -14,6 +14,9 @@ The release moves it under the version it ships in.
   toggle away and never counts toward unread or fires a notification. A thread
   whose recent messages are all from bots stays listed and shows how many are
   hidden; turning the toggle on reveals them with a small "agent" label.
+
+## [0.10.322] — 2026-09-24
+
 - Each company now has exactly one "company home" channel (settings,
   wallpaper). Other channels created inside a company are plain team
   channels. A new "Companies" section in the sidebar pins each company's
