@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed the channel list failing to load for people in companies with a lot of
+  channels. The app was giving that request the same short timeout as every
+  other one, so once a company's channel roster got large enough, the response
+  legitimately took longer to arrive and the request aborted partway through
+  with a decode error. It now gets a longer timeout of its own.
 - Fixed a bug where every company in the sidebar's "Companies" section showed
   "no home channel yet," even companies with a working home channel. The
   fallback check that resolves a home channel while the server catches up was
