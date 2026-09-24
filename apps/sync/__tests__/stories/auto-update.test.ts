@@ -405,10 +405,10 @@ describe('master automatic-updates switch', () => {
     expect(core).toContain('scope.set_tag( "pnpm_home_env_present",');
     expect(core).toContain('scope.set_tag( "pnpm_path_has_shim_dir",');
     expect(core).toContain('scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());');
-    // The grouping must NOT split: a new tag that forked the fingerprint would
-    // make the issue look resolved while the same defect kept occurring.
-    expect(cliUpdateCore).toContain(
-      'scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));',
+    // The existing closed class tag distinguishes root causes while keeping
+    // paths and machine-specific install locations out of the grouping key.
+    expect(normalize(cliUpdateCore)).toContain(
+      'scope.set_fingerprint(Some(&[ "hq-cli-update", "install-non-convergent", report.kind.telemetry_value(), ]));',
     );
   });
 

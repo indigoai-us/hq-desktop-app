@@ -3475,7 +3475,14 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                 "settings_path_repair",
                 report.settings_path.repair.telemetry_value(),
             );
-            scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
+            // The class is the existing closed `non_convergence_kind` tag, so a
+            // foreign-managed shadow has one stable group independent of paths,
+            // versions, or the installer binary that happened to run.
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "install-non-convergent",
+                report.kind.telemetry_value(),
+            ]));
             // Home-redacted: the install LAYOUT is the diagnostic
             // (`~/Library/pnpm/hq` says everything); the account name in front
             // of it is personal data. The shared `before_send` scrubber only
