@@ -72,6 +72,7 @@
     stageTimeoutMs,
     setupFailureTelemetryDetails,
     StageTimeoutError,
+    withProgressTimeout,
     STAGE_ORDER,
     withTimeout,
     type InstallManifest,
@@ -291,6 +292,9 @@
   const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
+  let unlistenPersonalFirstPushScan: UnlistenFn | null = null;
+  let unlistenPersonalFirstPushProgress: UnlistenFn | null = null;
+  let activeInitialSyncTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -1033,6 +1037,29 @@
       return;
     }
     unlistenContentProgress = unlistenContent;
+
+    const notifyInitialSyncActivity = () => {
+      if (isCurrentRun(runId) && currentStageId === 'initial-sync') {
+        activeInitialSyncTimeoutProgress?.();
+      }
+    };
+    const unlistenPersonalScan = safeUnlisten(
+      await listen('sync:personal-first-push-scan', notifyInitialSyncActivity),
+    );
+    if (!isCurrentRun(runId)) {
+      unlistenPersonalScan();
+      return;
+    }
+    unlistenPersonalFirstPushScan = unlistenPersonalScan;
+
+    const unlistenPersonalProgress = safeUnlisten(
+      await listen('sync:personal-first-push-progress', notifyInitialSyncActivity),
+    );
+    if (!isCurrentRun(runId)) {
+      unlistenPersonalProgress();
+      return;
+    }
+    unlistenPersonalFirstPushProgress = unlistenPersonalProgress;
   }
 
   function invokeDesktopCommand(command: string, args?: Record<string, unknown>) {
@@ -1112,14 +1139,28 @@
                 Promise.resolve(invokeDesktopCommand(invocation.command, args)),
               )
             : Promise.resolve(invokeDesktopCommand(invocation.command, args));
-        await withTimeout(
-          operation,
-          ms,
-          () => new StageTimeoutError(id, ms),
-          () => {
-            void cancelForegroundWork(runId);
-          },
-        );
+        const onTimeout = () => new StageTimeoutError(id, ms);
+        const cancel = () => {
+          void cancelForegroundWork(runId);
+        };
+        if (id === 'initial-sync') {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeInitialSyncTimeoutProgress = onProgress;
+              return () => {
+                if (activeInitialSyncTimeoutProgress === onProgress) {
+                  activeInitialSyncTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+          );
+        } else {
+          await withTimeout(operation, ms, onTimeout, cancel);
+        }
       } catch (err) {
         if (invocation.required) throw err;
       } finally {
@@ -1140,6 +1181,7 @@
   type NativeStageFailureDetail = {
     failedDependency?: unknown;
     errorCategory?: unknown;
+    errorKind?: unknown;
   };
 
   async function stageFailureTelemetryDetails(
@@ -1148,6 +1190,7 @@
     failureScope: OnboardingFailureScope,
   ) {
     const timeoutCategory = error instanceof StageTimeoutError ? 'timeout' : undefined;
+    const timeoutKind = error instanceof StageTimeoutError ? 'setup_stage_timeout' : undefined;
     let nativeDetail: NativeStageFailureDetail | undefined;
     try {
       nativeDetail = await invokeCommand<NativeStageFailureDetail | undefined>(
@@ -1161,6 +1204,7 @@
     return setupFailureTelemetryDetails({
       stageId: id,
       errorCategory: timeoutCategory ?? nativeDetail?.errorCategory,
+      errorKind: timeoutKind ?? nativeDetail?.errorKind,
       failedDependency: nativeDetail?.failedDependency,
     });
   }
@@ -1504,6 +1548,11 @@
     unlistenInstallProgress = null;
     unlistenContentProgress?.();
     unlistenContentProgress = null;
+    unlistenPersonalFirstPushScan?.();
+    unlistenPersonalFirstPushScan = null;
+    unlistenPersonalFirstPushProgress?.();
+    unlistenPersonalFirstPushProgress = null;
+    activeInitialSyncTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once
     // its run stops being current, so `allSettled` would stay false forever
     // and the completion gate would never fire. Put it back to 'pending': the

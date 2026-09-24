@@ -5,6 +5,7 @@ import {
   ERROR_CATEGORIES,
   FAILED_DEPENDENCIES,
   normalizeErrorCategory,
+  normalizeSetupErrorKind,
   normalizeFailedDependency,
   normalizeFailedStageIds,
   reuseInFlightOperation,
@@ -77,6 +78,27 @@ describe('setup failure telemetry details', () => {
       failedDependency: 'unknown',
       errorCategory: 'unknown',
     });
+  });
+
+  it('normalizes a bounded content error kind alongside its category', () => {
+    expect(
+      setupFailureTelemetryDetails({
+        stageId: 'content',
+        errorCategory: 'disk',
+        errorKind: 'content_path_too_long',
+      }),
+    ).toEqual({ errorCategory: 'disk', errorKind: 'content_path_too_long' });
+    expect(
+      setupFailureTelemetryDetails({
+        stageId: 'content',
+        errorCategory: 'spawn-failed',
+        errorKind: 'content_symlink_helper_spawn_failed',
+      }),
+    ).toEqual({
+      errorCategory: 'spawn-failed',
+      errorKind: 'content_symlink_helper_spawn_failed',
+    });
+    expect(normalizeSetupErrorKind('/Users/alice/private/path')).toBe('unknown');
   });
 
   it('keeps only known failed stages in a bounded completion list', () => {

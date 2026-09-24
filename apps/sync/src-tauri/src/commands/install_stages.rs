@@ -95,6 +95,8 @@ pub(crate) struct OnboardingFailureDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed_dependency: Option<String>,
     pub error_category: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
 }
 
 static ONBOARDING_FAILURE_DETAILS: OnceLock<
@@ -135,6 +137,22 @@ pub(crate) fn record_onboarding_failure_detail(
     failed_dependency: Option<&str>,
     error_category: OnboardingErrorCategory,
 ) {
+    record_onboarding_failure_detail_with_kind(
+        stage,
+        failure_scope,
+        failed_dependency,
+        error_category,
+        None,
+    );
+}
+
+pub(crate) fn record_onboarding_failure_detail_with_kind(
+    stage: &str,
+    failure_scope: Option<&OnboardingFailureScope>,
+    failed_dependency: Option<&str>,
+    error_category: OnboardingErrorCategory,
+    error_kind: Option<&str>,
+) {
     let Some(failure_scope) = failure_scope else {
         return;
     };
@@ -157,11 +175,24 @@ pub(crate) fn record_onboarding_failure_detail(
     {
         return;
     }
+    let error_kind = error_kind.map(|value| {
+        if !value.is_empty()
+            && value.len() <= 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
+            value.to_string()
+        } else {
+            "unknown".to_string()
+        }
+    });
     details.insert(
         key,
         OnboardingFailureDetail {
             failed_dependency,
             error_category: error_category.as_str().to_string(),
+            error_kind,
         },
     );
 }
@@ -1023,6 +1054,7 @@ mod tests {
             Some(OnboardingFailureDetail {
                 failed_dependency: Some("unknown".to_string()),
                 error_category: "network".to_string(),
+                error_kind: None,
             })
         );
         assert_eq!(
@@ -1036,6 +1068,7 @@ mod tests {
             Some(OnboardingFailureDetail {
                 failed_dependency: Some("qmd".to_string()),
                 error_category: "timeout".to_string(),
+                error_kind: None,
             })
         );
         assert_eq!(
@@ -1059,7 +1092,42 @@ mod tests {
             Some(OnboardingFailureDetail {
                 failed_dependency: Some("path-write".to_string()),
                 error_category: "unknown".to_string(),
+                error_kind: None,
             })
+        );
+    }
+
+    #[test]
+    fn failure_detail_preserves_a_bounded_error_kind() {
+        let scope = OnboardingFailureScope {
+            setup_run_id: "22222222-2222-4222-8222-222222222222".to_string(),
+            attempt_count: 1,
+            flow: "first_install".to_string(),
+            frontend_session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_string(),
+        };
+        clear_onboarding_failure_detail("content", Some(&scope));
+        record_onboarding_failure_detail_with_kind(
+            "content",
+            Some(&scope),
+            None,
+            OnboardingErrorCategory::Disk,
+            Some("content_path_too_long"),
+        );
+
+        let detail = take_onboarding_failure_detail(
+            "content".to_string(),
+            scope.setup_run_id,
+            scope.attempt_count,
+            scope.flow,
+            scope.frontend_session_id,
+        )
+        .expect("scoped content detail should be retained");
+
+        assert_eq!(detail.error_category, "disk");
+        assert_eq!(detail.error_kind.as_deref(), Some("content_path_too_long"));
+        assert_eq!(
+            serde_json::to_value(detail).unwrap()["errorKind"],
+            "content_path_too_long"
         );
     }
 
