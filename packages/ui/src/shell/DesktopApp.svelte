@@ -160,6 +160,7 @@
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
+  import ProjectsHome from "../projects/ProjectsHome.svelte";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -1326,9 +1327,12 @@
     | "meetings"
     | "library"
     | "shared-files"
+    | "projects"
     | "extra"
     | "dm-requests"
   >("conversation");
+  /** Company shown on the Projects page; null follows the selected channel. */
+  let projectsCompany = $state<string | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -2952,6 +2956,17 @@
         },
       },
     ];
+    if (adapter.kind !== "web") {
+      nav.push({
+        id: "command-go-projects",
+        label: "Projects",
+        detail: "Open a company's project board",
+        shortcut: shortcutLabel("view.projects"),
+        action: () => {
+          void navigate({ kind: "projects" });
+        },
+      });
+    }
     nav.push({
       id: "command-go-library",
       label: "Library",
@@ -5512,6 +5527,8 @@
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
         return { kind: "shared-files" };
+      case "projects":
+        return { kind: "projects", company: projectsCompany };
       case "extra":
         if (extraPageId) return extraDestination(extraPageId, extraPageParam);
         return { kind: "messages" };
@@ -5811,6 +5828,13 @@
         break;
       case "shared-files":
         view = "shared-files";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "projects":
+        projectsCompany = next.company ?? null;
+        view = "projects";
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
@@ -7500,6 +7524,19 @@
       group: "Views",
       run: () => openLibrary("skills"),
     },
+    ...(adapter.kind !== "web"
+      ? [
+          {
+            id: "view.projects",
+            keys: "Mod+6",
+            label: "Projects",
+            group: "Views",
+            run: () => {
+              void navigate({ kind: "projects" });
+            },
+          } satisfies ShortcutBinding,
+        ]
+      : []),
     {
       id: "conversation.next",
       keys: "Mod+Shift+]",
@@ -7798,6 +7835,9 @@
     onopenMeetings={() => {
       void navigate({ kind: "meetings" });
     }}
+    onopenProjects={isWeb ? undefined : () => {
+      void navigate({ kind: "projects" });
+    }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
@@ -8054,7 +8094,19 @@
             onopensettings={() => openSettings("notifications")}
           />
         </div>
-        {#if view === "shared-files"}
+        {#if view === "projects"}
+          <div class="projects-host" data-testid="projects-host">
+            <ProjectsHome
+              {adapter}
+              {companies}
+              slug={projectsCompany}
+              preferredSlug={selectedCompanySlug || null}
+              onslugchange={(slug) => {
+                void navigate({ kind: "projects", company: slug });
+              }}
+            />
+          </div>
+        {:else if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
             onback={() => {
@@ -9213,6 +9265,19 @@
     /* In-pane destinations (Meetings, Notifications) are not under the
        overlay traffic lights — don't inherit the window-chrome gutter. */
     --titlebar-leading-inset: 16px;
+  }
+
+  .projects-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .projects-host > :global(*) {
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .extra-page-host {

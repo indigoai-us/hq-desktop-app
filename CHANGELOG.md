@@ -8,6 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The project board is back. A new Projects page (Cmd+6, or the board icon in
+  the title bar) shows one company's projects at a time as a board or a list.
+  Opening a project shows its tasks by status, with task details, files and
+  activity. Pick the company at the top of the page. It starts on the company
+  of the channel you have open.
+
 ## [0.10.320] — 2026-09-24
 
 - HQ no longer shows the setup screen on every launch for machines that are already configured and signed in. If a previous version left the setup flag set incorrectly, the app clears it on the next start.

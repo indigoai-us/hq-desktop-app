@@ -726,7 +726,6 @@
           {#if liveCount > 0}
             · {liveCount} live
           {/if}
-          · stories live here (no separate Tasks tab)
         </span>
       </div>
       <div
