@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The desktop app now asks for (and transparently decodes) compressed
+  responses from the server, so the same data moves over the wire faster —
+  most noticeable on the channel list for people in large companies.
 - Fixed the channel list failing to load for people in companies with a lot of
   channels. The app was giving that request the same short timeout as every
   other one, so once a company's channel roster got large enough, the response
