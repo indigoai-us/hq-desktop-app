@@ -127,9 +127,12 @@
     loadConversationCache,
     loadDmDots,
     loadPins,
+    loadPinnedCompanies,
     loadRecentDms,
     loadSetupPinDismissed,
     loadShowFilter,
+    resolveCompanySectionRows,
+    type CompanySectionRow,
     mergeContactActivity,
     isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
@@ -140,6 +143,7 @@
     rowAvatar,
     saveConversationCache,
     saveDmDots,
+    savePinnedCompanies,
     savePins,
     saveRecentDms,
     saveSetupPinDismissed,
@@ -480,6 +484,10 @@
     loadConversationCache(storage)?.contacts ?? [],
   );
   let pins = $state<string[]>(loadPins(storage));
+  /** "Companies" sidebar section selection — `null` until the user customizes
+   * it via the section's Edit affordance, meaning "show every company". */
+  let pinnedCompanySelection = $state<string[] | null>(loadPinnedCompanies(storage));
+  let companiesSectionMenuOpen = $state(false);
   /** User unpinned #setup — sticky until they pin it again. */
   let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
   /** Rows with an unsent composer draft (Slack-style pencil marker). */
@@ -892,6 +900,18 @@
     savePins(pins, storage);
   }
 
+  /** companyUid → slug, the desktop fallback for `isCompanyHome` resolution
+   * while the backend flag rolls out (see channels.ts `isCompanyHomeChannel`). */
+  const companySlugByUid = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const company of companies ?? []) {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      if (uid && slug) map.set(uid, slug);
+    }
+    return map;
+  });
+
   const allRows = $derived(
     normalizeConversations(channelsWithSetup, contactsWithUnreads, {
       pinnedIds: pinsWithSetup,
@@ -899,8 +919,48 @@
       recentDms,
       engagedAgentUids: engagedAgents,
       ownAgentUids,
+      companySlugByUid,
     }),
   );
+
+  /**
+   * The sidebar's "Companies" section. Each pinned company shows its home
+   * channel; a company with no home channel yet is included with
+   * `homeRow: null` so the row can render disabled with a reason instead of
+   * silently vanishing (step 8's "your call" — disabled beats hidden here so
+   * a newly-provisioned company is still visible to the user).
+   *
+   * Home channels shown here are NOT removed from the regular channel list:
+   * this section is additive, the same way the existing pin star only
+   * removes a row from the day sections when the user explicitly stars it
+   * (`ConversationRow.pinned`) — pinning a company here does not set that
+   * flag, so no new dedup logic was needed.
+   */
+  const companySectionRows = $derived<CompanySectionRow[]>(
+    resolveCompanySectionRows(
+      (companies ?? [])
+        .filter((c) => (c.cloudUid ?? "").trim())
+        .map((c) => ({
+          companyUid: (c.cloudUid as string).trim(),
+          label: c.displayName || c.slug || c.cloudUid!,
+          iconUrl: companyIcons.get((c.cloudUid as string).trim()) ?? null,
+        })),
+      allRows,
+      pinnedCompanySelection,
+    ),
+  );
+
+  function toggleCompanySectionSelection(companyUid: string): void {
+    const current =
+      pinnedCompanySelection ??
+      (companies ?? [])
+        .map((c) => (c.cloudUid ?? "").trim())
+        .filter(Boolean);
+    pinnedCompanySelection = current.includes(companyUid)
+      ? current.filter((uid) => uid !== companyUid)
+      : [...current, companyUid];
+    savePinnedCompanies(pinnedCompanySelection, storage);
+  }
 
   let lastEmittedRows: ConversationRow[] | null = null;
   $effect(() => {
@@ -920,6 +980,7 @@
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
+      companySlugByUid,
     }),
   );
 
@@ -934,7 +995,7 @@
   const browseRows = $derived(
     browseOnlyCompanyProjectChannels(channels, companyProjectChannels).map(
       (c) => ({
-        ...normalizeChannel(c, { pinnedIds: pins }),
+        ...normalizeChannel(c, { pinnedIds: pins, companySlugByUid }),
         browseOnly: true,
       }),
     ),
@@ -2762,6 +2823,75 @@
       </button>
     {/if}
 
+    {#if (companies ?? []).length > 0}
+      <div class="chat-section-label chat-companies-label" id="chat-companies-label">
+        <span>COMPANIES</span>
+        <button
+          type="button"
+          class="chat-companies-edit"
+          data-testid="chat-companies-edit"
+          aria-haspopup="true"
+          aria-expanded={companiesSectionMenuOpen}
+          onclick={() => (companiesSectionMenuOpen = !companiesSectionMenuOpen)}
+        >
+          Edit
+        </button>
+      </div>
+      {#if companiesSectionMenuOpen}
+        <div
+          class="chat-companies-menu"
+          role="menu"
+          data-testid="chat-companies-menu"
+          aria-labelledby="chat-companies-label"
+        >
+          {#each companies ?? [] as company (company.cloudUid ?? company.slug)}
+            {@const uid = (company.cloudUid ?? "").trim()}
+            {#if uid}
+              {@const checked = pinnedCompanySelection === null || pinnedCompanySelection.includes(uid)}
+              <label class="chat-companies-menu-item">
+                <input
+                  type="checkbox"
+                  data-testid={`chat-companies-menu-item-${uid}`}
+                  {checked}
+                  onchange={() => toggleCompanySectionSelection(uid)}
+                />
+                <span>{company.displayName || company.slug}</span>
+              </label>
+            {/if}
+          {/each}
+        </div>
+      {/if}
+      <div
+        class="chat-list"
+        role="list"
+        aria-labelledby="chat-companies-label"
+        data-testid="chat-companies-section"
+      >
+        {#if companySectionRows.length === 0}
+          <p class="chat-companies-empty" data-testid="chat-companies-empty">
+            No companies selected. Use Edit above to pin one.
+          </p>
+        {:else}
+          {#each companySectionRows as company (company.companyUid)}
+            {#if company.homeRow}
+              {@render conversationRow(company.homeRow)}
+            {:else}
+              <div
+                class="chat-row chat-row-disabled"
+                data-testid={`chat-companies-row-disabled-${company.companyUid}`}
+                aria-disabled="true"
+                title="This company doesn't have a home channel yet."
+              >
+                <span class="chat-glyph" aria-hidden="true">·</span>
+                <span class="chat-row-title">{company.label}</span>
+                <span class="chat-companies-row-reason">No home channel yet</span>
+              </div>
+            {/if}
+          {/each}
+        {/if}
+      </div>
+    {/if}
+
     {#if grouped.pinned.length > 0}
       <div class="chat-section-label" id="chat-pinned-label">
         <span class="chat-pin-ic" aria-hidden="true">
@@ -3891,6 +4021,72 @@
   .chat-section-label.inline {
     margin: 0;
     padding: 0;
+  }
+
+  .chat-companies-label {
+    justify-content: space-between;
+  }
+
+  .chat-companies-edit {
+    all: unset;
+    cursor: pointer;
+    color: var(--ice-ink);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 6px;
+  }
+  .chat-companies-edit:hover,
+  .chat-companies-edit:focus-visible {
+    background: var(--hover);
+  }
+
+  .chat-companies-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0 8px 6px;
+    padding: 6px;
+    border-radius: 8px;
+    border: 1px solid var(--line2);
+    background: var(--panel);
+  }
+  .chat-companies-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--t1);
+    cursor: pointer;
+  }
+  .chat-companies-menu-item:hover {
+    background: var(--hover);
+  }
+
+  .chat-companies-empty {
+    margin: 0;
+    padding: 6px 12px 10px;
+    color: var(--t2);
+    font-size: 12px;
+  }
+
+  .chat-row-disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .chat-companies-row-reason {
+    margin-left: auto;
+    color: var(--t2);
+    font-size: 10px;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
 
   /* Day-group header: name left, date right-aligned (D-13). */

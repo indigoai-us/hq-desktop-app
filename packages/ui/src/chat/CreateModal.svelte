@@ -169,8 +169,9 @@
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /**
-     * What to create inside a company: a company channel (default) or a
-     * project channel — an invite-only channel that is the home of one
+     * What to create inside a company: a plain team channel (default —
+     * `scope: "company"` for name uniqueness, but never the company's home)
+     * or a project channel — an invite-only channel that is the home of one
      * project (its files, work, and people). #welcome's "Start a project
      * channel" opens the modal in project mode.
      */
@@ -2758,7 +2759,7 @@
                 disabled={creating}
                 onclick={() => (channelKind = "channel")}
               >
-                Channel
+                Team channel
               </button>
               <button
                 type="button"
@@ -2777,7 +2778,7 @@
           <p class="create-help" data-testid="chat-channel-kind-help">
             {channelKind === "project"
               ? "One home for a project: its work, files, and people. Invite-only."
-              : "A shared channel everyone in the company can find."}
+              : "A team channel everyone in the company can find. Not the company's main home — just a normal channel."}
           </p>
         {/if}
 

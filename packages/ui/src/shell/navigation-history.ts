@@ -125,7 +125,9 @@ export function historyNeighbor(
 
 const CHANNEL_TABS = new Set<ChannelSurfaceTab>(["chat", "board", "files"]);
 const AGENT_SURFACES = new Set<AgentSurfaceTab>(["chat", "details"]);
-const COMPANY_TABS = new Set<CompanyChannelTabId>(["chat", "office"]);
+// Office is hidden for company channels; "office" is intentionally excluded
+// here so a stale deep link normalizes back to Chat.
+const COMPANY_TABS = new Set<CompanyChannelTabId>(["chat"]);
 const LIBRARY_TABS = new Set<LibraryTab>([
   "skills",
   "workers",
