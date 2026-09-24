@@ -13249,7 +13249,7 @@ mod tests {
         use hq_desktop_core::daemon::WatcherMemoryClass as Class;
         use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass as Report;
 
-        let classify = |node_rss_mb, report: Report| {
+        let classify = |node_rss_mb: u64, report: Report| {
             let sample = ScopedRssSample {
                 kb: node_rss_mb * 1024,
                 kind: RssSampleKind::Tree,
