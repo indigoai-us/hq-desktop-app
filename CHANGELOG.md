@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.315] — 2026-09-24
+
 - Switching channels or DMs in the sidebar now shows the new conversation
   right away instead of pausing first, even when leaving a long conversation.
 
