@@ -922,8 +922,32 @@ export function vaultPutIntegrityFields(
   };
 }
 
+/** One file in a {@link VaultIndexWire}. */
+export interface VaultIndexedFile {
+  /** HQ-folder-relative, forward-slash path. */
+  path: string;
+  name: string;
+  isMarkdown: boolean;
+  /** Raw `[[target]]` values in a Markdown note (alias and heading removed). */
+  links: string[];
+}
+
+/** Result of `files.indexVault` (Rust `vault_index::VaultIndex`). */
+export interface VaultIndexWire {
+  root: string;
+  files: VaultIndexedFile[];
+  /** More files than the index returns; the list is incomplete. */
+  truncated: boolean;
+}
+
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
+  /**
+   * Index one local vault for the Files explorer: every visible file and the
+   * `[[wikilinks]]` in each note. `root` is `""` (personal vault) or
+   * `companies/<slug>`. Desktop only; hosts without it omit the method.
+   */
+  indexVault?(root: string): AdapterPromise<VaultIndexWire>;
   getFileContent(path: string): AdapterPromise<string>;
   /** ACL-filtered vault browse (hq-pro GET /v1/files/list). */
   listVaultPrefix(companyUid: string, prefix: string): AdapterPromise<Json>;

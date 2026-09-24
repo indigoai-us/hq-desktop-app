@@ -970,6 +970,7 @@ export function createSyncPlatformAdapter(
 
     files: {
       listDir: (relPath) => call('list_hq_dir', { relPath }),
+      indexVault: (root) => call('index_hq_vault', { root }),
       getFileContent: (path) => call('get_company_file_content', { path }),
       listVaultPrefix: (companyUid, prefix) =>
         hqProJson(

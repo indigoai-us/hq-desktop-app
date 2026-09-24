@@ -1611,6 +1611,39 @@ pub async fn list_hq_dir(
     Ok(entries)
 }
 
+/// Index one local vault for the Files explorer: every visible file plus the
+/// `[[wikilinks]]` in each note (quick switcher, link resolution, backlinks).
+///
+/// `root` is `""` for the personal vault or `companies/<slug>` for a company
+/// vault. Same gates as `list_hq_dir`: signed-in, the desktop session's
+/// company scope, and live company membership. Settings folders and
+/// credential-named files are never indexed (`vault_index::is_sensitive_name`).
+#[tauri::command]
+pub async fn index_hq_vault(
+    root: String,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<hq_desktop_core::vault_index::VaultIndex, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("file explorer requires a signed-in user".to_string());
+    }
+    let normalized = validate_hq_relative_path(&root, true)?;
+    enforce_desktop_read_scope(&normalized, &scope)?;
+    let hq = if company_slug_for_hq_path(&normalized)?.is_some() {
+        let (hq, workspaces) = hydrated_file_context().await?;
+        let canonical = canonical_hq_relative_path(&hq, &normalized, false)?;
+        require_matching_company_scope(&normalized, &canonical)?;
+        require_company_file_read_access(&workspaces, &canonical)?;
+        hq
+    } else {
+        resolve_hq_folder()
+    };
+    tokio::task::spawn_blocking(move || {
+        hq_desktop_core::vault_index::build_vault_index(&hq, &normalized)
+    })
+    .await
+    .map_err(|e| format!("vault index task failed: {e}"))?
+}
+
 #[cfg(test)]
 mod window_router_tests {
     use super::*;

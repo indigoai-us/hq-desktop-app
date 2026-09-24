@@ -869,6 +869,7 @@ fn main() {
             commands::desktop_alt::reveal_hq_root,
             commands::desktop_alt::open_authorized_file_in_claude,
             commands::desktop_alt::list_hq_dir,
+            commands::desktop_alt::index_hq_vault,
             commands::projects_local::get_local_projects,
             commands::projects_local::get_local_project_prd,
             commands::projects_local::get_local_project_readme,
