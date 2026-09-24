@@ -142,12 +142,12 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
   it('tray_helper polls the command file and dispatches show/sync/quit', () => {
     const helper = read('src-tauri/src/tray_helper.rs');
     expect(helper).toContain('.tray-cmd');
-    // US-004 retarget: menu-bar click toggles the COMPACT popover. Full desktop
-    // is reserved for the right-click "desktop" command. The "show" command
-    // still carries the icon anchor for popover positioning.
+    // Left-click now opens the menu (see hq-tray-helper.swift), so "show" is
+    // anchor-only — it still carries the icon anchor for window positioning
+    // (e.g. the onboarding card), but no longer activates anything itself.
+    // "desktop" (the "Open desktop view" menu item) owns activation instead.
     expect(helper).toContain('strip_prefix("show")');
     expect(helper).toContain('set_tray_anchor_x');
-    expect(helper).toContain('activate_primary_surface');
     expect(helper).not.toMatch(
       /strip_prefix\("show"\)[\s\S]*?toggle_desktop_window/,
     );
@@ -191,9 +191,13 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(desktop).toMatch(/get_webview_window\("main"\)[\s\S]*?\.hide\(\)/);
   });
 
-  it('marshals the menu-bar click toggle onto the main thread (no poll-thread deadlock)', () => {
+  it('marshals the pause-sync toggle onto the main thread (no poll-thread deadlock)', () => {
     const helper = read('src-tauri/src/tray_helper.rs');
-    // The poll thread must NOT call window ops directly — it marshals them.
-    expect(helper).toMatch(/run_on_main_thread\([\s\S]*?activate_primary_surface/);
+    // The poll thread must NOT call Tauri app-handle mutations directly for
+    // the pause toggle (settings write + tray label refresh) — it marshals
+    // them. (Left-click activation no longer runs through this poll thread at
+    // all — "show" is anchor-only and "desktop" is a plain event emit, both
+    // safe off-main; only the pause toggle needs the main-thread hop.)
+    expect(helper).toMatch(/run_on_main_thread\([\s\S]*?toggle_cloud_paused_sync/);
   });
 });

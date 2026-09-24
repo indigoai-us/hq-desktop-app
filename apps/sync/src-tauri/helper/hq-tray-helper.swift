@@ -274,6 +274,14 @@ final class TrayController: NSObject {
         // Pause/Resume label first so a flag change from elsewhere (e.g. a
         // future Settings toggle) is never stale.
         refreshPauseMenuItem()
+        // Report the icon's on-screen horizontal centre (Cocoa screen points)
+        // on every click, menu or not, so that WHENEVER the main app later
+        // needs to anchor a window under this icon (e.g. the onboarding card
+        // for a still-signed-out user opening "Open desktop view"), the
+        // anchor is fresh. This does NOT activate the app itself anymore —
+        // "show" is now anchor-only; -1 = unknown → main app falls back.
+        let anchorX = item.button?.window?.frame.midX ?? -1
+        writeCommand("show \(Int(anchorX.rounded()))")
         item.menu = menu
         item.button?.performClick(nil)
         item.menu = nil

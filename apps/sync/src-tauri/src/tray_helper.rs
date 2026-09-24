@@ -134,19 +134,18 @@ pub fn spawn_and_poll(app: &AppHandle) {
             };
             let _ = std::fs::remove_file(&cf);
             let cmd = cmd.trim();
-            // Menu-bar click opens the desktop workspace (setup still keeps the
-            // installer card on `main`). Parse the icon's on-screen centre
-            // ("show <x>", Cocoa points) so that card anchors under the icon.
+            // Every click (menu or not) reports the icon's on-screen centre
+            // ("show <x>", Cocoa points) so that WHENEVER a window later needs
+            // to anchor under this icon — e.g. the onboarding card shown by
+            // "Open desktop view" while setup is unfinished — the anchor is
+            // fresh. This is anchor-only: a left-click no longer activates the
+            // app directly, since it opens the menu instead (see
+            // hq-tray-helper.swift's `statusItemClicked`); "Open desktop
+            // view" and the other menu items own activation from here.
             if let Some(rest) = cmd.strip_prefix("show") {
                 if let Ok(points) = rest.trim().parse::<f64>() {
                     crate::tray::set_tray_anchor_x(points);
                 }
-                // Window ops MUST run on the main thread — calling them from
-                // this poll thread deadlocks AppKit.
-                let app_main = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    crate::tray::activate_primary_surface(&app_main);
-                });
             } else {
                 match cmd {
                     "sync" => {
@@ -165,7 +164,7 @@ pub fn spawn_and_poll(app: &AppHandle) {
                         let _ = app.run_on_main_thread(move || {
                             match crate::commands::settings::toggle_cloud_paused_sync(&app_main) {
                                 Ok(paused) => {
-                                    let _ = app_main.emit("tray:cloud-paused-changed", paused);
+                                    let _ = app_main.emit_to("main", "tray:cloud-paused-changed", paused);
                                 }
                                 Err(e) => log(
                                     "tray",

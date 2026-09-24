@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Listener, Manager, PhysicalPosition, Rect, WindowEvent,
 };
 
@@ -567,7 +567,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     id if id == MENU_PAUSE_SYNC => {
                         match crate::commands::settings::toggle_cloud_paused_sync(&app_handle) {
                             Ok(paused) => {
-                                let _ = app_handle.emit("tray:cloud-paused-changed", paused);
+                                let _ = app_handle.emit_to("main", "tray:cloud-paused-changed", paused);
                             }
                             Err(e) => crate::util::logfile::log(
                                 "tray",
@@ -604,7 +604,26 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
             }
         });
 
-    let tray = tray_builder.build(app)?;
+    let tray = tray_builder
+        .on_tray_icon_event(|_tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                // Left-click no longer opens the app window directly — the
+                // menu (shown via `show_menu_on_left_click(true)` above)
+                // covers that, with "Open desktop view" as the way in. This
+                // seam is kept recording purely as a native-crash diagnostic
+                // marker for the left-click gesture itself, unrelated to what
+                // the click now does.
+                hq_telemetry::record_native_panic_seam(
+                    hq_telemetry::NativePanicSeam::TrayLeftClick,
+                );
+            }
+        })
+        .build(app)?;
 
     Ok(tray)
 }
