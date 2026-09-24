@@ -7,9 +7,10 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import type { LocalBotWorkerOption } from "@hq/platform";
+import { failure, ok, type AgentProvisionOptionsView, type LocalBotWorkerOption } from "@hq/platform";
 
 import type { AvatarPack } from "../../avatars/types.js";
+import type { CloudBotDraft } from "../lifecycle-entry-points.js";
 import CreateBotFlow from "./CreateBotFlow.svelte";
 
 const WORKERS: LocalBotWorkerOption[] = [
@@ -63,6 +64,55 @@ const OWNER_COMPANIES = [
   { slug: "acme", label: "Acme" },
 ];
 
+const CLOUD_QUOTE: AgentProvisionOptionsView = {
+  defaultInstanceType: "t4g.medium",
+  catalogVersion: "test-catalog",
+  options: [
+    {
+      key: "basic",
+      productName: "Basic",
+      instanceType: "t4g.medium",
+      listCents: 5000,
+      default: true,
+      selectable: true,
+      netMonthlyCents: 4200,
+      deltaCents: 4200,
+      unavailableReason: null,
+      notBilled: false,
+      lanes: 1,
+      workers: 1,
+    },
+    {
+      key: "power",
+      productName: "Power",
+      instanceType: "m7i.large",
+      listCents: 12000,
+      default: false,
+      selectable: true,
+      netMonthlyCents: 10000,
+      deltaCents: 10000,
+      unavailableReason: null,
+      notBilled: false,
+      lanes: 4,
+      workers: 4,
+    },
+    {
+      key: "dev",
+      productName: "Dev",
+      instanceType: "c7i.large",
+      listCents: 18000,
+      default: false,
+      selectable: false,
+      netMonthlyCents: 15000,
+      deltaCents: 15000,
+      unavailableReason: "owner-required",
+      notBilled: false,
+      lanes: 8,
+      workers: 8,
+    },
+  ],
+};
+
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -114,6 +164,8 @@ function render(props: Record<string, unknown> = {}): void {
       botCompanies: OWNER_COMPANIES,
       // A rail preview needs matchMedia; pin the placement so the test is stable.
       previewPlacement: "top",
+      loadClaudeProviderFlag: async () => ok(true),
+      loadCloudProvisionOptions: async () => ok(CLOUD_QUOTE),
       ...props,
     },
   });
@@ -398,7 +450,13 @@ describe("CreateBotFlow", () => {
     click('[data-testid="chat-bot-create"]');
     await settle();
     // Exactly what the person typed — never an auto-suggestion they never saw.
-    expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme", { name: "Polar Bear", handle: "ice" });
+    expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme", {
+      name: "Polar Bear",
+      handle: "ice",
+      runtime: "claude",
+      size: "basic",
+      authMode: "subscription",
+    });
     expect(oncreate).not.toHaveBeenCalled();
   });
 
@@ -441,6 +499,9 @@ describe("CreateBotFlow", () => {
     expect(onCloudCreate).toHaveBeenCalledWith("cmp_indigo", {
       name: "Polar Bear",
       handle: "polar-bear",
+      runtime: "claude",
+      size: "basic",
+      authMode: "subscription",
     });
   });
 
@@ -470,8 +531,137 @@ describe("CreateBotFlow", () => {
     expect(onCloudCreate).toHaveBeenCalledWith("cmp_indigo", {
       name: "Polar",
       handle: "polar",
+      runtime: "claude",
+      size: "basic",
+      authMode: "subscription",
       title: "Ad account analyst",
     });
+  });
+
+  it("shows Claude only when the signed-in user flag is enabled and shows the tenant quote", async () => {
+    render({
+      oncreate: vi.fn(),
+      onCloudCreate: vi.fn(),
+      agentTargets: COMPANIES,
+      loadClaudeProviderFlag: async () => ok(true),
+    });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="cloud-bot-runtime-claude"]')).toBeTruthy();
+    expect(q('[data-testid="cloud-bot-size-basic"]')?.parentElement?.textContent).toContain("$42.00/month");
+    expect(q('[data-testid="cloud-bot-size-dev"]')?.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("keeps Claude hidden and refuses creation when the flag is false", async () => {
+    const onCloudCreate = vi.fn(async () => undefined);
+    render({
+      oncreate: vi.fn(),
+      onCloudCreate,
+      agentTargets: COMPANIES,
+      loadClaudeProviderFlag: async () => ok(false),
+    });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="cloud-bot-runtime-claude"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(false);
+    // Codex remains available; the hidden Claude selection is never submitted.
+    expect(q<HTMLInputElement>('[data-testid="cloud-bot-runtime-codex"]')?.checked).toBe(true);
+  });
+
+  it("passes the chosen runtime, quote size, auth mode, and API key to create", async () => {
+    const onCloudCreate = vi.fn(async () => undefined);
+    render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    q<HTMLInputElement>('[data-testid="cloud-bot-runtime-grok"]')!.click();
+    await settle();
+    q<HTMLInputElement>('[data-testid="cloud-bot-auth-api-key"]')!.click();
+    await settle();
+    type(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')!, "sk-test-cloud-key");
+    await settle();
+    type(q<HTMLInputElement>('[data-testid="chat-bot-name"]')!, "Polar");
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(onCloudCreate).toHaveBeenCalledWith("cmp_indigo", {
+      name: "Polar",
+      handle: "polar",
+      runtime: "grok",
+      size: "basic",
+      authMode: "apiKey",
+      apiKey: "sk-test-cloud-key",
+    });
+  });
+
+  it("clears a Cloud API key when the draft moves to another company", async () => {
+    const onCloudCreate = vi.fn(async (_companyUid: string, _draft: CloudBotDraft) => undefined);
+    render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="cloud-bot-auth-api-key"]');
+    await settle();
+    type(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')!, "sk-test-cloud-key");
+    await settle();
+
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-create-agent-company"][data-company="cmp_acme"]')!.click();
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+
+    expect(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')?.value).toBe("");
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Enter an API key");
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(onCloudCreate).not.toHaveBeenCalled();
+
+    type(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')!, "sk-test-acme-cloud-key");
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme", expect.objectContaining({ apiKey: "sk-test-acme-cloud-key" }));
+    expect(onCloudCreate.mock.calls[0]?.[1]).not.toHaveProperty("apiKey", "sk-test-cloud-key");
+  });
+
+  it("blocks creation and offers a retry when tenant pricing cannot be loaded", async () => {
+    render({
+      oncreate: vi.fn(),
+      onCloudCreate: vi.fn(),
+      agentTargets: COMPANIES,
+      loadCloudProvisionOptions: async () => failure("http-503", "unavailable"),
+    });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="cloud-bot-quote-error"]')).toBeTruthy();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
+    expect(q('[data-testid="cloud-bot-quote-retry"]')).toBeTruthy();
   });
 
   it("a Cloud title over 60 characters blocks the create", async () => {

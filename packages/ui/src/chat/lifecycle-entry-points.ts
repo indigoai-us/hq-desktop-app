@@ -26,7 +26,7 @@ import {
   parseLifecycleCard,
   type LifecycleCardModel,
 } from "./messaging/channelMessageModels.js";
-import { botHandle } from "./create-bot/create-bot-model.js";
+import { botHandle, type BotRuntime } from "./create-bot/create-bot-model.js";
 import { messagesForDisplay } from "./live-messages.js";
 import { SETUP_CHANNEL_ID } from "./setup-channel.js";
 
@@ -200,6 +200,27 @@ export interface CloudBotDraft {
    * is the same PATCH the Local path uses.
    */
   title?: string;
+  runtime?: BotRuntime;
+  size?: "basic" | "power" | "dev";
+  authMode?: "subscription" | "apiKey";
+  /** Write-only create input; never copied into lifecycle card state. */
+  apiKey?: string;
+}
+
+/** Console page where a newly-created Claude subscription can be authorized. */
+export function claudeSubscriptionSignInUrl(
+  draft: Pick<CloudBotDraft, "runtime" | "authMode">,
+  agentUid: string,
+): string | null {
+  const uid = agentUid.trim();
+  if (
+    draft.runtime !== "claude" ||
+    (draft.authMode ?? "subscription") !== "subscription" ||
+    !uid
+  ) {
+    return null;
+  }
+  return `https://hq.getindigo.ai/resolve/agents/${encodeURIComponent(uid)}`;
 }
 
 export interface CloudBotEntryOptions {
@@ -392,8 +413,18 @@ function valuesForCard(
     let value = field.value.trim();
     if (field.id === "name" && name) value = name;
     else if (field.id === "handle" && handle) value = handle;
+    else if (field.id === "runtime" && draft.runtime) value = draft.runtime;
+    else if (field.id === "size" && draft.size) value = draft.size;
     if (!value && field.required) return null;
     values[field.id] = value;
+  }
+  // Auth is carried only on the final create action. In particular, the API
+  // key never enters a lifecycle field or a card snapshot.
+  if (card.fields.some((field) => field.id === "size")) {
+    values.authMode = draft.authMode ?? "subscription";
+    if (values.authMode === "apiKey" && draft.apiKey) {
+      values.apiKey = draft.apiKey;
+    }
   }
   return values;
 }

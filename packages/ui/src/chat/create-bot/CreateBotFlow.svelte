@@ -16,8 +16,13 @@
    * on a Cloud draft, where it moves to the next step until the details step
    * is reached, so a company bot is never made under a name nobody has seen.
    */
-  import { untrack } from "svelte";
-  import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
+  import { onMount, untrack } from "svelte";
+  import type {
+    AdapterPromise,
+    AgentProvisionOptionsView,
+    LocalBotCreateInput,
+    LocalBotWorkerOption,
+  } from "@hq/platform";
   import type { AvatarPack, AvatarSelection } from "../../avatars/types.js";
   import type { LocalBotEntryResult } from "../local-bots.js";
   import BotPreviewCard from "./BotPreviewCard.svelte";
@@ -27,6 +32,7 @@
   import KindStep from "./KindStep.svelte";
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import type { RuntimeStatus } from "./runtime-status.js";
+  import type { CloudBotDraft } from "../lifecycle-entry-points.js";
   import {
     STEP_TITLES,
     botDisplayName,
@@ -85,9 +91,9 @@
      * present only when the person typed one — it is not part of the server's
      * card sequence, so the host PATCHes it onto the agent profile after.
      */
-    onCloudCreate?:
-      | ((companyUid: string, draft: { name: string; handle: string; title?: string }) => void | Promise<void>)
-      | null;
+    onCloudCreate?: ((companyUid: string, draft: CloudBotDraft) => void | Promise<void>) | null;
+    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
+    loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Local: the host creates through the CLI and opens the DM. */
     oncreate?: ((input: LocalBotCreateInput, extras: CreateBotExtras) => void | Promise<LocalBotEntryResult | void>) | null;
     /** Back from the first step (the host returns to its previous view). */
@@ -115,6 +121,8 @@
     agentTargets = null,
     botCompanies = null,
     onCloudCreate = null,
+    loadClaudeProviderFlag = null,
+    loadCloudProvisionOptions = null,
     oncreate = null,
     onback = null,
     entryBusy = null,
@@ -135,6 +143,12 @@
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
   const canCloud = $derived(!!onCloudCreate && companies.length > 0);
+  let claudeProviderEnabled = $state(false);
+  let cloudProvisionOptions = $state<AgentProvisionOptionsView | null>(null);
+  let cloudQuoteStatus = $state<"loading" | "ready" | "error">("loading");
+  let cloudApiKey = $state("");
+  let quoteReloadToken = $state(0);
+  let quoteGeneration = 0;
 
   const ctx = $derived<CreateBotContext>({
     canLocal,
@@ -145,6 +159,10 @@
     companies,
     ownerCompanies,
     templates,
+    claudeProviderEnabled,
+    cloudProvisionOptions,
+    cloudQuoteStatus,
+    cloudApiKeyPresent: cloudApiKey.trim().length > 0,
   });
 
   // The draft is seeded once from the initial context; later prop changes
@@ -180,6 +198,75 @@
   const previewAvatar = $derived(pickedAvatarSrc);
   const cloudCompany = $derived(companies.find((c) => c.companyUid === draft.companyUid) ?? null);
 
+  onMount(() => {
+    if (!loadClaudeProviderFlag) return;
+    let active = true;
+    void loadClaudeProviderFlag()
+      .then((result) => {
+        if (!active) return;
+        claudeProviderEnabled = result.ok && result.value === true;
+        if (!claudeProviderEnabled && draft.home === "cloud" && draft.runtime === "claude") {
+          draft = { ...draft, runtime: "codex" };
+        }
+        if (!result.ok && result.reason === "error") {
+          console.warn("[hq-desktop] Claude provider flag unavailable", result.code ?? result.message ?? "unknown error");
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        claudeProviderEnabled = false;
+        console.warn("[hq-desktop] Claude provider flag lookup failed", error);
+      });
+    return () => { active = false; };
+  });
+
+  $effect(() => {
+    const companyUid = draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "";
+    const reloadToken = quoteReloadToken;
+    void reloadToken;
+    if (!companyUid || !loadCloudProvisionOptions) {
+      cloudProvisionOptions = null;
+      cloudQuoteStatus = companyUid ? "error" : "loading";
+      return;
+    }
+    const generation = ++quoteGeneration;
+    let active = true;
+    cloudProvisionOptions = null;
+    cloudQuoteStatus = "loading";
+    void loadCloudProvisionOptions(companyUid)
+      .then((result) => {
+        if (!active || generation !== quoteGeneration) return;
+        if (!result.ok || !Array.isArray(result.value.options)) {
+          cloudQuoteStatus = "error";
+          if (!result.ok && result.reason === "error") {
+            console.warn("[hq-desktop] company agent pricing unavailable", result.code ?? result.message ?? "unknown error");
+          }
+          return;
+        }
+        cloudProvisionOptions = result.value;
+        cloudQuoteStatus = "ready";
+        const selected = result.value.options.find(
+          (option) => option.key === untrack(() => draft.size) && option.selectable && option.netMonthlyCents !== null,
+        );
+        if (!selected) {
+          const defaultOption = result.value.options.find(
+            (option) => option.default && option.selectable && option.netMonthlyCents !== null,
+          ) ?? result.value.options.find(
+            (option) => option.selectable && option.netMonthlyCents !== null,
+          );
+          if (defaultOption) draft = { ...draft, size: defaultOption.key };
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active || generation !== quoteGeneration) return;
+        cloudQuoteStatus = "error";
+        console.warn("[hq-desktop] company agent pricing lookup failed", error);
+      });
+    return () => {
+      active = false;
+    };
+  });
+
   // Preview placement: right rail on wide windows, top otherwise.
   let wide = $state(true);
   $effect(() => {
@@ -194,7 +281,22 @@
 
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
+    const oldHome = draft.home;
+    const oldCompanyUid = draft.companyUid;
+    const oldRuntime = draft.runtime;
+    const oldAuthMode = draft.authMode;
     draft = { ...draft, ...p };
+    if (p.home === "cloud" && draft.runtime === "claude" && claudeProviderEnabled !== true) {
+      draft = { ...draft, runtime: "codex" };
+    }
+    if (
+      oldHome !== draft.home ||
+      oldCompanyUid !== draft.companyUid ||
+      oldRuntime !== draft.runtime ||
+      oldAuthMode !== draft.authMode
+    ) {
+      cloudApiKey = "";
+    }
     if (p.scope !== undefined) scopeAnswered = true;
     // A company template is a company bot for that company unless the user
     // already answered "who is it for?" (Personal stays personal even after
@@ -232,10 +334,17 @@
     const title = draft.title.trim();
     const displayName = botDisplayName(draft);
     if (draft.home === "cloud") {
-      if (draft.companyUid) {
+      const quotedSize = cloudProvisionOptions?.options.find(
+        (option) => option.key === draft.size && option.selectable && option.netMonthlyCents !== null,
+      );
+      if (draft.companyUid && quotedSize) {
         await onCloudCreate?.(draft.companyUid, {
           name: draft.name.trim(),
           handle: botHandle(draft),
+          runtime: draft.runtime,
+          size: quotedSize.key,
+          authMode: draft.authMode,
+          ...(draft.authMode === "apiKey" && cloudApiKey ? { apiKey: cloudApiKey } : {}),
           ...(title ? { title } : {}),
         });
       }
@@ -354,6 +463,12 @@
         <CloudDetailsStep
           {draft}
           companyLabel={cloudCompany?.label ?? "your company"}
+          claudeProviderEnabled={claudeProviderEnabled}
+          cloudProvisionOptions={cloudProvisionOptions}
+          cloudQuoteStatus={cloudQuoteStatus}
+          apiKey={cloudApiKey}
+          onapikey={(value) => (cloudApiKey = value)}
+          onretryquote={() => (quoteReloadToken += 1)}
           disabled={busy}
           onpatch={patch}
         />

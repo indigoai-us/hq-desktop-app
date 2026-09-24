@@ -62,6 +62,27 @@ function adapter(): PlatformAdapter {
     sessions: {
       preflight: async () => ok({ claudeAvailable: true, claudeLoggedIn: true, codexAvailable: false, codexLoggedIn: false, grokAvailable: false, grokLoggedIn: false }),
     },
+    identity: { hasFeature: async () => ok(false) },
+    agents: {
+      getProvisionOptions: async () => ok({
+        defaultInstanceType: "t4g.medium",
+        catalogVersion: "test",
+        options: [{
+          key: "basic",
+          productName: "Basic",
+          instanceType: "t4g.medium",
+          listCents: 1200,
+          default: true,
+          selectable: true,
+          netMonthlyCents: 1200,
+          deltaCents: null,
+          unavailableReason: null,
+          notBilled: false,
+          lanes: 1,
+          workers: 1,
+        }],
+      }),
+    },
     bots: {
       list: async () => ok({ bots: rows }),
       // The CLI provisions the bot: only then does it show up in `list`.

@@ -13,7 +13,12 @@
  * never a silent default.
  */
 
-import type { LocalBotCreateInput, LocalBotKind, LocalBotWorkerOption } from "@hq/platform";
+import type {
+  AgentProvisionOptionsView,
+  LocalBotCreateInput,
+  LocalBotKind,
+  LocalBotWorkerOption,
+} from "@hq/platform";
 import type { AvatarSelection } from "../../avatars/types.js";
 import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../local-bots.js";
 import { runtimeBlocksNext, runtimeStatusOf, runtimeStepIssue, type RuntimeStatus } from "./runtime-status.js";
@@ -22,6 +27,7 @@ export type CreateBotStep = "kind" | "home" | "details";
 export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
+export type CloudBotAuthMode = "subscription" | "apiKey";
 export type BotMemory = "synced" | "local";
 /** Who a Local bot acts as (bot-kinds): the owner, or itself inside its companies. */
 export type BotScope = LocalBotKind;
@@ -31,6 +37,10 @@ export interface CreateBotDraft {
   templateId?: string;
   home: BotHome;
   runtime: BotRuntime;
+  /** Cloud-only size rung, chosen from the current company quote. */
+  size: "basic" | "power" | "dev" | "";
+  /** Cloud-only provider credential mode. */
+  authMode: CloudBotAuthMode;
   companyUid?: string;
   /** Local only: personal (acts as you) or company (acts as itself). */
   scope: BotScope;
@@ -79,6 +89,12 @@ export interface CreateBotContext {
   /** The owner's companies a Local company bot can belong to (slugs). */
   ownerCompanies: ReadonlyArray<{ slug: string; label: string }>;
   templates: readonly LocalBotWorkerOption[];
+  /** Server-resolved hq-flags value. Claude stays hidden until this is true. */
+  claudeProviderEnabled?: boolean;
+  /** Tenant-specific options from GET /v1/agents/provision-options. */
+  cloudProvisionOptions?: AgentProvisionOptionsView | null;
+  cloudQuoteStatus?: "loading" | "ready" | "error";
+  cloudApiKeyPresent?: boolean;
 }
 
 /** One-line copy for each bot scope, shown beside the choice. */
@@ -118,7 +134,9 @@ export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud"
   return {
     kind: "blank",
     home: ctx.canLocal ? "local" : "cloud",
-    runtime: firstReadyRuntime(ctx.runtimeReady),
+    runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : "codex",
+    size: "",
+    authMode: "subscription",
     companyUid: ctx.companies[0]?.companyUid,
     scope: "personal",
     companySlugs: [],
@@ -433,7 +451,27 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
       return null;
     case "details":
       if (draft.home === "cloud") {
-        return cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
+        const fieldsIssue =
+          cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
+        if (fieldsIssue) return fieldsIssue;
+        if (draft.runtime === "claude" && ctx.claudeProviderEnabled !== true) {
+          return "Claude isn’t available for this account.";
+        }
+        if (ctx.cloudQuoteStatus !== "ready" || !ctx.cloudProvisionOptions) {
+          return ctx.cloudQuoteStatus === "error"
+            ? "Couldn’t load company pricing. Try again."
+            : "Checking company pricing…";
+        }
+        const quotedSize = ctx.cloudProvisionOptions.options.find(
+          (option) => option.key === draft.size,
+        );
+        if (!quotedSize?.selectable || quotedSize.netMonthlyCents === null) {
+          return "Choose an available size.";
+        }
+        if (draft.authMode === "apiKey" && !ctx.cloudApiKeyPresent) {
+          return "Enter an API key to continue.";
+        }
+        return null;
       }
       // "Who is it for?" is answered here now, so its rule is checked here.
       return (

@@ -8,6 +8,44 @@ interface Invocation {
 }
 
 describe("TauriPlatformAdapter hasFeature", () => {
+  it("Claude provider flag reads the signed-in user's registry value", async () => {
+    const calls: Invocation[] = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { "agents.claude-provider": true },
+            }),
+          };
+        }
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(
+      adapter.identity.hasFeature("agents.claude-provider"),
+    ).resolves.toEqual({ ok: true, value: true });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+  });
+
+  it("Claude provider flag fails closed when the registry is unavailable", async () => {
+    const calls: Invocation[] = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") return { status: 503, body: "down" };
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(
+      adapter.identity.hasFeature("agents.claude-provider"),
+    ).resolves.toEqual({ ok: true, value: false });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+  });
+
   it("meetings: snapshot missing → legacy has_feature command", async () => {
     const calls: Invocation[] = [];
     const adapter = new TauriPlatformAdapter({
@@ -47,6 +85,21 @@ describe("TauriPlatformAdapter hasFeature", () => {
 });
 
 describe("createSyncPlatformAdapter hasFeature", () => {
+  it("Claude provider flag fails closed when the registry is unavailable", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") return { status: 503, body: "down" };
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(
+      adapter.identity.hasFeature("agents.claude-provider"),
+    ).resolves.toEqual({ ok: true, value: false });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+  });
+
   it("meetings: configured registry value wins over meetings_feature_enabled", async () => {
     const calls: Invocation[] = [];
     const adapter = createSyncPlatformAdapter({

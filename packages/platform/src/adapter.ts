@@ -947,6 +947,8 @@ export interface AgentProfilePatch {
 }
 
 export const AGENT_PATHS = {
+  provisionOptions: (companyUid: string) =>
+    `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
   status: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/status`,
   jobs: (agentUid: string) =>
@@ -973,7 +975,32 @@ export const AGENT_PATHS = {
     `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
 } as const;
 
+export interface AgentProvisionSizeOption {
+  key: "basic" | "power" | "dev";
+  productName: string;
+  instanceType: string;
+  listCents: number;
+  default: boolean;
+  selectable: boolean;
+  netMonthlyCents: number | null;
+  deltaCents: number | null;
+  unavailableReason: string | null;
+  notBilled: boolean;
+  lanes: number;
+  workers: number;
+}
+
+export interface AgentProvisionOptionsView {
+  defaultInstanceType: string;
+  catalogVersion: string;
+  options: readonly AgentProvisionSizeOption[];
+}
+
 export interface AgentsApi {
+  /** GET /v1/agents/provision-options?companyUid= — tenant-priced sizes. */
+  getProvisionOptions(
+    companyUid: string,
+  ): AdapterPromise<AgentProvisionOptionsView>;
   /** GET /v1/agents/{uid}/status — owner/admin. */
   getStatus(agentUid: string): AdapterPromise<Json>;
   /** GET /v1/agents/mobile-roster — member-safe directory. */

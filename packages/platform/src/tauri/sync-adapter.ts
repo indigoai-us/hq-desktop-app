@@ -9,6 +9,7 @@
 import {
   type AdapterResult,
   type AdapterPromise,
+  type AgentProvisionOptionsView,
   type ChannelSummary,
   type Json,
   type NotifyPrefsResponse,
@@ -29,6 +30,7 @@ import {
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
+  CLAUDE_PROVIDER_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
 } from '../flags.js';
@@ -403,6 +405,9 @@ export function createSyncPlatformAdapter(
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
       hasFeature: (flag) =>
         flags.resolve(flag, () => {
+          if (flag === CLAUDE_PROVIDER_FLAG) {
+            return Promise.resolve(ok(false));
+          }
           if (flag === 'meetings') {
             return call<boolean>('meetings_feature_enabled');
           }
@@ -877,6 +882,11 @@ export function createSyncPlatformAdapter(
     },
 
     agents: {
+      getProvisionOptions: (companyUid) =>
+        hqProJson<AgentProvisionOptionsView>(
+          'GET',
+          AGENT_PATHS.provisionOptions(companyUid),
+        ),
       getStatus: (agentUid) =>
         hqProJson('GET', AGENT_PATHS.status(agentUid)),
       listMobileRoster: (companyUid) =>
