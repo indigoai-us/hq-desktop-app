@@ -24,6 +24,7 @@ const COMPANY_ROW: ConversationRow = {
   channelId: "chn_acme",
   channelScope: "company",
   companyUid: "cmp_acme",
+  isCompanyHome: true,
 } as ConversationRow;
 
 const SETUP_ROW: ConversationRow = {

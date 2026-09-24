@@ -10,10 +10,18 @@ The release moves it under the version it ships in.
 
 - HQ Sync tells you to verify your email before it can show pending company invites.
 
+- Each company now has exactly one "company home" channel (settings,
+  wallpaper). Other channels created inside a company are plain team
+  channels. A new "Companies" section in the sidebar pins each company's
+  home channel, and you can choose which companies show there.
+- Company home channels show Chat only — the Office tab is hidden for
+  company channels for now (the underlying calling code is unchanged).
+
 ## [0.10.321] — 2026-09-24
 
 - Auto-sync memory alerts now include a bounded memory class and, for
   multi-process trees, the largest child's process type.
+- Added internal telemetry to diagnose cases where a machine that was already set up and signed in shows the sign-in or setup screen on startup. No new information about your account is collected; the report records which setup state the app read at launch (such as whether setup markers were present), whether a token file existed and how old it was in minutes (not its contents), and which screen appeared. This data goes only to the development team and is used to find the cause if the sign-in screen returns on a configured machine.
 
 ## [0.10.320] — 2026-09-24
 

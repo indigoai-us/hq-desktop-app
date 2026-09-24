@@ -3,16 +3,18 @@
 /**
  * US-018 REACHABILITY — can a signed-in user actually get to the Office?
  *
- * The office view can be perfect and still be unreachable if nothing in the
- * shell that actually ships renders it. That was the review finding this file
- * exists to prevent from recurring, so it pins the whole chain:
+ * Company channels hide Office entirely now: they show Chat only. This file
+ * pins that Office is unreachable from a company channel, while the shared
+ * `CompanyPage` surface (a different, non-channel destination) keeps its own
+ * Office implementation intact:
  *
- *   1. the company tab list a host renders is capability-gated (Office appears
- *      only when the adapter reports `nativeCalls`, and defaults to hidden);
- *   2. `CompanyPage` — the shared company surface — renders the Office panel
- *      for `tab: "office"` and NOT a blank when the host cannot call;
- *   3. the shipping shell (`DesktopApp.svelte`) mounts the SAME one panel and
- *      never asks the company-tab endpoint for Office rows;
+ *   1. the company CHANNEL tab list never includes Office, regardless of
+ *      adapter capabilities;
+ *   2. `CompanyPage` — the shared company surface — still renders the Office
+ *      panel for `tab: "office"` and NOT a blank when the host cannot call;
+ *   3. the shipping shell (`DesktopApp.svelte`) no longer mounts OfficePanel
+ *      for company channels, and never asks the company-tab endpoint for
+ *      Office rows;
  *   4. `@hq/ui` reaches for no native import of its own.
  */
 
@@ -128,20 +130,21 @@ const ROSTER = ok({
 } as Json);
 
 describe("US-018 reachability: the company tab list is the door", () => {
-  it("advertises Office only when the host reports native calling", () => {
-    const closed = companyChannelTabsFor({ nativeCalls: false }).map((t) => t.id);
-    expect(closed).not.toContain("office");
-    // Default is closed: forgetting to pass capabilities cannot open a door.
-    expect(companyChannelTabsFor().map((t) => t.id)).not.toContain("office");
-    // The gate is surgical — the ungated four are untouched.
-    expect(closed).toEqual(COMPANY_CHANNEL_TABS.map((t) => t.id));
+  it("never advertises Office for company channels, regardless of capabilities", () => {
+    const withoutCalls = companyChannelTabsFor({ nativeCalls: false }).map((t) => t.id);
+    expect(withoutCalls).not.toContain("office");
+    expect(withoutCalls).toEqual(COMPANY_CHANNEL_TABS.map((t) => t.id));
 
-    const open = companyChannelTabsFor({ nativeCalls: true });
-    expect(open.map((t) => t.id)).toEqual([
-      ...COMPANY_CHANNEL_TABS.map((t) => t.id),
-      "office",
-    ]);
-    expect(open.at(-1)).toEqual({ id: "office", label: "Office" });
+    // Default (no capabilities passed) is Chat only.
+    expect(companyChannelTabsFor().map((t) => t.id)).not.toContain("office");
+
+    // Reporting nativeCalls does NOT reopen the door for company channels.
+    const withCalls = companyChannelTabsFor({ nativeCalls: true }).map((t) => t.id);
+    expect(withCalls).not.toContain("office");
+    expect(withCalls).toEqual(COMPANY_CHANNEL_TABS.map((t) => t.id));
+
+    // The id is still recognized elsewhere (CompanyPage's own surface); it is
+    // simply never listed as a company-channel tab.
     expect(COMPANY_OFFICE_TAB.id).toBe("office");
   });
 
@@ -220,33 +223,27 @@ describe("US-018 reachability: CompanyPage renders the Office surface", () => {
   });
 });
 
-describe("US-018 reachability: the shipping shell mounts the same panel", () => {
+describe("US-018 reachability: the shipping shell hides Office for company channels", () => {
   const shell = read("../shell/DesktopApp.svelte");
 
-  it("renders the shared OfficePanel for the office tab", () => {
-    expect(shell).toContain('import OfficePanel from "../meet/OfficePanel.svelte"');
-    expect(shell).toContain('companyTab === "office"');
-    expect(shell).toContain('data-testid="company-tab-panel-office"');
-    expect(shell).toContain("<OfficePanel");
-    // The panel gets the adapter AND the host seams; without both it cannot
-    // preflight or open a window.
-    const mountBlock = shell.slice(
-      shell.indexOf("<OfficePanel"),
-      shell.indexOf("<OfficePanel") + 400,
-    );
-    expect(mountBlock).toContain("{adapter}");
-    expect(mountBlock).toContain("{callsHost}");
-    expect(mountBlock).toContain("companyUid={selectedRow.companyUid");
+  it("no longer imports or mounts OfficePanel for company channels", () => {
+    expect(shell).not.toContain('import OfficePanel from "../meet/OfficePanel.svelte"');
+    expect(shell).not.toContain("<OfficePanel");
+    expect(shell).not.toContain('data-testid="company-tab-panel-office"');
   });
 
-  it("gates the tab on the adapter capability rather than on the build", () => {
+  it("still resolves the company tab list through companyChannelTabsFor", () => {
     expect(shell).toContain("companyChannelTabsFor({");
-    expect(shell).toContain("nativeCalls: adapter?.capabilities?.nativeCalls === true");
     expect(shell).toContain("tabs={companyTabsForHost}");
   });
 
   it("never asks the company-tab endpoint for office rows", () => {
     expect(shell).toContain('if (tabId === "office") {');
+  });
+
+  it("routes any stale office deep link back to chat", () => {
+    expect(shell).toContain('companyTab = "chat";');
+    expect(shell).not.toContain('companyTab = next.companyTab === "office" ? "office" : "chat";');
   });
 });
 
