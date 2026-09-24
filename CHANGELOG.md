@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The setup finish card goes away as soon as you send the setup bot another
+  message, instead of staying under the rest of the conversation.
 - Files and images attached in chat upload again. Since vault storage turned on
   write protection, every attachment upload was refused, so bots and teammates
   never received the file.
