@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.322] — 2026-09-24
+
 - Each company now has exactly one "company home" channel (settings,
   wallpaper). Other channels created inside a company are plain team
   channels. A new "Companies" section in the sidebar pins each company's
