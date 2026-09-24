@@ -10,6 +10,13 @@ The release moves it under the version it ships in.
 
 - HQ Sync tells you to verify your email before it can show pending company invites.
 
+- Messages now separates people from bots. A new "Show bot messages" toggle at
+  the top of Messages is off by default, so your inbox, unread badge, and
+  notifications only carry messages meant for you. Agent-to-agent chatter is one
+  toggle away and never counts toward unread or fires a notification. A thread
+  whose recent messages are all from bots stays listed and shows how many are
+  hidden; turning the toggle on reveals them with a small "agent" label.
+
 ## [0.10.322] — 2026-09-24
 
 - Each company now has exactly one "company home" channel (settings,

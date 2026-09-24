@@ -43,6 +43,11 @@ pub struct DmEvent {
     /// Vault-path file cards on a `file_share` DM. Absent-safe for old servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<MessageAttachment>>,
+    /// Declared audience: `"human"` | `"agent"` | `"both"`. Absent on messages
+    /// stored before this feature was shipped — treat as `"human"` per the
+    /// rollout decision. Mirrors `details` and `prompt` in the server contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
 }
 
 /// Per-counterparty DM unread rollup from `GET /v1/notify/inbox` (hq-pro
@@ -994,6 +999,10 @@ pub struct ThreadMessage {
     /// Vault-path file cards. Absent-safe for old servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<MessageAttachment>>,
+    /// Declared audience: `"human"` | `"agent"` | `"both"`. Absent on older
+    /// rows — treat as `"human"`. Mirrors `details` and `prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1104,6 +1113,10 @@ pub struct ThreadReply {
     /// attachment validation and loads bytes through the authorized vault API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachments: Option<serde_json::Value>,
+    /// Declared audience: `"human"` | `"agent"` | `"both"`. Absent on older
+    /// rows — treat as `"human"`. Mirrors `details` and `prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
 }
 
 /// The full thread view returned by `GET /v1/notify/threads`: the pinned root
@@ -1259,6 +1272,33 @@ pub fn build_thread_reply_payload(
         let uid = to_person_uid.unwrap_or_default();
         serde_json::json!({ "toPersonUid": uid, "body": body, "rootEventId": root_event_id })
     }
+}
+
+/// True when the message is addressed only to agents (`audience == "agent"`).
+/// Absent audience or any other value is treated as `"human"` (non-agent).
+/// Used by the unread counter, OS notification path, and preview selection.
+pub fn is_agent_audience(audience: Option<&str>) -> bool {
+    matches!(audience, Some(a) if a.eq_ignore_ascii_case("agent"))
+}
+
+/// Filter a `DmEvent` slice to the subset a human should see in the unread
+/// count and OS notifications: everything whose audience is NOT `"agent"`.
+/// `"human"`, `"both"`, and absent all pass through.
+pub fn filter_human_visible_events(events: &[DmEvent]) -> Vec<&DmEvent> {
+    events
+        .iter()
+        .filter(|e| !is_agent_audience(e.audience.as_deref()))
+        .collect()
+}
+
+/// Return the newest event in `events` that is not agent-only, for use as
+/// the conversation preview when the "Show bot messages" toggle is off. The
+/// input is assumed newest-first (inbox/thread order). Returns `None` when
+/// all events are agent-only or the slice is empty.
+pub fn newest_non_agent_event<'a>(events: &'a [DmEvent]) -> Option<&'a DmEvent> {
+    events
+        .iter()
+        .find(|e| !is_agent_audience(e.audience.as_deref()))
 }
 
 #[cfg(test)]
@@ -1460,6 +1500,14 @@ mod tests {
             root_event_id: None,
             message_kind: None,
             attachments: None,
+            audience: None,
+        }
+    }
+
+    fn mk_dm_with_audience(event_id: &str, created_at: &str, audience: &str) -> DmEvent {
+        DmEvent {
+            audience: Some(audience.to_string()),
+            ..mk_dm(event_id, created_at)
         }
     }
 
@@ -2660,5 +2708,229 @@ mod tests {
         ));
         assert!(!should_suppress_duplicate_event("evt_2", &["evt_1".into()]));
         assert!(!should_suppress_duplicate_event("", &["evt_1".into()]));
+    }
+
+    // ── US-005: audience field and filtering ─────────────────────────────────
+
+    #[test]
+    fn dm_event_deserializes_audience_field_when_present() {
+        let json = r#"{
+            "eventId": "evt_1",
+            "fromPersonUid": "agt_bot",
+            "fromEmail": "bot@hq.ai",
+            "fromDisplayName": "Bot",
+            "body": "status: running",
+            "createdAt": "2026-09-23T10:00:00Z",
+            "audience": "agent"
+        }"#;
+        let dm: DmEvent = serde_json::from_str(json).expect("DmEvent with audience parses");
+        assert_eq!(dm.audience.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn dm_event_audience_absent_deserializes_as_none() {
+        let json = r#"{
+            "eventId": "evt_2",
+            "fromPersonUid": "prs_human",
+            "fromEmail": "h@b.com",
+            "fromDisplayName": "Human",
+            "body": "hello",
+            "createdAt": "2026-09-23T10:00:00Z"
+        }"#;
+        let dm: DmEvent = serde_json::from_str(json).expect("DmEvent without audience parses");
+        assert!(dm.audience.is_none());
+    }
+
+    #[test]
+    fn thread_message_deserializes_audience_field() {
+        let json = r#"{
+            "eventId": "evt_t1",
+            "fromPersonUid": "agt_bot",
+            "fromEmail": "b@b.com",
+            "fromDisplayName": "Bot",
+            "body": "progress update",
+            "createdAt": "2026-09-23T10:00:00Z",
+            "direction": "in",
+            "audience": "agent"
+        }"#;
+        let msg: ThreadMessage = serde_json::from_str(json).expect("ThreadMessage with audience parses");
+        assert_eq!(msg.audience.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn thread_reply_deserializes_audience_field() {
+        let json = r#"{
+            "eventId": "evt_r1",
+            "fromPersonUid": "agt_bot",
+            "body": "delegating",
+            "createdAt": "2026-09-23T10:00:00Z",
+            "audience": "agent"
+        }"#;
+        let reply: ThreadReply = serde_json::from_str(json).expect("ThreadReply with audience parses");
+        assert_eq!(reply.audience.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn thread_reply_audience_absent_is_none() {
+        let json = r#"{
+            "eventId": "evt_r2",
+            "fromPersonUid": "prs_human",
+            "body": "hey",
+            "createdAt": "2026-09-23T10:00:00Z"
+        }"#;
+        let reply: ThreadReply = serde_json::from_str(json).expect("ThreadReply without audience parses");
+        assert!(reply.audience.is_none());
+    }
+
+    #[test]
+    fn is_agent_audience_classifies_correctly() {
+        assert!(is_agent_audience(Some("agent")));
+        assert!(is_agent_audience(Some("Agent")));
+        assert!(is_agent_audience(Some("AGENT")));
+        assert!(!is_agent_audience(Some("human")));
+        assert!(!is_agent_audience(Some("both")));
+        assert!(!is_agent_audience(None));
+        assert!(!is_agent_audience(Some("")));
+    }
+
+    #[test]
+    fn filter_human_visible_excludes_agent_messages_counts_as_unread() {
+        // One human and two agent DMs: only the human one counts for unread.
+        let events = vec![
+            mk_dm_with_audience("e1", "2026-09-23T10:00:00Z", "human"),
+            mk_dm_with_audience("e2", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm_with_audience("e3", "2026-09-23T10:02:00Z", "agent"),
+        ];
+        let visible = filter_human_visible_events(&events);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].event_id, "e1");
+    }
+
+    #[test]
+    fn filter_human_visible_keeps_both_and_absent_audience() {
+        let events = vec![
+            mk_dm("e_absent", "2026-09-23T10:00:00Z"),
+            mk_dm_with_audience("e_both", "2026-09-23T10:01:00Z", "both"),
+            mk_dm_with_audience("e_human", "2026-09-23T10:02:00Z", "human"),
+            mk_dm_with_audience("e_agent", "2026-09-23T10:03:00Z", "agent"),
+        ];
+        let visible = filter_human_visible_events(&events);
+        assert_eq!(visible.len(), 3);
+        let ids: Vec<&str> = visible.iter().map(|e| e.event_id.as_str()).collect();
+        assert!(ids.contains(&"e_absent"));
+        assert!(ids.contains(&"e_both"));
+        assert!(ids.contains(&"e_human"));
+        assert!(!ids.contains(&"e_agent"));
+    }
+
+    #[test]
+    fn newest_non_agent_event_skips_leading_agent_messages() {
+        // Newest-first list: two agent messages then a human one.
+        let events = vec![
+            mk_dm_with_audience("e_agent1", "2026-09-23T10:02:00Z", "agent"),
+            mk_dm_with_audience("e_agent2", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm("e_human", "2026-09-23T10:00:00Z"),
+        ];
+        let preview = newest_non_agent_event(&events);
+        assert_eq!(preview.map(|e| e.event_id.as_str()), Some("e_human"));
+    }
+
+    #[test]
+    fn newest_non_agent_event_returns_none_when_all_agent() {
+        let events = vec![
+            mk_dm_with_audience("e1", "2026-09-23T10:00:00Z", "agent"),
+            mk_dm_with_audience("e2", "2026-09-23T10:01:00Z", "agent"),
+        ];
+        assert!(newest_non_agent_event(&events).is_none());
+    }
+
+    #[test]
+    fn newest_non_agent_event_returns_none_for_empty_slice() {
+        assert!(newest_non_agent_event(&[]).is_none());
+    }
+
+    #[test]
+    fn audience_field_round_trips_through_serialization() {
+        let mut dm = mk_dm("evt_rt", "2026-09-23T10:00:00Z");
+        dm.audience = Some("both".to_string());
+        let v = serde_json::to_value(&dm).expect("serializes");
+        assert_eq!(v["audience"], "both");
+        let back: DmEvent = serde_json::from_value(v).expect("deserializes");
+        assert_eq!(back.audience.as_deref(), Some("both"));
+    }
+
+    #[test]
+    fn audience_absent_not_emitted_in_serialization() {
+        let dm = mk_dm("evt_absent", "2026-09-23T10:00:00Z");
+        let v = serde_json::to_value(&dm).expect("serializes");
+        assert!(v.get("audience").is_none(), "absent audience must not emit a key");
+    }
+
+    // --- US-005 pipeline tests: partition_unnotified → filter_human_visible ---
+    // These mirror the real do_poll code path so the wiring is exercised, not
+    // just the pure helpers.
+
+    #[test]
+    fn do_poll_pipeline_agent_events_do_not_count_toward_unread() {
+        // Inbox: 1 human + 2 agent events, none previously seen.
+        let events = vec![
+            mk_dm_with_audience("h1", "2026-09-23T10:00:00Z", "human"),
+            mk_dm_with_audience("a1", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm_with_audience("a2", "2026-09-23T10:02:00Z", "agent"),
+        ];
+        let (fresh, _) = partition_unnotified(&events, &[]);
+        // All 3 are fresh (none previously notified).
+        assert_eq!(fresh.len(), 3);
+        // But only 1 is human-visible — this is the delta bump_unread receives.
+        let visible = filter_human_visible_events(&fresh);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].event_id, "h1");
+    }
+
+    #[test]
+    fn do_poll_pipeline_already_notified_agent_event_does_not_resurface() {
+        let events = vec![
+            mk_dm_with_audience("a_seen", "2026-09-23T10:00:00Z", "agent"),
+            mk_dm_with_audience("h_new", "2026-09-23T10:01:00Z", "human"),
+        ];
+        let already_notified = vec!["a_seen".to_string()];
+        let (fresh, _) = partition_unnotified(&events, &already_notified);
+        // Only h_new is fresh.
+        assert_eq!(fresh.len(), 1);
+        // And it is human-visible.
+        let visible = filter_human_visible_events(&fresh);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].event_id, "h_new");
+    }
+
+    #[test]
+    fn do_poll_pipeline_all_agent_events_yield_zero_unread_delta() {
+        let events = vec![
+            mk_dm_with_audience("a1", "2026-09-23T10:00:00Z", "agent"),
+            mk_dm_with_audience("a2", "2026-09-23T10:01:00Z", "agent"),
+        ];
+        let (fresh, _) = partition_unnotified(&events, &[]);
+        let visible = filter_human_visible_events(&fresh);
+        // bump_unread would receive 0 — the badge must not move.
+        assert_eq!(visible.len(), 0);
+    }
+
+    #[test]
+    fn do_poll_pipeline_banner_filter_suppresses_agent_audience() {
+        // Simulate the banner_worthy filter: exclude is_agent_audience.
+        let fresh = vec![
+            mk_dm_with_audience("h1", "2026-09-23T10:00:00Z", "human"),
+            mk_dm_with_audience("a1", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm("absent1", "2026-09-23T10:02:00Z"),
+        ];
+        let banner_worthy: Vec<&DmEvent> = fresh
+            .iter()
+            .filter(|dm| !is_agent_audience(dm.audience.as_deref()))
+            .collect();
+        assert_eq!(banner_worthy.len(), 2);
+        let ids: Vec<&str> = banner_worthy.iter().map(|e| e.event_id.as_str()).collect();
+        assert!(ids.contains(&"h1"));
+        assert!(ids.contains(&"absent1"));
+        assert!(!ids.contains(&"a1"));
     }
 }
