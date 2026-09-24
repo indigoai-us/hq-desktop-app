@@ -133,6 +133,8 @@
     loadShowFilter,
     resolveCompanySectionRows,
     type CompanySectionRow,
+    migratePinnedCompanySelection,
+    mergeResolvedCompanyChannels,
     mergeContactActivity,
     isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
@@ -484,10 +486,29 @@
     loadConversationCache(storage)?.contacts ?? [],
   );
   let pins = $state<string[]>(loadPins(storage));
-  /** "Companies" sidebar section selection — `null` until the user customizes
-   * it via the section's Edit affordance, meaning "show every company". */
-  let pinnedCompanySelection = $state<string[] | null>(loadPinnedCompanies(storage));
+  /**
+   * "Companies" sidebar section pins — companies the user explicitly pinned
+   * via the section's header submenu. Empty/absent = no pins yet, so the
+   * section falls back to the top-N most active companies (see
+   * `companySectionRows` below). Persisted data may still carry the OLD
+   * "which companies to show" shape from before this pin model existed
+   * (`null` = show all, an array = the exact visible set) — migrated once at
+   * load via `migratePinnedCompanySelection` (see that function's doc for the
+   * exact migration rule).
+   */
+  let pinnedCompanies = $state<string[]>(
+    migratePinnedCompanySelection(
+      loadPinnedCompanies(storage),
+      (companies ?? [])
+        .map((c) => (c.cloudUid ?? "").trim())
+        .filter(Boolean),
+    ) ?? [],
+  );
   let companiesSectionMenuOpen = $state(false);
+  /** companyUids the on-demand home-channel resolver has already fetched (or
+   * is fetching) this session — never re-fetch the same company on every
+   * render. */
+  const attemptedCompanyHomeResolutions = new Set<string>();
   /** User unpinned #setup — sticky until they pin it again. */
   let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
   /** Rows with an unsent composer draft (Slack-style pencil marker). */
@@ -924,11 +945,14 @@
   );
 
   /**
-   * The sidebar's "Companies" section. Each pinned company shows its home
-   * channel; a company with no home channel yet is included with
-   * `homeRow: null` so the row can render disabled with a reason instead of
-   * silently vanishing (step 8's "your call" — disabled beats hidden here so
-   * a newly-provisioned company is still visible to the user).
+   * The sidebar's "Companies" section. When the user has pinned any
+   * companies (via the header submenu), only the pinned ones show, in
+   * `companies` order. Otherwise the section shows the
+   * `DEFAULT_COMPANY_SECTION_LIMIT` most active companies (see
+   * `companyActivityScore` / `rankCompaniesByActivity` in sidebar-model.ts).
+   * A company with no home channel yet is included with `homeRow: null` so
+   * the row can render disabled with a reason instead of silently vanishing
+   * — the resolver effect below tries to fetch it on demand.
    *
    * Home channels shown here are NOT removed from the regular channel list:
    * this section is additive, the same way the existing pin star only
@@ -946,21 +970,53 @@
           iconUrl: companyIcons.get((c.cloudUid as string).trim()) ?? null,
         })),
       allRows,
-      pinnedCompanySelection,
+      pinnedCompanies,
     ),
   );
 
-  function toggleCompanySectionSelection(companyUid: string): void {
-    const current =
-      pinnedCompanySelection ??
-      (companies ?? [])
-        .map((c) => (c.cloudUid ?? "").trim())
-        .filter(Boolean);
-    pinnedCompanySelection = current.includes(companyUid)
-      ? current.filter((uid) => uid !== companyUid)
-      : [...current, companyUid];
-    savePinnedCompanies(pinnedCompanySelection, storage);
+  function toggleCompanyPin(companyUid: string): void {
+    pinnedCompanies = pinnedCompanies.includes(companyUid)
+      ? pinnedCompanies.filter((uid) => uid !== companyUid)
+      : [...pinnedCompanies, companyUid];
+    savePinnedCompanies(pinnedCompanies, storage);
   }
+
+  /**
+   * On-demand home-channel resolution (requirement 4): a company shown in
+   * the section with `homeRow: null` means its home channel wasn't in the
+   * currently-loaded directory feed (e.g. the directory hasn't synced that
+   * company's channels yet, or the caller's membership in it is stale
+   * locally). Reuse the SAME `listChannels({ companyUid })` lane the
+   * owner-only "All company projects" view already uses (see the
+   * `companyProjectsSeq` effect above) to fetch that company's channels
+   * directly, rather than inventing a new fetch path — this is the
+   * mechanism deep links and the company switcher rely on elsewhere in the
+   * shell to resolve a channel that isn't cached yet.
+   */
+  $effect(() => {
+    const missing = companySectionRows
+      .filter((c) => !c.homeRow)
+      .map((c) => c.companyUid)
+      .filter((uid) => !attemptedCompanyHomeResolutions.has(uid));
+    if (missing.length === 0) return;
+    for (const uid of missing) attemptedCompanyHomeResolutions.add(uid);
+    void (async () => {
+      for (const uid of missing) {
+        try {
+          const resp = await api.listChannels({
+            companyUid: uid,
+            includeCompanyProjects: false,
+          });
+          const resolved = resp?.channels ?? [];
+          if (resolved.length > 0) {
+            channels = mergeResolvedCompanyChannels(channels, resolved);
+          }
+        } catch (err) {
+          console.warn("chat-sidebar: company home-channel resolution failed", err);
+        }
+      }
+    })();
+  });
 
   let lastEmittedRows: ConversationRow[] | null = null;
   $effect(() => {
@@ -2832,9 +2888,15 @@
           data-testid="chat-companies-edit"
           aria-haspopup="true"
           aria-expanded={companiesSectionMenuOpen}
+          aria-label="More companies"
+          title="Pin companies"
           onclick={() => (companiesSectionMenuOpen = !companiesSectionMenuOpen)}
         >
-          Edit
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="4" cy="8" r="1.3" fill="currentColor" />
+            <circle cx="8" cy="8" r="1.3" fill="currentColor" />
+            <circle cx="12" cy="8" r="1.3" fill="currentColor" />
+          </svg>
         </button>
       </div>
       {#if companiesSectionMenuOpen}
@@ -2844,16 +2906,19 @@
           data-testid="chat-companies-menu"
           aria-labelledby="chat-companies-label"
         >
+          <p class="chat-companies-menu-hint">
+            Pin companies to keep them here — otherwise your 3 most active show.
+          </p>
           {#each companies ?? [] as company (company.cloudUid ?? company.slug)}
             {@const uid = (company.cloudUid ?? "").trim()}
             {#if uid}
-              {@const checked = pinnedCompanySelection === null || pinnedCompanySelection.includes(uid)}
+              {@const checked = pinnedCompanies.includes(uid)}
               <label class="chat-companies-menu-item">
                 <input
                   type="checkbox"
                   data-testid={`chat-companies-menu-item-${uid}`}
                   {checked}
-                  onchange={() => toggleCompanySectionSelection(uid)}
+                  onchange={() => toggleCompanyPin(uid)}
                 />
                 <span>{company.displayName || company.slug}</span>
               </label>
@@ -2869,22 +2934,39 @@
       >
         {#if companySectionRows.length === 0}
           <p class="chat-companies-empty" data-testid="chat-companies-empty">
-            No companies selected. Use Edit above to pin one.
+            No companies yet.
           </p>
         {:else}
           {#each companySectionRows as company (company.companyUid)}
             {#if company.homeRow}
-              {@render conversationRow(company.homeRow)}
+              {@const row = company.homeRow}
+              <button
+                type="button"
+                class="chat-row chat-companies-row"
+                class:active={activeId === row.id}
+                data-testid={`chat-companies-row-${company.companyUid}`}
+                onclick={() => openRow(row)}
+              >
+                {#if company.iconUrl}
+                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
+                {:else}
+                  <span class="chat-glyph" aria-hidden="true">·</span>
+                {/if}
+                <span class="chat-row-title">{company.label}</span>
+              </button>
             {:else}
               <div
-                class="chat-row chat-row-disabled"
+                class="chat-row chat-row-disabled chat-companies-row"
                 data-testid={`chat-companies-row-disabled-${company.companyUid}`}
                 aria-disabled="true"
-                title="This company doesn't have a home channel yet."
+                title="Still connecting this company's home channel…"
               >
-                <span class="chat-glyph" aria-hidden="true">·</span>
+                {#if company.iconUrl}
+                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
+                {:else}
+                  <span class="chat-glyph" aria-hidden="true">·</span>
+                {/if}
                 <span class="chat-row-title">{company.label}</span>
-                <span class="chat-companies-row-reason">No home channel yet</span>
               </div>
             {/if}
           {/each}
@@ -4029,14 +4111,13 @@
 
   .chat-companies-edit {
     all: unset;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
     color: var(--ice-ink);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    padding: 2px 6px;
+    width: 18px;
+    height: 18px;
     border-radius: 6px;
   }
   .chat-companies-edit:hover,
@@ -4068,6 +4149,14 @@
     background: var(--hover);
   }
 
+  .chat-companies-menu-hint {
+    margin: 0 0 4px;
+    padding: 2px 6px;
+    color: var(--t2);
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
   .chat-companies-empty {
     margin: 0;
     padding: 6px 12px 10px;
@@ -4075,19 +4164,35 @@
     font-size: 12px;
   }
 
+  /* Companies section rows are intentionally minimal — name only, single
+   * line, no unread badge/dot/status text (requirement 1). */
+  .chat-companies-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+  }
+  .chat-companies-row .chat-row-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-companies-row-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    object-fit: cover;
+    flex: 0 0 auto;
+  }
+
   .chat-row-disabled {
     opacity: 0.55;
     cursor: default;
   }
 
-  .chat-companies-row-reason {
-    margin-left: auto;
-    color: var(--t2);
-    font-size: 10px;
-    font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
 
   /* Day-group header: name left, date right-aligned (D-13). */
   .chat-day-head {

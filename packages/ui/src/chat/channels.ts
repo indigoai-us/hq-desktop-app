@@ -104,7 +104,19 @@ export function isCompanyHomeChannel(
   companySlug: string | null | undefined,
 ): boolean {
   if (typeof channel.isCompanyHome === "boolean") return channel.isCompanyHome;
-  return channel.scope === "company" && !!companySlug && channel.name === companySlug;
+  if (channel.scope !== "company" || !companySlug) return false;
+  // The wire `name` carries the raw channel name, which for a company-genesis
+  // channel is "#<slug>" (the directory row's `name` is never stripped of its
+  // leading "#" — only display helpers like `channelDisplayName` do that). A
+  // literal `channel.name === companySlug` comparison therefore NEVER matches
+  // (every company home channel would compare "#indigo" to "indigo"), which is
+  // exactly the bug that made every company show "no home channel yet." Strip
+  // the leading "#" (and normalize case/whitespace) on both sides before
+  // comparing so this fallback actually works while the backend rolls out the
+  // authoritative `isCompanyHome` flag.
+  const normalizedName = channel.name.trim().replace(/^#+/, "").trim().toLowerCase();
+  const normalizedSlug = companySlug.trim().replace(/^#+/, "").trim().toLowerCase();
+  return !!normalizedName && normalizedName === normalizedSlug;
 }
 
 /** A group-DM participant as surfaced on the channels list payload — just enough

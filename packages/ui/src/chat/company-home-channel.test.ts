@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { isCompanyHomeChannel, type Channel } from "./channels";
 import {
+  companyActivityScore,
+  findCompanyHomeRow,
   loadPinnedCompanies,
+  mergeResolvedCompanyChannels,
+  migratePinnedCompanySelection,
   normalizeChannel,
+  rankCompaniesByActivity,
   resolveCompanySectionRows,
   savePinnedCompanies,
   type ConversationRow,
@@ -66,6 +71,28 @@ describe("isCompanyHomeChannel", () => {
     expect(isCompanyHomeChannel({ scope: "company", name: "acme" }, null)).toBe(false);
     expect(isCompanyHomeChannel({ scope: "company", name: "acme" }, undefined)).toBe(false);
   });
+
+  /**
+   * Regression test for the reported bug: EVERY company (including one with a
+   * real, definitely-existing home channel like #indigo) showed "no home
+   * channel yet". Root cause: the wire `name` field on a directory row is the
+   * RAW channel name, which for a company-genesis channel carries a leading
+   * "#" (e.g. "#indigo") — only display helpers like `channelDisplayName`
+   * strip it. The old fallback compared `channel.name === companySlug`
+   * literally, so "#indigo" was never equal to "indigo" and the fallback
+   * match failed for every single company, always. This must now match.
+   */
+  it("regression: matches a '#slug' raw wire name against the bare company slug", () => {
+    expect(isCompanyHomeChannel({ scope: "company", name: "#indigo" }, "indigo")).toBe(
+      true,
+    );
+    expect(
+      isCompanyHomeChannel({ scope: "company", name: "#Indigo" }, "indigo"),
+    ).toBe(true);
+    expect(
+      isCompanyHomeChannel({ scope: "company", name: "#indigo" }, "acme"),
+    ).toBe(false);
+  });
 });
 
 describe("normalizeChannel — isCompanyHome resolution", () => {
@@ -106,81 +133,285 @@ describe("normalizeChannel — isCompanyHome resolution", () => {
   });
 });
 
+function homeRow(
+  companyUid: string,
+  channelId: string,
+  messageActivityAt = 0,
+): ConversationRow {
+  return {
+    id: `ch:${channelId}`,
+    kind: "channel",
+    channelScope: "company",
+    title: `#${channelId}`,
+    companyUid,
+    unreadDot: false,
+    lastActivityAt: messageActivityAt,
+    messageActivityAt,
+    pinned: false,
+    channelId,
+    isCompanyHome: true,
+  };
+}
+
+function teamRow(
+  companyUid: string,
+  channelId: string,
+  messageActivityAt = 0,
+): ConversationRow {
+  return {
+    id: `ch:${channelId}`,
+    kind: "channel",
+    channelScope: "company",
+    title: `#${channelId}`,
+    companyUid,
+    unreadDot: false,
+    lastActivityAt: messageActivityAt,
+    messageActivityAt,
+    pinned: false,
+    channelId,
+    isCompanyHome: false,
+  };
+}
+
+describe("companyActivityScore / rankCompaniesByActivity", () => {
+  const companies = [
+    { companyUid: "cmp_acme", label: "Acme" },
+    { companyUid: "cmp_beta", label: "Beta" },
+    { companyUid: "cmp_gamma", label: "Gamma" },
+  ];
+
+  it("prefers the home channel's messageActivityAt", () => {
+    const rows = [homeRow("cmp_acme", "acme", 500)];
+    expect(companyActivityScore("cmp_acme", rows)).toBe(500);
+  });
+
+  it("falls back to the busiest other company-scope channel when the home row has no message activity", () => {
+    const rows = [
+      homeRow("cmp_acme", "acme", 0),
+      teamRow("cmp_acme", "marketing", 100),
+      teamRow("cmp_acme", "eng", 300),
+    ];
+    expect(companyActivityScore("cmp_acme", rows)).toBe(300);
+  });
+
+  it("falls back the same way when the home row is unresolved (not in the loaded rows at all)", () => {
+    const rows = [teamRow("cmp_acme", "eng", 42)];
+    expect(companyActivityScore("cmp_acme", rows)).toBe(42);
+  });
+
+  it("scores 0 for a company with no activity anywhere", () => {
+    expect(companyActivityScore("cmp_acme", [])).toBe(0);
+  });
+
+  it("ranks the 3 most active companies first, deterministically", () => {
+    const rows = [
+      homeRow("cmp_acme", "acme", 100),
+      homeRow("cmp_beta", "beta", 900),
+      homeRow("cmp_gamma", "gamma", 500),
+    ];
+    const ranked = rankCompaniesByActivity(companies, rows);
+    expect(ranked.map((c) => c.companyUid)).toEqual([
+      "cmp_beta",
+      "cmp_gamma",
+      "cmp_acme",
+    ]);
+  });
+
+  it("breaks ties by label for deterministic ordering", () => {
+    const rows = [
+      homeRow("cmp_acme", "acme", 0),
+      homeRow("cmp_beta", "beta", 0),
+      homeRow("cmp_gamma", "gamma", 0),
+    ];
+    const ranked = rankCompaniesByActivity(companies, rows);
+    expect(ranked.map((c) => c.companyUid)).toEqual([
+      "cmp_acme",
+      "cmp_beta",
+      "cmp_gamma",
+    ]);
+  });
+});
+
 describe("resolveCompanySectionRows", () => {
   const companies = [
     { companyUid: "cmp_acme", label: "Acme" },
     { companyUid: "cmp_beta", label: "Beta" },
+    { companyUid: "cmp_gamma", label: "Gamma" },
+    { companyUid: "cmp_delta", label: "Delta" },
   ];
 
-  function homeRow(companyUid: string, channelId: string): ConversationRow {
-    return {
-      id: `ch:${channelId}`,
-      kind: "channel",
-      channelScope: "company",
-      title: `#${channelId}`,
-      companyUid,
-      unreadDot: false,
-      lastActivityAt: 0,
-      pinned: false,
-      channelId,
-      isCompanyHome: true,
-    };
-  }
-
-  it("selection === null shows every company the user belongs to (default, and covers newly-joined)", () => {
-    const rows = resolveCompanySectionRows(
-      companies,
-      [homeRow("cmp_acme", "acme"), homeRow("cmp_beta", "beta")],
-      null,
-    );
-    expect(rows.map((r) => r.companyUid)).toEqual(["cmp_acme", "cmp_beta"]);
-    expect(rows.every((r) => r.homeRow)).toBe(true);
+  it("no pins: shows the top-3 most active companies, ranked", () => {
+    const rows = [
+      homeRow("cmp_acme", "acme", 100),
+      homeRow("cmp_beta", "beta", 900),
+      homeRow("cmp_gamma", "gamma", 500),
+      homeRow("cmp_delta", "delta", 50),
+    ];
+    const sections = resolveCompanySectionRows(companies, rows, null);
+    expect(sections.map((r) => r.companyUid)).toEqual([
+      "cmp_beta",
+      "cmp_gamma",
+      "cmp_acme",
+    ]);
   });
 
-  it("an explicit selection filters to only the chosen companies", () => {
-    const rows = resolveCompanySectionRows(
-      companies,
-      [homeRow("cmp_acme", "acme"), homeRow("cmp_beta", "beta")],
-      ["cmp_acme"],
-    );
-    expect(rows.map((r) => r.companyUid)).toEqual(["cmp_acme"]);
+  it("no pins: an empty pin array behaves the same as null (top-3 default)", () => {
+    const rows = [
+      homeRow("cmp_acme", "acme", 100),
+      homeRow("cmp_beta", "beta", 900),
+      homeRow("cmp_gamma", "gamma", 500),
+      homeRow("cmp_delta", "delta", 50),
+    ];
+    const sections = resolveCompanySectionRows(companies, rows, []);
+    expect(sections.map((r) => r.companyUid)).toEqual([
+      "cmp_beta",
+      "cmp_gamma",
+      "cmp_acme",
+    ]);
   });
 
-  it("an explicit empty selection hides every company (deliberate hide-all, not treated as unset)", () => {
-    const rows = resolveCompanySectionRows(
-      companies,
-      [homeRow("cmp_acme", "acme"), homeRow("cmp_beta", "beta")],
-      [],
-    );
-    expect(rows).toEqual([]);
+  it("pins present: shows ONLY the pinned companies, never mixed with top-3", () => {
+    const rows = [
+      homeRow("cmp_acme", "acme", 100),
+      homeRow("cmp_beta", "beta", 900),
+      homeRow("cmp_gamma", "gamma", 500),
+      homeRow("cmp_delta", "delta", 50),
+    ];
+    // Pin the two LEAST active companies — if pins were merged with top-3
+    // this would show 4 or 5 rows; it must show exactly the 2 pinned ones.
+    const sections = resolveCompanySectionRows(companies, rows, [
+      "cmp_delta",
+      "cmp_acme",
+    ]);
+    expect(sections.map((r) => r.companyUid)).toEqual(["cmp_acme", "cmp_delta"]);
+  });
+
+  it("pins are always shown even if they have zero activity", () => {
+    const rows: ConversationRow[] = [];
+    const sections = resolveCompanySectionRows(companies, rows, ["cmp_gamma"]);
+    expect(sections.map((r) => r.companyUid)).toEqual(["cmp_gamma"]);
   });
 
   it("a company without a home channel yet is included with homeRow: null (shown disabled, not hidden)", () => {
-    const rows = resolveCompanySectionRows(companies, [homeRow("cmp_acme", "acme")], null);
-    const beta = rows.find((r) => r.companyUid === "cmp_beta");
+    const rows = [homeRow("cmp_acme", "acme")];
+    const sections = resolveCompanySectionRows(
+      [companies[0]!, companies[1]!],
+      rows,
+      ["cmp_acme", "cmp_beta"],
+    );
+    const beta = sections.find((r) => r.companyUid === "cmp_beta");
     expect(beta).toBeDefined();
     expect(beta?.homeRow).toBeNull();
   });
 
   it("ignores non-home company-scope rows when picking the home channel", () => {
-    const teamRow: ConversationRow = {
-      id: "ch:team",
-      kind: "channel",
-      channelScope: "company",
-      title: "#team",
-      companyUid: "cmp_acme",
-      unreadDot: false,
-      lastActivityAt: 0,
-      pinned: false,
-      channelId: "team",
-      isCompanyHome: false,
-    };
-    const rows = resolveCompanySectionRows(
-      [companies[0]!],
-      [teamRow, homeRow("cmp_acme", "acme")],
-      null,
+    const rows = [teamRow("cmp_acme", "team"), homeRow("cmp_acme", "acme")];
+    const sections = resolveCompanySectionRows([companies[0]!], rows, [
+      "cmp_acme",
+    ]);
+    expect(sections[0]?.homeRow?.channelId).toBe("acme");
+  });
+
+  it("respects a custom limit for the default top-N view", () => {
+    const rows = [
+      homeRow("cmp_acme", "acme", 100),
+      homeRow("cmp_beta", "beta", 900),
+      homeRow("cmp_gamma", "gamma", 500),
+      homeRow("cmp_delta", "delta", 50),
+    ];
+    const sections = resolveCompanySectionRows(companies, rows, null, 1);
+    expect(sections.map((r) => r.companyUid)).toEqual(["cmp_beta"]);
+  });
+});
+
+describe("migratePinnedCompanySelection", () => {
+  const allUids = ["cmp_acme", "cmp_beta", "cmp_gamma"];
+
+  it("null (no persisted pref) stays null — no pins yet, falls back to top-N", () => {
+    expect(migratePinnedCompanySelection(null, allUids)).toBeNull();
+  });
+
+  it("an old empty array ('hide all') is discarded, not carried forward as pins", () => {
+    expect(migratePinnedCompanySelection([], allUids)).toBeNull();
+  });
+
+  it("an old selection naming every company ('show all', the old default) is discarded", () => {
+    expect(migratePinnedCompanySelection([...allUids], allUids)).toBeNull();
+  });
+
+  it("an old selection naming every company in a different order is still discarded", () => {
+    expect(
+      migratePinnedCompanySelection(["cmp_gamma", "cmp_acme", "cmp_beta"], allUids),
+    ).toBeNull();
+  });
+
+  it("a proper, non-empty subset is carried forward as the initial pin set", () => {
+    expect(migratePinnedCompanySelection(["cmp_acme"], allUids)).toEqual([
+      "cmp_acme",
+    ]);
+    expect(
+      migratePinnedCompanySelection(["cmp_acme", "cmp_beta"], allUids),
+    ).toEqual(["cmp_acme", "cmp_beta"]);
+  });
+
+  it("with an unknown company universe (allCompanyUids empty), a non-empty selection is kept as-is", () => {
+    expect(migratePinnedCompanySelection(["cmp_acme"], [])).toEqual([
+      "cmp_acme",
+    ]);
+  });
+});
+
+describe("mergeResolvedCompanyChannels (on-demand home-channel resolution)", () => {
+  function ch(channelId: string, over: Partial<Channel> = {}): Channel {
+    return { channelId, name: channelId, scope: "company", ...over };
+  }
+
+  it("adds a resolved channel that was not previously known", () => {
+    const merged = mergeResolvedCompanyChannels([ch("chn_a")], [ch("chn_b")]);
+    expect(merged.map((c) => c.channelId).sort()).toEqual(["chn_a", "chn_b"]);
+  });
+
+  it("a fresh resolved fetch overrides a stale existing entry for the same channel id", () => {
+    const merged = mergeResolvedCompanyChannels(
+      [ch("chn_a", { name: "stale" })],
+      [ch("chn_a", { name: "#indigo" })],
     );
-    expect(rows[0]?.homeRow?.channelId).toBe("acme");
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.name).toBe("#indigo");
+  });
+
+  it("an empty resolved list leaves existing channels untouched", () => {
+    const existing = [ch("chn_a")];
+    expect(mergeResolvedCompanyChannels(existing, [])).toEqual(existing);
+  });
+});
+
+describe("findCompanyHomeRow + on-demand resolution scenario coverage", () => {
+  it("field present: server-tagged isCompanyHome resolves directly", () => {
+    const rows = [homeRow("cmp_acme", "acme")];
+    expect(findCompanyHomeRow(rows, "cmp_acme")?.channelId).toBe("acme");
+  });
+
+  it("fallback match: normalizeChannel resolves isCompanyHome via the '#slug' fallback", () => {
+    const row = normalizeChannel(channel({ name: "#acme" }), {
+      companySlugByUid: new Map([["cmp_acme", "acme"]]),
+    });
+    expect(row.isCompanyHome).toBe(true);
+    expect(findCompanyHomeRow([row], "cmp_acme")?.channelId).toBe("chn_1");
+  });
+
+  it("fallback miss: no row matches, home channel must be resolved on demand (caller's job)", () => {
+    const rows = [teamRow("cmp_acme", "random-team")];
+    expect(findCompanyHomeRow(rows, "cmp_acme")).toBeNull();
+  });
+
+  it("multiple company-scope channels for one company: only the true home resolves", () => {
+    const rows = [
+      teamRow("cmp_acme", "marketing"),
+      teamRow("cmp_acme", "eng"),
+      homeRow("cmp_acme", "acme"),
+    ];
+    expect(findCompanyHomeRow(rows, "cmp_acme")?.channelId).toBe("acme");
   });
 });
 

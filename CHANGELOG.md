@@ -14,6 +14,16 @@ The release moves it under the version it ships in.
   home channel, and you can choose which companies show there.
 - Company home channels show Chat only — the Office tab is hidden for
   company channels for now (the underlying calling code is unchanged).
+- Fixed a bug where every company in the sidebar's "Companies" section showed
+  "no home channel yet," even companies with a working home channel. The
+  fallback check that resolves a home channel while the server catches up was
+  comparing the channel's raw name (which carries a leading "#", e.g.
+  "#indigo") against the bare company slug ("indigo") — they could never
+  match. The "Companies" section rows are now compact (name only, single
+  line) and default to your 3 most active companies by recent message
+  activity; pinning any company from the header's pin menu switches the
+  section to show only your pinned companies. A company whose home channel
+  isn't loaded yet is now resolved on demand instead of staying stuck.
 
 ## [0.10.321] — 2026-09-24
 
