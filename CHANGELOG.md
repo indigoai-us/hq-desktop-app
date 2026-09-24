@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Each company now has exactly one "company home" channel (Office tab,
+  settings, wallpaper). Other channels created inside a company are plain
+  team channels. A new "Companies" section in the sidebar pins each
+  company's home channel, and you can choose which companies show there.
+
 ## [0.10.320] — 2026-09-24
 
 - HQ no longer shows the setup screen on every launch for machines that are already configured and signed in. If a previous version left the setup flag set incorrectly, the app clears it on the next start.

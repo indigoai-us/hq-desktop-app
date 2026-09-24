@@ -993,6 +993,10 @@ export function directoryRowToChannel(
     channelId: row.channelId,
     name: row.name || prev?.name || "",
     scope: row.scope,
+    // `undefined` means the server hasn't rolled the field out on this row;
+    // keep whatever we already knew rather than silently reverting to the
+    // name-match fallback on every subsequent (unrelated) directory update.
+    isCompanyHome: row.isCompanyHome ?? prev?.isCompanyHome ?? false,
     companyUid: row.companyUid ?? null,
     companyName: row.companyName ?? prev?.companyName ?? null,
     // `undefined` on the row means "not served / not sent" — keep whatever we

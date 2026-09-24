@@ -59,6 +59,7 @@ const companyRow: ConversationRow = {
   channelId: "chn_acme",
   channelScope: "company",
   memberCount: 2,
+  isCompanyHome: true,
 };
 
 let host: HTMLDivElement;

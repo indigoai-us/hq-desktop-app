@@ -148,6 +148,17 @@ function asRow(value: unknown): ChannelDirectoryRow | null {
             ? nested.memberCount
             : members?.length,
     ...(members ? { members } : {}),
+    // Only set when the source carried an explicit boolean so an absent
+    // field never overwrites a known flag during reconciliation (the
+    // desktop-side name-match fallback then applies, same as the regular
+    // channel-list path).
+    ...(typeof rec.isCompanyHome === "boolean"
+      ? { isCompanyHome: rec.isCompanyHome }
+      : typeof rec.is_company_home === "boolean"
+        ? { isCompanyHome: rec.is_company_home }
+        : typeof nested?.isCompanyHome === "boolean"
+          ? { isCompanyHome: nested.isCompanyHome }
+          : {}),
   };
 }
 
