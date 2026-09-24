@@ -1474,6 +1474,7 @@
         includeContactsWithoutConversation: true,
         homeChannelIdByUid,
         peerDirectory,
+        selfUid: self?.uid ?? null,
       }),
       retiredEntities,
       liveCompanyUids,
