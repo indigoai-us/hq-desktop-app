@@ -19,6 +19,7 @@ The release moves it under the version it ships in.
 
 - Auto-sync memory alerts now include a bounded memory class and, for
   multi-process trees, the largest child's process type.
+- Added internal telemetry to diagnose cases where a machine that was already set up and signed in shows the sign-in or setup screen on startup. No new information about your account is collected; the report records which setup state the app read at launch (such as whether setup markers were present), whether a token file existed and how old it was in minutes (not its contents), and which screen appeared. This data goes only to the development team and is used to find the cause if the sign-in screen returns on a configured machine.
 
 ## [0.10.320] — 2026-09-24
 
