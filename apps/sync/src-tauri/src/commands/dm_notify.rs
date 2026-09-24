@@ -3052,12 +3052,14 @@ async fn detect_and_deliver_mentions(
             };
             let mut guard = watch.0.lock().unwrap_or_else(|p| p.into_inner());
             let last_seen = guard.last_event_by_channel.get(channel_id).cloned();
+            let watch_started_at = guard.watch_started_at;
             let messages = fetched.as_ref().map(|detail| detail.messages.as_slice());
             let (cursor, newer) = mention_cursor_after_fetch(
                 last_seen.as_deref(),
                 fetched.is_some(),
                 messages.unwrap_or(&[]),
                 now,
+                watch_started_at,
             );
             if fetched.is_none() {
                 failed_last.push((channel_id.clone(), channel_name.clone()));
