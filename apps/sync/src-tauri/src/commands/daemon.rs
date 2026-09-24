@@ -3042,6 +3042,16 @@ pub(crate) fn ensure_runner_report_dir(route: &str, generation: u64) -> Option<P
     let dir = hq_desktop_core::daemon::runner_report_dir(route, generation)?;
     match std::fs::create_dir_all(&dir) {
         Ok(()) => {
+            #[cfg(unix)]
+            if let Err(error) =
+                hq_desktop_core::runner_diagnostic_report::install_runner_memory_class_helper(&dir)
+            {
+                log(
+                    "daemon",
+                    &format!("could not install runner memory sampler: {}", error.kind()),
+                );
+                return None;
+            }
             // Bound disk: remove leaked sibling directories (from a teardown/kill
             // race that skipped the per-read deletion, or a prior session) so a
             // machine that faults repeatedly cannot accumulate reports.
@@ -5216,6 +5226,52 @@ enum RssSampleKind {
     Single,
 }
 
+/// Process identity reduced to a bounded class before it reaches telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatcherProcessKind {
+    Node,
+    Git,
+    PackageManager,
+    Shell,
+    Other,
+    Unknown,
+}
+
+impl WatcherProcessKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Git => "git",
+            Self::PackageManager => "package_manager",
+            Self::Shell => "shell",
+            Self::Other => "other",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn classify_watcher_process_kind(command_name: &str) -> WatcherProcessKind {
+    let first = command_name.split_whitespace().next().unwrap_or("");
+    let basename = first
+        .rsplit(|ch| ch == '/' || ch == '\\')
+        .next()
+        .unwrap_or(first)
+        .trim_end_matches(".exe")
+        .to_ascii_lowercase();
+    match basename.as_str() {
+        "node" | "nodejs" => WatcherProcessKind::Node,
+        "git" | "git-remote-http" | "git-remote-https" | "git-remote-ssh" | "git-remote-ext" => {
+            WatcherProcessKind::Git
+        }
+        name if name.starts_with("git-") => WatcherProcessKind::Git,
+        "npm" | "npx" | "pnpm" | "yarn" => WatcherProcessKind::PackageManager,
+        "sh" | "bash" | "zsh" | "fish" => WatcherProcessKind::Shell,
+        "" => WatcherProcessKind::Unknown,
+        _ => WatcherProcessKind::Other,
+    }
+}
+
 /// A scoped RSS sample plus, for a comparable whole-tree (`Tree`) sample, the
 /// bounded decomposition a supervisor pre-empt attributes with: how many
 /// processes summed into the total and the largest single member. Both are `None`
@@ -5230,11 +5286,19 @@ struct ScopedRssSample {
     kind: RssSampleKind,
     tree_pid_count: Option<u32>,
     tree_largest_member_kb: Option<u64>,
-    /// The PID of the largest single tree member, for a comparable `Tree` sample on
-    /// a platform with a live-signal report path (POSIX). The supervisor signals
-    /// this PID for a memory-class decomposition just before a footprint pre-empt
-    /// (HQ-DESKTOP-60). `None` for a `Single` fallback and on the Windows job path.
-    tree_largest_member_pid: Option<u32>,
+    /// PID of the largest Node process in the sampled tree. The supervisor targets
+    /// this process for Node's signal report rather than signaling a larger `git`
+    /// or other helper child that cannot produce one.
+    tree_largest_node_member_pid: Option<u32>,
+    /// RSS (KB) for the selected Node process, used to compare the bounded Node
+    /// report against resident memory when estimating native allocations.
+    tree_largest_node_member_kb: Option<u64>,
+    /// RSS (KB) for the registered root and largest descendant, plus that
+    /// descendant's normalized kind. These values let a pre-empt identify when a
+    /// child process, rather than the root runner, dominates the tree footprint.
+    tree_root_member_kb: Option<u64>,
+    tree_largest_child_member_kb: Option<u64>,
+    tree_largest_child_kind: Option<WatcherProcessKind>,
 }
 
 /// Shared crash-loop state across the spawn (`start_daemon`), the watcher Exit
@@ -5554,10 +5618,16 @@ struct SupervisorPreemptEvidence {
     /// Live memory-class decomposition read from a signal-triggered Node diagnostic
     /// report just before this pre-empt (HQ-DESKTOP-60), naming the memory class the
     /// tree total alone could not. Empty (all `None`) when no report was readable.
-    memory_class: hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    report_memory: hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    /// Outcome of the Node diagnostic report itself, kept distinct from the source
+    /// used to classify a supervisor-sampled child when the report is unavailable.
+    runner_report_source: hq_desktop_core::daemon::WatcherMemoryClassSource,
+    /// Dominant measured class from the Node report or the process-tree sample.
+    memory_class: hq_desktop_core::daemon::WatcherMemoryClass,
     /// Why the memory-class decomposition is or is not present — a fixed-vocabulary
     /// token so an absent report degrades honestly instead of guessing.
     memory_class_source: hq_desktop_core::daemon::WatcherMemoryClassSource,
+    largest_child_kind: Option<WatcherProcessKind>,
     /// Why the rate-aware projection did or did not arm on the pre-empt sample — the
     /// re-scoped gate's verdict, so a pre-empt is self-describing on the wire
     /// (HQ-DESKTOP-60).
@@ -5575,68 +5645,192 @@ const SUPERVISOR_MEMORY_REPORT_WAIT: Duration = Duration::from_secs(2);
 #[cfg(unix)]
 const SUPERVISOR_MEMORY_REPORT_POLL: Duration = Duration::from_millis(50);
 
-/// Poll a report path to a hard `deadline` for a FRESH, readable memory-class
-/// decomposition, factored out of [`resolve_watcher_memory_class`] so the bounded
-/// read discipline is unit-testable without signalling a live PID (HQ-DESKTOP-60).
-/// A fresh-but-INCOMPLETE (mid-write) report is retried to the deadline rather than
-/// recorded as terminally unreadable — r1's bug, which lost the decomposition on
-/// 100% of post-fix occurrences. It ends early ONLY on a present class
-/// (`report_read`) or a COMPLETE document with no class (`report_unreadable`); a
-/// report that appeared but never completed within the window degrades to
-/// `report_never_completed`, distinct from one that never appeared (`report_absent`).
-/// Never blocks past `deadline`.
+/// Poll the Node diagnostic report and its bounded ArrayBuffer sidecar to the same
+/// hard deadline. The sidecar reads only process.memoryUsage().arrayBuffers; the
+/// Node report remains the source of heap, external, and libuv values. A report
+/// outcome is returned separately from the source of any usable memory data.
 #[cfg(unix)]
 fn read_fresh_memory_class_within(
     report_path: &Path,
     before: Option<SystemTime>,
+    array_buffers_path: Option<&Path>,
+    array_buffers_before: Option<SystemTime>,
     deadline: Instant,
 ) -> (
     hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
     hq_desktop_core::daemon::WatcherMemoryClassSource,
 ) {
     use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
     use hq_desktop_core::runner_diagnostic_report::{
         parse_runner_report_memory_class, runner_report_is_complete, RunnerReportMemoryClass,
     };
-    let mut saw_fresh = false;
+    let mut report_memory = RunnerReportMemoryClass::default();
+    let mut array_buffers_mb = None;
+    let mut saw_fresh_report = false;
+    let mut report_done = false;
+    let mut report_source = Src::ReportAbsent;
+    let mut array_buffers_done = array_buffers_path.is_none();
+
     while Instant::now() < deadline {
-        if let Ok(meta) = std::fs::metadata(report_path) {
-            let modified = meta.modified().ok();
-            let is_fresh = match (before, modified) {
-                (Some(b), Some(m)) => m > b,
-                (None, Some(_)) => true,
-                _ => false,
-            };
-            if is_fresh {
-                saw_fresh = true;
-                if let Ok(bytes) = std::fs::read(report_path) {
-                    let mc = parse_runner_report_memory_class(&bytes);
-                    if mc.is_present() {
-                        // The report carried a memory class: done.
-                        return (mc, Src::ReportRead);
-                    }
-                    if runner_report_is_complete(&bytes) {
-                        // A COMPLETE document with no memory class: honestly empty, and
-                        // retrying will not help.
-                        return (RunnerReportMemoryClass::default(), Src::ReportUnreadable);
-                    }
-                    // Fresh but still mid-write: re-poll to the deadline.
+        if !report_done && file_is_fresh(report_path, before) {
+            saw_fresh_report = true;
+            if let Ok(bytes) = std::fs::read(report_path) {
+                let parsed = parse_runner_report_memory_class(&bytes);
+                if parsed.is_present() {
+                    report_memory = parsed;
+                    report_source = Src::ReportRead;
+                    report_done = true;
+                } else if runner_report_is_complete(&bytes) {
+                    report_source = Src::ReportUnreadable;
+                    report_done = true;
                 }
-                // A transient read error is treated the same as still-being-written.
             }
+        }
+
+        if !array_buffers_done {
+            if let Some(path) = array_buffers_path.filter(|p| {
+                file_is_fresh(p, array_buffers_before)
+            }) {
+                if let Ok(bytes) = std::fs::read(path) {
+                    let parsed = parse_runner_report_memory_class(&bytes);
+                    if let Some(value) = parsed.array_buffers_mb {
+                        array_buffers_mb = Some(value);
+                        array_buffers_done = true;
+                    } else if runner_report_is_complete(&bytes) {
+                        array_buffers_done = true;
+                    }
+                }
+            }
+        }
+
+        if report_done && array_buffers_done {
+            break;
         }
         thread::sleep(SUPERVISOR_MEMORY_REPORT_POLL);
     }
-    // The window closed. A fresh report that appeared but never completed is distinct
-    // from one that never appeared at all.
-    if saw_fresh {
-        (RunnerReportMemoryClass::default(), Src::ReportNeverCompleted)
+
+    if !report_done {
+        report_source = if saw_fresh_report {
+            Src::ReportNeverCompleted
+        } else {
+            Src::ReportAbsent
+        };
+    }
+    if report_memory.array_buffers_mb.is_none() {
+        report_memory.array_buffers_mb = array_buffers_mb;
+    }
+    let data_source = if report_memory.is_present() {
+        Src::ReportRead
     } else {
-        (RunnerReportMemoryClass::default(), Src::ReportAbsent)
+        report_source
+    };
+    (report_memory, data_source, report_source)
+}
+
+#[cfg(unix)]
+fn file_is_fresh(path: &Path, before: Option<SystemTime>) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    match (before, meta.modified().ok()) {
+        (Some(previous), Some(current)) => current > previous,
+        (None, Some(_)) => true,
+        _ => false,
     }
 }
 
-/// Best-effort: signal the largest tree member for a LIVE Node diagnostic report and
+/// Classify a failed Node report from the supervisor's bounded tree sample. A
+/// child is named as the class only when its sampled RSS is larger than the
+/// registered root's RSS; otherwise the sample supports `unknown`, not a guess.
+fn resolve_memory_class_from_sample(
+    sample: &ScopedRssSample,
+) -> hq_desktop_core::daemon::WatcherMemoryClass {
+    use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+    match (
+        sample.tree_root_member_kb,
+        sample.tree_largest_child_member_kb,
+    ) {
+        (Some(root_kb), Some(child_kb)) if child_kb > root_kb => Class::ChildRss,
+        _ => Class::Unknown,
+    }
+}
+
+/// Classify the largest measured component in a bounded Node report and its
+/// matching process RSS. `arrayBuffers` is a subset of external memory, so it is
+/// subtracted before comparing the remaining external allocation.
+fn resolve_memory_class_from_report(
+    sample: &ScopedRssSample,
+    report: &hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+) -> hq_desktop_core::daemon::WatcherMemoryClass {
+    use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+    let heap_used = report.js_heap_used_mb;
+    let array_buffers = report.array_buffers_mb;
+    let external = report
+        .external_memory_mb
+        .map(|total| total.saturating_sub(array_buffers.unwrap_or(0).min(total)));
+    let native = match (
+        sample.tree_largest_node_member_kb,
+        report.js_heap_total_mb,
+        report.external_memory_mb,
+    ) {
+        (Some(node_rss_kb), Some(heap_total), Some(external_total)) => {
+            Some((node_rss_kb / 1024).saturating_sub(heap_total.saturating_add(external_total)))
+        }
+        _ => None,
+    };
+
+    let report_components = [
+        (heap_used, Class::Heap),
+        (external, Class::External),
+        (array_buffers, Class::ArrayBuffers),
+        (native, Class::Native),
+    ];
+    let largest_report_component = report_components
+        .iter()
+        .filter_map(|(size, _)| *size)
+        .max()
+        .unwrap_or(0);
+    let largest_child_mb = match (
+        sample.kind,
+        sample.tree_root_member_kb,
+        sample.tree_largest_child_member_kb,
+        sample.tree_largest_child_kind,
+    ) {
+        (
+            RssSampleKind::Tree,
+            Some(root_kb),
+            Some(child_kb),
+            Some(kind),
+        ) if child_kb > root_kb && kind != WatcherProcessKind::Node => Some(child_kb / 1024),
+        _ => None,
+    };
+    if largest_child_mb.is_some_and(|child| child > largest_report_component) {
+        return Class::ChildRss;
+    }
+
+    report_components
+        .into_iter()
+        .filter_map(|(size, class)| size.filter(|mb| *mb > 0).map(|mb| (mb, class)))
+        .max_by_key(|(mb, _)| *mb)
+        .map(|(_, class)| class)
+        .unwrap_or(Class::Unknown)
+}
+
+#[cfg(unix)]
+fn largest_node_memory_report_pid(sample: &ScopedRssSample) -> Option<u32> {
+    sample.tree_largest_node_member_pid.filter(|pid| *pid != 0)
+}
+
+#[cfg(unix)]
+fn signal_largest_node_memory_report(
+    sample: &ScopedRssSample,
+    signal: impl FnOnce(u32) -> bool,
+) -> Option<bool> {
+    Some(signal(largest_node_memory_report_pid(sample)?))
+}
+
+/// Best-effort: signal the largest Node member for a LIVE diagnostic report and
 /// read the memory-class decomposition it writes, so a footprint pre-empt can NAME
 /// the memory class the tree total alone could not (HQ-DESKTOP-60). Strictly bounded
 /// by [`SUPERVISOR_MEMORY_REPORT_WAIT`] and best-effort: it never blocks the
@@ -5650,39 +5844,96 @@ fn resolve_watcher_memory_class(
     generation: u64,
 ) -> (
     hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
     hq_desktop_core::daemon::WatcherMemoryClassSource,
 ) {
     use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
-    use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass;
-    // Only a comparable tree sample yields a member PID to signal.
-    let Some(pid) = sample.tree_largest_member_pid.filter(|p| *p != 0) else {
-        return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
+    use hq_desktop_core::runner_diagnostic_report::{
+        RunnerReportMemoryClass, RUNNER_MEMORY_CLASS_FILENAME,
     };
+    let sampled_class = resolve_memory_class_from_sample(sample);
+    let sampled_source = if sample.kind == RssSampleKind::Tree {
+        Src::SupervisorSample
+    } else {
+        Src::ReportNotRequested
+    };
+    // Only a comparable tree sample yields a Node PID capable of writing the
+    // diagnostic report. The largest tree member may be a helper such as git.
+    if largest_node_memory_report_pid(sample).is_none() {
+        return (
+            RunnerReportMemoryClass::default(),
+            sampled_class,
+            sampled_source,
+            Src::ReportNotRequested,
+        );
+    }
     let Some(report_dir) = hq_desktop_core::daemon::runner_report_dir("watcher", generation) else {
-        return (RunnerReportMemoryClass::default(), Src::ReportNotRequested);
+        return (
+            RunnerReportMemoryClass::default(),
+            sampled_class,
+            sampled_source,
+            Src::ReportNotRequested,
+        );
     };
-    let report_path =
-        report_dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME);
-    // The report's modification time BEFORE signalling, so a fresh signal report is
-    // told apart from any stale file at the shared filename.
+    let report_path = report_dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME);
+    let array_buffers_path = report_dir.join(RUNNER_MEMORY_CLASS_FILENAME);
+    // Capture both file times before signalling so stale per-generation contents
+    // cannot be mistaken for this pre-emption's samples.
     let before = std::fs::metadata(&report_path)
         .and_then(|m| m.modified())
         .ok();
-    // Send Node's report signal (default SIGUSR2) to the largest member. Best-effort:
-    // an ESRCH (already exited) or EPERM just degrades to ReportAbsent.
-    let signalled = nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGUSR2,
-    )
-    .is_ok();
+    let array_buffers_before = std::fs::metadata(&array_buffers_path)
+        .and_then(|m| m.modified())
+        .ok();
+    // Send Node's report signal (default SIGUSR2) to the largest Node member,
+    // even when a larger non-Node tree member (such as git) cannot write the report.
+    // Best-effort: ESRCH (already exited) or EPERM falls back to the tree sample.
+    let Some(signalled) = signal_largest_node_memory_report(sample, |pid| {
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGUSR2,
+        )
+        .is_ok()
+    }) else {
+        return (
+            RunnerReportMemoryClass::default(),
+            sampled_class,
+            sampled_source,
+            Src::ReportNotRequested,
+        );
+    };
     if !signalled {
-        return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
+        return (
+            RunnerReportMemoryClass::default(),
+            sampled_class,
+            sampled_source,
+            Src::ReportAbsent,
+        );
     }
-    // Poll for a FRESH report to the hard-bounded deadline; never block beyond it.
-    // The bounded read discipline (retry a mid-write report, name a never-completed
-    // one honestly) lives in the unit-testable helper.
     let deadline = Instant::now() + SUPERVISOR_MEMORY_REPORT_WAIT;
-    read_fresh_memory_class_within(&report_path, before, deadline)
+    let (report, data_source, report_source) = read_fresh_memory_class_within(
+        &report_path,
+        before,
+        Some(&array_buffers_path),
+        array_buffers_before,
+        deadline,
+    );
+    if report.is_present() {
+        let class = resolve_memory_class_from_report(sample, &report);
+        let class_source = if class == hq_desktop_core::daemon::WatcherMemoryClass::ChildRss {
+            Src::SupervisorSample
+        } else {
+            Src::ReportRead
+        };
+        (report, class, class_source, report_source)
+    } else if sample.kind == RssSampleKind::Tree {
+        // Keep the report failure outcome separately while using the supervisor's
+        // pre-termination sample to classify a dominant child process.
+        (report, sampled_class, Src::SupervisorSample, report_source)
+    } else {
+        (report, sampled_class, data_source, report_source)
+    }
 }
 
 /// Windows (and any non-signal platform) has no live-signal report path, so the
@@ -5694,10 +5945,15 @@ fn resolve_watcher_memory_class(
     _generation: u64,
 ) -> (
     hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
     hq_desktop_core::daemon::WatcherMemoryClassSource,
 ) {
+    use hq_desktop_core::daemon::WatcherMemoryClass as Class;
     (
         hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass::default(),
+        Class::Unknown,
+        hq_desktop_core::daemon::WatcherMemoryClassSource::ReportUnsupportedPlatform,
         hq_desktop_core::daemon::WatcherMemoryClassSource::ReportUnsupportedPlatform,
     )
 }
@@ -5763,16 +6019,16 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
         None => sentry::protocol::Value::String(String::new()),
     };
     // Named memory-class decomposition (HQ-DESKTOP-60): the JS old-space total/used,
-    // the inferred non-heap excess measured as tree RSS minus the reported JS heap
-    // total (a real measurement, unlike the rss-minus-declared-cap proxy above), and
-    // the active libuv handle count. Absent fields ship as `""`; the source token
-    // records exactly why an empty decomposition is empty.
-    let mc = evidence.memory_class;
+    // external allocations, array buffers, the inferred non-heap excess, and active
+    // libuv handles. Absent fields ship as `""`; the source token records exactly
+    // why an empty decomposition is empty.
+    let mc = evidence.report_memory;
     let inferred_non_heap_mb = mc
         .js_heap_total_mb
         .map(|total| footprint_mb.saturating_sub(total));
-    let lifecycle = crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
-    let tags = [
+    let lifecycle =
+        crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
+    let mut tags = vec![
         ("exit_class", "runner_memory".to_string()),
         ("sync_route", "watcher".to_string()),
         (
@@ -5801,15 +6057,26 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
         ),
         ("watcher_tree_process_count", process_count),
         ("watcher_footprint_growth_bucket", growth_bucket),
+        ("memory_class", evidence.memory_class.as_str().to_string()),
         (
             "watcher_memory_class_source",
             evidence.memory_class_source.as_str().to_string(),
+        ),
+        (
+            "watcher_memory_report_source",
+            evidence.runner_report_source.as_str().to_string(),
         ),
         (
             "watcher_projection_arm_reason",
             evidence.projection_arm_reason.as_str().to_string(),
         ),
     ];
+    if matches!(evidence.tree_pid_count, Some(count) if count > 1) {
+        let child_kind = evidence
+            .largest_child_kind
+            .unwrap_or(WatcherProcessKind::Unknown);
+        tags.push(("largest_child_kind", child_kind.as_str().to_string()));
+    }
     let extras = [
         ("runner_heap_ceiling_mb", num(u64::from(heap_ceiling.mb))),
         ("watcher_tree_rss_mb", num(footprint_mb)),
@@ -5828,7 +6095,12 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
         ),
         ("watcher_js_heap_total_mb", opt_int(mc.js_heap_total_mb)),
         ("watcher_js_heap_used_mb", opt_int(mc.js_heap_used_mb)),
-        ("watcher_inferred_non_heap_mb", opt_int(inferred_non_heap_mb)),
+        ("watcher_js_external_mb", opt_int(mc.external_memory_mb)),
+        ("watcher_js_array_buffers_mb", opt_int(mc.array_buffers_mb)),
+        (
+            "watcher_inferred_non_heap_mb",
+            opt_int(inferred_non_heap_mb),
+        ),
         (
             "watcher_libuv_active_handles",
             opt_int(mc.libuv_active_handles),
@@ -5881,7 +6153,8 @@ fn watch_watcher_footprint_slice(sample_pid: Option<u32>) -> (bool, u64) {
     );
     // Best-effort, hard-bounded live memory-class decomposition BEFORE terminate, so
     // the pre-empt names the memory class the tree total alone could not.
-    let (memory_class, memory_class_source) = resolve_watcher_memory_class(&sample, generation);
+    let (report_memory, memory_class, memory_class_source, runner_report_source) =
+        resolve_watcher_memory_class(&sample, generation);
     // Record the attributed memory outcome and set the respawn backoff BEFORE the
     // deliberate terminate: its exit is suppressed as an app teardown, so it would
     // otherwise emit no event and leave the runaway to be hot-respawned every ~60s.
@@ -5891,8 +6164,11 @@ fn watch_watcher_footprint_slice(sample_pid: Option<u32>) -> (bool, u64) {
         tree_largest_member_kb: sample.tree_largest_member_kb,
         prev_sample_kb: footprint.prev_comparable_sample_kb,
         gap_secs: footprint.sample_gap_secs,
+        report_memory,
+        runner_report_source,
         memory_class,
         memory_class_source,
+        largest_child_kind: sample.tree_largest_child_kind,
         projection_arm_reason: footprint.arm_reason,
     });
     terminate_daemon_generation_once(generation, DaemonFailureCategory::RunnerMemory);
@@ -6011,14 +6287,22 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
             kind: RssSampleKind::Tree,
             tree_pid_count: Some(tree.pid_count),
             tree_largest_member_kb: Some(tree.largest_member_kb),
-            tree_largest_member_pid: Some(tree.largest_member_pid),
+            tree_largest_node_member_pid: tree.largest_node_member_pid,
+            tree_largest_node_member_kb: tree.largest_node_member_kb,
+            tree_root_member_kb: Some(tree.root_member_kb),
+            tree_largest_child_member_kb: tree.largest_child_member_kb,
+            tree_largest_child_kind: tree.largest_child_kind,
         }),
         None => sample_pid_rss_kb(pid).map(|kb| ScopedRssSample {
             kb,
             kind: RssSampleKind::Single,
             tree_pid_count: None,
             tree_largest_member_kb: None,
-            tree_largest_member_pid: None,
+            tree_largest_node_member_pid: None,
+            tree_largest_node_member_kb: None,
+            tree_root_member_kb: None,
+            tree_largest_child_member_kb: None,
+            tree_largest_child_kind: None,
         }),
     }
 }
@@ -6046,10 +6330,14 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
             kind: RssSampleKind::Tree,
             tree_pid_count: None,
             tree_largest_member_kb: None,
-            // Windows withholds the per-member decomposition, so there is no largest
-            // member PID to signal; the memory-class source degrades to the
+            // Windows withholds the per-member decomposition, so there is no Node
+            // PID to target; the memory-class source degrades to the
             // unsupported-platform sentinel.
-            tree_largest_member_pid: None,
+            tree_largest_node_member_pid: None,
+            tree_largest_node_member_kb: None,
+            tree_root_member_kb: None,
+            tree_largest_child_member_kb: None,
+            tree_largest_child_kind: None,
         });
     }
     // ANY failure — no generation, no job handle, query failure, the observed root
@@ -6062,7 +6350,11 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
         kind: RssSampleKind::Single,
         tree_pid_count: None,
         tree_largest_member_kb: None,
-        tree_largest_member_pid: None,
+        tree_largest_node_member_pid: None,
+        tree_largest_node_member_kb: None,
+        tree_root_member_kb: None,
+        tree_largest_child_member_kb: None,
+        tree_largest_child_kind: None,
     })
 }
 
@@ -6125,15 +6417,17 @@ struct TreeRssSample {
     total_kb: u64,
     pid_count: u32,
     largest_member_kb: u64,
-    /// PID of the largest single member, so a pre-empt can signal it for a
-    /// memory-class decomposition (HQ-DESKTOP-60). `0` only when no member had a
-    /// positive RSS.
-    largest_member_pid: u32,
+    root_member_kb: u64,
+    largest_node_member_kb: Option<u64>,
+    largest_node_member_pid: Option<u32>,
+    largest_child_member_kb: Option<u64>,
+    largest_child_kind: Option<WatcherProcessKind>,
 }
 
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
-/// `ps -eo pid=,ppid=,rss=` table, and decompose it into the PID count and the
-/// largest single member. Cycle-safe via a visited set. Returns `None` only when
+/// `ps -eo pid=,ppid=,rss=,comm=` table, and decompose it into the PID count,
+/// largest member, largest Node process, and largest descendant kind. Cycle-safe
+/// via a visited set. Returns `None` only when
 /// `root` is absent from the table, so the caller falls back to a single-PID
 /// sample rather than reporting a wrong sum. The `None`-on-missing-root contract
 /// is byte-identical to before, keeping the `Single` fallback unchanged. Pure so
@@ -6143,6 +6437,7 @@ struct TreeRssSample {
 fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     use std::collections::{HashMap, HashSet, VecDeque};
     let mut rss_by_pid: HashMap<u32, u64> = HashMap::new();
+    let mut kind_by_pid: HashMap<u32, WatcherProcessKind> = HashMap::new();
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for line in ps_table.lines() {
         let mut columns = line.split_whitespace();
@@ -6150,12 +6445,14 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
         else {
             continue;
         };
+        let kind = classify_watcher_process_kind(columns.next().unwrap_or(""));
         let (Ok(pid), Ok(ppid), Ok(kb)) =
             (pid.parse::<u32>(), ppid.parse::<u32>(), kb.parse::<u64>())
         else {
             continue;
         };
         rss_by_pid.insert(pid, kb);
+        kind_by_pid.insert(pid, kind);
         children.entry(ppid).or_default().push(pid);
     }
     if !rss_by_pid.contains_key(&root) {
@@ -6164,7 +6461,10 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     let mut total = 0_u64;
     let mut pid_count = 0_u32;
     let mut largest_member_kb = 0_u64;
-    let mut largest_member_pid = 0_u32;
+    let mut largest_node_member_kb = 0_u64;
+    let mut largest_node_member_pid = None;
+    let mut largest_child_member_kb = 0_u64;
+    let mut largest_child_kind = None;
     let mut visited: HashSet<u32> = HashSet::new();
     let mut queue: VecDeque<u32> = VecDeque::from([root]);
     while let Some(pid) = queue.pop_front() {
@@ -6174,12 +6474,22 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
         let member_kb = rss_by_pid.get(&pid).copied().unwrap_or(0);
         total = total.saturating_add(member_kb);
         pid_count = pid_count.saturating_add(1);
-        // Track the largest member AND its PID so a pre-empt can signal it. Strict
-        // `>` keeps the first PID seen on a tie, which is deterministic for a given
-        // `ps` ordering.
+        // Strict `>` keeps the first largest member on a tie, deterministic for a
+        // given `ps` ordering.
         if member_kb > largest_member_kb {
             largest_member_kb = member_kb;
-            largest_member_pid = pid;
+        }
+        let process_kind = kind_by_pid
+            .get(&pid)
+            .copied()
+            .unwrap_or(WatcherProcessKind::Unknown);
+        if process_kind == WatcherProcessKind::Node && member_kb > largest_node_member_kb {
+            largest_node_member_kb = member_kb;
+            largest_node_member_pid = Some(pid);
+        }
+        if pid != root && member_kb > largest_child_member_kb {
+            largest_child_member_kb = member_kb;
+            largest_child_kind = Some(process_kind);
         }
         if let Some(kids) = children.get(&pid) {
             queue.extend(kids.iter().copied());
@@ -6189,19 +6499,25 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
         total_kb: total,
         pid_count,
         largest_member_kb,
-        largest_member_pid,
+        root_member_kb: rss_by_pid.get(&root).copied().unwrap_or(0),
+        largest_node_member_kb: largest_node_member_pid
+            .and_then(|pid| rss_by_pid.get(&pid).copied()),
+        largest_node_member_pid,
+        largest_child_member_kb: (pid_count > 1).then_some(largest_child_member_kb),
+        largest_child_kind,
     })
 }
 
 /// Best-effort whole-tree RSS decomposition for the registered watcher PID: one
-/// bounded `ps -eo pid=,ppid=,rss=` invocation summed by [`sum_pid_tree_rss_kb`].
+/// bounded `ps -eo pid=,ppid=,rss=,comm=` invocation summed by
+/// [`sum_pid_tree_rss_kb`].
 /// `None` on spawn/exit/parse failure or a missing root, so the caller falls back
 /// to the single-PID sample.
 #[cfg(not(target_os = "windows"))]
 fn sample_pid_tree_rss_kb(root: u32) -> Option<TreeRssSample> {
     let mut cmd = std::process::Command::new("ps");
     paths::no_window(&mut cmd);
-    let out = cmd.args(["-eo", "pid=,ppid=,rss="]).output().ok()?;
+    let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -12953,18 +13269,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn sum_pid_tree_rss_kb_sums_descendants_and_handles_edges() {
-        // pid ppid rss — root=100 with children 200/300 and grandchild 400.
-        let table = "100 1 10\n200 100 20\n300 100 30\n400 200 40\n999 1 99\n";
+        // pid ppid rss command — root=100 with children 200/300 and grandchild 400.
+        let table =
+            "100 1 10 node\n200 100 20 node\n300 100 30 git\n400 200 40 node\n999 1 99 git\n";
         // root + 200 + 300 + 400 = 100 KB over 4 PIDs; the unrelated 999 is excluded,
-        // and the largest single member is 400's 40 KB (so its PID is what a pre-empt
-        // would signal for a memory-class report).
+        // and the largest single member is 400's 40 KB.
         assert_eq!(
             sum_pid_tree_rss_kb(table, 100),
             Some(TreeRssSample {
                 total_kb: 100,
                 pid_count: 4,
                 largest_member_kb: 40,
-                largest_member_pid: 400
+                root_member_kb: 10,
+                largest_node_member_kb: Some(40),
+                largest_node_member_pid: Some(400),
+                largest_child_member_kb: Some(40),
+                largest_child_kind: Some(WatcherProcessKind::Node),
             })
         );
         // A leaf sums only itself.
@@ -12974,7 +13294,11 @@ mod tests {
                 total_kb: 40,
                 pid_count: 1,
                 largest_member_kb: 40,
-                largest_member_pid: 400
+                root_member_kb: 40,
+                largest_node_member_kb: Some(40),
+                largest_node_member_pid: Some(400),
+                largest_child_member_kb: None,
+                largest_child_kind: None,
             })
         );
         // A missing root -> None, which drives the single-PID fallback unchanged.
@@ -12987,23 +13311,301 @@ mod tests {
                 total_kb: 10,
                 pid_count: 1,
                 largest_member_kb: 10,
-                largest_member_pid: 100
+                root_member_kb: 10,
+                largest_node_member_kb: None,
+                largest_node_member_pid: None,
+                largest_child_member_kb: None,
+                largest_child_kind: None,
             })
         );
     }
 
     #[cfg(unix)]
     #[test]
+    fn sum_pid_tree_rss_kb_targets_node_and_records_largest_child_kind() {
+        // The largest process is git, which cannot write Node's report. Preserve its
+        // bounded kind while selecting the Node process as the signal target.
+        let table = "100 1 10 /opt/node\n200 100 90 git\n300 100 80 node\n";
+        let sample = sum_pid_tree_rss_kb(table, 100).expect("root is present");
+        assert_eq!(sample.total_kb, 180);
+        assert_eq!(sample.pid_count, 3);
+        assert_eq!(sample.largest_member_kb, 90);
+        assert_eq!(sample.largest_node_member_pid, Some(300));
+        assert_eq!(sample.largest_node_member_kb, Some(80));
+        assert_eq!(sample.largest_child_member_kb, Some(90));
+        assert_eq!(sample.largest_child_kind, Some(WatcherProcessKind::Git));
+        assert_eq!(WatcherProcessKind::Git.as_str(), "git");
+        for helper in ["git-lfs", "git-index-pack", "git-pack-objects"] {
+            assert_eq!(
+                classify_watcher_process_kind(helper),
+                WatcherProcessKind::Git
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_memory_class_uses_supervisor_child_sample_when_child_dominates() {
+        use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+
+        let sample = ScopedRssSample {
+            kb: 3_000 * 1024,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(2),
+            tree_largest_member_kb: Some(2_000 * 1024),
+            tree_largest_node_member_pid: Some(100),
+            tree_largest_node_member_kb: Some(1_000 * 1024),
+            tree_root_member_kb: Some(1_000 * 1024),
+            tree_largest_child_member_kb: Some(2_000 * 1024),
+            tree_largest_child_kind: Some(WatcherProcessKind::Git),
+        };
+        assert_eq!(resolve_memory_class_from_sample(&sample), Class::ChildRss);
+
+        let root_dominates = ScopedRssSample {
+            tree_largest_child_member_kb: Some(900 * 1024),
+            ..sample
+        };
+        assert_eq!(
+            resolve_memory_class_from_sample(&root_dominates),
+            Class::Unknown
+        );
+    }
+
+    #[test]
+    fn watcher_memory_class_uses_largest_measured_node_report_component() {
+        use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+        use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass as Report;
+
+        let classify = |node_rss_mb: u64, report: Report| {
+            let sample = ScopedRssSample {
+                kb: node_rss_mb * 1024,
+                kind: RssSampleKind::Tree,
+                tree_pid_count: Some(2),
+                tree_largest_member_kb: Some(node_rss_mb * 1024),
+                tree_largest_node_member_pid: Some(100),
+                tree_largest_node_member_kb: Some(node_rss_mb * 1024),
+                tree_root_member_kb: Some(node_rss_mb * 1024),
+                tree_largest_child_member_kb: Some(100 * 1024),
+                tree_largest_child_kind: Some(WatcherProcessKind::Git),
+            };
+            resolve_memory_class_from_report(&sample, &report)
+        };
+
+        assert_eq!(
+            classify(
+                1_200,
+                Report {
+                    js_heap_total_mb: Some(1_000),
+                    js_heap_used_mb: Some(800),
+                    external_memory_mb: Some(100),
+                    array_buffers_mb: Some(20),
+                    libuv_active_handles: Some(12),
+                }
+            ),
+            Class::Heap
+        );
+        assert_eq!(
+            classify(
+                1_600,
+                Report {
+                    js_heap_total_mb: Some(500),
+                    js_heap_used_mb: Some(300),
+                    external_memory_mb: Some(700),
+                    array_buffers_mb: Some(200),
+                    libuv_active_handles: None,
+                }
+            ),
+            Class::External
+        );
+        assert_eq!(
+            classify(
+                1_600,
+                Report {
+                    js_heap_total_mb: Some(500),
+                    js_heap_used_mb: Some(400),
+                    external_memory_mb: Some(900),
+                    array_buffers_mb: Some(800),
+                    libuv_active_handles: None,
+                }
+            ),
+            Class::ArrayBuffers
+        );
+        assert_eq!(
+            classify(
+                2_000,
+                Report {
+                    js_heap_total_mb: Some(500),
+                    js_heap_used_mb: Some(400),
+                    external_memory_mb: Some(200),
+                    array_buffers_mb: Some(50),
+                    libuv_active_handles: None,
+                }
+            ),
+            Class::Native
+        );
+
+        let child_dominates_report = ScopedRssSample {
+            kb: 2_100 * 1024,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(2),
+            tree_largest_member_kb: Some(2_000 * 1024),
+            tree_largest_node_member_pid: Some(100),
+            tree_largest_node_member_kb: Some(1_200 * 1024),
+            tree_root_member_kb: Some(100 * 1024),
+            tree_largest_child_member_kb: Some(2_000 * 1024),
+            tree_largest_child_kind: Some(WatcherProcessKind::Git),
+        };
+        assert_eq!(
+            resolve_memory_class_from_report(
+                &child_dominates_report,
+                &Report {
+                    js_heap_total_mb: Some(1_000),
+                    js_heap_used_mb: Some(800),
+                    external_memory_mb: Some(100),
+                    array_buffers_mb: None,
+                    libuv_active_handles: None,
+                }
+            ),
+            Class::ChildRss
+        );
+    }
+
+    #[test]
+    fn node_child_rss_does_not_override_available_report_components() {
+        use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+        use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass as Report;
+
+        let sample = ScopedRssSample {
+            kb: 1_200 * 1024,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(2),
+            tree_largest_member_kb: Some(1_000 * 1024),
+            tree_largest_node_member_pid: Some(300),
+            tree_largest_node_member_kb: Some(1_000 * 1024),
+            tree_root_member_kb: Some(200 * 1024),
+            tree_largest_child_member_kb: Some(1_000 * 1024),
+            tree_largest_child_kind: Some(WatcherProcessKind::Node),
+        };
+        let report = Report {
+            js_heap_total_mb: Some(900),
+            js_heap_used_mb: Some(800),
+            external_memory_mb: Some(100),
+            array_buffers_mb: Some(25),
+            libuv_active_handles: None,
+        };
+
+        assert_eq!(
+            resolve_memory_class_from_report(&sample, &report),
+            Class::Heap
+        );
+    }
+
+    #[test]
+    fn report_component_wins_when_non_node_child_exceeds_root_but_not_report() {
+        use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+        use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass as Report;
+
+        let sample = ScopedRssSample {
+            kb: 2_000 * 1024,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(2),
+            tree_largest_member_kb: Some(1_100 * 1024),
+            tree_largest_node_member_pid: Some(100),
+            tree_largest_node_member_kb: Some(1_000 * 1024),
+            tree_root_member_kb: Some(1_000 * 1024),
+            tree_largest_child_member_kb: Some(1_100 * 1024),
+            tree_largest_child_kind: Some(WatcherProcessKind::Git),
+        };
+        let report = Report {
+            js_heap_total_mb: None,
+            js_heap_used_mb: Some(1_200),
+            external_memory_mb: None,
+            array_buffers_mb: None,
+            libuv_active_handles: None,
+        };
+
+        assert_eq!(
+            resolve_memory_class_from_report(&sample, &report),
+            Class::Heap
+        );
+    }
+
+    #[test]
+    fn zero_report_components_classify_as_unknown() {
+        use hq_desktop_core::daemon::WatcherMemoryClass as Class;
+        use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass as Report;
+
+        let sample = ScopedRssSample {
+            kb: 500 * 1024,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(2),
+            tree_largest_member_kb: Some(500 * 1024),
+            tree_largest_node_member_pid: Some(100),
+            tree_largest_node_member_kb: None,
+            tree_root_member_kb: Some(500 * 1024),
+            tree_largest_child_member_kb: Some(400 * 1024),
+            tree_largest_child_kind: Some(WatcherProcessKind::Git),
+        };
+        let report = Report {
+            js_heap_total_mb: None,
+            js_heap_used_mb: Some(0),
+            external_memory_mb: Some(0),
+            array_buffers_mb: Some(0),
+            libuv_active_handles: None,
+        };
+
+        assert_eq!(
+            resolve_memory_class_from_report(&sample, &report),
+            Class::Unknown
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_report_signal_targets_largest_node_when_git_child_is_larger() {
+        let tree =
+            sum_pid_tree_rss_kb("100 1 10 /opt/node\n200 100 90 git\n300 100 80 node\n", 100)
+                .expect("root is present");
+        let sample = ScopedRssSample {
+            kb: tree.total_kb,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(tree.pid_count),
+            tree_largest_member_kb: Some(tree.largest_member_kb),
+            tree_largest_node_member_pid: tree.largest_node_member_pid,
+            tree_largest_node_member_kb: tree.largest_node_member_kb,
+            tree_root_member_kb: Some(tree.root_member_kb),
+            tree_largest_child_member_kb: tree.largest_child_member_kb,
+            tree_largest_child_kind: tree.largest_child_kind,
+        };
+        assert_eq!(sample.tree_largest_member_kb, Some(90));
+        assert_eq!(sample.tree_largest_node_member_kb, Some(80));
+
+        let mut signalled_pid = None;
+        assert_eq!(
+            signal_largest_node_memory_report(&sample, |pid| {
+                signalled_pid = Some(pid);
+                true
+            }),
+            Some(true)
+        );
+        assert_eq!(signalled_pid, Some(300));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn sum_pid_tree_rss_kb_is_cycle_safe() {
         // A pathological ppid cycle must terminate and count each PID once.
-        let table = "100 200 10\n200 100 20\n";
+        let table = "100 200 10 node\n200 100 20 git\n";
         assert_eq!(
             sum_pid_tree_rss_kb(table, 100),
             Some(TreeRssSample {
                 total_kb: 30,
                 pid_count: 2,
                 largest_member_kb: 20,
-                largest_member_pid: 200
+                root_member_kb: 10,
+                largest_node_member_kb: Some(10),
+                largest_node_member_pid: Some(100),
+                largest_child_member_kb: Some(20),
+                largest_child_kind: Some(WatcherProcessKind::Git),
             })
         );
     }
@@ -13030,24 +13632,42 @@ mod tests {
 
         // 1) A complete report already carrying a class -> report_read immediately.
         std::fs::write(&path, &complete).unwrap();
-        let (mc, src) =
-            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
-        assert_eq!(src, Src::ReportRead);
+        let (mc, data_source, report_source) = read_fresh_memory_class_within(
+            &path,
+            None,
+            None,
+            None,
+            Instant::now() + Duration::from_secs(2),
+        );
+        assert_eq!(data_source, Src::ReportRead);
+        assert_eq!(report_source, Src::ReportRead);
         assert_eq!(mc.js_heap_total_mb, Some(3584));
 
         // 2) A complete document with no memory class -> report_unreadable (honestly empty).
         std::fs::write(&path, br#"{"header":{"trigger":"Signal"}}"#).unwrap();
-        let (_, src) =
-            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
-        assert_eq!(src, Src::ReportUnreadable);
+        let (_, data_source, report_source) = read_fresh_memory_class_within(
+            &path,
+            None,
+            None,
+            None,
+            Instant::now() + Duration::from_secs(2),
+        );
+        assert_eq!(data_source, Src::ReportUnreadable);
+        assert_eq!(report_source, Src::ReportUnreadable);
 
         // 3) A report that stays truncated until the deadline -> report_never_completed,
         //    NOT report_unreadable (r1's bug), and it never blocks past the deadline.
         std::fs::write(&path, &complete.as_bytes()[..complete.len() / 2]).unwrap();
         let start = Instant::now();
-        let (_, src) =
-            read_fresh_memory_class_within(&path, None, start + Duration::from_millis(300));
-        assert_eq!(src, Src::ReportNeverCompleted);
+        let (_, data_source, report_source) = read_fresh_memory_class_within(
+            &path,
+            None,
+            None,
+            None,
+            start + Duration::from_millis(300),
+        );
+        assert_eq!(data_source, Src::ReportNeverCompleted);
+        assert_eq!(report_source, Src::ReportNeverCompleted);
         assert!(start.elapsed() < Duration::from_secs(2), "must not block past the deadline");
 
         // 4) Mid-write on first observation, complete before the deadline -> report_read.
@@ -13060,18 +13680,99 @@ mod tests {
             f.write_all(complete_writer.as_bytes()).unwrap();
             f.flush().unwrap();
         });
-        let (mc, src) =
-            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
+        let (mc, data_source, report_source) = read_fresh_memory_class_within(
+            &path,
+            None,
+            None,
+            None,
+            Instant::now() + Duration::from_secs(2),
+        );
         writer.join().unwrap();
-        assert_eq!(src, Src::ReportRead, "a mid-write report that completes must resolve to report_read");
+        assert_eq!(data_source, Src::ReportRead, "a mid-write report that completes must resolve to report_read");
+        assert_eq!(report_source, Src::ReportRead);
         assert_eq!(mc.js_heap_total_mb, Some(3584));
 
         // 5) No fresh report ever appears -> report_absent (distinct from never-completed).
         let empty_dir = TempDir::new().unwrap();
         let missing = empty_dir.path().join("nope.json");
-        let (_, src) =
-            read_fresh_memory_class_within(&missing, None, Instant::now() + Duration::from_millis(150));
-        assert_eq!(src, Src::ReportAbsent);
+        let (_, data_source, report_source) = read_fresh_memory_class_within(
+            &missing,
+            None,
+            None,
+            None,
+            Instant::now() + Duration::from_millis(150),
+        );
+        assert_eq!(data_source, Src::ReportAbsent);
+        assert_eq!(report_source, Src::ReportAbsent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runner_memory_sidecar_reads_array_buffers_from_live_node() {
+        use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
+        use hq_desktop_core::runner_diagnostic_report::{
+            install_runner_memory_class_helper, RUNNER_MEMORY_CLASS_FILENAME,
+        };
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let helper =
+            install_runner_memory_class_helper(dir.path()).expect("install the embedded sampler");
+        let ready_path = dir.path().join("ready");
+        let node_script = "const buffer = Buffer.alloc(16 * 1024 * 1024); require('node:fs').writeFileSync(process.argv[1], 'ready'); setInterval(() => buffer[0], 1000);";
+        let mut child = ChildGuard(
+            Command::new("node")
+                .arg("--report-on-signal")
+                .arg(format!("--report-directory={}", dir.path().display()))
+                .arg("--report-filename=runner-fatal.json")
+                .arg("--require")
+                .arg(helper)
+                .arg("-e")
+                .arg(node_script)
+                .arg(&ready_path)
+                .spawn()
+                .expect("Node is installed for the desktop test suite"),
+        );
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        while !ready_path.exists() && Instant::now() < ready_deadline {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "Node fixture exited before registering its signal handler"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ready_path.exists(), "Node fixture should become ready");
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(child.0.id() as i32),
+            nix::sys::signal::Signal::SIGUSR2,
+        )
+        .expect("send the same signal the supervisor uses");
+
+        let report_path = dir.path().join("runner-fatal.json");
+        let array_buffers_path = dir.path().join(RUNNER_MEMORY_CLASS_FILENAME);
+        let (report, data_source, report_source) = read_fresh_memory_class_within(
+            &report_path,
+            None,
+            Some(&array_buffers_path),
+            None,
+            Instant::now() + Duration::from_secs(2),
+        );
+        assert_eq!(data_source, Src::ReportRead);
+        assert_eq!(report_source, Src::ReportRead);
+        assert!(
+            report.array_buffers_mb.unwrap_or(0) >= 16,
+            "process.memoryUsage().arrayBuffers should include the retained Buffer"
+        );
+        assert!(report_path.is_file(), "Node's signal report still gets written");
     }
 
     #[cfg(unix)]
