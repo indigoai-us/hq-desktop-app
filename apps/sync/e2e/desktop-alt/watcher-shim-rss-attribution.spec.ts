@@ -111,14 +111,14 @@ describe('watcher shim RSS attribution — source contracts', () => {
     );
     expect(windowsResolve).toContain('WatcherMemoryClassSource::ReportUnsupportedPlatform');
     expect(windowsResolve).toContain('RunnerReportMemoryClass::default()');
-    // The Windows sample carries no largest-member PID to signal.
+    // The Windows sample carries no Node PID to signal.
     const windowsArm = sliceBetween(
       daemonSource,
       '#[cfg(target_os = "windows")]\nfn sample_watcher_rss_scoped(',
       '\n}\n',
       'windows sample_watcher_rss_scoped',
     );
-    expect(windowsArm).toContain('tree_largest_member_pid: None,');
+    expect(windowsArm).toContain('tree_largest_node_member_pid: None,');
   });
 
   it('keeps the non-Windows sampling path byte-identical (ps descendant sum)', () => {

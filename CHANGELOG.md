@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - HQ Sync tells you to verify your email before it can show pending company invites.
+- Auto-sync memory alerts now include a bounded memory class and, for
+  multi-process trees, the largest child's process type.
 
 ## [0.10.320] — 2026-09-24
 

@@ -1632,6 +1632,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // producer bug that shipped a path or fragment degrades to `[Filtered]`.
         "watcher_js_heap_total_mb"
         | "watcher_js_heap_used_mb"
+        | "watcher_js_external_mb"
+        | "watcher_js_array_buffers_mb"
         | "watcher_inferred_non_heap_mb"
         | "watcher_libuv_active_handles" => Some(value.is_empty() || value.parse::<u64>().is_ok()),
         // Why the memory-class decomposition is or is not present, so an absent report
@@ -1648,6 +1650,30 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "report_never_completed"
                 | "report_not_requested"
                 | "report_unsupported_platform"
+                | "supervisor_sample"
+        )),
+        // Outcome of the Node diagnostic report itself. Kept separately from the
+        // memory-class source so a supervisor sample does not hide report failure.
+        "watcher_memory_report_source" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_never_completed"
+                | "report_not_requested"
+                | "report_unsupported_platform"
+        )),
+        // Bounded, fixed-vocabulary result of the Node report or the supervisor's
+        // process-tree sample. No runtime names or user data are accepted.
+        "memory_class" => Some(matches!(
+            value,
+            "heap" | "external" | "array_buffers" | "child_rss" | "native" | "unknown"
+        )),
+        // Process type of the highest-RSS descendant, normalized by the producer to
+        // this closed set before the value reaches telemetry.
+        "largest_child_kind" => Some(matches!(
+            value,
+            "node" | "git" | "package_manager" | "shell" | "other" | "unknown"
         )),
         // Why the rate-aware footprint projection did or did not ARM on the pre-empt
         // sample (this reopen, HQ-DESKTOP-60), mirroring
@@ -5181,6 +5207,10 @@ mod tests {
             ("watcher_js_heap_total_mb", "3584"),
             ("watcher_js_heap_total_mb", ""),
             ("watcher_js_heap_used_mb", "3072"),
+            ("watcher_js_external_mb", "512"),
+            ("watcher_js_external_mb", ""),
+            ("watcher_js_array_buffers_mb", "256"),
+            ("watcher_js_array_buffers_mb", ""),
             ("watcher_inferred_non_heap_mb", "4365"),
             ("watcher_inferred_non_heap_mb", "0"),
             ("watcher_libuv_active_handles", "128"),
@@ -5191,6 +5221,28 @@ mod tests {
             ("watcher_memory_class_source", "report_never_completed"),
             ("watcher_memory_class_source", "report_not_requested"),
             ("watcher_memory_class_source", "report_unsupported_platform"),
+            ("watcher_memory_class_source", "supervisor_sample"),
+            ("watcher_memory_report_source", "report_read"),
+            ("watcher_memory_report_source", "report_absent"),
+            ("watcher_memory_report_source", "report_unreadable"),
+            ("watcher_memory_report_source", "report_never_completed"),
+            ("watcher_memory_report_source", "report_not_requested"),
+            (
+                "watcher_memory_report_source",
+                "report_unsupported_platform",
+            ),
+            ("memory_class", "heap"),
+            ("memory_class", "external"),
+            ("memory_class", "array_buffers"),
+            ("memory_class", "child_rss"),
+            ("memory_class", "native"),
+            ("memory_class", "unknown"),
+            ("largest_child_kind", "node"),
+            ("largest_child_kind", "git"),
+            ("largest_child_kind", "package_manager"),
+            ("largest_child_kind", "shell"),
+            ("largest_child_kind", "other"),
+            ("largest_child_kind", "unknown"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -5205,10 +5257,22 @@ mod tests {
         for (key, value) in [
             ("watcher_js_heap_total_mb", "3584 /Users/Ada"),
             ("watcher_js_heap_used_mb", "3072MB"),
+            ("watcher_js_external_mb", "512MB"),
+            ("watcher_js_array_buffers_mb", "256 /Users/Ada"),
             ("watcher_inferred_non_heap_mb", "-1"),
             ("watcher_libuv_active_handles", "128; rm -rf"),
             ("watcher_memory_class_source", "report_read /Users/Ada"),
             ("watcher_memory_class_source", "report_guessed"),
+            (
+                "watcher_memory_class_source",
+                "supervisor_sample /Users/Ada",
+            ),
+            ("watcher_memory_report_source", "report_read /Users/Ada"),
+            ("watcher_memory_report_source", "supervisor_sample"),
+            ("memory_class", "heap /Users/Ada"),
+            ("memory_class", "heap_growth"),
+            ("largest_child_kind", "git /Users/Ada"),
+            ("largest_child_kind", "arbitrary_process_name"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
