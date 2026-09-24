@@ -1196,6 +1196,9 @@ pub fn footprint_growth_bucket_mb_per_sec(rate_mb_per_sec: u64) -> &'static str 
 pub enum WatcherMemoryClassSource {
     /// A signal-triggered report was read and carried at least one memory field.
     ReportRead,
+    /// The live Node report was unavailable, so the supervisor classified its
+    /// already-collected process-tree sample before pre-emption.
+    SupervisorSample,
     /// A report was armed but no fresh report ever appeared within the bounded wait.
     ReportAbsent,
     /// A fresh, COMPLETE report was read but carried no memory class
@@ -1215,8 +1218,9 @@ pub enum WatcherMemoryClassSource {
 
 impl WatcherMemoryClassSource {
     /// Every variant, so content-safety tests enumerate the emitter's own token set.
-    pub const ALL: [WatcherMemoryClassSource; 6] = [
+    pub const ALL: [WatcherMemoryClassSource; 7] = [
         Self::ReportRead,
+        Self::SupervisorSample,
         Self::ReportAbsent,
         Self::ReportUnreadable,
         Self::ReportNeverCompleted,
@@ -1228,11 +1232,48 @@ impl WatcherMemoryClassSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReportRead => "report_read",
+            Self::SupervisorSample => "supervisor_sample",
             Self::ReportAbsent => "report_absent",
             Self::ReportUnreadable => "report_unreadable",
             Self::ReportNeverCompleted => "report_never_completed",
             Self::ReportNotRequested => "report_not_requested",
             Self::ReportUnsupportedPlatform => "report_unsupported_platform",
+        }
+    }
+}
+
+/// Bounded memory-class label carried by a watcher footprint pre-emption.
+/// Every value is a fixed token safe for Sentry aggregation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherMemoryClass {
+    Heap,
+    External,
+    ArrayBuffers,
+    ChildRss,
+    Native,
+    Unknown,
+}
+
+impl WatcherMemoryClass {
+    /// Every class, so content-safety tests enumerate the emitter's full vocabulary.
+    pub const ALL: [WatcherMemoryClass; 6] = [
+        Self::Heap,
+        Self::External,
+        Self::ArrayBuffers,
+        Self::ChildRss,
+        Self::Native,
+        Self::Unknown,
+    ];
+
+    /// Fixed vocabulary, safe for a Sentry tag.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Heap => "heap",
+            Self::External => "external",
+            Self::ArrayBuffers => "array_buffers",
+            Self::ChildRss => "child_rss",
+            Self::Native => "native",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -3601,11 +3642,15 @@ mod tests {
     fn test_watcher_memory_class_source_is_fixed_content_safe_vocabulary() {
         for source in WatcherMemoryClassSource::ALL {
             let token = source.as_str();
-            assert!(token.starts_with("report_"));
+            assert!(token.starts_with("report_") || token == "supervisor_sample");
             assert!(token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
         }
         // The exact tokens the telemetry allow-list mirrors.
         assert_eq!(WatcherMemoryClassSource::ReportRead.as_str(), "report_read");
+        assert_eq!(
+            WatcherMemoryClassSource::SupervisorSample.as_str(),
+            "supervisor_sample"
+        );
         assert_eq!(
             WatcherMemoryClassSource::ReportAbsent.as_str(),
             "report_absent"
@@ -3626,6 +3671,22 @@ mod tests {
             WatcherMemoryClassSource::ReportUnsupportedPlatform.as_str(),
             "report_unsupported_platform"
         );
+    }
+
+    #[test]
+    fn test_watcher_memory_class_is_fixed_content_safe_vocabulary() {
+        let expected = [
+            "heap",
+            "external",
+            "array_buffers",
+            "child_rss",
+            "native",
+            "unknown",
+        ];
+        for (class, token) in WatcherMemoryClass::ALL.into_iter().zip(expected) {
+            assert_eq!(class.as_str(), token);
+            assert!(token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
     }
 
     // ── Re-scoped projection arm (this reopen, HQ-DESKTOP-60) ──────────────────

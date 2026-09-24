@@ -194,6 +194,32 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     expect(recorder).toContain('("exit_class", "runner_memory".to_string())');
   });
 
+  it('keeps memory-class evidence non-absent when the supervisor sampled before pre-emption', () => {
+    const resolver = sliceBetween(
+      appDaemonSource,
+      'fn resolve_watcher_memory_class(',
+      '/// Windows (and any non-signal platform)',
+      'resolve_watcher_memory_class',
+    );
+    // Signal the largest Node member, not an arbitrary largest child such as git.
+    // If a fresh Node report is unavailable, the already-collected tree sample is
+    // still the source of a bounded class instead of being reported as absent.
+    expect(resolver).toContain('tree_largest_node_member_pid');
+    expect(resolver).toContain('resolve_memory_class_from_sample');
+    expect(coreDaemonSource).toContain('Self::SupervisorSample');
+
+    const recorder = sliceBetween(
+      appDaemonSource,
+      'fn record_supervisor_memory_preempt(',
+      '\n}\n',
+      'record_supervisor_memory_preempt',
+    );
+    expect(recorder).toContain('("memory_class", evidence.memory_class.as_str().to_string())');
+    expect(recorder).toContain('("largest_child_kind"');
+    expect(telemetrySource).toContain('"memory_class" =>');
+    expect(telemetrySource).toContain('"largest_child_kind" =>');
+  });
+
   // ── Footprint growth-rate projection + pre-empt decomposition (this fix) ──
 
   it('projects growth from the prior comparable sample into the hard-ceiling decision', () => {

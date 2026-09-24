@@ -11,6 +11,8 @@ The release moves it under the version it ships in.
 - First-run setup now waits for activity from the initial personal-vault push
   before timing out. Template-install failures also record a bounded cause for
   diagnosis without sending local paths.
+- Auto-sync memory alerts now include a bounded memory class and, for
+  multi-process trees, the largest child's process type.
 - Sync and Meetings show the server's upgrade link when a plan pauses uploads or
   meeting-bot recording.
 

@@ -261,6 +261,10 @@ pub struct RunnerReportMemoryClass {
     pub js_heap_total_mb: Option<u64>,
     /// Reported V8 JS heap used memory, in MB (`javascriptHeap.usedMemory`).
     pub js_heap_used_mb: Option<u64>,
+    /// Reported JS external memory, in MB (`javascriptHeap.externalMemory`).
+    pub external_memory_mb: Option<u64>,
+    /// Reported array-buffer memory, in MB when the runtime report exposes it.
+    pub array_buffers_mb: Option<u64>,
     /// Count of libuv handles reported as active (`libuv[].is_active == true`).
     pub libuv_active_handles: Option<u64>,
 }
@@ -271,6 +275,8 @@ impl RunnerReportMemoryClass {
     pub fn is_present(&self) -> bool {
         self.js_heap_total_mb.is_some()
             || self.js_heap_used_mb.is_some()
+            || self.external_memory_mb.is_some()
+            || self.array_buffers_mb.is_some()
             || self.libuv_active_handles.is_some()
     }
 }
@@ -296,6 +302,9 @@ pub fn parse_runner_report_memory_class(bytes: &[u8]) -> RunnerReportMemoryClass
     let heap = value.get("javascriptHeap");
     let js_heap_total_mb = bytes_to_mb(heap, "totalMemory");
     let js_heap_used_mb = bytes_to_mb(heap, "usedMemory");
+    let external_memory_mb = bytes_to_mb(heap, "externalMemory");
+    let array_buffers_mb =
+        bytes_to_mb(heap, "arrayBuffers").or_else(|| bytes_to_mb(Some(&value), "arrayBuffers"));
     let libuv_active_handles = value.get("libuv").and_then(Value::as_array).map(|handles| {
         handles
             .iter()
@@ -306,6 +315,8 @@ pub fn parse_runner_report_memory_class(bytes: &[u8]) -> RunnerReportMemoryClass
     RunnerReportMemoryClass {
         js_heap_total_mb,
         js_heap_used_mb,
+        external_memory_mb,
+        array_buffers_mb,
         libuv_active_handles,
     }
 }
@@ -569,6 +580,8 @@ mod tests {
             "javascriptHeap": {
                 "totalMemory": 3_758_096_384u64, // 3584 MB in bytes
                 "usedMemory": 3_221_225_472u64,  // 3072 MB in bytes
+                "externalMemory": 536_870_912u64, // 512 MB in bytes
+                "arrayBuffers": 268_435_456u64, // 256 MB in bytes
                 "memoryLimit": 3_758_096_384u64
             },
             "libuv": [
@@ -586,6 +599,8 @@ mod tests {
         let m = parse_runner_report_memory_class(signal_report_with_memory_class().as_bytes());
         assert_eq!(m.js_heap_total_mb, Some(3584));
         assert_eq!(m.js_heap_used_mb, Some(3072));
+        assert_eq!(m.external_memory_mb, Some(512));
+        assert_eq!(m.array_buffers_mb, Some(256));
         // Three handles reported is_active:true (two fs_event + one check).
         assert_eq!(m.libuv_active_handles, Some(3));
         assert!(m.is_present());
