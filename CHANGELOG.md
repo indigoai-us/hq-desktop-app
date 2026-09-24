@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - HQ Sync tells you to verify your email before it can show pending company invites.
 
+## [0.10.322] — 2026-09-24
+
 - Each company now has exactly one "company home" channel (settings,
   wallpaper). Other channels created inside a company are plain team
   channels. A new "Companies" section in the sidebar pins each company's
