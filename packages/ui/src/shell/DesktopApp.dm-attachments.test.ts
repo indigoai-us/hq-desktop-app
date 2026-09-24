@@ -48,7 +48,12 @@ const companies = [
 ] as Workspace[];
 
 function adapter(
-  presignVaultPut: (companyUid: string, key: string, contentType: string) => Promise<unknown>,
+  presignVaultPut: (
+    companyUid: string,
+    key: string,
+    contentType: string,
+    integrity?: unknown,
+  ) => Promise<unknown>,
 ): PlatformAdapter {
   return {
     kind: "web",
@@ -101,8 +106,14 @@ async function sendPastedImage(row: ConversationRow): Promise<string[]> {
     vi.fn(async () => new Response(null, { status: 200 })),
   );
   const presignVaultPut = vi.fn(
-    async (companyUid: string, _key: string, _contentType: string) => {
+    async (
+      companyUid: string,
+      _key: string,
+      _contentType: string,
+      integrity?: unknown,
+    ) => {
       scopes.push(companyUid);
+      integrities.push(integrity);
       return ok({
         results: [
           {
@@ -150,10 +161,19 @@ async function sendPastedImage(row: ConversationRow): Promise<string[]> {
   return scopes;
 }
 
+// Every upload must carry the file's SHA-256: vault buckets have S3 Object
+// Lock and refuse a PUT without a signed checksum.
+const integrities: unknown[] = [];
+
 describe("DesktopApp DM attachment upload scope", () => {
   it("uploads a personal-scope DM attachment with the personal vault uid", async () => {
     const scopes = await sendPastedImage(personalDm);
     expect(scopes).toEqual([SELF_UID]);
+    expect(integrities.at(-1)).toEqual({
+      checksumSha256: "A5BYxvLAy0ksUzsKTRTvd8wPeKvMztUofYShogEc+4E=",
+      contentSha256:
+        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+    });
   });
 
   it("uploads a company-scope DM attachment with the company uid", async () => {

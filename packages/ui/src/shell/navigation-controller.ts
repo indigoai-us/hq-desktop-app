@@ -75,6 +75,14 @@ export interface NavigationControllerDeps {
   apply: (applied: AppliedNavigation) => void;
   captureCurrent?: () => NavigationEntry | null;
   captureScroll?: () => NavigationScrollState | null;
+  /**
+   * Called right after a destination commits, so the scroll tracker can
+   * drop the sample it just handed to `rememberScroll` for the outgoing
+   * entry and start sampling the new destination instead. Without this the
+   * next `read()` could still return the entry-before-last's scroll state
+   * if the newly-committed destination never fires `scroll`/`resize`.
+   */
+  invalidateScroll?: () => void;
   onPending?: (pending: NavigationPending | null) => void;
   onRejected?: (reason: string) => void;
 }
@@ -258,6 +266,7 @@ export function createNavigationController(
         outcome.status === "unavailable" ? outcome.reason : undefined,
       mode,
     });
+    deps.invalidateScroll?.();
     return true;
   }
 
@@ -356,6 +365,7 @@ export function createNavigationController(
           mode: "replace",
         });
       }
+      deps.invalidateScroll?.();
       return { ...resolved, generation, committed: true };
     };
     const resolved = resolveDestination(

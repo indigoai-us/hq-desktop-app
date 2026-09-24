@@ -546,7 +546,47 @@ export function normalizeReplyThreadValue(value: unknown): ReplyThreadValue {
 export const DELETE_CHANNEL_UNSUPPORTED_MESSAGE =
   "This server doesn't support deleting channels yet.";
 
+/** Per-channel notification level (`PUT /v1/notify/channels/{id}/notify-level`). */
+export type NotifyLevel = "all" | "mentions" | "files" | "muted";
+
+/**
+ * Per-person notification preferences (`GET/PUT /v1/notify/prefs`).
+ * `pausedUntil` is an ISO-8601 instant (Z), `"forever"`, or null.
+ */
+export interface NotifyPrefs {
+  pausedUntil: string | null;
+  dmsDuringPause: boolean;
+  dms: boolean;
+  mentions: boolean;
+  files: boolean;
+  allActivity: boolean;
+  addedToChannel: boolean;
+  updatedAt?: string | null;
+}
+
+/** Envelope of both prefs routes. */
+export interface NotifyPrefsResponse {
+  prefs: NotifyPrefs;
+  paused: boolean;
+}
+
+/** Partial PUT body; the server merges it onto the stored row. */
+export type NotifyPrefsPatch = Partial<Omit<NotifyPrefs, "updatedAt">>;
+
 export interface MessagingApi {
+  /**
+   * GET /v1/notify/prefs. Optional: hosts without it hide the fine-grained
+   * notification settings. A server that predates the route answers 404
+   * (`code: "http-404"`), which callers treat as "not available yet".
+   */
+  getNotifyPrefs?(): AdapterPromise<NotifyPrefsResponse>;
+  /** PUT /v1/notify/prefs with a partial body. */
+  updateNotifyPrefs?(patch: NotifyPrefsPatch): AdapterPromise<NotifyPrefsResponse>;
+  /**
+   * PUT /v1/notify/channels/{id}/notify-level `{ level }`. Errors:
+   * 400 INVALID_NOTIFY_LEVEL, 403 CHANNEL_NOT_JOINED, 404 on older servers.
+   */
+  setChannelNotifyLevel?(channelId: string, level: NotifyLevel): AdapterPromise<Json>;
   listChannels(opts?: ListChannelsOptions): AdapterPromise<ChannelSummary[]>;
   fetchChannelDirectory(cursor?: string): AdapterPromise<Json>;
   createChannel(payload: Json): AdapterPromise<Json>;
@@ -861,6 +901,29 @@ export interface LibraryApi {
   getSkillDetail(path: string): AdapterPromise<Json>;
 }
 
+/**
+ * Content digest for a vault PUT. hq-pro signs `x-amz-checksum-sha256` into
+ * the upload URL only when `checksumSha256` (base64) matches the
+ * `hq-content-sha256` metadata (hex) for the same bytes.
+ */
+export interface VaultPutIntegrity {
+  /** SHA-256 of the bytes, base64 (S3's checksum form). */
+  checksumSha256: string;
+  /** SHA-256 of the bytes, lowercase hex. */
+  contentSha256: string;
+}
+
+/** Presign request fields for {@link VaultPutIntegrity}. */
+export function vaultPutIntegrityFields(
+  integrity: VaultPutIntegrity | undefined,
+): { checksumSha256?: string; metadata?: Record<string, string> } {
+  if (!integrity) return {};
+  return {
+    checksumSha256: integrity.checksumSha256,
+    metadata: { "hq-content-sha256": integrity.contentSha256 },
+  };
+}
+
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
   getFileContent(path: string): AdapterPromise<string>;
@@ -868,11 +931,18 @@ export interface FilesApi {
   listVaultPrefix(companyUid: string, prefix: string): AdapterPromise<Json>;
   /** Presigned GET for a vault key (hq-pro POST /v1/files/presign). */
   presignVaultGet(companyUid: string, key: string): AdapterPromise<Json>;
-  /** Presigned PUT for a vault key (hq-pro POST /v1/files/presign). */
+  /**
+   * Presigned PUT for a vault key (hq-pro POST /v1/files/presign).
+   *
+   * Pass `integrity` for every upload: vault buckets have S3 Object Lock, and
+   * S3 refuses a PUT to a locked bucket unless it carries a signed content
+   * checksum. Without it the byte upload fails with 400.
+   */
   presignVaultPut(
     companyUid: string,
     key: string,
     contentType: string,
+    integrity?: VaultPutIntegrity,
   ): AdapterPromise<Json>;
   getAuthorizedPreview(path: string): AdapterPromise<Json>;
   /** Desktop-only capability: localFiles. */
@@ -909,6 +979,8 @@ export interface AgentProfilePatch {
 }
 
 export const AGENT_PATHS = {
+  provisionOptions: (companyUid: string) =>
+    `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
   status: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/status`,
   jobs: (agentUid: string) =>
@@ -935,7 +1007,32 @@ export const AGENT_PATHS = {
     `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
 } as const;
 
+export interface AgentProvisionSizeOption {
+  key: "basic" | "power" | "dev";
+  productName: string;
+  instanceType: string;
+  listCents: number;
+  default: boolean;
+  selectable: boolean;
+  netMonthlyCents: number | null;
+  deltaCents: number | null;
+  unavailableReason: string | null;
+  notBilled: boolean;
+  lanes: number;
+  workers: number;
+}
+
+export interface AgentProvisionOptionsView {
+  defaultInstanceType: string;
+  catalogVersion: string;
+  options: readonly AgentProvisionSizeOption[];
+}
+
 export interface AgentsApi {
+  /** GET /v1/agents/provision-options?companyUid= — tenant-priced sizes. */
+  getProvisionOptions(
+    companyUid: string,
+  ): AdapterPromise<AgentProvisionOptionsView>;
   /** GET /v1/agents/{uid}/status — owner/admin. */
   getStatus(agentUid: string): AdapterPromise<Json>;
   /** GET /v1/agents/mobile-roster — member-safe directory. */

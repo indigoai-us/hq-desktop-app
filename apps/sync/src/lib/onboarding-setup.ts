@@ -37,6 +37,56 @@ export const ERROR_CATEGORIES = [
 
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
 
+export const SETUP_ERROR_KINDS = [
+  'offline',
+  'port_in_use',
+  'browser_open_failed',
+  'provider_denied',
+  'state_mismatch',
+  'invalid_token',
+  'person_missing',
+  'expired',
+  'cancelled',
+  'persistence_failed',
+  'unavailable',
+  'setup_stage_timeout',
+  'content_http_not_found',
+  'content_http_forbidden',
+  'content_http_rate_limited',
+  'content_http_server_error',
+  'content_http_status_error',
+  'content_http_timeout',
+  'content_http_connect',
+  'content_http_body',
+  'content_http_request',
+  'content_http_client_build_failed',
+  'content_release_response_invalid',
+  'content_release_unavailable',
+  'content_invalid_release_reference',
+  'content_setup_path_unavailable',
+  'content_staging_credential_unavailable',
+  'content_archive_invalid',
+  'content_path_too_long',
+  'content_file_locked',
+  'content_missing_path',
+  'content_permission_denied',
+  'content_disk_full',
+  'content_filesystem_error',
+  'content_file_operation_timeout',
+  'content_symlink_creation_failed',
+  'content_symlink_helper_spawn_failed',
+  'content_symlink_helper_exit_nonzero',
+  'unknown',
+] as const;
+
+export type SetupErrorKind = (typeof SETUP_ERROR_KINDS)[number];
+
+export function normalizeSetupErrorKind(value: unknown): SetupErrorKind {
+  return typeof value === 'string' && SETUP_ERROR_KINDS.includes(value as SetupErrorKind)
+    ? (value as SetupErrorKind)
+    : 'unknown';
+}
+
 /**
  * Claude Desktop connector import observes only its documented local config,
  * never Codex, browser sessions, or cloud integrations. Keep the emitted
@@ -116,21 +166,30 @@ export function normalizeFailedStageIds(values: Iterable<unknown>): StageId[] {
 
 export interface SetupFailureTelemetryDetails {
   errorCategory: ErrorCategory;
+  errorKind?: SetupErrorKind;
   failedDependency?: FailedDependency;
 }
 
 export function setupFailureTelemetryDetails(input: {
   stageId: StageId;
   errorCategory?: unknown;
+  errorKind?: unknown;
   failedDependency?: unknown;
 }): SetupFailureTelemetryDetails {
   const errorCategory = normalizeErrorCategory(input.errorCategory);
+  const errorKind = input.errorKind === undefined
+    ? undefined
+    : normalizeSetupErrorKind(input.errorKind);
   return input.stageId === 'deps'
     ? {
         errorCategory,
+        ...(errorKind === undefined ? {} : { errorKind }),
         failedDependency: normalizeFailedDependency(input.failedDependency),
       }
-    : { errorCategory };
+    : {
+        errorCategory,
+        ...(errorKind === undefined ? {} : { errorKind }),
+      };
 }
 
 export function createSetupRunId(randomUuid: () => string = () => crypto.randomUUID()): string {
@@ -664,6 +723,59 @@ export function withTimeout<T>(
       (err) => {
         clearTimeout(timer);
         reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Timeout a long-running setup operation only after it has stopped reporting
+ * activity for `ms`. The subscriber is installed before the timer starts and
+ * is always removed when the operation settles or times out.
+ */
+export function withProgressTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  onTimeout: () => Error,
+  subscribeToProgress: (onProgress: () => void) => () => void,
+  onTimeoutCancel?: () => void | Promise<void>,
+): Promise<T> {
+  if (!(ms > 0)) return promise;
+  return new Promise<T>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    let settled = false;
+    let unlisten = () => {};
+    const clear = () => {
+      clearTimeout(timer);
+      unlisten();
+    };
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          void onTimeoutCancel?.();
+        } finally {
+          clear();
+          reject(onTimeout());
+        }
+      }, ms);
+    };
+    unlisten = subscribeToProgress(reset);
+    reset();
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clear();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clear();
+        reject(error);
       },
     );
   });

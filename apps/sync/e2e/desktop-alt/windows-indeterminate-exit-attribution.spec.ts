@@ -172,8 +172,8 @@ interface NodeReport {
 
 /**
  * Model the 0xFFFFFFFF watcher-exit envelope under a policy. Everything that is NOT a
- * reason axis — message, fingerprint, capture policy, watcher_fault_provenance — stays
- * exactly as the observed event carried it, so grouping continuity is provable.
+ * reason axis stays as observed. The candidate intentionally replaces the raw host
+ * fingerprint with the stable exit-class fingerprint and adds the class as a tag.
  */
 function modelIndeterminateEnvelope(
   policy: Policy,
@@ -182,8 +182,8 @@ function modelIndeterminateEnvelope(
   survivorCount: number | null,
 ): SentryEnvelope {
   const env: SentryEnvelope = {
-    // The exact observed message and the six-component fingerprint of this cluster,
-    // unchanged by the fix (message text is not a fingerprint input).
+    // Preserve the observed text and historical six-component base fingerprint.
+    // The candidate switches grouping to the bounded exit class.
     message:
       'auto-sync watcher exited unexpectedly (with Windows status 0xFFFFFFFF (origin unknown)), consecutive failure #1',
     fingerprint: [
@@ -216,6 +216,9 @@ function modelIndeterminateEnvelope(
     env.tags.runner_fatal_source = 'none';
     return env;
   }
+
+  env.fingerprint = ['sync-watcher-exit', 'minus_one'];
+  env.tags.exit_class = 'minus_one';
 
   // Post-fix: runner_report_read is a MEASUREMENT, and a report that names a cause the
   // stderr channel lost is adopted with runner_fatal_source=node_report.
@@ -284,12 +287,11 @@ describe('windows indeterminate-status attribution — modeled envelope', () => 
     expect(env.extras.watcher_job_survivor_count).toBe(0);
   });
 
-  it('grouping continuity: message, fingerprint, and fault provenance are unchanged', () => {
+  it('candidate groups the exit by its stable class while retaining the historical baseline', () => {
     const pre = modelIndeterminateEnvelope('pre-fix', { present: true, named: true }, 'unavailable', null);
     const post = modelIndeterminateEnvelope('post-fix', { present: true, named: true }, 'node_exe', 2);
     expect(post.message).toBe(pre.message);
-    expect(post.fingerprint).toEqual(pre.fingerprint);
-    expect(post.fingerprint).toEqual([
+    expect(pre.fingerprint).toEqual([
       'sync',
       'auto-sync-watcher-termination',
       'windows:status-ffffffff',
@@ -297,6 +299,11 @@ describe('windows indeterminate-status attribution — modeled envelope', () => 
       'none',
       'none',
     ]);
+    expect(post.fingerprint).toEqual([
+      'sync-watcher-exit',
+      'minus_one',
+    ]);
+    expect(post.tags.exit_class).toBe('minus_one');
     // A non-fault exit never claims a Windows fault, before or after the fix.
     expect(post.tags.watcher_fault_provenance).toBe('not_applicable');
   });

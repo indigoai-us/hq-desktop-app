@@ -573,7 +573,12 @@ async fn drive_eventloop(
                         continue;
                     }
                 }
-                // Wake signal. We do not inspect the payload — just wake.
+                // Wake signal. The only field read is the per-recipient
+                // `notify` hint on channel/thread wakes, which the poll uses to
+                // decide the OS notification for that eventId.
+                if matches!(wake, MqttWakeAction::Dm) {
+                    crate::commands::dm_notify::record_wake_notify_hint(&publish.payload);
+                }
                 log(LOG_TAG, "DM_MQTT_WAKE");
                 wake.fire(&app).await;
             }

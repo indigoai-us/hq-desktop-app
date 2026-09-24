@@ -8,6 +8,51 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Auto-sync memory alerts now include a bounded memory class and, for
+  multi-process trees, the largest child's process type.
+
+## [0.10.320] — 2026-09-24
+
+- HQ no longer shows the setup screen on every launch for machines that are already configured and signed in. If a previous version left the setup flag set incorrectly, the app clears it on the next start.
+
+## [0.10.319] — 2026-09-24
+
+- The setup finish card goes away as soon as you send the setup bot another
+  message, instead of staying under the rest of the conversation.
+- Files and images attached in chat upload again. Since vault storage turned on
+  write protection, every attachment upload was refused, so bots and teammates
+  never received the file.
+- First-run setup now waits for activity from the initial personal-vault push
+  before timing out. Template-install failures also record a bounded cause for
+  diagnosis without sending local paths.
+
+## [0.10.317] — 2026-09-24
+
+- Sync and Meetings show the server's upgrade link when a plan pauses uploads or
+  meeting-bot recording.
+
+## [0.10.315] — 2026-09-24
+
+- Switching channels or DMs in the sidebar now shows the new conversation
+  right away instead of pausing first, even when leaving a long conversation.
+
+## [0.10.314] — 2026-09-24
+
+- Create company Cloud bots with Codex, Grok, or Claude. HQ shows the tenant price before creation and opens the Claude sign-in page after a Claude subscription bot is created.
+
+## [0.10.313] — 2026-09-24
+
+- When npm's metadata has not caught up to a new dependency version, HQ refreshes
+  it and retries the CLI update. If needed, it tries npm's public registry.
+
+## [0.10.311] — 2026-09-23
+
+- Large sync-output bursts no longer build up in HQ's memory. If the app falls
+  behind, the runner waits for the app to process more output.
+- Mute a channel from the speaker icon in the channel header, or open the menu next to it to choose all messages, files and mentions, mentions only, or muted. Muted channels show a muted icon in the sidebar.
+- Settings > Notifications can pause notifications (1 hour, 8 hours, until tomorrow 8am, or indefinitely) and turn DMs, mentions, shared files, all activity, and "added to a channel" alerts on or off. You can also let DMs through while paused. These settings follow your HQ account to every device.
+- You get a notification when someone adds you to a channel. Clicking it opens the channel.
+
 ## [0.10.310] — 2026-09-23
 
 - When sync finishes with per-file errors, events with the same exit code and

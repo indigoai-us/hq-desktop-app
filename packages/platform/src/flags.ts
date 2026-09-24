@@ -76,10 +76,12 @@ import { ok, type AdapterPromise } from "./adapter.js";
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
+  "agents.claude-provider": "agents.claude-provider",
 };
 
 export const MEETINGS_LEGACY_FLAG = "meetings";
 export const MEETINGS_REGISTRY_KEY = "desktop.meetings";
+export const CLAUDE_PROVIDER_FLAG = "agents.claude-provider";
 
 /**
  * FlagClient revalidation cadence for the desktop/web adapters.

@@ -39,6 +39,29 @@ function calledIdentityFeatures(calls: RecordedCall[]): boolean {
 }
 
 describe("WebPlatformAdapter hasFeature", () => {
+  it("Claude provider flag uses hq-flags and returns the configured user value", async () => {
+    const { adapter, calls } = makeAdapter({
+      "GET /v1/flags/resolve": {
+        status: 200,
+        body: { version: 3, flags: { "agents.claude-provider": true } },
+      },
+    });
+    await expect(
+      adapter.identity.hasFeature("agents.claude-provider"),
+    ).resolves.toEqual({ ok: true, value: true });
+    expect(calledFlagsResolve(calls)).toBe(true);
+    expect(calledIdentityFeatures(calls)).toBe(false);
+  });
+
+  it("Claude provider flag fails closed when hq-flags is unavailable", async () => {
+    const { adapter, calls } = makeAdapter({});
+    await expect(
+      adapter.identity.hasFeature("agents.claude-provider"),
+    ).resolves.toEqual({ ok: true, value: false });
+    expect(calledFlagsResolve(calls)).toBe(true);
+    expect(calledIdentityFeatures(calls)).toBe(false);
+  });
+
   it("meetings: registry configured true still resolves false and never consults the registry", async () => {
     const { adapter, calls } = makeAdapter({
       "GET /v1/flags/resolve": {

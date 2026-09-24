@@ -39,6 +39,7 @@ import {
   DEFAULT_STAGE_SKIP_THRESHOLD_MS,
   DEFAULT_STAGE_TIMEOUT_MS,
   withTimeout,
+  withProgressTimeout,
   type StageId,
   type StageState,
 } from './onboarding-setup';
@@ -568,6 +569,51 @@ describe('stage timeouts', () => {
     await vi.advanceTimersByTimeAsync(90_000);
     await assertion;
     expect(onTimeoutCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('renews the initial-sync inactivity timeout when the native push reports progress', async () => {
+    let reportProgress: (() => void) | undefined;
+    let resolveWork: ((value: string) => void) | undefined;
+    const work = new Promise<string>((resolve) => {
+      resolveWork = resolve;
+    });
+    const unsubscribe = vi.fn();
+    const guarded = withProgressTimeout(
+      work,
+      100,
+      () => new StageTimeoutError('initial-sync', 100),
+      (onProgress) => {
+        reportProgress = onProgress;
+        return unsubscribe;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(80);
+    reportProgress?.();
+    await vi.advanceTimersByTimeAsync(80);
+    resolveWork?.('complete');
+
+    await expect(guarded).resolves.toBe('complete');
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('still times out when initial-sync progress stops', async () => {
+    const work = new Promise<void>(() => {});
+    const unsubscribe = vi.fn();
+    const onTimeoutCancel = vi.fn();
+    const guarded = withProgressTimeout(
+      work,
+      100,
+      () => new StageTimeoutError('initial-sync', 100),
+      () => unsubscribe,
+      onTimeoutCancel,
+    );
+    const assertion = expect(guarded).rejects.toBeInstanceOf(StageTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await assertion;
+    expect(onTimeoutCancel).toHaveBeenCalledOnce();
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 });
 

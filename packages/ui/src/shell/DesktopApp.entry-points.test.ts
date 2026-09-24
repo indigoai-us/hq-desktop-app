@@ -9,7 +9,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type PlatformAdapter } from "@hq/platform";
+import { ok, type AgentProvisionOptionsView, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -36,6 +36,27 @@ const SETUP_ROW: ConversationRow = {
 } as ConversationRow;
 
 const viewerOwner = { canAct: true, role: "owner" };
+
+const CLOUD_PROVISION_OPTIONS: AgentProvisionOptionsView = {
+  defaultInstanceType: "t4g.medium",
+  catalogVersion: "test-catalog",
+  options: [
+    {
+      key: "basic",
+      productName: "Basic",
+      instanceType: "t4g.medium",
+      listCents: 5000,
+      default: true,
+      selectable: true,
+      netMonthlyCents: 4200,
+      deltaCents: 4200,
+      unavailableReason: null,
+      notBilled: false,
+      lanes: 1,
+      workers: 1,
+    },
+  ],
+};
 
 /** One cloud company, so the New bot flow has somewhere to host a bot. */
 const ACME_WORKSPACE = {
@@ -151,7 +172,18 @@ function adapter(
     identity: {
       listAvatarPacks: async () => ok({ packs: [], expiresAt: Date.now() + 60_000 }),
       updateAgentProfile: async () => ok({}),
+      hasFeature: async () => ok(false),
       ...identity,
+    },
+    agents: {
+      getProvisionOptions: async () => ok(CLOUD_PROVISION_OPTIONS),
+    },
+    meetings: {
+      listUpcoming: async () => ok([]),
+    },
+    calls: {
+      contractVersion: "hq-meet/1",
+      discoverOffice: async (companyUid: string) => ok({ companyUid, people: [], observedAt: Date.now() }),
     },
     settings: {
       getSetupStatus: async () =>
@@ -254,7 +286,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
         { id: "name", label: "Agent name", control: "text", required: true, value: "" },
         { id: "handle", label: "Handle", control: "text", required: true, value: "" },
       ],
-      actions: [{ id: "next", label: "Next", style: "primary" }],
+      actions: [{ id: "continue", label: "Continue", style: "primary" }],
       viewer: viewerOwner,
     },
     {
@@ -266,6 +298,32 @@ describe("DesktopApp New bot: the Cloud option", () => {
       state: "open",
       title: "Create an agent",
       fields: [
+        {
+          id: "runtime",
+          label: "Runtime",
+          control: "radio",
+          required: true,
+          value: "codex",
+          options: [
+            { id: "codex", label: "Codex" },
+            { id: "grok", label: "Grok" },
+            { id: "claude", label: "Claude" },
+          ],
+        },
+      ],
+      actions: [{ id: "continue", label: "Continue", style: "primary" }],
+      viewer: viewerOwner,
+    },
+    {
+      v: 1,
+      type: "lifecycle_card",
+      cardId: "card_create_agent_3",
+      kind: "create_agent",
+      companyUid: "cmp_acme",
+      state: "open",
+      title: "Create an agent",
+      fields: [
+        { id: "runtime", label: "Runtime", control: "readonly", required: true, value: "codex" },
         {
           id: "size",
           label: "Size",
@@ -280,14 +338,27 @@ describe("DesktopApp New bot: the Cloud option", () => {
     },
   ];
 
-  it("creates a cloud bot and lands in its channel, with no create_agent card on the way", async () => {
+  it("creates a Claude subscription agent from the cloud flow and opens its authorization page", async () => {
     let posted = [TURNS[0]!];
     const runCompanyTabAction = vi.fn(async () =>
       ok({ cardId: "card_create_agent_1", actionId: "add_agent", state: "open", channelId: "chn_acme" }),
     );
-    const runCardAction = vi.fn(async (args: { cardId: string; actionId: string }) => {
+    const runCardAction = vi.fn(async (args: { cardId: string; actionId: string; values?: Record<string, string> }) => {
       if (args.cardId === "card_create_agent_1") {
         posted = [...posted, TURNS[1]!];
+        return ok({ cardId: args.cardId, actionId: args.actionId, state: "done" });
+      }
+      if (args.cardId === "card_create_agent_2") {
+        const finalTurn = TURNS[2]!;
+        posted = [
+          ...posted,
+          {
+            ...finalTurn,
+            fields: finalTurn.fields.map((field) =>
+              field.id === "runtime" ? { ...field, value: args.values?.runtime ?? "codex" } : field,
+            ),
+          },
+        ];
         return ok({ cardId: args.cardId, actionId: args.actionId, state: "done" });
       }
       return ok({
@@ -310,6 +381,8 @@ describe("DesktopApp New bot: the Cloud option", () => {
     const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
       ok(tab === "team" ? teamTab(true) : { tab, companyUid: "cmp_acme", viewer: viewerOwner, sections: [] }),
     );
+    const hasFeature = vi.fn(async () => ok(true));
+    const onopenurl = vi.fn();
 
     const opened: string[] = [];
     const onOpen = (event: Event) => {
@@ -318,9 +391,9 @@ describe("DesktopApp New bot: the Cloud option", () => {
     window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
     try {
       mountApp(
-        adapter({ runCompanyTabAction, runCardAction, fetchChannel, getCompanyTab }),
+        adapter({ runCompanyTabAction, runCardAction, fetchChannel, getCompanyTab }, { hasFeature }),
         COMPANY_ROW,
-        { companies: [ACME_WORKSPACE] },
+        { companies: [ACME_WORKSPACE], onopenurl },
       );
       await vi.waitFor(() =>
         expect(document.querySelector('[data-testid="chat-new-message"]')).toBeTruthy(),
@@ -346,6 +419,9 @@ describe("DesktopApp New bot: the Cloud option", () => {
       nameField!.value = "Polar";
       nameField!.dispatchEvent(new Event("input", { bubbles: true }));
       await settle(10);
+      expect(document.querySelector('[data-testid="cloud-bot-size-basic"]')?.parentElement?.textContent).toContain("$42.00/month");
+      document.querySelector<HTMLInputElement>('[data-testid="cloud-bot-runtime-claude"]')!.click();
+      await settle(10);
       clickAnywhere('[data-testid="chat-bot-create"]');
 
       // The server's own sequence runs, and the shell opens the bot's channel.
@@ -356,14 +432,26 @@ describe("DesktopApp New bot: the Cloud option", () => {
       expect(runCompanyTabAction).toHaveBeenCalledWith(
         expect.objectContaining({ tab: "team", cardId: "team:spend", actionId: "add_agent" }),
       );
-      expect(runCardAction).toHaveBeenCalledTimes(2);
+      expect(hasFeature).toHaveBeenCalledWith("agents.claude-provider");
+      expect(runCardAction).toHaveBeenCalledTimes(3);
       // The name the person typed reaches the server as-is: no cloud bot is
       // ever created under a suggestion they never saw.
       expect(runCardAction.mock.calls[0]![0]).toMatchObject({
         cardId: "card_create_agent_1",
-        actionId: "next",
+        actionId: "continue",
         values: { name: "Polar", handle: "polar" },
       });
+      expect(runCardAction.mock.calls[1]![0]).toMatchObject({
+        cardId: "card_create_agent_2",
+        values: { runtime: "claude" },
+      });
+      expect(runCardAction.mock.calls[2]![0]).toMatchObject({
+        cardId: "card_create_agent_3",
+        actionId: "create",
+        values: { size: "basic", authMode: "subscription" },
+      });
+      expect(runCardAction.mock.calls[2]![0].values).not.toHaveProperty("apiKey");
+      expect(onopenurl).toHaveBeenCalledWith("https://hq.getindigo.ai/resolve/agents/agt_polar");
 
       // Nothing was ever drawn: the card that collects these details is a
       // retired timeline kind, and nothing was focused on it either.
@@ -386,13 +474,26 @@ describe("DesktopApp New bot: the Cloud option", () => {
     const runCompanyTabAction = vi.fn(async () =>
       ok({ cardId: "card_create_agent_1", actionId: "add_agent", state: "open", channelId: "chn_acme" }),
     );
-    const runCardAction = vi.fn(async (args: { cardId: string; actionId: string }) => {
+    const runCardAction = vi.fn(async (args: { cardId: string; actionId: string; values?: Record<string, string> }) => {
       if (args.cardId === "card_create_agent_1") {
         if (refuseOnce) {
           refuseOnce = false;
           return ok({ cardId: args.cardId, actionId: args.actionId, state: "blocked" });
         }
         posted = [...posted, TURNS[1]!];
+        return ok({ cardId: args.cardId, actionId: args.actionId, state: "done" });
+      }
+      if (args.cardId === "card_create_agent_2") {
+        const finalTurn = TURNS[2]!;
+        posted = [
+          ...posted,
+          {
+            ...finalTurn,
+            fields: finalTurn.fields.map((field) =>
+              field.id === "runtime" ? { ...field, value: args.values?.runtime ?? "codex" } : field,
+            ),
+          },
+        ];
         return ok({ cardId: args.cardId, actionId: args.actionId, state: "done" });
       }
       return ok({

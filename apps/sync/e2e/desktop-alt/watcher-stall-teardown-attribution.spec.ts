@@ -249,11 +249,17 @@ function isUnexpectedWatcherExit(
   return signal !== SIGTERM;
 }
 
-/** Mirrors the fingerprint assembled by `record_unexpected_watcher_exit`. */
+/** Mirrors the stable exit-class fingerprint assembled by the watcher. */
 function terminationFingerprint(code: number | null, signal: number | null): string[] {
-  const token =
-    signal !== null ? `signal:${signal}` : code !== null ? `exit:${code}` : 'unknown';
-  return ['sync', 'auto-sync-watcher-termination', token, 'none'];
+  const exitClass =
+    signal === SIGTERM
+      ? 'sigterm'
+      : signal === SIGKILL
+        ? 'sigkill'
+        : code === -1
+          ? 'minus_one'
+          : 'other';
+  return ['sync-watcher-exit', exitClass];
 }
 
 /**
@@ -341,7 +347,10 @@ function simulateTeardownEnvelope(scenario: TeardownScenario): SentryEnvelopeEve
     {
       message: 'auto-sync watcher exited unexpectedly, consecutive failure #1',
       fingerprint: terminationFingerprint(scenario.code, scenario.signal),
-      tags: { watcher_exit_signal: String(scenario.signal ?? 'none') },
+      tags: {
+        watcher_exit_signal: String(scenario.signal ?? 'none'),
+        exit_class: terminationFingerprint(scenario.code, scenario.signal)[1],
+      },
       extras: {
         cancelled,
         heartbeat_stall_termination_in_flight: stallTerminationInFlight,
@@ -375,22 +384,21 @@ describe('watcher stall-teardown attribution — shipped Sentry envelope', () =>
   it('emits no watcher-termination event for a heartbeat-stall SIGKILL teardown', () => {
     const envelope = simulateTeardownEnvelope(HEARTBEAT_STALL_TEARDOWN);
     expect(
-      envelope.filter((event) => event.fingerprint[1] === 'auto-sync-watcher-termination'),
+      envelope.filter((event) => event.fingerprint[0] === 'sync-watcher-exit'),
     ).toHaveLength(0);
   });
 
   it('still emits one for an uncancelled SIGKILL of identical exit shape', () => {
     const envelope = simulateTeardownEnvelope(EXTERNAL_SIGKILL);
     const terminations = envelope.filter(
-      (event) => event.fingerprint[1] === 'auto-sync-watcher-termination',
+      (event) => event.fingerprint[0] === 'sync-watcher-exit',
     );
     expect(terminations).toHaveLength(1);
     expect(terminations[0].fingerprint).toEqual([
-      'sync',
-      'auto-sync-watcher-termination',
-      'signal:9',
-      'none',
+      'sync-watcher-exit',
+      'sigkill',
     ]);
+    expect(terminations[0].tags.exit_class).toBe('sigkill');
     // The two scenarios differ only in who asked for the kill, so the
     // suppression cannot be a blanket signal-9 filter.
     expect(HEARTBEAT_STALL_TEARDOWN.signal).toBe(EXTERNAL_SIGKILL.signal);
@@ -405,7 +413,7 @@ describe('watcher stall-teardown attribution — shipped Sentry envelope', () =>
       policy: 'deregister-on-sigkill',
     });
     const terminations = envelope.filter(
-      (event) => event.fingerprint[1] === 'auto-sync-watcher-termination',
+      (event) => event.fingerprint[0] === 'sync-watcher-exit',
     );
     expect(terminations).toHaveLength(1);
     // The exact production signature both cluster issues carry: the stall
@@ -458,7 +466,7 @@ describe('watcher stall-teardown attribution — shipped Sentry envelope', () =>
   it('attributes a flag-lost stall teardown through the durable record', () => {
     const envelope = simulateTeardownEnvelope(FLAG_LOST_STALL_TEARDOWN);
     expect(
-      envelope.filter((event) => event.fingerprint[1] === 'auto-sync-watcher-termination'),
+      envelope.filter((event) => event.fingerprint[0] === 'sync-watcher-exit'),
     ).toHaveLength(0);
   });
 
@@ -471,15 +479,14 @@ describe('watcher stall-teardown attribution — shipped Sentry envelope', () =>
       recordCause: null,
     });
     const terminations = envelope.filter(
-      (event) => event.fingerprint[1] === 'auto-sync-watcher-termination',
+      (event) => event.fingerprint[0] === 'sync-watcher-exit',
     );
     expect(terminations).toHaveLength(1);
     expect(terminations[0].fingerprint).toEqual([
-      'sync',
-      'auto-sync-watcher-termination',
-      'signal:9',
-      'none',
+      'sync-watcher-exit',
+      'sigkill',
     ]);
+    expect(terminations[0].tags.exit_class).toBe('sigkill');
     expect(terminations[0].extras.heartbeat_stall_termination_in_flight).toBe(true);
     expect(terminations[0].extras.cancelled).toBe(false);
   });

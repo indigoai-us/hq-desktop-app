@@ -9,8 +9,10 @@
 import {
   type AdapterResult,
   type AdapterPromise,
+  type AgentProvisionOptionsView,
   type ChannelSummary,
   type Json,
+  type NotifyPrefsResponse,
   type PlatformAdapter,
   type VersionProbe,
   type WhoAmI,
@@ -24,10 +26,12 @@ import {
   unavailable,
   validateFetchReplyThread,
   validateSendReply,
+  vaultPutIntegrityFields,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
+  CLAUDE_PROVIDER_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
 } from '../flags.js';
@@ -402,6 +406,9 @@ export function createSyncPlatformAdapter(
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
       hasFeature: (flag) =>
         flags.resolve(flag, () => {
+          if (flag === CLAUDE_PROVIDER_FLAG) {
+            return Promise.resolve(ok(false));
+          }
           if (flag === 'meetings') {
             return call<boolean>('meetings_feature_enabled');
           }
@@ -505,6 +512,30 @@ export function createSyncPlatformAdapter(
       respondDmRequest: ({ pairKey, action }) =>
         call('respond_dm_request', { pairKey, action }),
       markChannelRead: (id) => call('mark_channel_read', { channelId: id }),
+      // Fine-grained notification prefs go straight to hq-pro through the
+      // authenticated fetch seam. A successful write also drops the native
+      // poller's cached copy so a new pause applies on the next poll.
+      getNotifyPrefs: () => hqProJson('GET', WEB_PATHS.notifyPrefs),
+      updateNotifyPrefs: async (patch) => {
+        const result = await hqProJson<NotifyPrefsResponse>(
+          'PUT',
+          WEB_PATHS.notifyPrefs,
+          patch,
+        );
+        if (result.ok) {
+          // Best-effort: the write already landed, so a failed cache drop
+          // (older native build, IPC error) must not turn it into a failure.
+          // The native cache expires on its own within 30s.
+          try {
+            await call('invalidate_notify_prefs_cache');
+          } catch {
+            /* ignore */
+          }
+        }
+        return result;
+      },
+      setChannelNotifyLevel: (channelId, level) =>
+        hqProJson('PUT', WEB_PATHS.channelNotifyLevel(channelId), { level }),
       markDmThreadRead: (personUid) =>
         call('mark_dm_thread_read', { withPersonUid: personUid }),
       searchMessages: async (q, opts) => {
@@ -853,6 +884,11 @@ export function createSyncPlatformAdapter(
     },
 
     agents: {
+      getProvisionOptions: (companyUid) =>
+        hqProJson<AgentProvisionOptionsView>(
+          'GET',
+          AGENT_PATHS.provisionOptions(companyUid),
+        ),
       getStatus: (agentUid) =>
         hqProJson('GET', AGENT_PATHS.status(agentUid)),
       listMobileRoster: (companyUid) =>
@@ -950,12 +986,13 @@ export function createSyncPlatformAdapter(
           op: 'get',
           key,
         }),
-      presignVaultPut: (companyUid, key, contentType) =>
+      presignVaultPut: (companyUid, key, contentType, integrity) =>
         hqProJson('POST', WEB_PATHS.filesPresign, {
           company: companyUid,
           op: 'put',
           key,
           contentType,
+          ...vaultPutIntegrityFields(integrity),
         }),
       getAuthorizedPreview: (path) =>
         call('get_authorized_file_preview', { path }),

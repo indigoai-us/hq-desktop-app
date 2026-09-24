@@ -23,7 +23,12 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
-  import { failure, startJitteredPoll, type PlatformAdapter } from "@hq/platform";
+  import {
+    CLAUDE_PROVIDER_FLAG,
+    failure,
+    startJitteredPoll,
+    type PlatformAdapter,
+  } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -84,7 +89,7 @@
     findSetupBot,
     findSetupBotContact,
     firstSignedInRuntime,
-    setupBotMarkedDone,
+    setupFinaleDue,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_INTRO,
@@ -101,10 +106,12 @@
   } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
+    claudeSubscriptionSignInUrl,
     runCreateCloudBotEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
     type EntryPointTarget,
+    type CloudBotDraft,
   } from "../chat/lifecycle-entry-points.js";
   import {
     openCreateCompanyDraft,
@@ -192,6 +199,14 @@
   } from "../settings/update-store.svelte";
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
+  import ChannelMuteControl from "../chat/ChannelMuteControl.svelte";
+  import {
+    changeNotifyLevel,
+    defaultNotifyLevel,
+    loadRememberedNotifyLevels,
+    saveRememberedNotifyLevels,
+    type NotifyLevel,
+  } from "../chat/notify-level";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
@@ -238,7 +253,7 @@
     type NavigationScrollState,
   } from "./navigation-history.js";
   import {
-    captureNavigationScroll,
+    createNavigationScrollTracker,
     scheduleNavigationScrollRestore,
   } from "./navigation-scroll.js";
   import {
@@ -2218,13 +2233,16 @@
     await loadLocalBotRuntimeReady();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
-  /** The setup bot's DM, once the bot has marked setup finished: show the finish card. */
+  /**
+   * The setup bot's DM, once the bot has marked setup finished and the person
+   * has not written since: show the finish card. A follow-up puts it away.
+   */
   const setupBotDmDone = $derived.by(() => {
     const bot = selectedLocalBot;
     const row = selectedRow;
     if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return false;
     const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
-    return setupBotMarkedDone(timeline, bot.agentUid, messageMarksSetupDone);
+    return setupFinaleDue(timeline, bot.agentUid, messageMarksSetupDone);
   });
   $effect(() => {
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
@@ -4244,6 +4262,86 @@
     }
   }
 
+  // ── Channel notification level (header mute control) ─────────────────────
+  let notifyLevelBusy = $state(false);
+  /** channelId → last non-muted level, restored by a one-click unmute. */
+  // Persisted so a one-click unmute after a reload still restores the level.
+  const notifyLevelStorage: Storage | null = (() => {
+    try {
+      return typeof window !== "undefined" ? window.localStorage : null;
+    } catch {
+      return null;
+    }
+  })();
+  let rememberedNotifyLevels = $state<Record<string, NotifyLevel>>(
+    loadRememberedNotifyLevels(notifyLevelStorage),
+  );
+
+  /** Level a one-click unmute restores: remembered, else the server default. */
+  const unmuteTarget = $derived.by((): NotifyLevel => {
+    const channelId = selectedRow?.channelId?.trim() ?? "";
+    return (
+      rememberedNotifyLevels[channelId] ??
+      defaultNotifyLevel({
+        scope: selectedRow?.channelScope,
+        kind: selectedRow?.kind,
+        createdBy: selectedRow?.createdBy,
+        selfUid: self?.uid,
+      })
+    );
+  });
+
+  $effect(() => {
+    const channelId = selectedRow?.channelId?.trim() ?? "";
+    const level = selectedRow?.notifyLevel;
+    if (!channelId || !level || level === "muted") return;
+    if (rememberedNotifyLevels[channelId] === level) return;
+    rememberedNotifyLevels = { ...rememberedNotifyLevels, [channelId]: level };
+    saveRememberedNotifyLevels(notifyLevelStorage, rememberedNotifyLevels);
+  });
+
+  const showNotifyBell = $derived(
+    !!selectedRow &&
+      (selectedRow.kind === "channel" || selectedRow.kind === "group") &&
+      !selectedRow.browseOnly &&
+      (selectedRow.membership ?? "joined") === "joined" &&
+      (selectedRow.channelId?.trim() ?? "").startsWith("chn_") &&
+      typeof adapter?.messaging?.setChannelNotifyLevel === "function",
+  );
+
+  /** Paint a level on the open row and the sidebar rail. */
+  function paintNotifyLevel(channelId: string, level: NotifyLevel | null): void {
+    if (selectedRow?.channelId?.trim() === channelId) {
+      selectedRow = { ...selectedRow, notifyLevel: level };
+    }
+    wakes?.emit?.("channel:notify-level", { channelId, level });
+  }
+
+  async function changeSelectedNotifyLevel(next: NotifyLevel): Promise<void> {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() ?? "";
+    const setLevel = adapter?.messaging?.setChannelNotifyLevel;
+    if (!row || !channelId || !setLevel || notifyLevelBusy) return;
+    notifyLevelBusy = true;
+    channelActionError = null;
+    try {
+      const outcome = await changeNotifyLevel({
+        previous: row.notifyLevel ?? null,
+        next,
+        apply: (level) => paintNotifyLevel(channelId, level),
+        persist: async (level) => {
+          const res = await setLevel(channelId, level);
+          return res.ok
+            ? { ok: true }
+            : { ok: false, code: res.code, message: res.message };
+        },
+      });
+      if (!outcome.ok) channelActionError = outcome.error;
+    } finally {
+      notifyLevelBusy = false;
+    }
+  }
+
   async function deleteSelectedChannel(): Promise<void> {
     const row = selectedRow;
     const channelId = row?.channelId?.trim() ?? "";
@@ -4950,7 +5048,7 @@
    */
   async function createCloudBotEntry(
     companyUid: string,
-    draft: { name: string; handle: string; title?: string },
+    draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
     const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
     if (result.ok) {
@@ -4964,6 +5062,8 @@
         console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
       }
       navigateToEntryTarget(result.target, companyUid);
+      const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
+      if (signInUrl) onopenurl?.(signInUrl);
     }
     return result;
   }
@@ -5449,9 +5549,16 @@
     }
   }
 
+  // Sampled off the click path (see navigation-scroll.ts) so `navigate()`
+  // never forces a synchronous layout of the outgoing conversation just to
+  // remember where it was scrolled to.
+  const navigationScrollTracker = createNavigationScrollTracker(
+    () => (typeof document === "undefined" ? null : document),
+  );
+  $effect(() => () => navigationScrollTracker.stop());
+
   function readNavigationScroll(): NavigationScrollState | null {
-    if (typeof document === "undefined") return null;
-    return captureNavigationScroll(document);
+    return navigationScrollTracker.read();
   }
 
   function stopScrollRestore(): void {
@@ -5793,6 +5900,7 @@
     getScope: () => currentNavigationScope(),
     captureCurrent: () => captureCurrentNavigation(),
     captureScroll: () => readNavigationScroll(),
+    invalidateScroll: () => navigationScrollTracker.invalidate(),
     resolve: (destination, context) =>
       resolveShellDestination(destination, context),
     apply: (applied) => applyCommittedNavigation(applied),
@@ -6653,8 +6761,8 @@
       scopeId: isDm
         ? conversationPairKey(selfUid, row.personUid ?? "")
         : (row.channelId?.trim() ?? ""),
-      presignPut: (cmp, key, contentType) =>
-        adapter.files.presignVaultPut(cmp, key, contentType),
+      presignPut: (cmp, key, contentType, integrity) =>
+        adapter.files.presignVaultPut(cmp, key, contentType, integrity),
       // Vault buckets have no CORS. Web hops through same-origin; desktop
       // sends bytes from Rust so WKWebView never PUTs to S3.
       putObject:
@@ -7907,6 +8015,8 @@
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
+          loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
+          loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botRuntimeStatus={localBotRuntimeStatus}
@@ -7954,6 +8064,7 @@
             }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
+            onopensettings={() => openSettings("notifications")}
           />
         </div>
         {#if view === "shared-files"}
@@ -8252,6 +8363,15 @@
                     </button>
                   {/each}
                 </nav>
+              {/if}
+
+              {#if showNotifyBell && selectedRow}
+                <ChannelMuteControl
+                  level={selectedRow.notifyLevel ?? null}
+                  rememberedLevel={unmuteTarget}
+                  busy={notifyLevelBusy}
+                  onchange={(level) => void changeSelectedNotifyLevel(level)}
+                />
               {/if}
 
               {#if showMemberPill}

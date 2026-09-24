@@ -19,9 +19,11 @@ import {
   unavailable,
   validateFetchReplyThread,
   validateSendReply,
+  vaultPutIntegrityFields,
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
+  type AgentProvisionOptionsView,
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
@@ -81,6 +83,11 @@ export const WEB_PATHS = {
     `/v1/notify/connections/${action}`,
   markChannelRead: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/read`,
+  /** GET/PUT the caller's fine-grained notification prefs. */
+  notifyPrefs: "/v1/notify/prefs",
+  /** PUT `{ level }` — the caller's notification level for one channel. */
+  channelNotifyLevel: (id: string) =>
+    `/v1/notify/channels/${encodeURIComponent(id)}/notify-level`,
   /** GET two-way DM history. */
   dmThread: "/v1/notify/thread",
   /** POST body `{ withPersonUid }` — pair lastReadAt (US-010). */
@@ -469,7 +476,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
    * byte-for-byte.
    */
   private legacyHasFeature(flag: string): AdapterPromise<boolean> {
-    if (flag === "meetings") {
+    if (flag === "meetings" || flag === "agents.claude-provider") {
       return Promise.resolve(ok(false));
     }
     return this.get(WEB_PATHS.hasFeature(flag));
@@ -675,6 +682,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       return this.post(WEB_PATHS.dmRequestRespond(action), { pairKey: key });
     },
     markChannelRead: (id) => this.post(WEB_PATHS.markChannelRead(id), {}),
+    getNotifyPrefs: () => this.request("GET", WEB_PATHS.notifyPrefs),
+    updateNotifyPrefs: (patch) =>
+      this.request("PUT", WEB_PATHS.notifyPrefs, patch),
+    setChannelNotifyLevel: (id, level) =>
+      this.request("PUT", WEB_PATHS.channelNotifyLevel(id), { level }),
     markDmThreadRead: async (uid) => {
       const withPersonUid = uid.trim();
       if (!withPersonUid)
@@ -930,6 +942,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    getProvisionOptions: (companyUid) =>
+      this.get<AgentProvisionOptionsView>(AGENT_PATHS.provisionOptions(companyUid)),
     getStatus: (agentUid) => this.get(WEB_PATHS.agentStatus(agentUid)),
     listMobileRoster: (companyUid) =>
       this.get(WEB_PATHS.agentMobileRoster(companyUid)),
@@ -1049,12 +1063,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
         op: "get",
         key,
       }),
-    presignVaultPut: (companyUid, key, contentType) =>
+    presignVaultPut: (companyUid, key, contentType, integrity) =>
       this.post(WEB_PATHS.filesPresign, {
         company: companyUid,
         op: "put",
         key,
         contentType,
+        ...vaultPutIntegrityFields(integrity),
       }),
     getAuthorizedPreview: async () => NO_API,
     revealInFinder: async () => DESKTOP_ONLY,

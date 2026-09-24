@@ -48,6 +48,8 @@
     onopen?: (item: NotificationItem) => void;
     /** Host already verified a session — never tell a signed-in user to sign in. */
     signedIn?: boolean;
+    /** Open Settings > Notifications. Absent: the link is hidden. */
+    onopensettings?: () => void;
   }
 
   let {
@@ -57,6 +59,7 @@
     wakeSeq = 0,
     onopen,
     signedIn = false,
+    onopensettings,
   }: Props = $props();
 
   let feedState = $state(emptyFeedState("all") as NotificationsFeedState);
@@ -365,6 +368,16 @@
       >
         {markAllPending ? "Marking…" : "Mark all read"}
       </button>
+      {#if onopensettings}
+        <button
+          type="button"
+          class="notif-mark-all"
+          data-testid="notifications-open-settings"
+          onclick={() => onopensettings?.()}
+        >
+          Notification settings
+        </button>
+      {/if}
     </div>
     {/snippet}
   </PageHeader>

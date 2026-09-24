@@ -153,6 +153,96 @@ export function restoreNavigationScroll(
   return true;
 }
 
+/**
+ * Track the active scroller's position off the click path.
+ *
+ * `captureNavigationScroll` reads `scrollTop`/`offsetTop` on the transcript's
+ * DOM, and any geometry read forces the browser to flush a pending layout
+ * for the whole document before it can answer. Calling it synchronously
+ * inside the row-click handler (the old `rememberScroll` in
+ * `navigation-controller.ts`) meant every conversation switch paid for a
+ * full layout of the *outgoing* conversation's DOM before the new row's
+ * highlight or loading state could paint — the click's own tick has to
+ * finish before the browser gets a frame, and this reflow ran inside it.
+ * On a long transcript that reflow is the "noticeable lag" reported: the
+ * result is unaffected by which conversation just got selected, purely a
+ * cost of measuring the one being left.
+ *
+ * This tracker instead samples the scroller on `scroll`/`resize`, throttled
+ * to one measurement per animation frame, so the expensive read happens
+ * while the user is scrolling (off the critical path) rather than the
+ * instant they click. `read()` then just returns the last sample — no DOM
+ * access, no forced layout — so it is safe to call from `navigate()`.
+ *
+ * A sample only describes the destination that was on screen while it was
+ * taken. `navigate()`/`traverse()` consume the sample (via `read()`) for the
+ * entry being *left*, then commit a new destination. If the new destination
+ * renders without ever firing `scroll`/`resize` (a short conversation with
+ * no overflow, or one that opens already at its natural position), the old
+ * sample would otherwise sit in `last` and get attributed to whichever
+ * destination is left *next* — stale state from a conversation two hops
+ * back landing on the wrong entry. `invalidate()` is called right after a
+ * destination commits: it drops the stale sample and schedules a fresh rAF
+ * read of the new destination, so by the time that destination is itself
+ * left, `read()` either has its own sample or (if left before the first
+ * frame renders) correctly returns null instead of another entry's state.
+ */
+export function createNavigationScrollTracker(
+  readRoot: () => ParentNode | null | undefined,
+): {
+  read: () => NavigationScrollState | null;
+  invalidate: () => void;
+  stop: () => void;
+} {
+  let last: NavigationScrollState | null = null;
+  let rafHandle: number | null = null;
+
+  const sample = (): void => {
+    rafHandle = null;
+    try {
+      last = captureNavigationScroll(readRoot());
+    } catch {
+      /* sampling is best-effort */
+    }
+  };
+
+  const schedule = (): void => {
+    if (rafHandle != null) return;
+    rafHandle =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(sample)
+        : (setTimeout(sample, 16) as unknown as number);
+  };
+
+  const target = typeof document === "undefined" ? null : document;
+  target?.addEventListener("scroll", schedule, { capture: true, passive: true });
+  target?.defaultView?.addEventListener("resize", schedule, { passive: true });
+  // Prime an initial sample so the very first navigate() has something to
+  // hand back instead of null.
+  schedule();
+
+  return {
+    read: () => last,
+    // Drop the outgoing destination's sample and queue a fresh one for
+    // whatever just became current. Scheduling (not sampling now) keeps this
+    // off the commit's own synchronous path — the read happens in the next
+    // frame's normal layout pass, after the new destination has rendered.
+    invalidate: () => {
+      last = null;
+      schedule();
+    },
+    stop: () => {
+      if (rafHandle != null) {
+        if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(rafHandle);
+        else clearTimeout(rafHandle);
+        rafHandle = null;
+      }
+      target?.removeEventListener("scroll", schedule, true);
+      target?.defaultView?.removeEventListener("resize", schedule);
+    },
+  };
+}
+
 export function scheduleNavigationScrollRestore(
   readRoot: () => ParentNode | null | undefined,
   scroll: NavigationScrollState,

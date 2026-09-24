@@ -33,6 +33,7 @@
  * with no durable messages — never fabricate a timestamp for it (an empty
  * channel must NEVER bucket under "today"). */
 import { startJitteredPoll } from "@hq/platform";
+import type { NotifyLevel } from "./notify-level";
 
 export interface ChannelDirectoryRow {
   channelId: string;
@@ -59,10 +60,14 @@ export interface ChannelDirectoryRow {
   lastActivityAt: string | null;
   /** Notify-channel created stamp — sidebar fallback when activity is a provision clone. */
   createdAt?: string | null;
+  /** Channel creator uid (drives the default notification level). */
+  createdBy?: string | null;
   /** Notify-channel updated stamp — used to detect doctor/ensure "now" clones. */
   updatedAt?: string | null;
   unreadCount?: number;
   mentionFlag?: boolean;
+  /** Caller's notification level; absent when the source did not carry one. */
+  notifyLevel?: NotifyLevel | null;
   memberCount?: number;
   /** Group-DM roster (caller excluded) so the rail can name unnamed chats. */
   members?: Array<{ personUid: string; displayName: string }>;

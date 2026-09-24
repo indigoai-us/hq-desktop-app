@@ -549,23 +549,13 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     expect(otherTerminationFingerprint).toContain('error_class,');
     expect(otherTerminationFingerprint).toContain('totals.runner_error_causes.fingerprint_token()');
     expect(otherTerminationFingerprint).toContain('totals.runner_error_sites.fingerprint_token()');
-    // Watcher seam (commands::daemon): the token is carried on the context from the
-    // SAME shared rollup and validated before it enters the fingerprint.
+    // Watcher seam keeps the same shared cause rollup as a diagnostic tag, while
+    // the new stable class fingerprint is independent of the manual-runner axes.
     expect(daemonSource).toContain(
       'runner_error_cause: totals.runner_error_causes.fingerprint_token()',
     );
-    expect(daemonSource).toContain(
-      'let runner_error_cause = safe_runner_error_cause_fingerprint_token(context.runner_error_cause);',
-    );
-    const watcherFp = sliceBetween(
-      daemonSource,
-      'let runner_error_cause = safe_runner_error_cause_fingerprint_token(context.runner_error_cause);',
-      '];',
-      'watcher runner-termination fingerprint',
-    );
-    expect(watcherFp).toContain('"auto-sync-watcher-termination"');
-    expect(watcherFp).toContain('runner_error_class,');
-    expect(watcherFp).toContain('runner_error_cause,');
+    expect(daemonSource).toContain('let fingerprint = ["sync-watcher-exit", exit_class];');
+    expect(daemonSource).toContain('tags.push(("runner_error_causes", causes.clone()))');
   });
 
   it('derives BOTH watcher validators from the enums, not a hand-written allow-list', () => {
@@ -715,7 +705,7 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
     expect(otherTerminationFingerprint).toContain('totals.runner_error_sites.fingerprint_token()');
   });
 
-  it('emits the site tag and the sixth fingerprint element at the watcher seam, enum-validated', () => {
+  it('keeps the enum-derived site diagnostic tag beside the stable watcher fingerprint', () => {
     const captureContext = sliceBetween(
       daemonSource,
       'fn watcher_exit_capture_context(',
@@ -724,29 +714,12 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
     );
     expect(captureContext).toContain('runner_error_site: totals.runner_error_sites.fingerprint_token()');
     expect(captureContext).toContain('runner_error_sites: totals.runner_error_sites.tag_value()');
-    // The watcher validator is DERIVED from RunnerErrorSite::ALL (not a hand list),
-    // exactly the drift class PR #544 closed for the class/cause validators.
-    const siteValidator = sliceBetween(
-      daemonSource,
-      "fn safe_runner_error_site_fingerprint_token(candidate: &'static str) -> &'static str {",
-      '}',
-      'site validator',
-    );
-    expect(siteValidator).toContain('RunnerErrorSite::ALL');
-    expect(siteValidator).toContain('.as_str() == candidate');
-    expect(daemonSource).toContain(
-      'let runner_error_site = safe_runner_error_site_fingerprint_token(context.runner_error_site);',
-    );
-    const watcherFp = sliceBetween(
-      daemonSource,
-      'let runner_error_site = safe_runner_error_site_fingerprint_token(context.runner_error_site);',
-      '];',
-      'watcher runner-termination fingerprint',
-    );
-    expect(watcherFp).toContain('runner_error_cause,');
-    expect(watcherFp).toContain('runner_error_site,');
-    // The tag is pushed on the watcher route too, from the same shared rollup.
+    // The site remains visible as a tag from the shared enum-owned rollup, but
+    // never becomes a fingerprint axis after c061's stable two-part grouping.
     expect(daemonSource).toContain('tags.push(("runner_error_sites", sites.clone()))');
+    expect(daemonSource).toContain('let fingerprint = ["sync-watcher-exit", exit_class];');
+    expect(telemetrySource).toContain('"runner_error_sites" => Some(is_closed_vocab_count_rollup(');
+    expect(telemetrySource).toContain('RUNNER_ERROR_SITE_TOKENS');
   });
 
   it('guards the site axis at egress (hq-telemetry)', () => {

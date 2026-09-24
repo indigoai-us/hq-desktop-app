@@ -939,6 +939,7 @@ fn main() {
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
             commands::dm_notify::poll_dm_inbox,
+            commands::dm_notify::invalidate_notify_prefs_cache,
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::open_inbox_window,
             commands::dm_notify::open_communications_window,
@@ -1038,6 +1039,9 @@ fn main() {
             if commands::headless_install::maybe_run(app.handle()) {
                 return Ok(());
             }
+            commands::watcher_exit_lifecycle::initialize_watcher_exit_lifecycle();
+            #[cfg(target_os = "macos")]
+            commands::watcher_exit_lifecycle::initialize_macos_power_observer();
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.

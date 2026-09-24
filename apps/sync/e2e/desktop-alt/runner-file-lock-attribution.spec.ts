@@ -299,6 +299,17 @@ function exitDescription(fx: RunFixture): string {
   return `with code ${fx.code}`;
 }
 
+/** Stable watcher grouping class for the status shape retained by this model. */
+function watcherExitClass(fx: RunFixture): string {
+  if (fx.retainedFatalClass === 'heap_oom') return 'runner_memory';
+  if (isWindowsFaultCode(fx.code)) return 'stack_buffer_overrun';
+  if (fx.code === -1) return 'minus_one';
+  if (fx.signal === 15) return 'sigterm';
+  if (fx.signal === 9) return 'sigkill';
+  if (fx.retainedFatalClass === 'node_fatal') return 'node_fatal';
+  return 'other';
+}
+
 /** Model the MANUAL boundary's Sentry + UI outcome for one exit. */
 function simulateManualExit(fx: RunFixture, policy: Policy): ExitOutcome {
   if (policy === 'post-fix' && isFileLockVerdict(fx)) {
@@ -347,9 +358,10 @@ function simulateWatcherExit(fx: RunFixture, policy: Policy): ExitOutcome {
     captures: [
       {
         message: `auto-sync watcher exited unexpectedly (${exitDescription(fx)}), consecutive failure #1`,
-        fingerprint: ['sync', 'auto-sync-watcher-termination', fx.retainedFatalClass],
+        fingerprint: ['sync-watcher-exit', watcherExitClass(fx)],
         tags: {
           sync_route: 'watcher',
+          exit_class: watcherExitClass(fx),
           runner_fatal_class: fx.retainedFatalClass,
           runner_error_rollup: fx.rollup,
         },

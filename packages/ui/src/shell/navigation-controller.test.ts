@@ -45,6 +45,7 @@ function controllerWith(
     accountId?: () => string;
     capture?: () => NavigationEntry | null;
     captureScroll?: () => NavigationScrollState | null;
+    invalidateScroll?: () => void;
   },
 ): {
   controller: NavigationController;
@@ -58,6 +59,7 @@ function controllerWith(
     getScope: () => scope(accountId()),
     captureCurrent: options?.capture,
     captureScroll: options?.captureScroll,
+    invalidateScroll: options?.invalidateScroll,
     resolve: (destination) => resolve(destination),
     apply: (next) => {
       applied.push(next);
@@ -274,6 +276,65 @@ describe("navigation controller commit boundary", () => {
       id: "evt_mid",
       offset: 420,
     });
+  });
+
+  /**
+   * Regression coverage for the stale-destination-scroll bug: a scroll
+   * sample only describes whichever conversation was on screen when it was
+   * taken. If B never fires a fresh sample (a short conversation with no
+   * scroll/resize event) and the tracker is never told "B just became
+   * current", the next `captureScroll()` call (leaving B for C) still hands
+   * back A's stale sample, and B's history entry gets stamped with A's
+   * scroll state instead of its own.
+   *
+   * The controller now calls `deps.invalidateScroll?.()` right after every
+   * commit, so a scroll-tracker implementation can drop the outgoing
+   * sample there. This test uses a fake tracker (mirroring
+   * `createNavigationScrollTracker`'s real invalidate-then-resample shape)
+   * to prove: (1) `invalidateScroll` fires exactly once per commit, right
+   * after `apply`, and (2) if the caller wires it up to clear its sample,
+   * the entry for a never-scrolled destination is recorded as null rather
+   * than reusing the previous destination's offset.
+   */
+  it("invalidates the scroll sample on every commit so a never-scrolled destination is not stamped with the previous one's state", () => {
+    let sample: NavigationScrollState | null = { kind: "pixel", id: null, offset: 800 };
+    let invalidateCalls = 0;
+    const { controller } = controllerWith(
+      (destination) => ({ status: "ready", destination }),
+      {
+        captureScroll: () => sample,
+        invalidateScroll: () => {
+          invalidateCalls += 1;
+          // Mirror the real tracker: invalidation drops the sample; only a
+          // fresh scroll/resize on the new destination would repopulate it.
+          sample = null;
+        },
+      },
+    );
+
+    // Land on A already scrolled to 800 (simulated: pretend A committed and
+    // then scrolled before we navigate away).
+    controller.navigate(dest("channel", "a"));
+    sample = { kind: "pixel", id: null, offset: 800 };
+
+    // A -> B. rememberScroll() reads A's 800 and stamps it on A's entry;
+    // commit then invalidates, clearing `sample` since B never scrolls.
+    controller.navigate(dest("channel", "b"));
+    expect(invalidateCalls).toBe(2); // once for A's commit, once for B's
+
+    // B -> C with no scroll ever happening in B: the sample handed to
+    // rememberScroll() for B must be null, not A's leftover 800.
+    controller.navigate(dest("channel", "c"));
+
+    const entries = controller.history.snapshot().entries;
+    const entryA = entries.find(
+      (e) => (e.destination as { channelId?: string }).channelId === "chn_a",
+    );
+    const entryB = entries.find(
+      (e) => (e.destination as { channelId?: string }).channelId === "chn_b",
+    );
+    expect(entryA?.scroll).toEqual({ kind: "pixel", id: null, offset: 800 });
+    expect(entryB?.scroll ?? null).toBeNull();
   });
 
   it("clears the stack on account change so prior destinations are not restorable", () => {

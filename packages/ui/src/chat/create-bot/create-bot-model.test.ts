@@ -79,12 +79,39 @@ function ctx(over: Partial<CreateBotContext> = {}): CreateBotContext {
       { slug: "acme", label: "Acme" },
     ],
     templates: WORKERS,
+    claudeProviderEnabled: true,
+    cloudQuoteStatus: "ready",
+    cloudApiKeyPresent: true,
+    cloudProvisionOptions: {
+      defaultInstanceType: "t4g.medium",
+      catalogVersion: "test",
+      options: [
+        {
+          key: "basic",
+          productName: "Basic",
+          instanceType: "t4g.medium",
+          listCents: 5000,
+          default: true,
+          selectable: true,
+          netMonthlyCents: 5000,
+          deltaCents: 5000,
+          unavailableReason: null,
+          notBilled: false,
+          lanes: 1,
+          workers: 1,
+        },
+      ],
+    },
     ...over,
   };
 }
 
 function draft(over: Partial<CreateBotDraft> = {}, c: CreateBotContext = ctx()): CreateBotDraft {
-  return { ...initialDraft(c), ...over };
+  return {
+    ...initialDraft(c),
+    ...(over.home === "cloud" ? { size: "basic" as const } : {}),
+    ...over,
+  };
 }
 
 describe("initialDraft", () => {
@@ -96,6 +123,7 @@ describe("initialDraft", () => {
 
   it("opens on Cloud when this Mac cannot host a bot", () => {
     expect(initialDraft(ctx({ canLocal: false })).home).toBe("cloud");
+    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("codex");
     expect(firstReadyRuntime(null)).toBe("claude");
     expect(firstReadyRuntime({ claude: false, codex: false, grok: false })).toBe("claude");
   });
@@ -281,6 +309,15 @@ describe("steps", () => {
     expect(stepIssue("details", cloud({ name: "Polar", handle: "!!!", title: "x".repeat(61) }), c)).toContain(
       "Give your bot a handle",
     );
+  });
+
+  it("requires server permission, a selectable tenant quote, and a key for API-key auth", () => {
+    const base = draft({ home: "cloud", companyUid: "cmp_acme", name: "Polar", size: "basic" });
+    expect(stepIssue("details", base, ctx({ claudeProviderEnabled: false }))).toContain("Claude isn’t available");
+    expect(stepIssue("details", { ...base, runtime: "codex" }, ctx({ cloudQuoteStatus: "loading" }))).toContain("Checking company pricing");
+    expect(stepIssue("details", { ...base, runtime: "codex", size: "power" }, ctx())).toBe("Choose an available size.");
+    expect(stepIssue("details", { ...base, runtime: "codex", authMode: "apiKey" }, ctx({ cloudApiKeyPresent: false }))).toBe("Enter an API key to continue.");
+    expect(stepIssue("details", { ...base, runtime: "codex" }, ctx())).toBeNull();
   });
 
   it("cloud details validates the name and the @handle it will be created under", () => {

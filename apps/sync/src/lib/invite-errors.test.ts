@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isAlreadyScheduledError, isPlanRequiredError } from './invite-errors';
+import {
+  isAlreadyScheduledError,
+  isPlanRequiredError,
+  planRequiredUpgradeUrl,
+} from './invite-errors';
 
 describe('isAlreadyScheduledError', () => {
   it('matches the atomic dedup-lock 409 (bot-already-scheduling)', () => {
@@ -57,5 +61,42 @@ describe('isPlanRequiredError', () => {
     ).toBe(false);
     expect(isPlanRequiredError('bot/invite HTTP 500: server error')).toBe(false);
     expect(isPlanRequiredError(null)).toBe(false);
+  });
+});
+
+describe('planRequiredUpgradeUrl', () => {
+  it('preserves the server-selected upgrade URL from a flattened Tauri error', () => {
+    const upgradeUrl = 'https://hq.computer/companies/acme/billing?upgrade=team';
+    expect(
+      planRequiredUpgradeUrl(
+        new Error(
+          `bot/invite HTTP 402: ${JSON.stringify({
+            code: 'MEETING_PLAN_REQUIRED',
+            requiredPlan: 'agents-500',
+            upgradeUrl,
+          })}`,
+        ),
+      ),
+    ).toEqual({ kind: 'available', url: upgradeUrl });
+  });
+
+  it('returns no URL for unrelated failures or an invalid server URL', () => {
+    expect(planRequiredUpgradeUrl('bot/invite HTTP 500: server error')).toEqual({
+      kind: 'not-plan-error',
+    });
+    expect(
+      planRequiredUpgradeUrl(
+        'bot/invite HTTP 402: {"code":"MEETING_PLAN_REQUIRED","upgradeUrl":"file:///etc/passwd"}',
+      ),
+    ).toEqual({ kind: 'invalid' });
+  });
+
+  it('distinguishes a missing upgrade URL from a malformed one', () => {
+    expect(planRequiredUpgradeUrl('bot/invite HTTP 402: {"code":"MEETING_PLAN_REQUIRED"}')).toEqual({
+      kind: 'missing',
+    });
+    expect(
+      planRequiredUpgradeUrl('bot/invite HTTP 402: {"code":"MEETING_PLAN_REQUIRED","upgradeUrl":" https://hq.computer/upgrade"}'),
+    ).toEqual({ kind: 'invalid' });
   });
 });

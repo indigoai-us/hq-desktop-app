@@ -82,6 +82,7 @@ pub mod message_search;
 pub mod messages;
 pub mod native_notify;
 pub mod notify_authz;
+pub mod notify_prefs;
 pub mod oauth;
 pub mod paths;
 pub mod prewarm;

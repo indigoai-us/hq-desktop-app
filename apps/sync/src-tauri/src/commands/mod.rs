@@ -86,6 +86,7 @@ pub mod vault_client;
 pub mod vault_s3;
 pub mod version_gate;
 pub mod windows_teardown_probe;
+pub mod watcher_exit_lifecycle;
 pub mod window_material;
 pub mod workspaces;
 
