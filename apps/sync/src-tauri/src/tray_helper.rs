@@ -134,23 +134,44 @@ pub fn spawn_and_poll(app: &AppHandle) {
             };
             let _ = std::fs::remove_file(&cf);
             let cmd = cmd.trim();
-            // Menu-bar click opens the desktop workspace (setup still keeps the
-            // installer card on `main`). Parse the icon's on-screen centre
-            // ("show <x>", Cocoa points) so that card anchors under the icon.
+            // Every click (menu or not) reports the icon's on-screen centre
+            // ("show <x>", Cocoa points) so that WHENEVER a window later needs
+            // to anchor under this icon — e.g. the onboarding card shown by
+            // "Open desktop view" while setup is unfinished — the anchor is
+            // fresh. This is anchor-only: a left-click no longer activates the
+            // app directly, since it opens the menu instead (see
+            // hq-tray-helper.swift's `statusItemClicked`); "Open desktop
+            // view" and the other menu items own activation from here.
             if let Some(rest) = cmd.strip_prefix("show") {
                 if let Ok(points) = rest.trim().parse::<f64>() {
                     crate::tray::set_tray_anchor_x(points);
                 }
-                // Window ops MUST run on the main thread — calling them from
-                // this poll thread deadlocks AppKit.
-                let app_main = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    crate::tray::activate_primary_surface(&app_main);
-                });
             } else {
                 match cmd {
                     "sync" => {
                         let _ = app.emit("tray:sync-now", ());
+                    }
+                    // Pause/Resume Sync menu item. Flips the SAME `cloudPaused`
+                    // flag the sync gates in `commands/sync.rs` /
+                    // `commands/daemon.rs` already read (see
+                    // `commands::settings::toggle_cloud_paused_sync`) — no
+                    // second pause flag. The Swift helper re-reads
+                    // `menubar.json` itself right before it shows the menu, so
+                    // there is nothing to push back to it here beyond
+                    // notifying the frontend.
+                    "toggle-pause" => {
+                        let app_main = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            match crate::commands::settings::toggle_cloud_paused_sync(&app_main) {
+                                Ok(paused) => {
+                                    let _ = app_main.emit_to("main", "tray:cloud-paused-changed", paused);
+                                }
+                                Err(e) => log(
+                                    "tray",
+                                    &format!("pause-sync toggle failed: {e}"),
+                                ),
+                            }
+                        });
                     }
                     // Right-click menu: "Open desktop view" / "Open Inbox" /
                     // "Sign Out". Relayed to the frontend, which routes them

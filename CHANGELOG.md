@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The menu bar icon's menu now has a Pause Sync / Resume Sync item, and clicking the icon with either mouse button opens that menu (previously only a right-click did; a left-click opened the app window instead). While sync is paused, Sync Now is disabled and the icon's tooltip shows "Paused".
+
 ## [0.10.315] — 2026-09-24
 
 - Switching channels or DMs in the sidebar now shows the new conversation

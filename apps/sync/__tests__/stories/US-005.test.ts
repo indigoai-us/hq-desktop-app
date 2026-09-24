@@ -56,11 +56,16 @@ describe('US-005: Alt Home surface wires to real sync state and events', () => {
 // Retargeted by hq-desktop-windows-reliability US-004: tray/menubar left-click
 // toggles the compact popover; full desktop is explicit Open HQ / shortcut only.
 describe('US-005 acceptance: menubar icon click opens the desktop workspace', () => {
-  it("tray_helper 'show' path marshals activate_primary_surface (not toggle_desktop_window)", () => {
+  it("tray_helper 'show' path is anchor-only; activation goes through the menu instead", () => {
+    // "show <x>" used to both record the anchor AND activate the app on a
+    // left-click. Left-click now opens the menu (see the left-click test
+    // below), so "show" only records the anchor — the menu's "Open desktop
+    // view" item owns activation via `tray:open-desktop` -> `open_desktop_alt_window`,
+    // which runs the same setup-guard/onboarding-card fallback
+    // `activate_primary_surface` used to.
     expect(trayHelper).toContain('strip_prefix("show")');
     expect(trayHelper).toContain('set_tray_anchor_x');
-    expect(trayHelper).toMatch(/run_on_main_thread\([\s\S]*?activate_primary_surface/);
-    expect(trayHelper).toContain('crate::tray::activate_primary_surface');
+    expect(trayHelper).not.toContain('crate::tray::activate_primary_surface');
     expect(trayHelper).not.toMatch(
       /strip_prefix\("show"\)[\s\S]*?toggle_desktop_window/,
     );
@@ -82,11 +87,20 @@ describe('US-005 acceptance: menubar icon click opens the desktop workspace', ()
     expect(body).toMatch(/if let Err[\s\S]*?show_onboarding_window/);
   });
 
-  it('non-macOS on_tray_icon_event left-click opens the desktop workspace', () => {
-    expect(trayRs).toContain('on_tray_icon_event');
-    expect(trayRs).toMatch(
-      /TrayIconEvent::Click\s*\{[\s\S]*?MouseButton::Left[\s\S]*?activate_primary_surface/,
-    );
+  it('non-macOS tray shows the menu on left-click too (not just right-click)', () => {
+    // Left-click opening the app window directly was removed — "Open desktop
+    // view" in the menu is now the only way to open the app window, and a
+    // left-click surfaces the same menu a right-click does. `on_tray_icon_event`
+    // stays wired, but only to record the native-panic-seam diagnostic marker
+    // for the left-click gesture — it no longer activates anything.
+    expect(trayRs).toContain('show_menu_on_left_click(true)');
+    const clickIdx = trayRs.indexOf('if let TrayIconEvent::Click {');
+    expect(clickIdx).toBeGreaterThan(-1);
+    const endIdx = trayRs.indexOf('.build(app)?;', clickIdx);
+    const clickBody = trayRs.slice(clickIdx, endIdx);
+    expect(clickBody).toContain('MouseButton::Left');
+    expect(clickBody).toContain('record_native_panic_seam');
+    expect(clickBody).not.toContain('activate_primary_surface');
   });
 });
 

@@ -146,16 +146,24 @@ describe('PL-06: `main` keeps running as the controller while it renders nothing
 });
 
 describe('PL-06: no activation path can show an empty `main`', () => {
-  it('routes tray left-click, the Dock icon and a second launch through the setup guard', () => {
+  it('routes the Dock icon and a second launch through the setup guard', () => {
     expect(tray).toMatch(
       /pub fn activate_primary_surface[\s\S]*?onboarding_window_requires_blur_suppression\(app\)[\s\S]*?show_onboarding_window\(app\)[\s\S]*?show_desktop_window\(app\)/,
     );
-    // Tray left-click (in-process icon) and the macOS helper both take it.
-    expect(tray).toContain('activate_primary_surface(&app_handle)');
-    expect(trayHelper).toContain('crate::tray::activate_primary_surface(&app_main)');
-    // Dock click + second launch.
+    // Dock click + second launch still activate directly.
     expect(mainRs).toContain('tray::activate_primary_surface(_app_handle)');
     expect(mainRs).toContain('tray::activate_primary_surface(app)');
+  });
+
+  it("routes tray left-click through the menu's Open desktop view guard instead of direct activation", () => {
+    // Tray left-click no longer opens the app window directly on either
+    // surface — it opens the same menu a right-click does, and "Open desktop
+    // view" is what opens the window from there, guarded the same way.
+    expect(tray).toContain('show_menu_on_left_click(true)');
+    expect(tray).not.toContain('activate_primary_surface(&app_handle)');
+    expect(trayHelper).not.toContain('crate::tray::activate_primary_surface(&app_main)');
+    expect(script).toContain("listen('tray:open-desktop'");
+    expect(script).toContain("invoke('open_desktop_alt_window')");
   });
 
   it('gives the desktop global shortcut no popover fallback', () => {

@@ -695,6 +695,7 @@ fn main() {
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::settings::toggle_cloud_paused,
             commands::telemetry::post_telemetry_opt_in,
             commands::telemetry::get_telemetry_consent_status,
             commands::telemetry::consent_reprompt_status,
