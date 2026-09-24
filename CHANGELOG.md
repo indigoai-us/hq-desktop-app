@@ -8,14 +8,6 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-## [0.10.322] — 2026-09-24
-
-- Each company now has exactly one "company home" channel (settings,
-  wallpaper). Other channels created inside a company are plain team
-  channels. A new "Companies" section in the sidebar pins each company's
-  home channel, and you can choose which companies show there.
-- Company home channels show Chat only — the Office tab is hidden for
-  company channels for now (the underlying calling code is unchanged).
 - Fixed a bug where every company in the sidebar's "Companies" section showed
   "no home channel yet," even companies with a working home channel. The
   fallback check that resolves a home channel while the server catches up was
@@ -26,6 +18,15 @@ The release moves it under the version it ships in.
   activity; pinning any company from the header's pin menu switches the
   section to show only your pinned companies. A company whose home channel
   isn't loaded yet is now resolved on demand instead of staying stuck.
+
+## [0.10.322] — 2026-09-24
+
+- Each company now has exactly one "company home" channel (settings,
+  wallpaper). Other channels created inside a company are plain team
+  channels. A new "Companies" section in the sidebar pins each company's
+  home channel, and you can choose which companies show there.
+- Company home channels show Chat only — the Office tab is hidden for
+  company channels for now (the underlying calling code is unchanged).
 
 ## [0.10.321] — 2026-09-24
 
