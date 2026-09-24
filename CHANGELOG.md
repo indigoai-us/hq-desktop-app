@@ -8,10 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Each company now has exactly one "company home" channel (Office tab,
-  settings, wallpaper). Other channels created inside a company are plain
-  team channels. A new "Companies" section in the sidebar pins each
-  company's home channel, and you can choose which companies show there.
+- Each company now has exactly one "company home" channel (settings,
+  wallpaper). Other channels created inside a company are plain team
+  channels. A new "Companies" section in the sidebar pins each company's
+  home channel, and you can choose which companies show there.
+- Company home channels show Chat only — the Office tab is hidden for
+  company channels for now (the underlying calling code is unchanged).
 
 ## [0.10.321] — 2026-09-24
 

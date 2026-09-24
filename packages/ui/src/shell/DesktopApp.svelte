@@ -156,7 +156,6 @@
     type CompanyChannelTabId,
     type CompanyTabModel,
   } from "../chat/tabs/tab-model.js";
-  import OfficePanel from "../meet/OfficePanel.svelte";
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
@@ -1362,9 +1361,8 @@
   let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
   /**
-   * US-018: the company tabs this host may actually offer. Office appears only
-   * when the platform adapter reports native calling, so the web build never
-   * advertises a destination it cannot open.
+   * The company tabs this host may actually offer. Office is currently hidden
+   * for all company channels; see `companyChannelTabsFor`.
    */
   const companyTabsForHost = $derived(
     companyChannelTabsFor({
@@ -5864,7 +5862,9 @@
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
-          companyTab = next.companyTab === "office" ? "office" : "chat";
+          // Office is hidden for company channels; route any stale deep
+          // link that targeted it back to Chat.
+          companyTab = "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
           const messageId = next.messageId?.trim() || "";
@@ -8468,17 +8468,10 @@
             />
           {/if}
 
-          <!-- One selected-company listener survives view/tab changes. Office UI is only visible on its tab. -->
-          {#if selectedRow.companyUid}
-            <div class="company-office-stage" class:office-background={!(isCompanyChannel && companyTab === "office")} data-testid="company-tab-panel-office">
-              <OfficePanel {adapter} {callsHost}
-                companyUid={selectedRow.companyUid}
-                companyLabel={selectedRow.title ?? "This company"}
-                displayName={(uid) => displayNameByUid[uid] || identities?.[uid] || uid}
-                visible={isCompanyChannel && companyTab === "office"}
-              />
-            </div>
-          {/if}
+          <!--
+            Office is hidden for company channels (see `companyChannelTabsFor`
+            above); OfficePanel is intentionally not mounted here anymore.
+          -->
 
           {#if isAgentChannel && agentSurface === "details" && agentChannelLocalBot}
             <LocalBotDetailPanel
@@ -8509,12 +8502,6 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => void leaveCurrentDestination()}
             />
-          {:else if isCompanyChannel && companyTab === "office"}
-            {#if companyTab === "office"}
-              <!--
-                US-018: OfficePanel is mounted above and shown via visible=.
-              -->
-            {/if}
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"
@@ -9576,13 +9563,6 @@
   .edit-profile-btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: 2px;
-  }
-
-  .company-office-stage.office-background { flex: none; height: 0; min-height: 0; overflow: visible; }
-  .company-office-stage {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
   }
 
   .project-tabs {

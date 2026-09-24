@@ -47,20 +47,16 @@ export interface CompanyTabCapabilities {
 }
 
 /**
- * The company tabs to render for a host. Office is appended ONLY when the
- * platform adapter reports native calling, so a browser (or a build without
- * it) never advertises a door it cannot open. The default is closed: a caller
- * that forgets to pass capabilities gets Chat only. Team and Settings live
- * in the HQ console.
+ * The company tabs to render for a host. Office is currently hidden for all
+ * company channels regardless of capabilities: company channels show Chat
+ * only (plus the existing settings gear). `capabilities` is accepted for API
+ * stability but no longer changes the result. Team and Settings live in the
+ * HQ console.
  */
 export function companyChannelTabsFor(
-  capabilities: CompanyTabCapabilities = {},
+  _capabilities: CompanyTabCapabilities = {},
 ): ReadonlyArray<{ id: CompanyChannelTabId; label: string }> {
-  const tabs: Array<{ id: CompanyChannelTabId; label: string }> = [
-    ...COMPANY_CHANNEL_TABS,
-  ];
-  if (capabilities.nativeCalls === true) tabs.push({ ...COMPANY_OFFICE_TAB });
-  return tabs;
+  return [...COMPANY_CHANNEL_TABS];
 }
 
 /** True for the company tabs that are fetched from the company-tab endpoint. */
