@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The setup bot now opens by asking whether you want HQ explained first or
+  want to jump straight into setup, instead of starting the first step right
+  away.
 - Fixed the channel list failing to load for people in companies with a lot of
   channels. The app was giving that request the same short timeout as every
   other one, so once a company's channel roster got large enough, the response

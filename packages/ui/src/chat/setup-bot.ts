@@ -66,9 +66,10 @@ export const SETUP_BOT_KICKOFF =
   "so do not greet again or repeat the plan. " +
   "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
   "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
-  "Then begin the first unfinished step right away, exactly as your instructions for the kickoff say: " +
-  "do the part you can do yourself, tell me in one line what you found or fixed, " +
-  "and end with exactly one concrete question or one concrete action for me. " +
+  "Then, exactly as your instructions for the kickoff say, do the part of the tools step you can do yourself, " +
+  "tell me in one line what you found or fixed, and ask whether I want HQ explained first or to jump straight in, " +
+  "in the exact words your instructions give; that is the one concrete question this message ends with. " +
+  "After I answer, begin the first unfinished step, ending each message with exactly one concrete question or one concrete action for me. " +
   "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
   "Never end with an open question like \"what would you like to do?\"";
 
