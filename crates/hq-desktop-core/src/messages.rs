@@ -140,6 +140,14 @@ pub struct Channel {
     /// to them as "added".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// True for the single company-home channel (created at company genesis,
+    /// named after the company slug) — the only `scope == "company"` channel
+    /// that carries Office/company-settings chrome. `#[serde(default)]` so
+    /// older server payloads that don't send this yet still parse; the
+    /// desktop UI falls back to `scope == "company" && name == companySlug`
+    /// when absent (see `isCompanyHomeChannel` in the TS `channels.ts`).
+    #[serde(default)]
+    pub is_company_home: bool,
 }
 
 /// Deserialization shape for [`Channel`]. The server's `membership` is either
@@ -185,6 +193,8 @@ struct ChannelWire {
     membership_source: Option<String>,
     #[serde(default)]
     created_by: Option<String>,
+    #[serde(default)]
+    is_company_home: bool,
 }
 
 impl From<ChannelWire> for Channel {
@@ -231,6 +241,7 @@ impl From<ChannelWire> for Channel {
             notify_level,
             membership_source,
             created_by: wire.created_by,
+            is_company_home: wire.is_company_home,
         }
     }
 }

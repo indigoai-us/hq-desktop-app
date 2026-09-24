@@ -8,6 +8,7 @@
 
 import {
   channelDisplayName,
+  isCompanyHomeChannel,
   mergeDirectoryUnread,
   type Channel,
   type ChannelMembership,
@@ -70,6 +71,14 @@ export interface ConversationRow {
    * under the project filters.
    */
   channelScope?: string;
+  /**
+   * True when the underlying channel is THE company home channel (one per
+   * company, created at genesis, named after the company slug). Only home
+   * channels carry Office/CompanyHero/company-settings chrome; other
+   * `channelScope === "company"` rows are plain team channels. See
+   * `isCompanyHomeChannel()` in channels.ts for the resolution rule.
+   */
+  isCompanyHome?: boolean;
   /** Underlying person uid when kind is dm. */
   personUid?: string;
   email?: string | null;
@@ -109,6 +118,7 @@ const CONVERSATION_ROW_RICHNESS_FIELDS = [
   "projectId",
   "channelId",
   "channelScope",
+  "isCompanyHome",
   "title",
   "personUid",
   "email",
@@ -212,6 +222,15 @@ export const SHOW_FILTER_STORAGE_KEY = "hq.chat.show-filter";
  * until the user pins it again.
  */
 export const SETUP_PIN_DISMISSED_STORAGE_KEY = "hq.chat.setup-pin-dismissed";
+/**
+ * Which companies the user has chosen to pin under the sidebar's "Companies"
+ * section (each pinned row opens that company's home channel). Stores an
+ * array of companyUids using the SAME per-tenant storage as `PINS_STORAGE_KEY`
+ * — no absent key or `null` sentinel means "not yet customized, show every
+ * company the user belongs to" (see `loadPinnedCompanies`); an explicit empty
+ * array means the user deliberately hid every company.
+ */
+export const PINNED_COMPANIES_STORAGE_KEY = "hq.chat.pinned-companies";
 
 // ── Timestamp helpers ────────────────────────────────────────────────────────
 
@@ -569,6 +588,13 @@ function newerIso(
 
 export interface NormalizeOptions {
   pinnedIds?: ReadonlySet<string> | readonly string[];
+  /**
+   * companyUid → slug, used only as the desktop fallback for resolving
+   * `isCompanyHome` on channels the server hasn't yet tagged (see
+   * `isCompanyHomeChannel()` in channels.ts). Absent/empty is safe — rows
+   * simply carry whatever `channel.isCompanyHome` the server sent (or none).
+   */
+  companySlugByUid?: ReadonlyMap<string, string> | Record<string, string>;
   /** Local DM activity dots (personUid set). Absent-safe. */
   dmDots?: ReadonlySet<string> | readonly string[];
   /** Recently opened pair threads — stay conversations after mark-read. */
@@ -616,11 +642,21 @@ export function normalizeChannel(
     parseActivityMs(channel.lastMessageAt),
   );
   const unread = Math.max(0, channel.unread ?? 0);
+  const companySlug = channel.companyUid
+    ? options.companySlugByUid instanceof Map
+      ? options.companySlugByUid.get(channel.companyUid)
+      : (options.companySlugByUid as Record<string, string> | undefined)?.[
+          channel.companyUid
+        ]
+    : undefined;
+  const isCompanyHome =
+    channel.scope === "company" ? isCompanyHomeChannel(channel, companySlug) : false;
 
   return {
     id,
     kind: isGroup ? "group" : "channel",
     ...(isGroup ? {} : { channelScope: channel.scope }),
+    ...(isGroup ? {} : { isCompanyHome }),
     title: channelDisplayName(channel, {
       projectTitles: options.projectTitles,
     }),
@@ -1526,6 +1562,113 @@ export function savePins(
   } catch {
     // Quota / private mode — best-effort.
   }
+}
+
+// ── "Companies" sidebar section — user-chosen company selection ────────────
+
+/**
+ * The user's chosen company selection for the sidebar's "Companies" section.
+ * `null` = no explicit choice yet (defaults to showing every company the
+ * caller belongs to, INCLUDING ones joined after the pref was last read — see
+ * `resolveCompanySectionSelection`). A non-null array is the exact set of
+ * companyUids to show, persisted verbatim (may legitimately be empty).
+ */
+export function loadPinnedCompanies(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): string[] | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(PINNED_COMPANIES_STORAGE_KEY);
+    if (raw == null) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((v): v is string => typeof v === "string");
+  } catch {
+    return null;
+  }
+}
+
+export function savePinnedCompanies(
+  companyUids: readonly string[],
+  storage: Pick<Storage, "setItem"> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(PINNED_COMPANIES_STORAGE_KEY, JSON.stringify([...companyUids]));
+  } catch {
+    // Quota / private mode — best-effort.
+  }
+}
+
+/**
+ * Finds THE home-channel row for a company by companyUid, among the caller's
+ * own (non-browse-only) channel rows. Used by both the sidebar's "Companies"
+ * section and the shell's slug-based channel lookup (`companyChannelRowForSlug`)
+ * so there is exactly one place that decides "which row is the company home."
+ */
+export function findCompanyHomeRow(
+  rows: ReadonlyArray<ConversationRow>,
+  companyUid: string,
+): ConversationRow | null {
+  const needle = companyUid.trim();
+  if (!needle) return null;
+  return (
+    rows.find((row) => {
+      if (row.kind !== "channel" || row.browseOnly) return false;
+      if ((row.channelScope ?? "") !== "company") return false;
+      if (!row.isCompanyHome) return false;
+      return (row.companyUid ?? "").trim() === needle;
+    }) ?? null
+  );
+}
+
+/** One row in the sidebar's "Companies" section. */
+export interface CompanySectionRow {
+  companyUid: string;
+  label: string;
+  iconUrl?: string | null;
+  /** The company's home-channel row, when one exists yet. Absent when the
+   * company has no home channel (new/legacy company still provisioning) —
+   * the section shows it disabled with a reason rather than hiding it, so a
+   * newly-joined company never silently disappears. */
+  homeRow: ConversationRow | null;
+}
+
+/**
+ * Resolves the sidebar's "Companies" section: one row per selected company,
+ * each carrying its home-channel row (if any) so the caller can open it.
+ *
+ * Selection semantics (product decision, step 8):
+ * - `selection === null` (no persisted pref yet) → every company the user
+ *   belongs to is shown. This also covers "newly joined companies show by
+ *   default" since a fresh join has no pref to exclude it.
+ * - `selection` is an array → only companies whose uid is listed are shown,
+ *   in `companies` order. An empty array is a valid, deliberate "hide all".
+ * - A company with no resolvable home-channel row is still included (with
+ *   `homeRow: null`) so the section can render it disabled with a reason,
+ *   per the brief's "hide or show disabled" choice — this implementation
+ *   shows disabled so the user isn't left wondering where a company went.
+ */
+export function resolveCompanySectionRows(
+  companies: ReadonlyArray<{
+    companyUid: string;
+    label: string;
+    iconUrl?: string | null;
+  }>,
+  rows: ReadonlyArray<ConversationRow>,
+  selection: readonly string[] | null,
+): CompanySectionRow[] {
+  const wanted =
+    selection === null ? null : new Set(selection.map((s) => s.trim()).filter(Boolean));
+  return companies
+    .filter((c) => c.companyUid.trim())
+    .filter((c) => wanted === null || wanted.has(c.companyUid.trim()))
+    .map((c) => ({
+      companyUid: c.companyUid,
+      label: c.label,
+      iconUrl: c.iconUrl ?? null,
+      homeRow: findCompanyHomeRow(rows, c.companyUid),
+    }));
 }
 
 /**

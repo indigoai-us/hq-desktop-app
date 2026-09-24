@@ -496,6 +496,7 @@
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
   import {
+    findCompanyHomeRow,
     isStrictlyRicherConversationRow,
     stepConversation,
     type ConversationRow,
@@ -3082,7 +3083,9 @@
       scope === "project"
         ? "project channel"
         : scope === "company"
-          ? "company channel"
+          ? row.isCompanyHome
+            ? "company home"
+            : "team channel"
           : scope === "personal"
             ? "personal channel"
             : "channel";
@@ -3111,9 +3114,14 @@
         selectedRow.kind === "channel" &&
         provisioning.state !== null),
   );
+  // Only the ONE company-home channel per company (created at genesis, named
+  // after the slug) carries CompanyHero/Office/settings chrome. Every other
+  // `channelScope === "company"` row is a plain team channel and must render
+  // as a normal channel — see `isCompanyHome` on ConversationRow.
   const isCompanyChannel = $derived(
     selectedRow?.kind === "channel" &&
       (selectedRow?.channelScope ?? "channel") === "company" &&
+      Boolean(selectedRow?.isCompanyHome) &&
       !isSetupChannel(selectedRow.channelId) &&
       !isAgentChannel,
   );
@@ -5006,15 +5014,7 @@
    */
   function openCompanyFromSetup(company: Workspace): void {
     const uid = company.cloudUid?.trim() ?? "";
-    const row = uid
-      ? railRows.find(
-          (candidate) =>
-            candidate.kind === "channel" &&
-            !candidate.browseOnly &&
-            candidate.channelScope === "company" &&
-            candidate.companyUid === uid,
-        )
-      : undefined;
+    const row = uid ? findCompanyHomeRow(railRows, uid) : null;
     if (row) {
       handleSelect(row);
       return;
@@ -7235,15 +7235,7 @@
     const uid = (workspace?.cloudUid ?? "").trim();
     const needle = slug.trim();
     if (!uid && !needle) return null;
-    return (
-      railRows.find((row) => {
-        if (row.kind !== "channel" || row.browseOnly) return false;
-        if ((row.channelScope ?? "") !== "company") return false;
-        const rowUid = (row.companyUid ?? "").trim();
-        if (!rowUid) return false;
-        return rowUid === uid || rowUid === needle;
-      }) ?? null
-    );
+    return findCompanyHomeRow(railRows, uid) ?? findCompanyHomeRow(railRows, needle);
   }
 
   async function waitForCompanyChannel(
