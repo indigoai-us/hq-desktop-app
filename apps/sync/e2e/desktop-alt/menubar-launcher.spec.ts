@@ -5,8 +5,12 @@ import { readRepoFile } from './harness';
  * US-006 — Menubar opens the desktop workspace.
  *
  * Source-contract coverage for the menubar-click → desktop window path:
- *  1. tray_helper "show" command marshals to activate_primary_surface.
- *  2. activate_primary_surface opens desktop-alt (onboarding still uses main).
+ *  1. tray_helper "show" command reports the icon anchor (left-click opens
+ *     the menu now, not the app directly — see hq-tray-helper.swift); the
+ *     menu's "desktop" command ("Open desktop view") routes to the frontend,
+ *     which opens the desktop workspace via `open_desktop_alt_window`.
+ *  2. activate_primary_surface (still used by Dock click / second launch)
+ *     opens desktop-alt (onboarding still uses main).
  *
  * The third leg — "the popover no longer carries desktop-alt chrome" — went
  * away with the popover itself in PL-07.
@@ -20,10 +24,11 @@ describe('US-006: menubar launcher opens desktop view', () => {
   const history = readRepoFile('src-tauri/src/commands/notification_history.rs');
   const appCmds = readRepoFile('src-tauri/src/commands/app.rs');
 
-  it('menu-bar click "show" routes to the desktop workspace on the main thread', () => {
+  it('menu-bar click "show" reports the icon anchor; "desktop" opens the workspace', () => {
     expect(trayHelper).toContain('if let Some(rest) = cmd.strip_prefix("show")');
-    expect(trayHelper).toContain('app.run_on_main_thread(move ||');
-    expect(trayHelper).toContain('activate_primary_surface');
+    expect(trayHelper).toContain('set_tray_anchor_x');
+    expect(trayHelper).toContain('"desktop" =>');
+    expect(trayHelper).toMatch(/"desktop"\s*=>\s*\{[\s\S]*?tray:open-desktop/);
   });
 
   it('activate_primary_surface opens desktop-alt except during onboarding', () => {
