@@ -2,14 +2,15 @@
   /**
    * ProjectRow — a single project rendered as a movable portfolio / board card.
    *
-   * DESKTOP-004: portfolio cards show real name, description, linked goal, owner,
-   * task progress, and state context. Active cards may also show a live-run block
-   * built only from real session/store fields (phase, elapsed, workers, progress,
-   * last signal) — never synthesized telemetry. Subagent count is omitted when
-   * the session contract does not expose it.
+   * DESKTOP-004: portfolio cards show real name, description, linked goal,
+   * task progress and the responsible person. The card stays calm: the column
+   * already says the state, so there is no status eyebrow, no source path and
+   * no run sentence. Active cards may show one short live-run line built only
+   * from real session/store fields (phase, elapsed, workers, last signal) —
+   * never synthesized telemetry.
    *
-   * Also used by ProjectListView (US-007 Board grid): company pill + status tag
-   * remain when portfolio extras are not supplied.
+   * Also used by ProjectListView (US-007 Board grid): a quiet status label and
+   * company pill remain when portfolio extras are not supplied.
    */
   import {
     projectDisplayName,
@@ -22,9 +23,9 @@
   import {
     mergeProvenance,
     normalizeProvenance,
+    provenanceView,
   } from "../common/provenance.js";
   import { relativeActivity } from "../common/relative-activity.js";
-  import ProvenanceLine from "../common/ProvenanceLine.svelte";
 
   interface Props {
     project: Project;
@@ -38,10 +39,12 @@
     provenanceUnavailable?: boolean;
     /**
      * Live run view for Active cards. Only pass when a real live signal exists.
-     * When null/undefined, the quiet state-context line is used instead.
      */
     liveRun?: ProjectLiveRunView | null;
-    /** Calm non-live state context (e.g. "Started · no active worker"). */
+    /**
+     * Calm non-live state context (e.g. "Started · no active worker"). The
+     * column already carries the state, so this is only offered as a tooltip.
+     */
     stateContext?: string | null;
     /** Compact relative "now" for last-signal labels (injected for tests). */
     now?: number;
@@ -80,6 +83,21 @@
       normalizeProvenance(ownerLabel ? { owner: ownerLabel } : null),
     ),
   );
+  const provenance = $derived(
+    provenanceView(cardProvenance, "project", provenanceUnavailable),
+  );
+  /** Owner first, then assignee, then creator — the person to show. */
+  const person = $derived(provenance.people[0] ?? null);
+  const personInitials = $derived(person ? initials(person.label) : "");
+
+  function initials(label: string): string {
+    const base = label.split("@")[0]?.trim() || label.trim();
+    const parts = base.split(/[\s._-]+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    }
+    return base.slice(0, 2).toUpperCase();
+  }
 
   function activate() {
     onselect?.(project);
@@ -91,167 +109,179 @@
   }
 </script>
 
-<article class="project-card" data-status={status} data-testid="project-row">
+<article
+  class="project-card"
+  class:has-live-run={liveRun !== null}
+  data-status={status}
+  data-testid="project-row"
+>
   <button
     type="button"
     class="project-open"
     aria-label={`Project ${projectDisplayName(project)}`}
     onclick={activate}
   >
-    <div class="card-head">
-      <span class="status-tag" data-status={status}>
-        <span
-          class="status-dot"
-          class:is-live={isLive}
-          data-status={status}
-          aria-hidden="true"
-        ></span>
-        {PROJECT_LIST_STATUS_LABEL[status]}
-      </span>
-      {#if showCompany && project.company && !showPortfolioMeta}
-        <span class="pill company" title={project.company}
-          >{project.company}</span
-        >
-      {/if}
-    </div>
-
-    <div class="title-stack">
-      <h3 class="card-name" title={projectDisplayName(project)}>
-        {projectDisplayName(project)}
-      </h3>
-      {#if project.description}
-        <p class="card-desc">{project.description}</p>
-      {/if}
-    </div>
-
-    <ProvenanceLine
-      provenance={cardProvenance}
-      kind="project"
-      testid="project-card-provenance"
-      unavailable={provenanceUnavailable}
-    />
-
-    {#if showPortfolioMeta}
-      <div class="card-context">
-        <span class="context-goal" title={goalLabel ?? "No linked goal"}>
-          {goalLabel ?? "No linked goal"}
-        </span>
-        {#if hasProgress}
-          <span class="context-tasks"
-            >{progress.complete} / {progress.total} tasks</span
-          >
-        {/if}
-      </div>
+    <h3 class="card-name" title={projectDisplayName(project)}>
+      {projectDisplayName(project)}
+    </h3>
+    {#if project.description}
+      <p class="card-desc">{project.description}</p>
     {/if}
 
-    {#if hasProgress}
-      <div class="card-progress">
-        <div class="progress-track" aria-hidden="true">
-          <div
-            class="progress-fill"
-            data-status={status}
-            class:live-run={liveRun !== null}
-            style={`--fill: ${progress.percent / 100};`}
-          ></div>
-        </div>
-        {#if !showPortfolioMeta}
-          <span class="progress-count"
-            >{progress.complete}/{progress.total}</span
+    {#if goalLabel || (showCompany && project.company && !showPortfolioMeta)}
+      <div class="card-chips">
+        {#if goalLabel}
+          <span class="chip goal-chip" title={`Goal: ${goalLabel}`}>
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <circle cx="8" cy="8" r="2" fill="currentColor" />
+            </svg>
+            <span class="chip-text">{goalLabel}</span>
+          </span>
+        {/if}
+        {#if showCompany && project.company && !showPortfolioMeta}
+          <span class="chip company" title={project.company}
+            ><span class="chip-text">{project.company}</span></span
           >
-          <span class="progress-percent">{progress.percent}%</span>
         {/if}
       </div>
     {/if}
 
     {#if liveRun}
-      <div class="live-run" data-testid="project-live-run">
-        <div class="live-run-head">
-          <span class="live-run-phase">
-            <span class="live-dot" aria-hidden="true"></span>
-            {liveRun.phase ?? "Live"}
-          </span>
+      <div
+        class="live-run"
+        data-testid="project-live-run"
+        title={liveRun.subagents !== null
+          ? `${liveRun.subagents} ${liveRun.subagents === 1 ? "subagent" : "subagents"}`
+          : undefined}
+      >
+        <span class="live-dot" aria-hidden="true"></span>
+        <span class="live-run-text">
+          {liveRun.phase ?? "Live"}
           {#if liveRun.elapsed}
-            <span class="live-run-time">{liveRun.elapsed}</span>
+            · <span class="live-run-time">{liveRun.elapsed}</span>
           {/if}
-        </div>
-        {#if liveRun.progressPercent !== null}
-          <div class="live-run-track" aria-hidden="true">
-            <span style={`width: ${liveRun.progressPercent}%`}></span>
-          </div>
-        {/if}
-        <div class="live-run-foot">
-          <span>
-            {liveRun.workers}
-            {liveRun.workers === 1 ? "worker" : "workers"}
-            {#if liveRun.subagents !== null}
-              · {liveRun.subagents}
-              {liveRun.subagents === 1 ? "subagent" : "subagents"}
-            {:else}
-              · subagents unavailable
-            {/if}
-          </span>
-          <span>
-            {#if liveRun.lastSignalAt}
-              {relativeActivity(liveRun.lastSignalAt, now)}
-            {:else}
-              signal unavailable
-            {/if}
-          </span>
-        </div>
+          · {liveRun.workers}
+          {liveRun.workers === 1 ? "worker" : "workers"}
+          {#if liveRun.lastSignalAt}
+            · {relativeActivity(liveRun.lastSignalAt, now)}
+          {/if}
+        </span>
       </div>
-    {:else if stateContext}
-      <span class="quiet-run-state">{stateContext}</span>
     {/if}
+
+    <div class="card-foot" title={stateContext ?? undefined}>
+      {#if hasProgress}
+        <div class="card-progress">
+          <div class="progress-track" aria-hidden="true">
+            <div
+              class="progress-fill"
+              data-status={status}
+              class:live-run-fill={liveRun !== null}
+              style={`--fill: ${progress.percent / 100};`}
+            ></div>
+          </div>
+          <span
+            class="progress-count"
+            aria-label={`${progress.complete} of ${progress.total} tasks complete`}
+            >{progress.complete}/{progress.total}</span
+          >
+        </div>
+      {:else}
+        <span class="foot-quiet">No tasks yet</span>
+      {/if}
+
+      {#if !showPortfolioMeta}
+        <span class="status-label" data-status={status}>
+          <span
+            class="status-dot"
+            class:is-live={isLive}
+            data-status={status}
+            aria-hidden="true"
+          ></span>
+          {PROJECT_LIST_STATUS_LABEL[status]}
+        </span>
+      {/if}
+
+      {#if personInitials}
+        <span
+          class="person"
+          data-testid="project-card-provenance"
+          aria-label={provenance.ariaLabel}
+          title={provenance.ariaLabel}
+        >
+          <span class="avatar" aria-hidden="true">{personInitials}</span>
+        </span>
+      {/if}
+    </div>
   </button>
 
   {#if onlinkgoal && !goalLabel}
-    <span class="link-row">
-      <button
-        type="button"
-        class="link-nudge"
-        class:is-busy={linkBusy}
-        disabled={linkBusy}
-        aria-busy={linkBusy}
-        onclick={linkGoal}
-      >
-        {linkBusy ? "Opening…" : "Link goal"}
-      </button>
-    </span>
+    <button
+      type="button"
+      class="link-nudge"
+      class:is-busy={linkBusy}
+      disabled={linkBusy}
+      aria-busy={linkBusy}
+      aria-label={linkBusy ? "Opening goal link" : "Link goal"}
+      title={linkBusy ? "Opening…" : "Link goal"}
+      onclick={linkGoal}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M6.8 9.2 9.2 6.8M7.4 4.6l.9-.9a2.6 2.6 0 0 1 3.7 3.7l-.9.9M8.6 11.4l-.9.9a2.6 2.6 0 0 1-3.7-3.7l.9-.9"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
+      </svg>
+    </button>
   {/if}
 </article>
 
 <style>
   .project-card {
     position: relative;
+    /* Cards sit in flex columns; never let the column squeeze them. */
+    flex: none;
     display: flex;
     flex-direction: column;
-    gap: var(--space-2, 8px);
     width: 100%;
     min-width: 0;
-    padding: var(--space-3, 10px);
-    overflow: hidden;
-    border: 1px solid var(--border, var(--v4-hairline));
+    max-width: 100%;
+    /* Nothing inside a card may ever paint outside it. clip (not hidden)
+       does not create a scroll container. */
+    overflow: clip;
+    border: 1px solid var(--v4-hairline);
     /* Movable work objects may be rounded; columns stay naked. */
-    border-radius: 6px;
-    background: var(--row-active, var(--v4-raised));
+    border-radius: 8px;
+    background: var(--v4-raised);
     color: inherit;
     font: inherit;
     text-align: left;
-    cursor: pointer;
     transition:
       background 140ms ease,
-      border-color 140ms ease,
-      transform 140ms ease;
+      border-color 140ms ease;
   }
 
+  .project-card.has-live-run {
+    border-color: color-mix(in srgb, var(--v4-ok) 32%, var(--v4-hairline));
+  }
+
+  /* A one-track grid (minmax(0, 1fr)) forces every row to shrink to the card
+     width, so long titles ellipsize instead of widening the button. */
   .project-open {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2, 8px);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
     width: 100%;
     min-width: 0;
-    padding: 0;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 12px;
     border: 0;
+    border-radius: inherit;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -261,162 +291,121 @@
 
   @media (hover: hover) and (pointer: fine) {
     .project-card:hover {
-      border-color: var(--border-strong, var(--v4-control-border));
-      background: var(--row-hover, var(--v4-active-row));
-      transform: translateY(-1px);
+      border-color: var(--v4-control-border);
+      background: var(--v4-active-row);
     }
   }
 
-  .project-card:active {
-    transform: translateY(0);
+  .project-open > * {
+    min-width: 0;
+    max-width: 100%;
   }
 
+  /* Inset focus rings: the card clips anything drawn outside it. */
   .project-open:focus-visible,
   .link-nudge:focus-visible {
-    outline: 2px solid var(--blue, var(--v4-control-border));
-    outline-offset: 2px;
-  }
-
-  .card-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2, 8px);
-    min-width: 0;
-  }
-
-  .title-stack {
-    display: grid;
-    gap: var(--v4-row-stack-gap, 3px);
-    min-width: 0;
-  }
-
-  .status-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    overflow: hidden;
-    color: var(--muted-2, var(--v4-text-2));
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, var(--text-micro, 10px));
-    font-weight: 600;
-    letter-spacing: 0.09em;
-    line-height: 15px;
-    text-overflow: ellipsis;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .status-tag[data-status="live"] {
-    color: var(--emerald, var(--v4-ok));
-  }
-
-  .status-dot {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
-    background: var(--muted-3, var(--v4-idle));
-  }
-  .status-dot[data-status="in-progress"] {
-    background: var(--blue, var(--v4-ok));
-  }
-  .status-dot[data-status="complete"] {
-    background: var(--muted-2, var(--v4-text-2));
-  }
-  .status-dot.is-live {
-    background: var(--emerald, var(--v4-ok));
-    animation: dot-pulse 1.8s ease-in-out infinite;
-  }
-
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    flex: 0 0 auto;
-    max-width: 50%;
-    overflow: hidden;
-    padding: 1px 7px;
-    border: 1px solid
-      color-mix(in srgb, var(--blue, var(--v4-ok)) 38%, transparent);
-    border-radius: 3px;
-    background: var(--row-hover, var(--v4-control-faint));
-    color: var(--blue, var(--v4-text-2));
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    line-height: 15px;
-    text-overflow: ellipsis;
-    text-transform: uppercase;
-    white-space: nowrap;
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: -2px;
   }
 
   .card-name {
     margin: 0;
+    /* Leave room for the hover link button in the top-right corner. */
+    padding-right: 22px;
     overflow: hidden;
-    color: var(--fg, var(--v4-text-1));
-    font-size: var(--type-body, var(--text-base, 12px));
+    color: var(--v4-text-1);
+    font-size: 14px;
     font-weight: 600;
-    line-height: 1.3;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.35;
+    /* Two lines, so projects with similar names can be told apart. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
   }
 
   .card-desc {
-    margin: 0;
-    min-width: 0;
-    overflow: hidden;
-    color: var(--muted, var(--v4-text-3));
-    font-size: var(--type-secondary, var(--text-sm, 11px));
-    line-height: 1.35;
     display: -webkit-box;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: 13px;
+    line-height: 1.4;
+    -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
-    -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
   }
 
-  .card-context {
+  .card-chips {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    flex-wrap: wrap;
+    gap: 4px;
     min-width: 0;
-    color: var(--muted-2, var(--v4-text-3));
-    font-size: var(--type-metadata, 10px);
-    line-height: 1.3;
   }
 
-  .context-goal,
-  .context-tasks {
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    min-width: 0;
+    height: 20px;
+    padding: 0 7px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .chip svg {
+    flex: 0 0 auto;
+    width: 11px;
+    height: 11px;
+    color: var(--v4-text-3);
+  }
+
+  .chip-text {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .context-tasks {
-    flex: 0 0 auto;
-    font-variant-numeric: tabular-nums;
+  .card-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    margin-top: 4px;
   }
 
   .card-progress {
     display: flex;
+    flex: 1 1 auto;
     align-items: center;
-    gap: var(--space-2, 8px);
+    gap: 8px;
+    min-width: 0;
   }
 
   .progress-track {
     flex: 1 1 auto;
+    max-width: 120px;
     height: 3px;
     overflow: hidden;
     border-radius: 999px;
-    background: var(--row-hover, var(--v4-control-faint));
+    background: var(--v4-control-faint);
   }
 
   .progress-fill {
     width: 100%;
     height: 100%;
     border-radius: 999px;
-    background: var(--muted-2, var(--v4-text-2));
+    background: var(--v4-text-2);
     /* Fill ratio via --fill (0..1) + scaleX so the transition runs on the
        compositor; the track clips + rounds the visible bar. */
     transform: scaleX(var(--fill, 0));
@@ -424,124 +413,152 @@
     transition: transform 300ms ease;
   }
   .progress-fill[data-status="live"],
-  .progress-fill.live-run {
-    background: var(--emerald, var(--v4-ok));
-  }
-  .progress-fill[data-status="in-progress"] {
-    background: var(--blue, var(--v4-ok));
+  .progress-fill.live-run-fill,
+  .progress-fill[data-status="complete"] {
+    background: var(--v4-ok);
   }
 
-  .progress-count {
+  .progress-count,
+  .foot-quiet {
     flex: 0 0 auto;
-    color: var(--muted-2, var(--v4-text-2));
-    font-size: var(--type-secondary, 11px);
+    color: var(--v4-text-3);
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
     line-height: 16px;
   }
 
-  .progress-percent {
-    flex: 0 0 auto;
-    min-width: 30px;
-    color: var(--muted-3, var(--v4-text-3));
-    font-size: var(--type-secondary, 11px);
-    font-variant-numeric: tabular-nums;
-    line-height: 16px;
-    text-align: right;
+  .foot-quiet {
+    flex: 1 1 auto;
   }
 
-  .quiet-run-state {
-    color: var(--muted-3, var(--v4-text-3));
-    font-size: var(--type-metadata, 10px);
-    line-height: 1.3;
+  .status-label {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    color: var(--v4-text-3);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .status-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--v4-idle, var(--v4-text-3));
+  }
+  .status-dot[data-status="in-progress"] {
+    background: var(--v4-text-2);
+  }
+  .status-dot[data-status="complete"] {
+    background: var(--v4-ok);
+  }
+  .status-dot.is-live {
+    background: var(--v4-ok);
+    animation: dot-pulse 1.8s ease-in-out infinite;
+  }
+
+  .person {
+    display: inline-flex;
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+
+  .avatar {
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    background: var(--v4-control-faint);
+    box-shadow: inset 0 0 0 1px var(--v4-hairline);
+    color: var(--v4-text-2);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    line-height: 1;
   }
 
   .live-run {
-    display: grid;
-    gap: 6px;
-    padding: 8px 0 0;
-    border: 0;
-    border-top: 1px solid var(--v4-rowline);
-    border-radius: 0;
-    background: transparent;
-  }
-
-  .live-run-head,
-  .live-run-foot {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .live-run-phase {
-    display: inline-flex;
-    align-items: center;
     gap: 6px;
     min-width: 0;
+    color: var(--v4-text-3);
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  .live-run-text {
+    min-width: 0;
     overflow: hidden;
-    color: var(--fg, var(--v4-text-1));
-    font-size: var(--type-secondary, 11px);
-    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .live-dot {
-    width: 6px;
-    height: 6px;
-    flex: 0 0 auto;
-    border-radius: 999px;
-    background: var(--emerald, var(--v4-ok));
-    animation: dot-pulse 1.8s ease-in-out infinite;
-  }
-
   .live-run-time {
-    flex: 0 0 auto;
-    color: var(--muted-2, var(--v4-text-2));
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
     font-variant-numeric: tabular-nums;
   }
 
-  .live-run-track {
-    height: 3px;
-    overflow: hidden;
+  .live-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
     border-radius: 999px;
-    background: var(--row-hover, var(--v4-control-faint));
+    background: var(--v4-ok);
+    animation: dot-pulse 1.8s ease-in-out infinite;
   }
 
-  .live-run-track span {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: var(--emerald, var(--v4-ok));
-  }
-
-  .live-run-foot {
-    color: var(--muted-3, var(--v4-text-3));
-    font-size: var(--type-metadata, 10px);
-    line-height: 1.3;
-  }
-
-  .link-row {
-    display: flex;
-  }
-
+  /* Quiet goal-link affordance: appears on hover / keyboard focus only. */
   .link-nudge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    display: inline-grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
     padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--muted-2, var(--v4-text-2));
-    font: inherit;
-    font-size: var(--type-secondary, 11px);
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    border: 1px solid transparent;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-raised);
+    color: var(--v4-text-2);
     cursor: pointer;
+    opacity: 0;
+    transition:
+      opacity 120ms ease,
+      background 120ms ease,
+      color 120ms ease;
+  }
+
+  .link-nudge svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .project-card:hover .link-nudge,
+  .project-card:focus-within .link-nudge,
+  .link-nudge.is-busy {
+    opacity: 1;
+  }
+
+  .link-nudge:hover {
+    border-color: var(--v4-hairline);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
   }
 
   .link-nudge.is-busy {
+    cursor: progress;
     opacity: 0.52;
+  }
+
+  @media (hover: none) {
+    .link-nudge {
+      opacity: 1;
+    }
   }
 
   @keyframes dot-pulse {
@@ -556,13 +573,9 @@
 
   @media (prefers-reduced-motion: reduce) {
     .project-card,
-    .progress-fill {
+    .progress-fill,
+    .link-nudge {
       transition: none;
-    }
-
-    .project-card:hover,
-    .project-card:active {
-      transform: none;
     }
 
     .status-dot.is-live,
