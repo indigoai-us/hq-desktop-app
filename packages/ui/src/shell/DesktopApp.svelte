@@ -6747,8 +6747,8 @@
       scopeId: isDm
         ? conversationPairKey(selfUid, row.personUid ?? "")
         : (row.channelId?.trim() ?? ""),
-      presignPut: (cmp, key, contentType) =>
-        adapter.files.presignVaultPut(cmp, key, contentType),
+      presignPut: (cmp, key, contentType, integrity) =>
+        adapter.files.presignVaultPut(cmp, key, contentType, integrity),
       // Vault buckets have no CORS. Web hops through same-origin; desktop
       // sends bytes from Rust so WKWebView never PUTs to S3.
       putObject:

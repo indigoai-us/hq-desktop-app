@@ -26,6 +26,7 @@ import {
   unavailable,
   validateFetchReplyThread,
   validateSendReply,
+  vaultPutIntegrityFields,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
@@ -984,12 +985,13 @@ export function createSyncPlatformAdapter(
           op: 'get',
           key,
         }),
-      presignVaultPut: (companyUid, key, contentType) =>
+      presignVaultPut: (companyUid, key, contentType, integrity) =>
         hqProJson('POST', WEB_PATHS.filesPresign, {
           company: companyUid,
           op: 'put',
           key,
           contentType,
+          ...vaultPutIntegrityFields(integrity),
         }),
       getAuthorizedPreview: (path) =>
         call('get_authorized_file_preview', { path }),

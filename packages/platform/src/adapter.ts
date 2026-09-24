@@ -899,6 +899,29 @@ export interface LibraryApi {
   getSkillDetail(path: string): AdapterPromise<Json>;
 }
 
+/**
+ * Content digest for a vault PUT. hq-pro signs `x-amz-checksum-sha256` into
+ * the upload URL only when `checksumSha256` (base64) matches the
+ * `hq-content-sha256` metadata (hex) for the same bytes.
+ */
+export interface VaultPutIntegrity {
+  /** SHA-256 of the bytes, base64 (S3's checksum form). */
+  checksumSha256: string;
+  /** SHA-256 of the bytes, lowercase hex. */
+  contentSha256: string;
+}
+
+/** Presign request fields for {@link VaultPutIntegrity}. */
+export function vaultPutIntegrityFields(
+  integrity: VaultPutIntegrity | undefined,
+): { checksumSha256?: string; metadata?: Record<string, string> } {
+  if (!integrity) return {};
+  return {
+    checksumSha256: integrity.checksumSha256,
+    metadata: { "hq-content-sha256": integrity.contentSha256 },
+  };
+}
+
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
   getFileContent(path: string): AdapterPromise<string>;
@@ -906,11 +929,18 @@ export interface FilesApi {
   listVaultPrefix(companyUid: string, prefix: string): AdapterPromise<Json>;
   /** Presigned GET for a vault key (hq-pro POST /v1/files/presign). */
   presignVaultGet(companyUid: string, key: string): AdapterPromise<Json>;
-  /** Presigned PUT for a vault key (hq-pro POST /v1/files/presign). */
+  /**
+   * Presigned PUT for a vault key (hq-pro POST /v1/files/presign).
+   *
+   * Pass `integrity` for every upload: vault buckets have S3 Object Lock, and
+   * S3 refuses a PUT to a locked bucket unless it carries a signed content
+   * checksum. Without it the byte upload fails with 400.
+   */
   presignVaultPut(
     companyUid: string,
     key: string,
     contentType: string,
+    integrity?: VaultPutIntegrity,
   ): AdapterPromise<Json>;
   getAuthorizedPreview(path: string): AdapterPromise<Json>;
   /** Desktop-only capability: localFiles. */
