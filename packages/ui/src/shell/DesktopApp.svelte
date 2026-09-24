@@ -5886,6 +5886,7 @@
     getScope: () => currentNavigationScope(),
     captureCurrent: () => captureCurrentNavigation(),
     captureScroll: () => readNavigationScroll(),
+    invalidateScroll: () => navigationScrollTracker.invalidate(),
     resolve: (destination, context) =>
       resolveShellDestination(destination, context),
     apply: (applied) => applyCommittedNavigation(applied),

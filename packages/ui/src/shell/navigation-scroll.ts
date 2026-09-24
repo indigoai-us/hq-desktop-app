@@ -173,10 +173,27 @@ export function restoreNavigationScroll(
  * while the user is scrolling (off the critical path) rather than the
  * instant they click. `read()` then just returns the last sample — no DOM
  * access, no forced layout — so it is safe to call from `navigate()`.
+ *
+ * A sample only describes the destination that was on screen while it was
+ * taken. `navigate()`/`traverse()` consume the sample (via `read()`) for the
+ * entry being *left*, then commit a new destination. If the new destination
+ * renders without ever firing `scroll`/`resize` (a short conversation with
+ * no overflow, or one that opens already at its natural position), the old
+ * sample would otherwise sit in `last` and get attributed to whichever
+ * destination is left *next* — stale state from a conversation two hops
+ * back landing on the wrong entry. `invalidate()` is called right after a
+ * destination commits: it drops the stale sample and schedules a fresh rAF
+ * read of the new destination, so by the time that destination is itself
+ * left, `read()` either has its own sample or (if left before the first
+ * frame renders) correctly returns null instead of another entry's state.
  */
 export function createNavigationScrollTracker(
   readRoot: () => ParentNode | null | undefined,
-): { read: () => NavigationScrollState | null; stop: () => void } {
+): {
+  read: () => NavigationScrollState | null;
+  invalidate: () => void;
+  stop: () => void;
+} {
   let last: NavigationScrollState | null = null;
   let rafHandle: number | null = null;
 
@@ -206,6 +223,14 @@ export function createNavigationScrollTracker(
 
   return {
     read: () => last,
+    // Drop the outgoing destination's sample and queue a fresh one for
+    // whatever just became current. Scheduling (not sampling now) keeps this
+    // off the commit's own synchronous path — the read happens in the next
+    // frame's normal layout pass, after the new destination has rendered.
+    invalidate: () => {
+      last = null;
+      schedule();
+    },
     stop: () => {
       if (rafHandle != null) {
         if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(rafHandle);

@@ -136,3 +136,69 @@ describe("navigation scroll tracker samples off the click path", () => {
     expect(scan).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Regression coverage for the stale-destination bug: before `invalidate()`
+ * existed, `read()` returned whatever the *last* scroll/resize sampled,
+ * with no notion of which destination that sample belonged to. Sequence:
+ * A (scrolled) -> navigate to B (no scroll/resize ever fires in B, e.g. a
+ * short conversation) -> navigate to C. The old tracker still had A's
+ * sample sitting in `last`, so it got attributed to B's history entry
+ * instead of B's own (empty) state. Restoring B later replayed A's scroll
+ * position onto B.
+ *
+ * `invalidate()` — called by the navigation controller right after a
+ * destination commits — drops that stale sample and queues a fresh rAF
+ * read of the new destination, so a subsequent `read()` either has B's own
+ * sample or (if nothing rendered/scrolled yet) correctly returns null.
+ */
+describe("navigation scroll tracker invalidates on destination commit", () => {
+  it("returns null for a destination that never scrolled, never the previous destination's sample", async () => {
+    const el = scroller("conversation-thread", "<p>hello</p>");
+    el.scrollTop = 800;
+    const tracker = createNavigationScrollTracker(() => document);
+    try {
+      // Conversation A scrolls to 800; the tracker samples it.
+      document.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      expect(tracker.read()).toEqual({ kind: "pixel", id: null, offset: 800 });
+
+      // navigate() consumes A's sample via read(), then the controller
+      // commits B and calls invalidate() — B never fires scroll/resize.
+      const forA = tracker.read();
+      expect(forA).toEqual({ kind: "pixel", id: null, offset: 800 });
+      tracker.invalidate();
+
+      // Leaving B (no sample was ever taken for it) must not hand back A's
+      // state.
+      expect(tracker.read()).toBeNull();
+    } finally {
+      tracker.stop();
+    }
+  });
+
+  it("picks up the new destination's own sample once it scrolls, still without a synchronous scan", async () => {
+    const el = scroller("conversation-thread", "<p>hello</p>");
+    el.scrollTop = 800;
+    const tracker = createNavigationScrollTracker(() => document);
+    try {
+      document.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      expect(tracker.read()).toEqual({ kind: "pixel", id: null, offset: 800 });
+
+      // Commit to B: invalidate() drops A's sample and queues B's own rAF
+      // sample (off the click path — no scan happens synchronously here).
+      const scan = vi.spyOn(el, "querySelectorAll");
+      tracker.invalidate();
+      expect(scan).not.toHaveBeenCalled();
+
+      // B renders at a different offset and the queued sample fires next
+      // frame.
+      el.scrollTop = 40;
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      expect(tracker.read()).toEqual({ kind: "pixel", id: null, offset: 40 });
+    } finally {
+      tracker.stop();
+    }
+  });
+});
