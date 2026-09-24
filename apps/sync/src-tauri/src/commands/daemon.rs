@@ -352,7 +352,11 @@ fn handle_watch_stdout_line<R: tauri::Runtime>(
         let _ = app.emit(EVENT_SYNC_CONFLICT, payload.clone());
     }
     if let SyncEvent::PlanLimit(payload) = &event {
-        if let Err(error) = app.emit(EVENT_SYNC_PLAN_LIMIT, payload.clone()) {
+        if let Err(error) = app.emit_to(
+            crate::commands::desktop_alt::WINDOW_LABEL,
+            EVENT_SYNC_PLAN_LIMIT,
+            payload.clone(),
+        ) {
             log("daemon", &format!("failed to emit plan-limit notice: {error}"));
         }
     }

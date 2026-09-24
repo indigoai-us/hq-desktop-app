@@ -1516,7 +1516,11 @@ fn handle_sync_line<R: tauri::Runtime>(
         // older runner that doesn't emit Plan, this branch is simply never
         // taken — the existing TOTALS-based denominator stays authoritative.
         SyncEvent::Plan(payload) => app.emit(EVENT_SYNC_PLAN, payload.clone()),
-        SyncEvent::PlanLimit(payload) => app.emit(EVENT_SYNC_PLAN_LIMIT, payload.clone()),
+        SyncEvent::PlanLimit(payload) => app.emit_to(
+            crate::commands::desktop_alt::WINDOW_LABEL,
+            EVENT_SYNC_PLAN_LIMIT,
+            payload.clone(),
+        ),
         SyncEvent::Progress(payload) => {
             // Record into the session activity log (uploaded/downloaded with a
             // timestamp) and live-append to the Recent Changes window if open.

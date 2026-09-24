@@ -9,6 +9,9 @@ const manualSyncSource = read('src-tauri/src/commands/sync.rs');
 const daemonSource = read('src-tauri/src/commands/daemon.rs');
 const workShellSource = read('src/desktop-alt/HqWorkWorkShell.svelte');
 const meetingsWindowSource = read('src/components/MeetingsWindow.svelte');
+const routedMeetingsStoreSource = read('../../packages/ui/src/meetings/meetings-store.svelte.ts');
+const routedMeetingsPageSource = read('../../packages/ui/src/meetings/MeetingsPage.svelte');
+const routedMeetingsErrorsSource = read('../../packages/ui/src/meetings/invite-errors.ts');
 
 describe('sync plan-limit event contract', () => {
   it('parses the server URL through the desktop event model', () => {
@@ -19,11 +22,13 @@ describe('sync plan-limit event contract', () => {
   });
 
   it('forwards the event from manual and background sync runs', () => {
-    expect(manualSyncSource).toContain(
-      'SyncEvent::PlanLimit(payload) => app.emit(EVENT_SYNC_PLAN_LIMIT, payload.clone())',
+    expect(manualSyncSource).toMatch(
+      /SyncEvent::PlanLimit\(payload\)\s*=>\s*app\.emit_to\(\s*crate::commands::desktop_alt::WINDOW_LABEL,\s*EVENT_SYNC_PLAN_LIMIT,\s*payload\.clone\(\),?\s*\)/,
     );
     expect(daemonSource).toContain('if let SyncEvent::PlanLimit(payload) = &event');
-    expect(daemonSource).toContain('app.emit(EVENT_SYNC_PLAN_LIMIT, payload.clone())');
+    expect(daemonSource).toMatch(
+      /app\.emit_to\(\s*crate::commands::desktop_alt::WINDOW_LABEL,\s*EVENT_SYNC_PLAN_LIMIT,\s*payload\.clone\(\),?\s*\)/,
+    );
   });
 
   it('renders a dismissible notice with a server-linked upgrade action', () => {
@@ -42,5 +47,14 @@ describe('sync plan-limit event contract', () => {
     );
     expect(meetingsWindowSource).toContain('testId="meetings-plan-upgrade"');
     expect(meetingsWindowSource).toContain('onUpgrade={openMeetingPlanUpgrade}');
+  });
+
+  it('shows the server upgrade URL in the routed desktop-alt Meetings page', () => {
+    expect(routedMeetingsStoreSource).toContain('planRequiredUpgradeUrl(err)');
+    expect(routedMeetingsStoreSource).toContain('upgradeUrl ? { upgradeUrl } : {}');
+    expect(routedMeetingsPageSource).toContain('{#if toast.upgradeUrl}');
+    expect(routedMeetingsPageSource).toContain('data-testid="meetings-plan-upgrade"');
+    expect(routedMeetingsPageSource).toContain('openToastUpgrade');
+    expect(routedMeetingsErrorsSource).toContain('url.protocol !== "https:"');
   });
 });

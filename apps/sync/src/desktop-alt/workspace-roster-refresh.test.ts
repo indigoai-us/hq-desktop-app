@@ -152,6 +152,31 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     expect(openApprovedExternalUrl).toHaveBeenCalledWith(upgradeUrl);
   });
 
+  it('clears a company plan notice when the authenticated account changes', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })]);
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    emit('sync:plan-limit', {
+      company: 'Acme',
+      upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
+    });
+    await flush();
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+
+    emit('auth:session-changed', {
+      accountId: 'acct_grace',
+      generation: 2,
+      status: 'active',
+      reason: null,
+    });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+  });
+
   it('recovers when the native roster succeeds after the UI deadline', async () => {
     vi.useFakeTimers();
     try {

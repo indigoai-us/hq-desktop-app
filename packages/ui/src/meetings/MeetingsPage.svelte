@@ -4,6 +4,7 @@
     MeetingPermissionsSnapshot,
     PlatformAdapter,
   } from "@hq/platform";
+  import { externalHref } from "../common/external-links";
   import {
     activeMeetings,
     recordingMemberships,
@@ -303,6 +304,8 @@
   // (returns a ToastDescriptor next to the call that produced it); this page
   // only renders it. `null` = nothing to surface (no-op dedupe / missing bot).
   let toast = $state<ToastDescriptor | null>(null);
+  let toastRevision = 0;
+  let toastUpgradePending = $state(false);
   let calendarOpening = $state(false);
 
   // Native detector permissions. When the host reports them and something
@@ -333,11 +336,39 @@
   let upNextJoining = $state(false);
   let connectStarting = $state(false);
   const connectPending = $derived(meetingsStore.connectPending);
-  function flashToast(kind: "info" | "warn", text: string): void {
-    toast = { kind, text };
+  function flashToast(
+    kind: "info" | "warn",
+    text: string,
+    upgradeUrl?: string,
+  ): void {
+    const revision = ++toastRevision;
+    const nextToast: ToastDescriptor = {
+      kind,
+      text,
+      ...(upgradeUrl ? { upgradeUrl } : {}),
+    };
+    toast = nextToast;
     setTimeout(() => {
-      if (toast && toast.text === text) toast = null;
+      if (toastRevision === revision) toast = null;
     }, 4000);
+  }
+
+  async function openToastUpgrade(url: string): Promise<void> {
+    if (toastUpgradePending) return;
+    const safeUrl = externalHref(url);
+    if (!safeUrl || !/^https:\/\//i.test(safeUrl)) {
+      flashToast("warn", "The upgrade link is not a valid HTTPS URL.");
+      return;
+    }
+    toastUpgradePending = true;
+    try {
+      await openExternal(safeUrl);
+    } catch (error) {
+      console.error("Could not open the Meetings upgrade page.", error);
+      flashToast("warn", "Could not open the upgrade page. Try again.");
+    } finally {
+      toastUpgradePending = false;
+    }
   }
 
   // Async connect-watch completion (new account appeared, or bounded timeout).
@@ -357,15 +388,15 @@
   // refresh-error banner (fetchError is store-owned and left untouched).
   async function onInvite(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.inviteBot(evt);
-    if (t) flashToast(t.kind, t.text);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
   }
   async function onUninvite(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.cancelBot(evt);
-    if (t) flashToast(t.kind, t.text);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
   }
   async function onJoinNow(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.joinBotNow(evt);
-    if (t) flashToast(t.kind, t.text);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
   }
 
   // Ad-hoc "paste a meeting URL" invite — parity with the classic
@@ -391,7 +422,7 @@
           urlInput = "";
           urlInputCompanyId = null;
         }
-        flashToast(t.kind, t.text);
+        flashToast(t.kind, t.text, t.upgradeUrl);
       }
     } finally {
       urlInviting = false;
@@ -639,7 +670,20 @@
 
   {#if toast}
     <div class="toast" class:toast-warn={toast.kind === "warn"} role="status">
-      {toast.text}
+      <span>{toast.text}</span>
+      {#if toast.upgradeUrl}
+        <button
+          class="toast-upgrade"
+          data-testid="meetings-plan-upgrade"
+          type="button"
+          disabled={toastUpgradePending}
+          onclick={() => {
+            if (toast?.upgradeUrl) void openToastUpgrade(toast.upgradeUrl);
+          }}
+        >
+          {toastUpgradePending ? "Opening…" : "Upgrade"}
+        </button>
+      {/if}
     </div>
   {/if}
 
@@ -1135,6 +1179,17 @@
 
   .toast-warn {
     --toast-dot: var(--v4-warn);
+  }
+
+  .toast-upgrade {
+    flex: 0 0 auto;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    padding: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    cursor: pointer;
   }
 
   .detect-setup {

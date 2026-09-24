@@ -196,6 +196,8 @@
     ) {
       return;
     }
+    planLimitNotices = [];
+    planLimitOpenError = null;
     authGeneration = next.generation;
     authAccountId = next.accountId;
     hydration += 1;
@@ -406,6 +408,8 @@
       rosterRefresher.cancel();
       authGeneration += 1;
       authAccountId = null;
+      planLimitNotices = [];
+      planLimitOpenError = null;
       self = null;
       companies = null;
       capabilities = null;
