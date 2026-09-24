@@ -39,7 +39,12 @@
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
-  import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
+  import PlanUpgradeAction from '../components/PlanUpgradeAction.svelte';
+  import {
+    approvedExternalUrl,
+    openApprovedExternalUrl,
+    openBrowserUrl,
+  } from './external-open';
   import {
     applyDesktopAltRoute,
     createEmbeddedNavigationController,
@@ -108,6 +113,12 @@
   let workspaceError = $state<string | null>(null);
   let signOutError = $state<string | null>(null);
   let signingOut = $state(false);
+  interface PlanLimitNotice {
+    company: string;
+    upgradeUrl: string;
+  }
+  let planLimitNotices = $state<PlanLimitNotice[]>([]);
+  let planLimitOpenError = $state<string | null>(null);
   let notificationWakeSeq = $state(0);
   let hydration = $state(0);
   let authGeneration = $state(0);
@@ -594,6 +605,37 @@
     const unlistenAuthReadyPromise = listen('auth:session-ready', () => {
       if (!cancelled) requestRevalidation();
     }).catch(() => () => {});
+    const unlistenPlanLimitPromise = listen<{
+      company?: unknown;
+      upgradeUrl?: unknown;
+    }>('sync:plan-limit', (event) => {
+      if (cancelled) return;
+      const company =
+        typeof event.payload?.company === 'string' ? event.payload.company.trim() : '';
+      const upgradeUrl =
+        typeof event.payload?.upgradeUrl === 'string' ? event.payload.upgradeUrl : '';
+      if (!company || !upgradeUrl) {
+        console.error('Sync plan-limit notice is missing its company or server upgrade URL.');
+        return;
+      }
+      try {
+        // The plan URL is server-selected. Keep the desktop's approved-host
+        // boundary before rendering an action that can open it.
+        const approvedUrl = approvedExternalUrl(upgradeUrl);
+        planLimitNotices = [
+          ...planLimitNotices.filter(
+            (notice) => notice.company !== company || notice.upgradeUrl !== approvedUrl,
+          ),
+          { company, upgradeUrl: approvedUrl },
+        ];
+        planLimitOpenError = null;
+      } catch (error) {
+        console.error('Sync plan-limit notice contains an unapproved server upgrade URL.', error);
+      }
+    }).catch((error) => {
+      console.error('Could not subscribe to sync plan-limit notices.', error);
+      return () => {};
+    });
     // Website-created companies are provisioned by the sync runner after
     // sign-in; re-read the roster when it says so instead of after a restart.
     const unsubscribeRosterEvents = subscribeRosterRefreshEvents(listen, () => {
@@ -719,6 +761,7 @@
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenPlanLimitPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenShortcutPromise.then((unlisten) => safeUnlisten(unlisten)());
       for (const unlistenPromise of unlistenUpdatePromises) {
         void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
@@ -739,6 +782,23 @@
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   });
+
+  function dismissPlanLimitNotice(notice: PlanLimitNotice): void {
+    planLimitNotices = planLimitNotices.filter(
+      (current) =>
+        current.company !== notice.company || current.upgradeUrl !== notice.upgradeUrl,
+    );
+  }
+
+  async function openPlanLimitUpgrade(url: string): Promise<void> {
+    try {
+      await openApprovedExternalUrl(url);
+      planLimitOpenError = null;
+    } catch (error) {
+      console.error('Could not open the sync plan upgrade page.', error);
+      planLimitOpenError = 'Could not open the upgrade page. Try again.';
+    }
+  }
 </script>
 
 <div class="hq-work-embedded" data-testid="hq-work-embedded-shell">
@@ -799,6 +859,31 @@
     {#if signOutError}
       <div class="workspace-warning" data-testid="hq-work-sign-out-error" role="alert">
         <span>{signOutError}</span>
+      </div>
+    {/if}
+    {#if planLimitNotices.length > 0}
+      <div class="plan-limit-notices" data-testid="sync-plan-limit-notice" role="status">
+        {#each planLimitNotices as notice (notice.company + notice.upgradeUrl)}
+          <div class="plan-limit-notice">
+            <span>New files are paused for {notice.company}.</span>
+            <PlanUpgradeAction
+              upgradeUrl={notice.upgradeUrl}
+              onUpgrade={openPlanLimitUpgrade}
+              testId="sync-plan-limit-upgrade"
+            />
+            <button
+              type="button"
+              class="plan-limit-dismiss"
+              aria-label={`Dismiss upgrade notice for ${notice.company}`}
+              onclick={() => dismissPlanLimitNotice(notice)}
+            >
+              Dismiss
+            </button>
+          </div>
+        {/each}
+        {#if planLimitOpenError}
+          <p class="plan-limit-open-error" role="alert">{planLimitOpenError}</p>
+        {/if}
       </div>
     {/if}
     <div class="work-shell-frame">
@@ -948,6 +1033,39 @@
     line-height: 1.4;
     color: var(--v4-text-2, #b0b0b0);
     background: var(--v4-surface-solid, #282828);
+  }
+
+  .plan-limit-notices {
+    flex: 0 0 auto;
+    display: grid;
+    gap: 4px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--v4-divider, var(--c-divider));
+    color: var(--v4-text-1, var(--c-text, currentColor));
+    font-size: 13px;
+    line-height: 18px;
+  }
+
+  .plan-limit-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .plan-limit-dismiss {
+    border: 0;
+    padding: 4px 6px;
+    background: transparent;
+    color: var(--v4-text-2, var(--c-muted, currentColor));
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .plan-limit-open-error {
+    margin: 0;
+    color: var(--v4-warn, #b45309);
   }
 
   .work-shell-frame {

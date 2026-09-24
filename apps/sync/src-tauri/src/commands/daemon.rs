@@ -31,7 +31,9 @@ use crate::commands::sync::{PreflightFailure, ProvisionAttempt, RunTotals};
 use crate::commands::windows_teardown_probe::{
     sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
 };
-use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT};
+use crate::events::{
+    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_PLAN_LIMIT,
+};
 use crate::util::logfile::log;
 use crate::util::paths;
 use hq_desktop_core::daemon::{
@@ -348,6 +350,11 @@ fn handle_watch_stdout_line<R: tauri::Runtime>(
     // only ever appear after a hand-pressed "Sync Now".
     if let SyncEvent::Conflict(payload) = &event {
         let _ = app.emit(EVENT_SYNC_CONFLICT, payload.clone());
+    }
+    if let SyncEvent::PlanLimit(payload) = &event {
+        if let Err(error) = app.emit(EVENT_SYNC_PLAN_LIMIT, payload.clone()) {
+            log("daemon", &format!("failed to emit plan-limit notice: {error}"));
+        }
     }
     if let SyncEvent::AllComplete(payload) = &event {
         let conflicts = {
