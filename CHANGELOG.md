@@ -10,6 +10,10 @@ The release moves it under the version it ships in.
 
 - Switching channels or DMs in the sidebar now shows the new conversation
   right away instead of pausing first, even when leaving a long conversation.
+
+## [0.10.313] — 2026-09-24
+
+- Create company Cloud bots with Codex, Grok, or Claude. HQ shows the tenant price before creation and opens the Claude sign-in page after a Claude subscription bot is created.
 - When npm's metadata has not caught up to a new dependency version, HQ refreshes
   it and retries the CLI update. If needed, it tries npm's public registry.
 

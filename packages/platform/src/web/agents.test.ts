@@ -38,12 +38,14 @@ function makeAdapter() {
 describe("WebPlatformAdapter agents", () => {
   it("GETs status, jobs, roster, owners, and telemetry", async () => {
     const { adapter, calls } = makeAdapter();
+    await adapter.agents.getProvisionOptions("cmp_1");
     await adapter.agents.getStatus("agt_1");
     await adapter.agents.listJobs("agt_1");
     await adapter.agents.listMobileRoster("cmp_1");
     await adapter.agents.listOwners("cmp_1", "agt_1");
     await adapter.agents.getCompanyTelemetry("cmp_1", "2026-08-01", "2026-09-01");
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      `GET ${AGENT_PATHS.provisionOptions("cmp_1")}`,
       `GET ${AGENT_PATHS.status("agt_1")}`,
       `GET ${AGENT_PATHS.jobs("agt_1")}`,
       `GET ${AGENT_PATHS.mobileRoster("cmp_1")}`,

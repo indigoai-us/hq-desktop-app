@@ -46,8 +46,14 @@
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
-  import type { EntryPointResult } from "./lifecycle-entry-points.js";
-  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
+  import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
+  import type {
+    AdapterPromise,
+    AgentProvisionOptionsView,
+    LocalBotCreateInput,
+    LocalBotRow,
+    LocalBotWorkerOption,
+  } from "@hq/platform";
   import type { BotDisplayNames } from "./bot-display-names.js";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
@@ -257,9 +263,11 @@
     oncreateagent?:
       | ((
           companyUid: string,
-          draft: { name: string; handle: string; title?: string },
+          draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
+    loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
     oncreatebot?:
       | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
@@ -384,6 +392,8 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    loadClaudeProviderFlag = null,
+    loadCloudProvisionOptions = null,
     oncreatebot = null,
     botRuntimeReady = null,
     botRuntimeStatus = null,
@@ -3259,6 +3269,8 @@
       {oncreatecompany}
       {companyCreate}
       {oncreateagent}
+      {loadClaudeProviderFlag}
+      {loadCloudProvisionOptions}
       {agentCompanies}
       {oncreatebot}
       {botRuntimeReady}
