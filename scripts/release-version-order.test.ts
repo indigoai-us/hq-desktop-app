@@ -62,9 +62,10 @@ describe("release-version-order", () => {
     expect(compareVersions("1.0.0-beta.1.1", "1.0.0-beta.1")).toBeGreaterThan(0);
   });
 
-  it("proceeds only when the candidate is strictly newer", () => {
+  it("proceeds when the candidate is current or newer, but never regresses", () => {
     expect(decide({ current: "0.10.95", candidate: "0.10.96" })).toBe("proceed");
-    expect(decide({ current: "0.10.95", candidate: "0.10.95" })).toBe("skip");
+    // The equal-version release sync still has changelog notes to promote.
+    expect(decide({ current: "0.10.95", candidate: "0.10.95" })).toBe("proceed");
     expect(decide({ current: "0.10.96", candidate: "0.10.95" })).toBe("skip");
   });
 

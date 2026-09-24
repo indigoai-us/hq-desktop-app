@@ -4,15 +4,17 @@
 // Re-running an older tag — a retry of a historical release, or a hotfix tag
 // pushed while a newer version already shipped — must never drag main
 // backwards, so this compares the branch's current [product] version against
-// the candidate and prints `proceed` or `skip`.
+// the candidate and prints `proceed` or `skip`. An equal version still
+// proceeds: version stamping is idempotent, and the same sync also has to move
+// the released changelog notes out of Unreleased.
 //
 // Usage:
 //   node scripts/release-version-order.mjs --versions-file versions.toml \
 //     --candidate 0.10.96
 //
-// Prints `proceed` when the candidate is strictly newer than the current
-// version, `skip` otherwise. Exits non-zero only on real errors (bad input,
-// unreadable file), so the caller can distinguish "nothing to do" from
+// Prints `proceed` when the candidate is equal to or newer than the current
+// version, `skip` when it is older. Exits non-zero only on real errors (bad
+// input, unreadable file), so the caller can distinguish "nothing to do" from
 // "something is wrong".
 
 import { readFileSync } from "node:fs";
@@ -107,7 +109,7 @@ export function compareVersions(a, b) {
 }
 
 export function decide({ current, candidate }) {
-  return compareVersions(candidate, current) > 0 ? "proceed" : "skip";
+  return compareVersions(candidate, current) >= 0 ? "proceed" : "skip";
 }
 
 export function parseArgs(argv) {
