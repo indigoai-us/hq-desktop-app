@@ -431,7 +431,18 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     expect(loop).toContain('runner_report_is_complete(');
     expect(loop).toContain('Src::ReportNeverCompleted');
     expect(loop).toContain('Src::ReportRead');
-    expect(appDaemonSource).toContain('read_fresh_memory_class_within(&report_path, before, deadline)');
+    expect(loop).toContain('array_buffers_path.filter');
+    expect(loop).toContain('array_buffers_mb = Some(value)');
+    const resolver = sliceBetween(
+      appDaemonSource,
+      'fn resolve_watcher_memory_class(',
+      '\n}\n',
+      'resolve_watcher_memory_class',
+    );
+    expect(resolver).toContain('RUNNER_MEMORY_CLASS_FILENAME');
+    expect(resolver).toContain('Some(&array_buffers_path)');
+    expect(resolver).toContain('array_buffers_before');
+    expect(resolver).toContain('read_fresh_memory_class_within(');
   });
 
   it('registers the arm-reason + never-completed vocabulary at the telemetry egress boundary', () => {
