@@ -6,7 +6,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { computeShellHash, normalizeCargoLock, normalizeCargoToml, normalizeTauriConf } from "./shell-hash.mjs";
+import {
+  computeShellHash,
+  normalizeCargoLock,
+  normalizeCargoToml,
+  normalizeLineEndings,
+  normalizeTauriConf,
+} from "./shell-hash.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -145,6 +151,37 @@ describe("shell-hash", () => {
     await writeFile(join(root, "apps/sync/src/App.svelte"), "<p>changed</p>\n");
     const after = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
     expect(after).toBe(before);
+  });
+
+  // Regression: `* text=auto` checks text files out with CRLF on Windows
+  // runners, so shell-windows-* computed a different key than publish's
+  // Linux recompute of the same commit (shelltest run 36201283064 failed the
+  // stale-shell check for both Windows targets). The key must not depend on
+  // the checkout's line endings.
+  it("gives the same key for LF and CRLF checkouts of the same commit", async () => {
+    const lf = await makeFixture();
+    const crlf = await makeFixture();
+    cleanup.push(lf, crlf);
+    for (const [root, eol] of [
+      [lf, "\n"],
+      [crlf, "\r\n"],
+    ] as const) {
+      await writeFile(join(root, "crates/hq-desktop-core/src/lib.rs"), ["pub fn hi() {}", "pub fn yo() {}", ""].join(eol));
+      await writeFile(join(root, "apps/sync/src-tauri/Cargo.lock"), ["# lock v1", "[[package]]", ""].join(eol));
+      await writeFile(
+        join(root, "apps/sync/src-tauri/tauri.conf.json"),
+        JSON.stringify({ productName: "HQ", version: "1.0.0" }, null, 2).replace(/\n/g, eol),
+      );
+    }
+    const opts = { rustToolchain: "1.80.0", targetTriple: "x86_64-pc-windows-msvc" };
+    expect(await computeShellHash(crlf, opts)).toBe(await computeShellHash(lf, opts));
+  });
+
+  it("normalizes CRLF only in text, never in binary files", () => {
+    expect(normalizeLineEndings("a\r\nb\r\n")).toBe("a\nb\n");
+    expect(normalizeLineEndings(Buffer.from("a\r\nb")).toString()).toBe("a\nb");
+    const binary = Buffer.from([0x89, 0x50, 0x00, 0x0d, 0x0a, 0x01]);
+    expect(normalizeLineEndings(binary)).toEqual(binary);
   });
 
   // Regression: the CLI-entry check (`import.meta.url === file://${argv[1]}`)

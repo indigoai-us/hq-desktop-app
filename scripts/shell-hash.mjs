@@ -138,6 +138,19 @@ export async function collectShellFiles(root) {
   return [...files].sort();
 }
 
+/** Hash text files with LF line endings. `* text=auto` in .gitattributes
+ * checks text files out with CRLF on Windows runners (only some extensions
+ * are pinned to eol=lf), so without this the same commit hashed to a
+ * different key on Windows than on Linux, and publish's recompute of the
+ * Windows keys could never match. A file is treated as binary, and hashed
+ * byte for byte, if its first 8000 bytes contain a NUL (git's heuristic). */
+export function normalizeLineEndings(contents) {
+  if (typeof contents === "string") return contents.replace(/\r\n/g, "\n");
+  if (contents.subarray(0, 8000).includes(0)) return contents;
+  if (!contents.includes(13)) return contents;
+  return Buffer.from(contents.toString("latin1").replace(/\r\n/g, "\n"), "latin1");
+}
+
 export async function computeShellHash(root, { rustToolchain, targetTriple } = {}) {
   const files = await collectShellFiles(root);
   const hash = createHash("sha256");
@@ -162,6 +175,7 @@ export async function computeShellHash(root, { rustToolchain, targetTriple } = {
       // absence so adding the file later changes the key.
       contents = "<absent>";
     }
+    contents = normalizeLineEndings(contents);
     hash.update(`\0path=${rel}\0len=${contents.length}\0`);
     hash.update(contents);
   }
@@ -169,7 +183,7 @@ export async function computeShellHash(root, { rustToolchain, targetTriple } = {
   // explicitly, normalized, so a version-only edit never changes the hash.
   try {
     const confPath = join(root, "apps/sync/src-tauri/tauri.conf.json");
-    const normalized = normalizeTauriConf(await readFile(confPath, "utf8"));
+    const normalized = normalizeLineEndings(normalizeTauriConf(await readFile(confPath, "utf8")));
     hash.update(`\0path=apps/sync/src-tauri/tauri.conf.json\0`);
     hash.update(normalized);
   } catch {
