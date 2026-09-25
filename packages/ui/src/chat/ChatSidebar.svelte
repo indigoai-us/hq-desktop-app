@@ -1039,12 +1039,23 @@
    * notifications and deep links use — the shell's navigation loads it by id
    * the same way it would for any of those.
    */
-  function openHomeChannelId(homeChannelId: string): void {
+  function openHomeChannelId(
+    homeChannelId: string,
+    company?: { slug?: string | null; label?: string | null; companyUid?: string | null },
+  ): void {
     const loaded = allRows.find((r) => r.channelId === homeChannelId);
     if (loaded) {
       void openRow(loaded);
     } else {
-      requestChannelOpen(homeChannelId, {});
+      // Not in the loaded rows yet: the stub row would otherwise paint the
+      // raw `chn_…` id as the title/composer placeholder until the full
+      // directory catches up. Seed it with the company's slug — the same
+      // label the row itself will carry once loaded — so the header never
+      // shows a raw id.
+      requestChannelOpen(homeChannelId, {
+        title: company?.slug || company?.label || null,
+        companyUid: company?.companyUid ?? null,
+      });
     }
   }
 
@@ -1068,7 +1079,7 @@
     const known = company.homeChannelId ?? resolvedHomeChannelIds[company.companyUid] ?? null;
     if (known) {
       companiesLog(`open company=${label} channel=${known}`);
-      openHomeChannelId(known);
+      openHomeChannelId(known, company);
       return;
     }
     if (companyHomeEnsuring[company.companyUid]) return;
@@ -1079,7 +1090,7 @@
       const { homeChannelId } = await api.ensureCompanyHomeChannel(company.companyUid);
       resolvedHomeChannelIds = { ...resolvedHomeChannelIds, [company.companyUid]: homeChannelId };
       companiesLog(`open company=${label} channel=${homeChannelId}`);
-      openHomeChannelId(homeChannelId);
+      openHomeChannelId(homeChannelId, company);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       companiesLog(`open-failed company=${label} reason=${reason}`);

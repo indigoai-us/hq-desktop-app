@@ -3164,7 +3164,9 @@
   );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
-  const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
+  const headerTitle = $derived(
+    resolveConversationTitle(selectedRow, railRows, selectedHomeCompany?.slug ?? null),
+  );
 
   /**
    * Company hero shows the company's display name ("Ramen Bae"), not the
@@ -3587,6 +3589,43 @@
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
   }
 
+  /**
+   * A channel opened by id before it was in the loaded rows (a deep link, a
+   * notification, or the Companies-row click before that company's channels
+   * loaded) starts life as a bare stub — `channelScope`/`isCompanyHome`
+   * unset, title possibly the raw `chn_…` id. `fetchChannel` (the same
+   * channel-get call the timeline fetch already makes) returns the
+   * channel's own metadata alongside its messages; once it lands, adopt the
+   * real name/companyUid into the row so the header and composer stop
+   * showing the id. A no-op once the row has already hydrated (its own
+   * `channelScope` is set) or the payload carries no channel metadata.
+   */
+  function hydrateStubChannelRow(row: ConversationRow, raw: unknown): void {
+    if (row.kind !== "channel" || row.channelScope !== undefined) return;
+    if (!raw || typeof raw !== "object") return;
+    const channel = (raw as { channel?: unknown }).channel;
+    if (!channel || typeof channel !== "object") return;
+    const name = (channel as { name?: unknown }).name;
+    if (typeof name !== "string" || !name.trim()) return;
+    const companyUidRaw = (channel as { companyUid?: unknown }).companyUid;
+    const companyUid =
+      typeof companyUidRaw === "string" && companyUidRaw.trim()
+        ? companyUidRaw.trim()
+        : null;
+    const scopeRaw = (channel as { scope?: unknown }).scope;
+    const channelScope = typeof scopeRaw === "string" ? scopeRaw : "channel";
+    if (selectedRow?.id !== row.id) return;
+    selectedRow = {
+      ...selectedRow,
+      title: name.trim(),
+      companyUid: companyUid ?? selectedRow.companyUid,
+      channelScope,
+      isCompanyHome:
+        channelScope === "company" &&
+        companyByHomeChannelId.get(row.channelId ?? "") !== undefined,
+    };
+  }
+
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
@@ -3599,6 +3638,7 @@
     if (selectedRow?.id !== row.id) return;
     timelineHydrating = false;
     if (raw == null) return;
+    hydrateStubChannelRow(row, raw);
     historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
     let incoming = messagesForDisplay(raw);
     // An immediate readback can lag the accepted mutation. Preserve its
