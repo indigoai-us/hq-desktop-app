@@ -171,8 +171,8 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
       'WindowsTermination::SessionTerminate => "windows:session-terminate".to_string()',
     );
     expect(daemonCommandSource).toContain('("windows_exit_class", termination.class_name().to_string())');
-    expect(daemonCommandSource.replace(/\s+/g, ' ')).toContain(
-      '("runner_fatal_class", runner_fatal_class.as_str().to_string())',
+    expect(daemonCommandSource).toMatch(
+      /\(\s*"runner_fatal_class",\s*runner_fatal_class\.as_str\(\)\.to_string\(\),\s*\)/,
     );
     expect(daemonCommandSource).toContain('("windows_fault_symbol", symbol.to_string())');
     expect(daemonCommandSource).toContain(
