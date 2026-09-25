@@ -2366,6 +2366,7 @@ jobs:
           mkdir -p "$STAMP_DIR"
           node ../../scripts/stamp-version.mjs --version "$RELEASE_VERSION" --resources-dir "$STAMP_DIR"
           printf '%s\n' "$SHELL_KEY" > "$STAMP_DIR/shell-key.txt"
+          test -s "$STAMP_DIR/version.json" && test -s "$STAMP_DIR/shell-key.txt"
           CONFIG="$RUNNER_TEMP/tauri.windows.assemble-stamp.conf.json"
           cat > "$CONFIG" <<'JSON'
           {"bundle":{"resources":{"../dist/":"ui/","assemble-stamp/version.json":"version.json","assemble-stamp/shell-key.txt":"shell-key.txt"}}}
@@ -2703,6 +2704,7 @@ jobs:
           mkdir -p "$STAMP_DIR"
           node ../../scripts/stamp-version.mjs --version "$RELEASE_VERSION" --resources-dir "$STAMP_DIR"
           printf '%s\n' "$SHELL_KEY" > "$STAMP_DIR/shell-key.txt"
+          test -s "$STAMP_DIR/version.json" && test -s "$STAMP_DIR/shell-key.txt"
           CONFIG="$RUNNER_TEMP/tauri.windows.assemble-stamp.conf.json"
           cat > "$CONFIG" <<'JSON'
           {"bundle":{"resources":{"../dist/":"ui/","assemble-stamp/version.json":"version.json","assemble-stamp/shell-key.txt":"shell-key.txt"}}}

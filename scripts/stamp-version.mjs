@@ -20,6 +20,7 @@
 // script — see scripts/stamp-exe-version.mjs, invoked separately in the
 // Windows assemble jobs.
 import { readFile, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:beta|alpha|shelltest)\.(0|[1-9]\d*))?$/;
 
@@ -83,7 +84,10 @@ export async function main(argv) {
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// process.argv[1] is a raw OS path (backslashes on Windows); compare as a
+// file URL so the CLI actually runs on Windows runners (same fix as
+// shell-hash.mjs).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {

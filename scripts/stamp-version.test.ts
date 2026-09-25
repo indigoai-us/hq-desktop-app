@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { assertValidVersion, patchInfoPlist, renderVersionJson, stampBundle } from "./stamp-version.mjs";
@@ -59,5 +62,22 @@ describe("stamp-version", () => {
 
     expect(await readFile(join(dir, "version.json"), "utf8")).toBe('{"version":"2.3.4"}\n');
     expect(await readFile(plistPath, "utf8")).toContain("<string>2.3.4</string>");
+  });
+
+  it("runs as a CLI and writes version.json (release.yml invocation shape)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "stamp-version-cli-"));
+    cleanup.push(dir);
+    const script = fileURLToPath(new URL("./stamp-version.mjs", import.meta.url));
+    await promisify(execFile)("node", [script, "--version", "3.4.5", "--resources-dir", dir]);
+    expect(await readFile(join(dir, "version.json"), "utf8")).toBe('{"version":"3.4.5"}\n');
+  });
+
+  it("detects its CLI entry point with pathToFileURL so it also runs on Windows", async () => {
+    // A `file://${process.argv[1]}` comparison never matches a backslash
+    // Windows path, so the script exited 0 without writing anything on the
+    // Windows assemble runners.
+    const source = await readFile(fileURLToPath(new URL("./stamp-version.mjs", import.meta.url)), "utf8");
+    expect(source).not.toContain("`file://${process.argv[1]}`");
+    expect(source).toContain("pathToFileURL(process.argv[1]).href");
   });
 });
