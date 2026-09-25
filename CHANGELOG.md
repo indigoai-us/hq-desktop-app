@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On Windows, HQ waits for its own command processes to finish before replacing
+  the HQ CLI package and retries once if npm still reports a locked install
+  directory.
+
 ## [0.10.324] — 2026-09-25
 
 - Channel @mention notifications now work on installs whose local settings file does not record your person ID, and the first mention in a channel after the app starts now notifies too.
@@ -15,10 +19,6 @@ The release moves it under the version it ships in.
 - The desktop app now asks for (and transparently decodes) compressed
   responses from the server, so the same data moves over the wire faster —
   most noticeable on the channel list for people in large companies.
-
-- On Windows, HQ waits for its own command processes to finish before replacing
-  the HQ CLI package and retries once if npm still reports a locked install
-  directory.
 
 ## [0.10.323] — 2026-09-24
 
