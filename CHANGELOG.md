@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed layout shifts when opening a company's home channel — the wallpaper
+  hero, the member-count and mute controls, and the message skeleton now hold
+  their final size from the first frame, so nothing jumps as the company's
+  real name, member count, and messages arrive.
 - Fixed a bug where clicking a company in the sidebar's "Companies" section
   before it had a home channel yet showed a raw server error
   ("home-channel HTTP 404 Not Found: ...") under the row — the request was

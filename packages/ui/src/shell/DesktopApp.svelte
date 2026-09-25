@@ -4774,8 +4774,22 @@
       ? selectedRow.memberCount
       : (channelStatus?.memberCount ?? 0),
   );
+  /**
+   * A joined channel/group always ends up with a member pill once its
+   * roster or status resolves — showing it from the first paint (with the
+   * "·" placeholder count already built into `memberPillCount`) reserves
+   * its slot in `.channel-header-trailing` so the count arriving later
+   * never nudges the title. Only a row we already know will never get one
+   * (not joined, browse-only, or a DM/group with no roster concept) skips
+   * it entirely.
+   */
   const showMemberPill = $derived(
-    Boolean(selectedRow) && (memberPillCount > 0 || channelStatus != null),
+    Boolean(selectedRow) &&
+      (memberPillCount > 0 ||
+        channelStatus != null ||
+        (selectedRow!.kind === "channel" &&
+          !selectedRow!.browseOnly &&
+          (selectedRow!.membership ?? "joined") === "joined")),
   );
 
   function unwrapAdapter<T>(

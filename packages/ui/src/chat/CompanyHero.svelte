@@ -33,7 +33,11 @@
 <style>
   .company-hero {
     position: relative;
-    min-height: 140px;
+    /* Fixed, not min: the appearance name can swap in later (server
+       settings fetch) and must never grow the box — the title itself is
+       clamped to one line below so a longer name never wraps and pushes
+       the hero taller mid-session. */
+    height: 140px;
     margin: 0 0 12px;
     overflow: hidden;
     border-radius: 10px;
@@ -68,5 +72,10 @@
     font-size: 24px;
     font-weight: 500;
     color: #fff;
+    /* Slug -> display-name swap (or the later appearance-name fetch) must
+       never wrap onto a second line and grow `.company-hero`. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>
