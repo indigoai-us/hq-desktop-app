@@ -84,9 +84,9 @@ describe('windows indeterminate-status attribution — source contracts', () => 
     // the manual route use, so the three seams cannot drift.
     expect(daemonSource).toContain('fn apply_deferred_runner_report(');
     expect(daemonSource).toContain('let report = read_runner_diagnostic_report(report_dir);');
-    expect(daemonSource).toContain('apply_report_to_fault_tags(tags, &report);');
+    expect(daemonSource).toContain('apply_report_to_fault_tags(tags, extras, &report);');
     // A report-derived class still never overrides a stderr-derived one (shared rule).
-    expect(daemonSource).toContain('current_class == "none"');
+    expect(daemonSource).toContain('matches!(current_class, "none" | "unknown")');
   });
 
   it('removes the requested-but-non-fault report directory (Leg A2)', () => {

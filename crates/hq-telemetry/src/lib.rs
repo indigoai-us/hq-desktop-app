@@ -59,6 +59,7 @@ pub fn redact_core_update_diagnostic_tail(value: &str) -> String {
 pub const RUNNER_FATAL_LINE_COUNT_LIMIT: usize = 3;
 const RUNNER_FATAL_LINE_INPUT_LIMIT_BYTES: usize = 1024;
 const RUNNER_FATAL_LINE_LIMIT_BYTES: usize = 512;
+pub const RUNNER_FATAL_REASON_LIMIT_BYTES: usize = 160;
 
 /// Redact and bound the fatal lines selected from a watcher's already bounded
 /// stderr tail. Each line is scrubbed independently before being joined so
@@ -78,6 +79,17 @@ pub fn redact_runner_fatal_lines(lines: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Redact one short runner-fatal reason excerpt for structured telemetry.
+/// Unlike the retained fatal-lines extra, the reason is capped to 160 bytes.
+pub fn redact_runner_fatal_reason(line: &str) -> String {
+    let single_line = line.split(['\r', '\n']).next().unwrap_or_default();
+    let input = truncate_at_utf8_boundary(single_line, RUNNER_FATAL_LINE_INPUT_LIMIT_BYTES);
+    let redacted = redact_core_update_diagnostic_tail(input);
+    truncate_at_utf8_boundary(&redacted, RUNNER_FATAL_REASON_LIMIT_BYTES)
+        .trim()
+        .to_string()
 }
 
 fn truncate_at_utf8_boundary(value: &str, max_bytes: usize) -> &str {
@@ -1462,6 +1474,20 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "unknown"
         )),
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
+        "watcher_job_process_count_bucket" => Some(matches!(
+            value,
+            "zero" | "1_to_5" | "6_to_10" | "11_to_25" | "26_to_50" | "over_50" | "unknown"
+        )),
+        "watcher_job_largest_process_kind" => Some(matches!(
+            value,
+            "node_exe"
+                | "npx_cmd"
+                | "cmd_exe"
+                | "hq_sync_menubar_exe"
+                | "other"
+                | "mixed"
+                | "unknown"
+        )),
         "watcher_child_kind" => Some(matches!(
             value,
             "cmd_shim" | "launcher" | "direct_executable"
@@ -1551,6 +1577,10 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 && value
                     .chars()
                     .all(|character| character == '\n' || !character.is_control()),
+        ),
+        "runner_fatal_reason" => Some(
+            value.len() <= RUNNER_FATAL_REASON_LIMIT_BYTES
+                && value.chars().all(|character| !character.is_control()),
         ),
         // Bare signal integer. A numeric extra reaches this check as `""` (the
         // scrub loop passes an empty string for a non-string `Value`), which is
@@ -1983,6 +2013,9 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
                 | "libuv_fatal_syscall"
                 | "node_check_abort"
                 | "node_fatal"
+                | "v8_fatal"
+                | "abort"
+                | "fastfail"
                 | "heap_oom"
                 | "rust_panic"
                 | "exec_permission_denied"
@@ -1990,6 +2023,7 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
                 | "node_too_old"
                 | "disk_full"
                 | "npm_install_relay"
+                | "unknown"
                 | "none"
         )
     };
@@ -2167,6 +2201,9 @@ fn is_runner_fatal_class_token(value: &str) -> bool {
             | "libuv_fatal_syscall"
             | "node_check_abort"
             | "node_fatal"
+            | "v8_fatal"
+            | "abort"
+            | "fastfail"
             | "heap_oom"
             | "rust_panic"
             | "exec_permission_denied"
@@ -2174,6 +2211,7 @@ fn is_runner_fatal_class_token(value: &str) -> bool {
             | "node_too_old"
             | "disk_full"
             | "npm_install_relay"
+            | "unknown"
             | "none"
     )
 }
@@ -2198,7 +2236,9 @@ fn sync_child_exit_detail(
     fatal_class: Option<&str>,
 ) -> Option<String> {
     let fatal_phrase = || match fatal_class {
-        Some(value) if is_runner_fatal_class_token(value) && value != "none" => {
+        Some(value)
+            if is_runner_fatal_class_token(value) && value != "none" && value != "unknown" =>
+        {
             Some(value.replace('_', " "))
         }
         _ => None,
@@ -3002,11 +3042,15 @@ mod tests {
         for (sequence, fatal_class) in [
             "libuv_assert",
             "node_fatal",
+            "v8_fatal",
+            "abort",
+            "fastfail",
             "heap_oom",
             "rust_panic",
             "exec_permission_denied",
             "exec_not_found",
             "node_too_old",
+            "unknown",
             "none",
         ]
         .into_iter()
@@ -3430,6 +3474,29 @@ mod tests {
         assert!(!safe.contains("secret-token-value"));
         assert!(!safe.contains("fourth fatal line"));
         assert!(safe.len() <= 3 * 512 + 2);
+    }
+
+    #[test]
+    fn watcher_fatal_reason_is_short_redacted_and_preserved_as_structured_extra() {
+        let raw = "FATAL ERROR: V8 allocation failed in C:\\Users\\Ada\\private\\cache with token=secret-token-value";
+        let reason = redact_runner_fatal_reason(raw);
+        assert!(reason.len() <= RUNNER_FATAL_REASON_LIMIT_BYTES);
+        assert!(reason.starts_with("FATAL ERROR: V8 allocation failed"));
+        assert!(reason.contains("[Filtered]"));
+        assert!(!reason.contains("Ada"));
+        assert!(!reason.contains("secret-token-value"));
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_fatal_reason", &reason),
+            Some(true)
+        );
+
+        let mut event = Event::default();
+        event.extra.insert(
+            "runner_fatal_reason".to_string(),
+            Value::String(reason.clone()),
+        );
+        let result = before_send(event).expect("reason-only diagnostic remains sendable");
+        assert_eq!(result.extra["runner_fatal_reason"], Value::String(reason));
     }
 
     #[test]
@@ -4472,6 +4539,28 @@ mod tests {
     }
 
     #[test]
+    fn before_send_does_not_present_unknown_fatal_class_as_a_cause() {
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("runner_fatal_class", "unknown"),
+            ("runner_fatal_source", "none"),
+            ("runner_report_read", "report_absent"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("unknown evidence remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/watcher: windows fault 0xC0000409")
+        );
+        assert_eq!(result.tags["runner_fatal_class"], "unknown");
+    }
+
+    #[test]
     fn runner_fatal_source_and_report_read_axes_fail_closed_at_egress() {
         // Valid fixed vocabulary passes; anything else — an off-vocabulary token, a
         // path, or a [Filtered]-shaped value a producer bug might ship — is refused,
@@ -5052,7 +5141,10 @@ mod tests {
             ("runner_fatal_errno", "5; rm -rf"),
             ("watcher_job_peak_commit_bucket", "512mb_to_1gb:/Users/Ada"),
             ("watcher_job_process_count", "2 processes /Users/Ada"),
+            ("watcher_job_process_count_bucket", "50 to 100 /Users/Ada"),
+            ("watcher_job_largest_process_kind", "node_exe:/Users/Ada"),
             ("watcher_child_kind", "launcher:/Users/Ada"),
+            ("runner_fatal_reason", "reason\nwith control"),
             // Shim-vs-runner discriminator (HQ-DESKTOP-66): an off-vocabulary token
             // or a path-shaped count must degrade to `[Filtered]`.
             ("watcher_job_survivors", "node_exe:/Users/Ada"),
@@ -5092,6 +5184,14 @@ mod tests {
             ("watcher_job_peak_commit_bucket", "unknown"),
             ("watcher_job_process_count", "2"),
             ("watcher_job_process_count", "unknown"),
+            ("watcher_job_process_count_bucket", "zero"),
+            ("watcher_job_process_count_bucket", "26_to_50"),
+            ("watcher_job_process_count_bucket", "over_50"),
+            ("watcher_job_process_count_bucket", "unknown"),
+            ("watcher_job_largest_process_kind", "node_exe"),
+            ("watcher_job_largest_process_kind", "hq_sync_menubar_exe"),
+            ("watcher_job_largest_process_kind", "mixed"),
+            ("watcher_job_largest_process_kind", "unknown"),
             ("watcher_child_kind", "cmd_shim"),
             ("watcher_child_kind", "launcher"),
             ("watcher_child_kind", "direct_executable"),

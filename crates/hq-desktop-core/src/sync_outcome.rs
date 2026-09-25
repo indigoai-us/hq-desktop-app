@@ -1534,6 +1534,14 @@ pub enum RunnerFatalClass {
     LibuvFatalSyscall,
     NodeCheckAbort,
     NodeFatal,
+    /// V8's process-fatal stderr banner, excluding the more specific heap-OOM
+    /// class below.
+    V8Fatal,
+    /// An explicit Node/native abort marker in the child's stderr.
+    Abort,
+    /// An explicit fast-fail marker. A Windows status code alone is not enough
+    /// to claim this class.
+    Fastfail,
     HeapOom,
     RustPanic,
     ExecPermissionDenied,
@@ -1553,6 +1561,9 @@ pub enum RunnerFatalClass {
     /// e.g. the still-unattributed exit-190 leg (HQ-DESKTOP-51) — never a causal
     /// claim. The token is a fixed constant, never derived from observed bytes.
     NpmInstallRelay,
+    /// A Windows fault exit whose bounded stderr/report evidence did not name a
+    /// cause. Kept distinct from `None`, which means no fatal exit was observed.
+    Unknown,
     #[default]
     None,
 }
@@ -1560,11 +1571,14 @@ pub enum RunnerFatalClass {
 impl RunnerFatalClass {
     /// Every variant, so content-safety tests can enumerate the emitter's own
     /// fatal-class token set instead of a hand-copied list.
-    pub const ALL: [RunnerFatalClass; 12] = [
+    pub const ALL: [RunnerFatalClass; 16] = [
         Self::LibuvAssert,
         Self::LibuvFatalSyscall,
         Self::NodeCheckAbort,
         Self::NodeFatal,
+        Self::V8Fatal,
+        Self::Abort,
+        Self::Fastfail,
         Self::HeapOom,
         Self::RustPanic,
         Self::ExecPermissionDenied,
@@ -1572,6 +1586,7 @@ impl RunnerFatalClass {
         Self::NodeTooOld,
         Self::DiskFull,
         Self::NpmInstallRelay,
+        Self::Unknown,
         Self::None,
     ];
 
@@ -1582,6 +1597,9 @@ impl RunnerFatalClass {
             Self::LibuvFatalSyscall => "libuv_fatal_syscall",
             Self::NodeCheckAbort => "node_check_abort",
             Self::NodeFatal => "node_fatal",
+            Self::V8Fatal => "v8_fatal",
+            Self::Abort => "abort",
+            Self::Fastfail => "fastfail",
             Self::HeapOom => "heap_oom",
             Self::RustPanic => "rust_panic",
             Self::ExecPermissionDenied => "exec_permission_denied",
@@ -1589,8 +1607,14 @@ impl RunnerFatalClass {
             Self::NodeTooOld => "node_too_old",
             Self::DiskFull => "disk_full",
             Self::NpmInstallRelay => "npm_install_relay",
+            Self::Unknown => "unknown",
             Self::None => "none",
         }
+    }
+
+    /// Parse only the producer-owned fixed vocabulary.
+    pub fn from_token(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|class| class.as_str() == value)
     }
 
     pub fn seen(self) -> bool {
@@ -1880,6 +1904,8 @@ pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
         RunnerFatalClass::NodeCheckAbort
     } else if msg.contains("javascript heap out of memory") {
         RunnerFatalClass::HeapOom
+    } else if msg.contains("fatal error:") {
+        RunnerFatalClass::NodeFatal
     } else if msg.contains("panicked at") {
         RunnerFatalClass::RustPanic
     } else if ["fatal error", "uncaught exception", "unhandledrejection"]
@@ -1915,6 +1941,61 @@ pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
         RunnerFatalClass::LibuvFatalSyscall
     } else {
         RunnerFatalClass::None
+    }
+}
+
+/// Classify additional Node/V8 crash signatures for diagnostics without
+/// changing the runner-exit or suppression decisions made by
+/// [`classify_runner_fatal_class`]. These categories are emitted only as
+/// reporting metadata.
+pub fn classify_runner_fatal_diagnostic_class(line: &str) -> RunnerFatalClass {
+    let message = line.to_ascii_lowercase();
+    match classify_runner_fatal_class(line) {
+        RunnerFatalClass::HeapOom => RunnerFatalClass::HeapOom,
+        RunnerFatalClass::NodeFatal if message.contains("fatal error") => RunnerFatalClass::V8Fatal,
+        class if class != RunnerFatalClass::None => class,
+        _ if [
+            "__fastfail",
+            "status_stack_buffer_overrun",
+            "fastfail",
+            "fast-fail",
+            "fast fail",
+        ]
+        .iter()
+        .any(|marker| message.contains(marker)) =>
+        {
+            RunnerFatalClass::Fastfail
+        }
+        _ if [
+            "process.abort()",
+            "process::abort",
+            "abort() called",
+            "calling abort()",
+            "sigabrt",
+            "aborted (core dumped)",
+        ]
+        .iter()
+        .any(|marker| message.contains(marker)) =>
+        {
+            RunnerFatalClass::Abort
+        }
+        _ => RunnerFatalClass::None,
+    }
+}
+
+/// Give an otherwise-unclassified Windows fault a truthful diagnostic token.
+/// The NTSTATUS establishes that a fault occurred, but not whether Node aborted,
+/// V8 failed, `__fastfail` fired, or a native stack guard was hit. A supplied
+/// class remains authoritative and an ambiguous code+signal pair is left alone.
+pub fn runner_fatal_class_for_windows_fault(
+    class: RunnerFatalClass,
+    code: Option<i32>,
+    signal: Option<i32>,
+) -> RunnerFatalClass {
+    if class == RunnerFatalClass::None && signal.is_none() && is_windows_fault_exit(code) {
+        RunnerFatalClass::Unknown
+    } else {
+        class
     }
 }
 
@@ -5378,6 +5459,44 @@ mod tests {
             RunnerFatalClass::HeapOom
         );
         assert_eq!(
+            classify_runner_fatal_class("FATAL ERROR: V8 failed to create a context"),
+            RunnerFatalClass::NodeFatal,
+            "the existing exit classifier keeps its behavior"
+        );
+        assert_eq!(
+            classify_runner_fatal_class("fatal error"),
+            RunnerFatalClass::NodeFatal,
+            "the existing exit classifier keeps its broad fatal-error marker"
+        );
+        assert_eq!(
+            classify_runner_fatal_class("process.abort() called"),
+            RunnerFatalClass::None,
+            "diagnostic markers do not alter exit policy"
+        );
+        assert_eq!(
+            classify_runner_fatal_class("__fastfail(FAST_FAIL_FATAL_APP_EXIT)"),
+            RunnerFatalClass::None,
+            "diagnostic markers do not alter exit policy"
+        );
+        for (line, expected) in [
+            (
+                "FATAL ERROR: V8 failed to create a context",
+                RunnerFatalClass::V8Fatal,
+            ),
+            ("fatal error", RunnerFatalClass::V8Fatal),
+            (
+                "FATAL ERROR: JavaScript heap out of memory",
+                RunnerFatalClass::HeapOom,
+            ),
+            ("process.abort() called", RunnerFatalClass::Abort),
+            (
+                "__fastfail(FAST_FAIL_FATAL_APP_EXIT)",
+                RunnerFatalClass::Fastfail,
+            ),
+        ] {
+            assert_eq!(classify_runner_fatal_diagnostic_class(line), expected);
+        }
+        assert_eq!(
             classify_runner_fatal_class("thread 'main' panicked at 'boom'"),
             RunnerFatalClass::RustPanic
         );
@@ -5417,6 +5536,45 @@ mod tests {
         assert_eq!(token, "libuv_assert");
         assert!(!token.contains("Ada"));
         assert!(!token.contains("secret-plan"));
+    }
+
+    #[test]
+    fn unclassified_windows_fault_is_unknown_without_changing_other_exit_classes() {
+        let stack_buffer_overrun = Some(0xC000_0409u32 as i32);
+        let access_violation = Some(0xC000_0005u32 as i32);
+
+        assert_eq!(
+            runner_fatal_class_for_windows_fault(
+                RunnerFatalClass::None,
+                stack_buffer_overrun,
+                None,
+            ),
+            RunnerFatalClass::Unknown
+        );
+        assert_eq!(
+            runner_fatal_class_for_windows_fault(RunnerFatalClass::None, access_violation, None,),
+            RunnerFatalClass::Unknown
+        );
+        assert_eq!(
+            runner_fatal_class_for_windows_fault(
+                RunnerFatalClass::HeapOom,
+                stack_buffer_overrun,
+                None,
+            ),
+            RunnerFatalClass::HeapOom
+        );
+        assert_eq!(
+            runner_fatal_class_for_windows_fault(RunnerFatalClass::None, Some(1), None),
+            RunnerFatalClass::None
+        );
+        assert_eq!(
+            runner_fatal_class_for_windows_fault(
+                RunnerFatalClass::None,
+                stack_buffer_overrun,
+                Some(6),
+            ),
+            RunnerFatalClass::None
+        );
     }
 
     #[test]
@@ -5646,7 +5804,10 @@ mod tests {
         for class in RunnerFatalClass::ALL {
             let token = class.as_str();
             assert!(
-                !token.is_empty() && token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                !token.is_empty()
+                    && token
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
                 "fatal-class token must be a fixed lower_snake constant: {token:?}"
             );
             assert!(seen.insert(token), "duplicate fatal-class token: {token:?}");

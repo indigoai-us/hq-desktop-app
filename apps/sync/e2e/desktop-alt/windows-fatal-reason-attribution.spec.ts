@@ -100,7 +100,14 @@ describe('windows fatal-reason attribution — source contracts', () => {
     // NOT in the terminal exit callback that gates emit_exit_then_deregister.
     expect(daemonSource).toContain('fn spawn_deferred_watcher_fault_capture(');
     expect(daemonSource).toContain('let report = read_runner_diagnostic_report(&report_dir);');
-    expect(daemonSource).toContain('apply_report_to_fault_tags(&mut payload.tags, &report);');
+    expect(daemonSource).toContain(
+      'apply_report_to_fault_tags(&mut payload.tags, &mut payload.extras, &report);',
+    );
+    // When the Node report supplies the cause, the deferred payload drops the
+    // stderr-only placeholder reason so its extras agree with the adopted class.
+    expect(daemonSource).toContain(
+      'extras.retain(|(key, _)| key != "runner_fatal_reason");',
+    );
     // The reader is a single bounded read (no directory listing) that removes the
     // report directory after reading, bounding disk on a crash-looping machine.
     expect(daemonSource).toContain('pub(crate) fn read_runner_diagnostic_report(');
@@ -115,10 +122,10 @@ describe('windows fatal-reason attribution — source contracts', () => {
   });
 
   it('a report-derived class NEVER overrides a stderr-derived one', () => {
-    // The deferred worker adopts a report class only when the current class is none;
+    // The deferred worker adopts a report class only when the current class is none or unknown;
     // the manual builder adopts it only when the stderr class is None — so macOS
     // heap_oom and every existing stderr attribution keep priority.
-    expect(daemonSource).toContain('current_class == "none"');
+    expect(daemonSource).toContain('matches!(current_class, "none" | "unknown")');
     expect(syncSource).toContain('stderr_class == RunnerFatalClass::None');
     expect(syncSource).toContain('"node_report"');
   });

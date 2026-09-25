@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Windows sync crash reports now include bounded Node/V8 fatal details and sampled watcher process counts and kinds.
+
 ## [0.10.327] — 2026-09-25
 
 - Simplified how the desktop app finds a company's main channel: it now opens

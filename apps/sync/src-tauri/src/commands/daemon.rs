@@ -1443,6 +1443,10 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // PIDs feed the deferred OS fault read below.
                         let job_sample =
                             crate::commands::process::take_watcher_job_sample(daemon_generation);
+                        exit_context.watcher_job_largest_process_kind = job_sample
+                            .largest_process_kind
+                            .unwrap_or("unknown")
+                            .to_string();
                         if job_sample.images.images_tag().is_some() {
                             exit_context.watcher_fault_job_images = job_sample.images.images_tag();
                             exit_context.watcher_fault_job_culprit_candidate =
@@ -1889,6 +1893,10 @@ struct WatcherExitCaptureContext {
     /// together.
     watcher_job_survivors: String,
     watcher_job_survivor_count: Option<u32>,
+    /// Dominant allow-listed image kind among distinct PIDs sampled while this
+    /// watcher generation's Job Object tree was alive. `unknown` means no image
+    /// could be resolved; this is diagnostic-only and never an attribution.
+    watcher_job_largest_process_kind: String,
     /// This generation's app-owned diagnostic-report directory when a report WAS
     /// requested but the exit is NOT a Windows fault (HQ-DESKTOP-66), so no
     /// `WatcherFaultDeferredRead` owns it. Its presence is what tells the capture
@@ -2034,6 +2042,7 @@ impl Default for WatcherExitCaptureContext {
                 .token()
                 .to_string(),
             watcher_job_survivor_count: None,
+            watcher_job_largest_process_kind: "unknown".to_string(),
             runner_report_deferred_dir: None,
         }
     }
@@ -2266,6 +2275,7 @@ fn watcher_exit_capture_context(
         // misleading `0`.
         watcher_job_survivors: job_survivors.token().to_string(),
         watcher_job_survivor_count: job_survivors.count(),
+        watcher_job_largest_process_kind: "unknown".to_string(),
         // Set by the exit callback for a requested-report NON-fault exit; `None` here
         // (unit-only callers request no report, and the fault path routes the read
         // through the fault deferred worker instead).
@@ -2279,7 +2289,15 @@ fn node_fatal_stderr_lines(stderr_tail: &[String]) -> Vec<String> {
     stderr_tail
         .iter()
         .filter(|line| {
-            classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal
+            matches!(
+                hq_desktop_core::sync_outcome::classify_runner_fatal_diagnostic_class(line),
+                RunnerFatalClass::NodeFatal
+                    | RunnerFatalClass::NodeCheckAbort
+                    | RunnerFatalClass::V8Fatal
+                    | RunnerFatalClass::Abort
+                    | RunnerFatalClass::Fastfail
+                    | RunnerFatalClass::HeapOom
+            )
         })
         .take(MAX_LINES)
         .map(|line| {
@@ -3146,12 +3164,13 @@ pub(crate) fn read_runner_diagnostic_report(
 /// Patch a deferred fault capture's tags with a runner diagnostic report's
 /// attribution, OFF the exit path. A report-derived class NEVER overrides a
 /// stderr-derived class that already named the cause: it is adopted ONLY when the
-/// current `runner_fatal_class` is `none` (the exact Windows-fault case the stderr
-/// channel loses). Always records `runner_report_read`; when a class IS adopted,
+/// current `runner_fatal_class` is `none` or `unknown` (the exact Windows-fault
+/// case the stderr channel loses). Always records `runner_report_read`; when a class IS adopted,
 /// flips `runner_fatal_source` to `node_report` and adopts the report's
 /// content-safe stack shape/signature. Pure — a test proves the patch with no I/O.
 fn apply_report_to_fault_tags(
     tags: &mut Vec<(String, String)>,
+    extras: &mut Vec<(String, sentry::protocol::Value)>,
     report: &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport,
 ) {
     set_payload_tag(tags, "runner_report_read", report.read.as_str().to_string());
@@ -3160,7 +3179,7 @@ fn apply_report_to_fault_tags(
         .find(|(key, _)| key == "runner_fatal_class")
         .map(|(_, value)| value.as_str())
         .unwrap_or("none");
-    if report.named_cause() && current_class == "none" {
+    if report.named_cause() && matches!(current_class, "none" | "unknown") {
         set_payload_tag(
             tags,
             "runner_fatal_class",
@@ -3177,6 +3196,10 @@ fn apply_report_to_fault_tags(
             "runner_fatal_source",
             report.fatal_source().to_string(),
         );
+        // The exit path may have recorded this stderr-only explanation before the
+        // report read. Once the report names a cause, that placeholder would
+        // contradict the adopted class, so remove it from the deferred payload.
+        extras.retain(|(key, _)| key != "runner_fatal_reason");
     }
 }
 
@@ -3236,7 +3259,7 @@ fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
             // class never overrides a stderr-derived one (see apply_report_to_fault_tags).
             if let Some(report_dir) = payload.read.report_dir.clone() {
                 let report = read_runner_diagnostic_report(&report_dir);
-                apply_report_to_fault_tags(&mut payload.tags, &report);
+                apply_report_to_fault_tags(&mut payload.tags, &mut payload.extras, &report);
             }
             let resolution = if outcome.is_some() {
                 "read_resolved"
@@ -3482,14 +3505,18 @@ fn reset_pending_runner_report_registry_for_test() {
 /// fault worker and the manual route use, so a report-derived class still never
 /// overrides a stderr-derived one and the three seams can never drift. Shared by the
 /// deferred worker and the recording test double so both observe the same result.
-fn apply_deferred_runner_report(report_dir: &Path, tags: &mut Vec<(String, String)>) {
+fn apply_deferred_runner_report(
+    report_dir: &Path,
+    tags: &mut Vec<(String, String)>,
+    extras: &mut Vec<(String, sentry::protocol::Value)>,
+) {
     let report = read_runner_diagnostic_report(report_dir);
-    apply_report_to_fault_tags(tags, &report);
+    apply_report_to_fault_tags(tags, extras, &report);
 }
 
 /// Read a held-back non-fault capture's report, apply its verdict, and send it.
 fn send_deferred_runner_report_capture(mut payload: DeferredRunnerReportCapture) {
-    apply_deferred_runner_report(&payload.report_dir, &mut payload.tags);
+    apply_deferred_runner_report(&payload.report_dir, &mut payload.tags, &mut payload.extras);
     let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
     let tags: Vec<(&str, String)> = payload
         .tags
@@ -4261,20 +4288,55 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let last_stderr_signature = last_stderr
         .map(classify_runner_fatal_signature)
         .filter(|signature| signature.class.seen());
-    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = match last_stderr_signature
-    {
-        Some(signature) => (
-            signature.class.as_str().to_string(),
-            signature.syscall.map(|syscall| syscall.to_string()),
-            signature.errno,
-        ),
-        None => (
-            context.runner_fatal_class.clone(),
-            context.runner_fatal_syscall.clone(),
-            context.runner_fatal_errno,
-        ),
+    let (mut runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) =
+        match last_stderr_signature {
+            Some(signature) => (
+                signature.class.as_str().to_string(),
+                signature.syscall.map(|syscall| syscall.to_string()),
+                signature.errno,
+            ),
+            None => (
+                context.runner_fatal_class.clone(),
+                context.runner_fatal_syscall.clone(),
+                context.runner_fatal_errno,
+            ),
+        };
+    let diagnostic_stderr_class = last_stderr
+        .map(hq_desktop_core::sync_outcome::classify_runner_fatal_diagnostic_class)
+        .filter(|class| class.seen())
+        .or_else(|| {
+            context
+                .runner_fatal_lines
+                .iter()
+                .rev()
+                .map(|line| {
+                    hq_desktop_core::sync_outcome::classify_runner_fatal_diagnostic_class(line)
+                })
+                .find(|class| class.seen())
+        });
+    if let Some(class) = diagnostic_stderr_class {
+        runner_fatal_class = class.as_str().to_string();
+    }
+    let runner_fatal_class = hq_desktop_core::sync_outcome::runner_fatal_class_for_windows_fault(
+        RunnerFatalClass::from_token(&runner_fatal_class).unwrap_or(RunnerFatalClass::None),
+        code,
+        signal,
+    );
+    let runner_fatal_class_seen = runner_fatal_class != RunnerFatalClass::None
+        && runner_fatal_class != RunnerFatalClass::Unknown;
+    let fatal_reason = match runner_fatal_class {
+        RunnerFatalClass::None => None,
+        RunnerFatalClass::Unknown => Some("windows_fault_without_known_stderr_signature"),
+        RunnerFatalClass::HeapOom => Some("v8_heap_exhaustion_marker_matched"),
+        RunnerFatalClass::V8Fatal => Some("v8_fatal_error_marker_matched"),
+        RunnerFatalClass::Abort => Some("node_abort_marker_matched"),
+        RunnerFatalClass::Fastfail => Some("windows_fastfail_marker_matched"),
+        RunnerFatalClass::LibuvAssert => Some("libuv_assertion_signature_matched"),
+        RunnerFatalClass::LibuvFatalSyscall => Some("libuv_syscall_signature_matched"),
+        RunnerFatalClass::NodeCheckAbort => Some("node_check_abort_signature_matched"),
+        RunnerFatalClass::NodeFatal => Some("node_fatal_signature_matched"),
+        _ => Some("runner_fatal_signature_matched"),
     };
-    let runner_fatal_class_seen = runner_fatal_class != "none";
 
     // Assertion identity (HQ-DESKTOP-50), derived from the SAME source as the
     // fatal class above so all four describe one line: prefer the last actual
@@ -4301,7 +4363,10 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
 
     let mut tags = vec![
         ("exit_class", exit_class.to_string()),
-        ("runner_fatal_class", runner_fatal_class),
+        (
+            "runner_fatal_class",
+            runner_fatal_class.as_str().to_string(),
+        ),
         ("sync_route", "watcher".to_string()),
         ("app_quitting", context.app_quitting.to_string()),
         ("updater_installing", context.updater_installing.to_string()),
@@ -4330,7 +4395,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // seeded from the request and upgraded by the deferred worker. Both diagnostic-only.
     tags.push((
         "runner_fatal_source",
-        if runner_fatal_class_seen { "stderr" } else { "none" }.to_string(),
+        if runner_fatal_class_seen {
+            "stderr"
+        } else {
+            "none"
+        }
+        .to_string(),
     ));
     tags.push(("runner_report_read", context.runner_report_read.clone()));
     // Report-directory delivery provenance (HQ-DESKTOP-5W): how the per-generation
@@ -4381,6 +4451,17 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     tags.push((
         "watcher_job_process_count",
         context.watcher_job_process_count.clone(),
+    ));
+    tags.push((
+        "watcher_job_process_count_bucket",
+        hq_desktop_core::watcher_fault::watcher_job_process_count_bucket(
+            context.watcher_job_process_count.parse::<u32>().ok(),
+        )
+        .to_string(),
+    ));
+    tags.push((
+        "watcher_job_largest_process_kind",
+        context.watcher_job_largest_process_kind.clone(),
     ));
     // Shim-vs-runner discriminator (HQ-DESKTOP-66): the images of the watcher Job
     // Object's processes STILL LIVE at the exit boundary. Always present — a closed
@@ -4523,6 +4604,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    if let Some(reason) = fatal_reason {
+        let reason = hq_telemetry::redact_runner_fatal_reason(&reason);
+        if !reason.is_empty() {
+            extras.push((
+                "runner_fatal_reason",
+                sentry::protocol::Value::String(reason),
+            ));
+        }
+    }
     if !context.runner_fatal_lines.is_empty() {
         let lines = hq_telemetry::redact_runner_fatal_lines(&context.runner_fatal_lines);
         if !lines.is_empty() {
@@ -7784,13 +7874,26 @@ mod tests {
                 .iter()
                 .map(|(key, value)| ((*key).to_string(), value.clone()))
                 .collect();
-            apply_deferred_runner_report(&report_dir, &mut applied);
+            let mut applied_extras: Vec<(String, sentry::protocol::Value)> = extras
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect();
+            apply_deferred_runner_report(&report_dir, &mut applied, &mut applied_extras);
             let applied_refs: Vec<(&str, String)> = applied
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.clone()))
                 .collect();
+            let applied_extra_refs: Vec<(&str, sentry::protocol::Value)> = applied_extras
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone()))
+                .collect();
             self.deferred_runner_report
-                .push(recorded_capture(message, fingerprint, &applied_refs, extras));
+                .push(recorded_capture(
+                    message,
+                    fingerprint,
+                    &applied_refs,
+                    &applied_extra_refs,
+                ));
         }
     }
 
@@ -8652,6 +8755,20 @@ mod tests {
             recorded_tag(capture, "watcher_job_process_count"),
             "unknown"
         );
+        assert_eq!(
+            recorded_tag(capture, "watcher_job_process_count_bucket"),
+            "unknown"
+        );
+        assert_eq!(
+            recorded_tag(capture, "watcher_job_largest_process_kind"),
+            "unknown"
+        );
+        assert_eq!(recorded_tag(capture, "runner_fatal_class"), "unknown");
+        assert_eq!(recorded_tag(capture, "runner_fatal_source"), "none");
+        assert_eq!(
+            recorded_string_extra(capture, "runner_fatal_reason"),
+            "windows_fault_without_known_stderr_signature"
+        );
         // `npx` is a direct launcher, not the runner, so its RSS is scoped away.
         assert_eq!(recorded_tag(capture, "watcher_child_kind"), "launcher");
         assert_eq!(recorded_tag(capture, "rss_scope"), "launcher");
@@ -8870,11 +8987,28 @@ mod tests {
         ]
     }
 
+    fn report_extras_with_reason(reason: &str) -> Vec<(String, sentry::protocol::Value)> {
+        vec![(
+            "runner_fatal_reason".to_string(),
+            sentry::protocol::Value::String(reason.to_string()),
+        )]
+    }
+
     fn report_tag_of<'a>(tags: &'a [(String, String)], key: &str) -> &'a str {
         tags.iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
             .unwrap_or("")
+    }
+
+    fn report_reason_of(extras: &[(String, sentry::protocol::Value)]) -> Option<&str> {
+        extras
+            .iter()
+            .find(|(key, _)| key == "runner_fatal_reason")
+            .and_then(|(_, value)| match value {
+                sentry::protocol::Value::String(reason) => Some(reason.as_str()),
+                _ => None,
+            })
     }
 
     fn unique_report_dir(label: &str) -> PathBuf {
@@ -8886,20 +9020,25 @@ mod tests {
     }
 
     #[test]
-    fn apply_report_adopts_a_named_cause_only_when_stderr_named_none() {
+    fn apply_report_adopts_a_named_cause_when_stderr_did_not_name_one() {
         // The Windows-fault case: stderr named nothing, so the report's heap_oom is
         // adopted and runner_fatal_source flips to node_report.
         let report = hq_desktop_core::runner_diagnostic_report::parse_runner_diagnostic_report(
             heap_oom_report_json().as_bytes(),
         );
         assert!(report.named_cause());
-        let mut tags = report_tags_with_class("none");
-        apply_report_to_fault_tags(&mut tags, &report);
-        assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "heap_oom");
-        assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "node_report");
-        assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
-        assert_ne!(report_tag_of(&tags, "runner_stack_shape"), "all_redacted");
-        assert_eq!(report_tag_of(&tags, "runner_stack_signature").len(), 16);
+        for current_class in ["none", "unknown"] {
+            let mut tags = report_tags_with_class(current_class);
+            let mut extras =
+                report_extras_with_reason("windows_fault_without_known_stderr_signature");
+            apply_report_to_fault_tags(&mut tags, &mut extras, &report);
+            assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "heap_oom");
+            assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "node_report");
+            assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
+            assert_ne!(report_tag_of(&tags, "runner_stack_shape"), "all_redacted");
+            assert_eq!(report_tag_of(&tags, "runner_stack_signature").len(), 16);
+            assert_eq!(report_reason_of(&extras), None);
+        }
     }
 
     #[test]
@@ -8917,24 +9056,35 @@ mod tests {
             "runner_stack_shape",
             "node_check_abort>v8_abort".to_string(),
         );
-        apply_report_to_fault_tags(&mut tags, &report);
+        let mut extras = report_extras_with_reason("stderr_named_cause");
+        apply_report_to_fault_tags(&mut tags, &mut extras, &report);
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "libuv_assert");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "stderr");
-        assert_eq!(report_tag_of(&tags, "runner_stack_shape"), "node_check_abort>v8_abort");
+        assert_eq!(
+            report_tag_of(&tags, "runner_stack_shape"),
+            "node_check_abort>v8_abort"
+        );
         // Only the read provenance is recorded.
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
+        assert_eq!(report_reason_of(&extras), Some("stderr_named_cause"));
     }
 
     #[test]
     fn apply_report_records_absence_without_naming_a_cause() {
         let mut tags = report_tags_with_class("none");
+        let mut extras = report_extras_with_reason("windows_fault_without_known_stderr_signature");
         apply_report_to_fault_tags(
             &mut tags,
+            &mut extras,
             &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport::absent(),
         );
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "none");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "none");
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_absent");
+        assert_eq!(
+            report_reason_of(&extras),
+            Some("windows_fault_without_known_stderr_signature")
+        );
     }
 
     #[test]
@@ -14234,6 +14384,13 @@ mod tests {
             recorded_tag(event, "windows_fault_symbol"),
             "STATUS_STACK_BUFFER_OVERRUN"
         );
+        assert_eq!(recorded_tag(event, "runner_fatal_class"), "heap_oom");
+        assert_eq!(recorded_tag(event, "runner_fatal_source"), "stderr");
+        let fatal_reason = recorded_string_extra(event, "runner_fatal_reason");
+        assert_eq!(fatal_reason, "v8_heap_exhaustion_marker_matched");
+        assert!(fatal_reason.len() <= hq_telemetry::RUNNER_FATAL_REASON_LIMIT_BYTES);
+        assert_eq!(recorded_tag(event, "watcher_job_process_count_bucket"), "unknown");
+        assert_eq!(recorded_tag(event, "watcher_job_largest_process_kind"), "unknown");
         assert_eq!(recorded_string_extra(event, "runner_phase"), "scan");
         assert_eq!(
             recorded_string_extra(event, "runner_phase_elapsed_bucket"),
@@ -14256,7 +14413,6 @@ mod tests {
             serde_json::to_string(&event.extras).expect("serialize extras"),
         );
         for forbidden in [
-            "JavaScript heap out of memory",
             "Module._compile",
             "node:internal/modules/cjs/loader",
             "Last few GCs",

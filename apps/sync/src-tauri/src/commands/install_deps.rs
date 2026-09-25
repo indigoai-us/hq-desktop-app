@@ -177,6 +177,74 @@ struct CancellationCleanupFailure {
     description: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupProcessTreeState {
+    Present,
+    Absent,
+    Unknown,
+}
+
+impl CleanupProcessTreeState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupDirectChildState {
+    Running,
+    Exited,
+    Unknown,
+}
+
+impl CleanupDirectChildState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Exited => "exited",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupChildReapState {
+    Pending,
+    Complete,
+    Unknown,
+}
+
+impl CleanupChildReapState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Complete => "complete",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SetupCancellationCleanupObservation {
+    process_tree: CleanupProcessTreeState,
+    direct_child: CleanupDirectChildState,
+    child_reap: CleanupChildReapState,
+}
+
+impl Default for SetupCancellationCleanupObservation {
+    fn default() -> Self {
+        Self {
+            process_tree: CleanupProcessTreeState::Unknown,
+            direct_child: CleanupDirectChildState::Unknown,
+            child_reap: CleanupChildReapState::Unknown,
+        }
+    }
+}
+
 impl CancellationCleanupFailure {
     #[cfg(unix)]
     fn from_unix_signal(signal: Signal, error: nix::errno::Errno) -> Self {
@@ -283,6 +351,16 @@ tokio::task_local! {
 }
 
 fn record_install_cancellation(cancellation: InstallCancellation) {
+    record_install_cancellation_with_observation(
+        cancellation,
+        SetupCancellationCleanupObservation::default(),
+    );
+}
+
+fn record_install_cancellation_with_observation(
+    cancellation: InstallCancellation,
+    observation: SetupCancellationCleanupObservation,
+) {
     let collector = ACTIVE_INSTALL_CANCELLATION_COLLECTOR
         .try_with(|collector| collector.clone())
         .ok();
@@ -316,7 +394,7 @@ fn record_install_cancellation(cancellation: InstallCancellation) {
     });
 
     if let InstallCancellation::CleanupFailed(cleanup) = cancellation {
-        if report_active_setup_cancellation_cleanup_failure(cleanup) {
+        if report_active_setup_cancellation_cleanup_failure(cleanup, observation) {
             if let Some(collector) = collector {
                 collector.mark_cleanup_failure_reported();
             }
@@ -627,6 +705,36 @@ fn cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
         .unwrap()
         .get(handle)
         .and_then(|state| state.cleanup_failure.clone())
+}
+
+#[cfg(unix)]
+fn process_group_state(handle: &str) -> CleanupProcessTreeState {
+    let pgid = cancel_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .and_then(|state| state.pgid);
+    let Some(pgid) = pgid.filter(|pgid| *pgid > 1) else {
+        return CleanupProcessTreeState::Unknown;
+    };
+
+    cleanup_process_tree_state_from_probe(signal::kill(Pid::from_raw(-pgid), None))
+}
+
+#[cfg(unix)]
+fn cleanup_process_tree_state_from_probe(
+    result: Result<(), nix::errno::Errno>,
+) -> CleanupProcessTreeState {
+    match result {
+        Ok(()) | Err(nix::errno::Errno::EPERM) => CleanupProcessTreeState::Present,
+        Err(nix::errno::Errno::ESRCH) => CleanupProcessTreeState::Absent,
+        Err(_) => CleanupProcessTreeState::Unknown,
+    }
+}
+
+#[cfg(not(unix))]
+fn process_group_state(_handle: &str) -> CleanupProcessTreeState {
+    CleanupProcessTreeState::Unknown
 }
 
 #[cfg(unix)]
@@ -2501,6 +2609,10 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
+        if status.is_none() {
+            status = child.try_wait().map_err(|e| e.to_string())?;
+        }
+
         if is_cancelled(&handle_id) {
             if cancel_started.is_none() {
                 if let Err(e) = terminate_process_tree(&handle_id, Signal::SIGTERM) {
@@ -2519,15 +2631,29 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             }
 
             if let Some(cleanup) = cleanup_failure(&handle_id) {
-                // Do not wait for `try_wait` or the output readers. A failed
-                // signal can be exactly what leaves this child running.
-                record_install_cancellation(InstallCancellation::CleanupFailed(cleanup));
+                // Report immediately with a process-group liveness probe and the
+                // nonblocking child state; do not wait for the process or readers.
+                let direct_child = if status.is_some() {
+                    CleanupDirectChildState::Exited
+                } else {
+                    CleanupDirectChildState::Running
+                };
+                let child_reap = if status.is_some() {
+                    CleanupChildReapState::Complete
+                } else {
+                    CleanupChildReapState::Pending
+                };
+                record_install_cancellation_with_observation(
+                    InstallCancellation::CleanupFailed(cleanup),
+                    SetupCancellationCleanupObservation {
+                        process_tree: process_group_state(&handle_id),
+                        direct_child,
+                        child_reap,
+                    },
+                );
             }
         }
 
-        if status.is_none() {
-            status = child.try_wait().map_err(|e| e.to_string())?;
-        }
         if status.is_some() && done_count >= 2 {
             break;
         }
@@ -6838,6 +6964,22 @@ fn send_setup_cancellation_cleanup_failure(
     cleanup: CancellationCleanupFailure,
     diagnostic: SetupCommandDiagnostic,
 ) {
+    send_setup_cancellation_cleanup_failure_observed(
+        scope,
+        dependency,
+        cleanup,
+        diagnostic,
+        SetupCancellationCleanupObservation::default(),
+    );
+}
+
+fn send_setup_cancellation_cleanup_failure_observed(
+    scope: &OnboardingFailureScope,
+    dependency: &'static str,
+    cleanup: CancellationCleanupFailure,
+    diagnostic: SetupCommandDiagnostic,
+    observation: SetupCancellationCleanupObservation,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let os = os_info::get();
         let category = OnboardingErrorCategory::CancelCleanupFailed;
@@ -6870,6 +7012,18 @@ fn send_setup_cancellation_cleanup_failure(
                 sentry_scope.set_tag("setup_os", os.os_type().to_string());
                 sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
                 sentry_scope.set_tag("setup_cancel_signal", cleanup.signal.as_str());
+                sentry_scope.set_tag(
+                    "setup_cancel_process_tree_state",
+                    observation.process_tree.as_str(),
+                );
+                sentry_scope.set_tag(
+                    "setup_cancel_direct_child_state",
+                    observation.direct_child.as_str(),
+                );
+                sentry_scope.set_tag(
+                    "setup_cancel_child_reap_state",
+                    observation.child_reap.as_str(),
+                );
                 sentry_scope.set_tag(
                     "setup_cancel_os_error_kind",
                     os_error_kind.clone(),
@@ -6957,6 +7111,22 @@ fn queue_setup_cancellation_cleanup_failure(
     cleanup: CancellationCleanupFailure,
     diagnostic: SetupCommandDiagnostic,
 ) {
+    queue_setup_cancellation_cleanup_failure_observed(
+        scope,
+        dependency,
+        cleanup,
+        diagnostic,
+        SetupCancellationCleanupObservation::default(),
+    );
+}
+
+fn queue_setup_cancellation_cleanup_failure_observed(
+    scope: OnboardingFailureScope,
+    dependency: &'static str,
+    cleanup: CancellationCleanupFailure,
+    diagnostic: SetupCommandDiagnostic,
+    observation: SetupCancellationCleanupObservation,
+) {
     let source_hub = sentry::Hub::current();
     if source_hub.client().is_none() {
         return;
@@ -6964,7 +7134,13 @@ fn queue_setup_cancellation_cleanup_failure(
     let hub = Arc::new(sentry::Hub::new_from_top(source_hub));
     hq_telemetry::dispatch_sentry_report(move || {
         sentry::Hub::run(hub, || {
-            send_setup_cancellation_cleanup_failure(&scope, dependency, cleanup, diagnostic);
+            send_setup_cancellation_cleanup_failure_observed(
+                &scope,
+                dependency,
+                cleanup,
+                diagnostic,
+                observation,
+            );
         });
     });
 }
@@ -6977,6 +7153,7 @@ struct ActiveCleanupFailureReport {
     dependency: &'static str,
     cleanup: CancellationCleanupFailure,
     diagnostic: SetupCommandDiagnostic,
+    observation: SetupCancellationCleanupObservation,
 }
 
 fn fallback_cleanup_failure_diagnostic(
@@ -6993,6 +7170,7 @@ fn fallback_cleanup_failure_diagnostic(
 
 fn active_setup_cancellation_cleanup_failure_report(
     cleanup: CancellationCleanupFailure,
+    observation: SetupCancellationCleanupObservation,
 ) -> Option<ActiveCleanupFailureReport> {
     let scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
         .try_with(|scope| scope.clone())
@@ -7010,21 +7188,27 @@ fn active_setup_cancellation_cleanup_failure_report(
         dependency,
         cleanup,
         diagnostic,
+        observation,
     })
 }
 
 /// Queue an independent cleanup report as soon as termination fails. Returns
 /// whether the command is running inside a setup dependency with reporting
 /// context, which lets the final aggregator avoid sending a duplicate event.
-fn report_active_setup_cancellation_cleanup_failure(cleanup: CancellationCleanupFailure) -> bool {
-    let Some(report) = active_setup_cancellation_cleanup_failure_report(cleanup) else {
+fn report_active_setup_cancellation_cleanup_failure(
+    cleanup: CancellationCleanupFailure,
+    observation: SetupCancellationCleanupObservation,
+) -> bool {
+    let Some(report) = active_setup_cancellation_cleanup_failure_report(cleanup, observation)
+    else {
         return false;
     };
-    queue_setup_cancellation_cleanup_failure(
+    queue_setup_cancellation_cleanup_failure_observed(
         report.scope,
         report.dependency,
         report.cleanup,
         report.diagnostic,
+        report.observation,
     );
     true
 }
@@ -11059,6 +11243,51 @@ mod cancellation_reporting_tests {
         assert_eq!(event.tags["setup_error_category"], "cancel-cleanup-failed");
         assert_eq!(event.tags["setup_cancel_signal"], "SIGTERM");
         assert_eq!(event.tags["setup_cancel_os_error_kind"], "EPERM");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_failure_records_process_tree_and_reap_state() {
+        assert_eq!(
+            cleanup_process_tree_state_from_probe(Ok(())),
+            CleanupProcessTreeState::Present
+        );
+        assert_eq!(
+            cleanup_process_tree_state_from_probe(Err(nix::errno::Errno::EPERM)),
+            CleanupProcessTreeState::Present,
+            "EPERM means a process exists but the probe cannot signal it"
+        );
+        assert_eq!(
+            cleanup_process_tree_state_from_probe(Err(nix::errno::Errno::ESRCH)),
+            CleanupProcessTreeState::Absent
+        );
+        assert_eq!(
+            cleanup_process_tree_state_from_probe(Err(nix::errno::Errno::EINVAL)),
+            CleanupProcessTreeState::Unknown
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            send_setup_cancellation_cleanup_failure_observed(
+                &scope(),
+                "git",
+                sigterm_eperm_cleanup_failure(),
+                diagnostic("cleanup failed"),
+                SetupCancellationCleanupObservation {
+                    process_tree: CleanupProcessTreeState::Present,
+                    direct_child: CleanupDirectChildState::Running,
+                    child_reap: CleanupChildReapState::Pending,
+                },
+            );
+        });
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.tags["setup_cancel_process_tree_state"], "present");
+        assert_eq!(event.tags["setup_cancel_direct_child_state"], "running");
+        assert_eq!(event.tags["setup_cancel_child_reap_state"], "pending");
+        assert_eq!(
+            event.fingerprint,
+            vec!["git", "cancel-cleanup-failed", "SIGTERM", "EPERM"]
+        );
     }
 
     #[test]
