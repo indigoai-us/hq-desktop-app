@@ -11,6 +11,8 @@ The release moves it under the version it ships in.
 - Failed Windows Core updates now include a bounded rsync error class and
   translated path shape in diagnostics, without adding local paths.
 
+## [0.10.328] — 2026-09-25
+
 - Fixed the "Setting up…" spinner some Companies rows got stuck on: the
   company board, activity feed, and home-channel requests were missing the
   server's `/v1` URL prefix, so those requests always failed. Added a build-time
