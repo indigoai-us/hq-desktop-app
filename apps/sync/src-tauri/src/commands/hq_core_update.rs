@@ -676,14 +676,26 @@ async fn install_hq_core_update_inner(
                     ),
                 );
                 if result.refresh_pending {
+                    let detail = result
+                        .persistence_diagnostic
+                        .as_ref()
+                        .map(|diagnostic| {
+                            format!(
+                                "{} {diagnostic}",
+                                "core update applied but baseline persistence failed:"
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            format!(
+                                "core update applied; baseline refresh pending at {}",
+                                result.commit,
+                            )
+                        });
                     crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
                         update_source,
                         crate::commands::hq_core_state::Channel::Release,
                         "hq-core-update",
-                        &format!(
-                            "core update applied; baseline refresh pending for {PROD_HQ_CORE_REPO}@{}",
-                            result.commit
-                        ),
+                        &detail,
                     );
                 }
                 (result.baseline_persisted, result.refresh_pending)
