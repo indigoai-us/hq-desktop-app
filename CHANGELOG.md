@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.329] — 2026-09-25
+
 - The project board is back. A new Projects page (Cmd+6, or the board icon in
   the title bar) shows one company's projects at a time as a board or a list.
   Opening a project shows its tasks by status, with task details, files and
