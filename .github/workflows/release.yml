@@ -1729,9 +1729,1054 @@ jobs:
             --launch
 
 
-  windows:
-    name: Build Windows ${{ matrix.target }}
+  shell-windows-x64:
+    name: Windows x64 shell (restore or build)
     needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUST_TARGET: x86_64-pc-windows-msvc
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    defaults:
+      run:
+        working-directory: apps/sync
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Compute shell key
+        id: key
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$(rustc --version | awk '{print $2}')"
+          KEY="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$RUST_TARGET")"
+          if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-hash.mjs returned an invalid key: $KEY"
+            exit 1
+          fi
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "Windows x64 shell key $KEY (rustc $TOOLCHAIN, $RUST_TARGET)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore shell from the Actions cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: shell-out/shell-windows-x64.tar
+          key: shell-windows-x64-${{ steps.key.outputs.key }}
+
+      # Cross-tag store, same rationale as shell-macos: Actions caches are
+      # ref-scoped and a cache saved by one tag cannot be read by another.
+      - name: Restore shell from the shell-cache release
+        id: release-cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHELL_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-windows-x64-${SHELL_KEY}.tar"
+          if ! gh release view shell-cache -R "$REPOSITORY" >/dev/null 2>&1; then
+            gh release create shell-cache -R "$REPOSITORY" --prerelease --latest=false \
+              --title "Shell cache" \
+              --notes "Build cache for the prebuilt macOS/Windows app shell, keyed by scripts/shell-hash.mjs. Not a release; never install from here." \
+              || gh release view shell-cache -R "$REPOSITORY" >/dev/null
+          fi
+          mkdir -p shell-out
+          if gh release view shell-cache -R "$REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ASSET"; then
+            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-windows-x64.tar --clobber
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Restored $ASSET from the shell-cache release."
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            echo "$ASSET is not in the shell-cache release; building the shell."
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm run sidecar:install
+
+      - name: Build Recall SDK sidecar (x86_64-pc-windows-msvc)
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        run: |
+          pnpm -C sidecar/recall-sdk-bridge build
+          $launcher = "src-tauri/binaries/recall-desktop-sdk-x86_64-pc-windows-msvc.exe"
+          if (-not (Test-Path $launcher)) {
+            throw "Recall sidecar launcher was not produced at $launcher"
+          }
+
+      - name: Stamp build commit identity
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # Placeholder UI, no bundling: compile only. The real UI and MSI/NSIS
+      # bundling happen in assemble-windows-x64 after this shell is restored.
+      - name: Compile unsigned Windows x64 shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        env:
+          HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+          RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
+
+      # The whole target/<triple> dir, not just the exe: assemble-windows-x64
+      # reruns `tauri build` to produce the signed MSI/NSIS bundles, and that
+      # needs cargo's own incremental build state to skip recompilation.
+      - name: Package shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/shell-out"
+          tar -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar" target/x86_64-pc-windows-msvc binaries
+          ls -la "$GITHUB_WORKSPACE/shell-out"
+
+      - name: Save shell to the Actions cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: shell-out/shell-windows-x64.tar
+          key: shell-windows-x64-${{ steps.key.outputs.key }}
+
+      - name: Upload shell to the shell-cache release
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHELL_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-windows-x64-${SHELL_KEY}.tar"
+          cp shell-out/shell-windows-x64.tar "$RUNNER_TEMP/$ASSET"
+          for attempt in 1 2 3 4 5; do
+            if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
+              echo "Uploaded $ASSET to the shell-cache release."
+              exit 0
+            fi
+            echo "::warning::Upload of $ASSET failed (attempt $attempt/5); retrying."
+            sleep $((attempt * 10))
+          done
+          echo "::error::Upload of $ASSET to shell-cache failed after 5 attempts."
+          exit 1
+
+      - name: Report shell source
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          RELEASE_HIT: ${{ steps.release-cache.outputs.hit }}
+        run: |
+          set -euo pipefail
+          if [ "$CACHE_HIT" = "true" ]; then SOURCE="restored from Actions cache";
+          elif [ "$RELEASE_HIT" = "true" ]; then SOURCE="restored from shell-cache release";
+          else SOURCE="built"; fi
+          echo "Windows x64 shell ${{ steps.key.outputs.key }}: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s shell-out/shell-windows-x64.tar
+
+      - name: Upload shell artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-windows-x64
+          if-no-files-found: error
+          retention-days: 3
+          path: shell-out/shell-windows-x64.tar
+
+  shell-windows-arm64:
+    name: Windows arm64 shell (restore or build)
+    needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUST_TARGET: aarch64-pc-windows-msvc
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    defaults:
+      run:
+        working-directory: apps/sync
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Compute shell key
+        id: key
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$(rustc --version | awk '{print $2}')"
+          KEY="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$RUST_TARGET")"
+          if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-hash.mjs returned an invalid key: $KEY"
+            exit 1
+          fi
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "Windows arm64 shell key $KEY (rustc $TOOLCHAIN, $RUST_TARGET)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore shell from the Actions cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: shell-out/shell-windows-arm64.tar
+          key: shell-windows-arm64-${{ steps.key.outputs.key }}
+
+      # Cross-tag store, same rationale as shell-macos: Actions caches are
+      # ref-scoped and a cache saved by one tag cannot be read by another.
+      - name: Restore shell from the shell-cache release
+        id: release-cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHELL_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-windows-arm64-${SHELL_KEY}.tar"
+          if ! gh release view shell-cache -R "$REPOSITORY" >/dev/null 2>&1; then
+            gh release create shell-cache -R "$REPOSITORY" --prerelease --latest=false \
+              --title "Shell cache" \
+              --notes "Build cache for the prebuilt macOS/Windows app shell, keyed by scripts/shell-hash.mjs. Not a release; never install from here." \
+              || gh release view shell-cache -R "$REPOSITORY" >/dev/null
+          fi
+          mkdir -p shell-out
+          if gh release view shell-cache -R "$REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ASSET"; then
+            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-windows-arm64.tar --clobber
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Restored $ASSET from the shell-cache release."
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            echo "$ASSET is not in the shell-cache release; building the shell."
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm run sidecar:install
+
+      - name: Download native ARM64 Node runtime for Recall launcher
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: pwsh
+        run: |
+          $version = node -p "process.version"
+          $archiveName = "node-${version}-win-arm64.zip"
+          $baseUrl = "https://nodejs.org/dist/$version"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $checksums = Join-Path $env:RUNNER_TEMP "SHASUMS256.txt"
+          $extract = Join-Path $env:RUNNER_TEMP "node-${version}-win-arm64"
+
+          Invoke-WebRequest "$baseUrl/$archiveName" -OutFile $archive
+          Invoke-WebRequest "$baseUrl/SHASUMS256.txt" -OutFile $checksums
+          $checksumLine = Get-Content $checksums | Where-Object { $_ -match "\s+$([regex]::Escape($archiveName))$" } | Select-Object -First 1
+          if (-not $checksumLine) {
+            throw "No Node checksum found for $archiveName"
+          }
+          $expected = ($checksumLine -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Node ARM64 checksum mismatch: expected $expected, got $actual"
+          }
+
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP -Force
+          $nodeExe = Join-Path $extract "node.exe"
+          if (-not (Test-Path $nodeExe)) {
+            throw "ARM64 node.exe was not extracted at $nodeExe"
+          }
+          "RECALL_SIDECAR_NODE_EXECUTABLE=$nodeExe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build Recall SDK sidecar (aarch64-pc-windows-msvc)
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
+        run: |
+          pnpm -C sidecar/recall-sdk-bridge build
+          $launcher = "src-tauri/binaries/recall-desktop-sdk-aarch64-pc-windows-msvc.exe"
+          if (-not (Test-Path $launcher)) {
+            throw "Recall sidecar launcher was not produced at $launcher"
+          }
+
+      - name: Stamp build commit identity
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # Placeholder UI, no bundling: compile only. The real UI and MSI/NSIS
+      # bundling happen in assemble-windows-arm64 after this shell is restored.
+      - name: Compile unsigned Windows arm64 shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        env:
+          HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+          RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
+        run: pnpm tauri build --no-bundle --target aarch64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
+
+      # The whole target/<triple> dir, not just the exe: assemble-windows-arm64
+      # reruns `tauri build` to produce the signed MSI/NSIS bundles, and that
+      # needs cargo's own incremental build state to skip recompilation.
+      - name: Package shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/shell-out"
+          tar -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-arm64.tar" target/aarch64-pc-windows-msvc binaries
+          ls -la "$GITHUB_WORKSPACE/shell-out"
+
+      - name: Save shell to the Actions cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: shell-out/shell-windows-arm64.tar
+          key: shell-windows-arm64-${{ steps.key.outputs.key }}
+
+      - name: Upload shell to the shell-cache release
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHELL_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-windows-arm64-${SHELL_KEY}.tar"
+          cp shell-out/shell-windows-arm64.tar "$RUNNER_TEMP/$ASSET"
+          for attempt in 1 2 3 4 5; do
+            if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
+              echo "Uploaded $ASSET to the shell-cache release."
+              exit 0
+            fi
+            echo "::warning::Upload of $ASSET failed (attempt $attempt/5); retrying."
+            sleep $((attempt * 10))
+          done
+          echo "::error::Upload of $ASSET to shell-cache failed after 5 attempts."
+          exit 1
+
+      - name: Report shell source
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          RELEASE_HIT: ${{ steps.release-cache.outputs.hit }}
+        run: |
+          set -euo pipefail
+          if [ "$CACHE_HIT" = "true" ]; then SOURCE="restored from Actions cache";
+          elif [ "$RELEASE_HIT" = "true" ]; then SOURCE="restored from shell-cache release";
+          else SOURCE="built"; fi
+          echo "Windows arm64 shell ${{ steps.key.outputs.key }}: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s shell-out/shell-windows-arm64.tar
+
+      - name: Upload shell artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-windows-arm64
+          if-no-files-found: error
+          retention-days: 3
+          path: shell-out/shell-windows-arm64.tar
+
+  assemble-windows-arm64:
+    name: Assemble, sign and package Windows x64
+    needs: [validate, shell-windows-x64, ui]
+    if: ${{ !cancelled() && needs.shell-windows-x64.result == 'success' && needs.ui.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    environment: release
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download shell
+        uses: actions/download-artifact@v4
+        with:
+          name: shell-windows-x64
+          path: ${{ runner.temp }}/shell
+
+      - name: Restore shell into src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-x64.tar"
+          test -f src-tauri/target/x86_64-pc-windows-msvc/release/hq-sync-menubar.exe
+          test -f src-tauri/binaries/recall-desktop-sdk-x86_64-pc-windows-msvc.exe
+
+      - name: Download UI
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/sync/dist
+
+      # The tag checkout still carries whatever version was committed. Overwrite
+      # the five version files with the bytes the validate job stamped from the
+      # tag, so both installers and the updater artifacts all carry it.
+      - name: Apply release version stamp
+        uses: actions/download-artifact@v4
+        with:
+          name: release-version-stamp
+          path: ${{ github.workspace }}
+
+      - name: Verify stamped version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$actual" != "$RELEASE_VERSION" ]; then
+            echo "::error::tauri.conf.json is $actual, expected $RELEASE_VERSION"
+            exit 1
+          fi
+          echo "Building version $actual"
+
+      - name: Write runtime version.json
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          node ../../scripts/stamp-version.mjs \
+            --version "$RELEASE_VERSION" \
+            --resources-dir src-tauri/target/x86_64-pc-windows-msvc/release
+
+      - name: Generate Windows MSI version overlay
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.version }}
+          EXPECTED_MSI_VERSION: ${{ needs.validate.outputs.msi_version }}
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.msi-version.conf.json"
+          node ../../scripts/windows-msi-version.mjs --version $env:APP_VERSION --output $configPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate Windows MSI version overlay"
+          }
+
+          $actual = (Get-Content $configPath -Raw | ConvertFrom-Json).bundle.windows.wix.version
+          if ($actual -ne $env:EXPECTED_MSI_VERSION) {
+            throw "Generated MSI ProductVersion $actual does not match validated $env:EXPECTED_MSI_VERSION"
+          }
+
+          "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Windows MSI ProductVersion: $actual"
+
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Stamp exe version resource
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          EXE="src-tauri/target/x86_64-pc-windows-msvc/release/hq-sync-menubar.exe"
+          # rcedit rewrites the file's own Win32 VERSIONINFO resource (what
+          # Explorer/Task Manager/the MSI installer show); the shell was
+          # compiled version-agnostic, so this must happen here, after the
+          # cached shell is restored and before signing. set-file-version /
+          # set-product-version need a bare X.X.X.X; strip any prerelease
+          # suffix and pad to four fields.
+          NUMERIC="$(node -e 'const v=process.env.RELEASE_VERSION.split("-")[0].split(".");while(v.length<4)v.push("0");console.log(v.slice(0,4).join("."))')"
+          npx --yes rcedit@2 "$EXE" \
+            --set-file-version "$NUMERIC" \
+            --set-product-version "$NUMERIC" \
+            --set-version-string FileVersion "$RELEASE_VERSION" \
+            --set-version-string ProductVersion "$RELEASE_VERSION"
+          echo "Stamped $EXE with $RELEASE_VERSION ($NUMERIC)"
+
+      # cargo build is a no-op here (the restored target dir already matches
+      # this exact shell key); this run only re-links the bundle (fresh
+      # version resource, dist/, msi overlay) and packages msi/nsis/updater.
+      - name: Tauri build (x86_64-pc-windows-msvc)
+        env:
+          RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
+
+      - name: Install Sentry CLI
+        shell: pwsh
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify Windows debug file contract
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri\target\x86_64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
+          if (-not (Test-Path $exe)) {
+            throw "Required release executable is missing: $exe"
+          }
+          if (-not (Test-Path $pdb)) {
+            throw "Required release PDB is missing: $pdb"
+          }
+          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
+          $exeDebugIds = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $pdbDebugIds = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $exeDebugId = $exeDebugIds -join ","
+          $pdbDebugId = $pdbDebugIds -join ","
+          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
+            throw "Release executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
+          }
+          Write-Host "Windows executable/PDB debug id: $exeDebugId"
+
+      - name: Upload Windows debug files to Sentry
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          $releaseDir = "src-tauri\target\x86_64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $metadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $debugIds = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $debugId = $debugIds -join ","
+          if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
+            $message = "SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+          & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 $releaseDir
+          if ($LASTEXITCODE -ne 0) {
+            $message = "SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:SENTRY_AUTH_TOKEN"
+            Accept = "application/json"
+          }
+          $endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          try {
+            foreach ($expectedDebugId in $debugIds) {
+              $encodedDebugId = [uri]::EscapeDataString($expectedDebugId)
+              $records = @(Invoke-RestMethod -Uri "${endpoint}?debug_id=$encodedDebugId" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop)
+              $matchingRecords = @($records | Where-Object { $_.debugId -ieq $expectedDebugId })
+              if ($matchingRecords.Count -eq 0) {
+                throw "Sentry debug-file listing is missing uploaded debug id $expectedDebugId"
+              }
+              Write-Host "Verified Sentry debug-file record for $expectedDebugId"
+            }
+          }
+          catch {
+            $message = "Sentry debug-file upload verification failed after sentry-cli reported success for debug id(s) ${debugId}: $($_.Exception.Message)"
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+      - name: Azure login (OIDC)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSI (Azure Trusted Signing)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign NSIS setup (Azure Trusted Signing)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Regenerate updater signatures (post-Authenticode)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        shell: pwsh
+        run: |
+          $bundleDir = "src-tauri\target\x86_64-pc-windows-msvc\release\bundle"
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction SilentlyContinue
+          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
+          if (-not $targets) { Write-Warning "No updater .sig artifacts found to regenerate." }
+          foreach ($target in $targets) {
+            Write-Host "Re-signing updater signature for $($target.Name)"
+            & "node_modules\.bin\tauri.cmd" signer sign "$($target.FullName)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "tauri signer sign failed on $($target.Name)"
+              exit 1
+            }
+          }
+
+      - name: Stage Windows artifacts
+        shell: pwsh
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          $tag = $env:TAG
+          $version = $tag.TrimStart("v")
+          $arch = "x64"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-x86_64-pc-windows-msvc"
+          $bundleDir = "src-tauri\target\x86_64-pc-windows-msvc\release\bundle"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $nsis = Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $msi = Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction Stop | Select-Object -First 1
+
+          $nsisName = "HQ_${version}_${arch}-setup.exe"
+          $msiName = "HQ_${version}_${arch}.msi"
+          Copy-Item $nsis.FullName (Join-Path $stage $nsisName)
+          Copy-Item $msi.FullName (Join-Path $stage $msiName)
+
+          foreach ($source in @($nsis, $msi)) {
+            $sig = "$($source.FullName).sig"
+            if (-not (Test-Path $sig)) {
+              throw "Required updater signature is missing: $sig"
+            }
+            $destName = if ($source.Extension -eq ".msi") { "${msiName}.sig" } else { "${nsisName}.sig" }
+            Copy-Item $sig (Join-Path $stage $destName)
+          }
+
+          Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-windows-x86_64-pc-windows-msvc
+          if-no-files-found: error
+          path: release-artifacts-x86_64-pc-windows-msvc/
+
+  assemble-windows-arm64:
+    name: Assemble, sign and package Windows arm64
+    needs: [validate, shell-windows-arm64, ui]
+    if: ${{ !cancelled() && needs.shell-windows-arm64.result == 'success' && needs.ui.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    environment: release
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download shell
+        uses: actions/download-artifact@v4
+        with:
+          name: shell-windows-arm64
+          path: ${{ runner.temp }}/shell
+
+      - name: Restore shell into src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-arm64.tar"
+          test -f src-tauri/target/aarch64-pc-windows-msvc/release/hq-sync-menubar.exe
+          test -f src-tauri/binaries/recall-desktop-sdk-aarch64-pc-windows-msvc.exe
+
+      - name: Download UI
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/sync/dist
+
+      # The tag checkout still carries whatever version was committed. Overwrite
+      # the five version files with the bytes the validate job stamped from the
+      # tag, so both installers and the updater artifacts all carry it.
+      - name: Apply release version stamp
+        uses: actions/download-artifact@v4
+        with:
+          name: release-version-stamp
+          path: ${{ github.workspace }}
+
+      - name: Verify stamped version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$actual" != "$RELEASE_VERSION" ]; then
+            echo "::error::tauri.conf.json is $actual, expected $RELEASE_VERSION"
+            exit 1
+          fi
+          echo "Building version $actual"
+
+      - name: Write runtime version.json
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          node ../../scripts/stamp-version.mjs \
+            --version "$RELEASE_VERSION" \
+            --resources-dir src-tauri/target/aarch64-pc-windows-msvc/release
+
+      - name: Generate Windows MSI version overlay
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.version }}
+          EXPECTED_MSI_VERSION: ${{ needs.validate.outputs.msi_version }}
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.msi-version.conf.json"
+          node ../../scripts/windows-msi-version.mjs --version $env:APP_VERSION --output $configPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate Windows MSI version overlay"
+          }
+
+          $actual = (Get-Content $configPath -Raw | ConvertFrom-Json).bundle.windows.wix.version
+          if ($actual -ne $env:EXPECTED_MSI_VERSION) {
+            throw "Generated MSI ProductVersion $actual does not match validated $env:EXPECTED_MSI_VERSION"
+          }
+
+          "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Windows MSI ProductVersion: $actual"
+
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Stamp exe version resource
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          EXE="src-tauri/target/aarch64-pc-windows-msvc/release/hq-sync-menubar.exe"
+          # rcedit rewrites the file's own Win32 VERSIONINFO resource (what
+          # Explorer/Task Manager/the MSI installer show); the shell was
+          # compiled version-agnostic, so this must happen here, after the
+          # cached shell is restored and before signing. set-file-version /
+          # set-product-version need a bare X.X.X.X; strip any prerelease
+          # suffix and pad to four fields.
+          NUMERIC="$(node -e 'const v=process.env.RELEASE_VERSION.split("-")[0].split(".");while(v.length<4)v.push("0");console.log(v.slice(0,4).join("."))')"
+          npx --yes rcedit@2 "$EXE" \
+            --set-file-version "$NUMERIC" \
+            --set-product-version "$NUMERIC" \
+            --set-version-string FileVersion "$RELEASE_VERSION" \
+            --set-version-string ProductVersion "$RELEASE_VERSION"
+          echo "Stamped $EXE with $RELEASE_VERSION ($NUMERIC)"
+
+      # cargo build is a no-op here (the restored target dir already matches
+      # this exact shell key); this run only re-links the bundle (fresh
+      # version resource, dist/, msi overlay) and packages msi/nsis/updater.
+      - name: Tauri build (aarch64-pc-windows-msvc)
+        env:
+          RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
+        run: pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
+
+      - name: Install Sentry CLI
+        shell: pwsh
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify Windows debug file contract
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri\target\aarch64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
+          if (-not (Test-Path $exe)) {
+            throw "Required release executable is missing: $exe"
+          }
+          if (-not (Test-Path $pdb)) {
+            throw "Required release PDB is missing: $pdb"
+          }
+          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
+          $exeDebugIds = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $pdbDebugIds = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $exeDebugId = $exeDebugIds -join ","
+          $pdbDebugId = $pdbDebugIds -join ","
+          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
+            throw "Release executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
+          }
+          Write-Host "Windows executable/PDB debug id: $exeDebugId"
+
+      - name: Upload Windows debug files to Sentry
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          $releaseDir = "src-tauri\target\aarch64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $metadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $debugIds = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $debugId = $debugIds -join ","
+          if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
+            $message = "SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+          & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 $releaseDir
+          if ($LASTEXITCODE -ne 0) {
+            $message = "SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:SENTRY_AUTH_TOKEN"
+            Accept = "application/json"
+          }
+          $endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          try {
+            foreach ($expectedDebugId in $debugIds) {
+              $encodedDebugId = [uri]::EscapeDataString($expectedDebugId)
+              $records = @(Invoke-RestMethod -Uri "${endpoint}?debug_id=$encodedDebugId" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop)
+              $matchingRecords = @($records | Where-Object { $_.debugId -ieq $expectedDebugId })
+              if ($matchingRecords.Count -eq 0) {
+                throw "Sentry debug-file listing is missing uploaded debug id $expectedDebugId"
+              }
+              Write-Host "Verified Sentry debug-file record for $expectedDebugId"
+            }
+          }
+          catch {
+            $message = "Sentry debug-file upload verification failed after sentry-cli reported success for debug id(s) ${debugId}: $($_.Exception.Message)"
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+      - name: Azure login (OIDC)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSI (Azure Trusted Signing)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\aarch64-pc-windows-msvc\release\bundle\msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign NSIS setup (Azure Trusted Signing)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\aarch64-pc-windows-msvc\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Regenerate updater signatures (post-Authenticode)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        shell: pwsh
+        run: |
+          $bundleDir = "src-tauri\target\aarch64-pc-windows-msvc\release\bundle"
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction SilentlyContinue
+          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
+          if (-not $targets) { Write-Warning "No updater .sig artifacts found to regenerate." }
+          foreach ($target in $targets) {
+            Write-Host "Re-signing updater signature for $($target.Name)"
+            & "node_modules\.bin\tauri.cmd" signer sign "$($target.FullName)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "tauri signer sign failed on $($target.Name)"
+              exit 1
+            }
+          }
+
+      - name: Stage Windows artifacts
+        shell: pwsh
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          $tag = $env:TAG
+          $version = $tag.TrimStart("v")
+          $arch = "arm64"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-aarch64-pc-windows-msvc"
+          $bundleDir = "src-tauri\target\aarch64-pc-windows-msvc\release\bundle"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $nsis = Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $msi = Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction Stop | Select-Object -First 1
+
+          $nsisName = "HQ_${version}_${arch}-setup.exe"
+          $msiName = "HQ_${version}_${arch}.msi"
+          Copy-Item $nsis.FullName (Join-Path $stage $nsisName)
+          Copy-Item $msi.FullName (Join-Path $stage $msiName)
+
+          foreach ($source in @($nsis, $msi)) {
+            $sig = "$($source.FullName).sig"
+            if (-not (Test-Path $sig)) {
+              throw "Required updater signature is missing: $sig"
+            }
+            $destName = if ($source.Extension -eq ".msi") { "${msiName}.sig" } else { "${nsisName}.sig" }
+            Copy-Item $sig (Join-Path $stage $destName)
+          }
+
+          Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-windows-aarch64-pc-windows-msvc
+          if-no-files-found: error
+          path: release-artifacts-aarch64-pc-windows-msvc/
+
+  windows:
+    name: Build Windows ${{ matrix.target }} (legacy single job)
+    needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build == true }}
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -2079,7 +3124,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [validate, shell-key, macos, assemble-macos, windows]
+    needs: [validate, shell-key, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]
     concurrency:
       # Serialize all tags, not only reruns of one tag. Otherwise two stable
       # builds can finish out of order and the older one can replace latest.
@@ -2088,7 +3133,7 @@ jobs:
     # A desktop release is one cross-platform product. Never publish a partial
     # release or updater manifest: macOS and the complete Windows matrix must
     # both finish successfully.
-    if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && needs.windows.result == 'success' }}
+    if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && (needs.windows.result == 'success' || (needs.assemble-windows-x64.result == 'success' && needs.assemble-windows-arm64.result == 'success')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
