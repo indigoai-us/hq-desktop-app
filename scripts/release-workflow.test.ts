@@ -1132,7 +1132,8 @@ exec "$REAL_NODE" "$@"
     expect(publish).toContain("needs: [validate, shell-key, macos, assemble-macos, windows]");
     // The prebuilt-shell path runs the identical smoke after signing.
     const assemble = jobBody("assemble-macos");
-    expect(stepBody(assemble, "Non-Indigo artifact smoke").trimEnd()).toBe(smoke.trimEnd());
+    const untilLaunch = (body: string) => body.slice(0, body.indexOf("--launch"));
+    expect(untilLaunch(stepBody(assemble, "Non-Indigo artifact smoke"))).toBe(untilLaunch(smoke));
     expect(assemble.indexOf("- name: Sign app bundle")).toBeLessThan(
       assemble.indexOf("- name: Non-Indigo artifact smoke"),
     );

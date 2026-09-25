@@ -1050,6 +1050,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       SHELL_KEY: ${{ needs.shell-key.outputs.key }}
+      # rust-toolchain.toml pins channel "stable", which would override the
+      # rustup default and select the runner's preinstalled stable (host
+      # target only). Force the exact toolchain the shell key names.
+      RUSTUP_TOOLCHAIN: ${{ needs.shell-key.outputs.toolchain }}
     defaults:
       run:
         working-directory: apps/sync
@@ -1114,6 +1118,18 @@ jobs:
         with:
           toolchain: ${{ needs.shell-key.outputs.toolchain }}
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Confirm the pinned toolchain is active
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(rustc --version | awk '{print $2}')"
+          if [ "$actual" != "$RUSTUP_TOOLCHAIN" ]; then
+            echo "::error::rustc is $actual, but the shell key was computed for $RUSTUP_TOOLCHAIN"
+            exit 1
+          fi
+          rustup target list --installed
 
       - name: Put rustup-managed cargo first on PATH
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
@@ -2884,13 +2900,20 @@ jobs:
             gh release delete "$TAG" -R "$REPOSITORY" --yes
             echo "Deleted release $TAG."
           fi
-          if gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-            gh api --method DELETE "repos/${REPOSITORY}/git/refs/tags/${TAG}"
-            echo "Deleted tag $TAG."
-          fi
-          if gh release view "$TAG" -R "$REPOSITORY" >/dev/null 2>&1 ||
-             gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-            echo "::error::$TAG release or tag still exists after cleanup."
+          if gh release view "$TAG" -R "$REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$TAG release still exists after cleanup."
             exit 1
           fi
-          echo "$TAG release and tag are gone."
+          echo "$TAG release is gone."
+          # The "release tag immutability" ruleset blocks deleting refs/tags/v*
+          # for GITHUB_TOKEN. Until the ruleset excludes v0.0.0-shelltest.*,
+          # a release manager deletes the leftover tag by hand; the release
+          # itself (the only thing a client could ever see) is already gone.
+          if gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            if gh api --method DELETE "repos/${REPOSITORY}/git/refs/tags/${TAG}"; then
+              echo "Deleted tag $TAG."
+            else
+              echo "::warning::Could not delete tag $TAG (tag ruleset). Delete it with: gh api --method DELETE repos/${REPOSITORY}/git/refs/tags/${TAG}"
+              echo "Tag $TAG left behind: the tag ruleset blocks deletion by the workflow token." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
