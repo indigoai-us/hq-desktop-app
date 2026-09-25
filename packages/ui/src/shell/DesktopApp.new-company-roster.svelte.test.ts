@@ -78,6 +78,7 @@ function sidebarApi(): ChatSidebarApi {
     markDmThreadRead: async () => {},
     markChannelRead: async () => {},
     searchMessages: async () => ({ results: [] }),
+    logToFile: async () => {},
   } as unknown as ChatSidebarApi;
 }
 
