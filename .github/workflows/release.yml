@@ -2141,7 +2141,7 @@ jobs:
           retention-days: 3
           path: shell-out/shell-windows-arm64.tar
 
-  assemble-windows-arm64:
+  assemble-windows-x64:
     name: Assemble, sign and package Windows x64
     needs: [validate, shell-windows-x64, ui]
     if: ${{ !cancelled() && needs.shell-windows-x64.result == 'success' && needs.ui.result == 'success' }}
