@@ -996,9 +996,17 @@ async fn run_npm_install_local_recovery_ladder(
                 ledger,
             )
             .await?;
-            if output.status.success() {
-                *windows_busy_retry_outcome = WindowsBusyRetryOutcome::Succeeded;
-            }
+            *windows_busy_retry_outcome = if output.status.success() {
+                WindowsBusyRetryOutcome::Succeeded
+            } else if is_windows_locked_install_target_failure(
+                output.status.code(),
+                &npm_output_detail(&output),
+                prefix,
+            ) {
+                WindowsBusyRetryOutcome::Failed
+            } else {
+                WindowsBusyRetryOutcome::OtherFailure
+            };
         } else if is_locked_target {
             *windows_busy_retry_attempts = Some(0);
             *windows_busy_retry_outcome = WindowsBusyRetryOutcome::NotArmed;
@@ -2036,6 +2044,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         let latest = fetch_latest().await?;
         let already_blocked =
             non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
+        #[cfg(target_os = "windows")]
+        let _cli_process_quiescence = crate::commands::process::wait_for_cli_install_quiescence(
+            CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
+        )
+        .await?;
         return match executor {
             InstallExecutor::Pnpm => {
                 install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await
@@ -2152,14 +2165,12 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     };
 
     #[cfg(target_os = "windows")]
-    let cli_process_quiescence = crate::commands::process::wait_for_cli_install_quiescence(
+    let _cli_process_quiescence = crate::commands::process::wait_for_cli_install_quiescence(
         CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
     )
     .await?;
     let install_run =
         run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
-    #[cfg(target_os = "windows")]
-    drop(cli_process_quiescence);
 
     if !install_run.output.status.success() {
         let raw_detail = npm_output_detail(&install_run.output);
@@ -3774,6 +3785,8 @@ async fn managed_toolchain_retry(
     // managed-provenance event too, so `npm_missing_target_state` is not lost when
     // the managed attempt itself ran the mkdir rung and still failed.
     install_env.missing_target_state = retry_run.missing_target_state;
+    install_env.windows_busy_retry_attempts = retry_run.windows_busy_retry_attempts;
+    install_env.windows_busy_retry_outcome = retry_run.windows_busy_retry_outcome;
     // Carry the same pinned-version attribution onto the managed-provenance event
     // (HQ-DESKTOP-5Q): the retry installs the SAME resolved `latest`, pinned. Tag
     // only, never a grouping component.

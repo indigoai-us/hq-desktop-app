@@ -6015,6 +6015,9 @@ pub enum WindowsBusyRetryOutcome {
     Succeeded,
     /// The one bounded retry ran and the install still failed.
     Failed,
+    /// The bounded retry failed, but its final output no longer identifies the
+    /// selected install target as locked.
+    OtherFailure,
 }
 
 impl WindowsBusyRetryOutcome {
@@ -6024,6 +6027,39 @@ impl WindowsBusyRetryOutcome {
             Self::NotArmed => "not-armed",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
+            Self::OtherFailure => "other-failure",
+        }
+    }
+
+    /// The final install output still proves that a process holds the target.
+    pub fn lock_holder_class(self) -> Option<&'static str> {
+        match self {
+            Self::NotArmed | Self::Failed => Some("unknown"),
+            Self::NotApplicable | Self::Succeeded | Self::OtherFailure => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod windows_busy_retry_outcome_tests {
+    use super::WindowsBusyRetryOutcome;
+
+    #[test]
+    fn lock_holder_is_unknown_only_when_the_lock_still_matches_the_final_outcome() {
+        assert_eq!(
+            WindowsBusyRetryOutcome::NotArmed.lock_holder_class(),
+            Some("unknown")
+        );
+        assert_eq!(
+            WindowsBusyRetryOutcome::Failed.lock_holder_class(),
+            Some("unknown")
+        );
+        for outcome in [
+            WindowsBusyRetryOutcome::NotApplicable,
+            WindowsBusyRetryOutcome::Succeeded,
+            WindowsBusyRetryOutcome::OtherFailure,
+        ] {
+            assert_eq!(outcome.lock_holder_class(), None);
         }
     }
 }
@@ -6460,9 +6496,11 @@ pub fn report_install_failure_with_environment(
     if let Some(attempts) = env.windows_busy_retry_attempts {
         // The desktop can wait for its own registered command processes, but it
         // cannot inspect Windows handles owned by antivirus or external tools.
-        // Keep the holder class explicit and conservative when EBUSY persists.
+        if let Some(holder_class) = env.windows_busy_retry_outcome.lock_holder_class() {
+            npm_diagnostics.push_str(&format!(" lock_holder_class={holder_class}"));
+        }
         npm_diagnostics.push_str(&format!(
-            " lock_holder_class=unknown windows_busy_retry_attempts={attempts} windows_busy_retry_outcome={}",
+            " windows_busy_retry_attempts={attempts} windows_busy_retry_outcome={}",
             env.windows_busy_retry_outcome.tag_value(),
         ));
     }
@@ -6557,7 +6595,9 @@ pub fn report_install_failure_with_environment(
                 env.managed_retry_outcome.tag_value(),
             );
             if let Some(attempts) = env.windows_busy_retry_attempts {
-                scope.set_tag("npm_lock_holder_class", "unknown");
+                if let Some(holder_class) = env.windows_busy_retry_outcome.lock_holder_class() {
+                    scope.set_tag("npm_lock_holder_class", holder_class);
+                }
                 scope.set_tag("npm_windows_busy_retry_attempts", attempts.to_string());
                 scope.set_tag(
                     "npm_windows_busy_retry_outcome",

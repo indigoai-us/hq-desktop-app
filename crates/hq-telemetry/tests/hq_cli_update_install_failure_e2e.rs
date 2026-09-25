@@ -2761,3 +2761,33 @@ fn windows_ebusy_retry_reports_unknown_holder_and_bounded_retry_outcome() {
     assert!(diagnostics.contains("windows_busy_retry_outcome=failed"));
     assert_path_safe(&event, &["C:\\Users\\me", "Roaming\\npm", "node-llama-cpp"]);
 }
+
+#[test]
+fn windows_ebusy_retry_that_ends_as_another_error_does_not_claim_a_lock_holder() {
+    let prefix = r"C:\Users\me\AppData\Roaming\npm";
+    let stderr = "npm error code EUNKNOWNRETRY\n\
+        npm error retry failed with an unrelated package manager error";
+    let env = InstallEnvironment {
+        windows_busy_retry_attempts: Some(1),
+        windows_busy_retry_outcome: WindowsBusyRetryOutcome::OtherFailure,
+        ..Default::default()
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(1), stderr, Some(prefix), false, &env)
+    }));
+
+    assert_eq!(tag(&event, "npm_lock_holder_class"), None);
+    assert_eq!(tag(&event, "npm_windows_busy_retry_attempts"), Some("1"));
+    assert_eq!(
+        tag(&event, "npm_windows_busy_retry_outcome"),
+        Some("other-failure")
+    );
+    let diagnostics = event
+        .extra
+        .get("npm_diagnostics")
+        .and_then(Value::as_str)
+        .expect("diagnostic summary");
+    assert!(!diagnostics.contains("lock_holder_class=unknown"));
+    assert!(diagnostics.contains("windows_busy_retry_attempts=1"));
+    assert!(diagnostics.contains("windows_busy_retry_outcome=other-failure"));
+}

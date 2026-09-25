@@ -3883,11 +3883,10 @@ impl Drop for UpdateQuiescenceGuard {
 }
 
 /// Close admission for app-owned child processes and wait briefly for the
-/// already-running command processes to finish before npm renames the global
+/// already-running command processes to finish before replacing the global
 /// hq-cli package. The pinned hq-cloud sync runners and bundled Recall SDK are
-/// excluded. The returned guard
-/// keeps admission closed only while the CLI install is in progress; dropping
-/// it resumes normal process starts on success or failure.
+/// excluded. Keep the returned guard through every updater retry and re-aim;
+/// dropping it resumes normal process starts after the update returns.
 #[cfg(target_os = "windows")]
 pub async fn wait_for_cli_install_quiescence(
     timeout: Duration,

@@ -501,15 +501,23 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
   const syncRs = readRepoFile('src-tauri/src/commands/sync.rs');
   const core = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
 
-  it('quiesces app-owned command processes before npm renames the selected install target', () => {
+  it('quiesces app-owned processes for each executor and holds admission through retries', () => {
     const installFlow = cli.slice(cli.indexOf('async fn install_hq_cli_update_once('));
-    const quiesceAt = installFlow.indexOf('wait_for_cli_install_quiescence(');
+    const pnpmAt = installFlow.indexOf('install_hq_cli_update_via_pnpm(&app');
+    const pnpmQuiesceAt = installFlow.indexOf('wait_for_cli_install_quiescence(');
+    const npmQuiesceAt = installFlow.indexOf(
+      'wait_for_cli_install_quiescence(',
+      pnpmQuiesceAt + 1,
+    );
     const npmInstallAt = installFlow.indexOf('run_npm_install_with_retries(&npm');
-    const releaseGateAt = installFlow.indexOf('drop(cli_process_quiescence)');
+    const managedRetryAt = installFlow.indexOf('match managed_toolchain_retry(');
 
-    expect(quiesceAt).toBeGreaterThanOrEqual(0);
-    expect(npmInstallAt).toBeGreaterThan(quiesceAt);
-    expect(releaseGateAt).toBeGreaterThan(npmInstallAt);
+    expect(pnpmQuiesceAt).toBeGreaterThanOrEqual(0);
+    expect(pnpmAt).toBeGreaterThan(pnpmQuiesceAt);
+    expect(npmQuiesceAt).toBeGreaterThan(pnpmAt);
+    expect(npmInstallAt).toBeGreaterThan(npmQuiesceAt);
+    expect(managedRetryAt).toBeGreaterThan(npmInstallAt);
+    expect(installFlow).not.toContain('drop(_cli_process_quiescence)');
     expect(installFlow).toContain('CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT');
     expect(cli).toContain(
       'const CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);',
@@ -549,7 +557,15 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     expect(retry).toContain('WindowsBusyRetryOutcome::NotArmed');
     expect(retry).toContain('WindowsBusyRetryOutcome::Succeeded');
     expect(retry).toContain('WindowsBusyRetryOutcome::Failed');
+    expect(retry).toContain('WindowsBusyRetryOutcome::OtherFailure');
+    const retryAttemptAt = retry.indexOf('WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG');
+    const finalFailureClassificationAt = retry.indexOf(
+      'else if is_windows_locked_install_target_failure(',
+      retryAttemptAt,
+    );
+    expect(finalFailureClassificationAt).toBeGreaterThan(retryAttemptAt);
     expect(core).toContain('pub enum WindowsBusyRetryOutcome');
+    expect(core).toContain('pub fn lock_holder_class(self)');
     expect(core).toContain('npm_lock_holder_class');
     expect(core).toContain('npm_windows_busy_retry_attempts');
     expect(core).toContain('npm_windows_busy_retry_outcome');
