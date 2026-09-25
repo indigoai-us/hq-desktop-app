@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed the "Setting up…" spinner some Companies rows got stuck on: the
+  company board, activity feed, and home-channel requests were missing the
+  server's `/v1` URL prefix, so those requests always failed. Added a build-time
+  check that fails CI if the app ever calls a server route hq-pro does not
+  register, so this class of bug cannot ship again silently.
 - Fixed layout shifts when opening a company's home channel — the wallpaper
   hero, the member-count and mute controls, and the message skeleton now hold
   their final size from the first frame, so nothing jumps as the company's
