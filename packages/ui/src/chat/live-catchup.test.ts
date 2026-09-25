@@ -363,7 +363,7 @@ describe("dmActivityFromThreadsPage — the per-user DM peer index", () => {
     ]);
   });
 
-  it("skips self, blank uids, malformed rows and non-string stamps", () => {
+  it("keeps self (notes to self) and skips blank uids, malformed rows and non-string stamps", () => {
     const out = dmActivityFromThreadsPage(
       {
         threads: [
@@ -378,6 +378,7 @@ describe("dmActivityFromThreadsPage — the per-user DM peer index", () => {
       { selfUid: "prs_me" },
     );
     expect(out).toEqual([
+      { personUid: "prs_me", lastMessageAt: "2026-09-01T00:00:00.000Z" },
       { personUid: "prs_ok", lastMessageAt: "2026-09-01T00:00:00.000Z" },
     ]);
   });

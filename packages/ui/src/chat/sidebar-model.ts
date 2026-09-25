@@ -613,6 +613,11 @@ export interface NormalizeOptions {
   engagedAgentUids?: ReadonlySet<string> | readonly string[];
   /** The user's own agents (local bots + owned cloud bots) — always visible. */
   ownAgentUids?: ReadonlySet<string> | readonly string[];
+  /**
+   * The signed-in person. Their own DM row (notes to self) is always shown,
+   * reads "<name> (you)", and never carries an unread badge or dot.
+   */
+  selfUid?: string | null;
   now?: number;
   /** Local project id → title so provisioned "Project slug hash" rows read as names. */
   projectTitles?: ReadonlyArray<{
@@ -708,8 +713,10 @@ export function normalizeDm(
   const pinnedIds = toIdSet(options.pinnedIds);
   const dmDots = toIdSet(options.dmDots);
   const id = `dm:${contact.personUid}`;
-  const title =
+  const isSelfRow = isSelfContact(contact, options);
+  const baseTitle =
     contact.displayName?.trim() || contact.email?.trim() || contact.personUid;
+  const title = isSelfRow ? `${baseTitle} (you)` : baseTitle;
   const activity = Math.max(
     parseActivityMs(contact.lastMessageAt),
     parseActivityMs(contact.lastActivityAt),
@@ -724,7 +731,7 @@ export function normalizeDm(
   const joinNoticeOnlyAgent =
     isAgentUid(contact.personUid) &&
     !contactHasConversation(contact, options);
-  const serverUnread = joinNoticeOnlyAgent ? 0 : contact.unreadCount;
+  const serverUnread = joinNoticeOnlyAgent || isSelfRow ? 0 : contact.unreadCount;
   const hasServerUnread =
     typeof serverUnread === "number" && Number.isFinite(serverUnread);
   const unreadCount =
@@ -733,7 +740,7 @@ export function normalizeDm(
       : undefined;
   // Numeric badge replaces the server-driven dot; local dots still apply when
   // the server says zero (or when the field is absent and only local dots exist).
-  const unreadDot = joinNoticeOnlyAgent
+  const unreadDot = joinNoticeOnlyAgent || isSelfRow
     ? false
     : hasServerUnread
       ? (serverUnread as number) > 0
@@ -807,10 +814,36 @@ export function clearPairUnread(
  * returns as contacts) must NOT render as sidebar conversation rows — contacts
  * without a conversation belong only in the new-message typeahead (G3).
  */
+function isSelfContact(contact: DmContactInput, options: NormalizeOptions): boolean {
+  const selfUid = options.selfUid?.trim();
+  return Boolean(selfUid) && contact.personUid === selfUid;
+}
+
+/**
+ * Contacts plus the signed-in person, so notes to self always have a row even
+ * before the first note. The server roster never lists the caller.
+ */
+export function withSelfContact(
+  contacts: DmContactInput[],
+  self: { uid: string; email?: string | null; displayName?: string | null } | null | undefined,
+): DmContactInput[] {
+  const uid = self?.uid?.trim();
+  if (!uid || contacts.some((c) => c.personUid === uid)) return contacts;
+  return [
+    ...contacts,
+    {
+      personUid: uid,
+      email: self?.email ?? null,
+      displayName: self?.displayName ?? null,
+    } as DmContactInput,
+  ];
+}
+
 export function contactHasConversation(
   contact: DmContactInput,
   options: NormalizeOptions = {},
 ): boolean {
+  if (isSelfContact(contact, options)) return true;
   // Agents are held to a stricter rule than people: creating one announces it
   // to the whole company, so a timestamp or an unread on an `agt_*` contact is
   // evidence that the agent EXISTS, not that it ever talked to this user. The

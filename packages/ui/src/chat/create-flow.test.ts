@@ -453,13 +453,13 @@ describe("buildFindResults", () => {
     expect(out.rows).toHaveLength(5);
   });
 
-  it("excludes self", () => {
+  it("offers your own DM row (notes to self)", () => {
     const out = buildFindResults({
       ...base,
       query: "Ada",
       selfPersonUid: "prs_ada",
     });
-    expect(out.rows.map((r) => r.label)).not.toContain("Ada");
+    expect(out.rows.map((r) => r.label)).toContain("Ada");
   });
 
   it("returns up to 8 recents and no create row for an empty query", () => {
