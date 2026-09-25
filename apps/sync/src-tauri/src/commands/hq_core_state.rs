@@ -373,6 +373,7 @@ pub(crate) struct CoreUpdateRescueTelemetry {
     pub(crate) rsync_source: &'static str,
     pub(crate) rsync_version: String,
     pub(crate) rsync_stderr_class: &'static str,
+    pub(crate) rsync_stderr_reason: Option<String>,
     pub(crate) rsync_translated_path_shape: &'static str,
     pub(crate) node_source: &'static str,
     pub(crate) node_version: String,
@@ -394,6 +395,7 @@ impl Default for CoreUpdateRescueTelemetry {
             rsync_source: "none",
             rsync_version: "unknown".to_string(),
             rsync_stderr_class: "not_applicable",
+            rsync_stderr_reason: None,
             rsync_translated_path_shape: "not_applicable",
             node_source: "unknown",
             node_version: "unknown".to_string(),
@@ -479,6 +481,7 @@ impl CoreUpdateRescueTelemetry {
             rsync_source: core_update_tool_source("rsync"),
             rsync_version: core_update_tool_version(raw, "rsync", "rsync_version"),
             rsync_stderr_class: rsync_diagnostic.stderr_class,
+            rsync_stderr_reason: rsync_diagnostic.stderr_reason,
             rsync_translated_path_shape: rsync_diagnostic.translated_path_shape,
             node_source: core_update_node_source(),
             node_version: core_update_tool_version(raw, "node", "node_version"),
@@ -2186,6 +2189,12 @@ fn send_core_update_failure_report(
                     "rsync_translated_path_shape",
                     report.rescue_telemetry.rsync_translated_path_shape,
                 );
+                if let Some(rsync_stderr_reason) = report.rescue_telemetry.rsync_stderr_reason {
+                    sentry_scope.set_extra(
+                        "rsyncStderrReason",
+                        sentry::protocol::Value::String(rsync_stderr_reason),
+                    );
+                }
                 sentry_scope.set_tag("node_source", report.rescue_telemetry.node_source);
                 sentry_scope.set_tag("node_version", report.rescue_telemetry.node_version.clone());
                 sentry_scope.set_tag("disk_free_bucket", report.rescue_telemetry.disk_free_bucket);
@@ -6329,7 +6338,7 @@ error: clone failed";
 
     #[test]
     fn sentry_rsync_failure_reports_closed_diagnostics_without_changing_fingerprint() {
-        let raw = "rsync: [sender] link_stat \"/cygdrive/c/fixture-one/HQ/core/file\" failed: No such file or directory (2)\nrsync error: some files/attrs were not transferred (code 23)";
+        let raw = "rsync: [sender] link_stat \"/cygdrive/c/fixture-one/HQ/core/file\" failed: No such file or directory (2)\nrsync status 23\nrsync error: some files/attrs were not transferred (code 23)";
         let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
         assert_eq!(telemetry.rescue_step, "rsync");
         assert_eq!(telemetry.rsync_stderr_class, "source_missing");
@@ -6381,9 +6390,12 @@ error: clone failed";
         assert!(events[0].tags.values().all(|value| {
             !value.contains("fixture-one") && !value.contains("/cygdrive/")
         }));
-        let reason = events[0].extra["rescueErrorReason"].as_str().unwrap();
+        let reason = events[0].extra["rsyncStderrReason"].as_str().unwrap();
         assert!(reason.contains("No such file or directory"));
         assert!(!reason.contains("fixture-one"));
+        let rescue_reason = events[0].extra["rescueErrorReason"].as_str().unwrap();
+        assert!(rescue_reason.contains("rsync status 23"));
+        assert!(!rescue_reason.contains("fixture-one"));
         assert_eq!(
             events[0].fingerprint,
             vec!["desktop-core-update-failed"]

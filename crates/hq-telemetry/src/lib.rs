@@ -55,16 +55,17 @@ pub fn redact_core_update_diagnostic_tail(value: &str) -> String {
     bounded_redacted_core_update_diagnostic_tail(&value)
 }
 
-/// Closed, path-free diagnostics extracted from a Core rescue's rsync error
-/// lines. The path shape describes only how a path printed by rsync was
-/// spelled after the Windows shim translated it; no path text is retained.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Path-free rsync diagnostics extracted from a Core rescue. Class and path
+/// shape use closed vocabularies; the reason is a scrubbed, bounded excerpt.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreUpdateRsyncDiagnostic {
     pub stderr_class: &'static str,
+    pub stderr_reason: Option<String>,
     pub translated_path_shape: &'static str,
 }
 
 const CORE_UPDATE_RSYNC_DIAGNOSTIC_LIMIT_BYTES: usize = 16 * 1024;
+const CORE_UPDATE_RSYNC_REASON_LIMIT_BYTES: usize = 160;
 
 /// Classify only rsync diagnostic lines from a bounded Core rescue tail.
 /// Results are fixed vocabulary for Sentry tags, so account paths and file
@@ -76,6 +77,7 @@ pub fn classify_core_update_rsync_diagnostic(
     if !is_rsync_failure {
         return CoreUpdateRsyncDiagnostic {
             stderr_class: "not_applicable",
+            stderr_reason: None,
             translated_path_shape: "not_applicable",
         };
     }
@@ -94,6 +96,7 @@ pub fn classify_core_update_rsync_diagnostic(
     if lines.is_empty() {
         return CoreUpdateRsyncDiagnostic {
             stderr_class: "unclassified",
+            stderr_reason: Some("No rsync diagnostic line captured".to_string()),
             translated_path_shape: "unavailable",
         };
     }
@@ -155,8 +158,29 @@ pub fn classify_core_update_rsync_diagnostic(
 
     CoreUpdateRsyncDiagnostic {
         stderr_class,
+        stderr_reason: Some(core_update_rsync_stderr_reason(&lines)),
         translated_path_shape: core_update_rsync_path_shape(&lines),
     }
+}
+
+fn core_update_rsync_stderr_reason(lines: &[&str]) -> String {
+    let Some(line) = lines.first() else {
+        return "No rsync diagnostic line captured".to_string();
+    };
+    let redacted = redact_core_update_diagnostic_tail(line);
+    let lower = redacted.to_ascii_lowercase();
+    let excerpt = if lower.starts_with("file has vanished:") {
+        "file has vanished".to_string()
+    } else if lower.starts_with("vanished file:") {
+        "vanished file".to_string()
+    } else {
+        redacted
+            .rsplit_once(": ")
+            .map(|(_, reason)| reason.trim().to_string())
+            .unwrap_or_else(|| redacted.trim().to_string())
+    };
+    let excerpt = excerpt.replace("files/attrs", "files and attrs");
+    truncate_at_utf8_boundary(&excerpt, CORE_UPDATE_RSYNC_REASON_LIMIT_BYTES).to_string()
 }
 
 fn is_core_update_rsync_diagnostic_line(line: &str) -> bool {
@@ -1588,6 +1612,17 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "unavailable"
                 | "not_applicable"
         )),
+        "rsyncStderrReason" => Some(
+            !value.is_empty()
+                && value.len() <= CORE_UPDATE_RSYNC_REASON_LIMIT_BYTES
+                && !value.contains('/')
+                && !value.contains('\\')
+                && !value.contains('\n')
+                && !value.contains('\r')
+                && !value.as_bytes().windows(2).any(|pair| {
+                    pair[0].is_ascii_alphabetic() && pair[1] == b':'
+                }),
+        ),
         // Existing install-failure events retain the child's numeric exit code;
         // Core update events use the closed semantic values below. Accept both
         // shapes while keeping the numeric form bounded by i32 parsing.
@@ -2949,6 +2984,10 @@ mod tests {
             ("rsync_stderr_class", "unclassified"),
             ("rsync_translated_path_shape", "cygwin_drive"),
             ("rsync_translated_path_shape", "unavailable"),
+            (
+                "rsyncStderrReason",
+                "No such file or directory (2)",
+            ),
             ("exit_code", "5"),
             ("git_source", "managed"),
             ("rsync_source", "system"),
@@ -2982,6 +3021,11 @@ mod tests {
                 "rsync_translated_path_shape",
                 "/cygdrive/c/Users/fixture/secret",
             ),
+            (
+                "rsyncStderrReason",
+                "rsync: [sender] open C:\\Users\\fixture\\secret failed: Permission denied",
+            ),
+            ("rsyncStderrReason", "C:relative-secret"),
             ("git_source", "managed:/Users/ada"),
             ("git_version", "git version 2.44.0"),
             ("disk_free_bucket", "3 GiB"),
@@ -3003,6 +3047,10 @@ mod tests {
             true,
         );
         assert_eq!(missing_source.stderr_class, "source_missing");
+        let reason = missing_source.stderr_reason.as_deref().unwrap();
+        assert!(reason.contains("No such file or directory"));
+        assert!(!reason.contains("fixture-one"));
+        assert!(reason.len() <= CORE_UPDATE_RSYNC_REASON_LIMIT_BYTES);
         assert_eq!(missing_source.translated_path_shape, "cygwin_drive");
         assert!(!missing_source.stderr_class.contains("fixture-one"));
         assert!(!missing_source.translated_path_shape.contains("/"));
@@ -3016,6 +3064,7 @@ mod tests {
 
         let unrelated = classify_core_update_rsync_diagnostic("git clone failed", false);
         assert_eq!(unrelated.stderr_class, "not_applicable");
+        assert!(unrelated.stderr_reason.is_none());
         assert_eq!(unrelated.translated_path_shape, "not_applicable");
     }
 
