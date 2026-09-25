@@ -117,6 +117,15 @@ pub fn client_headers() -> HeaderMap {
 /// wraps its call in `tokio::time::timeout(2s)` for a tighter budget; that
 /// wrapper becomes redundant once the client itself has a default, but it
 /// stays as defense-in-depth for the bot-invite hot path.
+///
+/// With the `gzip`/`brotli` reqwest features enabled (Cargo.toml), this
+/// client automatically sends `Accept-Encoding: gzip, br` and transparently
+/// decodes a compressed response body — callers never see `Content-Encoding`
+/// or compressed bytes. `.bytes()`/`.json()` yield the decoded payload; a raw
+/// `content_length()` read still reflects the on-wire (possibly compressed)
+/// size, which is why size-bounded downloads elsewhere in this workspace
+/// (`vault_s3.rs`, `hq_work.rs::http_get_bytes`) build their own client with
+/// `.no_gzip().no_brotli()` instead of using this helper.
 pub fn build_client() -> Client {
     Client::builder()
         .default_headers(client_headers())
@@ -216,6 +225,50 @@ mod tests {
             elapsed < Duration::from_secs(20),
             "build_client() did not time out (elapsed {elapsed:?}) — \
              a timeout regression has shipped",
+        );
+    }
+
+    /// `build_client()` must negotiate compression: send `Accept-Encoding`
+    /// naming gzip, and transparently decode a gzip-encoded response body so
+    /// callers see the original bytes, not the compressed wire payload.
+    /// Regression test for enabling the `gzip`/`brotli` reqwest features.
+    #[tokio::test]
+    async fn build_client_sends_accept_encoding_and_decodes_gzip_body() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        use wiremock::matchers::{header_regex, method, path};
+
+        let original = br#"{"channels":[{"channelId":"chn_1","name":"general"}]}"#;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/notify/channels"))
+            .and(header_regex("accept-encoding", "gzip"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-encoding", "gzip")
+                    .insert_header("content-type", "application/json")
+                    .set_body_bytes(compressed),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_client();
+        let resp = client
+            .get(format!("{}/v1/notify/channels", server.uri()))
+            .send()
+            .await
+            .expect("request should succeed");
+        assert!(resp.status().is_success());
+        let body = resp.text().await.expect("body should decode");
+        assert_eq!(
+            body,
+            String::from_utf8(original.to_vec()).unwrap(),
+            "build_client() did not transparently decode the gzip response body",
         );
     }
 }
