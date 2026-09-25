@@ -50,6 +50,17 @@ pub struct LifecycleInputs {
     /// consent is UNANSWERED must be routed back through onboarding rather than
     /// classified as an already-set-up machine that skips it.
     pub consent_answered: bool,
+    /// At least one piece of install evidence could not be READ this launch —
+    /// the HQ folder was unreachable (permission denied, an unmounted volume,
+    /// an I/O error) or the token store could not be read — as opposed to
+    /// being confirmed absent.
+    ///
+    /// "Could not tell" is not "not installed". A machine that already
+    /// finished first run keeps its steady-state surface when the evidence is
+    /// unreadable; the alternative is dropping a long-set-up person onto the
+    /// fresh-install Welcome card after an auto-update relaunch briefly makes
+    /// the read fail (customer report 2026-09-19, v0.10.296 -> v0.10.297).
+    pub evidence_unreadable: bool,
 }
 
 /// Classifier verdict: the state plus whether the caller should backfill
@@ -162,8 +173,60 @@ pub fn welcome_setup_owed(menubar: &Map<String, Value>, hq_root_valid: bool) -> 
 /// installer because launch misclassified the machine must not reset a
 /// finished welcome — otherwise `welcomeSetupCompletedAt` never sticks and
 /// the next restart looks like first-run again.
+///
+/// An already fully set-up machine (`installCompleted + firstRunCompleted +
+/// machineId` all present) never owes the guided welcome, so a re-run
+/// installer cannot re-arm the flag even when `welcomeSetupCompletedAt` is
+/// absent (pre-welcome-flow install).
 pub fn should_arm_welcome_setup_pending(menubar: &Map<String, Value>) -> bool {
     if menubar.get("welcomeSetupPending").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+    if menubar
+        .get("welcomeSetupCompletedAt")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return false;
+    }
+    // An already-set-up machine (all three completion markers) never needs the
+    // guided welcome run armed - it completed setup via an older flow that did
+    // not write welcomeSetupCompletedAt.
+    let (install_completed, first_run_completed, had_machine_id) = menubar_flags(menubar);
+    !(install_completed && first_run_completed && had_machine_id)
+}
+
+/// Should a stuck `welcomeSetupPending: true` flag be self-healed on this launch?
+///
+/// During the v0.10.259-v0.10.287 regression window the installer ran on
+/// every auto-update restart and wrote `welcomeSetupPending: true`. The only
+/// normal writer that clears it is `mark_welcome_setup_complete`, which fires
+/// only when the person completes the guided `/setup` run. Users who were
+/// fighting the loop never reached that point, leaving an orphaned flag that
+/// keeps surfacing the Welcome card on every launch even though the machine is
+/// fully set up.
+///
+/// Returns true when ALL of these hold:
+/// - the machine is provably set up: `installCompleted`, `firstRunCompleted`,
+///   `hq_root_valid`, and `has_auth` are all true
+/// - `welcomeSetupPending` is explicitly `true` (not absent - absence means
+///   the flag was never written, handled by `welcome_setup_owed` fallback)
+/// - `welcomeSetupCompletedAt` is absent or empty (not yet written by the
+///   normal `mark_welcome_setup_complete` path)
+///
+/// A new install that has not completed setup returns false: it still owes the
+/// guided welcome.
+pub fn should_backfill_welcome_setup_pending(
+    menubar: &Map<String, Value>,
+    install_completed: bool,
+    first_run_completed: bool,
+    hq_root_valid: bool,
+    has_auth: bool,
+) -> bool {
+    if !install_completed || !first_run_completed || !hq_root_valid || !has_auth {
+        return false;
+    }
+    if menubar.get("welcomeSetupPending").and_then(Value::as_bool) != Some(true) {
         return false;
     }
     !menubar
@@ -177,6 +240,41 @@ pub fn should_arm_welcome_setup_pending(menubar: &Map<String, Value>) -> bool {
 pub fn hq_root_valid(root: &Path) -> bool {
     root.is_dir()
         && (root.join("core").join("core.yaml").is_file() || root.join("core.yaml").is_file())
+}
+
+/// Outcome of probing the HQ folder on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HqRootProbe {
+    /// The folder exists and carries the installed hq-core shape.
+    Valid,
+    /// The folder was read and is not an installed HQ root.
+    Missing,
+    /// The folder could not be read: permission denied (macOS TCC on
+    /// `~/Documents`, for example), an unmounted volume, or an I/O error.
+    Unreadable,
+}
+
+/// Probe `root`, distinguishing "not an HQ folder" from "could not look".
+///
+/// `hq_root_valid` answers false for both, which is what sent an installed
+/// machine to the Welcome card when the folder was momentarily unreachable.
+pub fn probe_hq_root(root: &Path) -> HqRootProbe {
+    match std::fs::metadata(root) {
+        Ok(meta) if !meta.is_dir() => HqRootProbe::Missing,
+        Ok(_) => {
+            if hq_root_valid(root) {
+                return HqRootProbe::Valid;
+            }
+            // The directory is there but the marker read failed for a reason
+            // other than absence — treat that as "could not look".
+            match std::fs::read_dir(root) {
+                Ok(_) => HqRootProbe::Missing,
+                Err(_) => HqRootProbe::Unreadable,
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HqRootProbe::Missing,
+        Err(_) => HqRootProbe::Unreadable,
+    }
 }
 
 /// The pure classifier.
@@ -205,6 +303,19 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     // through sign-in, folder choice and install.
     let needs_first_run_backfill =
         is_installed && inputs.consent_answered && !inputs.first_run_completed;
+
+    // "Could not read the evidence" must never demote a machine that already
+    // completed first run. `first_run_completed` is only ever written after
+    // setup (and consent) finished on this computer, so preserving
+    // steady-state here cannot wave anyone past onboarding or consent — it
+    // only refuses to conclude "brand new machine" from a failed read.
+    if inputs.evidence_unreadable && inputs.first_run_completed && !inputs.install_in_progress {
+        return LifecycleVerdict {
+            state: LifecycleState::SteadyState,
+            needs_install_backfill: false,
+            needs_first_run_backfill: false,
+        };
+    }
 
     let state = if inputs.install_in_progress {
         LifecycleState::InstallResume
@@ -255,11 +366,126 @@ mod tests {
             has_auth: false,
             install_in_progress: false,
             consent_answered: false,
+            evidence_unreadable: false,
         }
     }
 
     fn map(v: Value) -> Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn unreadable_evidence_preserves_steady_state_for_a_set_up_machine() {
+        // The v0.10.297 report: an auto-update relaunch could not read the HQ
+        // folder, and a long-installed machine was shown the Welcome card.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            consent_answered: true,
+            hq_root_valid: false,
+            has_auth: false,
+            evidence_unreadable: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
+        assert!(!verdict.needs_install_backfill);
+        assert!(!verdict.needs_first_run_backfill);
+    }
+
+    #[test]
+    fn unreadable_evidence_does_not_wave_a_new_machine_through() {
+        let verdict = classify_lifecycle(LifecycleInputs {
+            evidence_unreadable: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
+    }
+
+    #[test]
+    fn unreadable_evidence_does_not_bypass_an_unanswered_consent() {
+        // machineId written, first run never finished: consent is still owed.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            had_machine_id: true,
+            hq_root_valid: true,
+            evidence_unreadable: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
+    }
+
+    #[test]
+    fn unreadable_evidence_yields_to_an_in_progress_install() {
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            install_in_progress: true,
+            evidence_unreadable: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::InstallResume);
+    }
+
+    #[test]
+    fn real_session_loss_still_reaches_the_setup_card() {
+        // Nothing unreadable: the HQ folder is genuinely gone and there is no
+        // auth. The install card is the correct surface.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            hq_root_valid: false,
+            has_auth: false,
+            evidence_unreadable: false,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
+    }
+
+    #[test]
+    fn probe_hq_root_reports_valid_missing_and_unreadable() {
+        let dir = tempdir().unwrap();
+
+        let missing = dir.path().join("nope");
+        assert_eq!(probe_hq_root(&missing), HqRootProbe::Missing);
+
+        let root = dir.path().join("HQ");
+        std::fs::create_dir_all(root.join("core")).unwrap();
+        assert_eq!(probe_hq_root(&root), HqRootProbe::Missing);
+        std::fs::write(root.join("core").join("core.yaml"), "version: 1\n").unwrap();
+        assert_eq!(probe_hq_root(&root), HqRootProbe::Valid);
+
+        // A path that exists but is not a directory is not an HQ root.
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, "x").unwrap();
+        assert_eq!(probe_hq_root(&file), HqRootProbe::Missing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_hq_root_reports_unreadable_for_a_permission_denied_folder() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("HQ");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let probe = probe_hq_root(&root);
+
+        // Restore before asserting so the tempdir can always clean itself up.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if unsafe { libc::geteuid() } == 0 {
+            // root ignores the mode bits; nothing to assert.
+            return;
+        }
+        assert_eq!(probe, HqRootProbe::Unreadable);
     }
 
     #[test]
@@ -284,6 +510,7 @@ mod tests {
             has_auth: true,
             install_in_progress: true,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstallResume);
@@ -312,6 +539,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: false,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
@@ -332,6 +560,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledLegacyUpdate);
@@ -353,6 +582,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -419,6 +649,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: false,
+            evidence_unreadable: false,
         });
 
         assert_eq!(
@@ -439,6 +670,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -502,6 +734,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -569,6 +802,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: false,
+            evidence_unreadable: false,
         });
         let steady_state = classify_lifecycle(LifecycleInputs {
             install_completed: true,
@@ -579,6 +813,7 @@ mod tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         });
 
         assert_eq!(first_run.state, LifecycleState::InstalledFirstRun);
@@ -619,6 +854,129 @@ mod tests {
         assert!(!should_arm_welcome_setup_pending(&finished));
         let stamped = map(json!({ "welcomeSetupCompletedAt": "2026-09-16T13:13:12Z" }));
         assert!(!should_arm_welcome_setup_pending(&stamped));
+    }
+
+    #[test]
+    fn finishing_the_installer_does_not_rearm_an_already_set_up_machine() {
+        // Regression guard: an already-set-up machine (all three markers) must
+        // not have welcomeSetupPending re-armed by a re-run installer, even
+        // when welcomeSetupCompletedAt was never written (pre-welcome-flow setup).
+        let set_up = map(json!({
+            "installCompleted": true,
+            "firstRunCompleted": true,
+            "machineId": "m1",
+        }));
+        assert!(!should_arm_welcome_setup_pending(&set_up));
+
+        // With an orphaned pending=true (as left by the v0.10.259 regression):
+        // still must not re-arm.
+        let orphaned = map(json!({
+            "installCompleted": true,
+            "firstRunCompleted": true,
+            "machineId": "m1",
+            "welcomeSetupPending": true,
+        }));
+        assert!(!should_arm_welcome_setup_pending(&orphaned));
+
+        // A brand-new install (no machineId yet) still owes the welcome.
+        let brand_new = map(json!({
+            "installCompleted": true,
+            "firstRunCompleted": true,
+        }));
+        assert!(should_arm_welcome_setup_pending(&brand_new));
+    }
+
+    // ---- Regression: orphaned welcomeSetupPending self-heal (fix PR) ----
+    //
+    // During v0.10.259-v0.10.287 the installer ran on every auto-update
+    // restart and wrote `welcomeSetupPending: true` into menubar.json. The
+    // only writer that clears it (`mark_welcome_setup_complete`) fires only
+    // when the person completes the guided /setup run. A user fighting the
+    // loop never completed that run, leaving an orphaned flag. On v0.10.288+
+    // the classifier correctly returns SteadyState but `welcome_setup_owed`
+    // still returns true on every launch, driving the Welcome card.
+    //
+    // Nima's exact menubar.json shape (2026-09-22/09-23, v0.10.299/v0.10.304):
+    //   installCompleted: true, firstRunCompleted: true, machineId: "m1",
+    //   welcomeSetupPending: true, welcomeSetupCompletedAt: absent
+    //
+    // The fix: `should_backfill_welcome_setup_pending` detects this shape and
+    // `setup_lifecycle` self-heals by merging the completion flags into
+    // menubar.json, after which `welcome_setup_owed` returns false.
+
+    #[test]
+    fn backfill_is_needed_for_orphaned_flag_on_set_up_machine() {
+        // Nima's exact shape: fully set up, but welcomeSetupPending was never
+        // cleared. Backfill should be triggered.
+        let menubar = map(json!({
+            "installCompleted": true,
+            "firstRunCompleted": true,
+            "machineId": "m1",
+            "welcomeSetupPending": true,
+        }));
+        assert!(
+            should_backfill_welcome_setup_pending(&menubar, true, true, true, true),
+            "orphaned pending flag on a set-up machine must trigger backfill",
+        );
+        // After the backfill (pending:false + completedAt written), owed is false.
+        let healed = map(json!({
+            "installCompleted": true,
+            "firstRunCompleted": true,
+            "machineId": "m1",
+            "welcomeSetupPending": false,
+            "welcomeSetupCompletedAt": "2026-09-23T10:00:00Z",
+        }));
+        assert!(
+            !welcome_setup_owed(&healed, true),
+            "after backfill welcome_setup_owed must be false",
+        );
+    }
+
+    #[test]
+    fn backfill_is_not_triggered_for_a_new_install_still_pending_setup() {
+        // A brand-new machine that has not completed setup must still be owed
+        // the guided welcome. installCompleted=false, firstRunCompleted=false.
+        let brand_new = map(json!({ "welcomeSetupPending": true }));
+        assert!(
+            !should_backfill_welcome_setup_pending(&brand_new, false, false, true, true),
+            "new install that has not completed setup must not be backfilled",
+        );
+        // Still owed after no backfill.
+        assert!(welcome_setup_owed(&brand_new, true));
+    }
+
+    #[test]
+    fn backfill_is_not_triggered_when_pending_flag_is_absent_or_already_false() {
+        // Flag absent (pre-welcome-flow install): `welcome_setup_owed` handles
+        // this via the legacy fallback; no backfill needed.
+        let absent = map(json!({
+            "installCompleted": true,
+            "firstRunCompleted": true,
+            "machineId": "m1",
+        }));
+        assert!(!should_backfill_welcome_setup_pending(&absent, true, true, true, true));
+
+        // Flag already false: already done.
+        let already_done = map(json!({
+            "installCompleted": true,
+            "firstRunCompleted": true,
+            "machineId": "m1",
+            "welcomeSetupPending": false,
+        }));
+        assert!(!should_backfill_welcome_setup_pending(&already_done, true, true, true, true));
+    }
+
+    #[test]
+    fn backfill_is_not_triggered_when_welcome_setup_already_has_a_completed_at() {
+        // completedAt already written: the guided run finished normally.
+        let completed = map(json!({
+            "installCompleted": true,
+            "firstRunCompleted": true,
+            "machineId": "m1",
+            "welcomeSetupPending": true,
+            "welcomeSetupCompletedAt": "2026-09-16T13:13:12Z",
+        }));
+        assert!(!should_backfill_welcome_setup_pending(&completed, true, true, true, true));
     }
 
     #[test]
@@ -732,6 +1090,7 @@ mod toolchain_readiness_tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         };
         assert_eq!(
             classify_lifecycle(inputs).state,
@@ -770,6 +1129,7 @@ mod toolchain_readiness_tests {
             has_auth: true,
             install_in_progress: false,
             consent_answered: true,
+            evidence_unreadable: false,
         };
         let classified = classify_lifecycle(inputs);
         assert_eq!(classified.state, LifecycleState::SteadyState);

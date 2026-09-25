@@ -1,4 +1,4 @@
-import type { AdapterResult, Json } from "@hq/platform";
+import type { AdapterResult, Json, VaultPutIntegrity } from "@hq/platform";
 import {
   attachmentKindForContentType,
   buildChatAttachmentVaultPath,
@@ -29,6 +29,28 @@ export function presignUrlFromResult(raw: unknown): {
     if (typeof value === "string") headers[key] = value;
   }
   return { url, headers };
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/**
+ * SHA-256 of a file, in the two forms hq-pro's presign needs. Vault buckets
+ * have S3 Object Lock, which rejects any PUT without a signed checksum.
+ */
+export async function fileIntegrity(file: Blob): Promise<VaultPutIntegrity> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", await file.arrayBuffer()),
+  );
+  return {
+    checksumSha256: bytesToBase64(digest),
+    contentSha256: Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join(""),
+  };
 }
 
 export type PutChatAttachment = (
@@ -87,6 +109,7 @@ export async function uploadChatAttachments(opts: {
     companyUid: string,
     key: string,
     contentType: string,
+    integrity: VaultPutIntegrity,
   ) => Promise<AdapterResult<Json>>;
   /** Override the byte PUT (web same-origin proxy). Default is a direct S3 fetch. */
   putObject?: PutChatAttachment;
@@ -106,6 +129,7 @@ export async function uploadChatAttachments(opts: {
       opts.companyUid,
       vaultPath,
       contentType,
+      await fileIntegrity(file),
     );
     if (!signed.ok) {
       throw new Error(

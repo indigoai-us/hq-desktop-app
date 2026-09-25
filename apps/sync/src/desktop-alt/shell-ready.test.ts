@@ -2,6 +2,10 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const nativeEvents = vi.hoisted(() => ({
+  handlers: new Map<string, Array<(event: { payload: unknown }) => void>>(),
+}));
+
 vi.mock('svelte', async () => {
   // @ts-expect-error client entry has no public type export.
   return await import('../../node_modules/svelte/src/index-client.js');
@@ -14,7 +18,17 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (event: string, handler: (event: { payload: unknown }) => void) => {
+    const list = nativeEvents.handlers.get(event) ?? [];
+    list.push(handler);
+    nativeEvents.handlers.set(event, list);
+    return () => {
+      nativeEvents.handlers.set(
+        event,
+        (nativeEvents.handlers.get(event) ?? []).filter((current) => current !== handler),
+      );
+    };
+  }),
 }));
 
 vi.mock('@tauri-apps/api/app', () => ({
@@ -120,6 +134,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  nativeEvents.handlers.clear();
 });
 
 describe('HqWorkWorkShell shell_ready', () => {

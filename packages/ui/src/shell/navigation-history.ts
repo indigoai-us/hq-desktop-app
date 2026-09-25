@@ -45,6 +45,8 @@ export type NavigationDestination =
       kind: "channel";
       channelId: string;
       replyRootEventId?: string | null;
+      /** Timeline message to scroll into view after the channel opens. */
+      messageId?: string | null;
       tab?: ChannelSurfaceTab;
       companyTab?: CompanyChannelTabId;
       agentSurface?: AgentSurfaceTab;
@@ -123,7 +125,9 @@ export function historyNeighbor(
 
 const CHANNEL_TABS = new Set<ChannelSurfaceTab>(["chat", "board", "files"]);
 const AGENT_SURFACES = new Set<AgentSurfaceTab>(["chat", "details"]);
-const COMPANY_TABS = new Set<CompanyChannelTabId>(["chat", "office"]);
+// Office is hidden for company channels; "office" is intentionally excluded
+// here so a stale deep link normalizes back to Chat.
+const COMPANY_TABS = new Set<CompanyChannelTabId>(["chat"]);
 const LIBRARY_TABS = new Set<LibraryTab>([
   "skills",
   "workers",
@@ -244,6 +248,7 @@ export function canonicalizeDestination(
         kind: "channel",
         channelId: requireId(destination.channelId, "channelId"),
         replyRootEventId: trimId(destination.replyRootEventId),
+        messageId: trimId(destination.messageId),
         tab,
         companyTab: asCompanyTab(destination.companyTab),
         agentSurface: asAgentSurface(destination.agentSurface),
@@ -334,6 +339,7 @@ export function canonicalDestinationKey(
         "channel",
         dest.channelId,
         dest.replyRootEventId ?? "",
+        dest.messageId ?? "",
         dest.tab,
         dest.companyTab,
         dest.agentSurface,
@@ -645,8 +651,22 @@ export function destinationFromEmbeddedTarget(
     case "home":
     case "messages":
       return { kind: "messages" };
-    case "inbox":
+    case "inbox": {
+      const channelId = trimId(target.channelId);
+      if (channelId) {
+        return {
+          kind: "channel",
+          channelId,
+          replyRootEventId: null,
+          messageId: trimId(target.messageId),
+        };
+      }
+      const dm = trimId(target.dm);
+      if (dm) {
+        return { kind: "dm", personUid: dm, replyRootEventId: null };
+      }
       return { kind: "notifications" };
+    }
     case "setup-checkout":
       return {
         kind: "setup-checkout",
@@ -657,6 +677,11 @@ export function destinationFromEmbeddedTarget(
       return { kind: "meetings", meetingId: target.meetingId ?? null };
     case "atlas":
       return { kind: "atlas" };
+    case "shared-files":
+      return { kind: "shared-files" };
+    case "company":
+      // Resolved in DesktopApp against the membership roster + company channel.
+      return null;
     case "library":
       return { kind: "library", tab: target.tab };
     case "settings":

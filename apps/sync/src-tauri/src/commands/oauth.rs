@@ -39,9 +39,9 @@
 
 use super::cognito::{AuthState, CognitoTokens};
 use hq_desktop_core::oauth::{
-    build_authorize_url_from, cognito_identity_provider, cognito_token_url, compute_code_challenge,
-    generate_code_verifier, parse_callback, AuthorizeRequest, CallbackOutcome, CallbackRejection,
-    cognito_client_id, REDIRECT_URI,
+    build_authorize_url_from, cognito_client_id, cognito_identity_provider, cognito_token_url,
+    compute_code_challenge, generate_code_verifier, parse_callback, AuthorizeRequest,
+    CallbackOutcome, CallbackRejection, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -74,9 +74,15 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ── PKCE verifier storage ──────────────────────────────────────────────
 
-static PKCE_VERIFIER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingPkce {
+    verifier: String,
+    identity_provider: Option<String>,
+}
 
-fn pkce_store() -> &'static Mutex<Option<String>> {
+static PKCE_VERIFIER: OnceLock<Mutex<Option<PendingPkce>>> = OnceLock::new();
+
+fn pkce_store() -> &'static Mutex<Option<PendingPkce>> {
     PKCE_VERIFIER.get_or_init(|| Mutex::new(None))
 }
 
@@ -269,11 +275,7 @@ fn receive_loopback_callback(
                                 }
                                 _ => "400 Bad Request",
                             };
-                            write_response(
-                                &mut stream,
-                                status,
-                                "<!doctype html><title>HQ</title>",
-                            );
+                            write_response(&mut stream, status, "<!doctype html><title>HQ</title>");
                         }
                     }
                 }
@@ -457,6 +459,11 @@ pub(crate) struct ArmedOAuthFlow {
     pub state: String,
 }
 
+pub(crate) struct ExchangedOAuthCode {
+    pub tokens: CognitoTokens,
+    pub identity_provider: Option<String>,
+}
+
 /// Bind the loopback listener, stash a fresh PKCE verifier, and build the
 /// authorize URL.
 ///
@@ -515,11 +522,15 @@ pub(crate) fn arm_oauth_flow(
     eprintln!("[oauth] listener ready; opening provider is now safe");
 
     // Store verifier for the exchange. One-time use, taken not read.
+    let selected_identity_provider = identity_provider.map(str::to_owned);
     {
         let mut guard = pkce_store()
             .lock()
             .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
-        *guard = Some(verifier);
+        *guard = Some(PendingPkce {
+            verifier,
+            identity_provider: selected_identity_provider,
+        });
     }
 
     let authorize_url = build_authorize_url_from(&AuthorizeRequest {
@@ -557,9 +568,9 @@ pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
 /// account it is about to sign in as before anything is persisted. The
 /// provider-button flow calls this and then completes immediately; that
 /// difference in what happens next is the entire feature.
-pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<CognitoTokens, String> {
+pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAuthCode, String> {
     // Take the verifier out of storage (one-time use)
-    let verifier = {
+    let pending_pkce = {
         let mut guard = pkce_store()
             .lock()
             .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
@@ -567,6 +578,11 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<CognitoTokens
             .take()
             .ok_or_else(|| "No PKCE verifier found — was start_oauth_login called?".to_string())?
     };
+
+    let PendingPkce {
+        verifier,
+        identity_provider,
+    } = pending_pkce;
 
     let client = crate::util::client_info::build_client();
 
@@ -621,7 +637,10 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<CognitoTokens
         expires_at,
     };
 
-    Ok(tokens)
+    Ok(ExchangedOAuthCode {
+        tokens,
+        identity_provider,
+    })
 }
 
 /// Exchange an authorization code and sign in with the result.
@@ -631,7 +650,9 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<CognitoTokens
 /// account is a surprise to them.
 #[tauri::command]
 pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthState, String> {
-    let tokens = exchange_code_for_tokens(&code).await?;
+    let exchanged = exchange_code_for_tokens(&code).await?;
+    let tokens = exchanged.tokens;
+    let identity_provider = exchanged.identity_provider;
 
     // The person just chose an account with a provider button. Any continuation
     // still waiting for confirmation is about a different account and a question
@@ -645,6 +666,20 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // Persist, publish, announce — the shared completion browser continuation
     // also ends on, so there is exactly one definition of "signed in".
     let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;
+    // The control cohort needs the same durable login-completed edge as the
+    // continuation cohort. Persist before background delivery so a transient
+    // telemetry failure cannot make its completed sign-in disappear.
+    if let Some(account_id) = state.account_id.as_deref() {
+        let _ = crate::commands::desktop_auth::record_desktop_login_completed(
+            &app,
+            account_id,
+            "manual_oauth",
+            "control",
+            identity_provider.as_deref(),
+        );
+    } else {
+        eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
+    }
     eprintln!("[oauth] token exchange completed");
     Ok(state)
 }
@@ -739,8 +774,11 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
             .or_else(|| app.get_webview_window("main"));
         if let Some(window) = window {
             // AppKit / WebView2 window ops must run on the UI thread.
-            // Sticky topmost is intentional here (post-OAuth only) so the
-            // wizard stays above the browser for the next step.
+            // The raise is transiently topmost (post-OAuth only) so the
+            // window comes above the browser once; the flag is released on
+            // the first focus change or a short timeout, never left sticky —
+            // a sticky flag here is what kept the workspace window above every
+            // other app after sign-in (Alt+Tab could not get past HQ).
             let win = window.clone();
             let _ = app.run_on_main_thread(move || {
                 crate::util::window_focus::bring_webview_to_front_after_oauth(&win);
@@ -768,12 +806,21 @@ mod tests {
         // Store a verifier, then take it out
         {
             let mut guard = pkce_store().lock().unwrap();
-            *guard = Some("test-verifier".to_string());
+            *guard = Some(PendingPkce {
+                verifier: "test-verifier".to_string(),
+                identity_provider: Some("Google".to_string()),
+            });
         }
         {
             let mut guard = pkce_store().lock().unwrap();
             let taken = guard.take();
-            assert_eq!(taken, Some("test-verifier".to_string()));
+            assert_eq!(
+                taken,
+                Some(PendingPkce {
+                    verifier: "test-verifier".to_string(),
+                    identity_provider: Some("Google".to_string()),
+                })
+            );
         }
         {
             let guard = pkce_store().lock().unwrap();

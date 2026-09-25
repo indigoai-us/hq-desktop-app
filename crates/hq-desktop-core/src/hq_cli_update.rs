@@ -57,6 +57,11 @@ pub const HQ_CLI_PACKAGE: &str = "@indigoai-us/hq-cli@latest";
 /// The bare package name, without any version or dist-tag suffix.
 pub const HQ_CLI_PACKAGE_NAME: &str = "@indigoai-us/hq-cli";
 
+/// Environment applied to desktop-spawned npm/pnpm/Bun installs. node-llama-cpp
+/// supports this flag to skip its optional download/build postinstall work. That
+/// work is not needed to install or run the HQ CLI and must not abort an update.
+pub const NPM_INSTALL_CHILD_ENV: [(&str, &str); 1] = [("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true")];
+
 /// Build the install spec the package manager is asked for. `Some(version)`
 /// pins the EXACT version the app resolved, so the version the app compares
 /// against and the version it asks npm/pnpm to install are the same string by
@@ -1838,6 +1843,82 @@ impl ExecutedCopyAim {
     }
 }
 
+/// Result of the single corrective attempt to install into a deferred,
+/// foreign-managed CLI copy's own user prefix. These values are closed and
+/// path-free because they are attached to the non-convergence event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutedCopyReaim {
+    #[default]
+    NotAttempted,
+    Converged,
+    StillForeign,
+    PreparationFailed,
+    InstallFailed,
+    SpawnFailed,
+    RefusedNoAim,
+}
+
+impl ExecutedCopyReaim {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "not-attempted",
+            Self::Converged => "converged",
+            Self::StillForeign => "still-foreign",
+            Self::PreparationFailed => "preparation-failed",
+            Self::InstallFailed => "install-failed",
+            Self::SpawnFailed => "spawn-failed",
+            Self::RefusedNoAim => "refused-no-aim",
+        }
+    }
+}
+
+/// Pure gate for the in-run foreign-copy re-aim. A drivable copy that was not
+/// selected by the original install is the only eligible shape; aimed,
+/// undrivable, and non-foreign outcomes keep their existing finalization path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutedCopyReaimGate {
+    Attempt,
+    RefusedNotForeign,
+    RefusedNotDeferred,
+    RefusedNoAim,
+}
+
+pub fn executed_copy_reaim_gate(
+    kind: Option<NonConvergenceKind>,
+    executed_copy_aim: ExecutedCopyAim,
+    user_aim_available: bool,
+) -> ExecutedCopyReaimGate {
+    if kind != Some(NonConvergenceKind::ForeignManaged) {
+        return ExecutedCopyReaimGate::RefusedNotForeign;
+    }
+    if executed_copy_aim != ExecutedCopyAim::NotYetAimed {
+        return ExecutedCopyReaimGate::RefusedNotDeferred;
+    }
+    if !user_aim_available {
+        return ExecutedCopyReaimGate::RefusedNoAim;
+    }
+    ExecutedCopyReaimGate::Attempt
+}
+
+pub fn executed_copy_reaim_outcome(
+    gate: ExecutedCopyReaimGate,
+    install_exit_ok: Option<bool>,
+    converged: bool,
+) -> ExecutedCopyReaim {
+    match gate {
+        ExecutedCopyReaimGate::RefusedNoAim => ExecutedCopyReaim::RefusedNoAim,
+        ExecutedCopyReaimGate::Attempt => match install_exit_ok {
+            None => ExecutedCopyReaim::SpawnFailed,
+            Some(false) => ExecutedCopyReaim::InstallFailed,
+            Some(true) if converged => ExecutedCopyReaim::Converged,
+            Some(true) => ExecutedCopyReaim::StillForeign,
+        },
+        ExecutedCopyReaimGate::RefusedNotForeign | ExecutedCopyReaimGate::RefusedNotDeferred => {
+            ExecutedCopyReaim::NotAttempted
+        }
+    }
+}
+
 /// Whether the shim the aimed prefix should expose after a delivered install is
 /// present. A closed, path-free telemetry token (the `delivered_prefix_shim`
 /// tag) that ALSO gates the durable block: a ForeignManaged verdict whose aimed
@@ -2555,6 +2636,9 @@ pub struct NonConvergentReport {
     /// settings-PATH foreign shadow's own mechanism without another planning
     /// round (HQ-DESKTOP-46).
     pub settings_path: SettingsPathTelemetry,
+    /// Outcome of the bounded in-run attempt to re-aim an install into a
+    /// deferred foreign-managed CLI copy's own user prefix (HQ-DESKTOP-46).
+    pub executed_copy_reaim: ExecutedCopyReaim,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3160,6 +3244,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         hq_bin_lane,
         delivered_prefix_shim,
         settings_path,
+        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
     });
 
     PostInstallOutcome {
@@ -3475,7 +3560,18 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                 "settings_path_repair",
                 report.settings_path.repair.telemetry_value(),
             );
-            scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
+            scope.set_tag(
+                "executed_copy_reaim",
+                report.executed_copy_reaim.telemetry_value(),
+            );
+            // The class is the existing closed `non_convergence_kind` tag, so a
+            // foreign-managed shadow has one stable group independent of paths,
+            // versions, or the installer binary that happened to run.
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "install-non-convergent",
+                report.kind.telemetry_value(),
+            ]));
             // Home-redacted: the install LAYOUT is the diagnostic
             // (`~/Library/pnpm/hq` says everything); the account name in front
             // of it is personal data. The shared `before_send` scrubber only
@@ -3625,6 +3721,45 @@ pub fn report_non_convergent_marker_unpersisted() {
 #[doc(hidden)]
 pub fn reset_non_convergent_marker_unpersisted_capture_for_tests() {
     MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
+}
+
+static REGISTRY_SERVING_LAG_MARKER_UNPERSISTED_CAPTURED: AtomicBool = AtomicBool::new(false);
+
+/// Keep a failed registry-lag deferral-marker write visible without allowing a
+/// repeated npm failure to flood Sentry when menubar.json remains unwritable.
+pub fn report_registry_serving_lag_marker_unpersisted() {
+    if REGISTRY_SERVING_LAG_MARKER_UNPERSISTED_CAPTURED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag(
+                "hq_cli_update_kind",
+                "registry-serving-lag-marker-unpersisted",
+            );
+            scope.set_tag("marker_store", "menubar-json");
+            scope.set_tag("marker_error_class", "persistence");
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "registry-serving-lag-marker-unpersisted",
+            ]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] could not persist registry serving-lag deferral marker",
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn reset_registry_serving_lag_marker_unpersisted_capture_for_tests() {
+    REGISTRY_SERVING_LAG_MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
 }
 
 /// Reduce a resolved executable to a closed, path-free source category for
@@ -4314,6 +4449,27 @@ fn npm_404_names_hq_cli_tarball_for(detail: &str, version: &str) -> bool {
     path.ends_with(&format!("/@indigoai-us/hq-cli/-/hq-cli-{version}.tgz"))
 }
 
+/// Package named by npm's npmjs tarball URL, reduced to a validated package
+/// name. The URL and tarball filename are discarded; only this bounded identity
+/// is eligible for a diagnostic tag or local episode key.
+fn npm_404_tarball_package(detail: &str) -> Option<String> {
+    if npm_404_resource(detail) != Npm404Resource::Tarball
+        || npm_registry_origin(detail) != NpmRegistryOrigin::Npmjs
+    {
+        return None;
+    }
+    let url = npm_404_get_url(detail)?;
+    let lower = url.to_ascii_lowercase();
+    let after_scheme = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))?;
+    let slash = after_scheme.find('/')?;
+    let path = after_scheme[slash..].split(['?', '#']).next()?;
+    let package_path = path.split("/-/").next()?.trim_matches('/');
+    let package = package_path.replace("%2f", "/");
+    is_safe_npm_package_name(&package).then_some(package)
+}
+
 /// Whether a failed npm install is the "this machine's npm resolves the
 /// `@indigoai-us` scope through a registry that does not carry hq-cli" condition:
 /// an E404 whose own 404 line names a non-npmjs host AND the requested
@@ -4342,30 +4498,30 @@ fn is_foreign_registry_package_missing(detail: &str) -> bool {
 
 /// Whether a failed npm install is the "registry.npmjs.org lists the version the
 /// updater just resolved but is not yet serving its tarball object" condition
-/// (HQ-DESKTOP-6D): an E404 whose own 404 line names registry.npmjs.org AND the
-/// `@indigoai-us/hq-cli` TARBALL for the EXACT version the updater pinned
-/// (`env.target_version`), with no lifecycle failure. This is the tarball-layer
-/// twin of the ETARGET packument lag that [`is_expected_transient_registry_failure`]
-/// already absorbs: npm stores the tarball in the SAME publish PUT that updates
-/// the packument, so a listed-but-unserved tarball is a self-healing serving-lag
-/// transient by construction — the next scheduled check installs it, and no
-/// updater code change can install through a registry-served 404.
+/// (HQ-DESKTOP-6D): an E404 whose own 404 line names registry.npmjs.org and a
+/// safely parsed tarball package, with no lifecycle failure. For hq-cli itself,
+/// the tarball must match the EXACT version the updater pinned (`env.target_version`);
+/// a dependency tarball is part of that pinned install's resolved tree. This is
+/// the tarball-layer twin of the ETARGET packument lag that
+/// [`is_expected_transient_registry_failure`] already absorbs. A listed-but-
+/// unserved tarball is a bounded serving-lag transient; a recurring failure is
+/// escalated through the visible install-failure report.
 ///
-/// Deliberately confined to hq-cli's OWN tarball at the pinned version: an npmjs
-/// packument 404, a foreign-host 404, a tarball for any OTHER package or any
-/// version OTHER than the pin, a default (unpinned) environment, and any E404 with
-/// a lifecycle marker all fall outside this predicate and stay loud at Error. The
-/// pin requirement is what confines the downgrade to the version the updater
-/// itself resolved from `/latest`. Keyed on npm's OWN structured signals; the
-/// parsed URL is consumed only for the boolean and never reaches Sentry.
+/// An npmjs packument 404, a foreign-host 404, an unpinned/default environment,
+/// an hq-cli tarball whose version differs from the pin, and any E404 with a
+/// lifecycle marker stay loud at Error. The pin requirement confines the
+/// downgrade to an install whose CLI version HQ itself resolved from `/latest`.
+/// The parsed package name is bounded and the URL never reaches Sentry.
 fn is_npmjs_pinned_tarball_not_yet_served(detail: &str, env: &InstallEnvironment) -> bool {
     npm_error_code(detail) == "E404"
-        && npm_registry_origin(detail) == NpmRegistryOrigin::Npmjs
-        && npm_404_resource(detail) == Npm404Resource::Tarball
-        && env
-            .target_version
-            .as_deref()
-            .is_some_and(|version| npm_404_names_hq_cli_tarball_for(detail, version))
+        && env.requested_spec_kind == RequestedSpecKind::PinnedVersion
+        && npm_404_tarball_package(detail).is_some_and(|package| {
+            package != HQ_CLI_PACKAGE_NAME
+                || env
+                    .target_version
+                    .as_deref()
+                    .is_some_and(|version| npm_404_names_hq_cli_tarball_for(detail, version))
+        })
         && !has_npm_lifecycle_failure_marker(detail)
         && !npm_lifecycle_failure(detail).failed
 }
@@ -4635,6 +4791,39 @@ pub fn npm_lifecycle_cause(detail: &str) -> &'static str {
     "unknown"
 }
 
+/// A more precise closed stage for node-llama-cpp's optional postinstall. This
+/// tag is only attached to that package's `postinstall-script` failure, and the
+/// classifier never returns stderr text or paths.
+fn npm_lifecycle_postinstall_stage(detail: &str) -> Option<&'static str> {
+    let lifecycle = npm_lifecycle_failure(detail);
+    if lifecycle.package.as_deref() != Some("node-llama-cpp")
+        || npm_lifecycle_cause(detail) != "postinstall-script"
+    {
+        return None;
+    }
+
+    let lower = detail.to_ascii_lowercase();
+    Some(if lower.contains("rosetta") {
+        "rosetta"
+    } else if lower.contains("failed to load a prebuilt")
+        || lower.contains("failed to load prebuilt")
+        || lower.contains("dlopen")
+    {
+        "prebuilt-load-failed"
+    } else if lower.contains("no prebuilt") || lower.contains("prebuilt binary was not found") {
+        "prebuilt-missing"
+    } else if lower.contains("cannot find module") || lower.contains("module not found") {
+        "module-load-failed"
+    } else if lower.contains("building from source")
+        || lower.contains("source build")
+        || lower.contains("cmake")
+    {
+        "source-build-attempted"
+    } else {
+        "unknown"
+    })
+}
+
 /// Which native builder emitted the failing lifecycle output, as a CLOSED
 /// enumeration: `prebuild-install | node-gyp | cmake-js | postinstall-script |
 /// unknown`. Companion to [`npm_lifecycle_cause`] — the cause is WHY the build
@@ -4847,6 +5036,7 @@ const WINDOWS_ABORT_EXIT: i32 = -1_073_740_791; // 0xC0000409
 /// `{ errno: -4048, code: 'EPERM' }`. Like the abort codes above, it is a
 /// normal user-machine condition, not an HQ updater defect (HQ-DESKTOP-3N).
 const WINDOWS_EPERM_EXIT: i32 = -4048;
+const WINDOWS_EBUSY_EXIT: i32 = -4082;
 
 /// Whether a failed npm install is the EXPECTED Windows "the `hq` binary is
 /// locked / in use" condition (libuv `EPERM`). npm bubbles the same underlying
@@ -4873,6 +5063,44 @@ pub fn is_windows_locked_binary_failure(exit_code: Option<i32>, detail: &str) ->
     detail.contains("eperm")
         || detail.contains("operation not permitted")
         || detail.contains("errno -4048")
+}
+
+/// Detect the Windows npm package-target lock reported as EBUSY/rename. This is
+/// distinct from EPERM while replacing the `hq` shim: the locked target can be a
+/// package directory under the selected prefix's node_modules. All structured
+/// fields must agree before the updater arms its one delayed retry.
+pub fn is_windows_locked_install_target_failure(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+) -> bool {
+    exit_code == Some(WINDOWS_EBUSY_EXIT)
+        && npm_error_code(detail) == "EBUSY"
+        && npm_syscall(detail) == "rename"
+        && npm_path_shape(detail, prefix) == NpmPathShape::SelectedPrefixNodeModules
+        && !has_npm_lifecycle_failure_marker(detail)
+        && !npm_lifecycle_failure(detail).failed
+}
+
+/// Attempt label for the single backoff retry after npm reports EBUSY while
+/// renaming a package under the selected global prefix.
+pub const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG: &str =
+    "windows-busy-install-target-backoff-plain";
+
+/// Decide whether the app may arm its one retry for a Windows locked install
+/// target. The pure seam keeps the failure classifier, one-shot ledger guard,
+/// and attempt cap together so the app cannot accidentally retry another EBUSY
+/// shape or loop after the retry has already run.
+pub fn should_retry_windows_busy_install_target(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    attempted_rungs: &[&str],
+    max_attempts: usize,
+) -> bool {
+    is_windows_locked_install_target_failure(exit_code, detail, prefix)
+        && !attempted_rungs.contains(&WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG)
+        && attempted_rungs.len() < max_attempts
 }
 
 /// Whether a failed npm install is the EXPECTED "the machine's disk is full"
@@ -4916,6 +5144,7 @@ pub enum InstallFailureKind {
     ExpectedPrefixPermission,
     ExpectedWindowsAbort,
     ExpectedWindowsLockedBinary,
+    WindowsLockedInstallTarget,
     ExpectedTransientRegistry,
     ExpectedBinCollision,
     ExpectedDiskFull,
@@ -5045,6 +5274,8 @@ pub fn classify_install_failure_with_final_attempt(
         InstallFailureKind::ExpectedPrefixPermission
     } else if matches!(exit_code, Some(WINDOWS_CONTROL_C_EXIT | WINDOWS_ABORT_EXIT)) {
         InstallFailureKind::ExpectedWindowsAbort
+    } else if is_windows_locked_install_target_failure(exit_code, detail, prefix) {
+        InstallFailureKind::WindowsLockedInstallTarget
     } else if is_windows_locked_binary_failure(exit_code, detail) {
         InstallFailureKind::ExpectedWindowsLockedBinary
     } else if !has_npm_lifecycle_failure_marker(detail)
@@ -5112,8 +5343,9 @@ fn probed_node_major(env: &InstallEnvironment) -> Option<u32> {
 /// first and rewrites the result ONLY from a base of exactly `Unexpected`, in two
 /// disjoint cases —
 ///   * [`is_npmjs_pinned_tarball_not_yet_served`] holds (HQ-DESKTOP-6D): an npmjs
-///     tarball 404 for the exact pinned version is the mid-publish serving-lag
-///     twin of ETARGET, so it becomes `ExpectedTransientRegistry`; OR
+///     tarball 404 in a pinned install is the mid-publish serving-lag twin of
+///     ETARGET, so it becomes `ExpectedTransientRegistry` until the recurrence
+///     window expires; OR
 ///   * the probed Node major parsed AND is strictly below [`MIN_NODE_MAJOR`] — a
 ///     runtime the CLI's own `engines.node` makes install impossible on — so it
 ///     becomes `UnsupportedNode`.
@@ -5122,10 +5354,10 @@ fn probed_node_major(env: &InstallEnvironment) -> Option<u32> {
 /// ran and resolved the packument for this attempt, so the Node-floor inference
 /// (which fires when npm dies BEFORE emitting a structured block) does not apply;
 /// once the serving lag clears, the next check reclassifies exactly as today.
-/// Every expected/lifecycle kind is returned untouched, and because the tarball
-/// arm requires a pinned `target_version` (absent by default) and the Node arm a
-/// sub-floor probe, `InstallEnvironment::default()` stays byte-identical to the
-/// env-blind classifier and reproduces today's behaviour for every existing caller.
+/// Every expected/lifecycle kind is returned untouched. The tarball arm requires
+/// a pinned target version (absent by default), and the Node arm a sub-floor probe,
+/// so `InstallEnvironment::default()` stays byte-identical to the env-blind
+/// classifier for every existing caller.
 pub fn classify_install_failure_with_environment(
     exit_code: Option<i32>,
     detail: &str,
@@ -5139,7 +5371,9 @@ pub fn classify_install_failure_with_environment(
         prefix,
         final_attempt_forced,
     );
-    if base == InstallFailureKind::Unexpected && is_npmjs_pinned_tarball_not_yet_served(detail, env)
+    if base == InstallFailureKind::Unexpected
+        && !env.registry_serving_lag_recurred
+        && is_npmjs_pinned_tarball_not_yet_served(detail, env)
     {
         // HQ-DESKTOP-6D: registry.npmjs.org lists the version the updater just
         // resolved but is not yet serving its tarball object — the tarball-layer
@@ -5169,6 +5403,7 @@ impl InstallFailureKind {
             Self::ExpectedPrefixPermission => "expected-prefix-permission",
             Self::ExpectedWindowsAbort => "expected-windows-abort",
             Self::ExpectedWindowsLockedBinary => "expected-windows-locked-binary",
+            Self::WindowsLockedInstallTarget => "windows-locked-install-target",
             Self::ExpectedTransientRegistry => "expected-transient-registry",
             Self::ExpectedBinCollision => "expected-bin-collision",
             Self::ExpectedDiskFull => "expected-disk-full",
@@ -5509,6 +5744,9 @@ pub fn install_failure_detail_with_environment(
         return "npm's registry was temporarily unavailable or was mid-publish. The updater will retry automatically on its next scheduled check; you can also retry the copied command shortly."
             .to_string();
     }
+    if kind == InstallFailureKind::WindowsLockedInstallTarget {
+        return "Windows could not replace a package in npm's selected install folder because it is still in use. Close the terminal or application using that package, wait briefly, then retry the copied command. HQ will retry once automatically.".to_string();
+    }
     if kind == InstallFailureKind::ExpectedBinCollision {
         return format!(
             "An existing hq shim is blocking this update. Remove or rename the stale shim named in npm's output, then run the copied command in a fresh terminal.\n\n{}",
@@ -5561,6 +5799,9 @@ pub fn install_failure_detail_with_environment(
         }
         InstallFailureKind::ExpectedWindowsLockedBinary => {
             "npm could not replace the hq program because the file is locked or in use (a running hq command or terminal, or antivirus/endpoint protection). Close any open hq processes and terminals, then retry the copied command in a fresh terminal; if it keeps happening, allow-list hq in your endpoint protection.".to_string()
+        }
+        InstallFailureKind::WindowsLockedInstallTarget => {
+            "Windows could not replace a package in npm's selected install folder because it is still in use. Close the terminal or application using that package, wait briefly, then retry the copied command. HQ will retry once automatically.".to_string()
         }
         InstallFailureKind::ExpectedTransientRegistry => {
             "npm's registry was temporarily unavailable or was mid-publish. The updater will retry automatically on its next scheduled check; you can also retry the copied command shortly.".to_string()
@@ -5653,6 +5894,7 @@ pub fn install_failure_report_with_environment(
         InstallFailureKind::Unexpected
         | InstallFailureKind::UnexpectedLifecycle
         | InstallFailureKind::UnsupportedNode
+        | InstallFailureKind::WindowsLockedInstallTarget
         | InstallFailureKind::MissingGlobalInstallTarget
         | InstallFailureKind::ForeignRegistryPackageMissing => {}
         InstallFailureKind::ExpectedPrefixPermission
@@ -5905,6 +6147,10 @@ pub struct InstallEnvironment {
     /// dist-tag. TAG ONLY, defaulting to [`RequestedSpecKind::Unknown`] (emitted as
     /// NO tag), so every existing caller's tag set is unchanged until it opts in.
     pub requested_spec_kind: RequestedSpecKind,
+    /// True only after a pinned npmjs tarball 404 has recurred at least thirty
+    /// minutes after its first persisted observation. This lifts the temporary
+    /// serving-lag classification so a persistent missing object remains visible.
+    pub registry_serving_lag_recurred: bool,
 }
 
 impl InstallEnvironment {
@@ -6083,6 +6329,7 @@ pub fn report_install_failure_with_environment(
     } else {
         None
     };
+    let lifecycle_postinstall_stage = npm_lifecycle_postinstall_stage(detail);
     let node_version = sanitized_version_token(env.node_version.as_deref());
     let node_abi = sanitized_version_token(env.node_abi.as_deref());
     let npm_version = sanitized_version_token(env.npm_version.as_deref());
@@ -6098,6 +6345,9 @@ pub fn report_install_failure_with_environment(
     } else {
         (None, None)
     };
+    let npm_404_package_tag = npm_error_is_e404
+        .then(|| npm_404_tarball_package(detail))
+        .flatten();
     // The exact version npm was asked to install, and whether it was pinned or the
     // `latest` tag. Tag-only (never a grouping component) and emitted ONLY when the
     // caller opted in (a non-default value), so a default InstallEnvironment keeps
@@ -6156,6 +6406,9 @@ pub fn report_install_failure_with_environment(
             env.missing_target_state.tag_value()
         ));
     }
+    if let Some(stage) = lifecycle_postinstall_stage {
+        npm_diagnostics.push_str(&format!(" postinstall_stage={stage}"));
+    }
     // Attribute the E404 in the diagnostic extra too (closed enums only, never the
     // host or URL). Appended ONLY for an E404, so every non-E404 event's
     // `npm_diagnostics` string stays byte-identical.
@@ -6163,6 +6416,12 @@ pub fn report_install_failure_with_environment(
         npm_diagnostics.push_str(&format!(
             " registry_origin={origin} npm_404_resource={resource}"
         ));
+    }
+    if let Some(package) = npm_404_package_tag.as_deref() {
+        npm_diagnostics.push_str(&format!(" npm_404_package={package}"));
+    }
+    if env.registry_serving_lag_recurred {
+        npm_diagnostics.push_str(" registry_serving_lag=escalated");
     }
     sentry::with_scope(
         |scope| {
@@ -6183,6 +6442,12 @@ pub fn report_install_failure_with_environment(
             }
             if let Some(resource) = e404_resource_tag {
                 scope.set_tag("npm_404_resource", resource);
+            }
+            if let Some(package) = npm_404_package_tag.as_deref() {
+                scope.set_tag("npm_404_package", package);
+            }
+            if env.registry_serving_lag_recurred {
+                scope.set_tag("npm_registry_serving_lag", "escalated");
             }
             scope.set_tag("npm_bin_target", npm_bin_target);
             scope.set_tag(
@@ -6212,6 +6477,9 @@ pub fn report_install_failure_with_environment(
             }
             if let Some(builder) = lifecycle_builder {
                 scope.set_tag("npm_lifecycle_builder", builder);
+            }
+            if let Some(stage) = lifecycle_postinstall_stage {
+                scope.set_tag("npm_lifecycle_postinstall_stage", stage);
             }
             // Toolchain provenance — the fields the reported 4R/4S events lacked,
             // which make the next occurrence self-diagnosing. Each is a closed
@@ -6271,6 +6539,12 @@ pub fn report_install_failure_with_environment(
             if let Some(profile) = &unattributed_profile {
                 scope.set_tag("npm_stderr_origin", profile.origin);
                 scope.set_tag("npm_stderr_shapes", profile.shapes_tag.as_str());
+                let failure_stage = match profile.origin {
+                    STDERR_ORIGIN_NON_NPM => "before-npm-logger",
+                    STDERR_ORIGIN_NPM_LOGGER => "npm-logger-output",
+                    _ => "unknown",
+                };
+                scope.set_tag("npm_failure_stage", failure_stage);
             }
             // Group on the failure's bounded signature, never on npm's exit
             // status — see `install_failure_signature`.
@@ -6560,6 +6834,75 @@ pub enum InstallFailureEpisode {
     /// not sent, so a permanent per-machine build failure stops re-paging on every
     /// scheduled check. The caller still logs it locally and unconditionally.
     SuppressedRepeat,
+    /// A pinned npmjs tarball 404 is deferred until its first observation has
+    /// aged past the serving-lag window. The first observation carries marker
+    /// keys for the caller to persist; repeats before the deadline do not rewrite
+    /// the original timestamp.
+    DeferredTransient { persist_keys: Option<Vec<String>> },
+}
+
+/// How long a pinned npmjs tarball 404 may remain deferred before the next
+/// observation is classified and reported as an unexpected install failure.
+pub const REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES: u64 = 30;
+
+fn unix_minutes_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() / 60)
+        .unwrap_or_default()
+}
+
+fn registry_serving_lag_first_seen(
+    reported_keys: &[String],
+    latest: &str,
+    package: &str,
+) -> Option<u64> {
+    let prefix = format!("{latest}|registry-serving-lag|{package}|");
+    reported_keys
+        .iter()
+        .filter_map(|key| key.strip_prefix(&prefix)?.parse::<u64>().ok())
+        .min()
+}
+
+/// Whether the same pinned npmjs tarball failure has a persisted first-seen
+/// marker older than the bounded serving-lag window. This is a pure seam so the
+/// first/deferred/escalated boundaries can be tested with synthetic time.
+pub fn registry_serving_lag_recurred_for_detail(
+    reported_keys: &[String],
+    latest: &str,
+    detail: &str,
+    now_minutes: u64,
+) -> bool {
+    if !is_npmjs_pinned_tarball_not_yet_served(
+        detail,
+        &InstallEnvironment {
+            target_version: Some(latest.to_string()),
+            requested_spec_kind: RequestedSpecKind::PinnedVersion,
+            ..InstallEnvironment::default()
+        },
+    ) {
+        return false;
+    }
+    let Some(package) = npm_404_tarball_package(detail) else {
+        return false;
+    };
+    registry_serving_lag_first_seen(reported_keys, latest, &package).is_some_and(|first_seen| {
+        now_minutes >= first_seen
+            && now_minutes - first_seen >= REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES
+    })
+}
+
+fn registry_serving_lag_marker_record(
+    reported_keys: &[String],
+    latest: &str,
+    package: &str,
+    now_minutes: u64,
+) -> Vec<String> {
+    if registry_serving_lag_first_seen(reported_keys, latest, package).is_some() {
+        return reported_keys.to_vec();
+    }
+    let key = format!("{latest}|registry-serving-lag|{package}|{now_minutes}");
+    install_failure_episode_record(reported_keys, &key, latest)
 }
 
 /// Report a CLI-install failure with the repeat-guard applied. The first
@@ -6575,6 +6918,85 @@ pub enum InstallFailureEpisode {
 /// cannot read its marker passes an empty slice and therefore reports
 /// (fail-closed).
 pub fn report_install_failure_episode(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+    latest: &str,
+    reported_keys: &[String],
+) -> InstallFailureEpisode {
+    report_install_failure_episode_at(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+        latest,
+        reported_keys,
+        unix_minutes_now(),
+    )
+}
+
+/// Deterministic form of [`report_install_failure_episode`] for boundary tests.
+/// The first pinned npmjs tarball observation is persisted locally and deferred;
+/// once the same package/version recurs after the gap, it follows the normal
+/// visible install-failure reporting path with an escalation tag.
+pub fn report_install_failure_episode_at(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+    latest: &str,
+    reported_keys: &[String],
+    now_minutes: u64,
+) -> InstallFailureEpisode {
+    if !env.registry_serving_lag_recurred && is_npmjs_pinned_tarball_not_yet_served(detail, env) {
+        let Some(package) = npm_404_tarball_package(detail) else {
+            return report_install_failure_episode_inner(
+                exit_code,
+                detail,
+                prefix,
+                final_attempt_forced,
+                env,
+                latest,
+                reported_keys,
+            );
+        };
+        let first_seen = registry_serving_lag_first_seen(reported_keys, latest, &package);
+        let has_recurred =
+            registry_serving_lag_recurred_for_detail(reported_keys, latest, detail, now_minutes);
+        if !has_recurred {
+            let persist_keys = first_seen.is_none().then(|| {
+                registry_serving_lag_marker_record(reported_keys, latest, &package, now_minutes)
+            });
+            return InstallFailureEpisode::DeferredTransient { persist_keys };
+        }
+        let mut escalated_env = env.clone();
+        escalated_env.registry_serving_lag_recurred = true;
+        return report_install_failure_episode_inner(
+            exit_code,
+            detail,
+            prefix,
+            final_attempt_forced,
+            &escalated_env,
+            latest,
+            reported_keys,
+        );
+    }
+    report_install_failure_episode_inner(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+        latest,
+        reported_keys,
+    )
+}
+
+fn report_install_failure_episode_inner(
     exit_code: Option<i32>,
     detail: &str,
     prefix: Option<&str>,
@@ -8599,6 +9021,56 @@ mod tests {
                 Some(home),
             ),
             ExecutedCopyAim::Undrivable
+        );
+    }
+
+    #[test]
+    fn executed_copy_reaim_only_runs_for_a_deferred_foreign_copy() {
+        let gate = executed_copy_reaim_gate(
+            Some(NonConvergenceKind::ForeignManaged),
+            ExecutedCopyAim::NotYetAimed,
+            true,
+        );
+        assert_eq!(gate, ExecutedCopyReaimGate::Attempt);
+        assert_eq!(
+            executed_copy_reaim_outcome(gate, Some(true), true),
+            ExecutedCopyReaim::Converged
+        );
+        assert_eq!(
+            executed_copy_reaim_outcome(gate, Some(true), false),
+            ExecutedCopyReaim::StillForeign
+        );
+        assert_eq!(
+            executed_copy_reaim_outcome(gate, Some(false), false),
+            ExecutedCopyReaim::InstallFailed
+        );
+        assert_eq!(
+            executed_copy_reaim_outcome(gate, None, false),
+            ExecutedCopyReaim::SpawnFailed
+        );
+        assert_eq!(
+            executed_copy_reaim_gate(
+                Some(NonConvergenceKind::ForeignManaged),
+                ExecutedCopyAim::NotYetAimed,
+                false,
+            ),
+            ExecutedCopyReaimGate::RefusedNoAim
+        );
+        assert_eq!(
+            executed_copy_reaim_gate(
+                Some(NonConvergenceKind::ForeignManaged),
+                ExecutedCopyAim::Aimed,
+                true,
+            ),
+            ExecutedCopyReaimGate::RefusedNotDeferred
+        );
+        assert_eq!(
+            executed_copy_reaim_gate(None, ExecutedCopyAim::NotYetAimed, true),
+            ExecutedCopyReaimGate::RefusedNotForeign
+        );
+        assert_eq!(
+            ExecutedCopyReaim::StillForeign.telemetry_value(),
+            "still-foreign"
         );
     }
 
@@ -11918,6 +12390,76 @@ mod tests {
         assert!(detail.contains("fresh terminal"));
     }
 
+    #[test]
+    fn windows_busy_install_target_requires_rename_and_selected_prefix_node_modules() {
+        let prefix = r"C:\Users\me\AppData\Roaming\npm";
+        for syscall in ["unlink", "open"] {
+            let detail = format!(
+                "npm error code EBUSY\n\
+                 npm error errno -4082\n\
+                 npm error syscall {syscall}\n\
+                 npm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli"
+            );
+            assert!(!is_windows_locked_install_target_failure(
+                Some(-4082),
+                &detail,
+                Some(prefix)
+            ));
+            assert_ne!(
+                classify_install_failure(Some(-4082), &detail, Some(prefix)),
+                InstallFailureKind::WindowsLockedInstallTarget,
+                "syscall {syscall} must retain its existing failure kind"
+            );
+        }
+
+        let outside_selected_prefix = "npm error code EBUSY\n\
+            npm error errno -4082\n\
+            npm error syscall rename\n\
+            npm error path C:\\Users\\me\\.npm\\_cacache\\tmp\\node-llama-cpp";
+        assert!(!is_windows_locked_install_target_failure(
+            Some(-4082),
+            outside_selected_prefix,
+            Some(prefix)
+        ));
+        assert_eq!(
+            npm_path_shape(outside_selected_prefix, Some(prefix)),
+            NpmPathShape::NpmCache
+        );
+        assert_eq!(
+            classify_install_failure(Some(-4082), outside_selected_prefix, Some(prefix)),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn windows_busy_install_target_retry_is_one_shot_and_bounded() {
+        let prefix = r"C:\Users\me\AppData\Roaming\npm";
+        let detail = "npm error code EBUSY\n\
+            npm error errno -4082\n\
+            npm error syscall rename\n\
+            npm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
+        assert!(should_retry_windows_busy_install_target(
+            Some(-4082), detail, Some(prefix), &[], 4
+        ));
+        assert!(!should_retry_windows_busy_install_target(
+            Some(-4082),
+            detail,
+            Some(prefix),
+            &[WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG],
+            4
+        ));
+        assert!(!should_retry_windows_busy_install_target(
+            Some(1),
+            "npm error network ETIMEDOUT",
+            Some(prefix),
+            &[],
+            4
+        ));
+        assert!(!should_retry_windows_busy_install_target(
+            Some(-4082), detail, Some(prefix), &[], 0
+        ));
+    }
+
     // HQ-DESKTOP-3N: a Windows `EPERM` install failure (exit -4048, the libuv
     // errno) means npm could not replace the locked/in-use `hq` binary. It is a
     // local-machine condition with the copy-the-command fallback — NOT an
@@ -15129,6 +15671,7 @@ mod tests {
             missing_target_state: MissingTargetState::Unknown,
             target_version: None,
             requested_spec_kind: RequestedSpecKind::Unknown,
+            registry_serving_lag_recurred: false,
         };
         let mut declined = base.clone();
         declined.managed_retry_outcome = ManagedRetryOutcome::ProvisionDeferred;
@@ -15980,8 +16523,8 @@ mod tests {
     fn npmjs_tarball_404_for_the_pinned_version_is_an_expected_transient() {
         // For both npm line prefixes and both toolchain sources, an npmjs tarball 404
         // for the EXACT pinned version is the mid-publish serving transient: the same
-        // kind, suppressed report, transient UI copy, and non-reportable episode that
-        // ETARGET already earns.
+        // kind, suppressed report, transient UI copy, and a persisted bounded
+        // episode marker.
         for prefix in ["npm error", "npm err!"] {
             for source in [NpmToolchainSource::Managed, NpmToolchainSource::UserPath] {
                 let stderr = npmjs_tarball_e404_stderr(prefix, "5.109.6");
@@ -16006,17 +16549,22 @@ mod tests {
                         && detail.contains("retry automatically"),
                     "{prefix} / {source:?}: transient UI copy: {detail}"
                 );
-                assert_eq!(
-                    report_install_failure_episode(
-                        Some(1),
-                        &stderr,
-                        None,
-                        false,
-                        &env,
-                        "5.109.6",
-                        &[],
+                assert!(
+                    matches!(
+                        report_install_failure_episode_at(
+                            Some(1),
+                            &stderr,
+                            None,
+                            false,
+                            &env,
+                            "5.109.6",
+                            &[],
+                            1_000,
+                        ),
+                        InstallFailureEpisode::DeferredTransient {
+                            persist_keys: Some(_)
+                        }
                     ),
-                    InstallFailureEpisode::NotReportable,
                     "{prefix} / {source:?}"
                 );
             }
@@ -16052,8 +16600,8 @@ mod tests {
                 Some("5.109.6|unexpected|E404:npmjs:tarball".to_string())
             );
         }
-        // A tarball for a DIFFERENT npmjs package under the matching pin is not
-        // hq-cli's own tarball, so it stays loud too.
+        // A dependency tarball is part of the pinned install tree and may lag
+        // independently on npmjs, so the bounded registry-serving rule covers it.
         let other_package = "npm error code E404\n\
             npm error 404 Not Found - GET https://registry.npmjs.org/some-dep/-/some-dep-1.2.3.tgz - Not found";
         let kind = classify_install_failure_with_environment(
@@ -16063,10 +16611,17 @@ mod tests {
             false,
             &pinned_env("5.109.6"),
         );
-        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(kind, InstallFailureKind::ExpectedTransientRegistry);
         assert_eq!(
-            install_failure_signature(kind, other_package, None),
-            "E404:npmjs:tarball"
+            install_failure_report_with_environment(
+                Some(1),
+                other_package,
+                None,
+                false,
+                &pinned_env("5.109.6"),
+            ),
+            None,
+            "a pinned dependency tarball serving lag is deferred before reporting"
         );
         // A lifecycle marker beside the same tarball 404 keeps it loud — the
         // `!has_npm_lifecycle_failure_marker` clause is load-bearing, not incidental.

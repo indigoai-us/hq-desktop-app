@@ -19,13 +19,16 @@ import {
   validateFetchReplyThread,
   validateSendReply,
   type AdapterPromise,
+  type AgentProvisionOptionsView,
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
+import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { createCallsApi } from "../calls/api.js";
 import {
+  CLAUDE_PROVIDER_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   type FeatureFlagGate,
@@ -208,7 +211,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
     hasFeature: (flag) =>
-      this.flags.resolve(flag, () => this.call("has_feature", { flag })),
+      this.flags.resolve(flag, () =>
+        flag === CLAUDE_PROVIDER_FLAG
+          ? Promise.resolve(ok(false))
+          : this.call("has_feature", { flag }),
+      ),
     listWorkspaces: async () => {
       const result = await this.hqProJson<Json>("GET", "/membership/me");
       if (!result.ok) return result;
@@ -284,6 +291,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     respondDmRequest: ({ pairKey, action }) =>
       this.call("respond_dm_request", { pairKey, action }),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
+    getNotifyPrefs: () => this.hqProJson("GET", WEB_PATHS.notifyPrefs),
+    updateNotifyPrefs: (patch) =>
+      this.hqProJson("PUT", WEB_PATHS.notifyPrefs, patch),
+    setChannelNotifyLevel: (id, level) =>
+      this.hqProJson("PUT", WEB_PATHS.channelNotifyLevel(id), { level }),
     markDmThreadRead: (personUid) =>
       this.call("mark_dm_thread_read", { personUid }),
     searchMessages: (q, opts) =>
@@ -462,6 +474,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    getProvisionOptions: (companyUid) =>
+      this.hqProJson<AgentProvisionOptionsView>(
+        "GET",
+        AGENT_PATHS.provisionOptions(companyUid),
+      ),
     getStatus: (agentUid) => this.hqProJson("GET", AGENT_PATHS.status(agentUid)),
     listMobileRoster: (companyUid) =>
       this.hqProJson("GET", AGENT_PATHS.mobileRoster(companyUid)),

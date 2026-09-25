@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  autolinkMessageUrls,
   clipMessageBodyForDisplay,
   isHeavyMessageBody,
   MESSAGE_PLAIN_DISPLAY_CHARS,
+  normalizeMessageMarkdown,
   renderMessageBodyMarkdown,
 } from "./messageMarkdown.js";
 
@@ -76,6 +78,45 @@ describe("heavy message bodies", () => {
     expect(isHeavyMessageBody("hello **Deacon**")).toBe(false);
     expect(html).toContain("<strong>Deacon</strong>");
   });
+
+  it("classifies multiline dumps by line count without misclassifying structured prose", () => {
+    expect(isHeavyMessageBody("plain output\n".repeat(31))).toBe(true);
+    expect(
+      isHeavyMessageBody(
+        [
+          "# Summary",
+          ...Array.from({ length: 29 }, () => "plain line"),
+          "- Next step",
+        ].join("\n"),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("message Markdown normalization", () => {
+  it("normalizes line endings and trims blank boundary lines", () => {
+    expect(normalizeMessageMarkdown("\r\nhello\r\nworld\r\n")).toBe(
+      "hello\nworld",
+    );
+    expect(normalizeMessageMarkdown(" \n\t\n")).toBe("");
+  });
+
+  it("dedents recognisable transport-framed prose but preserves deliberate code", () => {
+    expect(
+      normalizeMessageMarkdown(
+        "    # Update\n\n    - first\n    - second",
+      ),
+    ).toBe("# Update\n\n- first\n- second");
+    expect(
+      normalizeMessageMarkdown("    const answer = 42;\n    return answer;"),
+    ).toBe("    const answer = 42;\n    return answer;");
+  });
+
+  it("dedents a framed fenced block while leaving the fence intact", () => {
+    expect(normalizeMessageMarkdown("\t```ts\n\tconst x = 1;\n\t```")).toBe(
+      "```ts\nconst x = 1;\n```",
+    );
+  });
 });
 
 describe("message body URL autolinking", () => {
@@ -96,6 +137,15 @@ describe("message body URL autolinking", () => {
       '<a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>.',
     );
     expect(html).not.toContain('href="https://example.com."');
+  });
+
+  it("trims only unmatched closing parentheses from bare URLs", () => {
+    expect(
+      renderMessageBodyMarkdown("(https://example.com/path)."),
+    ).toContain('href="https://example.com/path"');
+    expect(renderMessageBodyMarkdown("https://example.com/a_(b)")).toContain(
+      'href="https://example.com/a_(b)"',
+    );
   });
 
   it("still renders markdown [label](https://…) links", () => {
@@ -140,6 +190,12 @@ describe("message body URL autolinking", () => {
       '<a href="https://example.com?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">https://example.com?a=1&amp;b=2</a>',
     );
     expect(html).not.toContain('href="https://example.com?a=1&b=2"');
+  });
+
+  it("leaves malformed HTML tails inert while scanning for bare URLs", () => {
+    expect(
+      autolinkMessageUrls("before <broken https://example.com"),
+    ).toBe("before <broken https://example.com");
   });
 });
 

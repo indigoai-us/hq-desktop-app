@@ -21,6 +21,8 @@ export interface DmEvent {
   details?: string | null;
   prompt?: string | null;
   createdAt: string;
+  messageKind?: string | null;
+  attachments?: import('./messageAttachments').MessageAttachment[] | null;
 }
 
 export interface ShareEvent {
@@ -34,6 +36,8 @@ export interface ShareEvent {
   note: string | null;
   permission: string;
   createdAt: string;
+  /** Inbox DM written for this share. When set, the thread merge skips this row. */
+  dmEventId?: string | null;
 }
 
 export interface UpdateInfo {

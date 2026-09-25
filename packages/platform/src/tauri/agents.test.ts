@@ -23,10 +23,19 @@ function makeTauri() {
 describe("TauriPlatformAdapter agents", () => {
   it("routes agent reads and mutations through hq_pro_fetch", async () => {
     const { adapter, calls } = makeTauri();
+    await adapter.agents.getProvisionOptions("cmp_1");
     await adapter.agents.getStatus("agt_1");
     await adapter.agents.updateProfile("agt_1", { displayName: "Izzy" });
     await adapter.agents.pauseJob("agt_1", "job_9");
     expect(calls).toEqual([
+      {
+        cmd: "hq_pro_fetch",
+        args: {
+          url: AGENT_PATHS.provisionOptions("cmp_1"),
+          method: "GET",
+          body: null,
+        },
+      },
       {
         cmd: "hq_pro_fetch",
         args: { url: AGENT_PATHS.status("agt_1"), method: "GET", body: null },
@@ -60,9 +69,18 @@ describe("createSyncPlatformAdapter agents", () => {
         return { status: 200, body: JSON.stringify({ ok: true }) };
       },
     });
+    await adapter.agents.getProvisionOptions("cmp_1");
     await adapter.agents.listJobs("agt_1");
     await adapter.agents.deprovision("agt_1");
     expect(calls).toEqual([
+      {
+        cmd: "hq_pro_fetch",
+        args: {
+          url: AGENT_PATHS.provisionOptions("cmp_1"),
+          method: "GET",
+          body: null,
+        },
+      },
       {
         cmd: "hq_pro_fetch",
         args: { url: AGENT_PATHS.jobs("agt_1"), method: "GET", body: null },

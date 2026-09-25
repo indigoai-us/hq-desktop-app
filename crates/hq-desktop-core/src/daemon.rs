@@ -638,6 +638,13 @@ fn runner_report_argv_flags(report_dir: &Path) -> Vec<String> {
     flags.push(format!(
         "--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"
     ));
+    #[cfg(unix)]
+    flags.push(format!(
+        "--require={}",
+        report_dir
+            .join(crate::runner_diagnostic_report::RUNNER_MEMORY_CLASS_HELPER_FILENAME)
+            .display()
+    ));
     flags
 }
 
@@ -664,6 +671,16 @@ fn runner_report_node_options_flags(report_dir: &Path) -> Vec<String> {
     ));
     flags.push(format!(
         "--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"
+    ));
+    #[cfg(unix)]
+    flags.push(format!(
+        "--require={}",
+        node_options_quoted_value(
+            &report_dir
+                .join(crate::runner_diagnostic_report::RUNNER_MEMORY_CLASS_HELPER_FILENAME)
+                .display()
+                .to_string()
+        )
     ));
     flags
 }
@@ -1196,6 +1213,9 @@ pub fn footprint_growth_bucket_mb_per_sec(rate_mb_per_sec: u64) -> &'static str 
 pub enum WatcherMemoryClassSource {
     /// A signal-triggered report was read and carried at least one memory field.
     ReportRead,
+    /// The live Node report was unavailable, so the supervisor classified its
+    /// already-collected process-tree sample before pre-emption.
+    SupervisorSample,
     /// A report was armed but no fresh report ever appeared within the bounded wait.
     ReportAbsent,
     /// A fresh, COMPLETE report was read but carried no memory class
@@ -1215,8 +1235,9 @@ pub enum WatcherMemoryClassSource {
 
 impl WatcherMemoryClassSource {
     /// Every variant, so content-safety tests enumerate the emitter's own token set.
-    pub const ALL: [WatcherMemoryClassSource; 6] = [
+    pub const ALL: [WatcherMemoryClassSource; 7] = [
         Self::ReportRead,
+        Self::SupervisorSample,
         Self::ReportAbsent,
         Self::ReportUnreadable,
         Self::ReportNeverCompleted,
@@ -1228,11 +1249,48 @@ impl WatcherMemoryClassSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReportRead => "report_read",
+            Self::SupervisorSample => "supervisor_sample",
             Self::ReportAbsent => "report_absent",
             Self::ReportUnreadable => "report_unreadable",
             Self::ReportNeverCompleted => "report_never_completed",
             Self::ReportNotRequested => "report_not_requested",
             Self::ReportUnsupportedPlatform => "report_unsupported_platform",
+        }
+    }
+}
+
+/// Bounded memory-class label carried by a watcher footprint pre-emption.
+/// Every value is a fixed token safe for Sentry aggregation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherMemoryClass {
+    Heap,
+    External,
+    ArrayBuffers,
+    ChildRss,
+    Native,
+    Unknown,
+}
+
+impl WatcherMemoryClass {
+    /// Every class, so content-safety tests enumerate the emitter's full vocabulary.
+    pub const ALL: [WatcherMemoryClass; 6] = [
+        Self::Heap,
+        Self::External,
+        Self::ArrayBuffers,
+        Self::ChildRss,
+        Self::Native,
+        Self::Unknown,
+    ];
+
+    /// Fixed vocabulary, safe for a Sentry tag.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Heap => "heap",
+            Self::External => "external",
+            Self::ArrayBuffers => "array_buffers",
+            Self::ChildRss => "child_rss",
+            Self::Native => "native",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -1487,6 +1545,98 @@ impl DaemonFailureCategory {
             Self::Preflight => "preflight",
             Self::RunnerMemory => "runner_memory",
         }
+    }
+}
+
+/// Closed initiator vocabulary for watcher shutdown attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherStopInitiator {
+    None,
+    WatcherSupervisor,
+    User,
+    App,
+    Updater,
+    OperatingSystem,
+}
+
+impl WatcherStopInitiator {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::WatcherSupervisor => "watcher_supervisor",
+            Self::User => "user",
+            Self::App => "app",
+            Self::Updater => "updater",
+            Self::OperatingSystem => "operating_system",
+        }
+    }
+}
+
+/// Content-safe reason/initiator pair derived from the supervisor action that
+/// requested a watcher termination. Natural exits intentionally return `none`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatcherStopAttribution {
+    pub reason: &'static str,
+    pub initiator: WatcherStopInitiator,
+}
+
+pub fn watcher_stop_attribution(category: DaemonFailureCategory) -> WatcherStopAttribution {
+    let (reason, initiator) = match category {
+        DaemonFailureCategory::HeartbeatStall => {
+            ("heartbeat_stall", WatcherStopInitiator::WatcherSupervisor)
+        }
+        DaemonFailureCategory::RunnerMemory => {
+            ("runner_memory", WatcherStopInitiator::WatcherSupervisor)
+        }
+        DaemonFailureCategory::ForceClear => ("force_clear", WatcherStopInitiator::User),
+        DaemonFailureCategory::Cancelled => ("cancelled", WatcherStopInitiator::User),
+        DaemonFailureCategory::Backoff => ("backoff", WatcherStopInitiator::WatcherSupervisor),
+        DaemonFailureCategory::None
+        | DaemonFailureCategory::SpawnFailed
+        | DaemonFailureCategory::Crash
+        | DaemonFailureCategory::Preflight => ("none", WatcherStopInitiator::None),
+    };
+    WatcherStopAttribution { reason, initiator }
+}
+
+/// Power-state evidence accumulated from native OS suspend/resume callbacks.
+/// Times are monotonic milliseconds supplied by the host so this state remains
+/// deterministic and independent of wall-clock adjustments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SystemPowerLifecycle {
+    observer_available: bool,
+    sleeping: bool,
+    last_resume_at_ms: Option<u64>,
+}
+
+impl SystemPowerLifecycle {
+    pub fn set_observer_available(&mut self, available: bool) {
+        self.observer_available = available;
+    }
+
+    pub fn note_sleep(&mut self, _at_ms: u64) {
+        self.sleeping = true;
+        self.last_resume_at_ms = None;
+    }
+
+    pub fn note_resume(&mut self, at_ms: u64) {
+        if self.sleeping {
+            self.sleeping = false;
+            self.last_resume_at_ms = Some(at_ms);
+        }
+    }
+
+    /// `None` means native power notifications were unavailable; otherwise the
+    /// answer is true only for a real observed sleep/resume within the window.
+    pub fn resume_within_seconds(&self, now_ms: u64, seconds: u64) -> Option<bool> {
+        if !self.observer_available {
+            return None;
+        }
+        let window_ms = seconds.saturating_mul(1_000);
+        Some(
+            self.last_resume_at_ms
+                .is_some_and(|resumed_at| now_ms >= resumed_at && now_ms - resumed_at <= window_ms),
+        )
     }
 }
 
@@ -1970,6 +2120,44 @@ mod tests {
             false,
             DaemonFailureCategory::Preflight
         ));
+    }
+
+    #[test]
+    fn watcher_stop_attribution_names_supervisor_and_user_causes() {
+        let heartbeat = watcher_stop_attribution(DaemonFailureCategory::HeartbeatStall);
+        assert_eq!(heartbeat.reason, "heartbeat_stall");
+        assert_eq!(heartbeat.initiator.as_str(), "watcher_supervisor");
+
+        let memory = watcher_stop_attribution(DaemonFailureCategory::RunnerMemory);
+        assert_eq!(memory.reason, "runner_memory");
+        assert_eq!(memory.initiator.as_str(), "watcher_supervisor");
+
+        let force_clear = watcher_stop_attribution(DaemonFailureCategory::ForceClear);
+        assert_eq!(force_clear.reason, "force_clear");
+        assert_eq!(force_clear.initiator.as_str(), "user");
+
+        let natural_crash = watcher_stop_attribution(DaemonFailureCategory::Crash);
+        assert_eq!(natural_crash.reason, "none");
+        assert_eq!(natural_crash.initiator.as_str(), "none");
+    }
+
+    #[test]
+    fn system_power_lifecycle_requires_a_real_resume_and_uses_a_bounded_window() {
+        let mut power = SystemPowerLifecycle::default();
+        assert_eq!(power.resume_within_seconds(10_000, 120), None);
+
+        power.set_observer_available(true);
+        assert_eq!(power.resume_within_seconds(10_000, 120), Some(false));
+        power.note_sleep(10_000);
+        power.note_resume(11_000);
+        assert_eq!(power.resume_within_seconds(131_000, 120), Some(true));
+        assert_eq!(power.resume_within_seconds(131_001, 120), Some(false));
+
+        // A second sleep invalidates the earlier wake until this sleep resumes.
+        power.note_sleep(140_000);
+        assert_eq!(power.resume_within_seconds(140_001, 120), Some(false));
+        power.note_resume(141_000);
+        assert_eq!(power.resume_within_seconds(141_001, 120), Some(true));
     }
 
     #[test]
@@ -2578,7 +2766,9 @@ mod tests {
         let node_options = flags.node_options.clone().expect("NODE_OPTIONS composed");
         assert!(node_options.contains("--report-on-fatalerror"));
         assert!(node_options.contains("--report-on-signal"));
+        assert!(node_options.contains("--require="));
         assert!(flags.node_argv.iter().any(|a| a == "--report-on-signal"));
+        assert!(flags.node_argv.iter().any(|a| a.starts_with("--require=")));
         assert_eq!(runner_report_signal_flag(), Some("--report-on-signal"));
     }
 
@@ -2673,6 +2863,14 @@ mod tests {
             .expect("composed NODE_OPTIONS carries a --report-directory token")
     }
 
+    #[cfg(unix)]
+    fn recover_memory_class_helper(node_options: &str) -> String {
+        node_options_tokenize(node_options)
+            .into_iter()
+            .find_map(|tok| tok.strip_prefix("--require=").map(str::to_string))
+            .expect("composed NODE_OPTIONS carries the bounded memory sampler")
+    }
+
     #[test]
     fn node_options_report_directory_round_trips_through_the_node_tokenizer() {
         // The assertion the prior fix's suite lacked (HQ-DESKTOP-5W): compose the ACTUAL
@@ -2701,6 +2899,14 @@ mod tests {
                 recover_report_directory(&node_options),
                 path.display().to_string(),
                 "report directory did not survive Node's NODE_OPTIONS parser for {dir:?}"
+            );
+            #[cfg(unix)]
+            assert_eq!(
+                recover_memory_class_helper(&node_options),
+                path.join(crate::runner_diagnostic_report::RUNNER_MEMORY_CLASS_HELPER_FILENAME)
+                    .display()
+                    .to_string(),
+                "memory sampler path did not survive Node's NODE_OPTIONS parser for {dir:?}"
             );
             assert!(node_options.contains("--max-old-space-size=3584"));
         }
@@ -3471,11 +3677,15 @@ mod tests {
     fn test_watcher_memory_class_source_is_fixed_content_safe_vocabulary() {
         for source in WatcherMemoryClassSource::ALL {
             let token = source.as_str();
-            assert!(token.starts_with("report_"));
+            assert!(token.starts_with("report_") || token == "supervisor_sample");
             assert!(token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
         }
         // The exact tokens the telemetry allow-list mirrors.
         assert_eq!(WatcherMemoryClassSource::ReportRead.as_str(), "report_read");
+        assert_eq!(
+            WatcherMemoryClassSource::SupervisorSample.as_str(),
+            "supervisor_sample"
+        );
         assert_eq!(
             WatcherMemoryClassSource::ReportAbsent.as_str(),
             "report_absent"
@@ -3496,6 +3706,22 @@ mod tests {
             WatcherMemoryClassSource::ReportUnsupportedPlatform.as_str(),
             "report_unsupported_platform"
         );
+    }
+
+    #[test]
+    fn test_watcher_memory_class_is_fixed_content_safe_vocabulary() {
+        let expected = [
+            "heap",
+            "external",
+            "array_buffers",
+            "child_rss",
+            "native",
+            "unknown",
+        ];
+        for (class, token) in WatcherMemoryClass::ALL.into_iter().zip(expected) {
+            assert_eq!(class.as_str(), token);
+            assert!(token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
     }
 
     // ── Re-scoped projection arm (this reopen, HQ-DESKTOP-60) ──────────────────

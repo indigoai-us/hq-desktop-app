@@ -99,6 +99,8 @@
     onStoryPassesChange?: (storyId: string, passes: boolean) => void;
     /** The optional cloud attribution lookup failed for this project. */
     provenanceUnavailable?: boolean;
+    /** Live session rows, including ones applied from a SESSION_EVENT push. */
+    sessions?: PortfolioSessionRef[];
   }
 
   let {
@@ -117,6 +119,7 @@
     onselectDependency,
     onStoryPassesChange,
     provenanceUnavailable = false,
+    sessions: sessionInput = [],
   }: Props = $props();
 
   function configureProjectsApiIfNeeded(): void {
@@ -194,7 +197,7 @@
     }, 15_000);
     return () => clearInterval(tick);
   });
-  const sessions: PortfolioSessionRef[] = [];
+  const sessions = $derived(sessionInput);
 
   // Task roll-up uses the four operational columns.
   const classifiedTasks = $derived(classifyTasks(stories, sessions));

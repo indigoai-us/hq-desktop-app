@@ -30,6 +30,9 @@ use nix::{
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+// Bound queued output events so slow callbacks backpressure the child's pipes.
+const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 64;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
@@ -383,10 +386,7 @@ pub fn note_app_initiated_exit() {
     APP_INITIATED_EXIT.store(true, Ordering::Release);
 }
 
-/// Read by the Windows-only `RunEvent::Exit` arm (and by this crate's tests on
-/// every host); gated so a macOS/Linux release build does not carry it as dead
-/// code.
-#[cfg(any(target_os = "windows", test))]
+/// Read by the watcher exit capture and platform lifecycle adapters on every host.
 pub fn app_initiated_exit() -> bool {
     APP_INITIATED_EXIT.load(Ordering::Acquire)
 }
@@ -2981,7 +2981,7 @@ where
         },
     }
 
-    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+    let (tx, rx) = mpsc::sync_channel::<ReaderMsg>(PROCESS_EVENT_CHANNEL_CAPACITY);
 
     let tx_stdout = tx.clone();
     thread::spawn(move || {
@@ -3230,7 +3230,7 @@ where
         },
     }
 
-    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+    let (tx, rx) = mpsc::sync_channel::<ReaderMsg>(PROCESS_EVENT_CHANNEL_CAPACITY);
 
     let tx_stdout = tx.clone();
     thread::spawn(move || {
@@ -7449,3 +7449,7 @@ mod child_env_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "process_output_backpressure_tests.rs"]
+mod process_output_backpressure_tests;

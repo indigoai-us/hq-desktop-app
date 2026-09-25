@@ -19,6 +19,7 @@
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
   import { onMount, untrack } from "svelte";
+  import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import {
     COMPOSER_DRAFT_CHANGED_EVENT,
     listDraftRowIds,
@@ -45,8 +46,15 @@
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
-  import type { EntryPointResult } from "./lifecycle-entry-points.js";
-  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
+  import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
+  import type {
+    AdapterPromise,
+    AgentProvisionOptionsView,
+    LocalBotCreateInput,
+    LocalBotRow,
+    LocalBotWorkerOption,
+  } from "@hq/platform";
+  import type { BotDisplayNames } from "./bot-display-names.js";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
@@ -100,6 +108,7 @@
   } from "./channel-directory-reconciler";
   import {
     applyDirectoryFeed,
+    applyChannelNotifyLevel,
     applyDirectoryRows,
     applyPairUnreads,
     incrementPairUnread,
@@ -118,9 +127,15 @@
     loadConversationCache,
     loadDmDots,
     loadPins,
+    loadPinnedCompanies,
     loadRecentDms,
     loadSetupPinDismissed,
     loadShowFilter,
+    resolveCompanySectionRows,
+    findCompanyHomeRow,
+    type CompanySectionRow,
+    migratePinnedCompanySelection,
+    mergeResolvedCompanyChannels,
     mergeContactActivity,
     isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
@@ -131,6 +146,7 @@
     rowAvatar,
     saveConversationCache,
     saveDmDots,
+    savePinnedCompanies,
     savePins,
     saveRecentDms,
     saveSetupPinDismissed,
@@ -254,14 +270,20 @@
     oncreateagent?:
       | ((
           companyUid: string,
-          draft: { name: string; handle: string; title?: string },
+          draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
+    loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
     oncreatebot?:
       | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
       | null;
     botRuntimeReady?: Record<string, boolean> | null;
+    /** Per-runtime state (not-installed / couldn't-check / signed-out). */
+    botRuntimeStatus?: Record<string, RuntimeStatus> | null;
+    /** Re-read runtime readiness from the host. */
+    onrecheckruntimes?: (() => void | Promise<void>) | null;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
@@ -275,6 +297,8 @@
      * from — otherwise a bot could not be added to a channel or group chat.
      */
     localBots?: readonly LocalBotRow[] | null;
+    /** agentUid → display name for local bots that have one. */
+    botDisplayNames?: BotDisplayNames | null;
     /**
      * The user's own local bots that this computer cannot run right now — a
      * wiped config, a reinstall, a second Mac. They are not on `localBots`,
@@ -347,6 +371,10 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
+    /** US-006: when true, contacts whose last message is agent-only show their preview. */
+    showBotMessages?: boolean;
+    /** Fires when the user clicks the bot-message toggle in the sidebar header. */
+    onshowbotmessageschange?: (value: boolean) => void;
   }
 
   let {
@@ -375,8 +403,12 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    loadClaudeProviderFlag = null,
+    loadCloudProvisionOptions = null,
     oncreatebot = null,
     botRuntimeReady = null,
+    botRuntimeStatus = null,
+    onrecheckruntimes = null,
     botWorkers = null,
     existingBotNames = null,
     botSignIn = null,
@@ -384,6 +416,7 @@
     avatarPacks = null,
     loadAvatarPacks = null,
     localBots = null,
+    botDisplayNames = null,
     ownedLocalBotUids = null,
     engagedAgentUids = null,
     onrows,
@@ -398,6 +431,8 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    showBotMessages = false,
+    onshowbotmessageschange,
   }: Props = $props();
   // Host still reports load failures; the sidebar no longer paints them.
   void rowExtrasError;
@@ -458,6 +493,35 @@
     loadConversationCache(storage)?.contacts ?? [],
   );
   let pins = $state<string[]>(loadPins(storage));
+  /**
+   * "Companies" sidebar section pins — companies the user explicitly pinned
+   * via the section's header submenu. Empty/absent = no pins yet, so the
+   * section falls back to the top-N most active companies (see
+   * `companySectionRows` below). Persisted data may still carry the OLD
+   * "which companies to show" shape from before this pin model existed
+   * (`null` = show all, an array = the exact visible set) — migrated once at
+   * load via `migratePinnedCompanySelection` (see that function's doc for the
+   * exact migration rule).
+   */
+  let pinnedCompanies = $state<string[]>(
+    migratePinnedCompanySelection(
+      loadPinnedCompanies(storage),
+      (companies ?? [])
+        .map((c) => (c.cloudUid ?? "").trim())
+        .filter(Boolean),
+    ) ?? [],
+  );
+  let companiesSectionMenuOpen = $state(false);
+  /** companyUids the on-demand home-channel resolver has already fetched (or
+   * is fetching) this session — never re-fetch the same company on every
+   * render. */
+  const attemptedCompanyHomeResolutions = new Set<string>();
+  /** companyUid → true while a click-triggered retry fetch is in flight, so
+   * a double-click doesn't fire two overlapping `listChannels` calls. */
+  let companyHomeRetrying = $state<Record<string, boolean>>({});
+  /** companyUid → last resolution-failure reason, shown on the disabled row
+   * so a click is never a silent no-op (policy: never swallow errors). */
+  let companyHomeErrors = $state<Record<string, string>>({});
   /** User unpinned #setup — sticky until they pin it again. */
   let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
   /** Rows with an unsent composer draft (Slack-style pencil marker). */
@@ -546,6 +610,39 @@
   let selectionMode = $state(false);
   let selection = $state<SelectionState>(EMPTY_SELECTION);
   let focusedRowId = $state<string | null>(null);
+  /**
+   * Shift-hover affordance: empty checkboxes preview which rows can be picked.
+   * Tracked at the document level because the modifier can be pressed before
+   * the pointer reaches the rail, and cleared on blur/visibility change so a
+   * modifier released outside the window cannot strand the boxes on screen.
+   */
+  let shiftHeld = $state(false);
+  let sidebarHovered = $state(false);
+  const showSelectGutter = $derived(
+    selectionMode || (shiftHeld && sidebarHovered),
+  );
+
+  $effect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Shift") shiftHeld = true;
+    }
+    function onKeyUp(event: KeyboardEvent) {
+      if (event.key === "Shift") shiftHeld = false;
+    }
+    function clearShift() {
+      shiftHeld = false;
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", clearShift);
+    document.addEventListener("visibilitychange", clearShift);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", clearShift);
+      document.removeEventListener("visibilitychange", clearShift);
+    };
+  });
   let personFilter = $state<string | null>(null);
   // People aren't company-scoped — switching company scope clears a stale
   // person filter so it can't silently empty the newly scoped list.
@@ -837,6 +934,18 @@
     savePins(pins, storage);
   }
 
+  /** companyUid → slug, the desktop fallback for `isCompanyHome` resolution
+   * while the backend flag rolls out (see channels.ts `isCompanyHomeChannel`). */
+  const companySlugByUid = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const company of companies ?? []) {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      if (uid && slug) map.set(uid, slug);
+    }
+    return map;
+  });
+
   const allRows = $derived(
     normalizeConversations(channelsWithSetup, contactsWithUnreads, {
       pinnedIds: pinsWithSetup,
@@ -844,8 +953,148 @@
       recentDms,
       engagedAgentUids: engagedAgents,
       ownAgentUids,
+      companySlugByUid,
     }),
   );
+
+  /**
+   * The sidebar's "Companies" section. When the user has pinned any
+   * companies (via the header submenu), only the pinned ones show, in
+   * `companies` order. Otherwise the section shows the
+   * `DEFAULT_COMPANY_SECTION_LIMIT` most active companies (see
+   * `companyActivityScore` / `rankCompaniesByActivity` in sidebar-model.ts).
+   * A company with no home channel yet is included with `homeRow: null` so
+   * the row can render disabled with a reason instead of silently vanishing
+   * — the resolver effect below tries to fetch it on demand.
+   *
+   * Home channels shown here are NOT removed from the regular channel list:
+   * this section is additive, the same way the existing pin star only
+   * removes a row from the day sections when the user explicitly stars it
+   * (`ConversationRow.pinned`) — pinning a company here does not set that
+   * flag, so no new dedup logic was needed.
+   */
+  const companySectionRows = $derived<CompanySectionRow[]>(
+    resolveCompanySectionRows(
+      (companies ?? [])
+        .filter((c) => (c.cloudUid ?? "").trim())
+        .map((c) => ({
+          companyUid: (c.cloudUid as string).trim(),
+          label: c.displayName || c.slug || c.cloudUid!,
+          iconUrl: companyIcons.get((c.cloudUid as string).trim()) ?? null,
+        })),
+      allRows,
+      pinnedCompanies,
+    ),
+  );
+
+  function toggleCompanyPin(companyUid: string): void {
+    pinnedCompanies = pinnedCompanies.includes(companyUid)
+      ? pinnedCompanies.filter((uid) => uid !== companyUid)
+      : [...pinnedCompanies, companyUid];
+    savePinnedCompanies(pinnedCompanies, storage);
+  }
+
+  /**
+   * Tagged, grep-able log line for the "Companies" section's open/resolve
+   * path (policy: never fail silently). Distinct from `sidebarLog` so a
+   * failed click always leaves a `[companies] open-home-failed` line in
+   * `~/.hq/logs` / devtools, even for users who never look at `[hq-sidebar]`
+   * noise.
+   */
+  function companiesLog(event: string, fields: Record<string, unknown>): void {
+    const parts = Object.entries(fields)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(" ");
+    console.warn(`[companies] ${event}${parts ? ` ${parts}` : ""}`);
+  }
+
+  /**
+   * One `listChannels({ companyUid })` attempt for a company whose home
+   * channel isn't in the currently-loaded directory feed (e.g. the directory
+   * hasn't synced that company's channels yet, or the caller's membership in
+   * it is stale locally). Reuse the SAME lane the owner-only "All company
+   * projects" view already uses (see the `companyProjectsSeq` effect above)
+   * — this is the mechanism deep links and the company switcher rely on
+   * elsewhere in the shell to resolve a channel that isn't cached yet.
+   * Returns the resolved home row, or `null` (and logs a reason) if the
+   * company still has no discoverable home channel.
+   */
+  async function resolveCompanyHomeOnce(
+    companyUid: string,
+    label: string,
+  ): Promise<ConversationRow | null> {
+    try {
+      const resp = await api.listChannels({
+        companyUid,
+        includeCompanyProjects: false,
+      });
+      const resolved = resp?.channels ?? [];
+      if (resolved.length > 0) {
+        channels = mergeResolvedCompanyChannels(channels, resolved);
+      }
+      const row = findCompanyHomeRow(allRows, companyUid);
+      if (!row) {
+        companiesLog("open-home-failed", {
+          company: label,
+          reason:
+            resolved.length === 0
+              ? "listChannels returned no channels for this company"
+              : "listChannels returned channels but none is the company home",
+        });
+        companyHomeErrors = { ...companyHomeErrors, [companyUid]: "no-home-channel" };
+      } else if (companyHomeErrors[companyUid]) {
+        const { [companyUid]: _drop, ...rest } = companyHomeErrors;
+        companyHomeErrors = rest;
+      }
+      return row;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      companiesLog("open-home-failed", { company: label, reason });
+      companyHomeErrors = { ...companyHomeErrors, [companyUid]: reason };
+      return null;
+    }
+  }
+
+  /**
+   * On-demand home-channel resolution (requirement 4): a company shown in
+   * the section with `homeRow: null` gets one background resolve attempt per
+   * session via `resolveCompanyHomeOnce`.
+   */
+  $effect(() => {
+    const missing = companySectionRows
+      .filter((c) => !c.homeRow)
+      .map((c) => ({ companyUid: c.companyUid, label: c.label }))
+      .filter((c) => !attemptedCompanyHomeResolutions.has(c.companyUid));
+    if (missing.length === 0) return;
+    for (const c of missing) attemptedCompanyHomeResolutions.add(c.companyUid);
+    void (async () => {
+      for (const c of missing) {
+        await resolveCompanyHomeOnce(c.companyUid, c.label);
+      }
+    })();
+  });
+
+  /**
+   * Click handler for a disabled ("still connecting") Companies row. The
+   * background resolver already tried once; a click never silently no-ops
+   * (policy: never swallow errors) — it retries immediately and either opens
+   * the resolved home channel or leaves a `[companies] open-home-failed`
+   * line plus an inline reason on the row.
+   */
+  async function retryCompanyHome(company: {
+    companyUid: string;
+    label: string;
+  }): Promise<void> {
+    if (companyHomeRetrying[company.companyUid]) return;
+    companyHomeRetrying = { ...companyHomeRetrying, [company.companyUid]: true };
+    try {
+      const row = await resolveCompanyHomeOnce(company.companyUid, company.label);
+      if (row) void openRow(row);
+    } finally {
+      const { [company.companyUid]: _drop, ...rest } = companyHomeRetrying;
+      companyHomeRetrying = rest;
+    }
+  }
 
   let lastEmittedRows: ConversationRow[] | null = null;
   $effect(() => {
@@ -861,10 +1110,11 @@
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
   // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
-    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots), {
+    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
+      companySlugByUid,
     }),
   );
 
@@ -879,7 +1129,7 @@
   const browseRows = $derived(
     browseOnlyCompanyProjectChannels(channels, companyProjectChannels).map(
       (c) => ({
-        ...normalizeChannel(c, { pinnedIds: pins }),
+        ...normalizeChannel(c, { pinnedIds: pins, companySlugByUid }),
         browseOnly: true,
       }),
     ),
@@ -1090,6 +1340,23 @@
       ctrlKey: event.ctrlKey,
     });
     focusedRowId = row.id;
+  }
+
+  /**
+   * Checkbox toggle. Always additive/subtractive (never a replace), so ticking
+   * a box can build a selection one row at a time without a modifier key.
+   */
+  function toggleRowSelection(row: ConversationRow, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectionMode) selectionMode = true;
+    selection = applySelectionClick(selection, orderedRowIds, row.id, {
+      shiftKey: false,
+      metaKey: true,
+      ctrlKey: false,
+    });
+    focusedRowId = row.id;
+    if (selection.selected.length === 0) exitSelectionMode();
   }
 
   function selectionKeydown(event: KeyboardEvent): void {
@@ -1633,7 +1900,7 @@
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
-        raceTimeout(api.listContacts(), bootTimeoutMs, "list_contacts").catch(
+        raceTimeout(api.listContacts({ showBotMessages }), bootTimeoutMs, "list_contacts").catch(
           (err) => {
             sidebarLog("boot-error", {
               source: "list_contacts",
@@ -1722,6 +1989,21 @@
     const seq = rosterWakeSeq;
     if (seq <= 0) return;
     untrack(() => {
+      void refreshLists();
+    });
+  });
+
+  // Re-fetch contacts when the bot-message toggle flips so list previews update.
+  // Skip the initial run: `onMount` already primes the roster with the current
+  // toggle value, so re-reading here would double the boot contacts fetch.
+  let botToggleSeen = false;
+  $effect(() => {
+    const _show = showBotMessages;
+    untrack(() => {
+      if (!botToggleSeen) {
+        botToggleSeen = true;
+        return;
+      }
       void refreshLists();
     });
   });
@@ -1968,6 +2250,14 @@
         wakes.on("channel:updated", (payload) => {
           channels = upsertChannel(channels, payload);
           scheduleDirectoryReconcile();
+        }),
+      );
+
+      // Header bell: optimistic level change (or its rollback). Local only —
+      // the server write is the shell's; the next directory read confirms it.
+      track(
+        wakes.on("channel:notify-level", ({ channelId, level }) => {
+          channels = applyChannelNotifyLevel(channels, channelId, level);
         }),
       );
 
@@ -2402,6 +2692,26 @@
           />
         </svg>
       </button>
+      <!-- US-006: bot-message toggle -->
+      <button
+        type="button"
+        class="chat-icon-btn"
+        class:on={showBotMessages}
+        data-testid="chat-bot-toggle"
+        aria-label={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
+        aria-pressed={showBotMessages}
+        title={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
+        onclick={() => onshowbotmessageschange?.(!showBotMessages)}
+      >
+        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true" focusable="false">
+          <rect x="2" y="4" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.25" fill="none"/>
+          <rect x="4.5" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
+          <rect x="8" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
+          <line x1="7" y1="1" x2="7" y2="4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+          <circle cx="7" cy="1" r="0.75" fill="currentColor"/>
+          <line x1="4.5" y1="9.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+        </svg>
+      </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>
         <button
           type="button"
@@ -2643,10 +2953,14 @@
     </div>
   {/if}
 
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="chat-scroll"
     data-testid="chat-conversation-list"
+    onmouseenter={() => (sidebarHovered = true)}
+    onmouseleave={() => (sidebarHovered = false)}
     data-selection-mode={selectionMode ? "on" : undefined}
+    data-select-gutter={showSelectGutter ? "on" : undefined}
     aria-multiselectable={selectionMode ? true : undefined}
     aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}
   >
@@ -2676,6 +2990,117 @@
           {pendingRequestCount > 99 ? "99+" : pendingRequestCount}
         </span>
       </button>
+    {/if}
+
+    {#if (companies ?? []).length > 0}
+      <div class="chat-section-label chat-companies-label" id="chat-companies-label">
+        <span>COMPANIES</span>
+        <button
+          type="button"
+          class="chat-companies-edit"
+          data-testid="chat-companies-edit"
+          aria-haspopup="true"
+          aria-expanded={companiesSectionMenuOpen}
+          aria-label="More companies"
+          title="Pin companies"
+          onclick={() => (companiesSectionMenuOpen = !companiesSectionMenuOpen)}
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="4" cy="8" r="1.3" fill="currentColor" />
+            <circle cx="8" cy="8" r="1.3" fill="currentColor" />
+            <circle cx="12" cy="8" r="1.3" fill="currentColor" />
+          </svg>
+        </button>
+      </div>
+      {#if companiesSectionMenuOpen}
+        <div
+          class="chat-companies-menu"
+          role="menu"
+          data-testid="chat-companies-menu"
+          aria-labelledby="chat-companies-label"
+        >
+          <p class="chat-companies-menu-hint">
+            Pin companies to keep them here — otherwise your 3 most active show.
+          </p>
+          {#each companies ?? [] as company (company.cloudUid ?? company.slug)}
+            {@const uid = (company.cloudUid ?? "").trim()}
+            {#if uid}
+              {@const checked = pinnedCompanies.includes(uid)}
+              <label class="chat-companies-menu-item">
+                <input
+                  type="checkbox"
+                  data-testid={`chat-companies-menu-item-${uid}`}
+                  {checked}
+                  onchange={() => toggleCompanyPin(uid)}
+                />
+                <span>{company.displayName || company.slug}</span>
+              </label>
+            {/if}
+          {/each}
+        </div>
+      {/if}
+      <div
+        class="chat-list"
+        role="list"
+        aria-labelledby="chat-companies-label"
+        data-testid="chat-companies-section"
+      >
+        {#if companySectionRows.length === 0}
+          <p class="chat-companies-empty" data-testid="chat-companies-empty">
+            No companies yet.
+          </p>
+        {:else}
+          {#each companySectionRows as company (company.companyUid)}
+            {#if company.homeRow}
+              {@const row = company.homeRow}
+              <button
+                type="button"
+                class="chat-row chat-companies-row"
+                class:active={activeId === row.id}
+                data-testid={`chat-companies-row-${company.companyUid}`}
+                onclick={() => openRow(row)}
+              >
+                {#if company.iconUrl}
+                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
+                {:else}
+                  <span class="chat-glyph" aria-hidden="true">·</span>
+                {/if}
+                <span class="chat-row-title">{company.label}</span>
+              </button>
+            {:else}
+              {@const retrying = companyHomeRetrying[company.companyUid] === true}
+              {@const failed = Boolean(companyHomeErrors[company.companyUid])}
+              <button
+                type="button"
+                class="chat-row chat-row-disabled chat-companies-row"
+                class:chat-companies-row-failed={failed}
+                data-testid={`chat-companies-row-disabled-${company.companyUid}`}
+                aria-busy={retrying}
+                title={retrying
+                  ? "Connecting…"
+                  : failed
+                    ? "Couldn't open this company's home channel — click to retry"
+                    : "Still connecting this company's home channel… click to retry"}
+                onclick={() =>
+                  retryCompanyHome({
+                    companyUid: company.companyUid,
+                    label: company.label,
+                  })}
+              >
+                {#if company.iconUrl}
+                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
+                {:else}
+                  <span class="chat-glyph" aria-hidden="true">·</span>
+                {/if}
+                <span class="chat-row-title">{company.label}</span>
+                <span class="chat-companies-row-status" aria-hidden="true">
+                  {retrying ? "…" : failed ? "Retry" : ""}
+                </span>
+              </button>
+            {/if}
+          {/each}
+        {/if}
+      </div>
     {/if}
 
     {#if grouped.pinned.length > 0}
@@ -3170,7 +3595,7 @@
     <CreateModal
       {api}
       rows={[...directoryRows, ...browseRows]}
-      contacts={localBotsAsContacts(contacts, localBots)}
+      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
       {scopeCompanies}
       createCompanies={createScopeCompanies}
       activeScope={scope}
@@ -3185,9 +3610,13 @@
       {oncreatecompany}
       {companyCreate}
       {oncreateagent}
+      {loadClaudeProviderFlag}
+      {loadCloudProvisionOptions}
       {agentCompanies}
       {oncreatebot}
       {botRuntimeReady}
+      {botRuntimeStatus}
+      {onrecheckruntimes}
       {botWorkers}
       {existingBotNames}
       {botCompanies}
@@ -3256,9 +3685,22 @@
     <div
       role={selectionMode ? "presentation" : "listitem"}
       class="chat-li"
+      class:gutter-open={showSelectGutter}
       onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
       onmouseleave={scheduleHoverCardHide}
     >
+      <span class="chat-select-gutter" aria-hidden={!showSelectGutter}>
+        <input
+          type="checkbox"
+          class="chat-select-check"
+          data-testid="chat-row-checkbox"
+          data-checkbox-for={row.id}
+          tabindex={showSelectGutter ? 0 : -1}
+          checked={selectionMode && selection.selected.includes(row.id)}
+          aria-label={`Select ${row.title}`}
+          onclick={(e) => toggleRowSelection(row, e)}
+        />
+      </span>
       {#if hasChildren}
         <button
           type="button"
@@ -3284,6 +3726,7 @@
         data-conversation-id={row.id}
         class:selected={selectionMode && selection.selected.includes(row.id)}
         class:archived={archivedSet.has(row.id)}
+        class:muted={row.notifyLevel === "muted"}
         role={selectionMode ? "option" : undefined}
         aria-selected={selectionMode
           ? selection.selected.includes(row.id)
@@ -3385,6 +3828,27 @@
             aria-hidden="true"
             use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
           >
+        {/if}
+        {#if row.notifyLevel === "muted"}
+          <span
+            class="chat-row-muted"
+            data-testid="chat-row-muted"
+            role="img"
+            aria-label="Muted"
+            title="Notifications muted"
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
+              <path
+                d="M5.2 3.6A3.6 3.6 0 0 1 11.6 6v2.6l1.2 2H5.4M3.9 10.6l.5-.9V6.9"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+              <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            </svg>
+          </span>
         {/if}
         {#if row.unreadCount != null && row.unreadCount > 0}
           <span
@@ -3770,6 +4234,110 @@
     padding: 0;
   }
 
+  .chat-companies-label {
+    justify-content: space-between;
+  }
+
+  .chat-companies-edit {
+    all: unset;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--ice-ink);
+    width: 18px;
+    height: 18px;
+    border-radius: 6px;
+  }
+  .chat-companies-edit:hover,
+  .chat-companies-edit:focus-visible {
+    background: var(--hover);
+  }
+
+  .chat-companies-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0 8px 6px;
+    padding: 6px;
+    border-radius: 8px;
+    border: 1px solid var(--line2);
+    background: var(--panel);
+  }
+  .chat-companies-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--t1);
+    cursor: pointer;
+  }
+  .chat-companies-menu-item:hover {
+    background: var(--hover);
+  }
+
+  .chat-companies-menu-hint {
+    margin: 0 0 4px;
+    padding: 2px 6px;
+    color: var(--t2);
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .chat-companies-empty {
+    margin: 0;
+    padding: 6px 12px 10px;
+    color: var(--t2);
+    font-size: 12px;
+  }
+
+  /* Companies section rows are intentionally minimal — name only, single
+   * line, no unread badge/dot/status text (requirement 1). */
+  .chat-companies-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+  }
+  .chat-companies-row .chat-row-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-companies-row-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    object-fit: cover;
+    flex: 0 0 auto;
+  }
+
+  .chat-row-disabled {
+    opacity: 0.55;
+    cursor: pointer;
+  }
+
+  .chat-row-disabled[aria-busy="true"] {
+    cursor: default;
+  }
+
+  .chat-companies-row-failed {
+    opacity: 0.75;
+  }
+
+  .chat-companies-row-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--ice-ink, inherit);
+    opacity: 0.8;
+  }
+
+
   /* Day-group header: name left, date right-aligned (D-13). */
   .chat-day-head {
     display: flex;
@@ -4007,6 +4575,18 @@
   .chat-row.unread .chat-row-title {
     color: var(--t1);
     font-weight: 500;
+  }
+
+  /* Muted channels read quieter; unread still shows as a count. */
+  .chat-row.muted .chat-row-title {
+    color: var(--t3);
+  }
+
+  .chat-row-muted {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    color: var(--t3);
   }
 
   .chat-row-title {
@@ -4413,10 +4993,82 @@
     opacity: 0.7;
   }
 
-  /* Selection is a state, not an event — no transition on the toggle. */
+  /* Selection is a state, not an event — no transition on the toggle.
+     Banned: the curved left-edge stroke that used to mark selected rows
+     (an inset accent box-shadow on the left edge, curved by the 8px radius).
+     Selection is carried by the checkbox in .chat-select-gutter. */
   .chat-row.selected {
     background: var(--hover);
-    box-shadow: inset 2px 0 0 var(--accent, currentColor);
+  }
+
+  /* Checkbox gutter. Zero-width until a selection exists or Shift is held, so
+     resting rows keep their original geometry and nothing jumps on hover. */
+  .chat-select-gutter {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 0;
+    height: 24px;
+    overflow: hidden;
+    opacity: 0;
+    transition:
+      width 120ms ease,
+      opacity 120ms ease;
+  }
+
+  .chat-li.gutter-open .chat-select-gutter {
+    width: 22px;
+    opacity: 1;
+  }
+
+  .chat-li.gutter-open .chat-row-children-toggle {
+    left: 30px;
+  }
+
+  .chat-select-check {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: none;
+    box-sizing: border-box;
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--line, var(--t3));
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .chat-select-check:checked {
+    position: relative;
+    border-color: var(--accent, var(--t1));
+    background: var(--accent, var(--t1));
+  }
+
+  /* The glyph is masked, not painted, so its colour is the accent's contrast
+     pair. The popover accent is white in dark mode — a white-stroked check
+     would vanish into the fill. */
+  .chat-select-check:checked::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--popover-primary-text, var(--c-bg, var(--bg, #111113)));
+    mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Cpath d='M3 6.7 5.4 9.1 10 4.2' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 13px 13px no-repeat;
+    -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Cpath d='M3 6.7 5.4 9.1 10 4.2' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 13px 13px no-repeat;
+  }
+
+  .chat-select-check:focus-visible {
+    outline: 2px solid var(--accent, var(--t1));
+    outline-offset: 1px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chat-select-gutter {
+      transition: none;
+    }
   }
 
   .chat-selection-bar {

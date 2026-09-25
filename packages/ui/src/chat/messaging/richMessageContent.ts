@@ -177,7 +177,18 @@ export interface DecisionBlock {
   questionId?: string;
 }
 
+/**
+ * The setup bot's "setup is finished" signal. Carries no data: the host sees
+ * it in the setup bot's conversation and shows the finish card (open in a
+ * coding tool, the HQ console, a Slack bot) under the last message. Renders
+ * nothing by itself and adds nothing to the text fallback.
+ */
+export interface SetupDoneBlock {
+  kind: "setupDone";
+}
+
 export type RichBlock =
+  | SetupDoneBlock
   | StatBlock
   | TableBlock
   | ChartBlock
@@ -194,6 +205,7 @@ export interface RichContentModel {
 
 /** Block-type names the schema knows about (informational; genui is unsupported). */
 export const KNOWN_BLOCK_KINDS = new Set<string>([
+  "setupDone",
   "stat",
   "table",
   "chart",
@@ -463,6 +475,8 @@ function parseBlock(raw: unknown): RichBlock | null {
   if (!isRecord(raw)) return null;
   const kind = typeof raw.kind === "string" ? raw.kind : "";
   switch (kind) {
+    case "setupDone":
+      return { kind: "setupDone" };
     case "stat":
       return parseStatBlock(raw);
     case "table":
@@ -526,6 +540,86 @@ const HQ_BLOCK_FENCE_RE = new RegExp(
 );
 
 /**
+ * Find a rich-content envelope anywhere in a body, whatever shape it arrived in.
+ *
+ * The envelope is machine text. A person must never see it, so recognising it
+ * cannot depend on the model formatting it correctly: the setup bot is told to
+ * wrap it in an ```hq-block fence, and when it dropped the label the raw
+ * `{"v":1,"blocks":[...]}` rendered as a code block at the end of the last
+ * message of setup.
+ *
+ * So this scans for a balanced JSON object that parses as an envelope, whether
+ * it is fenced with any label or none, indented, or pretty-printed across
+ * several lines, and reports the span to cut (fence included). JSON that is not
+ * an envelope never matches, so config someone is actually discussing is left
+ * alone.
+ */
+interface EnvelopeSpan {
+  /** Index of the first character to cut. */
+  start: number;
+  /** Index after the last character to cut. */
+  end: number;
+  /** The envelope itself. */
+  rich: RichContentModel;
+}
+
+/** End index of the JSON object starting at `open`, or -1. String-aware, so a
+ *  brace inside a quoted value cannot end it early. */
+function jsonObjectEnd(body: string, open: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = open; i < body.length; i += 1) {
+    const ch = body[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** Widen a span over a code fence that wraps it, so no empty fence is left. */
+function withSurroundingFence(body: string, start: number, end: number): [number, number] {
+  const before = body.slice(0, start);
+  const openFence = /(^|\n)[ \t]*(`{3,}|~{3,})[ \t]*[A-Za-z0-9_-]*[ \t]*\n[ \t]*$/.exec(before);
+  if (!openFence) return [start, end];
+  const rest = body.slice(end);
+  const closeFence = new RegExp("^[ \\t]*\\n?[ \\t]*" + openFence[2] + "[ \\t]*").exec(rest);
+  if (!closeFence) return [start, end];
+  return [start - (openFence[0].length - openFence[1].length), end + closeFence[0].length];
+}
+
+function findEnvelopeSpan(body: string): EnvelopeSpan | null {
+  if (!body.includes('"blocks"')) return null;
+  for (let i = body.indexOf("{"); i !== -1; i = body.indexOf("{", i + 1)) {
+    // Cheap gate: an envelope names its version or its blocks up front.
+    const head = body.slice(i, i + 64);
+    if (!head.includes('"v"') && !head.includes('"blocks"')) continue;
+    const end = jsonObjectEnd(body, i);
+    if (end === -1) continue;
+    let rich: RichContentModel | null = null;
+    try {
+      rich = parseRichContent(JSON.parse(body.slice(i, end)));
+    } catch {
+      rich = null;
+    }
+    if (!rich) continue;
+    const [from, to] = withSurroundingFence(body, i, end);
+    return { start: from, end: to, rich };
+  }
+  return null;
+}
+
+/**
  * Extract a single ```hq-block fenced JSON envelope from a message body.
  *
  * This is the mechanism a fleet agent can reliably produce with no server
@@ -538,22 +632,13 @@ const HQ_BLOCK_FENCE_RE = new RegExp(
  * see `richContentForMessage`.
  */
 export function extractRichContentFromBody(body: string): ExtractedRichContent {
-  if (!body || !body.includes(HQ_BLOCK_FENCE_LANG)) {
-    return { text: body ?? "", rich: null };
-  }
-  const match = HQ_BLOCK_FENCE_RE.exec(body);
-  if (!match) return { text: body, rich: null };
-  let rich: RichContentModel | null = null;
-  try {
-    rich = parseRichContent(JSON.parse(match[3]));
-  } catch {
-    rich = null;
-  }
-  if (!rich) return { text: body, rich: null };
-  const text = (body.slice(0, match.index) + body.slice(match.index + match[0].length))
+  if (!body) return { text: "", rich: null };
+  const span = findEnvelopeSpan(body);
+  if (!span) return { text: body, rich: null };
+  const text = (body.slice(0, span.start) + body.slice(span.end))
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return { text, rich };
+  return { text, rich: span.rich };
 }
 
 /**
@@ -581,6 +666,8 @@ export function richContentForMessage(message: {
  */
 function blockToPlainText(block: RichBlock): string {
   switch (block.kind) {
+    case "setupDone":
+      return "";
     case "markdown":
       return block.text;
     case "stat":
@@ -635,4 +722,29 @@ export function richContentToPlainText(model: RichContentModel): string {
     .filter(Boolean)
     .join("\n\n")
     .trim();
+}
+
+/** True when this message carries the setup bot's "setup is finished" signal. */
+export function messageMarksSetupDone(message: { body?: string | null; richContent?: unknown }): boolean {
+  return richContentForMessage(message).rich?.blocks.some((block) => block.kind === "setupDone") ?? false;
+}
+
+/**
+ * Is there anything for a person to see in this message?
+ *
+ * A message whose whole body was the finish marker has no visible content once
+ * the marker is lifted: rendering it anyway leaves an empty bubble with the
+ * bot's name on it. Attachments, a prompt or details still count as content,
+ * and so does any block other than the marker.
+ */
+export function messageHasVisibleContent(message: {
+  body?: string | null;
+  richContent?: unknown;
+  prompt?: string | null;
+  details?: string | null;
+}): boolean {
+  if (message.prompt?.trim() || message.details?.trim()) return true;
+  const { text, rich } = richContentForMessage(message);
+  if (text.trim()) return true;
+  return rich?.blocks.some((block) => block.kind !== "setupDone") ?? false;
 }

@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 
+import { messageMarksSetupDone, richContentForMessage } from "./messaging/richMessageContent";
 import {
   findSetupBot,
   findSetupBotContact,
@@ -14,6 +15,7 @@ import {
   setupBotActionLabel,
   SETUP_BOT_COPY,
   SETUP_BOT_INTRO,
+  setupFinaleDue,
   SETUP_BOT_KICKOFF,
   SETUP_BOT_KICKOFF_PREFIX,
   SETUP_BOT_MODE,
@@ -70,15 +72,21 @@ describe("firstSignedInRuntime", () => {
 
 describe("copy", () => {
   it("labels the one action by whether the bot exists yet", () => {
-    expect(setupBotActionLabel({ existing: false })).toBe("Run Setup");
-    expect(setupBotActionLabel({ existing: true })).toBe("Open your setup bot");
-    expect(setupBotActionLabel(null)).toBe("Run Setup");
+    // The bot starts by itself, so both states open the same waiting
+    // conversation; the label says so either way.
+    expect(setupBotActionLabel({ existing: false })).toBe("Open Setup Agent");
+    expect(setupBotActionLabel({ existing: true })).toBe("Open Setup Agent");
+    expect(setupBotActionLabel(null)).toBe("Open Setup Agent");
   });
 
-  it("says 'setup bot', never 'agent'", () => {
-    const copy = [...Object.values(SETUP_BOT_COPY), SETUP_BOT_INTRO].join(" ");
-    expect(copy.toLowerCase()).not.toContain("agent");
-    expect(copy).toContain("setup bot");
+  it("says 'setup bot' everywhere except the button, which is named Setup Agent", () => {
+    const label = "Open Setup Agent";
+    expect(SETUP_BOT_COPY.run).toBe(label);
+    expect(SETUP_BOT_COPY.open).toBe(label);
+    // Everything else is prose about the bot, and never calls it an agent.
+    const prose = [...Object.values(SETUP_BOT_COPY).filter((line) => line !== label), SETUP_BOT_INTRO].join(" ");
+    expect(prose.toLowerCase()).not.toContain("agent");
+    expect(prose).toContain("setup bot");
   });
 
   it("keeps the intro inside the CLI's --intro limit, on one line", () => {
@@ -87,13 +95,14 @@ describe("copy", () => {
     expect(SETUP_BOT_INTRO).not.toMatch(/[\u0000-\u001f\u007f]/);
   });
 
-  it("the intro is two short sentences: the plan, then step one starting now — never an open question", () => {
+  it("the intro is two short sentences: the plan, then that it is checking the Mac and may take a minute — never an open question", () => {
     const sentences = SETUP_BOT_INTRO.split(/(?<=[.!?])\s+/).filter(Boolean);
     expect(sentences).toHaveLength(2);
     for (const part of ["tools", "HQ Cloud", "company", "work you already have", "apps", "first bot"]) {
       expect(SETUP_BOT_INTRO).toContain(part);
     }
-    expect(sentences[1]).toMatch(/starting step one now/i);
+    expect(sentences[1]).toMatch(/checking your Mac now/i);
+    expect(sentences[1]).toMatch(/a minute/i);
     expect(SETUP_BOT_INTRO).not.toContain("?");
     expect(SETUP_BOT_INTRO.toLowerCase()).not.toMatch(/what would you like|say hi whenever/);
   });
@@ -114,6 +123,8 @@ describe("copy", () => {
     expect(k).toMatch(/exactly one concrete question or one concrete action/);
     expect(k).toMatch(/do not greet again/);
     expect(k).toMatch(/already finished/);
+    // Setup never advertises a way to skip it.
+    expect(k.toLowerCase()).not.toMatch(/skip/);
   });
 
   it("creates `setup` from the core `setup` worker, with the bot path on", () => {
@@ -213,5 +224,52 @@ describe("singleFlightStart", () => {
     await expect(gated()).rejects.toThrow("boom");
     await expect(gated()).rejects.toThrow("boom");
     expect(calls).toBe(2);
+  });
+});
+
+describe("setupFinaleDue", () => {
+  const BOT = "agt_SETUP";
+  const done = "Here's where you've landed.\n\n```hq-block\n{\"v\":1,\"blocks\":[{\"kind\":\"setupDone\"}]}\n```";
+
+  it("is true once the setup bot sends the setupDone block", () => {
+    expect(setupFinaleDue([{ fromPersonUid: BOT, body: "hi" }, { fromPersonUid: BOT, body: done }], BOT, messageMarksSetupDone)).toBe(true);
+  });
+
+  it("ignores the block from anyone but the setup bot, and plain messages", () => {
+    expect(setupFinaleDue([{ fromPersonUid: "prs_ME", body: done }], BOT, messageMarksSetupDone)).toBe(false);
+    expect(setupFinaleDue([{ fromPersonUid: BOT, body: "Setup is done!" }], BOT, messageMarksSetupDone)).toBe(false);
+    expect(setupFinaleDue([{ fromPersonUid: BOT, body: done }], "  ", messageMarksSetupDone)).toBe(false);
+  });
+
+  it("puts the card away once the person writes again", () => {
+    const thread = [
+      { fromPersonUid: BOT, body: done },
+      { fromPersonUid: "prs_ME", body: "one more thing" },
+    ];
+    expect(setupFinaleDue(thread, BOT, messageMarksSetupDone)).toBe(false);
+  });
+
+  it("keeps the card while only the bot has spoken since", () => {
+    const thread = [
+      { fromPersonUid: "prs_ME", body: "thanks" },
+      { fromPersonUid: BOT, body: done },
+      { fromPersonUid: BOT, body: "One more tip." },
+    ];
+    expect(setupFinaleDue(thread, BOT, messageMarksSetupDone)).toBe(true);
+  });
+
+  it("does not bring the card back when the bot repeats the block", () => {
+    const thread = [
+      { fromPersonUid: BOT, body: done },
+      { fromPersonUid: "prs_ME", body: "ok" },
+      { fromPersonUid: BOT, body: done },
+    ];
+    expect(setupFinaleDue(thread, BOT, messageMarksSetupDone)).toBe(false);
+  });
+
+  it("the block leaves only the prose as the message text", () => {
+    const { text, rich } = richContentForMessage({ body: done });
+    expect(text).toBe("Here's where you've landed.");
+    expect(rich?.blocks).toEqual([{ kind: "setupDone" }]);
   });
 });

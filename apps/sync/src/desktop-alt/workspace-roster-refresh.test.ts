@@ -39,6 +39,12 @@ vi.mock('@tauri-apps/api/event', () => ({
   }),
 }));
 
+vi.mock('./external-open', () => ({
+  approvedExternalUrl: vi.fn((url: string) => url),
+  openApprovedExternalUrl: vi.fn(async () => {}),
+  openBrowserUrl: vi.fn(async () => {}),
+}));
+
 vi.mock('@tauri-apps/api/app', () => ({
   getVersion: vi.fn(async () => '0.10.178'),
   setTheme: vi.fn(async () => {}),
@@ -53,6 +59,7 @@ vi.mock('@hq/work/WorkShell', async () => {
 
 import { flushSync, mount, unmount } from 'svelte';
 import HqWorkWorkShell from './HqWorkWorkShell.svelte';
+import { openApprovedExternalUrl } from './external-open';
 import type { SyncInvokeFn } from '@hq/platform';
 
 const WHOAMI = {
@@ -123,6 +130,53 @@ afterEach(async () => {
 });
 
 describe('HqWorkWorkShell workspace roster refresh', () => {
+  it('shows a server-linked plan notice and opens the exact upgrade URL', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })]);
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    const upgradeUrl = 'https://hq.computer/companies/acme/billing?upgrade=team';
+    emit('sync:plan-limit', { company: 'Acme', upgradeUrl });
+    await flush();
+
+    const notice = host.querySelector('[data-testid="sync-plan-limit-notice"]');
+    expect(notice?.textContent).toContain('New files are paused for Acme.');
+    const upgrade = notice?.querySelector<HTMLButtonElement>(
+      '[data-testid="sync-plan-limit-upgrade"]',
+    );
+    expect(upgrade?.textContent).toBe('Upgrade');
+    upgrade?.click();
+    await flush();
+    expect(openApprovedExternalUrl).toHaveBeenCalledWith(upgradeUrl);
+  });
+
+  it('clears a company plan notice when the authenticated account changes', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })]);
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    emit('sync:plan-limit', {
+      company: 'Acme',
+      upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
+    });
+    await flush();
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+
+    emit('auth:session-changed', {
+      accountId: 'acct_grace',
+      generation: 2,
+      status: 'active',
+      reason: null,
+    });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+  });
+
   it('recovers when the native roster succeeds after the UI deadline', async () => {
     vi.useFakeTimers();
     try {

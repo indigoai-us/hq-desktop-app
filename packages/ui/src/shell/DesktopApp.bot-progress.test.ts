@@ -15,7 +15,7 @@ import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { setJitterRandomForTests } from "@hq/platform";
-import { LOCAL_BOTS_POLL_MS } from "../chat/local-bots.js";
+import { LOCAL_BOT_BUSY_POLL_MS } from "../chat/local-bots.js";
 import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 
 const BOT_UID = "agt_new";
@@ -61,6 +61,27 @@ function adapter(): PlatformAdapter {
     },
     sessions: {
       preflight: async () => ok({ claudeAvailable: true, claudeLoggedIn: true, codexAvailable: false, codexLoggedIn: false, grokAvailable: false, grokLoggedIn: false }),
+    },
+    identity: { hasFeature: async () => ok(false) },
+    agents: {
+      getProvisionOptions: async () => ok({
+        defaultInstanceType: "t4g.medium",
+        catalogVersion: "test",
+        options: [{
+          key: "basic",
+          productName: "Basic",
+          instanceType: "t4g.medium",
+          listCents: 1200,
+          default: true,
+          selectable: true,
+          netMonthlyCents: 1200,
+          deltaCents: null,
+          unavailableReason: null,
+          notBilled: false,
+          lanes: 1,
+          workers: 1,
+        }],
+      }),
     },
     bots: {
       list: async () => ok({ bots: rows }),
@@ -123,8 +144,12 @@ function click(sel: string): void {
  * One poll cycle: the host re-reads adapter.bots.list. Background polls are
  * jittered, so the draw is pinned to the nominal interval below.
  */
+/** Advance to the next bot listing. An open local-bot DM refreshes on the
+ *  faster cadence (the thinking indicator follows the bot's own busy flag), so
+ *  this is the shorter of the two: a longer jump would also run the card's own
+ *  two-second dismissal and the test could never see the state in between. */
 async function poll(): Promise<void> {
-  await vi.advanceTimersByTimeAsync(LOCAL_BOTS_POLL_MS);
+  await vi.advanceTimersByTimeAsync(LOCAL_BOT_BUSY_POLL_MS);
   await settle();
 }
 

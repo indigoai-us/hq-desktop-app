@@ -13,6 +13,7 @@
   import { parseWorkSessionEvent } from '../../lib/workSessionEvent';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
+  import { invoke } from '@tauri-apps/api/core';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import {
     LinkContextMenu,
@@ -25,6 +26,18 @@
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
+  import AttachmentStack from './AttachmentStack.svelte';
+  import AttachmentPicker from './AttachmentPicker.svelte';
+  import AttachmentPreview from './AttachmentPreview.svelte';
+  import {
+    ATTACHMENT_MISSING_COMPANY,
+    filesRouteForAttachment,
+    type AttachmentCompany,
+  } from '../../lib/attachmentPresign';
+  import {
+    isFileShareMessage,
+    type MessageAttachment,
+  } from '../../lib/messageAttachments';
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it. Extra fields
@@ -60,6 +73,10 @@
     // the templated share prompt so the standard Copy-prompt action works; the
     // host passes `onopenshareinclaude` for the Open-in-Claude action.
     share?: ShareEvent | null;
+    /** `"file_share"` for a share written as a DM. Absent on ordinary rows. */
+    messageKind?: string | null;
+    /** Vault-path file cards on a `file_share` DM. */
+    attachments?: MessageAttachment[] | null;
   }
 
   interface Props {
@@ -98,6 +115,12 @@
     // Share timeline: called with a share-card bubble's ShareEvent when its
     // "Open in Claude" action is tapped (the host owns the deep link).
     onopenshareinclaude?: (share: ShareEvent) => void | Promise<void>;
+    // File-share stack click. Fires in addition to opening the in-thread picker.
+    onopenattachments?: () => void;
+    /** Navigate to `files:<slug>:<path>` (tests inject; default opens the desktop). */
+    onnavigatefiles?: (route: string) => void;
+    /** Membership list used to resolve a folder's companyUid to a known slug. */
+    companies?: ReadonlyArray<AttachmentCompany>;
     // When true, the reply composer is hidden and a static note renders in its
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
@@ -128,6 +151,9 @@
     reactions = {},
     ontogglereaction,
     onopenshareinclaude,
+    onopenattachments,
+    onnavigatefiles,
+    companies = [],
     readonly = false,
     composer = true,
     belowMessages,
@@ -149,6 +175,53 @@
   }
 
   let linkMenu = $state<LinkMenuAnchor | null>(null);
+  let pickerAttachments = $state<MessageAttachment[] | null>(null);
+  let previewIndex = $state<number | null>(null);
+  let filesNotice = $state<string | null>(null);
+
+  function openAttachmentPicker(attachments: MessageAttachment[]): void {
+    pickerAttachments = attachments;
+    previewIndex = null;
+    onopenattachments?.();
+  }
+
+  function closeAttachmentPicker(): void {
+    pickerAttachments = null;
+    previewIndex = null;
+  }
+
+  function closeAttachmentPreview(): void {
+    previewIndex = null;
+  }
+
+  function openAttachmentInFiles(attachment: MessageAttachment): void {
+    const route = filesRouteForAttachment(attachment, companies);
+    if (!route) {
+      filesNotice = ATTACHMENT_MISSING_COMPANY;
+      return;
+    }
+    filesNotice = null;
+    if (onnavigatefiles) {
+      onnavigatefiles(route);
+      return;
+    }
+    void invoke('open_desktop_alt_window', { route }).catch(() => {
+      // Navigation is best-effort; the preview stays open so the user can retry.
+    });
+  }
+
+  function onAttachmentDialogKey(event: KeyboardEvent): void {
+    if (event.key !== 'Escape') return;
+    if (previewIndex !== null) {
+      event.preventDefault();
+      closeAttachmentPreview();
+      return;
+    }
+    if (pickerAttachments) {
+      event.preventDefault();
+      closeAttachmentPicker();
+    }
+  }
 
   function openConversationLink(url: string): void {
     void openExternal(url).catch(() => {
@@ -509,7 +582,7 @@
       {/if}
       <div
         class="dm-bubble"
-        class:dm-bubble-share={!!msg.share}
+        class:dm-bubble-share={!!msg.share || isFileShareMessage(msg)}
         class:dm-bubble-thread-active={!!activeRootEventId && msg.rootEventId === activeRootEventId}
       >
         <!-- Copy the whole message. Hover/focus-revealed on every bubble so it
@@ -552,7 +625,17 @@
             {/if}
           </button>
         </div>
-        {#if msg.share}
+        {#if isFileShareMessage(msg)}
+          <AttachmentStack
+            attachments={msg.attachments ?? []}
+            senderName={messageAuthor(msg)}
+            onopen={() => openAttachmentPicker(msg.attachments ?? [])}
+            onfolder={openAttachmentInFiles}
+          />
+          {#if msg.body?.trim()}
+            <p class="share-card-note">{msg.body}</p>
+          {/if}
+        {:else if msg.share}
           {@const share = msg.share}
           <!-- Inline share card: file icon + filename(s), note, permission. -->
           <div class="share-card" class:share-card-multi={share.paths.length > 1}>
@@ -761,6 +844,30 @@
     </div>
   </div>
 {/if}
+{/if}
+
+<svelte:window onkeydown={onAttachmentDialogKey} />
+
+{#if filesNotice}
+  <p class="dm-files-notice" data-testid="attachment-files-notice" role="status">{filesNotice}</p>
+{/if}
+
+{#if pickerAttachments}
+  <AttachmentPicker
+    attachments={pickerAttachments}
+    onclose={closeAttachmentPicker}
+    onselect={(index) => (previewIndex = index)}
+    onfolder={openAttachmentInFiles}
+  />
+{/if}
+{#if pickerAttachments && previewIndex !== null}
+  <AttachmentPreview
+    attachments={pickerAttachments}
+    index={previewIndex}
+    onclose={closeAttachmentPreview}
+    onindex={(next) => (previewIndex = next)}
+    onopeninfiles={openAttachmentInFiles}
+  />
 {/if}
 
 <style>
@@ -1606,6 +1713,13 @@
   .dm-reply-error {
     font-size: var(--text-base);
     color: var(--red, var(--popover-danger));
+    word-break: break-word;
+  }
+
+  .dm-files-notice {
+    margin: 0 1.25rem 0.75rem;
+    font-size: var(--text-base);
+    color: var(--pop-muted);
     word-break: break-word;
   }
 

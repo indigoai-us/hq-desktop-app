@@ -38,15 +38,16 @@ export const SETUP_BOT_WORKER = "setup";
 /**
  * The bot's first message, sent by the runtime the moment it starts
  * (`hq bot create --intro`) instead of waiting for a model turn. Two short
- * sentences: the plan, and that step one is starting now — never an open
+ * sentences: the plan, and that it is checking the Mac now and may take a
+ * minute (the first model turn is slow, so say so up front) — never an open
  * "what would you like to do?", because the kickoff turn below follows it
  * automatically. Keep it under 500 characters (the CLI's `--intro` limit) and
  * on one line (the host rejects control characters).
  */
 export const SETUP_BOT_INTRO =
   "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
-  "the work you already have, the apps you use, and your first bot. " +
-  "I'm starting step one now by checking what's already set up on this Mac.";
+  "the work you already have, your business and the apps you use, and your first bot. " +
+  "I'm checking your Mac now, which can take a minute, and I'll post my first question here as soon as I'm done.";
 
 /**
  * Prefix the setup template recognises (`core/workers/public/setup`, "When
@@ -61,23 +62,26 @@ export const SETUP_BOT_KICKOFF_PREFIX = "Kickoff:";
  * for the person to type. Under 2000 characters and on one line.
  */
 export const SETUP_BOT_KICKOFF =
-  `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are starting step one now, ` +
+  `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are checking the Mac now, ` +
   "so do not greet again or repeat the plan. " +
   "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
   "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
   "Then begin the first unfinished step right away, exactly as your instructions for the kickoff say: " +
   "do the part you can do yourself, tell me in one line what you found or fixed, " +
   "and end with exactly one concrete question or one concrete action for me. " +
-  "If the tools are all installed and working, also tell me I can say skip at any stage to jump to the end, as your instructions describe. " +
   "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
   "Never end with an open question like \"what would you like to do?\"";
 
 /** Hero + button copy for the setup-bot path. */
 export const SETUP_BOT_COPY = {
-  /** Create it and open the conversation. */
-  run: "Run Setup",
+  /**
+   * Create it and open the conversation. The bot normally starts by itself on
+   * first open, so by the time anyone reads this button its hello is already
+   * waiting: the label says what the click does, which is open it.
+   */
+  run: "Open Setup Agent",
   /** One already exists: this only opens the conversation. */
-  open: "Open your setup bot",
+  open: "Open Setup Agent",
   /** Home's setup card, where "Run Setup" would not say what happens. */
   create: "Create your setup bot",
   /** Home's setup card, in place of "open your agent and run /setup". */
@@ -250,3 +254,53 @@ export function singleFlightStart(
 export function setupBotActionLabel(launcher: Pick<SetupBotLauncher, "existing"> | null | undefined): string {
   return launcher?.existing ? SETUP_BOT_COPY.open : SETUP_BOT_COPY.run;
 }
+
+/** The HQ console on the web: team, billing, bots and settings. */
+export const SETUP_BOT_CONSOLE_URL = "https://hq.computer";
+
+
+/** Copy for the finish card under the setup bot's last message. */
+export const SETUP_BOT_FINALE_COPY = {
+  eyebrow: "Setup complete",
+  title: "You're set up.",
+  toolsLead: "Keep working in the coding tool you already use. It opens your HQ folder, ready to go.",
+  claude: "Open in Claude Code",
+  codex: "Open in Codex",
+  consoleLead: "Manage your team, billing and bots from the HQ console on the web.",
+  console: "Open the HQ console",
+  dismiss: "Dismiss",
+} as const;
+
+/**
+ * Should the setup finish card show under this conversation? Pure.
+ *
+ * True once the setup bot has sent the `setupDone` block, and only until the
+ * person writes again. The card is the close of setup; a follow-up means the
+ * conversation carried on, and the card would otherwise sit under every later
+ * message. Only the bot's first `setupDone` counts, so a bot that repeats the
+ * block later does not bring the card back.
+ *
+ * `messages` is the timeline, oldest first.
+ */
+export function setupFinaleDue(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  marksDone: (message: { body?: string | null; richContent?: unknown }) => boolean,
+): boolean {
+  const uid = botUid.trim();
+  if (!uid) return false;
+  const doneAt = messages.findIndex((m) => (m.fromPersonUid ?? "").trim() === uid && marksDone(m));
+  if (doneAt < 0) return false;
+  return !messages.slice(doneAt + 1).some((m) => (m.fromPersonUid ?? "").trim() !== uid);
+}
+
+/**
+ * The other way through setup, for people who already work in a coding tool:
+ * shown on #welcome next to Run Setup, big enough to notice.
+ */
+export const SETUP_ELSEWHERE_COPY = {
+  title: "Already use Claude Code or Codex?",
+  body:
+    "You can set up HQ there instead. Open your HQ folder with the Launch button in the top right, " +
+    "then type /setup. Or open it straight from here, with /setup ready to go:",
+} as const;

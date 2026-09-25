@@ -13,14 +13,21 @@
  * never a silent default.
  */
 
-import type { LocalBotCreateInput, LocalBotKind, LocalBotWorkerOption } from "@hq/platform";
+import type {
+  AgentProvisionOptionsView,
+  LocalBotCreateInput,
+  LocalBotKind,
+  LocalBotWorkerOption,
+} from "@hq/platform";
 import type { AvatarSelection } from "../../avatars/types.js";
 import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../local-bots.js";
+import { runtimeBlocksNext, runtimeStatusOf, runtimeStepIssue, type RuntimeStatus } from "./runtime-status.js";
 
 export type CreateBotStep = "kind" | "home" | "details";
 export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
+export type CloudBotAuthMode = "subscription" | "apiKey";
 export type BotMemory = "synced" | "local";
 /** Who a Local bot acts as (bot-kinds): the owner, or itself inside its companies. */
 export type BotScope = LocalBotKind;
@@ -30,6 +37,10 @@ export interface CreateBotDraft {
   templateId?: string;
   home: BotHome;
   runtime: BotRuntime;
+  /** Cloud-only size rung, chosen from the current company quote. */
+  size: "basic" | "power" | "dev" | "";
+  /** Cloud-only provider credential mode. */
+  authMode: CloudBotAuthMode;
   companyUid?: string;
   /** Local only: personal (acts as you) or company (acts as itself). */
   scope: BotScope;
@@ -44,7 +55,12 @@ export interface CreateBotDraft {
    * same way the avatar pick is.
    */
   title: string;
-  /** Cloud only: the @handle. Empty means "follow the name". */
+  /**
+   * The @handle the bot is created under. Empty means "follow the name" —
+   * the slug of the display name. Both homes use it: a Local bot's handle is
+   * its folder name and what the CLI knows it as, so it is derived, shown,
+   * and only edited by hand when the derived one collides or is empty.
+   */
   handle: string;
   intro: string;
   avatar?: AvatarSelection;
@@ -61,19 +77,31 @@ export interface CreateBotContext {
   canCloud: boolean;
   /** `{ claude: true, codex: false }`; null → unknown, treated as ready. */
   runtimeReady: Record<string, boolean> | null;
-  /** Names already taken by the user's local bots. */
+  /**
+   * The state behind that boolean, per runtime. `runtimeReady` cannot tell
+   * not-installed from couldn't-check from signed-out, and the wizard has to
+   * say which. Absent → fall back to the boolean.
+   */
+  runtimeStatus?: Record<string, RuntimeStatus> | null;
+  /** Handles already taken by the user's local bots. */
   existingNames: readonly string[];
   companies: ReadonlyArray<{ companyUid: string; label: string }>;
   /** The owner's companies a Local company bot can belong to (slugs). */
   ownerCompanies: ReadonlyArray<{ slug: string; label: string }>;
   templates: readonly LocalBotWorkerOption[];
+  /** Server-resolved hq-flags value. Claude stays hidden until this is true. */
+  claudeProviderEnabled?: boolean;
+  /** Tenant-specific options from GET /v1/agents/provision-options. */
+  cloudProvisionOptions?: AgentProvisionOptionsView | null;
+  cloudQuoteStatus?: "loading" | "ready" | "error";
+  cloudApiKeyPresent?: boolean;
 }
 
 /** One-line copy for each bot scope, shown beside the choice. */
 export const BOT_SCOPE_COPY: Record<BotScope, { title: string; sub: string }> = {
   personal: {
     title: "Personal — acts as you",
-    sub: "Works under your account, with everything you can reach. Stays on this Mac.",
+    sub: "Works under your account, with everything you can reach. Stays on this Mac. It has no company identity, so teammates can’t find it — make it a company bot to share it.",
   },
   company: {
     title: "For a company",
@@ -82,6 +110,8 @@ export const BOT_SCOPE_COPY: Record<BotScope, { title: string; sub: string }> = 
 };
 
 export const INTRO_MAX = 500;
+/** Display names are a label, not a description. */
+export const NAME_MAX = 60;
 /** Agent-profile titles are a one-line label, not a description. */
 export const TITLE_MAX = 60;
 
@@ -104,7 +134,9 @@ export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud"
   return {
     kind: "blank",
     home: ctx.canLocal ? "local" : "cloud",
-    runtime: firstReadyRuntime(ctx.runtimeReady),
+    runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : "codex",
+    size: "",
+    authMode: "subscription",
     companyUid: ctx.companies[0]?.companyUid,
     scope: "personal",
     companySlugs: [],
@@ -153,14 +185,40 @@ function taken(name: string, existing: readonly string[]): boolean {
   return existing.some((e) => normalizeBotName(e) === n);
 }
 
-/** Validation message for the name field; null when the name is fine. */
-export function nameIssue(name: string, existing: readonly string[]): string | null {
-  const n = normalizeBotName(name);
+/**
+ * Validation for a bot's DISPLAY name — the free-form label a person types
+ * ("Dr Love"). Spaces and capitals are fine here; the handle rules live in
+ * `handleIssue`/`localHandleIssue`, which judge the derived slug instead.
+ */
+export function displayNameIssue(name: string): string | null {
+  const n = name.trim();
   if (!n) return "Give your bot a name.";
-  if (!isValidLocalBotName(n)) {
-    return "Lowercase letters, digits, and single hyphens — for example “scout-2”.";
+  if (n.length > NAME_MAX) return `Keep the name under ${NAME_MAX} characters.`;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(name)) {
+    return "The name can\u2019t contain control characters.";
   }
-  if (taken(n, existing)) return `You already have a bot named ${n}.`;
+  return null;
+}
+
+/**
+ * Validation for the handle a LOCAL bot is created under: the slug derived
+ * from its display name, or the one the person typed into "edit handle".
+ * This is the field that must stay unique and CLI-safe, so a collision or an
+ * unslugifiable name is reported here rather than against the display name.
+ */
+export function localHandleIssue(
+  draft: Pick<CreateBotDraft, "name" | "handle">,
+  existing: readonly string[],
+): string | null {
+  const handle = botHandle(draft);
+  if (!handle) {
+    return "That name has no letters or digits \u2014 give the bot a handle, for example \u201cscout-2\u201d.";
+  }
+  if (!isValidLocalBotName(handle)) {
+    return "Handles are lowercase letters, digits, and single hyphens \u2014 for example \u201cscout-2\u201d.";
+  }
+  if (taken(handle, existing)) return `You already have a bot with the handle @${handle}.`;
   return null;
 }
 
@@ -173,13 +231,10 @@ export function botHandle(draft: Pick<CreateBotDraft, "name" | "handle">): strin
 /**
  * Validation for a Cloud bot's display name. A cloud bot's name is a label the
  * company sees ("Polar"), not the @handle, so it is not held to the handle's
- * character rules — `handleIssue` covers those.
+ * character rules \u2014 `handleIssue` covers those.
  */
 export function cloudNameIssue(name: string): string | null {
-  const n = name.trim();
-  if (!n) return "Give your bot a name.";
-  if (n.length > 60) return "Keep the name under 60 characters.";
-  return null;
+  return displayNameIssue(name);
 }
 
 /** Validation for the @handle a Cloud bot is created under; null when fine. */
@@ -376,9 +431,16 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
     case "home":
       if (draft.home === "local") {
         if (!ctx.canLocal) return "Bots can’t run on this computer.";
-        if (!runtimeIsReady(ctx.runtimeReady, draft.runtime)) {
+        {
           const label = LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime;
-          return `${label} is not signed in on this Mac.`;
+          const status = runtimeStatusOf(ctx.runtimeStatus, draft.runtime);
+          // The status is the authority when the host has one: it names WHICH
+          // problem, so the person is not told to sign in to a CLI that is not
+          // installed. The boolean is the fallback for hosts without it.
+          if (status) return runtimeBlocksNext(status) ? runtimeStepIssue(status, label) : null;
+          if (!runtimeIsReady(ctx.runtimeReady, draft.runtime)) {
+            return `${label} is not signed in on this Mac.`;
+          }
         }
         return null;
       }
@@ -389,11 +451,32 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
       return null;
     case "details":
       if (draft.home === "cloud") {
-        return cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
+        const fieldsIssue =
+          cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
+        if (fieldsIssue) return fieldsIssue;
+        if (draft.runtime === "claude" && ctx.claudeProviderEnabled !== true) {
+          return "Claude isn’t available for this account.";
+        }
+        if (ctx.cloudQuoteStatus !== "ready" || !ctx.cloudProvisionOptions) {
+          return ctx.cloudQuoteStatus === "error"
+            ? "Couldn’t load company pricing. Try again."
+            : "Checking company pricing…";
+        }
+        const quotedSize = ctx.cloudProvisionOptions.options.find(
+          (option) => option.key === draft.size,
+        );
+        if (!quotedSize?.selectable || quotedSize.netMonthlyCents === null) {
+          return "Choose an available size.";
+        }
+        if (draft.authMode === "apiKey" && !ctx.cloudApiKeyPresent) {
+          return "Enter an API key to continue.";
+        }
+        return null;
       }
       // "Who is it for?" is answered here now, so its rule is checked here.
       return (
-        nameIssue(draft.name, ctx.existingNames) ??
+        displayNameIssue(draft.name) ??
+        localHandleIssue(draft, ctx.existingNames) ??
         titleIssue(draft.title) ??
         introIssue(draft.intro) ??
         scopeIssue(draft, ctx)
@@ -439,7 +522,7 @@ export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
   const worker = draft.kind === "template" ? (draft.templateId ?? "").trim() : "";
   const companies = draft.scope === "company" ? [...new Set(draft.companySlugs.map((c) => c.trim()).filter(Boolean))] : [];
   return {
-    name: normalizeBotName(draft.name),
+    name: botHandle(draft),
     runtime: draft.runtime,
     autoApprove: draft.autoApprove,
     ...(model ? { model } : {}),
@@ -450,6 +533,18 @@ export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
     // against an hq that predates `--kind` keeps creating personal/setup bots.
     ...(draft.scope === "company" ? { kind: "company" as const, companies } : {}),
   };
+}
+
+/**
+ * The display name to store for this draft, or "" when there is nothing to
+ * store. A name that is already its own slug ("scout") needs no display name:
+ * the handle is the label, and bots made before display names existed read
+ * the same way.
+ */
+export function botDisplayName(draft: Pick<CreateBotDraft, "name" | "handle">): string {
+  const display = draft.name.trim();
+  if (!display || display === botHandle(draft)) return "";
+  return display;
 }
 
 /** "acts as you" / "for Indigo and Ridge" for the preview card. */

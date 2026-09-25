@@ -18,6 +18,7 @@ import {
   type ConnectorImportSourceSet,
   type ErrorCategory,
   type FailedDependency,
+  type SetupErrorKind,
   type StageId,
 } from './onboarding-setup';
 import type { WizardStepId } from './onboarding-wizard';
@@ -59,7 +60,7 @@ export interface OnboardingStepProperties {
   failedDependency?: FailedDependency;
   errorCategory?: ErrorCategory;
   failureStage?: StageId;
-  errorKind?: import('./desktop-session-continuation').ContinuationErrorKind;
+  errorKind?: SetupErrorKind;
   setupRunId?: string;
 }
 

@@ -79,7 +79,7 @@
 
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
-  import { richContentForMessage } from "./richMessageContent";
+  import { messageHasVisibleContent, richContentForMessage } from "./richMessageContent";
   import { decisionAnswersFromMessages } from "./decision-answers";
   import type { DecisionOption } from "./richMessageContent";
   import {
@@ -1568,7 +1568,7 @@
               }}
               time={row.timeLabel}
             />
-          {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
+          {:else if messageHasVisibleContent(msg) || parseMessageAttachments(msg).length > 0}
             {@const rich = richContentForMessage(msg)}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"

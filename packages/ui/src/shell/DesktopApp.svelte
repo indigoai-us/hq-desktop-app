@@ -23,7 +23,12 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
-  import { failure, startJitteredPoll, type PlatformAdapter } from "@hq/platform";
+  import {
+    CLAUDE_PROVIDER_FLAG,
+    failure,
+    startJitteredPoll,
+    type PlatformAdapter,
+  } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -63,6 +68,8 @@
   import SetupRunCard from "../chat/SetupRunCard.svelte";
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
+  import SetupBotFinale from "../chat/SetupBotFinale.svelte";
+  import { messageMarksSetupDone } from "../chat/messaging/richMessageContent.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -82,6 +89,7 @@
     findSetupBot,
     findSetupBotContact,
     firstSignedInRuntime,
+    setupFinaleDue,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_INTRO,
@@ -98,10 +106,12 @@
   } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
+    claudeSubscriptionSignInUrl,
     runCreateCloudBotEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
     type EntryPointTarget,
+    type CloudBotDraft,
   } from "../chat/lifecycle-entry-points.js";
   import {
     openCreateCompanyDraft,
@@ -141,11 +151,11 @@
   import CompanyHero from "../chat/CompanyHero.svelte";
   import {
     companyChannelTabsFor,
+    isCompanyChannelTabId,
     parseCompanyTab,
     type CompanyChannelTabId,
     type CompanyTabModel,
   } from "../chat/tabs/tab-model.js";
-  import OfficePanel from "../meet/OfficePanel.svelte";
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
@@ -188,6 +198,14 @@
   } from "../settings/update-store.svelte";
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
+  import ChannelMuteControl from "../chat/ChannelMuteControl.svelte";
+  import {
+    changeNotifyLevel,
+    defaultNotifyLevel,
+    loadRememberedNotifyLevels,
+    saveRememberedNotifyLevels,
+    type NotifyLevel,
+  } from "../chat/notify-level";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
@@ -234,7 +252,7 @@
     type NavigationScrollState,
   } from "./navigation-history.js";
   import {
-    captureNavigationScroll,
+    createNavigationScrollTracker,
     scheduleNavigationScrollRestore,
   } from "./navigation-scroll.js";
   import {
@@ -307,6 +325,7 @@
     isAgentUid,
     newestMessageAtFrom,
     startThinkingIn,
+    syncBusyThinking,
     kickoffThinkingState,
     tickAll,
     type ThinkingByRow,
@@ -333,9 +352,12 @@
     type LocalBotTrace,
   } from "../chat/bot-runnability.js";
   import {
+    busyLocalBotUids,
     isAlreadyExistsFailure,
+    LOCAL_BOT_BUSY_POLL_MS,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
+    localBotNeedsOfflineNotice,
     localBotOfflineNotice,
     localBotPresence,
     type LocalBotEntryResult,
@@ -343,6 +365,11 @@
     plainBotFailure,
     promotedBotCompany,
   } from "../chat/local-bots.js";
+  import {
+    loadBotDisplayNames,
+    rememberBotDisplayName,
+    type BotDisplayNames,
+  } from "../chat/bot-display-names.js";
   import {
     adoptFallbackNotice,
     BOT_RESTORE_ALL,
@@ -410,6 +437,7 @@
   } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
     ChatSidebarApi,
@@ -467,6 +495,7 @@
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
   import {
+    findCompanyHomeRow,
     isStrictlyRicherConversationRow,
     stepConversation,
     type ConversationRow,
@@ -1313,6 +1342,7 @@
   } | null>(null);
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
+  let inboxRouteNotice = $state<string | null>(null);
   let navigationPending = $state(false);
   let navigationUnavailable = $state<{
     destination: NavigationDestination;
@@ -1325,13 +1355,14 @@
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
   let cancelScrollRestore: (() => void) | null = null;
   const DESTINATION_UNAVAILABLE = "This destination is no longer available.";
+  const INBOX_ROUTE_MISSING_NOTICE =
+    "Couldn't find that conversation. Opened Inbox instead.";
   let tab = $state<ChannelTab>("chat");
   let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
   /**
-   * US-018: the company tabs this host may actually offer. Office appears only
-   * when the platform adapter reports native calling, so the web build never
-   * advertises a destination it cannot open.
+   * The company tabs this host may actually offer. Office is currently hidden
+   * for all company channels; see `companyChannelTabsFor`.
    */
   const companyTabsForHost = $derived(
     companyChannelTabsFor({
@@ -1432,6 +1463,12 @@
   // thread notice track the bot without any CLI on the user's side.
   let localBotRecords = $state<LocalBotRow[]>([]);
   const localBots = $derived(locallyHostedBots(localBotRecords));
+  /**
+   * agentUid → display name for bots whose label differs from their handle.
+   * `hq bot list` reports the handle only, so the app keeps this copy of what
+   * it PATCHed onto the agent profile; every reader falls back to the handle.
+   */
+  let botDisplayNames = $state<BotDisplayNames>(loadBotDisplayNames());
   let localBotBusy = $state<string | null>(null);
   let localBotActionError = $state<string | null>(null);
   /**
@@ -1752,19 +1789,42 @@
   });
   /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
   let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
+  /** The state behind that boolean, per runtime; null when the host has none. */
+  let localBotRuntimeStatus = $state<Record<string, RuntimeStatus> | null>(null);
+  /** Coding tools installed on this Mac (signed in or not), for the setup finish card. */
+  let localCodingToolsInstalled = $state<Record<string, boolean>>({});
   /** Company/core workers a bot can be created from; loaded once on demand. */
   let localBotWorkers = $state<LocalBotWorkerOption[] | null>(null);
-  async function loadLocalBotRuntimeReady(): Promise<void> {
+  async function loadLocalBotRuntimeReady(force = false): Promise<void> {
     const preflight = adapter.sessions?.preflight;
-    if (!preflight || localBotRuntimeReady) return;
+    if (!preflight) return;
+    // A cached reading is enough unless the person asked to check again.
+    if (localBotRuntimeReady && !force) return;
     const result = await preflight();
     if (!result.ok) return;
     const rec = result.value as Record<string, unknown>;
     const next: Record<string, boolean> = {};
+    const statuses: Record<string, RuntimeStatus> = {};
+    const installed: Record<string, boolean> = {};
     for (const id of ["claude", "codex", "grok"]) {
       next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
+      installed[id] = rec[`${id}Available`] === true;
+      const status = parseRuntimeStatus(rec[`${id}Status`]);
+      if (status) statuses[id] = status;
     }
     localBotRuntimeReady = next;
+    localCodingToolsInstalled = installed;
+    // Only when the host reported them — an empty map reads as "unknown".
+    localBotRuntimeStatus = Object.keys(statuses).length > 0 ? statuses : null;
+  }
+
+  /**
+   * Ask again (Check again in the flow). The old reading stays on screen while
+   * it runs: clearing it would read as "unknown", which the flow treats as
+   * ready, and Next would blink enabled on a runtime that cannot host a bot.
+   */
+  async function recheckLocalBotRuntimes(): Promise<void> {
+    await loadLocalBotRuntimeReady(true);
   }
   async function loadLocalBotWorkers(): Promise<void> {
     const workers = adapter.bots?.workers;
@@ -1834,19 +1894,25 @@
     const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
     await refreshLocalBots();
     if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    // The label is remembered before the PATCH so the sidebar shows the name
+    // the person typed even if the profile write fails or the app is offline.
+    const label = extras.displayName?.trim() || input.name;
+    if (extras.displayName?.trim()) {
+      botDisplayNames = rememberBotDisplayName(botDisplayNames, agentUid, extras.displayName);
+    }
     // A kickoff turn starts with no message from the person, so nothing else
     // would show "is thinking…" while the bot works on it.
     if (input.kickoff?.trim()) kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: input.name };
     // Identity exists (the CLI returned a uid); the launch agent is installing.
     botProgressByUid = {
       ...botProgressByUid,
-      [agentUid]: { name: input.name, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
+      [agentUid]: { name: label, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
     };
     const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
     const row: ConversationRow = existing ?? {
       id: `dm:${agentUid}`,
       kind: "dm",
-      title: input.name,
+      title: label,
       companyUid: null,
       unreadDot: false,
       lastActivityAt: Date.now(),
@@ -1858,19 +1924,24 @@
     return { ok: true, agentUid, name: input.name };
   }
   /**
-   * The parts of the create flow neither create path has a field for — the job
-   * title and the avatar pick — written onto the agent profile now that the
-   * bot has a uid. Sequential: both land on the same profile document. Local
-   * bots bring both; a cloud bot brings the title.
+   * The parts of the create flow neither create path has a field for — the
+   * display name, the job title and the avatar pick — written onto the agent
+   * profile now that the bot has a uid. Sequential: all three land on the
+   * same profile document. `hq bot create` takes only the handle, so a bot
+   * named "Dr Love" is created as `dr-love` and labelled here.
    */
   async function saveNewBotProfile(agentUid: string, extras: CreateBotExtras): Promise<void> {
     const title = extras.title?.trim() ?? "";
-    if (title) {
+    const displayName = extras.displayName?.trim() ?? "";
+    if (title || displayName) {
       try {
-        await adapter.identity.updateAgentProfile(agentUid, { title });
+        await adapter.identity.updateAgentProfile(agentUid, {
+          ...(title ? { title } : {}),
+          ...(displayName ? { displayName } : {}),
+        });
       } catch (err) {
-        // The bot exists and works; only its subtitle is missing.
-        console.warn("[hq-desktop] bot title save failed:", err);
+        // The bot exists and works; only its label/subtitle is missing.
+        console.warn("[hq-desktop] bot profile save failed:", err);
       }
     }
     if (extras.avatar) await saveNewBotAvatar(agentUid, extras.avatar);
@@ -2039,12 +2110,12 @@
     return { ok: false, reason: created.reason };
   }
   /**
-   * First open on this Mac: the setup bot starts by itself, so the person is
-   * greeted and walked through setup without pressing anything. Only when
-   * setup has never been run here, a coding tool is signed in (otherwise Run
-   * Setup shows the Connect step first), and once per app session. Run Setup
-   * then opens the bot's conversation. A failure leaves Run Setup to retry
-   * and explain.
+   * First open on this Mac: the setup bot starts by itself, so its hello is
+   * already waiting when the person opens the conversation. #welcome's button
+   * then just opens it (and #welcome also offers setting up in the coding tool
+   * they already use). Only when setup has never been run here, a coding tool
+   * is signed in (otherwise the button shows the Connect step first), and once
+   * per app session. A failure leaves the button to retry and explain.
    */
   $effect(() => {
     if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
@@ -2161,9 +2232,44 @@
     await loadLocalBotRuntimeReady();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
-  const selectedLocalBotOffline = $derived(
-    Boolean(selectedLocalBot && selectedLocalBot.online !== true),
+  /**
+   * The setup bot's DM, once the bot has marked setup finished and the person
+   * has not written since: show the finish card. A follow-up puts it away.
+   */
+  const setupBotDmDone = $derived.by(() => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return false;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupFinaleDue(timeline, bot.agentUid, messageMarksSetupDone);
+  });
+  $effect(() => {
+    if (setupBotDmDone) void loadLocalBotRuntimeReady();
+  });
+  /**
+   * The finish card, once put away, stays away.
+   *
+   * Setup ending is not the end of the conversation: people keep talking to
+   * the bot, and a card pinned under the last message follows them down the
+   * thread for ever. Dismissing is remembered per bot, so it does not come
+   * back on the next launch either.
+   */
+  let setupFinaleDismissedAt = $state(0);
+  const setupFinaleDismissKey = $derived(
+    selectedLocalBot ? `setup-finale-dismissed:${selectedLocalBot.agentUid}` : null,
   );
+  const setupFinaleVisible = $derived.by(() => {
+    if (!setupBotDmDone) return false;
+    void setupFinaleDismissedAt;
+    const key = setupFinaleDismissKey;
+    return !key || tenantStorage.getItem(key) !== "1";
+  });
+  function dismissSetupFinale(): void {
+    const key = setupFinaleDismissKey;
+    if (key) tenantStorage.setItem(key, "1");
+    setupFinaleDismissedAt = Date.now();
+  }
+  const selectedLocalBotOffline = $derived(localBotNeedsOfflineNotice(selectedLocalBot));
   /**
    * The open bot's coding tool needs a new sign-in (`hq bot list` reports it):
    * the bot has paused, so the conversation says so above the composer and
@@ -2721,6 +2827,7 @@
   let cloudReachable = $state(true);
   let cloudError = $state<string | null>(null);
   let manifestError = $state<string | null>(null);
+  let emailVerificationRequired = $state(false);
   let syncWorkspaces = $state<Record<string, unknown>[]>([]);
   let hqFolderPath = $state<string | null>(null);
 
@@ -2747,6 +2854,7 @@
     }
     const envelope = (res.value ?? {}) as unknown as Partial<WorkspacesResult>;
     cloudReachable = envelope.cloudReachable !== false;
+    emailVerificationRequired = envelope.emailVerificationRequired === true;
     cloudError =
       typeof envelope.error === "string" && envelope.error.trim()
         ? envelope.error.trim()
@@ -2975,7 +3083,9 @@
       scope === "project"
         ? "project channel"
         : scope === "company"
-          ? "company channel"
+          ? row.isCompanyHome
+            ? "company home"
+            : "team channel"
           : scope === "personal"
             ? "personal channel"
             : "channel";
@@ -3004,9 +3114,14 @@
         selectedRow.kind === "channel" &&
         provisioning.state !== null),
   );
+  // Only the ONE company-home channel per company (created at genesis, named
+  // after the slug) carries CompanyHero/Office/settings chrome. Every other
+  // `channelScope === "company"` row is a plain team channel and must render
+  // as a normal channel — see `isCompanyHome` on ConversationRow.
   const isCompanyChannel = $derived(
     selectedRow?.kind === "channel" &&
       (selectedRow?.channelScope ?? "channel") === "company" &&
+      Boolean(selectedRow?.isCompanyHome) &&
       !isSetupChannel(selectedRow.channelId) &&
       !isAgentChannel,
   );
@@ -3200,6 +3315,43 @@
     selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
   );
 
+  // While a local bot's conversation is open, list its bots often enough that
+  // the thinking indicator can follow a short turn (the ordinary poll is 30 s).
+  $effect(() => {
+    if (!adapter.bots) return;
+    const bot = selectedLocalBot;
+    if (!bot || selectedRow?.kind !== "dm") return;
+    const handle = window.setInterval(() => {
+      void refreshLocalBots();
+    }, LOCAL_BOT_BUSY_POLL_MS);
+    return () => {
+      clearInterval(handle);
+    };
+  });
+
+  // A local bot that is mid-turn keeps its indicator, even after it posts.
+  // The CLI reports `busy` from the bot's own in-flight marker, so a progress
+  // note in the middle of a long turn no longer reads as "finished" and the
+  // DM stops going silent while the bot is still working. When the turn ends,
+  // `busy` drops and the row is cleared here.
+  let previouslyBusyBotUids: string[] = [];
+  const busyBotUids = $derived(busyLocalBotUids(localBots));
+  $effect(() => {
+    const busy = busyBotUids;
+    // The map is read and written here, so it must not be a dependency of
+    // this effect — only the busy list is.
+    untrack(() => {
+      const next = syncBusyThinking(thinkingByRow, {
+        busy,
+        previouslyBusy: previouslyBusyBotUids,
+        nameOf: (uid) => localBots.find((b) => b.agentUid === uid)?.name ?? "bot",
+        now: Date.now(),
+      });
+      previouslyBusyBotUids = busy;
+      if (next !== thinkingByRow) thinkingByRow = next;
+    });
+  });
+
   // Background-task chips for the agents in the selected conversation — the
   // room-scoped route for a channel (every agent on its roster), the
   // agent-wide view for a DM with an agent. One controller per selection;
@@ -3267,6 +3419,9 @@
     rowId: string,
   ): void {
     if (!thinkingByRow[rowId]?.length) return;
+    // A local bot that is still mid-turn keeps its row: its interim post is
+    // not the end of the turn, and the in-flight marker outranks the message.
+    if (busyBotUids.some((uid) => rowId === `dm:${uid}`)) return;
     // Timestamp-aware so a full-history hydrate or overlapping catch-up page
     // containing an OLD agent message cannot clear a newer row.
     thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
@@ -3760,6 +3915,17 @@
   let contactAvatarByUid = $state<Record<string, string>>({});
   let avatarOverridesByUid = $state<Record<string, string>>({});
   let rosterWakeSeq = $state(0);
+  const BOT_TOGGLE_KEY = 'hq:messages:show-bot-messages';
+  let showBotMessages = $state(
+    typeof localStorage !== 'undefined' && localStorage.getItem(BOT_TOGGLE_KEY) === 'true',
+  );
+  function handleShowBotMessagesChange(value: boolean) {
+    showBotMessages = value;
+    if (typeof localStorage !== 'undefined') {
+      if (value) localStorage.setItem(BOT_TOGGLE_KEY, 'true');
+      else localStorage.removeItem(BOT_TOGGLE_KEY);
+    }
+  }
   let agentAvatarSaving = $state(false);
   let agentAvatarSaveError = $state<string | null>(null);
   let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
@@ -4101,6 +4267,86 @@
       }
     } finally {
       removingMemberUid = null;
+    }
+  }
+
+  // ── Channel notification level (header mute control) ─────────────────────
+  let notifyLevelBusy = $state(false);
+  /** channelId → last non-muted level, restored by a one-click unmute. */
+  // Persisted so a one-click unmute after a reload still restores the level.
+  const notifyLevelStorage: Storage | null = (() => {
+    try {
+      return typeof window !== "undefined" ? window.localStorage : null;
+    } catch {
+      return null;
+    }
+  })();
+  let rememberedNotifyLevels = $state<Record<string, NotifyLevel>>(
+    loadRememberedNotifyLevels(notifyLevelStorage),
+  );
+
+  /** Level a one-click unmute restores: remembered, else the server default. */
+  const unmuteTarget = $derived.by((): NotifyLevel => {
+    const channelId = selectedRow?.channelId?.trim() ?? "";
+    return (
+      rememberedNotifyLevels[channelId] ??
+      defaultNotifyLevel({
+        scope: selectedRow?.channelScope,
+        kind: selectedRow?.kind,
+        createdBy: selectedRow?.createdBy,
+        selfUid: self?.uid,
+      })
+    );
+  });
+
+  $effect(() => {
+    const channelId = selectedRow?.channelId?.trim() ?? "";
+    const level = selectedRow?.notifyLevel;
+    if (!channelId || !level || level === "muted") return;
+    if (rememberedNotifyLevels[channelId] === level) return;
+    rememberedNotifyLevels = { ...rememberedNotifyLevels, [channelId]: level };
+    saveRememberedNotifyLevels(notifyLevelStorage, rememberedNotifyLevels);
+  });
+
+  const showNotifyBell = $derived(
+    !!selectedRow &&
+      (selectedRow.kind === "channel" || selectedRow.kind === "group") &&
+      !selectedRow.browseOnly &&
+      (selectedRow.membership ?? "joined") === "joined" &&
+      (selectedRow.channelId?.trim() ?? "").startsWith("chn_") &&
+      typeof adapter?.messaging?.setChannelNotifyLevel === "function",
+  );
+
+  /** Paint a level on the open row and the sidebar rail. */
+  function paintNotifyLevel(channelId: string, level: NotifyLevel | null): void {
+    if (selectedRow?.channelId?.trim() === channelId) {
+      selectedRow = { ...selectedRow, notifyLevel: level };
+    }
+    wakes?.emit?.("channel:notify-level", { channelId, level });
+  }
+
+  async function changeSelectedNotifyLevel(next: NotifyLevel): Promise<void> {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() ?? "";
+    const setLevel = adapter?.messaging?.setChannelNotifyLevel;
+    if (!row || !channelId || !setLevel || notifyLevelBusy) return;
+    notifyLevelBusy = true;
+    channelActionError = null;
+    try {
+      const outcome = await changeNotifyLevel({
+        previous: row.notifyLevel ?? null,
+        next,
+        apply: (level) => paintNotifyLevel(channelId, level),
+        persist: async (level) => {
+          const res = await setLevel(channelId, level);
+          return res.ok
+            ? { ok: true }
+            : { ok: false, code: res.code, message: res.message };
+        },
+      });
+      if (!outcome.ok) channelActionError = outcome.error;
+    } finally {
+      notifyLevelBusy = false;
     }
   }
 
@@ -4779,15 +5025,7 @@
    */
   function openCompanyFromSetup(company: Workspace): void {
     const uid = company.cloudUid?.trim() ?? "";
-    const row = uid
-      ? railRows.find(
-          (candidate) =>
-            candidate.kind === "channel" &&
-            !candidate.browseOnly &&
-            candidate.channelScope === "company" &&
-            candidate.companyUid === uid,
-        )
-      : undefined;
+    const row = uid ? findCompanyHomeRow(railRows, uid) : null;
     if (row) {
       handleSelect(row);
       return;
@@ -4810,7 +5048,7 @@
    */
   async function createCloudBotEntry(
     companyUid: string,
-    draft: { name: string; handle: string; title?: string },
+    draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
     const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
     if (result.ok) {
@@ -4824,6 +5062,8 @@
         console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
       }
       navigateToEntryTarget(result.target, companyUid);
+      const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
+      if (signInUrl) onopenurl?.(signInUrl);
     }
     return result;
   }
@@ -5200,6 +5440,7 @@
     row: ConversationRow,
     nested?: {
       replyRootEventId?: string | null;
+      messageId?: string | null;
       tab?: ChannelTab;
       companyTab?: CompanyChannelTabId;
       agentSurface?: AgentChannelTab;
@@ -5213,6 +5454,7 @@
         kind: "channel",
         channelId: row.channelId,
         replyRootEventId,
+        messageId: nested?.messageId ?? null,
         tab: nextTab,
         companyTab: nested?.companyTab ?? "chat",
         agentSurface: nested?.agentSurface ?? "chat",
@@ -5307,9 +5549,16 @@
     }
   }
 
+  // Sampled off the click path (see navigation-scroll.ts) so `navigate()`
+  // never forces a synchronous layout of the outgoing conversation just to
+  // remember where it was scrolled to.
+  const navigationScrollTracker = createNavigationScrollTracker(
+    () => (typeof document === "undefined" ? null : document),
+  );
+  $effect(() => () => navigationScrollTracker.stop());
+
   function readNavigationScroll(): NavigationScrollState | null {
-    if (typeof document === "undefined") return null;
-    return captureNavigationScroll(document);
+    return navigationScrollTracker.read();
   }
 
   function stopScrollRestore(): void {
@@ -5523,6 +5772,7 @@
     navigationUnavailable = null;
     embeddedNavigationError = null;
     const next = applied.entry.destination;
+    if (next.kind !== "notifications") inboxRouteNotice = null;
     meetingFocusRequest = null;
     switch (next.kind) {
       case "messages":
@@ -5625,9 +5875,19 @@
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
-          companyTab = next.companyTab === "office" ? "office" : "chat";
+          // Office is hidden for company channels; route any stale deep
+          // link that targeted it back to Chat.
+          companyTab = "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
+          const messageId = next.messageId?.trim() || "";
+          if (messageId) {
+            pendingRestoreScroll = {
+              kind: "message",
+              id: messageId,
+              offset: 0,
+            };
+          }
         } else {
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = null;
@@ -5642,6 +5902,7 @@
     getScope: () => currentNavigationScope(),
     captureCurrent: () => captureCurrentNavigation(),
     captureScroll: () => readNavigationScroll(),
+    invalidateScroll: () => navigationScrollTracker.invalidate(),
     resolve: (destination, context) =>
       resolveShellDestination(destination, context),
     apply: (applied) => applyCommittedNavigation(applied),
@@ -5761,6 +6022,7 @@
     row: ConversationRow,
     options?: {
       replyRootEventId?: string | null;
+      messageId?: string | null;
       preserveView?: boolean;
       automatic?: boolean;
     },
@@ -5773,13 +6035,14 @@
     void navigate(
       destinationFromConversation(row, {
         replyRootEventId: options?.replyRootEventId ?? null,
+        messageId: options?.messageId ?? null,
       }),
     );
   }
 
   function applyConversationDeepLink(
     link: ConversationDeepLink,
-    options?: { preserveView?: boolean },
+    options?: { preserveView?: boolean; messageId?: string | null },
   ): void {
     const row =
       conversationRowForDeepLink(link, [...searchRows, ...railRows]) ??
@@ -5802,6 +6065,7 @@
     }
     handleSelect(row, {
       replyRootEventId: reply,
+      messageId: options?.messageId ?? null,
       preserveView: options?.preserveView,
     });
   }
@@ -5815,7 +6079,10 @@
         title: pending.title,
         companyUid: pending.companyUid,
       },
-      { preserveView: pending.automatic && view !== "conversation" },
+      {
+        preserveView: pending.automatic && view !== "conversation",
+        messageId: pending.messageId,
+      },
     );
     if (pending.focusCardId || pending.focusCardKind) {
       focusLifecycleCard({
@@ -6047,7 +6314,12 @@
   );
 
   /** The user's own local bots: never on the contacts roster, but @mentionable
-   * anywhere the user can add them. */
+   * anywhere the user can add them.
+   *
+   * Deliberately the HANDLE, not the display name: the picker matches on the
+   * label it inserts, so a bot labelled "Dr Love" would not be found by
+   * typing the `@dr-love` the create flow told the person to type. Showing
+   * the display name here needs the picker to match on both. */
   const localBotMentionTargets = $derived(
     mentionTargetsFromContacts(
       localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
@@ -6491,8 +6763,8 @@
       scopeId: isDm
         ? conversationPairKey(selfUid, row.personUid ?? "")
         : (row.channelId?.trim() ?? ""),
-      presignPut: (cmp, key, contentType) =>
-        adapter.files.presignVaultPut(cmp, key, contentType),
+      presignPut: (cmp, key, contentType, integrity) =>
+        adapter.files.presignVaultPut(cmp, key, contentType, integrity),
       // Vault buckets have no CORS. Web hops through same-origin; desktop
       // sends bytes from Rust so WKWebView never PUTs to S3.
       putObject:
@@ -6947,21 +7219,156 @@
   function closeSettings(): void {
     // Settings subsections each push a history entry, so a plain history
     // back would walk Profile → Appearance → … one tab at a time. The Back
-    // button means "close Settings": return to whatever the user was looking
-    // at before Settings opened, or Messages when Settings was the first stop.
-    const { entries, index } = navigationHistory.snapshot();
-    for (let i = index - 1; i >= 0; i -= 1) {
-      const destination = entries[i]?.destination;
-      if (destination && destination.kind !== "settings") {
-        void navigate(destination);
+    // button means "close Settings": always land on the main Messages view,
+    // never on whatever page happened to be open before Settings. The
+    // titlebar history arrows still walk the full stack for users who want
+    // the previous page.
+    void navigate({ kind: "messages" });
+  }
+
+  function companyWorkspaceForSlug(slug: string) {
+    const needle = slug.trim();
+    if (!needle) return null;
+    const lower = needle.toLowerCase();
+    return (
+      (companies ?? []).find((company) => {
+        const companySlug = (company.slug ?? "").trim();
+        const uid = (company.cloudUid ?? "").trim();
+        return (
+          companySlug === needle ||
+          companySlug.toLowerCase() === lower ||
+          uid === needle
+        );
+      }) ?? null
+    );
+  }
+
+  function companyChannelRowForSlug(slug: string): ConversationRow | null {
+    const workspace = companyWorkspaceForSlug(slug);
+    const uid = (workspace?.cloudUid ?? "").trim();
+    const needle = slug.trim();
+    if (!uid && !needle) return null;
+    return findCompanyHomeRow(railRows, uid) ?? findCompanyHomeRow(railRows, needle);
+  }
+
+  async function waitForCompanyChannel(
+    slug: string,
+    context: { isStale: () => boolean },
+  ): Promise<ConversationRow | null> {
+    const attempts = 16;
+    const delayMs = 50;
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = (): void => {
+        if (context.isStale()) {
+          resolve(null);
+          return;
+        }
+        const row = companyChannelRowForSlug(slug);
+        if (row) {
+          resolve(row);
+          return;
+        }
+        tries += 1;
+        if (tries >= attempts) {
+          resolve(null);
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      tick();
+    });
+  }
+
+  async function applyCompanyDeepLink(
+    target: Extract<EmbeddedNavigationTarget, { kind: "company" }>,
+  ): Promise<void> {
+    inboxRouteNotice = null;
+    embeddedNavigationError = null;
+    const generation = navigation.generation();
+    const slug = target.slug.trim();
+    const rawTab = target.tab?.trim() ?? "";
+    const nextCompanyTab: CompanyChannelTabId = isCompanyChannelTabId(rawTab)
+      ? rawTab
+      : "chat";
+    const isCurrent = () => navigation.generation() === generation;
+    let row = companyChannelRowForSlug(slug);
+    if (!row) {
+      if (directorySettled && companies != null) {
+        embeddedNavigationError = `Unknown company: ${slug}`;
+        return;
+      }
+      row = await waitForCompanyChannel(slug, {
+        isStale: () => !isCurrent(),
+      });
+      if (!isCurrent()) return;
+      if (!row) {
+        embeddedNavigationError = `Unknown company: ${slug}`;
         return;
       }
     }
-    void navigate({ kind: "messages" });
+    const channelId = row.channelId?.trim() ?? "";
+    if (!isCurrent() || !channelId) {
+      if (!channelId) embeddedNavigationError = `Unknown company: ${slug}`;
+      return;
+    }
+    void navigate({
+      kind: "channel",
+      channelId,
+      companyTab: nextCompanyTab,
+    });
+  }
+
+  async function applyInboxDeepLink(
+    target: Extract<EmbeddedNavigationTarget, { kind: "inbox" }>,
+  ): Promise<void> {
+    inboxRouteNotice = null;
+    const generation = navigation.generation();
+    const destination = destinationFromEmbeddedTarget(target);
+    if (
+      !destination ||
+      (destination.kind !== "channel" && destination.kind !== "dm")
+    ) {
+      void navigate({ kind: "notifications" });
+      return;
+    }
+    const isCurrent = () => navigation.generation() === generation;
+    let row = rowForDestination(destination);
+    if (!row) {
+      if (directorySettled && companies != null) {
+        inboxRouteNotice = INBOX_ROUTE_MISSING_NOTICE;
+        void navigate({ kind: "notifications" });
+        return;
+      }
+      const outcome = await waitForDestinationRow(destination, {
+        isStale: () => !isCurrent(),
+      });
+      if (!isCurrent()) return;
+      if (outcome.status !== "ready") {
+        inboxRouteNotice = INBOX_ROUTE_MISSING_NOTICE;
+        void navigate({ kind: "notifications" });
+        return;
+      }
+      row = rowForDestination(destination);
+    }
+    if (!isCurrent()) return;
+    void navigate(destination);
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
   function applyEmbeddedNavigation(target: EmbeddedNavigationTarget): void {
+    if (target.kind === "company") {
+      void applyCompanyDeepLink(target);
+      return;
+    }
+    if (
+      target.kind === "inbox" &&
+      (target.dm?.trim() || target.channelId?.trim())
+    ) {
+      void applyInboxDeepLink(target);
+      return;
+    }
+    inboxRouteNotice = null;
     const destination = destinationFromEmbeddedTarget(target);
     if (!destination) {
       embeddedNavigationError =
@@ -7467,9 +7874,10 @@
     </div>
   {/if}
 
-  {#if adapter.isAvailable("canSync") && membershipsToPull.length > 0}
+  {#if adapter.isAvailable("canSync") && (membershipsToPull.length > 0 || emailVerificationRequired)}
     <MembershipSyncBanner
       memberships={membershipsToPull}
+      emailVerificationRequired={emailVerificationRequired}
       syncing={membershipSyncPending}
       error={membershipSyncError}
       onsync={() => void syncMembership()}
@@ -7484,6 +7892,16 @@
       role="alert"
     >
       Couldn’t open requested destination. {embeddedNavigationError}
+    </div>
+  {/if}
+
+  {#if inboxRouteNotice}
+    <div
+      class="inbox-route-notice"
+      data-testid="inbox-route-notice"
+      role="status"
+    >
+      {inboxRouteNotice}
     </div>
   {/if}
 
@@ -7592,14 +8010,19 @@
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
+          loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
+          loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
+          botRuntimeStatus={localBotRuntimeStatus}
+          onrecheckruntimes={recheckLocalBotRuntimes}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
           loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
+          {botDisplayNames}
           {ownedLocalBotUids}
           onrows={(rows) => {
             railRows = rows;
@@ -7615,6 +8038,8 @@
           {rowExtrasLoading}
           {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
+          {showBotMessages}
+          onshowbotmessageschange={handleShowBotMessagesChange}
         />
         {/key}
         {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
@@ -7634,6 +8059,7 @@
             }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
+            onopensettings={() => openSettings("notifications")}
           />
         </div>
         {#if view === "shared-files"}
@@ -7934,6 +8360,15 @@
                 </nav>
               {/if}
 
+              {#if showNotifyBell && selectedRow}
+                <ChannelMuteControl
+                  level={selectedRow.notifyLevel ?? null}
+                  rememberedLevel={unmuteTarget}
+                  busy={notifyLevelBusy}
+                  onchange={(level) => void changeSelectedNotifyLevel(level)}
+                />
+              {/if}
+
               {#if showMemberPill}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
@@ -8049,17 +8484,10 @@
             />
           {/if}
 
-          <!-- One selected-company listener survives view/tab changes. Office UI is only visible on its tab. -->
-          {#if selectedRow.companyUid}
-            <div class="company-office-stage" class:office-background={!(isCompanyChannel && companyTab === "office")} data-testid="company-tab-panel-office">
-              <OfficePanel {adapter} {callsHost}
-                companyUid={selectedRow.companyUid}
-                companyLabel={selectedRow.title ?? "This company"}
-                displayName={(uid) => displayNameByUid[uid] || identities?.[uid] || uid}
-                visible={isCompanyChannel && companyTab === "office"}
-              />
-            </div>
-          {/if}
+          <!--
+            Office is hidden for company channels (see `companyChannelTabsFor`
+            above); OfficePanel is intentionally not mounted here anymore.
+          -->
 
           {#if isAgentChannel && agentSurface === "details" && agentChannelLocalBot}
             <LocalBotDetailPanel
@@ -8090,12 +8518,6 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => void leaveCurrentDestination()}
             />
-          {:else if isCompanyChannel && companyTab === "office"}
-            {#if companyTab === "office"}
-              <!--
-                US-018: OfficePanel is mounted above and shown via visible=.
-              -->
-            {/if}
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"
@@ -8112,6 +8534,17 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if setupFinaleVisible}
+                    <SetupBotFinale
+                      hasClaude={localCodingToolsInstalled.claude === true}
+                      hasCodex={localCodingToolsInstalled.codex === true}
+                      onclaude={() => void launchSetupIn("claude")}
+                      oncodex={() => void launchSetupIn("codex")}
+                      onopenurl={(url) => onopenurl?.(url)}
+                      ondismiss={dismissSetupFinale}
+                      launchError={setupLaunchError}
+                    />
+                  {/if}
                   {#if inSetupChannelWithAgent}
                     {@const agentState = setupAgent.state}
                     {@const stopFailure = setupAgent.failure}
@@ -8722,8 +9155,27 @@
     zoom: 0.9;
   }
 
+  /* The native macOS traffic lights are drawn by AppKit and do not zoom with
+     the shell, so the overlay titlebar must stay at its real 48pt height and
+     78pt leading gutter at every Interface size. Dividing the shared
+     titlebar-layout.ts constants by the same factor the shell zooms by keeps
+     the Back pill clear of the green light and puts the bar's centre line
+     back on the lights. Scoped to the overlay case only — web and Windows
+     (native caption buttons, 12px gutter) keep the plain tokens. */
+  :global(html[data-ui-size="compact"]:not([data-platform="windows"]))
+    .desktop-shell.has-window-controls {
+    --titlebar-height: calc(48px / 0.9);
+    --titlebar-leading-inset: calc(78px / 0.9);
+  }
+
   :global(html[data-ui-size="large"]) .desktop-shell {
     zoom: 1.12;
+  }
+
+  :global(html[data-ui-size="large"]:not([data-platform="windows"]))
+    .desktop-shell.has-window-controls {
+    --titlebar-height: calc(48px / 1.12);
+    --titlebar-leading-inset: calc(78px / 1.12);
   }
 
   .desktop-body {
@@ -9129,13 +9581,6 @@
     outline-offset: 2px;
   }
 
-  .company-office-stage.office-background { flex: none; height: 0; min-height: 0; overflow: visible; }
-  .company-office-stage {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-  }
-
   .project-tabs {
     display: flex;
     align-items: center;
@@ -9317,6 +9762,18 @@
     flex-shrink: 0;
     border-bottom: 1px solid var(--v4-hairline, rgba(0, 0, 0, 0.08));
     background: color-mix(in srgb, var(--v4-text-1, #111) 6%, transparent);
+  }
+
+  .inbox-route-notice {
+    flex-shrink: 0;
+    margin: 8px 16px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line2);
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   .bot-auto-restore-banner {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { addChannelNotification, readChannelNotifications, resolveWakeAuthorName, saveChannelNotifications } from "./channel-notifications";
+  import { hydrateChannelWake, addChannelNotification, readChannelNotifications, resolveWakeAuthorName, saveChannelNotifications } from "./channel-notifications";
   /**
    * ROOT = the full V2 desktop shell (the sidebar-first windowed app), filling
    * 100vw/100vh. The channel rail + title bar ARE the navigation.
@@ -292,22 +292,41 @@
 
   const wakes = hostWakes ?? createChatWakeBus();
   let localNotificationRows = $state<Record<string, unknown>[]>([]);
-  const notificationsApi = createNotificationsApi(adapter, {
+  const pendingNotificationLookups = new Set<{ id: string; acknowledged: boolean; row?: Record<string, unknown> }>();
+  const baseNotificationsApi = createNotificationsApi(adapter, {
     localNotifications: () => localNotificationRows,
     ackLocalNotification: (id) => {
+      for (const lookup of pendingNotificationLookups) {
+        if (lookup.id === id) lookup.acknowledged = true;
+      }
       localNotificationRows = localNotificationRows.map((row) =>
         row.id === id ? { ...row, status: "read" } : row,
       );
       saveChannelNotifications(conversationCacheStorage, localNotificationRows);
     },
-    readAllLocalNotifications: () => {
-      localNotificationRows = localNotificationRows.map((row) => ({
-        ...row,
-        status: "read",
-      }));
-      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
-    },
   });
+  const notificationsApi = {
+    ...baseNotificationsApi,
+    readAllNotifications: async () => {
+      // Snapshot at the click, including wakes whose sender lookup is pending.
+      // Later arrivals stay unread, even if the server read-all takes time.
+      const account = effectiveTenantAccountId;
+      const generation = effectiveTenantGeneration;
+      const rows = new Set(localNotificationRows);
+      const lookups = [...pendingNotificationLookups];
+      await baseNotificationsApi.readAllNotifications();
+      if (account !== effectiveTenantAccountId || generation !== effectiveTenantGeneration) return;
+      for (const lookup of lookups) {
+        lookup.acknowledged = true;
+        if (lookup.row) rows.add(lookup.row);
+      }
+      localNotificationRows = localNotificationRows.map(row =>
+        rows.has(row) ? { ...row, status: "read" } : row,
+      );
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
+      localNotificationWakeSeq += 1;
+    },
+  };
   let localNotificationWakeSeq = $state(0);
   const notificationWakeSeq = $derived(
     (hostNotificationWakeSeq ?? 0) + localNotificationWakeSeq,
@@ -635,30 +654,51 @@
 
   // Channel unread deltas arrive through the desktop poller independently of
   // the NOTIF store. Bridge that wake into the visible feed immediately.
-  onMount(() =>
-    wakes.on("channel:new-message", (wake) => {
-      if (!personUid) return;
-      const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
-      // The wake carries ids, not names. Resolve the sender from what this
-      // client already knows so the row names a person, not the channel.
-      const authorName = resolveWakeAuthorName(wake, [
-        ...(channel?.members ?? []),
-        ...shallow.contacts,
-      ]);
-      const next = addChannelNotification(
-        localNotificationRows,
-        wake,
-        personUid,
-        channel?.name?.trim() || "",
-        Date.now(),
-        authorName,
-      );
-      if (next === localNotificationRows) return;
-      localNotificationRows = next;
-      saveChannelNotifications(conversationCacheStorage, next);
-      localNotificationWakeSeq += 1;
-    }),
-  );
+  onMount(() => {
+    let active = true;
+    const pending = new Map<string, number>();
+    const unsubscribe = wakes.on("channel:new-message", (incoming) => {
+      if (!personUid || !incoming.absoluteUnread || !(Number(incoming.unread) > 0)) return;
+      const account = effectiveTenantAccountId;
+      const generation = effectiveTenantGeneration;
+      const selfUid = personUid;
+      const sequence = (pending.get(incoming.channelId) ?? 0) + 1;
+      pending.set(incoming.channelId, sequence);
+      const lookup: { id: string; acknowledged: boolean; row?: Record<string, unknown> } = { id: `local:channel:${incoming.channelId}:${incoming.eventId?.trim() || "summary"}`, acknowledged: false };
+      pendingNotificationLookups.add(lookup);
+      void (async () => {
+        const wake = await hydrateChannelWake(incoming, async () => {
+          const result = await adapter.messaging.fetchChannel({channelId: incoming.channelId, limit: 1});
+          return result.ok ? result.value : null;
+        }, selfUid);
+        if (!active || pending.get(incoming.channelId) !== sequence || account !== effectiveTenantAccountId || generation !== effectiveTenantGeneration || selfUid !== personUid) return;
+        const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
+        // The wake carries ids, not names. Resolve the sender from what this
+        // client already knows so the row names a person, not the channel.
+        const authorName = resolveWakeAuthorName(wake, [
+          ...(channel?.members ?? []),
+          ...shallow.contacts,
+        ]);
+        const next = addChannelNotification(
+          localNotificationRows,
+          wake,
+          personUid,
+          channel?.name?.trim() || "",
+          Date.now(),
+          authorName,
+        );
+        if (next === localNotificationRows) return;
+        lookup.id = `local:channel:${wake.channelId}:${wake.eventId?.trim() || "summary"}`;
+        localNotificationRows = lookup.acknowledged
+          ? next.map(row => row.id === lookup.id ? { ...row, status: "read" } : row)
+          : next;
+        lookup.row = localNotificationRows.find(row => row.id === lookup.id);
+        saveChannelNotifications(conversationCacheStorage, localNotificationRows);
+        localNotificationWakeSeq += 1;
+      })().finally(() => pendingNotificationLookups.delete(lookup));
+    });
+    return () => { active = false; unsubscribe(); };
+  });
 
   $effect(() => {
     if (!self) return;

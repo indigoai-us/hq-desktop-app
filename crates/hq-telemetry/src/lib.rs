@@ -55,6 +55,39 @@ pub fn redact_core_update_diagnostic_tail(value: &str) -> String {
     bounded_redacted_core_update_diagnostic_tail(&value)
 }
 
+/// Maximum number of fatal stderr lines retained on a watcher-exit event.
+pub const RUNNER_FATAL_LINE_COUNT_LIMIT: usize = 3;
+const RUNNER_FATAL_LINE_INPUT_LIMIT_BYTES: usize = 1024;
+const RUNNER_FATAL_LINE_LIMIT_BYTES: usize = 512;
+
+/// Redact and bound the fatal lines selected from a watcher's already bounded
+/// stderr tail. Each line is scrubbed independently before being joined so
+/// credentials, paths, hostnames, and repository identifiers cannot leak via
+/// the diagnostic context.
+pub fn redact_runner_fatal_lines(lines: &[String]) -> String {
+    lines
+        .iter()
+        .take(RUNNER_FATAL_LINE_COUNT_LIMIT)
+        .filter_map(|line| {
+            let single_line = line.split(['\r', '\n']).next().unwrap_or_default();
+            let input = truncate_at_utf8_boundary(single_line, RUNNER_FATAL_LINE_INPUT_LIMIT_BYTES);
+            let redacted = redact_core_update_diagnostic_tail(input);
+            let output = truncate_at_utf8_boundary(&redacted, RUNNER_FATAL_LINE_LIMIT_BYTES);
+            let output = output.trim();
+            (!output.is_empty()).then(|| output.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn truncate_at_utf8_boundary(value: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
 /// Apply the stream limit after Core-specific redactions, whose replacement
 /// marker can be longer than the diagnostic literal it replaces. Advancing to
 /// whitespace keeps the retained suffix from starting in the middle of either
@@ -82,10 +115,10 @@ fn bounded_redacted_core_update_diagnostic_tail(value: &str) -> String {
 }
 
 /// The exact Sentry issue grouping for setup dependency failures. Correlation
-/// fields deliberately stay outside this pair so retries and people do not
-/// fragment a single dependency/category root cause into separate issues.
-pub fn setup_failure_fingerprint<'a>(dependency: &'a str, category: &'a str) -> [&'a str; 2] {
-    [dependency, category]
+/// fields deliberately stay outside this identity so retries and people do not
+/// fragment setup failures into separate issues.
+pub fn setup_failure_fingerprint(_dependency: &str, _category: &str) -> [&'static str; 1] {
+    ["desktop-setup-dependency-install-failed"]
 }
 
 /// Isolate best-effort Sentry reporting from an interactive command. A failed
@@ -841,6 +874,14 @@ fn is_known_core_rescue_failure_kind_marker(line: &str) -> bool {
         line,
         "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable"
             | "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed"
+            | "HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker"
+            | "HQ_RESCUE_FAILURE_KIND=rsync-partial"
+            | "HQ_RESCUE_FAILURE_KIND=rsync-failed"
+            | "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken"
+            | "HQ_RESCUE_FAILURE_KIND=network-unreachable"
+            | "HQ_RESCUE_FAILURE_KIND=missing-dependency"
+            | "HQ_RESCUE_FAILURE_KIND=rsync-missing"
+            | "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed"
             | "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable"
             | "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed"
     )
@@ -972,7 +1013,9 @@ fn is_watcher_fault_binary_token_set(value: &str) -> bool {
 /// The ordered key set MUST match the producer's `tag_value` exactly, or a
 /// recurrence's counters tag degrades to `[Filtered]` on the wire.
 fn is_watcher_fault_read_counters(value: &str) -> bool {
-    const KEYS: &[&str] = &["seen", "parsed", "stale", "rej_win", "rej_code", "sweeps", "ms"];
+    const KEYS: &[&str] = &[
+        "seen", "parsed", "stale", "rej_win", "rej_code", "sweeps", "ms",
+    ];
     !value.is_empty()
         && value.len() <= 128
         && value.split(',').enumerate().all(|(index, entry)| {
@@ -1284,6 +1327,27 @@ fn is_runner_hq_cloud_version(value: &str) -> bool {
             && semver::Version::parse(value).is_ok())
 }
 
+fn is_core_update_version(value: &str) -> bool {
+    value == "unknown"
+        || (value.len() <= 64
+            && value.chars().any(|character| character.is_ascii_digit())
+            && value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+')
+            }))
+}
+
+fn is_core_update_os_version(value: &str) -> bool {
+    value == "unknown"
+        || (value.len() <= 128
+            && !value.contains('/')
+            && !value.contains('\\')
+            && value.chars().all(|character| {
+                character.is_ascii_alphanumeric()
+                    || character.is_ascii_whitespace()
+                    || matches!(character, '.' | '-' | '_')
+            }))
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -1292,6 +1356,66 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
     match key {
         "runner_stack_shape" => Some(valid_runner_stack_shape(value)),
         "runner_stack_signature" => Some(valid_runner_stack_signature(value)),
+        "rescue_step" => Some(matches!(
+            value,
+            "clone" | "checkout" | "rsync" | "npm-install" | "verify" | "unknown"
+        )),
+        "rescue_error_class" => Some(matches!(
+            value,
+            "clone_failed"
+                | "checkout_failed"
+                | "rsync_missing"
+                | "rsync_failed"
+                | "rsync_partial"
+                | "npm_enoent"
+                | "npx_resolve_failed"
+                | "eacces"
+                | "enospc"
+                | "dns"
+                | "tls"
+                | "timeout"
+                | "unknown"
+        )),
+        // Existing install-failure events retain the child's numeric exit code;
+        // Core update events use the closed semantic values below. Accept both
+        // shapes while keeping the numeric form bounded by i32 parsing.
+        "exit_code" => Some(
+            value.is_empty()
+                || value.parse::<i32>().is_ok()
+                || matches!(
+                    value,
+                    "signal_or_unknown" | "signal/none" | "other" | "not_available"
+                ),
+        ),
+        "git_source" | "rsync_source" => Some(matches!(value, "managed" | "system" | "none")),
+        "node_source" => Some(matches!(
+            value,
+            "not_resolved"
+                | "settings_path"
+                | "managed_toolchain"
+                | "user_prefix"
+                | "system_prefix"
+                | "login_shell"
+                | "unknown"
+        )),
+        "git_version" | "rsync_version" | "node_version" | "app_version" => {
+            Some(is_core_update_version(value))
+        }
+        "os_version" => Some(is_core_update_os_version(value)),
+        "disk_free_bucket" => Some(matches!(
+            value,
+            "<1G" | "1-5G" | "5-20G" | ">20G" | "unknown"
+        )),
+        "root_on_synced_folder" => {
+            Some(matches!(value, "onedrive" | "icloud" | "dropbox" | "none"))
+        }
+        "network_probe" => Some(matches!(
+            value,
+            "ok" | "dns" | "tls" | "timeout" | "offline" | "unknown"
+        )),
+        "attempt_number" | "suppressed_since_last" => {
+            Some(value.is_empty() || value.parse::<u32>().is_ok())
+        }
         "watcher_launch_origin" => Some(matches!(
             value,
             "renderer" | "app_launch" | "supervisor_respawn"
@@ -1365,6 +1489,69 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "fault" | "cancel" | "hangup" | "interrupt" | "other" | "none"
         )),
+        // Stable auto-sync watcher-exit grouping and attribution. Every tag is a
+        // producer-owned token; the free-text fatal-line extra is accepted only
+        // within its pre-redaction byte and line bounds and is redacted again by
+        // the general Sentry egress scrubber.
+        "exit_class" => Some(matches!(
+            value,
+            "access_violation"
+                | "runner_memory"
+                | "stack_buffer_overrun"
+                | "dbg_terminate"
+                | "minus_one"
+                | "sigterm"
+                | "sigkill"
+                | "node_fatal"
+                | "other"
+        )),
+        "last_stop_reason" => Some(matches!(
+            value,
+            "none"
+                | "heartbeat_stall"
+                | "force_clear"
+                | "runner_memory"
+                | "app_quit"
+                | "session_ending"
+                | "user_stop"
+                | "timeout_watchdog"
+                | "cancelled"
+                | "backoff"
+                | "updater_install"
+        )),
+        "stop_initiator" => Some(matches!(
+            value,
+            "none" | "watcher_supervisor" | "user" | "app" | "updater" | "operating_system"
+        )),
+        "app_quitting" | "updater_installing" => Some(matches!(value, "true" | "false")),
+        "session_ending" => Some(matches!(
+            value,
+            "wm_query_end_session"
+                | "wm_end_session"
+                | "wts_logoff"
+                | "macos_will_power_off"
+                | "none"
+                | "unavailable"
+        )),
+        "system_sleep_resume_within_120_seconds" => {
+            Some(matches!(value, "true" | "false" | "unavailable"))
+        }
+        "system_power_observer" => Some(matches!(value, "active" | "unavailable")),
+        "runner_fatal_line_count" => Some(
+            value.is_empty()
+                || value
+                    .parse::<usize>()
+                    .is_ok_and(|count| count <= RUNNER_FATAL_LINE_COUNT_LIMIT),
+        ),
+        "runner_fatal_lines" => Some(
+            value.len()
+                <= RUNNER_FATAL_LINE_COUNT_LIMIT * RUNNER_FATAL_LINE_LIMIT_BYTES
+                    + (RUNNER_FATAL_LINE_COUNT_LIMIT - 1)
+                && value.lines().count() <= RUNNER_FATAL_LINE_COUNT_LIMIT
+                && value
+                    .chars()
+                    .all(|character| character == '\n' || !character.is_control()),
+        ),
         // Bare signal integer. A numeric extra reaches this check as `""` (the
         // scrub loop passes an empty string for a non-string `Value`), which is
         // type-safe by construction; a string value must parse as an integer, so a
@@ -1445,6 +1632,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // producer bug that shipped a path or fragment degrades to `[Filtered]`.
         "watcher_js_heap_total_mb"
         | "watcher_js_heap_used_mb"
+        | "watcher_js_external_mb"
+        | "watcher_js_array_buffers_mb"
         | "watcher_inferred_non_heap_mb"
         | "watcher_libuv_active_handles" => Some(value.is_empty() || value.parse::<u64>().is_ok()),
         // Why the memory-class decomposition is or is not present, so an absent report
@@ -1461,6 +1650,30 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "report_never_completed"
                 | "report_not_requested"
                 | "report_unsupported_platform"
+                | "supervisor_sample"
+        )),
+        // Outcome of the Node diagnostic report itself. Kept separately from the
+        // memory-class source so a supervisor sample does not hide report failure.
+        "watcher_memory_report_source" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_never_completed"
+                | "report_not_requested"
+                | "report_unsupported_platform"
+        )),
+        // Bounded, fixed-vocabulary result of the Node report or the supervisor's
+        // process-tree sample. No runtime names or user data are accepted.
+        "memory_class" => Some(matches!(
+            value,
+            "heap" | "external" | "array_buffers" | "child_rss" | "native" | "unknown"
+        )),
+        // Process type of the highest-RSS descendant, normalized by the producer to
+        // this closed set before the value reaches telemetry.
+        "largest_child_kind" => Some(matches!(
+            value,
+            "node" | "git" | "package_manager" | "shell" | "other" | "unknown"
         )),
         // Why the rate-aware footprint projection did or did not ARM on the pre-empt
         // sample (this reopen, HQ-DESKTOP-60), mirroring
@@ -2439,10 +2652,11 @@ mod tests {
     #[test]
     fn core_update_diagnostic_tail_keeps_only_known_rescue_failure_kind_markers() {
         let diagnostic = redact_core_update_diagnostic_tail(
-            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\nHQ_RESCUE_FAILURE_KIND=untrusted-value\nHQ_RESCUE_SKIPPED_KIND=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_FAILURE_KIND=rsync-missing\nHQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\nHQ_RESCUE_FAILURE_KIND=untrusted-value\nHQ_RESCUE_SKIPPED_KIND=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
         );
 
         assert!(diagnostic.contains("HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable"));
+        assert!(diagnostic.contains("HQ_RESCUE_FAILURE_KIND=rsync-missing"));
         assert!(diagnostic.contains("HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed"));
         assert!(!diagnostic.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
         assert!(!diagnostic.contains("HQ_RESCUE_FAILURE_KIND=untrusted-value"));
@@ -2501,14 +2715,61 @@ mod tests {
         assert!(!diagnostic.contains("x/y"));
     }
 
-    /// Correlation is event context, never part of the issue key: one failed
-    /// dependency/category stays one root cause across retries and people.
+    /// Correlation is event context, never part of the issue key: every setup
+    /// dependency failure stays in one root cause issue.
     #[test]
     fn setup_failure_fingerprint_is_only_dependency_and_closed_category() {
         assert_eq!(
             setup_failure_fingerprint("node", "exit-nonzero"),
-            ["node", "exit-nonzero"],
+            ["desktop-setup-dependency-install-failed"],
         );
+    }
+
+    #[test]
+    fn core_update_diagnostic_axes_are_closed_and_path_free() {
+        for (key, value) in [
+            ("rescue_step", "clone"),
+            ("rescue_error_class", "clone_failed"),
+            ("rescue_error_class", "rsync_failed"),
+            ("rescue_error_class", "rsync_partial"),
+            ("rescue_error_class", "npx_resolve_failed"),
+            ("exit_code", "5"),
+            ("git_source", "managed"),
+            ("rsync_source", "system"),
+            ("node_source", "managed_toolchain"),
+            ("git_version", "2.44.0"),
+            ("rsync_version", "3.2.7"),
+            ("node_version", "20.11.1"),
+            ("app_version", "0.10.302"),
+            ("os_version", "macOS 15.6"),
+            ("disk_free_bucket", "1-5G"),
+            ("root_on_synced_folder", "onedrive"),
+            ("network_probe", "dns"),
+            ("attempt_number", "2"),
+            ("suppressed_since_last", "1"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(true),
+                "{key}"
+            );
+        }
+
+        for (key, value) in [
+            ("rescue_step", "/Users/ada/HQ"),
+            ("rescue_error_class", "fatal: clone failed"),
+            ("git_source", "managed:/Users/ada"),
+            ("git_version", "git version 2.44.0"),
+            ("disk_free_bucket", "3 GiB"),
+            ("network_probe", "Could not resolve host api.example.com"),
+            ("attempt_number", "two"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "{key}"
+            );
+        }
     }
 
     /// Diagnostic reporting remains fire-and-forget even when its work is
@@ -3070,6 +3331,105 @@ mod tests {
                 "off-vocabulary delivery value {bad:?} must fail closed"
             );
         }
+    }
+
+    #[test]
+    fn watcher_exit_diagnostics_have_closed_vocabularies() {
+        for value in [
+            "access_violation",
+            "runner_memory",
+            "stack_buffer_overrun",
+            "dbg_terminate",
+            "minus_one",
+            "sigterm",
+            "sigkill",
+            "node_fatal",
+            "other",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("exit_class", value),
+                Some(true)
+            );
+        }
+        for (key, value) in [
+            ("last_stop_reason", "heartbeat_stall"),
+            ("last_stop_reason", "runner_memory"),
+            ("last_stop_reason", "force_clear"),
+            ("last_stop_reason", "app_quit"),
+            ("last_stop_reason", "session_ending"),
+            ("last_stop_reason", "user_stop"),
+            ("last_stop_reason", "timeout_watchdog"),
+            ("last_stop_reason", "cancelled"),
+            ("last_stop_reason", "backoff"),
+            ("last_stop_reason", "updater_install"),
+            ("last_stop_reason", "none"),
+            ("stop_initiator", "watcher_supervisor"),
+            ("stop_initiator", "user"),
+            ("stop_initiator", "app"),
+            ("stop_initiator", "updater"),
+            ("stop_initiator", "operating_system"),
+            ("stop_initiator", "none"),
+            ("app_quitting", "true"),
+            ("app_quitting", "false"),
+            ("updater_installing", "true"),
+            ("updater_installing", "false"),
+            ("session_ending", "wm_query_end_session"),
+            ("session_ending", "wm_end_session"),
+            ("session_ending", "wts_logoff"),
+            ("session_ending", "macos_will_power_off"),
+            ("session_ending", "none"),
+            ("session_ending", "unavailable"),
+            ("system_sleep_resume_within_120_seconds", "true"),
+            ("system_sleep_resume_within_120_seconds", "false"),
+            ("system_sleep_resume_within_120_seconds", "unavailable"),
+            ("system_power_observer", "active"),
+            ("system_power_observer", "unavailable"),
+            ("runner_fatal_line_count", "0"),
+            ("runner_fatal_line_count", "3"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(true),
+                "{key}={value} must survive egress"
+            );
+        }
+        for (key, value) in [
+            ("exit_class", "0xC0000409"),
+            ("last_stop_reason", "/tmp/user-path"),
+            ("stop_initiator", "Ada Lovelace"),
+            ("app_quitting", "yes"),
+            ("updater_installing", "pending"),
+            ("session_ending", "WM_QUERYENDSESSION 0"),
+            ("system_sleep_resume_within_120_seconds", "recent"),
+            ("system_power_observer", "maybe"),
+            ("runner_fatal_line_count", "4"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "{key} must reject {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_fatal_lines_are_bounded_and_redact_machine_details() {
+        let lines = vec![
+            "FATAL ERROR: Reached heap limit at /Users/ada/Library/HQ/cache".to_string(),
+            "uncaught exception: Authorization: Bearer secret-token-value".to_string(),
+            "third fatal line".to_string(),
+            "fourth fatal line must not be included".to_string(),
+        ];
+
+        let safe = redact_runner_fatal_lines(&lines);
+
+        assert_eq!(safe.lines().count(), 3);
+        assert!(safe.contains("FATAL ERROR: Reached heap limit"));
+        assert!(safe.contains("[Filtered]"));
+        assert!(!safe.contains("/Users/ada"));
+        assert!(!safe.contains("secret-token-value"));
+        assert!(!safe.contains("fourth fatal line"));
+        assert!(safe.len() <= 3 * 512 + 2);
     }
 
     #[test]
@@ -4847,6 +5207,10 @@ mod tests {
             ("watcher_js_heap_total_mb", "3584"),
             ("watcher_js_heap_total_mb", ""),
             ("watcher_js_heap_used_mb", "3072"),
+            ("watcher_js_external_mb", "512"),
+            ("watcher_js_external_mb", ""),
+            ("watcher_js_array_buffers_mb", "256"),
+            ("watcher_js_array_buffers_mb", ""),
             ("watcher_inferred_non_heap_mb", "4365"),
             ("watcher_inferred_non_heap_mb", "0"),
             ("watcher_libuv_active_handles", "128"),
@@ -4857,6 +5221,28 @@ mod tests {
             ("watcher_memory_class_source", "report_never_completed"),
             ("watcher_memory_class_source", "report_not_requested"),
             ("watcher_memory_class_source", "report_unsupported_platform"),
+            ("watcher_memory_class_source", "supervisor_sample"),
+            ("watcher_memory_report_source", "report_read"),
+            ("watcher_memory_report_source", "report_absent"),
+            ("watcher_memory_report_source", "report_unreadable"),
+            ("watcher_memory_report_source", "report_never_completed"),
+            ("watcher_memory_report_source", "report_not_requested"),
+            (
+                "watcher_memory_report_source",
+                "report_unsupported_platform",
+            ),
+            ("memory_class", "heap"),
+            ("memory_class", "external"),
+            ("memory_class", "array_buffers"),
+            ("memory_class", "child_rss"),
+            ("memory_class", "native"),
+            ("memory_class", "unknown"),
+            ("largest_child_kind", "node"),
+            ("largest_child_kind", "git"),
+            ("largest_child_kind", "package_manager"),
+            ("largest_child_kind", "shell"),
+            ("largest_child_kind", "other"),
+            ("largest_child_kind", "unknown"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -4871,10 +5257,22 @@ mod tests {
         for (key, value) in [
             ("watcher_js_heap_total_mb", "3584 /Users/Ada"),
             ("watcher_js_heap_used_mb", "3072MB"),
+            ("watcher_js_external_mb", "512MB"),
+            ("watcher_js_array_buffers_mb", "256 /Users/Ada"),
             ("watcher_inferred_non_heap_mb", "-1"),
             ("watcher_libuv_active_handles", "128; rm -rf"),
             ("watcher_memory_class_source", "report_read /Users/Ada"),
             ("watcher_memory_class_source", "report_guessed"),
+            (
+                "watcher_memory_class_source",
+                "supervisor_sample /Users/Ada",
+            ),
+            ("watcher_memory_report_source", "report_read /Users/Ada"),
+            ("watcher_memory_report_source", "supervisor_sample"),
+            ("memory_class", "heap /Users/Ada"),
+            ("memory_class", "heap_growth"),
+            ("largest_child_kind", "git /Users/Ada"),
+            ("largest_child_kind", "arbitrary_process_name"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());

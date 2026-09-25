@@ -379,7 +379,7 @@ export function mapNotificationRow(
 
   const serverType = asOptionalString(raw.type) ?? "unknown";
   const displayKind = mapServerType(serverType);
-  const rawActorName = asOptionalString(raw.actorName);
+  const rawActorName = asOptionalString(raw.actorName) === "Someone" ? null : asOptionalString(raw.actorName);
   const title = asOptionalString(raw.title);
   const body = asOptionalString(raw.body);
   const context = asOptionalString(raw.context);
@@ -410,7 +410,7 @@ export function mapNotificationRow(
     rawActorName ??
     (displayKind === "infra_flag" ? "System" : "Someone");
   const actorNameResolved =
-    displayKind === "channel_message" && !authorName ? "Someone" : actorName;
+    (displayKind === "channel_message" && !authorName) || (displayKind === "new_file" && !rawActorName) ? "" : actorName;
   const channelLabel = channelHandle ? formatChannelLabel(channelHandle) : null;
   const contextLine = channelLabel ?? context ?? body ?? title ?? "";
   const verb = verbForKind(displayKind, serverType, title);
@@ -426,8 +426,8 @@ export function mapNotificationRow(
     displayKind,
     typeIcon: typeIconForKind(displayKind),
     actorName: actorNameResolved,
-    actorInitials: actorInitials(actorNameResolved),
-    verbText: formatVerbLine(actorNameResolved, verb),
+    actorInitials: actorNameResolved ? actorInitials(actorNameResolved) : (displayKind === "new_file" ? "FI" : "#"),
+    verbText: !actorNameResolved ? (displayKind === "new_file" ? "File added" : "New messages") : formatVerbLine(actorNameResolved, verb),
     contextLine,
     status: asStatus(raw.status),
     createdAt,

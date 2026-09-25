@@ -47,15 +47,16 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use crate::commands::cognito;
 use crate::commands::dm_notify;
 use crate::commands::sync::resolve_vault_api_url;
-use crate::util::client_info::build_client;
+use crate::util::client_info::{build_client, describe_error_chain, HYDRATE_REQUEST_TIMEOUT};
 use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    build_create_payload, build_create_payload_with_project, build_ensure_project_channel_payload,
-    build_group_payload, build_reaction_payload, build_reactions_url, esc_query, esc_seg,
-    invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
-    ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
+    apply_contact_preview_filter, build_channel_messages_url, build_create_payload,
+    build_create_payload_with_project, build_ensure_project_channel_payload, build_group_payload,
+    build_reaction_payload, build_reactions_url, esc_query, esc_seg, invite_member_payload,
+    Channel, ChannelDetail, ChannelMember, ChannelMembersResponse, ChannelMessage,
+    ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     EnsureProjectChannelResponse, MessageReactions, ReactionAggregate, RequestsResponse,
     UnreadSummary,
 };
@@ -312,15 +313,29 @@ async fn get_json<T: serde::de::DeserializeOwned>(
     token: &str,
     code: &str,
 ) -> Result<T, String> {
-    let resp = build_client()
+    get_json_timeout(url, token, code, None).await
+}
+
+/// Like [`get_json`], but lets the caller override the per-request timeout
+/// for routes hq-pro documents with their own longer deadline (e.g.
+/// `GET /v1/notify/channels`'s hydrate/roster fan-out — see
+/// [`HYDRATE_REQUEST_TIMEOUT`]). `None` keeps the client's blanket default.
+async fn get_json_timeout<T: serde::de::DeserializeOwned>(
+    url: &str,
+    token: &str,
+    code: &str,
+    timeout: Option<std::time::Duration>,
+) -> Result<T, String> {
+    let mut req = build_client()
         .get(url)
-        .header("authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|e| {
-            log(LOG_TAG, &format!("{code}_NETWORK_FAIL {e}"));
-            format!("Network error: {e}")
-        })?;
+        .header("authorization", format!("Bearer {token}"));
+    if let Some(t) = timeout {
+        req = req.timeout(t);
+    }
+    let resp = req.send().await.map_err(|e| {
+        log(LOG_TAG, &format!("{code}_NETWORK_FAIL {e}"));
+        format!("Network error: {e}")
+    })?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -393,7 +408,12 @@ async fn parse_body<T: serde::de::DeserializeOwned>(
     code: &str,
 ) -> Result<T, String> {
     let body = resp.text().await.map_err(|e| {
-        log(LOG_TAG, &format!("{code}_BODY_READ_FAIL {e}"));
+        let chain = describe_error_chain(&e);
+        let kind = if e.is_timeout() { "timeout" } else { "other" };
+        log(
+            LOG_TAG,
+            &format!("{code}_BODY_READ_FAIL kind={kind} chain={chain}"),
+        );
         format!("Could not read response: {e}")
     })?;
     serde_json::from_str::<T>(&body).map_err(|e| {
@@ -407,11 +427,19 @@ async fn parse_body<T: serde::de::DeserializeOwned>(
 
 /// Tauri command: list everyone the caller can DM (active connections + company
 /// teammates). `GET /v1/notify/contacts`.
+///
+/// `show_bot_messages` is the US-006 "Show bot messages" toggle (default off).
+/// When false (the default), preview fields on contacts whose last message is
+/// agent-only are cleared before returning, so the DM rail never shows an
+/// agent-only snippet to a user who hasn't opted in.
 #[tauri::command]
-pub async fn list_contacts() -> Result<ContactsResponse, String> {
+pub async fn list_contacts(
+    show_bot_messages: Option<bool>,
+) -> Result<ContactsResponse, String> {
     let (base, token) = auth_and_base("MESSAGES_CONTACTS").await?;
     let url = format!("{base}/v1/notify/contacts");
-    let out: ContactsResponse = get_json(&url, &token, "MESSAGES_CONTACTS").await?;
+    let mut out: ContactsResponse = get_json(&url, &token, "MESSAGES_CONTACTS").await?;
+    apply_contact_preview_filter(&mut out.contacts, show_bot_messages.unwrap_or(false));
     log(
         LOG_TAG,
         &format!("MESSAGES_CONTACTS_OK count={}", out.contacts.len()),
@@ -422,15 +450,21 @@ pub async fn list_contacts() -> Result<ContactsResponse, String> {
 /// Tauri command: list the teammates in one company. `GET
 /// /v1/notify/contacts?companyUid=…` — the company-scoped slice of the contacts
 /// surface, used by the (later) compose flow's company picker.
+///
+/// `show_bot_messages` mirrors the US-006 toggle; default off.
 #[tauri::command]
-pub async fn list_company_members(company_uid: String) -> Result<ContactsResponse, String> {
+pub async fn list_company_members(
+    company_uid: String,
+    show_bot_messages: Option<bool>,
+) -> Result<ContactsResponse, String> {
     let target = company_uid.trim();
     if target.is_empty() {
         return Err("companyUid must not be empty".to_string());
     }
     let (base, token) = auth_and_base("MESSAGES_MEMBERS").await?;
     let url = format!("{base}/v1/notify/contacts?companyUid={target}");
-    let out: ContactsResponse = get_json(&url, &token, "MESSAGES_MEMBERS").await?;
+    let mut out: ContactsResponse = get_json(&url, &token, "MESSAGES_MEMBERS").await?;
+    apply_contact_preview_filter(&mut out.contacts, show_bot_messages.unwrap_or(false));
     log(
         LOG_TAG,
         &format!(
@@ -517,7 +551,16 @@ pub async fn list_channels(
             url = format!("{url}?companyUid={}&includeCompanyProjects=1", esc_seg(uid));
         }
     }
-    let out: ChannelsResponse = get_json(&url, &token, "MESSAGES_CHANNELS").await?;
+    // Hydrate/roster fan-out route (hq-pro `notify_channels` gets a 28s route
+    // deadline) — the blanket client timeout is too short once the account
+    // has enough channels to push the response past a few hundred KB.
+    let out: ChannelsResponse = get_json_timeout(
+        &url,
+        &token,
+        "MESSAGES_CHANNELS",
+        Some(HYDRATE_REQUEST_TIMEOUT),
+    )
+    .await?;
     log(
         LOG_TAG,
         &format!("MESSAGES_CHANNELS_OK count={}", out.channels.len()),
@@ -1944,5 +1987,114 @@ mod tests {
         let json = serde_json::to_value(&out).expect("serialises");
         assert_eq!(json["reason"], "Only owners can add agents");
         assert!(json.get("channelId").is_none());
+    }
+
+    /// Regression for the `MESSAGES_CHANNELS_BODY_READ_FAIL` /
+    /// `DM_NOTIFY_CHAN_POLL_ERROR` reports in `~/.hq/logs/hq-sync.log`
+    /// starting 2026-09-23T23:01Z: a real-shaped `GET /v1/notify/channels`
+    /// roster (redacted — synthetic uids/emails/names, real field shape and
+    /// scale) must decode cleanly. A ~800KB roster is exactly the payload
+    /// that used to outrun the blanket 15s client timeout mid-body-read; this
+    /// asserts the decode path itself has no issue with a large, real-shaped
+    /// page, isolating the bug to the timeout budget (covered by the test
+    /// below) rather than the parser.
+    #[test]
+    fn decodes_a_large_real_shaped_channels_roster() {
+        let mut channels = Vec::new();
+        for i in 0..1200 {
+            channels.push(serde_json::json!({
+                "channelId": format!("chn_{i:06}"),
+                "name": format!("redacted-channel-{i}"),
+                "scope": if i % 5 == 0 { "group" } else { "company" },
+                "companyUid": format!("cmp_{:04}", i % 40),
+                "companyName": format!("redacted-company-{}", i % 40),
+                "postPolicy": "all",
+                "visibility": "company",
+                "membership": {
+                    "joined": true,
+                    "notifyLevel": "mentions",
+                    "source": "company-auto",
+                },
+                "unreadCount": i % 7,
+                "memberCount": 3 + (i % 12),
+                "lastActivityAt": "2026-09-24T12:00:00Z",
+                "lastMessageAt": "2026-09-24T12:00:00Z",
+                "createdAt": "2026-01-01T00:00:00Z",
+                "members": [
+                    {"personUid": format!("prs_{i:06}a"), "displayName": "Redacted Person A"},
+                    {"personUid": format!("prs_{i:06}b"), "displayName": "Redacted Person B"},
+                ],
+                "createdBy": format!("prs_{i:06}a"),
+                "isCompanyHome": false,
+            }));
+        }
+        let body = serde_json::to_string(&serde_json::json!({ "channels": channels }))
+            .expect("serializes fixture");
+        // Same order of magnitude as the real 797089-byte roster captured
+        // against the live endpoint (see workspace/reports/hq-desktop-app/
+        // decode-errors-evidence.md).
+        assert!(
+            body.len() > 400_000,
+            "fixture should be comparable in scale to the real roster, got {} bytes",
+            body.len()
+        );
+        let parsed: ChannelsResponse =
+            serde_json::from_str(&body).expect("large real-shaped roster decodes");
+        assert_eq!(parsed.channels.len(), 1200);
+        assert_eq!(parsed.channels[0].channel_id, "chn_000000");
+        assert_eq!(parsed.channels[0].membership.as_deref(), Some("joined"));
+        assert_eq!(parsed.channels[5].scope, "group");
+    }
+
+    /// Regression for the actual root cause: `GET /v1/notify/channels` is a
+    /// hydrate/fan-out route that can legitimately take longer than the
+    /// blanket client timeout once an account has enough channels, and the
+    /// client had no way to give it more budget. `get_json_timeout` with
+    /// `Some(duration)` must actually widen the per-request timeout rather
+    /// than being ignored — proven here against a mock server that takes
+    /// longer than a short override (fails) but well under a longer one
+    /// (succeeds), the same shape as `HYDRATE_REQUEST_TIMEOUT` vs the default.
+    #[tokio::test]
+    async fn get_json_timeout_override_actually_widens_the_budget() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/notify/channels"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "channels": [] }))
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/v1/notify/channels", server.uri());
+
+        let too_short = get_json_timeout::<ChannelsResponse>(
+            &url,
+            "test-token",
+            "TEST_CHANNELS",
+            Some(std::time::Duration::from_millis(50)),
+        )
+        .await;
+        assert!(
+            too_short.is_err(),
+            "a timeout shorter than the server delay must fail, not hang forever"
+        );
+
+        let long_enough = get_json_timeout::<ChannelsResponse>(
+            &url,
+            "test-token",
+            "TEST_CHANNELS",
+            Some(std::time::Duration::from_secs(2)),
+        )
+        .await;
+        assert!(
+            long_enough.is_ok(),
+            "a timeout longer than the server delay must succeed: {:?}",
+            long_enough.err()
+        );
     }
 }

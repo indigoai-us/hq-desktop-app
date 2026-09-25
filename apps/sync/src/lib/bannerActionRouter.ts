@@ -1,11 +1,35 @@
 import { safeUnlisten } from './listener-registry';
+import { routeForNotificationPayload } from './notificationRoutes';
 
 export type NotificationActionKind =
   | 'dm'
   | 'share'
+  | 'mention'
   | 'update'
   | 'meeting'
   | 'session';
+
+/**
+ * Inbox route for a banner body-click / open action. DM and share banners
+ * resolve the same way native notification clicks do; other kinds do not
+ * navigate the inbox.
+ */
+export function bannerOpenRoute(
+  kind: NotificationActionKind,
+  data: unknown,
+): string | null {
+  if (kind === 'dm' || kind === 'share' || kind === 'mention') {
+    return routeForNotificationPayload(data);
+  }
+  return null;
+}
+
+/** True when a share payload already has a DM, so a share banner is a duplicate. */
+export function shouldSuppressShareNotification(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const id = (data as { dmEventId?: unknown }).dmEventId;
+  return typeof id === 'string' && id.trim().length > 0;
+}
 
 export interface BannerActionEvent {
   requestId: string;

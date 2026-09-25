@@ -702,6 +702,7 @@ export type MemberFailureReason =
   | "unreachable"
   | "not-owner"
   | "agent-scope"
+  | "personal-bot"
   | "other";
 
 /**
@@ -716,6 +717,11 @@ export function memberFailureReason(
   personUid: string,
 ): MemberFailureReason {
   const raw = errorText(err);
+  // personal-bot-channel-scope: somebody else's personal bot. Only its owner
+  // can put it in a channel, so neither a retry nor an email invite helps —
+  // the fix is to ask the owner. Checked before the owner and not-found
+  // branches so its own coded answer wins.
+  if (/PERSONAL_BOT_OWNER_ONLY/i.test(raw)) return "personal-bot";
   if (/CHANNEL_NOT_OWNER/i.test(raw) || /not the (channel )?owner/i.test(raw)) {
     return "not-owner";
   }

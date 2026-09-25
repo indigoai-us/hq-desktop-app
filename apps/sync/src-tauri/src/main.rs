@@ -426,6 +426,13 @@ fn main() {
                 crate::deep_link::spawn_open_hq_desktop_url(app, url);
                 return;
             }
+            // US-004: hq://inbox/dm/… (and the other mapped forms) front the
+            // desktop window on the parsed route. Malformed hq:// still fronts
+            // the landing route.
+            if let Some(url) = crate::deep_link::hq_url_from_argv(&argv) {
+                crate::deep_link::spawn_open_hq_url(app, url);
+                return;
+            }
 
             // US-004 WindowRouter: taskbar / second-process activation always
             // shows the compact notification popover — never auto-focuses the
@@ -524,6 +531,7 @@ fn main() {
         .manage(commands::dm_notify::PairUnreadState::new())
         .manage(commands::dm_notify::SeenRequestState::new())
         .manage(commands::dm_notify::SeenChannelState::new())
+        .manage(commands::dm_notify::MentionWatchState::new())
         .manage(commands::dm_notify::ActiveThreadState::new())
         .manage(commands::dm_notify::ActiveConversationState::new())
         .manage(commands::dm_notify::WatchedSharesState::new())
@@ -674,6 +682,7 @@ fn main() {
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_setup_status,
             commands::lifecycle::mark_welcome_setup_complete,
+            commands::lifecycle::report_unexpected_startup_surface,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,
             commands::session_end_latch::session_end_latch_status,
@@ -931,6 +940,7 @@ fn main() {
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
             commands::dm_notify::poll_dm_inbox,
+            commands::dm_notify::invalidate_notify_prefs_cache,
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::open_inbox_window,
             commands::dm_notify::open_communications_window,
@@ -1030,6 +1040,9 @@ fn main() {
             if commands::headless_install::maybe_run(app.handle()) {
                 return Ok(());
             }
+            commands::watcher_exit_lifecycle::initialize_watcher_exit_lifecycle();
+            #[cfg(target_os = "macos")]
+            commands::watcher_exit_lifecycle::initialize_macos_power_observer();
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.
@@ -1084,27 +1097,32 @@ fn main() {
             if let Some(url) = crate::deep_link::hq_desktop_url_from_argv(&startup_args) {
                 crate::deep_link::spawn_open_hq_desktop_url(app.handle(), url);
             }
+            if let Some(url) = crate::deep_link::hq_url_from_argv(&startup_args) {
+                crate::deep_link::spawn_open_hq_url(app.handle(), url);
+            }
 
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 #[cfg(any(windows, target_os = "linux"))]
                 {
-                    if let Err(error) = app.deep_link().register("hq-desktop") {
-                        util::logfile::log(
-                            "deep-link",
-                            &format!("HQ_DESKTOP_REGISTER_FAIL {error}"),
-                        );
+                    for scheme in ["hq-desktop", "hq"] {
+                        if let Err(error) = app.deep_link().register(scheme) {
+                            util::logfile::log(
+                                "deep-link",
+                                &format!("HQ_DESKTOP_REGISTER_FAIL {error}"),
+                            );
+                        }
                     }
                 }
                 let handle = app.handle().clone();
                 let _ = app.deep_link().on_open_url(move |event| {
                     for url in event.urls() {
-                        crate::deep_link::spawn_open_hq_desktop_url(&handle, url.to_string());
+                        crate::deep_link::spawn_open_delivered_url(&handle, url.to_string());
                     }
                 });
                 if let Ok(Some(urls)) = app.deep_link().get_current() {
                     for url in urls {
-                        crate::deep_link::spawn_open_hq_desktop_url(
+                        crate::deep_link::spawn_open_delivered_url(
                             app.handle(),
                             url.to_string(),
                         );

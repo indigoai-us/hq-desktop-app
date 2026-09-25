@@ -1,12 +1,15 @@
 use chrono::Utc;
+use hq_desktop_core::cognito::StoredTokenPresence;
 use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 #[cfg(not(windows))]
 use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
 use hq_desktop_core::lifecycle::{
-    classify_lifecycle, hq_root_valid, menubar_flags, LifecycleInputs, LifecycleState,
+    classify_lifecycle, hq_root_valid, menubar_flags, probe_hq_root,
+    should_backfill_welcome_setup_pending, HqRootProbe, LifecycleInputs, LifecycleState,
 };
 use serde_json::{Map, Value};
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
+use std::time::Instant;
 use tauri::{AppHandle, Manager, State};
 
 use crate::util::{logfile::log, paths};
@@ -32,6 +35,21 @@ pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
         .map(|handle| handle.current())
 }
 
+/// Immutable lifecycle inputs captured at startup, for use by diagnostic
+/// commands that run after setup_lifecycle has returned.
+pub struct LifecycleInputsHandle {
+    pub inputs: LifecycleInputs,
+    pub tools_present: bool,
+    pub bundled_cli_ready: bool,
+}
+
+/// Time at which setup_lifecycle started, used to compute seconds since
+/// process start in diagnostic events.
+static SETUP_LIFECYCLE_TIME: OnceLock<Instant> = OnceLock::new();
+
+/// Rate-limit: at most one unexpected-surface Sentry event per process.
+static UNEXPECTED_SURFACE_REPORTED: OnceLock<()> = OnceLock::new();
+
 /// Advance the in-process lifecycle verdict. Called when the setup wizard
 /// finishes so the same launch routes Dock / tray / second-launch activations
 /// to the desktop workspace instead of back to the (now finished) setup card.
@@ -51,6 +69,7 @@ pub fn set_lifecycle_state(app: &AppHandle, state: LifecycleState) {
 /// Resolve lifecycle inputs at startup, classify, backfill legacy install
 /// markers when needed, and cache the state for command consumers.
 pub fn setup_lifecycle(app: &AppHandle) {
+    let _ = SETUP_LIFECYCLE_TIME.get_or_init(Instant::now);
     let menubar_path = match paths::menubar_json_path() {
         Ok(path) => Some(path),
         Err(e) => {
@@ -79,6 +98,21 @@ pub fn setup_lifecycle(app: &AppHandle) {
         app.manage(LifecycleStateHandle(RwLock::new(
             LifecycleState::SteadyState,
         )));
+        app.manage(LifecycleInputsHandle {
+            inputs: LifecycleInputs {
+                install_completed: false,
+                first_run_completed: false,
+                had_machine_id: false,
+                config_valid: false,
+                hq_root_valid: false,
+                has_auth: false,
+                install_in_progress: false,
+                consent_answered: false,
+                evidence_unreadable: true,
+            },
+            tools_present: false,
+            bundled_cli_ready: false,
+        });
         return;
     }
     let menubar = match menubar_read {
@@ -118,20 +152,38 @@ pub fn setup_lifecycle(app: &AppHandle) {
         config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
         menubar.get("hqPath").and_then(Value::as_str),
     );
-    let hq_root_valid = hq_root_valid(&hq_root);
+    // Probe twice when the first look fails: an auto-update relaunch can race
+    // a still-settling filesystem (a rewritten settings tree, a volume that
+    // has not remounted). Two unreadable looks is evidence we cannot tell,
+    // not evidence the machine is new.
+    let mut root_probe = probe_hq_root(&hq_root);
+    if root_probe == HqRootProbe::Unreadable {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        root_probe = probe_hq_root(&hq_root);
+    }
+    let hq_root_valid = root_probe == HqRootProbe::Valid;
+    let hq_root_unreadable = root_probe == HqRootProbe::Unreadable;
+    if hq_root_unreadable {
+        log(
+            "lifecycle",
+            &format!(
+                "setup_lifecycle: HQ folder unreadable at {} - treating install evidence as unknown",
+                hq_root.display()
+            ),
+        );
+    }
 
-    let has_auth = match tauri::async_runtime::block_on(
-        crate::commands::cognito::has_non_empty_stored_token(),
-    ) {
-        Ok(has_auth) => has_auth,
-        Err(e) => {
-            log(
-                "lifecycle",
-                &format!("setup_lifecycle: auth presence check failed: {e}"),
-            );
-            false
-        }
-    };
+    let token_presence =
+        tauri::async_runtime::block_on(hq_desktop_core::cognito::stored_token_presence());
+    let has_auth = token_presence == StoredTokenPresence::Present;
+    let token_unreadable = token_presence == StoredTokenPresence::Unreadable;
+    if token_unreadable {
+        log(
+            "lifecycle",
+            "setup_lifecycle: token store unreadable - treating auth evidence as unknown",
+        );
+    }
+    let evidence_unreadable = hq_root_unreadable || token_unreadable;
 
     let inputs = LifecycleInputs {
         install_completed,
@@ -142,6 +194,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         has_auth,
         install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
         consent_answered,
+        evidence_unreadable,
     };
     // macOS only: HQ is installed only when hq and node are on this computer.
     // A bundled CLI version mismatch is not "missing tools": auto-update
@@ -157,14 +210,16 @@ pub fn setup_lifecycle(app: &AppHandle) {
             paths::resolve_bin_with_kind("node").kind != paths::ResolvedProgramKind::NotResolved;
         let tools_present = tools_present_for_lifecycle_gate(hq_resolved, node_resolved);
         let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
-        (
-            hq_desktop_core::lifecycle::require_local_toolchain(
-                classify_lifecycle(inputs),
-                tools_present,
-            ),
-            tools_present,
-            bundled_cli_ready,
-        )
+        // When the install evidence itself could not be read, a "tools are
+        // missing" reading of the same filesystem is not trustworthy either,
+        // so it must not demote a set-up machine to NeedsInstall.
+        let classified = classify_lifecycle(inputs);
+        let verdict = if evidence_unreadable {
+            classified
+        } else {
+            hq_desktop_core::lifecycle::require_local_toolchain(classified, tools_present)
+        };
+        (verdict, tools_present, bundled_cli_ready)
     };
     #[cfg(windows)]
     let verdict = classify_lifecycle(inputs);
@@ -225,10 +280,53 @@ pub fn setup_lifecycle(app: &AppHandle) {
         }
     }
 
+    // A machine that is fully set up and signed in but still has
+    // welcomeSetupPending:true with no welcomeSetupCompletedAt was left in this
+    // state by the v0.10.259–v0.10.287 regression (bundled_hq_cli_ready false on
+    // every auto-update restart caused SteadyState→NeedsInstall, running the
+    // installer and arming the flag). Clear it now so welcome_setup_owed returns
+    // false on this and every subsequent launch.
+    let welcome_setup_backfill = should_backfill_welcome_setup_pending(
+        &menubar,
+        install_completed,
+        first_run_completed,
+        hq_root_valid,
+        has_auth,
+    );
+    if welcome_setup_backfill {
+        match menubar_path.as_ref() {
+            Some(path) => {
+                let now = Utc::now().to_rfc3339();
+                if let Err(e) = hq_desktop_core::first_run::merge_menubar_flags(
+                    path,
+                    &[
+                        ("welcomeSetupPending", Value::Bool(false)),
+                        ("welcomeSetupCompletedAt", Value::String(now.clone())),
+                        ("welcomeSetupBackfilledAt", Value::String(now)),
+                    ],
+                ) {
+                    log(
+                        "lifecycle",
+                        &format!("setup_lifecycle: welcome-setup backfill failed: {e}"),
+                    );
+                } else {
+                    log(
+                        "lifecycle",
+                        "setup_lifecycle: backfilled welcomeSetupPending=false for set-up machine",
+                    );
+                }
+            }
+            None => log(
+                "lifecycle",
+                "setup_lifecycle: welcome-setup backfill skipped; menubar path unavailable",
+            ),
+        }
+    }
+
     log(
         "lifecycle",
         &format!(
-            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={}",
+            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} evidence_unreadable={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={} welcome_setup_backfill={}",
             lifecycle_state_str(verdict.state),
             install_completed,
             first_run_completed,
@@ -238,14 +336,21 @@ pub fn setup_lifecycle(app: &AppHandle) {
             has_auth,
             inputs.install_in_progress,
             consent_answered,
+            evidence_unreadable,
             tools_present,
             bundled_cli_ready,
             verdict.needs_install_backfill,
             verdict.needs_first_run_backfill,
+            welcome_setup_backfill,
         ),
     );
 
     app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
+    app.manage(LifecycleInputsHandle {
+        inputs,
+        tools_present,
+        bundled_cli_ready,
+    });
 }
 
 #[tauri::command]
@@ -357,6 +462,146 @@ fn lifecycle_state_str(state: LifecycleState) -> &'static str {
         LifecycleState::SteadyState => "SteadyState",
     }
 }
+
+/// Report an unexpected startup surface to Sentry and the app log.
+///
+/// Called from the frontend after `checkAuth()` resolves, when the resolved
+/// surface is "sign-in" or "onboarding" AND the machine shows prior-setup
+/// evidence (installCompleted, firstRunCompleted, or token file present).
+/// Rate-limited to one Sentry event per process via `UNEXPECTED_SURFACE_REPORTED`.
+#[tauri::command]
+pub fn report_unexpected_startup_surface(
+    app: AppHandle,
+    state: State<'_, LifecycleInputsHandle>,
+    surface: String,
+    auth_check_failed: bool,
+    probe_attempts: u32,
+) {
+    // Read token file metadata without reading its contents.
+    let (token_file_exists, token_file_age_minutes) = {
+        let token_path = hq_desktop_core::paths::hq_config_dir()
+            .ok()
+            .map(|d| d.join("cognito-tokens.json"));
+        match token_path.as_ref().and_then(|p| p.metadata().ok()) {
+            Some(meta) => {
+                let age_minutes = meta
+                    .modified()
+                    .ok()
+                    .and_then(|mt| mt.elapsed().ok())
+                    .map(|d| d.as_secs() / 60);
+                (true, age_minutes)
+            }
+            None => (false, None),
+        }
+    };
+
+    let inputs = &state.inputs;
+    let lc_state_str = app
+        .try_state::<LifecycleStateHandle>()
+        .map(|h| lifecycle_state_str(h.current()).to_string())
+        .unwrap_or_else(|| "unknown".into());
+
+    let prior_setup = hq_desktop_core::unexpected_surface::prior_setup_detected(
+        inputs.install_completed,
+        inputs.first_run_completed,
+        token_file_exists,
+    );
+
+    // Always write the log line so diagnostics can find it.
+    let log_line = format!(
+        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} from_updater_restart={} app_version={}",
+        surface,
+        lc_state_str,
+        inputs.install_completed,
+        inputs.first_run_completed,
+        inputs.config_valid,
+        inputs.hq_root_valid,
+        inputs.has_auth,
+        state.tools_present,
+        state.bundled_cli_ready,
+        inputs.consent_answered,
+        inputs.evidence_unreadable,
+        token_file_exists,
+        token_file_age_minutes.map(|v| v.to_string()).unwrap_or_else(|| "none".into()),
+        auth_check_failed,
+        probe_attempts,
+        std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
+        env!("APP_VERSION"),
+    );
+
+    if !prior_setup {
+        log("lifecycle", &format!("[skip] {log_line}"));
+        return;
+    }
+
+    log("lifecycle", &log_line);
+
+    // Rate-limit: at most one Sentry event per process.
+    if UNEXPECTED_SURFACE_REPORTED.set(()).is_err() {
+        return;
+    }
+
+    let seconds_since_start = SETUP_LIFECYCLE_TIME
+        .get()
+        .map(|t| t.elapsed().as_secs())
+        .unwrap_or(0);
+    let from_updater_restart =
+        std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
+
+    let payload = hq_desktop_core::unexpected_surface::build_payload(
+        surface.clone(),
+        lc_state_str,
+        inputs.install_completed,
+        inputs.first_run_completed,
+        inputs.config_valid,
+        inputs.hq_root_valid,
+        inputs.has_auth,
+        state.tools_present,
+        state.bundled_cli_ready,
+        inputs.consent_answered,
+        inputs.evidence_unreadable,
+        token_file_exists,
+        token_file_age_minutes,
+        auth_check_failed,
+        probe_attempts,
+        seconds_since_start,
+        from_updater_restart,
+        env!("APP_VERSION"),
+    );
+
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("surface", &payload.surface);
+            scope.set_tag("lifecycle_state", &payload.lifecycle_state);
+            scope.set_tag("app_version", payload.app_version);
+            scope.set_tag("from_updater_restart", payload.from_updater_restart.to_string());
+            scope.set_extra("install_completed", serde_json::json!(payload.install_completed).into());
+            scope.set_extra("first_run_completed", serde_json::json!(payload.first_run_completed).into());
+            scope.set_extra("config_valid", serde_json::json!(payload.config_valid).into());
+            scope.set_extra("hq_root_valid", serde_json::json!(payload.hq_root_valid).into());
+            scope.set_extra("has_auth", serde_json::json!(payload.has_auth).into());
+            scope.set_extra("tools_present", serde_json::json!(payload.tools_present).into());
+            scope.set_extra("bundled_cli_ready", serde_json::json!(payload.bundled_cli_ready).into());
+            scope.set_extra("consent_answered", serde_json::json!(payload.consent_answered).into());
+            scope.set_extra("evidence_unreadable", serde_json::json!(payload.evidence_unreadable).into());
+            scope.set_extra("token_file_exists", serde_json::json!(payload.token_file_exists).into());
+            scope.set_extra(
+                "token_file_age_minutes",
+                serde_json::json!(payload.token_file_age_minutes).into(),
+            );
+            scope.set_extra("auth_check_failed", serde_json::json!(payload.auth_check_failed).into());
+            scope.set_extra("probe_attempts", serde_json::json!(payload.probe_attempts).into());
+            scope.set_extra("seconds_since_start", serde_json::json!(payload.seconds_since_start).into());
+        },
+        || {
+            sentry::capture_message(
+                &format!("unexpected_startup_surface: surface={}", payload.surface),
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
 
 #[cfg(test)]
 mod tests {

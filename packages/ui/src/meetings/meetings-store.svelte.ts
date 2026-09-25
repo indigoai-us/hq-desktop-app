@@ -11,7 +11,11 @@ import {
   type MeetingsStorage,
 } from "./meetings-cache";
 import { startJitteredPoll } from "@hq/platform";
-import { isAlreadyScheduledError, isPlanRequiredError } from "./invite-errors";
+import {
+  isAlreadyScheduledError,
+  isPlanRequiredError,
+  planRequiredUpgradeUrl,
+} from "./invite-errors";
 import { isRecordingCompanyMembership } from "./recording-membership";
 import {
   buildRefreshProblemReport,
@@ -102,12 +106,17 @@ function unwrap<T>(res: AdapterResult<T>): T {
 export interface ToastDescriptor {
   kind: "info" | "warn";
   text: string;
+  upgradeUrl?: string;
 }
 
-const PLAN_REQUIRED_TOAST: ToastDescriptor = {
-  kind: "warn",
-  text: "Meetings need the $500/mo Team plan—upgrade in HQ Console to record.",
-};
+function planRequiredToast(err: unknown): ToastDescriptor {
+  const upgradeUrl = planRequiredUpgradeUrl(err);
+  return {
+    kind: "warn",
+    text: "Meetings need HQ Workforce ($500/mo) to record. Upgrade in HQ Console.",
+    ...(upgradeUrl ? { upgradeUrl } : {}),
+  };
+}
 
 /** Per-account calendar list plus the user's enabled selection. The adapter's
  *  `listCalendars` is typed loosely (`Json[]`), so `parseAccountCalendars`
@@ -590,7 +599,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       void refresh(true);
       return { kind: "info", text: "Already invited — refreshing." };
     }
-    if (isPlanRequiredError(err)) return PLAN_REQUIRED_TOAST;
+    if (isPlanRequiredError(err)) return planRequiredToast(err);
     return {
       kind: "warn",
       text: friendlyError(err, "Couldn't invite the bot."),
@@ -673,7 +682,7 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       void refresh(true);
       return { kind: "info", text: "Already invited — joining." };
     }
-    if (isPlanRequiredError(err)) return PLAN_REQUIRED_TOAST;
+    if (isPlanRequiredError(err)) return planRequiredToast(err);
     return {
       kind: "warn",
       text: friendlyError(err, "Couldn't tell the bot to join."),
@@ -722,7 +731,7 @@ async function inviteBotByUrl(
       void refresh(true);
       return { kind: "info", text: "Already invited — refreshing." };
     }
-    if (isPlanRequiredError(err)) return PLAN_REQUIRED_TOAST;
+    if (isPlanRequiredError(err)) return planRequiredToast(err);
     return {
       kind: "warn",
       text: friendlyError(err, "Couldn't invite the bot."),

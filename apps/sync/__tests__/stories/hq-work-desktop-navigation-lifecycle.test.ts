@@ -171,6 +171,7 @@ interface Options {
   notificationFeed?: { current: unknown };
   fetchNotifications?: () => unknown;
   sendChannelResponse?: Promise<unknown>;
+  dmThreads?: unknown[];
 }
 
 function invokeFor(options: Options = {}): SyncInvokeFn {
@@ -253,6 +254,8 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
         };
       case 'fetch_channel':
         return { messages: [{ eventId: 'evt_root', body: 'hello' }] };
+      case 'fetch_dm_thread':
+        return { messages: [{ eventId: 'evt_dm', body: 'hello' }] };
       case 'fetch_thread':
         return {
           root: { eventId: 'evt_root', body: 'root' },
@@ -312,6 +315,12 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
           return {
             status: 200,
             body: JSON.stringify({ events: options.shareEvents ?? [] }),
+          };
+        }
+        if (path.startsWith('/v1/notify/dm-threads')) {
+          return {
+            status: 200,
+            body: JSON.stringify({ threads: options.dmThreads ?? [] }),
           };
         }
         return { status: 200, body: JSON.stringify({}) };
@@ -554,14 +563,6 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
     expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
 
-    // A Custom native destination with no embedded surface must be visible,
-    // rather than silently leaving the stale destination selected.
-    warmRoute('company:indigo:activity');
-    await flush();
-    expect(host.querySelector('[data-testid="embedded-navigation-error"]')?.textContent).toContain(
-      'Unsupported embedded destination',
-    );
-
     warmRoute('settings:appearance:untrusted');
     await flush();
     expect(host.querySelector('[data-testid="embedded-navigation-error"]')?.textContent).toContain(
@@ -579,6 +580,107 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
     expect(host.querySelector('[data-testid="library-installed-panel"]')).toBeNull();
+  });
+
+  it('selects a DM thread from a warm inbox:dm route', async () => {
+    await mountShell({
+      dmThreads: [
+        {
+          peerUid: 'prs_ada',
+          lastActivityAt: MEETING_START,
+          lastEventId: 'evt_dm',
+        },
+      ],
+    });
+    warmRoute('inbox:dm:prs_ada');
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="dm:prs_ada"]')?.classList.contains('active'),
+      ).toBe(true);
+    });
+    expect(
+      host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains(
+        'is-active',
+      ),
+    ).toBe(false);
+    expect(host.querySelector('[data-testid="inbox-route-notice"]')).toBeNull();
+  });
+
+  it('opens a channel and targets the message from a cold inbox:channel route', async () => {
+    await mountShell({ pendingRoute: 'inbox:channel:chn_engineering:evt_root' });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toMatch(
+        /engineering/i,
+      );
+      expect(host.querySelector('[data-testid="conversation-thread"]')).toBeTruthy();
+      expect(host.querySelector('[data-event-id="evt_root"]')).toBeTruthy();
+    });
+  });
+
+  it('falls back to Inbox with a notice when the route names an unknown peer', async () => {
+    await mountShell();
+    expect(() => warmRoute('inbox:dm:prs_missing')).not.toThrow();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains(
+          'is-active',
+        ),
+      ).toBe(true);
+      expect(host.querySelector('[data-testid="inbox-route-notice"]')?.textContent).toContain(
+        "Couldn't find that conversation",
+      );
+    });
+    expect(host.querySelector('[data-conversation-id="dm:prs_missing"]')).toBeNull();
+  });
+
+  it('falls back to Inbox with a notice when the route names an unknown channel', async () => {
+    await mountShell();
+    expect(() => warmRoute('inbox:channel:chn_missing:evt_gone')).not.toThrow();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains(
+          'is-active',
+        ),
+      ).toBe(true);
+      expect(host.querySelector('[data-testid="inbox-route-notice"]')?.textContent).toContain(
+        "Couldn't find that conversation",
+      );
+    });
+    expect(host.querySelector('[data-conversation-id="ch:chn_missing"]')).toBeNull();
+    expect(host.querySelector('[data-testid="channel-header"]')).toBeNull();
+  });
+
+  it('routes files:<slug>:<path> onto Shared files and company:<slug> onto the company channel', async () => {
+    await mountShell({
+      directoryResponse: {
+        channels: [
+          {
+            channelId: 'chn_engineering',
+            id: 'chn_engineering',
+            name: 'engineering',
+            scope: 'company',
+            companyUid: 'cmp_indigo',
+            isCompanyHome: true,
+          },
+        ],
+      },
+    });
+
+    warmRoute('files:indigo:companies:indigo:knowledge:foo.md');
+    await flush(64);
+    expect(host.querySelector('[data-testid="shared-files-overlay"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="embedded-navigation-error"]')).toBeNull();
+
+    warmRoute('company:indigo');
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toMatch(
+        /engineering/i,
+      );
+    });
+    expect(host.querySelector('[data-testid="shared-files-overlay"]')).toBeNull();
+    expect(host.querySelector('[data-testid="embedded-navigation-error"]')).toBeNull();
   });
 
   it('routes a real Sync-host file-share notification to its scoped file surface', async () => {

@@ -1219,6 +1219,14 @@ This final paragraph verifies spacing after a thematic break.
     },
   ],
   meetings_list_active_recordings: () => [],
+  start_recording: async (args) => {
+    await emit('recording:started', { windowId: args?.windowId, platform: 'meet', startedAt: new Date().toISOString() });
+    return 'preview-recording';
+  },
+  stop_recording: async (args) => {
+    await emit('recording:ended', { windowId: args?.windowId, platform: 'meet', endedAt: new Date().toISOString() });
+    return null;
+  },
   is_indigo_user: () => true,
   available_channels: () => ['stable', 'beta', 'alpha'],
   notification_permission_state: () =>
@@ -1680,12 +1688,47 @@ This final paragraph verifies spacing after a thematic break.
   agent_session_answer_question: () => null,
 };
 
+// Fine-grained notification prefs (GET/PUT /v1/notify/prefs) and the channel
+// notify-level route, held in memory so Settings and the header bell can be
+// exercised in the preview harness.
+const harnessNotifyPrefs: Record<string, unknown> = {
+  pausedUntil: null,
+  dmsDuringPause: false,
+  dms: true,
+  mentions: true,
+  files: true,
+  allActivity: true,
+  addedToChannel: true,
+  updatedAt: '2026-09-23T12:00:00.000Z',
+};
+
+function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; body: string } | null {
+  const url = typeof args?.url === 'string' ? args.url : '';
+  const method = typeof args?.method === 'string' ? args.method : 'GET';
+  const body = typeof args?.body === 'string' ? JSON.parse(args.body) : null;
+  if (url === '/v1/notify/prefs') {
+    if (method === 'PUT' && body && typeof body === 'object') Object.assign(harnessNotifyPrefs, body);
+    const until = harnessNotifyPrefs.pausedUntil;
+    const paused = until === 'forever' || (typeof until === 'string' && Date.parse(until) > Date.now());
+    return { status: 200, body: JSON.stringify({ prefs: harnessNotifyPrefs, paused }) };
+  }
+  if (/^\/v1\/notify\/channels\/[^/]+\/notify-level$/.test(url)) {
+    return { status: 200, body: JSON.stringify({ level: body?.level ?? null }) };
+  }
+  return null;
+}
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (typeof window !== 'undefined') {
     const counts = ((window as Window & { __hqInvokeCounts?: Record<string, number> })
       .__hqInvokeCounts ??= {});
     counts[cmd] = (counts[cmd] ?? 0) + 1;
   }
+  if (cmd === 'hq_pro_fetch') {
+    const notify = harnessNotifyFetch(args);
+    if (notify) return notify as T;
+  }
+  if (cmd === 'invalidate_notify_prefs_cache') return null as T;
   if (new URLSearchParams(window.location.search).has('loadingTest')) {
     if (cmd === 'session_project_links') await new Promise(resolve => setTimeout(resolve, 1200));
     if (cmd === 'hq_pro_fetch' && args?.url === '/v1/profile') {

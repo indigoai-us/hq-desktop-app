@@ -17,11 +17,15 @@ const TERMINAL_SEND_CODES = [
   "MENTION_PARTICIPANT_NOT_VISIBLE",
   "CHANNEL_MENTION_INVITE_FORBIDDEN",
   "OUTPOST_MENTION_MEMBER_ADDITION_FORBIDDEN",
+  // personal-bot-channel-scope: the message tagged somebody else's personal
+  // bot into a channel its owner has not added it to. Only the owner can do
+  // that, so retrying from this account is a dead end.
+  "PERSONAL_BOT_OWNER_ONLY",
 ] as const;
 
 /** Mention denials: the message named someone this channel will not accept. */
 const MENTION_DENIAL_PATTERN =
-  /MENTION_PARTICIPANT_NOT_VISIBLE|not active in this company|MENTION_PARTICIPANT_NOT_FOUND|mentioned participant was not found|CHANNEL_MENTION_INVITE_FORBIDDEN|mention-invite/i;
+  /MENTION_PARTICIPANT_NOT_VISIBLE|not active in this company|MENTION_PARTICIPANT_NOT_FOUND|mentioned participant was not found|CHANNEL_MENTION_INVITE_FORBIDDEN|mention-invite|PERSONAL_BOT_OWNER_ONLY/i;
 
 export function isTerminalSendError(raw: string): boolean {
   const text = raw.trim();
@@ -64,6 +68,11 @@ export function formatComposerSendError(
       : named.length > 1
         ? named.map((name) => `@${name}`).join(", ")
         : "";
+  if (/PERSONAL_BOT_OWNER_ONLY/i.test(text)) {
+    return who
+      ? `Couldn't send — only ${who}'s owner can add it to this channel. Ask them to add it, then you can tag it here.`
+      : "Couldn't send — only that bot's owner can add it to this channel.";
+  }
   if (/CHANNEL_MENTION_INVITE_FORBIDDEN|mention-invite/i.test(text)) {
     return who
       ? `Couldn't send — only the channel owner can tag someone who isn't a member yet (${who}). Remove the name and send again.`

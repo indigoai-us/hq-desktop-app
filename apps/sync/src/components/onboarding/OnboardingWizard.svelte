@@ -72,6 +72,7 @@
     stageTimeoutMs,
     setupFailureTelemetryDetails,
     StageTimeoutError,
+    withProgressTimeout,
     STAGE_ORDER,
     withTimeout,
     type InstallManifest,
@@ -166,6 +167,7 @@
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
+  const MIN_VISIBLE_MS_FOR_ABANDON = 1500;
   // Provider buttons remain available after this short head start. The native
   // continuation attempt keeps running until it completes, expires, or a
   // person explicitly takes over with a provider.
@@ -245,6 +247,7 @@
   let onboardingAppVersion =
     typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : 'unknown';
   let onboardingAppVersionResolution: Promise<void> | null = null;
+  let currentStepVisibleAt = Date.now();
   let onboardingAbandoned = false;
   let onboardingCompleted = false;
 
@@ -289,6 +292,9 @@
   const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
+  let unlistenPersonalFirstPushScan: UnlistenFn | null = null;
+  let unlistenPersonalFirstPushProgress: UnlistenFn | null = null;
+  let activeInitialSyncTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -338,6 +344,11 @@
     return WIZARD_STEPS.find((candidate) => candidate.index === step)?.id ?? 'welcome-signin';
   }
 
+  function setCurrentStep(step: number): void {
+    currentStep = step;
+    currentStepVisibleAt = Date.now();
+  }
+
   function recordStep(
     step: number,
     action: OnboardingAction,
@@ -371,8 +382,10 @@
 
   function recordOnboardingAbandonment(): void {
     if (consentOnly || finishing || finishInProgress || onboardingCompleted || onboardingAbandoned) return;
+    const durationMs = Date.now() - currentStepVisibleAt;
+    if (durationMs < MIN_VISIBLE_MS_FOR_ABANDON) return;
     onboardingAbandoned = true;
-    recordStep(currentStep, 'abandoned');
+    recordStep(currentStep, 'abandoned', { durationMs });
   }
 
   /**
@@ -447,7 +460,7 @@
     if (activeInitialStep === initialStep) return;
     activeInitialStep = initialStep;
     router = createWizardRouter({ start: initialStep });
-    currentStep = router.currentStep;
+    setCurrentStep(router.currentStep);
     panelStep = router.currentStep;
     graphicStep = router.currentStep;
     furthestStep = Math.max(furthestStep, router.currentStep);
@@ -1024,6 +1037,29 @@
       return;
     }
     unlistenContentProgress = unlistenContent;
+
+    const notifyInitialSyncActivity = () => {
+      if (isCurrentRun(runId) && currentStageId === 'initial-sync') {
+        activeInitialSyncTimeoutProgress?.();
+      }
+    };
+    const unlistenPersonalScan = safeUnlisten(
+      await listen('sync:personal-first-push-scan', notifyInitialSyncActivity),
+    );
+    if (!isCurrentRun(runId)) {
+      unlistenPersonalScan();
+      return;
+    }
+    unlistenPersonalFirstPushScan = unlistenPersonalScan;
+
+    const unlistenPersonalProgress = safeUnlisten(
+      await listen('sync:personal-first-push-progress', notifyInitialSyncActivity),
+    );
+    if (!isCurrentRun(runId)) {
+      unlistenPersonalProgress();
+      return;
+    }
+    unlistenPersonalFirstPushProgress = unlistenPersonalProgress;
   }
 
   function invokeDesktopCommand(command: string, args?: Record<string, unknown>) {
@@ -1103,14 +1139,28 @@
                 Promise.resolve(invokeDesktopCommand(invocation.command, args)),
               )
             : Promise.resolve(invokeDesktopCommand(invocation.command, args));
-        await withTimeout(
-          operation,
-          ms,
-          () => new StageTimeoutError(id, ms),
-          () => {
-            void cancelForegroundWork(runId);
-          },
-        );
+        const onTimeout = () => new StageTimeoutError(id, ms);
+        const cancel = () => {
+          void cancelForegroundWork(runId);
+        };
+        if (id === 'initial-sync') {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeInitialSyncTimeoutProgress = onProgress;
+              return () => {
+                if (activeInitialSyncTimeoutProgress === onProgress) {
+                  activeInitialSyncTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+          );
+        } else {
+          await withTimeout(operation, ms, onTimeout, cancel);
+        }
       } catch (err) {
         if (invocation.required) throw err;
       } finally {
@@ -1131,6 +1181,7 @@
   type NativeStageFailureDetail = {
     failedDependency?: unknown;
     errorCategory?: unknown;
+    errorKind?: unknown;
   };
 
   async function stageFailureTelemetryDetails(
@@ -1139,6 +1190,7 @@
     failureScope: OnboardingFailureScope,
   ) {
     const timeoutCategory = error instanceof StageTimeoutError ? 'timeout' : undefined;
+    const timeoutKind = error instanceof StageTimeoutError ? 'setup_stage_timeout' : undefined;
     let nativeDetail: NativeStageFailureDetail | undefined;
     try {
       nativeDetail = await invokeCommand<NativeStageFailureDetail | undefined>(
@@ -1152,6 +1204,7 @@
     return setupFailureTelemetryDetails({
       stageId: id,
       errorCategory: timeoutCategory ?? nativeDetail?.errorCategory,
+      errorKind: timeoutKind ?? nativeDetail?.errorKind,
       failedDependency: nativeDetail?.failedDependency,
     });
   }
@@ -1495,6 +1548,11 @@
     unlistenInstallProgress = null;
     unlistenContentProgress?.();
     unlistenContentProgress = null;
+    unlistenPersonalFirstPushScan?.();
+    unlistenPersonalFirstPushScan = null;
+    unlistenPersonalFirstPushProgress?.();
+    unlistenPersonalFirstPushProgress = null;
+    activeInitialSyncTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once
     // its run stops being current, so `allSettled` would stay false forever
     // and the completion gate would never fire. Put it back to 'pending': the
@@ -2005,7 +2063,7 @@
     // ConnectorImportStep owns its entry so it can record detection outcomes
     // without a duplicate generic entry event.
     if (next !== CONNECTOR_IMPORT_STEP_INDEX) recordStep(next, 'entered');
-    currentStep = next;
+    setCurrentStep(next);
     furthestStep = Math.max(furthestStep, next);
     const token = ++transitionToken;
     clearTransitionTimers();

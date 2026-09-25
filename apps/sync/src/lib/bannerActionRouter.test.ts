@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BannerActionRouter, type BannerActionEvent } from './bannerActionRouter';
+import {
+  BannerActionRouter,
+  bannerOpenRoute,
+  shouldSuppressShareNotification,
+  type BannerActionEvent,
+} from './bannerActionRouter';
+import { routeForNotificationPayload } from './notificationRoutes';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -8,6 +14,27 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+describe('bannerOpenRoute', () => {
+  it('maps a mention banner onto inbox:channel:<channelId>:<messageId>', () => {
+    expect(
+      bannerOpenRoute('mention', {
+        channelId: 'chn_eng',
+        eventId: 'evt_mention',
+        fromPersonUid: 'prs_ada',
+      }),
+    ).toBe('inbox:channel:chn_eng:evt_mention');
+  });
+});
+
+describe('shouldSuppressShareNotification', () => {
+  it('suppresses share banners that already point at a DM event', () => {
+    expect(shouldSuppressShareNotification({ dmEventId: 'evt_dm' })).toBe(true);
+    expect(shouldSuppressShareNotification({ dmEventId: '  ' })).toBe(false);
+    expect(shouldSuppressShareNotification({ eventId: 'shr_1' })).toBe(false);
+    expect(shouldSuppressShareNotification(null)).toBe(false);
+  });
+});
 
 describe('BannerActionRouter', () => {
   it('contains an async Tauri unlisten rejection during disposal', async () => {
@@ -168,5 +195,26 @@ describe('BannerActionRouter', () => {
       requestId: 'request-1',
       success: false,
     });
+  });
+
+  it('resolves dm and share banner opens onto the same inbox routes as native notifications', () => {
+    const dm = { fromPersonUid: 'prs_ada', eventId: 'evt_1' };
+    const channel = { channelId: 'chn_eng', eventId: 'evt_root' };
+    const share = { issuerUid: 'prs_izzy' };
+    const missing = {};
+
+    expect(bannerOpenRoute('dm', dm)).toBe(routeForNotificationPayload(dm));
+    expect(bannerOpenRoute('dm', channel)).toBe(
+      routeForNotificationPayload(channel),
+    );
+    expect(bannerOpenRoute('share', share)).toBe(
+      routeForNotificationPayload(share),
+    );
+    expect(bannerOpenRoute('share', { issuerPersonUid: 'prs_maya' })).toBe(
+      'inbox:dm:prs_maya',
+    );
+    expect(bannerOpenRoute('dm', missing)).toBe('inbox');
+    expect(bannerOpenRoute('meeting', { windowId: 'WIN-1' })).toBeNull();
+    expect(bannerOpenRoute('update', {})).toBeNull();
   });
 });

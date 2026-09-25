@@ -405,10 +405,10 @@ describe('master automatic-updates switch', () => {
     expect(core).toContain('scope.set_tag( "pnpm_home_env_present",');
     expect(core).toContain('scope.set_tag( "pnpm_path_has_shim_dir",');
     expect(core).toContain('scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());');
-    // The grouping must NOT split: a new tag that forked the fingerprint would
-    // make the issue look resolved while the same defect kept occurring.
-    expect(cliUpdateCore).toContain(
-      'scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));',
+    // The existing closed class tag distinguishes root causes while keeping
+    // paths and machine-specific install locations out of the grouping key.
+    expect(normalize(cliUpdateCore)).toContain(
+      'scope.set_fingerprint(Some(&[ "hq-cli-update", "install-non-convergent", report.kind.telemetry_value(), ]));',
     );
   });
 
@@ -480,7 +480,7 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('fn clean_partial_hq_cli_install_scope(scope: &Path)');
     expect(cliUpdate).toContain('clean_partial_hq_cli_install_scope(&scope)');
     expect(cliUpdate).toContain('scope.join("hq-cli")');
-    expect(cliUpdate).toContain('.starts_with(".hq-cli-")');
+    expect(cliUpdate).toContain('.starts_with(&format!(".{package_name}-"))');
     // 5C: EIDLETIMEOUT joins the transient-registry allow-list so a registry idle
     // timeout is absorbed like its siblings instead of paging at Error.
     expect(cliUpdateCore).toContain('"EIDLETIMEOUT"');
@@ -560,6 +560,54 @@ describe('master automatic-updates switch', () => {
     expect(appCli).toContain(
       'repairable_runtime && (repairable_lifecycle || unsupported_node || unattributed_non_npm)',
     );
+  });
+
+  it('re-aims a deferred foreign-managed CLI copy into its own user prefix (HQ-DESKTOP-46)', () => {
+    const core = normalize(cliUpdateCore);
+    const appCli = normalize(cliUpdate);
+    expect(cliUpdateCore).toContain('pub enum ExecutedCopyReaim');
+    expect(core).toContain('pub fn executed_copy_reaim_gate(');
+    expect(core).toContain('pub fn executed_copy_reaim_outcome(');
+    expect(appCli).toContain('ExecutedCopyAim::NotYetAimed');
+    expect(appCli).toContain('select_ordinary_install_aim(');
+    expect(appCli).toContain('ExecutedCopyReaim::Converged');
+    expect(appCli).toContain('executed_copy_reaim');
+  });
+
+  it('passes the supported node-llama-cpp download opt-out to every CLI install child (HQ-DESKTOP-5E)', () => {
+    const updater = normalize(cliUpdate);
+    const installer = normalize(installDeps);
+    expect(cliUpdateCore).toContain('pub const NPM_INSTALL_CHILD_ENV');
+    expect(cliUpdateCore).toContain('("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true")');
+    expect(updater.match(/\.envs\(NPM_INSTALL_CHILD_ENV\.iter\(\)\.copied\(\)\)/g) ?? [])
+      .toHaveLength(3);
+    // First-run qmd/hq-cli installs use the same updater command builder, via
+    // the managed install's cache-aware streaming seam.
+    expect(installer).toContain('crate::commands::hq_cli_update::npm_install_command(');
+    expect(installer).toContain(
+      'run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await',
+    );
+    expect(cliUpdateCore).not.toContain('NODE_LLAMA_CPP_POSTINSTALL');
+  });
+
+  it('bounds npmjs dependency-tarball serving lag and escalates a stale marker (HQ-DESKTOP-6D)', () => {
+    const core = normalize(cliUpdateCore);
+    const appCli = normalize(cliUpdate);
+    expect(cliUpdateCore).toContain('REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES');
+    expect(core).toContain('registry_serving_lag_recurred_for_detail(');
+    expect(appCli).toContain('InstallFailureEpisode::DeferredTransient');
+    expect(appCli).toContain('report_registry_serving_lag_marker_unpersisted()');
+  });
+
+  it('retries a Windows locked selected-prefix package rename once after release (HQ-DESKTOP-7V)', () => {
+    const core = normalize(cliUpdateCore);
+    const appCli = normalize(cliUpdate);
+    expect(core).toContain('WindowsLockedInstallTarget');
+    expect(core).toContain('is_windows_locked_install_target_failure(');
+    expect(core).toContain('should_retry_windows_busy_install_target(');
+    expect(appCli).toContain('should_retry_windows_busy_install_target(');
+    expect(appCli).toContain('WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG');
+    expect(core).toContain('attempted_rungs.len() < max_attempts');
   });
 
   it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {

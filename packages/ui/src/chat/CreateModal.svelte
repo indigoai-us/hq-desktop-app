@@ -15,8 +15,14 @@
    * is hidden entirely when the host cannot send one.
    */
   import type { Channel } from "./channels.js";
-  import type { EntryPointResult } from "./lifecycle-entry-points.js";
-  import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
+  import type { RuntimeStatus } from "./create-bot/runtime-status.js";
+  import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
+  import type {
+    AdapterPromise,
+    AgentProvisionOptionsView,
+    LocalBotCreateInput,
+    LocalBotWorkerOption,
+  } from "@hq/platform";
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
   import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
@@ -76,7 +82,6 @@
     companyUidsByPerson,
     defaultChannelCompanyUid,
     directoryRowsFromFeed,
-    personalScopeAllowed,
     pickChannelCompanyUid,
     unavailableChannelScopes,
     unconfirmedCreateMessage,
@@ -129,9 +134,11 @@
     oncreateagent?:
       | ((
           companyUid: string,
-          draft: { name: string; handle: string; title?: string },
+          draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
+    loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
@@ -144,6 +151,10 @@
       | null;
     /** `{ claude: true, codex: false, … }` — which runtimes are signed in here. */
     botRuntimeReady?: Record<string, boolean> | null;
+    /** Per-runtime state (not-installed / couldn't-check / signed-out). */
+    botRuntimeStatus?: Record<string, RuntimeStatus> | null;
+    /** Re-read runtime readiness from the host. */
+    onrecheckruntimes?: (() => void | Promise<void>) | null;
     /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** Names the user's local bots already use (availability check). */
@@ -158,8 +169,9 @@
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /**
-     * What to create inside a company: a company channel (default) or a
-     * project channel — an invite-only channel that is the home of one
+     * What to create inside a company: a plain team channel (default —
+     * `scope: "company"` for name uniqueness, but never the company's home)
+     * or a project channel — an invite-only channel that is the home of one
      * project (its files, work, and people). #welcome's "Start a project
      * channel" opens the modal in project mode.
      */
@@ -185,9 +197,13 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    loadClaudeProviderFlag = null,
+    loadCloudProvisionOptions = null,
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
+    botRuntimeStatus = null,
+    onrecheckruntimes = null,
     botWorkers = null,
     existingBotNames = null,
     botCompanies = null,
@@ -459,7 +475,7 @@
    */
   function newAgentFor(
     companyUid: string,
-    draft: { name: string; handle: string; title?: string },
+    draft: CloudBotDraft,
   ): void {
     if (!oncreateagent) return;
     void runEntry("agent", () => oncreateagent!(companyUid, draft));
@@ -519,6 +535,7 @@
     | "invite-failed"
     | "member-unreachable"
     | "member-agent-scope"
+    | "member-personal-bot"
     | "member-not-owner"
     | "member-other"
     | "first-message-failed";
@@ -834,8 +851,41 @@
         companyUids: memberCompanies.get(chip.personUid as string) ?? [],
       })),
   );
-  /** Personal is only for the owner and their own agents. */
-  const personalAllowed = $derived(personalScopeAllowed(scopeMembers, selfUid));
+  /** Company vs Personal is an explicit two-way choice; Personal is the
+   *  owner's own scope and stays put when the roster changes. */
+  const scopeMode = $derived<"company" | "personal">(
+    companyUid ? "company" : "personal",
+  );
+  const canScopeCompany = $derived(targetCompanies.length > 0);
+  /** The company to restore when the user toggles back to Company. */
+  let lastCompanyUid = $state("");
+  $effect(() => {
+    if (companyUid) lastCompanyUid = companyUid;
+  });
+
+  function setScopeMode(next: "company" | "personal"): void {
+    if (next === "personal") {
+      companyUid = "";
+      return;
+    }
+    if (!canScopeCompany) return;
+    // Restore the company the user had before switching to Personal; if there
+    // is none, fall back to the shared create-scope default.
+    if (
+      lastCompanyUid &&
+      targetCompanies.some((c) => c.companyUid === lastCompanyUid)
+    ) {
+      companyUid = lastCompanyUid;
+      return;
+    }
+    companyUid =
+      defaultChannelCompanyUid({
+        activeScope,
+        companies: targetCompanies,
+        members: scopeMembers,
+        selfUid,
+      }) || (targetCompanies[0]?.companyUid ?? "");
+  }
   const scopeUnavailable = $derived(
     unavailableChannelScopes(targetCompanies, scopeMembers, selfUid),
   );
@@ -926,6 +976,12 @@
    */
   function isExternal(chip: MemberChip): boolean {
     if (chip.type !== "person" || !chip.personUid || !companyUid) return false;
+    // Positively placed in another company: the shared scope rules own this
+    // case (the "In" option is marked unavailable and Create is blocked
+    // inline), same as `pickCandidate`. Asking "add anyway?" on top of a block
+    // that Create will refuse would be two answers to one question.
+    const known = memberCompanies.get(chip.personUid) ?? [];
+    if (known.length > 0 && !known.includes(companyUid)) return false;
     return (
       companyRelation(chip.personUid, companyUid, contacts, roster) === "outside"
     );
@@ -1580,6 +1636,9 @@
     if (reason === "member-agent-scope") {
       return "bots can only join channels in a workspace they belong to.";
     }
+    if (reason === "member-personal-bot") {
+      return "only this bot's owner can add it to a channel.";
+    }
     return "couldn't add them.";
   }
 
@@ -1590,9 +1649,11 @@
         ? "member-unreachable"
         : reason === "agent-scope"
           ? "member-agent-scope"
-          : reason === "not-owner"
-            ? "member-not-owner"
-            : "member-other";
+          : reason === "personal-bot"
+            ? "member-personal-bot"
+            : reason === "not-owner"
+              ? "member-not-owner"
+              : "member-other";
     return issueFrom({
       key: chip.key,
       label: chip.label,
@@ -1940,6 +2001,9 @@
     if (issue.reason === "first-message-failed") return true;
     // The server refused on ROLE — a retry from the same account is a dead end.
     if (issue.reason === "member-not-owner") return false;
+    // Same for somebody else's personal bot: only its owner can add it, so a
+    // retry from this account fails identically every time.
+    if (issue.reason === "member-personal-bot") return false;
     if (issue.reason === "member-other") return true;
     return issue.reason === "member-unreachable" && !offersEmailFallback(issue);
   }
@@ -2440,11 +2504,15 @@
     {:else if step === "bot"}
       <CreateBotFlow
         {botRuntimeReady}
+        {botRuntimeStatus}
+        {onrecheckruntimes}
         {botWorkers}
         existingNames={existingBotNames}
         {botCompanies}
         agentTargets={canCreateCloudBot ? agentTargets : []}
         onCloudCreate={canCreateCloudBot ? newAgentFor : null}
+        {loadClaudeProviderFlag}
+        {loadCloudProvisionOptions}
         oncreate={canCreateLocalBot ? submitLocalBot : null}
         onback={() => {
           entryError = null;
@@ -2616,28 +2684,62 @@
 
         <div class="create-field">
           <span class="create-label" id="create-scope-label">In</span>
-          <select
-            class="create-select"
-            data-testid="chat-channel-scope"
+          <div
+            class="create-kind"
+            role="radiogroup"
             aria-labelledby="create-scope-label"
-            disabled={creating}
-            bind:value={companyUid}
+            data-testid="chat-channel-scope-mode"
           >
-            {#each targetCompanies as company (company.companyUid)}
-              {@const blocked = scopeUnavailable.find(
-                (row) => row.company.companyUid === company.companyUid,
-              )}
-              <option value={company.companyUid} disabled={Boolean(blocked)}>
-                {blocked ? `${company.label} — ${blocked.reason}` : company.label}
-              </option>
-            {/each}
-            <!-- Personal is the owner's own scope: only they and their agents
-                 can be in it, so it is held (not hidden) once a teammate is
-                 picked — the value stays legible instead of a blank select. -->
-            <option value="" disabled={!personalAllowed}>Personal</option>
-          </select>
+            <button
+              type="button"
+              role="radio"
+              class="create-kind-option"
+              class:selected={scopeMode === "company"}
+              aria-checked={scopeMode === "company"}
+              data-testid="chat-channel-scope-company"
+              disabled={creating || !canScopeCompany}
+              onclick={() => setScopeMode("company")}
+            >
+              Company
+            </button>
+            <button
+              type="button"
+              role="radio"
+              class="create-kind-option"
+              class:selected={scopeMode === "personal"}
+              aria-checked={scopeMode === "personal"}
+              data-testid="chat-channel-scope-personal"
+              disabled={creating}
+              onclick={() => setScopeMode("personal")}
+            >
+              Personal
+            </button>
+          </div>
         </div>
-        {#if scopeUnavailable.length > 0}
+        {#if scopeMode === "company"}
+          <div class="create-field">
+            <span class="create-label" id="create-company-label">Company</span>
+            <select
+              class="create-select"
+              data-testid="chat-channel-scope"
+              aria-labelledby="create-company-label"
+              disabled={creating}
+              bind:value={companyUid}
+            >
+              {#each targetCompanies as company (company.companyUid)}
+                {@const blocked = scopeUnavailable.find(
+                  (row) => row.company.companyUid === company.companyUid,
+                )}
+                <option value={company.companyUid} disabled={Boolean(blocked)}>
+                  {blocked
+                    ? `${company.label} — ${blocked.reason}`
+                    : company.label}
+                </option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+        {#if scopeMode === "company" && scopeUnavailable.length > 0}
           <p class="create-help" data-testid="chat-channel-scope-unavailable">
             {scopeUnavailable[0].reason}
           </p>
@@ -2657,7 +2759,7 @@
                 disabled={creating}
                 onclick={() => (channelKind = "channel")}
               >
-                Channel
+                Team channel
               </button>
               <button
                 type="button"
@@ -2676,7 +2778,7 @@
           <p class="create-help" data-testid="chat-channel-kind-help">
             {channelKind === "project"
               ? "One home for a project: its work, files, and people. Invite-only."
-              : "A shared channel everyone in the company can find."}
+              : "A team channel everyone in the company can find. Not the company's main home — just a normal channel."}
           </p>
         {/if}
 

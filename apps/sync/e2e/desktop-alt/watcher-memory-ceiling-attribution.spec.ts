@@ -5,7 +5,7 @@
  * The auto-sync Node runner is spawned with NO declared memory ceiling, so V8's
  * old-space limit is whatever each host derives from its RAM. One mechanism —
  * the runner's unbounded mid-pull growth — therefore arrives as THREE different
- * termination fingerprints:
+ * watcher termination envelopes:
  *   - 7675812922: an OS SIGKILL at a 5.9GB tree footprint (signal:9), memory
  *     evidence destroyed;
  *   - 7676269601: a V8 heap-OOM SIGABRT at 3662/3802MB (abort:sigabrt);
@@ -20,9 +20,9 @@
  *      footprint is interpretable against the ceiling that bounded it.
  *   3. Add a supervisor FOOTPRINT ceiling so the app — not the host — decides the
  *      outcome for the RSS-outruns-heap case.
- *   4. CONVERGE the fingerprint on EVIDENCE only: a heap-OOM class, an at-or-above
- *      ceiling comparable footprint, or a supervisor pre-empt collapse the three
- *      encodings onto one token; an evidence-free SIGKILL stays signal:9.
+ *   4. CONVERGE the stable exit class on EVIDENCE only: a heap-OOM class, an at-or-
+ *      above-ceiling comparable footprint, or a supervisor pre-empt classifies the
+ *      three encodings as runner_memory; an evidence-free SIGKILL stays sigkill.
  *   5. Carry a comparable Windows memory fact so an idle-phase fault is honestly
  *      SEPARATED from the memory mode rather than swept into it.
  *
@@ -107,27 +107,29 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     expect(appDaemonSource).toContain('DaemonFailureCategory::RunnerMemory');
   });
 
-  it('gates the fingerprint convergence on evidence in sync_outcome.rs', () => {
+  it('gates memory convergence on evidence in the shared exit-class helper', () => {
     expect(coreSyncOutcomeSource).toContain('pub const RUNNER_MEMORY_EXHAUSTION_TOKEN: &str');
     expect(coreSyncOutcomeSource).toContain('pub struct MemoryExhaustionEvidence');
-    expect(coreSyncOutcomeSource).toContain('pub fn watcher_termination_fingerprint_token(');
-    const gate = sliceBetween(
+    const classifier = sliceBetween(
       coreSyncOutcomeSource,
-      'pub fn watcher_termination_fingerprint_token(',
+      'pub fn watcher_exit_class(',
       '\n}\n',
-      'watcher_termination_fingerprint_token',
+      'watcher_exit_class',
     );
-    // Attributed → the memory token; otherwise byte-for-byte the host token.
-    expect(gate).toContain('memory_evidence.is_attributed()');
-    expect(gate).toContain('RUNNER_MEMORY_EXHAUSTION_TOKEN');
-    expect(gate).toContain('termination_fingerprint_token_for_host(code, signal, host)');
+    // Attributed deaths share runner_memory; unproven exits retain a bounded
+    // host exit class rather than being assumed to be OOMs.
+    expect(classifier).toContain('if memory_attributed');
+    expect(classifier).toContain('"runner_memory"');
   });
 
-  it('wires the evidence-gated token + ceiling extras at the app exit seam', () => {
-    expect(appDaemonSource).toContain('watcher_termination_fingerprint_token(code, signal, host, memory_evidence)');
+  it('wires evidence-gated memory classification into the stable exit fingerprint', () => {
+    expect(appDaemonSource).toMatch(
+      /watcher_exit_class\(\s*code,\s*signal,\s*node_fatal,\s*memory_attributed,\s*\)/,
+    );
+    expect(appDaemonSource).toContain('let fingerprint = ["sync-watcher-exit", exit_class];');
     expect(appDaemonSource).toContain('"runner_heap_ceiling_mb"');
     expect(appDaemonSource).toContain('"runner_heap_ceiling_source"');
-    // The raw host token is preserved when convergence overrides it.
+    // The raw host token is preserved when memory evidence overrides the exit class.
     expect(appDaemonSource).toContain('normalized_abort.is_some() || memory_attributed');
     // A comparable footprint only counts when whole-tree scoped — never a shim.
     expect(appDaemonSource).toContain('resolved_rss_scope == "tree"');
@@ -182,12 +184,54 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
       '\n}\n',
       'record_supervisor_memory_preempt',
     );
-    // Establishes respawn backoff, emits the attributed event, and marks the
-    // evidence source as a supervisor pre-empt (so the token converges).
+    // Establishes respawn backoff, emits the attributed event, and tags the
+    // supervisor as the stop initiator with the measured projection arm reason.
     expect(recorder).toContain('note_watcher_crashed()');
-    expect(recorder).toContain('supervisor_preempt: true');
+    expect(recorder).toContain('("stop_initiator", "watcher_supervisor".to_string())');
+    expect(recorder).toContain('"watcher_projection_arm_reason"');
     expect(recorder).toContain('.capture(');
-    expect(recorder).toContain('watcher_termination_fingerprint_token(');
+    expect(recorder).toContain('["sync-watcher-exit", "runner_memory"]');
+    expect(recorder).toContain('("exit_class", "runner_memory".to_string())');
+  });
+
+  it('keeps memory-class evidence non-absent when the supervisor sampled before pre-emption', () => {
+    const resolver = sliceBetween(
+      appDaemonSource,
+      'fn resolve_watcher_memory_class(',
+      '/// Windows (and any non-signal platform)',
+      'resolve_watcher_memory_class',
+    );
+    // Signal the largest Node member, not an arbitrary largest child such as git.
+    // If a fresh Node report is unavailable, the already-collected tree sample is
+    // still the source of a bounded class instead of being reported as absent.
+    const signalTarget = sliceBetween(
+      appDaemonSource,
+      'fn signal_largest_node_memory_report(',
+      '\n}\n',
+      'signal_largest_node_memory_report',
+    );
+    const targetPid = sliceBetween(
+      appDaemonSource,
+      'fn largest_node_memory_report_pid(',
+      '\n}\n',
+      'largest_node_memory_report_pid',
+    );
+    expect(resolver).toContain('signal_largest_node_memory_report(sample,');
+    expect(signalTarget).toContain('largest_node_memory_report_pid(sample)');
+    expect(targetPid).toContain('sample.tree_largest_node_member_pid.filter(|pid| *pid != 0)');
+    expect(resolver).toContain('resolve_memory_class_from_sample');
+    expect(coreDaemonSource).toContain('Self::SupervisorSample');
+
+    const recorder = sliceBetween(
+      appDaemonSource,
+      'fn record_supervisor_memory_preempt(',
+      '\n}\n',
+      'record_supervisor_memory_preempt',
+    );
+    expect(recorder).toContain('("memory_class", evidence.memory_class.as_str().to_string())');
+    expect(recorder).toContain('("largest_child_kind"');
+    expect(telemetrySource).toContain('"memory_class" =>');
+    expect(telemetrySource).toContain('"largest_child_kind" =>');
   });
 
   // ── Footprint growth-rate projection + pre-empt decomposition (this fix) ──
@@ -249,10 +293,11 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     ]) {
       expect(recorder).toContain(field);
     }
-    // The message, the converged fingerprint token, and the three original channels
+    // The message, stable memory exit class, and the three original channels
     // are untouched — only bounded extras and tags are added.
     expect(recorder).toContain('runner memory exhausted');
-    expect(recorder).toContain('watcher_termination_fingerprint_token(');
+    expect(recorder).toContain('["sync-watcher-exit", "runner_memory"]');
+    expect(recorder).toContain('("exit_class", "runner_memory".to_string())');
     expect(recorder).toContain('"rss_scope"');
     expect(recorder).toContain('"runner_heap_ceiling_mb"');
   });
@@ -400,7 +445,18 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     expect(loop).toContain('runner_report_is_complete(');
     expect(loop).toContain('Src::ReportNeverCompleted');
     expect(loop).toContain('Src::ReportRead');
-    expect(appDaemonSource).toContain('read_fresh_memory_class_within(&report_path, before, deadline)');
+    expect(loop).toContain('array_buffers_path.filter');
+    expect(loop).toContain('array_buffers_mb = Some(value)');
+    const resolver = sliceBetween(
+      appDaemonSource,
+      'fn resolve_watcher_memory_class(',
+      '\n}\n',
+      'resolve_watcher_memory_class',
+    );
+    expect(resolver).toContain('RUNNER_MEMORY_CLASS_FILENAME');
+    expect(resolver).toContain('Some(&array_buffers_path)');
+    expect(resolver).toContain('array_buffers_before');
+    expect(resolver).toContain('read_fresh_memory_class_within(');
   });
 
   it('registers the arm-reason + never-completed vocabulary at the telemetry egress boundary', () => {
@@ -573,6 +629,17 @@ function isMemoryAttributed(ev: MemoryEvidence): boolean {
   return ev.heapOomClass || footprintAtOrAboveCeiling || ev.supervisorPreempt;
 }
 
+/** Mirror the stable app exit class, keeping memory convergence evidence-gated. */
+function watcherExitClass(exit: WatcherExit): string {
+  if (isMemoryAttributed(exit.evidence)) return 'runner_memory';
+  if (exit.code !== null && (exit.code >>> 0) === 0xc0000409) return 'stack_buffer_overrun';
+  if (exit.code !== null && (exit.code >>> 0) === 0x40010004) return 'dbg_terminate';
+  if (exit.code === -1) return 'minus_one';
+  if (exit.signal === 15) return 'sigterm';
+  if (exit.signal === 9) return 'sigkill';
+  return 'other';
+}
+
 interface WatcherExit {
   label: string;
   code: number | null;
@@ -587,9 +654,9 @@ interface WatcherExit {
 
 /**
  * Model one watcher exit into the Sentry envelope the artifact ships. `pre-fix`
- * reproduces today's shipped envelope: the raw host token, three fingerprints,
- * NO declared ceiling. `post-fix` declares the ceiling on every exit and
- * converges the fingerprint on evidence only.
+ * reproduces the historical raw-host fingerprint. `post-fix` declares the ceiling
+ * on every exit and emits the stable two-part fingerprint, converging only
+ * evidence-backed memory deaths to the runner_memory exit class.
  */
 function simulateWatcherExit(exit: WatcherExit, policy: Policy): SentryEnvelopeEvent {
   const host = hostToken(exit.code, exit.signal, exit.host);
@@ -602,13 +669,15 @@ function simulateWatcherExit(exit: WatcherExit, policy: Policy): SentryEnvelopeE
   };
   if (exit.jobPeakCommitBucket) tags.watcher_job_peak_commit_bucket = exit.jobPeakCommitBucket;
 
-  let token: string;
+  let fingerprint: string[];
   if (policy === 'pre-fix') {
     // Host-derived ceiling: three encodings → three fingerprints, no ceiling fact.
-    token = host;
+    fingerprint = ['sync', 'auto-sync-watcher-termination', host, 'none', 'none'];
   } else {
     const attributed = isMemoryAttributed(exit.evidence);
-    token = attributed ? MEMORY_TOKEN : host;
+    const exitClass = watcherExitClass(exit);
+    tags.exit_class = exitClass;
+    fingerprint = ['sync-watcher-exit', exitClass];
     // Declared ceiling recorded on EVERY exit, with its provenance.
     extras.runner_heap_ceiling_mb = RUNNER_HEAP_CEILING_DEFAULT_MB;
     tags.runner_heap_ceiling_source = 'declared_default';
@@ -618,7 +687,7 @@ function simulateWatcherExit(exit: WatcherExit, policy: Policy): SentryEnvelopeE
 
   return {
     message: `auto-sync watcher exited unexpectedly, consecutive failure #1`,
-    fingerprint: ['sync', 'auto-sync-watcher-termination', token, 'none', 'none'],
+    fingerprint,
     tags,
     extras,
   };
@@ -680,8 +749,10 @@ describe('watcher memory-ceiling attribution — shipped Sentry envelopes', () =
     const abort = simulateWatcherExit(SIGABRT_HEAP_OOM, 'post-fix');
 
     // Footprint-at-ceiling (kill) and heap-OOM class (abort) both converge.
-    expect(kill.fingerprint[2]).toBe(MEMORY_TOKEN);
-    expect(abort.fingerprint[2]).toBe(MEMORY_TOKEN);
+    expect(kill.fingerprint).toEqual(['sync-watcher-exit', 'runner_memory']);
+    expect(abort.fingerprint).toEqual(['sync-watcher-exit', 'runner_memory']);
+    expect(kill.tags.exit_class).toBe('runner_memory');
+    expect(abort.tags.exit_class).toBe('runner_memory');
     expect(kill.fingerprint).toEqual(abort.fingerprint);
 
     for (const ev of [kill, abort]) {
@@ -706,7 +777,8 @@ describe('watcher memory-ceiling attribution — shipped Sentry envelopes', () =
     };
     const fq = simulateWatcherExit(forceQuit, 'post-fix');
     // A force-quit must NEVER be relabelled an OOM.
-    expect(fq.fingerprint[2]).toBe('signal:9');
+    expect(fq.fingerprint).toEqual(['sync-watcher-exit', 'sigkill']);
+    expect(fq.tags.exit_class).toBe('sigkill');
     expect(fq.extras.termination_status_raw).toBeUndefined();
     // …but it still carries the declared ceiling for interpretability.
     expect(fq.extras.runner_heap_ceiling_mb).toBe(RUNNER_HEAP_CEILING_DEFAULT_MB);
@@ -715,8 +787,8 @@ describe('watcher memory-ceiling attribution — shipped Sentry envelopes', () =
     // now ships (declared ceiling + peak-commit bucket) so it is honestly
     // SEPARATED from the memory mode, not swept into it on a 7MB shim number.
     const win = simulateWatcherExit(WINDOWS_IDLE_FAULT, 'post-fix');
-    expect(win.fingerprint[2]).toBe('windows:fault:0xC0000409');
-    expect(win.fingerprint[2]).not.toBe(MEMORY_TOKEN);
+    expect(win.fingerprint).toEqual(['sync-watcher-exit', 'stack_buffer_overrun']);
+    expect(win.tags.exit_class).toBe('stack_buffer_overrun');
     expect(win.extras.runner_heap_ceiling_mb).toBe(RUNNER_HEAP_CEILING_DEFAULT_MB);
     expect(win.tags.watcher_job_peak_commit_bucket).toBe('512mb_to_1gb');
     // The withheld shim scope is never read as the runner's own footprint.
@@ -725,8 +797,9 @@ describe('watcher memory-ceiling attribution — shipped Sentry envelopes', () =
     for (const ev of [fq, win]) assertContentSafeDiagnostics(ev);
   });
 
-  it('never regroups: an exit with no memory evidence keeps its host token byte-for-byte', () => {
-    // A plain SIGSEGV crash (unrelated) must be identical pre- and post-fix.
+  it('groups evidence-free exits by stable class instead of raw host codes', () => {
+    // A plain SIGSEGV crash remains outside the memory class and has a bounded
+    // class-only fingerprint; raw signal detail stays available in the event tag.
     const segv: WatcherExit = {
       label: 'segv',
       code: null,
@@ -738,8 +811,8 @@ describe('watcher memory-ceiling attribution — shipped Sentry envelopes', () =
     const pre = simulateWatcherExit(segv, 'pre-fix');
     const post = simulateWatcherExit(segv, 'post-fix');
     expect(pre.fingerprint[2]).toBe('signal:11');
-    expect(post.fingerprint[2]).toBe('signal:11');
-    expect(post.fingerprint).toEqual(pre.fingerprint);
+    expect(post.fingerprint).toEqual(['sync-watcher-exit', 'other']);
+    expect(post.tags.exit_class).toBe('other');
   });
 });
 
@@ -786,6 +859,7 @@ function simulateSupervisorPreempt(p: SupervisorPreempt, policy: Policy): Sentry
     runner_heap_ceiling_mb: p.heapCeilingMb,
   };
   if (policy === 'post-fix') {
+    tags.exit_class = 'runner_memory';
     extras.watcher_tree_rss_mb = p.footprintMb;
     extras.watcher_tree_largest_member_mb = p.treeLargestMemberMb;
     // The non-heap excess --max-old-space-size cannot bound, saturating at 0.
@@ -803,7 +877,10 @@ function simulateSupervisorPreempt(p: SupervisorPreempt, policy: Policy): Sentry
     message:
       `auto-sync watcher pre-empted at declared footprint ceiling ` +
       `(runner memory exhausted), consecutive failure #1 [footprint ${p.footprintMb}MB]`,
-    fingerprint: ['sync', 'auto-sync-watcher-termination', MEMORY_TOKEN, 'none', 'none'],
+    fingerprint:
+      policy === 'pre-fix'
+        ? ['sync', 'auto-sync-watcher-termination', MEMORY_TOKEN, 'none', 'none']
+        : ['sync-watcher-exit', 'runner_memory'],
     tags,
     extras,
   };
@@ -855,14 +932,8 @@ describe('watcher memory-ceiling attribution — supervisor pre-empt decompositi
 
   it('post-fix: the same pre-empt now carries the full bounded decomposition', () => {
     const ev = simulateSupervisorPreempt(SUPERVISOR_PREEMPT_2026_09_04, 'post-fix');
-    // Grouping, message and the original channels are byte-identical to pre-fix.
-    expect(ev.fingerprint).toEqual([
-      'sync',
-      'auto-sync-watcher-termination',
-      MEMORY_TOKEN,
-      'none',
-      'none',
-    ]);
+    expect(ev.fingerprint).toEqual(['sync-watcher-exit', 'runner_memory']);
+    expect(ev.tags.exit_class).toBe('runner_memory');
     expect(ev.tags.rss_scope).toBe('tree');
     expect(ev.extras.runner_heap_ceiling_mb).toBe(RUNNER_HEAP_CEILING_DEFAULT_MB);
     // Tree total, largest single member, and the non-heap excess above the declared
@@ -1063,8 +1134,9 @@ describe('watcher memory-ceiling attribution — adaptive footprint guard (2026-
     const jsHeapTotalMb = 3584;
     const envelope: SentryEnvelopeEvent = {
       message: `auto-sync watcher pre-empted at declared footprint ceiling (runner memory exhausted), consecutive failure #1 [footprint ${footprintMb}MB]`,
-      fingerprint: ['sync', 'auto-sync-watcher-termination', MEMORY_TOKEN, 'none', 'none'],
+      fingerprint: ['sync-watcher-exit', 'runner_memory'],
       tags: {
+        exit_class: 'runner_memory',
         sync_route: 'watcher',
         rss_scope: 'tree',
         runner_heap_ceiling_source: 'declared_default',
@@ -1163,8 +1235,9 @@ describe('watcher memory-ceiling attribution — six evented rows + arm-reason (
     const r = EVENTED_ROWS.find((x) => x.verdict === 'preempt')!;
     const envelope: SentryEnvelopeEvent = {
       message: `auto-sync watcher pre-empted at declared footprint ceiling (runner memory exhausted), consecutive failure #1 [footprint ${r.curMb}MB]`,
-      fingerprint: ['sync', 'auto-sync-watcher-termination', MEMORY_TOKEN, 'none', 'none'],
+      fingerprint: ['sync-watcher-exit', 'runner_memory'],
       tags: {
+        exit_class: 'runner_memory',
         sync_route: 'watcher',
         rss_scope: 'tree',
         runner_heap_ceiling_source: 'declared_default',
@@ -1199,8 +1272,13 @@ describe('watcher memory-ceiling attribution — six evented rows + arm-reason (
     // gap seen on BOTH post-fix events, proved closed.
     const read: SentryEnvelopeEvent = {
       message: 'auto-sync watcher pre-empted at declared footprint ceiling (runner memory exhausted), consecutive failure #1 [footprint 4800MB]',
-      fingerprint: ['sync', 'auto-sync-watcher-termination', MEMORY_TOKEN, 'none', 'none'],
-      tags: { sync_route: 'watcher', rss_scope: 'tree', watcher_memory_class_source: 'report_read' },
+      fingerprint: ['sync-watcher-exit', 'runner_memory'],
+      tags: {
+        exit_class: 'runner_memory',
+        sync_route: 'watcher',
+        rss_scope: 'tree',
+        watcher_memory_class_source: 'report_read',
+      },
       extras: {
         watcher_js_heap_total_mb: 3584,
         watcher_js_heap_used_mb: 3072,
@@ -1216,8 +1294,13 @@ describe('watcher memory-ceiling attribution — six evented rows + arm-reason (
 
     const neverCompleted: SentryEnvelopeEvent = {
       message: 'auto-sync watcher pre-empted at declared footprint ceiling (runner memory exhausted), consecutive failure #1 [footprint 4800MB]',
-      fingerprint: ['sync', 'auto-sync-watcher-termination', MEMORY_TOKEN, 'none', 'none'],
-      tags: { sync_route: 'watcher', rss_scope: 'tree', watcher_memory_class_source: 'report_never_completed' },
+      fingerprint: ['sync-watcher-exit', 'runner_memory'],
+      tags: {
+        exit_class: 'runner_memory',
+        sync_route: 'watcher',
+        rss_scope: 'tree',
+        watcher_memory_class_source: 'report_never_completed',
+      },
       extras: {
         watcher_js_heap_total_mb: '',
         watcher_js_heap_used_mb: '',

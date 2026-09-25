@@ -10,6 +10,179 @@ The release moves it under the version it ships in.
 
 - Meeting detection now runs on the newest Recall recording engine, which officially supports Zoom and Teams meetings joined from Chrome, not only from the Zoom and Teams apps. Google Meet in a browser was already supported. Safari, Edge, and Firefox are still not supported for Zoom or Teams, so join from Chrome (or a Chromium browser like Arc or Brave) if you want HQ to notice the meeting.
 
+## [0.10.324] — 2026-09-25
+
+- Channel @mention notifications now work on installs whose local settings file does not record your person ID, and the first mention in a channel after the app starts now notifies too.
+
+- The desktop app now asks for (and transparently decodes) compressed
+  responses from the server, so the same data moves over the wire faster —
+  most noticeable on the channel list for people in large companies.
+
+## [0.10.323] — 2026-09-24
+
+- Fixed the channel list failing to load for people in companies with a lot of
+  channels. The app was giving that request the same short timeout as every
+  other one, so once a company's channel roster got large enough, the response
+  legitimately took longer to arrive and the request aborted partway through
+  with a decode error. It now gets a longer timeout of its own.
+- HQ Sync tells you to verify your email before it can show pending company invites.
+
+- Fixed a bug where every company in the sidebar's "Companies" section showed
+  "no home channel yet," even companies with a working home channel. The
+  fallback check that resolves a home channel while the server catches up was
+  comparing the channel's raw name (which carries a leading "#", e.g.
+  "#indigo") against the bare company slug ("indigo") — they could never
+  match. The "Companies" section rows are now compact (name only, single
+  line) and default to your 3 most active companies by recent message
+  activity; pinning any company from the header's pin menu switches the
+  section to show only your pinned companies. A company whose home channel
+  isn't loaded yet is now resolved on demand instead of staying stuck.
+- Messages now separates people from bots. A new "Show bot messages" toggle at
+  the top of Messages is off by default, so your inbox, unread badge, and
+  notifications only carry messages meant for you. Agent-to-agent chatter is one
+  toggle away and never counts toward unread or fires a notification. A thread
+  whose recent messages are all from bots stays listed and shows how many are
+  hidden; turning the toggle on reveals them with a small "agent" label.
+
+## [0.10.322] — 2026-09-24
+
+- Each company now has exactly one "company home" channel (settings,
+  wallpaper). Other channels created inside a company are plain team
+  channels. A new "Companies" section in the sidebar pins each company's
+  home channel, and you can choose which companies show there.
+- Company home channels show Chat only — the Office tab is hidden for
+  company channels for now (the underlying calling code is unchanged).
+
+## [0.10.321] — 2026-09-24
+
+- Auto-sync memory alerts now include a bounded memory class and, for
+  multi-process trees, the largest child's process type.
+- Added internal telemetry to diagnose cases where a machine that was already set up and signed in shows the sign-in or setup screen on startup. No new information about your account is collected; the report records which setup state the app read at launch (such as whether setup markers were present), whether a token file existed and how old it was in minutes (not its contents), and which screen appeared. This data goes only to the development team and is used to find the cause if the sign-in screen returns on a configured machine.
+
+## [0.10.320] — 2026-09-24
+
+- HQ no longer shows the setup screen on every launch for machines that are already configured and signed in. If a previous version left the setup flag set incorrectly, the app clears it on the next start.
+
+## [0.10.319] — 2026-09-24
+
+- The setup finish card goes away as soon as you send the setup bot another
+  message, instead of staying under the rest of the conversation.
+- Files and images attached in chat upload again. Since vault storage turned on
+  write protection, every attachment upload was refused, so bots and teammates
+  never received the file.
+- First-run setup now waits for activity from the initial personal-vault push
+  before timing out. Template-install failures also record a bounded cause for
+  diagnosis without sending local paths.
+
+## [0.10.317] — 2026-09-24
+
+- Sync and Meetings show the server's upgrade link when a plan pauses uploads or
+  meeting-bot recording.
+
+## [0.10.315] — 2026-09-24
+
+- Switching channels or DMs in the sidebar now shows the new conversation
+  right away instead of pausing first, even when leaving a long conversation.
+
+## [0.10.314] — 2026-09-24
+
+- Create company Cloud bots with Codex, Grok, or Claude. HQ shows the tenant price before creation and opens the Claude sign-in page after a Claude subscription bot is created.
+
+## [0.10.313] — 2026-09-24
+
+- When npm's metadata has not caught up to a new dependency version, HQ refreshes
+  it and retries the CLI update. If needed, it tries npm's public registry.
+
+## [0.10.311] — 2026-09-23
+
+- Large sync-output bursts no longer build up in HQ's memory. If the app falls
+  behind, the runner waits for the app to process more output.
+- Mute a channel from the speaker icon in the channel header, or open the menu next to it to choose all messages, files and mentions, mentions only, or muted. Muted channels show a muted icon in the sidebar.
+- Settings > Notifications can pause notifications (1 hour, 8 hours, until tomorrow 8am, or indefinitely) and turn DMs, mentions, shared files, all activity, and "added to a channel" alerts on or off. You can also let DMs through while paused. These settings follow your HQ account to every device.
+- You get a notification when someone adds you to a channel. Clicking it opens the channel.
+
+## [0.10.310] — 2026-09-23
+
+- When sync finishes with per-file errors, events with the same exit code and
+  dominant error class now share a Sentry issue. The cause and failure site stay
+  attached for diagnosis.
+
+- When someone @mentions you in a channel, HQ now shows a notification that opens that message. Mentions only count when they are structured (not just the word @YourName), and they stay quiet if you already have that channel open. Shared folders show a folder tile that opens Files instead of a file preview.
+
+## [0.10.309] — 2026-09-23
+
+- A private folder shared as `foo/` now appears as `foo/` in the app and its
+  notification instead of looking like a file.
+
+## [0.10.308] — 2026-09-23
+
+- First-run setup now retries npm dependency installs after stale caches, interrupted installs, and registry metadata that has not propagated yet.
+
+## [0.10.307] — 2026-09-23
+
+- Core updates now report clearer failure details when rescue fails, including the failed stage, tool versions, and available disk space, without sending local paths.
+
+## [0.10.306] — 2026-09-22
+
+- When the onboarding window is replaced during startup, HQ no longer counts the brief screen teardown as an abandoned sign-in attempt. Longer stays still record how long the step was visible.
+
+## [0.10.305] — 2026-09-22
+
+- On macOS, the window buttons and the Back button in Library and Settings stay lined up when the Interface size is set to Compact or Large. Before, Compact slid the Back button under the green window button and shifted the title bar off centre.
+- An open project updates when the same story changes on another device. A status change refetches that project, a work change reloads the company board, and a session that needs you or finishes updates the live marker on its card. You do not have to refresh the page. Needs the matching HQ Cloud release; with an older server the page still loads when you open it.
+
+## [0.10.304] — 2026-09-22
+
+- Core update failures now include consistent diagnostics, so repeated failures are grouped together and the report shows what went wrong without exposing local paths.
+
+- Clicking a DM or file-share notification now opens the main window on that conversation, even when HQ was not running. Before, the click opened the small quick Inbox window or landed on Home. The quick Inbox window is still available from the menu bar icon.
+- Links that start with hq:// (for example from an email or the HQ console) now open the right screen: a DM thread, a channel message, a file, a company, or Meetings. Existing hq-desktop:// setup and sign-in links work as before.
+- When someone shares files with you, the DM thread shows a card of square file tiles (up to four, then a +N tile). Click the card for a grid of every file, and click a file to preview images, PDFs, and text right in the thread, or open anything else in Files. One share produces one notification instead of two. Needs the matching HQ Cloud release; with an older server the thread looks as before.
+- Clicking a DM or file-share notification now opens the main window on that conversation, even when HQ was not running. Before, the click opened the small quick Inbox window or landed on Home. The quick Inbox window is still available from the menu bar icon.
+- Links that start with hq:// (for example from an email or the HQ console) now open the right screen: a DM thread, a channel message, a file, a company, or Meetings. Existing hq-desktop:// setup and sign-in links work as before.
+- When someone shares files with you, the DM thread shows a card of square file tiles (up to four, then a +N tile). Click the card for a grid of every file, and click a file to preview images, PDFs, and text right in the thread, or open anything else in Files. One share produces one notification instead of two. Needs the matching HQ Cloud release; with an older server the thread looks as before.
+
+## [0.10.303] — 2026-09-22
+
+- On macOS, the close, minimise and zoom buttons now line up with the toolbar. They were sitting about five pixels low.
+- Back from Settings now always returns to the main Messages view, instead of whatever page you were on before you opened Settings. The titlebar arrows still walk back through your history.
+- Core update failures now report their cause, and a finished update no longer runs the installer again when saving its drift baseline fails.
+- Windows Core updates now install a real rsync executable before the rescue runs, and show a clear message when rsync cannot be installed.
+- If a Core rescue applied the release but could not restore preserved files, automatic checks stop retrying that target and show where the preserved bytes were kept.
+
+## [0.10.302] — 2026-09-22
+
+- Story cards and the story detail pane now show who a story is assigned to. A person shows their photo or initials, an agent shows its mark, and a story with nobody assigned says Unassigned. The detail pane also shows who last changed the story. This uses the live project from HQ, so a name written only in the local plan does not override the assignment HQ has.
+
+- Long status updates in a channel now read as normal wrapped text. A post over about 1,200 characters that used the round bullet for its points was being mistaken for a log dump and shown in a narrow grey code box with a sideways scrollbar and a "Show more" cut, which made it unreadable on a phone. The check now recognises that bullet as ordinary writing, so those updates wrap like any other message. Real log and JSON dumps still get the compact box.
+
+## [0.10.301] — 2026-09-21
+
+- Detected meetings now appear on the Meetings page with a recording destination picker, Start recording, and Stop recording. Opening the page after detection or after recording starts shows the current state, and the controls remain reachable in narrow windows.
+
+- When the setup bot finishes, a card now appears under its last message with a button to open your HQ in Claude Code or Codex (only the ones installed on this Mac) and a button to open the HQ console. You can dismiss the card, and it stays dismissed for that bot, so it no longer follows you down the conversation after setup. Before, if the bot formatted its finishing note slightly differently, the note showed up as a block of code at the end of the chat and no card appeared; it is now recognised however the bot writes it, and never shown as text.
+- A local bot's "thinking" line now stays up for the whole time it is working. It used to disappear the moment the bot posted a progress note, so a bot that was still busy looked finished and the chat went quiet. It now follows whether the bot is actually still answering, and clears when it is really done. Needs the matching hq-cli release to show the full turn; with an older CLI it behaves as before.
+- The setup bot's first message tells you it is checking your Mac and that this can take a minute, so a slow first reply no longer looks stuck. The #welcome channel also offers to finish setup in Claude Code or Codex if you would rather use those, and the setup button is now called Open Setup Agent.
+- The "is starting up" notice no longer flashes over a bot that is running and answering, when HQ Cloud briefly could not be asked whether it was online.
+- On Windows, the HQ window no longer stays above every other app after signing in; Alt+Tab works again. The window still comes to the front once after you finish signing in, and lets other apps in front of it as soon as you switch away.
+- Windows: the in-app updater no longer fails with "The requested operation requires elevation (os error 740)". The app now carries an explicit asInvoker manifest and the staged update helper no longer has "update" in its file name. Users on 0.10.246 through 0.10.299 need one manual reinstall of the current release to pick up this fix.
+
+## [0.10.299] — 2026-09-20
+
+- Picking several conversations at once in the sidebar now shows a checkbox next to each one, instead of the curved purple stroke down the left edge of the row. Hold Shift with the pointer over the sidebar and an empty box appears on every row so you can see what you can pick; click a box to pick that row. Shift-click to pick a range, Cmd-click to add or remove one, and Escape to clear, all as before. The boxes take up no space until you have something picked or are holding Shift, so the rows do not shift around as you move down the list.
+- Developer tooling: the browser preview harness works again. It had kept pointing at five pages that were removed in an earlier cleanup, which left the preview blank; those entries are gone and a check now fails if a preview import ever stops resolving. No change for people using the app.
+
+## [0.10.298] — 2026-09-19
+
+- The New bot wizard now tells apart the three reasons a coding tool can't be used, instead of calling all of them “not signed in”. A tool that isn't installed says so and points at where to get it; a check that couldn't finish says so and offers to try again; only a tool that really is signed out offers Sign in. Sign in is no longer offered for a tool the app can't find, and a sign-in that doesn't open now says what went wrong instead of sitting on “Opening…”. The app also looks in more places for the tools, including Claude Code's own install folder and version-manager shims.
+- Your personal bot can now be brought into a channel with other people. Add it the way you add anyone else, and everyone in that channel can tag it by name and get a reply there. It stays yours: nobody else can add it to a channel of their own, tag it into one you have not put it in, or message it directly. If someone tries, HQ says only its owner can add it and points them at you. Take it out of the channel and it disappears from everyone else's @ list again. Needs the matching server change to be live first.
+- The New bot wizard no longer says Claude Code is not signed in when it is. On some Macs the check ran without the account name macOS needs to find your Claude Code sign-in, so it read an empty one and reported you as signed out — which also left Next greyed out and the Sign in button unable to fix it. It now looks under your own account, so a signed-in Claude Code is recognised. A Claude Code that really is signed out still shows as signed out.
+- HQ no longer shows the first-run “Welcome to HQ” / sign-in screen to people who are already set up. On launch the app checks whether you are set up and signed in, and if that check cannot complete — which can happen for a moment right after an update installs and the app restarts — it used to assume you were a brand-new user and show the setup card. It now waits for a real answer, retries, and shows a plain loading spinner in the meantime. If your session has genuinely ended you still get the sign-in screen, and the reason is written to the app log.
+- The New channel window now asks **Company or Personal** first, and only shows the company list when you pick Company. Choosing Personal and then adding someone used to switch you back to your first company and ask whether to add that person from outside it, so a personal channel with another person could not be made. Personal now stays Personal no matter who you add, and there is nothing to be outside of, so nothing asks. Company channels are unchanged: the company list still greys out companies someone is not in, and still asks before you add someone from outside the one you picked.
+- You can give a new bot a real name. The name field used to refuse anything but lowercase letters, digits and hyphens, so “Dr Love” was rejected. It now takes whatever you type — spaces, capitals — and works out the handle to mention it by, shown under the field as “@dr-love”. If that handle is already taken by one of your bots, or your name has nothing to make a handle from, it says so and opens a Handle field to fix it there, instead of making you rename the bot. The bot shows its name in the sidebar, in your messages list and in Settings; bots you made before this still show the name they had.
+- The New bot flow now says what “Personal” means for other people: a personal bot has no company identity, so teammates can’t find it — make it a company bot if you want to share it.
+- Channel notifications now look up who sent the message and avoid repeated anonymous entries. If the sender cannot be retrieved, the feed shows one “New messages” summary for that channel. Existing anonymous summaries are consolidated, and files without a recorded author show “File added” instead of “Someone added a file”.
+
 ## [0.10.297] — 2026-09-19
 
 - Links in channel and thread messages are easier to see. A pasted URL used to render in the same dim grey as the surrounding text, so it barely read as something you could click. It now uses the violet the app already uses for other clickable text, still underlined, and brightens when you hover it.

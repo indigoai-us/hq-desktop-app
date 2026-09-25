@@ -512,6 +512,34 @@ describe('US-105 embedded feature-parity QA', () => {
       });
     });
 
+    // Vault buckets have S3 Object Lock: a PUT without a signed checksum is
+    // refused, so the desktop adapter must forward the file's digest.
+    it('presignVaultPut forwards the file digest for Object Lock buckets', async () => {
+      const { adapter, calls } = makeAdapter();
+      expectOk(
+        await adapter.files.presignVaultPut('prs_me', 'chat/a.pdf', 'application/pdf', {
+          checksumSha256: 'ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=',
+          contentSha256:
+            'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+        }),
+      );
+      expect(hqProJson(calls[0]?.args)).toEqual({
+        method: 'POST',
+        path: WEB_PATHS.filesPresign,
+        body: {
+          company: 'prs_me',
+          op: 'put',
+          key: 'chat/a.pdf',
+          contentType: 'application/pdf',
+          checksumSha256: 'ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=',
+          metadata: {
+            'hq-content-sha256':
+              'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+          },
+        },
+      });
+    });
+
     it('history fetchChannel / fetchDmThread map Sync commands unless since', async () => {
       const { adapter, calls } = makeAdapter();
       expectOk(
@@ -579,7 +607,10 @@ describe('US-105 embedded feature-parity QA', () => {
       });
       expect(calls[0]).toEqual({
         cmd: 'list_company_members',
-        args: { companyUid: 'cmp_indigo' },
+        // showBotMessages defaults to null (US-006 preview filter): the roster
+        // command now forwards the toggle so agent-only last-message previews
+        // can be hidden. A null keeps the pre-toggle default (off).
+        args: { companyUid: 'cmp_indigo', showBotMessages: null },
       });
     });
 

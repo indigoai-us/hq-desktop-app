@@ -8,6 +8,7 @@
   import { onDestroy } from "svelte";
   import type { BotRuntime } from "./create-bot-model.js";
   import { localBotRuntimeLabel } from "../local-bots.js";
+  import { RUNTIME_SIGNIN_OPEN_TIMEOUT_MS, runtimeSignInTimeoutMessage } from "./runtime-status.js";
 
   export interface RuntimeSignInState {
     state: "disconnected" | "waiting" | "connected" | "error";
@@ -27,25 +28,57 @@
     oncancel?: () => void;
     /** Poll interval; tests shorten it. */
     pollMs?: number;
+    /**
+     * How long "Opening … sign-in…" may last before it says something.
+     *
+     * A `loginStart` that never settles is what the owner hit: the host spawns
+     * a CLI that is not there, the promise stays pending, and the line sits
+     * unchanged for ever. A spinner with no end is the worst possible report of
+     * a failure, so there is always a deadline behind it.
+     */
+    openTimeoutMs?: number;
   }
 
-  let { runtime, api, onconnected, oncancel, pollMs = 1500 }: Props = $props();
+  let {
+    runtime,
+    api,
+    onconnected,
+    oncancel,
+    pollMs = 1500,
+    openTimeoutMs = RUNTIME_SIGNIN_OPEN_TIMEOUT_MS,
+  }: Props = $props();
 
   let phase = $state<RuntimeSignInState["state"]>("disconnected");
   let message = $state("");
   let busy = $state(false);
+  /**
+   * Re-entrancy guard for `start`, deliberately NOT `$state`.
+   *
+   * `start` runs from an `$effect`, so anything reactive it READS becomes a
+   * dependency of that effect — and `busy` is something it also writes. Using
+   * `busy` as the guard made the open-deadline's `busy = false` re-run the
+   * effect, which started another sign-in, which armed another deadline: a
+   * spin that never settles. The guard is plain so the effect depends on
+   * `runtime` and nothing else.
+   */
+  let starting = false;
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let openTimer: ReturnType<typeof setTimeout> | undefined;
 
   const label = $derived(localBotRuntimeLabel(runtime));
 
   function stopPolling(): void {
     clearTimeout(timer);
     timer = undefined;
+    clearTimeout(openTimer);
+    openTimer = undefined;
   }
 
   async function apply(result: RuntimeSignInState, token: number): Promise<void> {
     if (token !== generation) return;
+    clearTimeout(openTimer);
+    openTimer = undefined;
     phase = result.state;
     message = result.message ?? "";
     if (result.state === "connected") {
@@ -68,25 +101,49 @@
   }
 
   async function start(): Promise<void> {
-    if (busy) return;
+    if (starting) return;
+    starting = true;
     stopPolling();
     busy = true;
     message = "";
     const token = ++generation;
+    // The deadline runs alongside the call, not after it: a `loginStart` that
+    // never settles would otherwise never reach the code that reports it.
+    openTimer = setTimeout(() => {
+      if (token !== generation) return;
+      phase = "error";
+      message = runtimeSignInTimeoutMessage(label);
+      busy = false;
+      starting = false;
+    }, openTimeoutMs);
     try {
       await apply(await api.loginStart(runtime), token);
-    } catch {
+    } catch (error) {
       if (token === generation) {
+        clearTimeout(openTimer);
+        openTimer = undefined;
         phase = "error";
-        message = "Could not open sign-in. Check that the app is installed, then try again.";
+        // The host's own words when it has them — a spawn error or a non-zero
+        // exit says far more than a generic line — and the generic line only
+        // when it does not.
+        const reason = error instanceof Error ? error.message.trim() : "";
+        message = reason
+          ? `Could not open ${label} sign-in — ${reason}`
+          : `Could not open ${label} sign-in. Check that it is installed, then try again.`;
       }
     } finally {
-      if (token === generation) busy = false;
+      // Whatever the outcome, the line stops saying "Opening…": the error
+      // branch below it is what the person needs to read.
+      if (token === generation) {
+        starting = false;
+        busy = false;
+      }
     }
   }
 
   async function cancel(): Promise<void> {
     stopPolling();
+    starting = false;
     const token = ++generation;
     if (api.loginCancel) {
       try {

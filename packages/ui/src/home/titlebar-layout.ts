@@ -54,6 +54,18 @@ export const TITLEBAR_HEIGHT_CSS_VAR = "--titlebar-height";
  */
 export const TITLEBAR_LEADING_INSET_CSS_VAR = "--titlebar-leading-inset";
 
+/**
+ * Measured gap between `trafficLightPosition.y` and where macOS actually
+ * draws the centre of the lights. tao sizes the overlay title-bar container
+ * to `buttonHeight + y` and leaves each button's AppKit origin alone, so the
+ * visual centre lands `y + offset` below the window top, not at `y`.
+ * Measured 2026-09-22 on macOS 26 against v0.10.302: y=24 drew the lights at
+ * ~29px while the wordmark and sub-page Back pill sat at 24px. If a macOS
+ * release moves the default button origin, re-measure this constant; do not
+ * compensate through the titlebar height or the CSS.
+ */
+export const MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX = 5;
+
 /** Vertical centre of the titlebar content (flex `align-items: center`). */
 export function titlebarContentCenterPx(
   titleBarHeightPx: number = TITLEBAR_HEIGHT_PX,
@@ -64,17 +76,18 @@ export function titlebarContentCenterPx(
 /**
  * Tauri 2 / wry `trafficLightPosition.y`.
  *
- * wry sizes the overlay title-bar container to `buttonHeight + y` and leaves
- * each button's AppKit `origin.y` alone. With `titleBarStyle: Overlay` and
- * `hiddenTitle: true`, that leftover origin is half the button, so `y` is
- * the visual centre of the lights. Setting it to the titlebar content
- * centre therefore middle-aligns them with the wordmark and date. If the
+ * The lights render `MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX` below `y`, so
+ * subtract that from the titlebar content centre to put their visual centre
+ * on the same line as the wordmark, date, and sub-page Back control. If the
  * titlebar height changes, this value follows it.
  */
 export function trafficLightYPx(
   titleBarHeightPx: number = TITLEBAR_HEIGHT_PX,
 ): number {
-  return titlebarContentCenterPx(titleBarHeightPx);
+  return (
+    titlebarContentCenterPx(titleBarHeightPx) -
+    MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX
+  );
 }
 
 export function trafficLightPosition(

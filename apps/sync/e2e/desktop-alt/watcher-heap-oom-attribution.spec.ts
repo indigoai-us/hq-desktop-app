@@ -430,9 +430,13 @@ function simulateHeapOomEnvelope(
     lastRss = renderLastRss(rss, resolvedScope);
   }
 
+  if (policy === 'post-fix') tags.exit_class = 'runner_memory';
   return {
     message: `auto-sync watcher exited unexpectedly (aborted with SIGABRT), consecutive failure #1 [uptime=35m23s; ${lastRss}]`,
-    fingerprint: ['sync', 'auto-sync-watcher-termination', 'signal:6', 'none'],
+    fingerprint:
+      policy === 'pre-fix'
+        ? ['sync', 'auto-sync-watcher-termination', 'signal:6', 'none']
+        : ['sync-watcher-exit', 'runner_memory'],
     tags,
     extras,
   };
@@ -501,10 +505,11 @@ describe('watcher heap-OOM attribution — shipped Sentry envelope', () => {
     assertContentSafeDiagnostics(event);
   });
 
-  it('never regroups: the fingerprint is message-independent across both directions', () => {
+  it('uses the evidence-backed memory class after c061 while preserving the historical baseline', () => {
     const post = simulateHeapOomEnvelope(FIXTURE_A, 'post-fix', TREE_SAMPLE);
     const pre = simulateHeapOomEnvelope(FIXTURE_A, 'pre-fix', LAUNCHER_SINGLE);
-    expect(post.fingerprint).toEqual(pre.fingerprint);
-    expect(post.fingerprint).toEqual(['sync', 'auto-sync-watcher-termination', 'signal:6', 'none']);
+    expect(pre.fingerprint).toEqual(['sync', 'auto-sync-watcher-termination', 'signal:6', 'none']);
+    expect(post.fingerprint).toEqual(['sync-watcher-exit', 'runner_memory']);
+    expect(post.tags.exit_class).toBe('runner_memory');
   });
 });

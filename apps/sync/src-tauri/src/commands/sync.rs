@@ -77,7 +77,8 @@ use crate::events::{
     SyncEvent, SyncProgressEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR,
     EVENT_SYNC_COMPANY_PROVISIONED, EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT,
     EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN,
-    EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
+    EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PLAN_LIMIT, EVENT_SYNC_PROGRESS,
+    EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -716,29 +717,22 @@ fn capture_runner_exit_error_with_termination_reason(
 ) {
     let termination = termination_fingerprint_token(code, signal);
     let error_class = totals.runner_error_rollup.fingerprint_token();
-    // Append the dominant CAUSE token as the fifth fingerprint element. The first
-    // four keep their exact position and meaning; the cause token splits the
-    // runner-termination catch-all so a named fault (e.g. vault_permission_denied)
-    // groups apart from the coarse class it shares (HQ-DESKTOP-4T r3). The token
-    // is `RunnerErrorCause::as_str()` of the dominant cause (or "none"), which
-    // already ships in the runner_error_causes tag — so no new byte reaches Sentry.
-    let error_cause = totals.runner_error_causes.fingerprint_token();
-    // Append the dominant SITE token as the sixth fingerprint element (HQ-DESKTOP-5M).
-    // The first five keep their exact position and meaning; the site token splits the
-    // runner-termination family by WHICH failure site produced the exit, so a
-    // `(local-state)`/`(runner)` exit-1 groups apart from the file/other catch-all it
-    // shared. The token is `RunnerErrorSite::as_str()` of the dominant site (or
-    // "none"), which already ships in the runner_error_sites tag — so no new byte
-    // reaches Sentry.
-    let error_site = totals.runner_error_sites.fingerprint_token();
-    let fingerprint = [
-        "sync",
-        "runner-termination",
-        termination.as_str(),
-        error_class,
-        error_cause,
-        error_site,
-    ];
+    let fingerprint = if code == Some(2) && signal.is_none() {
+        // Exit code 2 means the runner completed with per-file errors. Keep that
+        // issue grouped by termination and dominant class; cause and site remain
+        // tags so changing producer details do not fan out the same class.
+        vec!["sync-runner-exit", termination.as_str(), error_class]
+    } else {
+        // Other termination shapes retain their existing cause/site separation.
+        vec![
+            "sync",
+            "runner-termination",
+            termination.as_str(),
+            error_class,
+            totals.runner_error_causes.fingerprint_token(),
+            totals.runner_error_sites.fingerprint_token(),
+        ]
+    };
     let (tags, extras) =
         runner_exit_telemetry_context(code, signal, totals, context, sync_termination_reason);
     capture_sync_error_with_fingerprint_and_context(
@@ -1522,6 +1516,11 @@ fn handle_sync_line<R: tauri::Runtime>(
         // older runner that doesn't emit Plan, this branch is simply never
         // taken — the existing TOTALS-based denominator stays authoritative.
         SyncEvent::Plan(payload) => app.emit(EVENT_SYNC_PLAN, payload.clone()),
+        SyncEvent::PlanLimit(payload) => app.emit_to(
+            crate::commands::desktop_alt::WINDOW_LABEL,
+            EVENT_SYNC_PLAN_LIMIT,
+            payload.clone(),
+        ),
         SyncEvent::Progress(payload) => {
             // Record into the session activity log (uploaded/downloaded with a
             // timestamp) and live-append to the Recent Changes window if open.
@@ -4912,27 +4911,16 @@ mod tests {
 
         // (2) The op/fatal/route/stack axes are unchanged; the class rollup now
         // names the 8 company-scope AccessDenied records AUTH via the r3
-        // cause→class bridge (the 160 unnamed pull-leg records stay OTHER), and
-        // the fingerprint gains the dominant cause as its fifth element while the
-        // dominant CLASS token stays "other" (160 > 8) — so the exit-2 family
-        // re-groups by cause without losing the class it always had.
+        // cause→class bridge (the 160 unnamed pull-leg records stay OTHER). The
+        // cause and site remain available as tags without splitting the class group.
         assert_eq!(event.tags["runner_error_rollup"], "AUTH:8,OTHER:160");
         assert_eq!(event.tags["runner_error_ops"], "other:168");
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(event.tags["sync_route"], "manual");
         assert_eq!(event.tags["runner_stack_shape"], "all_redacted");
-        // The sixth fingerprint element is the dominant site (`file`), appended
-        // after the cause without disturbing the first five.
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "runner-termination",
-                "exit:2",
-                "other",
-                "unknown_unnamed",
-                "file"
-            ]
+            vec!["sync-runner-exit", "exit:2", "other"]
         );
         assert_eq!(
             event.extra["saw_alertable_error"],
@@ -5522,8 +5510,8 @@ mod tests {
     /// first reproduce the observed baseline (scan phase, manual route, uncancelled,
     /// mixed tail, alertable), proving the fixture is not a strawman, then (2) attribute
     /// the exit to the `local_state` SITE — the tag names it, the scope routes it out of
-    /// the per-file arm, no `other:1` path root is emitted, and the sixth fingerprint
-    /// element is the site — while (3) leaking not one runner byte. On the base revision
+    /// the per-file arm, no `other:1` path root is emitted, and the site remains a
+    /// diagnostic tag — while (3) leaking not one runner byte. On the base revision
     /// the site tag is absent and the exit misroutes to `company:0,file:1` with
     /// `path_roots=other:1`, so every new assertion fails.
     #[test]
@@ -5634,7 +5622,7 @@ mod tests {
 
         // (2) The fix: the exit is attributed to the local_state SITE. The site tag
         // names it, the scope split routes it out of the per-file arm, NO `other:1`
-        // path root is emitted, and the sixth fingerprint element is the site.
+        // path root is emitted, and the fingerprint remains grouped by error class.
         assert_eq!(event.tags["runner_error_sites"], "local_state:1");
         assert_eq!(
             event.extra["runner_error_scope"],
@@ -5748,7 +5736,7 @@ mod tests {
             .expect("runner exit event remains sendable");
         let serialized = serde_json::to_string(&event).expect("serialize final event");
 
-        // The runner SITE is named, and the sixth fingerprint element carries it.
+        // The runner SITE is named in tags while the fingerprint stays class-based.
         assert_eq!(event.tags["runner_error_sites"], "runner:1");
         assert_eq!(
             event.extra["runner_error_scope"],
@@ -6049,18 +6037,10 @@ mod tests {
         assert_eq!(event.tags["pre_runner_failures"], "first_push:1");
         assert_eq!(event.tags["pre_runner_causes"], "vend_http:1");
         assert_eq!(event.tags["runner_error_http"], "http_403:1");
-        // The six-element exit fingerprint is UNCHANGED by residual + pre-runner
-        // evidence: class OTHER→"other", dominant cause "unknown_unnamed", site "company".
+        // The exit fingerprint groups by class; cause and site remain in tags.
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "runner-termination",
-                "exit:2",
-                "other",
-                "unknown_unnamed",
-                "company"
-            ]
+            vec!["sync-runner-exit", "exit:2", "other"]
         );
         // Content safety: no runner message byte, code symbol, prose, plain line, or
         // company ships — only the derived fixed tokens and the fixed-length digests.
@@ -6246,14 +6226,7 @@ mod tests {
         );
         assert_eq!(
             scrubbed.fingerprint,
-            vec![
-                "sync",
-                "runner-termination",
-                "exit:2",
-                "eperm",
-                "eperm",
-                "file"
-            ]
+            vec!["sync-runner-exit", "exit:2", "eperm"]
         );
         for forbidden in [
             "secret-plan.md",
@@ -6311,44 +6284,17 @@ mod tests {
         assert_eq!(
             fingerprints,
             vec![
-                // The per-file eperm and auth errors carry the `file` site; the
-                // error-free capture carries the `none` site sentinel (HQ-DESKTOP-5M).
-                vec![
-                    "sync",
-                    "runner-termination",
-                    "exit:2",
-                    "eperm",
-                    "eperm",
-                    "file"
-                ],
-                vec![
-                    "sync",
-                    "runner-termination",
-                    "exit:2",
-                    "auth",
-                    "unknown_unnamed",
-                    "file"
-                ],
-                vec![
-                    "sync",
-                    "runner-termination",
-                    "exit:2",
-                    "none",
-                    "none",
-                    "none"
-                ],
+                vec!["sync-runner-exit", "exit:2", "eperm"],
+                vec!["sync-runner-exit", "exit:2", "auth"],
+                vec!["sync-runner-exit", "exit:2", "none"],
             ]
         );
     }
 
     #[test]
-    fn the_manual_runner_termination_fingerprint_appends_the_dominant_cause() {
-        // The HQ-DESKTOP-4T recurrence, driven through the production manual
-        // capture path: a company-scope VaultPermissionDeniedError exit-2. Before
-        // r3 every one of the issue's 23 events grouped on
-        // ["sync","runner-termination","exit:2","other"] because the keyword class
-        // matcher is blind to the named cause. It now classes AUTH and groups on a
-        // fifth cause element — away from the catch-all.
+    fn the_manual_runner_exit_fingerprint_uses_class_and_keeps_cause_and_site_tags() {
+        // A company-scope VaultPermissionDeniedError groups by its AUTH class;
+        // its cause and site remain available for diagnosis as tags.
         let mut totals = RunTotals::default();
         totals.record_error(&SyncErrorEvent {
             company: Some("acme".to_string()),
@@ -6374,19 +6320,9 @@ mod tests {
         let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
             .expect("event remains sendable");
         let serialized = serde_json::to_string(&event).expect("serialize event");
-        // The black-box proof: the reported production event now groups AUTH and
-        // vault_permission_denied — no longer HQ-DESKTOP-4T's exit-2 catch-all.
         assert_eq!(
             event.fingerprint,
-            vec![
-                "sync",
-                "runner-termination",
-                "exit:2",
-                "auth",
-                "vault_permission_denied",
-                // Company-scope fault → the `company` site as the sixth element.
-                "company"
-            ]
+            vec!["sync-runner-exit", "exit:2", "auth"]
         );
         assert_eq!(event.tags["runner_error_sites"], "company:1");
         assert_eq!(event.tags["runner_error_rollup"], "AUTH:1");
@@ -6408,6 +6344,57 @@ mod tests {
         ] {
             assert!(!serialized.contains(forbidden), "leaked {forbidden:?}");
         }
+    }
+
+    #[test]
+    fn manual_runner_exit_fingerprint_does_not_split_same_class_by_cause_or_site() {
+        let mut dangling_parent_totals = RunTotals::default();
+        dangling_parent_totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "docs/linked/notes.md".to_string(),
+            message: "DanglingSymlinkParentError parent is a dangling symlink".to_string(),
+        });
+        let mut type_error_totals = RunTotals::default();
+        type_error_totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "TypeError: invalid runtime value".to_string(),
+        });
+        assert_eq!(
+            dangling_parent_totals
+                .runner_error_rollup
+                .fingerprint_token(),
+            "other"
+        );
+        assert_eq!(
+            type_error_totals.runner_error_rollup.fingerprint_token(),
+            "other"
+        );
+
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let captures = sentry::test::with_captured_events(|| {
+            let context = ManualRunnerExitContext::default();
+            capture_runner_exit_error(Some(2), None, &dangling_parent_totals, &payload, &context);
+            capture_runner_exit_error(Some(2), None, &type_error_totals, &payload, &context);
+        });
+
+        assert_eq!(captures.len(), 2);
+        let first = &captures[0];
+        let second = &captures[1];
+        let expected_fingerprint = vec!["sync-runner-exit", "exit:2", "other"];
+        assert_eq!(first.fingerprint, expected_fingerprint);
+        assert_eq!(second.fingerprint, expected_fingerprint);
+        assert_eq!(
+            first.tags["runner_error_causes"],
+            "dangling_symlink_parent:1"
+        );
+        assert_eq!(second.tags["runner_error_causes"], "type_error:1");
+        assert_eq!(first.tags["runner_error_sites"], "file:1");
+        assert_eq!(second.tags["runner_error_sites"], "company:1");
     }
 
     #[test]

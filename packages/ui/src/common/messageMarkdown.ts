@@ -110,7 +110,7 @@ export const MESSAGE_MARKDOWN_HARD_MAX_CHARS = 6_000;
 
 function markdownCueCount(lines: string[]): number {
   return lines.filter((line) =>
-    /^(?:#{1,6}\s+|```|~~~|[-*+]\s+|\d+[.)]\s+|>\s+)/.test(line.trim()) || /\*\*[^*\n]+\*\*/.test(line),
+    /^(?:#{1,6}\s+|```|~~~|[-*+•]\s+|\d+[.)]\s+|>\s+)/.test(line.trim()) || /\*\*[^*\n]+\*\*/.test(line),
   ).length;
 }
 

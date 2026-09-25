@@ -40,10 +40,33 @@ pub struct Contact {
     pub last_message_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_direction: Option<String>,
+    /// Audience of the last message: "human" | "agent" | "both". Absent on
+    /// older servers. When present and equal to "agent", the preview fields
+    /// should be hidden unless the US-006 "show bot messages" toggle is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_audience: Option<String>,
     /// Presigned avatar GET URL from hq-pro (contacts + company members).
     /// Absent/null on older servers or people without a photo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+}
+
+/// Clear the conversation preview fields on contacts whose last message is
+/// agent-only, unless `show_bot_messages` is true (US-006 toggle, default off).
+/// Called in `list_contacts` / `list_company_members` so the frontend never
+/// renders an agent-only snippet in the DM rail unless the user opted in.
+pub fn apply_contact_preview_filter(contacts: &mut [Contact], show_bot_messages: bool) {
+    if show_bot_messages {
+        return;
+    }
+    for c in contacts.iter_mut() {
+        let audience = c.last_message_audience.as_deref().unwrap_or("").to_lowercase();
+        if audience == "agent" {
+            c.last_message_body = None;
+            c.last_message_preview = None;
+            c.last_message_text = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +96,7 @@ pub struct RequestsResponse {
 /// fields are ignored. `company_uid` is present only for company/project-scoped
 /// channels. Mirrors the TS `Channel` shape in `src/lib/channels.ts`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "ChannelWire")]
 pub struct Channel {
     pub channel_id: String,
     #[serde(default)]
@@ -97,13 +120,9 @@ pub struct Channel {
     /// Caller's membership: "joined" | "invited" | "none".
     ///
     /// Newer servers send a membership object while older ones sent this
-    /// string directly. Normalize both wire shapes here so all desktop
-    /// consumers retain the existing string contract.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_membership"
-    )]
+    /// string directly. `ChannelWire` normalizes both wire shapes so all
+    /// desktop consumers retain the existing string contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership: Option<String>,
     #[serde(
         default,
@@ -129,27 +148,125 @@ pub struct Channel {
     /// unnamed group DM by its people. Present only for group-scoped channels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ChannelParticipant>>,
+    /// Caller's resolved notification level ("all" | "mentions" | "files" |
+    /// "muted"), read from `membership.notifyLevel`. `None` for browse-only
+    /// rows and older servers. Serialized flat so the webview sees it as
+    /// `notifyLevel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_level: Option<String>,
+    /// How the caller joined (`membership.source`): "explicit" |
+    /// "company-auto" | "company". Company joins never raise an "added"
+    /// notification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_source: Option<String>,
+    /// Channel creator uid, so a channel the caller made is never announced
+    /// to them as "added".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// True for the single company-home channel (created at company genesis,
+    /// named after the company slug) — the only `scope == "company"` channel
+    /// that carries Office/company-settings chrome. `#[serde(default)]` so
+    /// older server payloads that don't send this yet still parse; the
+    /// desktop UI falls back to `scope == "company" && name == companySlug`
+    /// when absent (see `isCompanyHomeChannel` in the TS `channels.ts`).
+    #[serde(default)]
+    pub is_company_home: bool,
 }
 
-fn deserialize_membership<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum MembershipWire {
-        Legacy(String),
-        Current {
-            #[serde(default)]
-            joined: bool,
-        },
-    }
+/// Deserialization shape for [`Channel`]. The server's `membership` is either
+/// a legacy string or an object (`{ joined, notifyLevel, source, ... }`); the
+/// object's extra fields are lifted onto the channel here. The flat
+/// `notifyLevel` / `membershipSource` keys are what [`Channel`] serializes, so
+/// a round-trip through the webview keeps them.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelWire {
+    channel_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    scope: String,
+    #[serde(default)]
+    company_uid: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    company_name: Option<String>,
+    #[serde(default)]
+    post_policy: Option<String>,
+    #[serde(default)]
+    visibility: Option<String>,
+    #[serde(default)]
+    membership: Option<serde_json::Value>,
+    #[serde(default, alias = "unreadCount")]
+    unread: Option<u32>,
+    #[serde(default)]
+    member_count: Option<u32>,
+    #[serde(default)]
+    last_activity_at: Option<String>,
+    #[serde(default)]
+    last_message_at: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    members: Option<Vec<ChannelParticipant>>,
+    #[serde(default)]
+    notify_level: Option<String>,
+    #[serde(default)]
+    membership_source: Option<String>,
+    #[serde(default)]
+    created_by: Option<String>,
+    #[serde(default)]
+    is_company_home: bool,
+}
 
-    let membership = Option::<MembershipWire>::deserialize(deserializer)?;
-    Ok(membership.map(|membership| match membership {
-        MembershipWire::Legacy(value) => value,
-        MembershipWire::Current { joined } => if joined { "joined" } else { "invited" }.to_string(),
-    }))
+impl From<ChannelWire> for Channel {
+    fn from(wire: ChannelWire) -> Self {
+        let object = wire.membership.as_ref().and_then(|m| m.as_object());
+        let object_str = |key: &str| {
+            object
+                .and_then(|o| o.get(key))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let membership = match &wire.membership {
+            Some(serde_json::Value::String(value)) => Some(value.clone()),
+            Some(serde_json::Value::Object(o)) => Some(
+                if o.get("joined").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    "joined"
+                } else {
+                    "invited"
+                }
+                .to_string(),
+            ),
+            _ => None,
+        };
+        let notify_level = object_str("notifyLevel").or(wire.notify_level);
+        let membership_source = object_str("source").or(wire.membership_source);
+        Channel {
+            channel_id: wire.channel_id,
+            name: wire.name,
+            scope: wire.scope,
+            company_uid: wire.company_uid,
+            project_id: wire.project_id,
+            company_name: wire.company_name,
+            post_policy: wire.post_policy,
+            visibility: wire.visibility,
+            membership,
+            unread: wire.unread,
+            member_count: wire.member_count,
+            last_activity_at: wire.last_activity_at,
+            last_message_at: wire.last_message_at,
+            created_at: wire.created_at,
+            members: wire.members,
+            notify_level,
+            membership_source,
+            created_by: wire.created_by,
+            is_company_home: wire.is_company_home,
+        }
+    }
 }
 
 /// A group-DM participant as returned on the channels list — enough to label the
@@ -218,6 +335,15 @@ pub struct MessageAttachment {
     pub size_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Client-generated id for multi-file messages. Absent on older rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Company vault the bytes live in (needed to presign GET).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
+    /// MIME type when distinct from `kind`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 /// One channel message, as returned by `/v1/notify/channels/{id}/messages`.
@@ -262,6 +388,23 @@ pub struct ChannelMessage {
     /// payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_count: Option<u32>,
+    /// Structured @-mentions stored on the message. Match on
+    /// `participantUid`, never a `personUid` key. Absent-safe for older rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<MessageMention>>,
+}
+
+/// One structured mention on a channel message. Live wire shape:
+/// `{ "participantUid", "participantType", "displayName" }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageMention {
+    #[serde(default)]
+    pub participant_uid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participant_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// The full channel view: its metadata + a page of messages (newest-first).
@@ -303,6 +446,20 @@ pub fn esc_query(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Build `GET /v1/notify/channels/{id}/messages` (newest-first history).
+/// Pure so the poll path and unit tests share one URL shape.
+pub fn build_channel_messages_url(base_url: &str, channel_id: &str, limit: Option<u32>) -> String {
+    let mut url = format!(
+        "{}/v1/notify/channels/{}/messages",
+        base_url.trim_end_matches('/'),
+        esc_seg(channel_id),
+    );
+    if let Some(n) = limit {
+        url.push_str(&format!("?limit={n}"));
+    }
+    url
 }
 
 pub fn esc_seg(s: &str) -> String {
@@ -673,6 +830,69 @@ mod tests {
         let v = serde_json::to_value(&m).expect("serialize");
         assert_eq!(v["rootEventId"], "evt_root");
         assert_eq!(v["replyCount"], 4);
+        assert!(m.mentions.is_none());
+    }
+
+    #[test]
+    fn channel_message_mentions_use_participant_uid_live_shape() {
+        let json = r#"{
+            "eventId": "evt_live",
+            "fromPersonUid": "94b82448-aaaa-bbbb-cccc-ddddeeeeffff",
+            "body": "hey @Stefan",
+            "createdAt": "2026-09-23T00:00:00Z",
+            "direction": "in",
+            "mentions": [{
+                "participantUid": "prs_01KQ2RY9VB1S105X2GZ2EPHKWY",
+                "participantType": "human",
+                "displayName": "Stefan Johnson"
+            }]
+        }"#;
+        let m: ChannelMessage = serde_json::from_str(json).expect("live mentions shape");
+        let mentions = m.mentions.expect("mentions present");
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(
+            mentions[0].participant_uid,
+            "prs_01KQ2RY9VB1S105X2GZ2EPHKWY"
+        );
+        assert_eq!(mentions[0].participant_type.as_deref(), Some("human"));
+        assert_eq!(mentions[0].display_name.as_deref(), Some("Stefan Johnson"));
+    }
+
+    #[test]
+    fn channel_detail_parses_mention_missing_participant_uid() {
+        let json = r#"{
+            "messages": [{
+                "eventId": "evt_partial",
+                "fromPersonUid": "prs_ada",
+                "body": "hey",
+                "createdAt": "2026-09-23T00:00:00Z",
+                "direction": "in",
+                "mentions": [{
+                    "participantType": "human",
+                    "displayName": "Stefan Johnson"
+                }]
+            }]
+        }"#;
+        let detail: ChannelDetail =
+            serde_json::from_str(json).expect("missing participantUid is default");
+        let mentions = detail.messages[0]
+            .mentions
+            .as_ref()
+            .expect("mentions present");
+        assert_eq!(mentions[0].participant_uid, "");
+        assert_eq!(mentions[0].display_name.as_deref(), Some("Stefan Johnson"));
+    }
+
+    #[test]
+    fn build_channel_messages_url_uses_existing_history_path() {
+        assert_eq!(
+            build_channel_messages_url("https://api.example.com/", "chn_eng", Some(50)),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?limit=50"
+        );
+        assert_eq!(
+            build_channel_messages_url("https://api.example.com", "chn_eng", None),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages"
+        );
     }
 
     #[test]
@@ -708,6 +928,51 @@ mod tests {
         assert_eq!(c.scope, "company");
         assert!(c.company_uid.is_none());
         assert!(c.unread.is_none());
+    }
+
+    #[test]
+    fn channel_lifts_notify_level_and_source_from_membership_object() {
+        // Live /v1/notify/channels row shape (2026-09-23).
+        let json = r#"{
+            "channelId": "chn_1", "name": "hq-sentry", "scope": "company",
+            "createdBy": "prs_owner",
+            "membership": {
+                "joined": true, "following": true, "muted": false,
+                "notifyLevel": "mentions", "role": "member",
+                "source": "explicit", "lastReadAt": null
+            }
+        }"#;
+        let c: Channel = serde_json::from_str(json).expect("Channel parses");
+        assert_eq!(c.membership.as_deref(), Some("joined"));
+        assert_eq!(c.notify_level.as_deref(), Some("mentions"));
+        assert_eq!(c.membership_source.as_deref(), Some("explicit"));
+        assert_eq!(c.created_by.as_deref(), Some("prs_owner"));
+
+        // Serialized flat for the webview, and a round-trip keeps the fields.
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["notifyLevel"], "mentions");
+        assert_eq!(v["membership"], "joined");
+        assert_eq!(v["membershipSource"], "explicit");
+        let back: Channel = serde_json::from_value(v).unwrap();
+        assert_eq!(back.notify_level.as_deref(), Some("mentions"));
+        assert_eq!(back.membership_source.as_deref(), Some("explicit"));
+    }
+
+    #[test]
+    fn channel_notify_level_absent_for_browse_only_and_legacy_rows() {
+        let browse =
+            r#"{ "channelId": "chn_2", "membership": { "joined": false, "notifyLevel": null } }"#;
+        let c: Channel = serde_json::from_str(browse).unwrap();
+        assert_eq!(c.membership.as_deref(), Some("invited"));
+        assert!(c.notify_level.is_none());
+        let v = serde_json::to_value(&c).unwrap();
+        assert!(v.get("notifyLevel").is_none());
+
+        let legacy = r#"{ "channelId": "chn_3", "membership": "joined" }"#;
+        let c: Channel = serde_json::from_str(legacy).unwrap();
+        assert_eq!(c.membership.as_deref(), Some("joined"));
+        assert!(c.notify_level.is_none());
+        assert!(c.membership_source.is_none());
     }
 
     #[test]
@@ -1055,5 +1320,74 @@ mod esc_query_tests {
     #[test]
     fn encodes_non_ascii_as_utf8_bytes() {
         assert_eq!(esc_query("é"), "%C3%A9");
+    }
+}
+
+#[cfg(test)]
+mod contact_preview_filter_tests {
+    use super::{apply_contact_preview_filter, Contact};
+
+    fn make_contact(audience: Option<&str>) -> Contact {
+        Contact {
+            person_uid: "uid1".into(),
+            email: "a@b.com".into(),
+            display_name: "Alice".into(),
+            company_uid: None,
+            source: None,
+            connection_state: None,
+            last_message_at: None,
+            last_activity_at: None,
+            last_dm_at: None,
+            last_message_body: Some("hello".into()),
+            last_message_preview: Some("hello".into()),
+            last_message_text: Some("hello".into()),
+            last_message_direction: Some("inbound".into()),
+            last_message_audience: audience.map(str::to_string),
+            avatar_url: None,
+        }
+    }
+
+    #[test]
+    fn clears_preview_when_audience_is_agent_and_toggle_off() {
+        let mut contacts = vec![make_contact(Some("agent"))];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_none());
+        assert!(contacts[0].last_message_preview.is_none());
+        assert!(contacts[0].last_message_text.is_none());
+    }
+
+    #[test]
+    fn keeps_preview_when_audience_is_agent_and_toggle_on() {
+        let mut contacts = vec![make_contact(Some("agent"))];
+        apply_contact_preview_filter(&mut contacts, true);
+        assert!(contacts[0].last_message_body.is_some());
+    }
+
+    #[test]
+    fn keeps_preview_for_human_audience() {
+        let mut contacts = vec![make_contact(Some("human"))];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_some());
+    }
+
+    #[test]
+    fn keeps_preview_for_both_audience() {
+        let mut contacts = vec![make_contact(Some("both"))];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_some());
+    }
+
+    #[test]
+    fn keeps_preview_when_audience_absent() {
+        let mut contacts = vec![make_contact(None)];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_some());
+    }
+
+    #[test]
+    fn clears_preview_for_uppercase_agent_audience() {
+        let mut contacts = vec![make_contact(Some("AGENT"))];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_none());
     }
 }

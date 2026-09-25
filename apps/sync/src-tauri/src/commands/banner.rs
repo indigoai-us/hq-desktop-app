@@ -331,8 +331,8 @@ fn ns_str(s: &str) -> *mut objc2::runtime::AnyObject {
 
 // ── Source-specific constructors ─────────────────────────────────────────────────
 
-/// DM → banner. Body-click opens the DM detail; the chip copies the agent
-/// prompt when the DM carries one.
+/// DM → banner. Body-click opens the named inbox thread; the chip copies the
+/// agent prompt when the DM carries one.
 pub async fn show_dm_banner(
     app: AppHandle,
     event: crate::commands::dm_notify::DmEvent,
@@ -355,7 +355,31 @@ pub async fn show_dm_banner(
     show_banner(app, payload).await
 }
 
-/// Share ("shared with me") → banner. Body-click opens the share detail window.
+/// Channel @mention → banner. Body-click opens the named channel message.
+pub async fn show_mention_banner(
+    app: AppHandle,
+    title: String,
+    body: String,
+    data: serde_json::Value,
+) -> Result<(), String> {
+    let icon = data
+        .get("fromDisplayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let payload = BannerPayload {
+        kind: "mention".to_string(),
+        title,
+        body,
+        icon_text: Some(initials(icon)),
+        action_label: Some("Open".to_string()),
+        action_id: Some("open".to_string()),
+        click_action_id: "open".to_string(),
+        data,
+    };
+    show_banner(app, payload).await
+}
+
+/// Share ("shared with me") → banner. Body-click opens the issuer's DM thread.
 pub async fn show_share_banner(
     app: AppHandle,
     event: crate::commands::share_notify::ShareEvent,
@@ -770,6 +794,9 @@ pub async fn preview_dm_banner(app: AppHandle) -> Result<(), String> {
         prompt: Some("Review the custom notification banner spike in repos/public/hq-sync and report on the feel vs native.".to_string()),
         created_at: "2026-05-29T00:00:00Z".to_string(),
         root_event_id: None,
+        message_kind: None,
+        attachments: None,
+        audience: None,
     };
     show_dm_banner(app, event).await
 }
@@ -789,6 +816,7 @@ pub async fn preview_share_banner(app: AppHandle) -> Result<(), String> {
         note: Some("Sharing the Q1 forecast — take a look before our sync.".to_string()),
         permission: "read".to_string(),
         created_at: "2026-05-29T00:00:00Z".to_string(),
+        dm_event_id: None,
     };
     show_share_banner(app, event).await
 }

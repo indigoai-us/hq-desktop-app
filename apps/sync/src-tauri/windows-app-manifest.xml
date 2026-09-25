@@ -1,0 +1,36 @@
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    Explicit requestedExecutionLevel is required so Windows' UAC "installer
+    detection" heuristic does not misidentify this executable (or a byte
+    copy of it, such as the staged auto-update helper) as a legacy setup
+    program. That heuristic inspects unmanifested executables and blocks a
+    non-elevated CreateProcess with ERROR_ELEVATION_REQUIRED (os error 740)
+    when the file name contains words like "update", "install", "setup", or
+    "patch". Declaring asInvoker opts this binary out of the heuristic
+    entirely, regardless of its file name.
+
+    See apps/sync/src-tauri/src/windows_update.rs for the update-helper
+    launch path this fixes, and
+    companies/indigo/projects/windows-ga-sprint/reports/us-001-us-008-diagnosis.json
+    for the full diagnosis (HQ US-001).
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

@@ -68,7 +68,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::commands::install_deps::MANAGED_NODE_ABI;
 use crate::commands::sync::ToolchainRepair;
@@ -87,7 +87,8 @@ pub use hq_desktop_core::hq_cli_update::{
     bun_install_argv, classify_install_failure, classify_install_failure_with_environment,
     classify_install_failure_with_final_attempt, cli_auto_update_enabled, cli_below_floor,
     cli_below_floor_of, cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
-    delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for, get_local_version,
+    delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for,
+    executed_copy_reaim_gate, executed_copy_reaim_outcome, get_local_version,
     get_local_version_diagnostics, hq_cli_version_under_pnpm_root, hq_version_string, install_argv,
     install_converged, install_executor_for_first_install, install_executor_for_hq_bin,
     install_failure_detail, install_failure_detail_with_environment,
@@ -95,31 +96,34 @@ pub use hq_desktop_core::hq_cli_update::{
     installed_hq_cli_version_in_bun_global, installed_hq_cli_version_in_pnpm_store,
     installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_missing_global_install_target,
     is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
-    is_windows_locked_binary_failure, launch_cli_check, launch_cli_check_with_floor,
-    legacy_marker_needs_recovery, managed_retry_start_decision, managed_retry_user_copy_detail,
-    managed_retry_user_prefix_aim, non_convergent_cli_contract, non_convergent_cli_version,
-    non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
-    non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
-    npm_lifecycle_cause, npm_prefix_from_hq_bin, partial_install_scope_from_npm_path,
-    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version,
-    pnpm_install_argv, pnpm_store_family, read_installed_version, redact_home, redact_home_in,
-    repair_managed_shadow, report_install_failure, report_install_failure_episode,
-    report_install_failure_with_environment, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_non_convergent_marker_unpersisted,
-    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    is_windows_locked_binary_failure, is_windows_locked_install_target_failure, launch_cli_check,
+    launch_cli_check_with_floor, legacy_marker_needs_recovery, managed_retry_start_decision,
+    managed_retry_user_copy_detail, managed_retry_user_prefix_aim, non_convergent_cli_contract,
+    non_convergent_cli_version, non_convergent_detail, non_convergent_episode_blocked,
+    non_convergent_episode_key, non_convergent_episode_record, non_convergent_episode_reported,
+    npm_install_attempt_summary, npm_lifecycle_cause, npm_prefix_from_hq_bin,
+    partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
+    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
+    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
+    report_install_failure_episode, report_install_failure_with_environment,
+    report_install_failure_with_final_attempt, report_non_convergent_install,
+    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
+    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version,
+    should_retry_windows_busy_install_target, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, HqCliUpdateInfo,
-    InstallEnvironment, InstallExecutor, InstallFailureEpisode, InstallFailureKind,
-    InterpreterRecovery, LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
-    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
-    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
-    PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects, PostInstallOutcome,
-    RequestedSpecKind, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
-    STDERR_ORIGIN_NON_NPM,
+    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
+    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
+    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
+    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
+    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmToolchainSource,
+    PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, SettingsPathTelemetry,
+    UserPrefixAim, VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
+    NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
+    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -329,61 +333,97 @@ fn is_bin_exists_failure(detail: &str, prefix: Option<&str>) -> bool {
 
 /// An `ENOTEMPTY` partial/interrupted-install failure. npm updates a package by
 /// renaming the existing package dir aside to a `.<name>-<rand>` staging dir;
-/// when a prior install was interrupted it leaves a partial `hq-cli` package dir
-/// (and/or an orphan `.hq-cli-*` staging dir) under
-/// `<prefix>/lib/node_modules/@indigoai-us`, so that rename fails
-/// `ENOTEMPTY: directory not empty`. Unlike the `EEXIST` bin collision, `--force`
-/// does NOT clear this — the leftover partial state must be removed first (see
-/// `clean_partial_hq_cli_install`). Left unhandled, every 6-hourly auto-update
-/// wedges on the same error and the user's `hq` stays broken (ENOENT) until a
-/// human runs `hq-heal` (field report feedback_44061f91).
-fn is_partial_install_failure(detail: &str) -> bool {
+/// when a prior install was interrupted it leaves a partial package dir (and/or
+/// an orphan staging dir) under the package's npm global scope, so that rename
+/// fails `ENOTEMPTY: directory not empty`. Unlike the `EEXIST` bin collision,
+/// `--force` does NOT clear this — the leftover partial state must be removed
+/// first (see `clean_partial_install_scope`). The updater's hq-cli path retains
+/// the existing hq-specific diagnostics around this classifier.
+pub(crate) fn is_partial_install_failure(detail: &str) -> bool {
     detail.contains("ENOTEMPTY")
 }
 
-/// The npm global scope dir that holds the `@indigoai-us/hq-cli` package for a
-/// given prefix. Unix uses `<prefix>/lib/node_modules`; Windows uses
-/// `<prefix>\node_modules`. Partial-install debris — the `hq-cli` package dir
-/// and its `.hq-cli-*` temp staging dirs — lives directly under the resulting
-/// `@indigoai-us` dir. Factored out so cleanup stays strictly scoped and both
-/// path shapes are unit-testable without touching the filesystem.
-fn partial_install_scope_dir_for(prefix: &str, windows_layout: bool) -> PathBuf {
+/// npm's registry metadata can briefly lag a just-published dependency. Keep
+/// this classifier narrow: retry with --prefer-online first, and use the
+/// public-registry fallback only when the next attempt still reports ETARGET.
+pub(crate) fn is_etarget_failure(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("etarget") || detail.contains("notarget")
+}
+
+/// The npm global scope dir that holds a package for a given prefix. Unix uses
+/// `<prefix>/lib/node_modules`; Windows uses `<prefix>\node_modules`.
+/// Factored out so setup and updater cleanup use the same path rules and both
+/// layouts are unit-testable without touching the filesystem.
+pub(crate) fn npm_global_package_scope_dir_for(
+    prefix: &str,
+    windows_layout: bool,
+    package_name: &str,
+) -> PathBuf {
     let root = Path::new(prefix);
     let node_modules = if windows_layout {
         root.join("node_modules")
     } else {
         root.join("lib").join("node_modules")
     };
-    node_modules.join("@indigoai-us")
+    package_name
+        .strip_prefix('@')
+        .and_then(|name| name.split_once('/'))
+        .map(|(scope, _)| node_modules.join(format!("@{scope}")))
+        .unwrap_or(node_modules)
+}
+
+fn partial_install_scope_dir_for(prefix: &str, windows_layout: bool) -> PathBuf {
+    npm_global_package_scope_dir_for(prefix, windows_layout, "@indigoai-us/hq-cli")
 }
 
 fn partial_install_scope_dir(prefix: &str) -> PathBuf {
     partial_install_scope_dir_for(prefix, cfg!(target_os = "windows"))
 }
 
-/// Remove partial `@indigoai-us/hq-cli` install debris left by an interrupted
-/// npm install so a fresh `npm install -g` can lay the package down cleanly.
-/// Scoped strictly to `<prefix>/lib/node_modules/@indigoai-us`: deletes the
-/// `hq-cli` package dir and any `.hq-cli-*` temp staging dir, and touches
-/// nothing else — sibling packages under the scope, and everything outside it,
-/// are left intact. Best-effort: every removal is logged, but a failure does not
-/// abort the caller's retry, since the subsequent install surfaces the real
-/// error. Mirrors the manual remedy `hq-heal` applies (back up the partial
-/// state, then reinstall).
+/// Remove partial package install debris left by an interrupted npm install so
+/// a fresh `npm install -g` can lay the package down cleanly. Best-effort:
+/// every removal is logged, but a failure does not abort the caller's retry,
+/// since the subsequent install surfaces the real error.
 fn clean_partial_hq_cli_install(prefix: &str) {
     clean_partial_hq_cli_install_scope(&partial_install_scope_dir(prefix));
 }
 
-/// Remove partial `hq-cli` install debris from an already-derived
-/// `@indigoai-us` scope directory. Split out of [`clean_partial_hq_cli_install`]
-/// so BOTH scope sources — the resolved install prefix and, when no prefix
-/// resolved, the absolute path npm itself named
-/// ([`partial_install_scope_from_npm_path`]) — share ONE deletion routine with
-/// one blast radius. The deletion set is exactly as before: the `hq-cli` child
-/// directory and any `.hq-cli-*` child directory, and nothing else — never the
-/// scope directory itself, never a sibling package.
-fn clean_partial_hq_cli_install_scope(scope: &Path) {
-    let pkg = scope.join("hq-cli");
+/// Remove partial package install debris from an already-derived npm scope
+/// directory. Split out of [`clean_partial_hq_cli_install`] so BOTH scope
+/// sources — the resolved install prefix and, when no prefix resolved, the
+/// absolute path npm itself named ([`partial_install_scope_from_npm_path`]) —
+/// share ONE deletion routine with one blast radius. The deletion set is the
+/// named package child directory and matching staging children, and nothing
+/// else — never the scope directory itself, never a sibling package.
+pub(crate) fn clean_partial_install_scope(scope: &Path, package_name: &str) {
+    let valid_package_name = if let Some((scope_name, package)) = package_name.split_once('/') {
+        package_name.starts_with('@')
+            && !scope_name.is_empty()
+            && !package.is_empty()
+            && !package.contains('/')
+            && !package.contains('\\')
+            && scope_name != "."
+            && scope_name != ".."
+            && package != "."
+            && package != ".."
+    } else {
+        !package_name.is_empty()
+            && !package_name.contains('/')
+            && !package_name.contains('\\')
+            && package_name != "."
+            && package_name != ".."
+    };
+    if !valid_package_name {
+        log(
+            "hq-cli-update",
+            &format!("skipping partial npm cleanup with invalid package name {package_name:?}"),
+        );
+        return;
+    }
+    let package_name = package_name.rsplit('/').next().unwrap_or(package_name);
+
+    let pkg = scope.join(package_name);
     if pkg.exists() {
         match std::fs::remove_dir_all(&pkg) {
             Ok(()) => log(
@@ -400,14 +440,18 @@ fn clean_partial_hq_cli_install_scope(scope: &Path) {
         }
     }
 
-    // Sweep orphan `.hq-cli-*` staging dirs npm left behind mid-rename. Reading
-    // the scope dir may fail (e.g. it doesn't exist yet) — that's fine, there is
-    // simply nothing to sweep.
+    // Sweep orphan `.<package>-*` staging dirs npm left behind mid-rename.
+    // Reading the scope dir may fail (e.g. it does not exist yet), which means
+    // there is simply nothing to sweep.
     let Ok(entries) = std::fs::read_dir(scope) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(".hq-cli-") {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&format!(".{package_name}-"))
+        {
             let staging = entry.path();
             match std::fs::remove_dir_all(&staging) {
                 Ok(()) => log(
@@ -424,6 +468,10 @@ fn clean_partial_hq_cli_install_scope(scope: &Path) {
             }
         }
     }
+}
+
+fn clean_partial_hq_cli_install_scope(scope: &Path) {
+    clean_partial_install_scope(scope, "@indigoai-us/hq-cli");
 }
 
 /// Resolve the `@indigoai-us` install-scope directory to CREATE for an ENOENT
@@ -598,7 +646,7 @@ fn log_npm_install_attempt_ledger(ledger: &[NpmInstallAttempt]) {
 /// Build the npm child with the exact PATH and app-owned cache the updater
 /// needs. Keeping this at the process boundary means every retry inherits the
 /// same cache instead of falling back to a potentially root-owned `~/.npm`.
-fn npm_install_command(
+pub(crate) fn npm_install_command(
     npm: &str,
     path: &str,
     npm_cache: &Path,
@@ -607,20 +655,23 @@ fn npm_install_command(
     let mut cmd = paths::spawn_command(npm, &[]);
     cmd.args(args)
         .env("PATH", path)
-        .env("NPM_CONFIG_CACHE", npm_cache);
+        .env("NPM_CONFIG_CACHE", npm_cache)
+        .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
     cmd
 }
 
 /// Create the stable cache directory owned by this app rather than inheriting
 /// npm's user-global cache. This deliberately never repairs, deletes, or
 /// changes ownership of the user's existing npm cache.
-fn prepare_app_npm_cache(app_cache_dir: PathBuf) -> Result<PathBuf, String> {
+pub(crate) fn prepare_app_npm_cache(app_cache_dir: PathBuf) -> Result<PathBuf, String> {
     let npm_cache = app_cache_dir.join("npm");
     std::fs::create_dir_all(&npm_cache).map_err(|e| format!("prepare app-owned npm cache: {e}"))?;
     Ok(npm_cache)
 }
 
-fn app_npm_cache(app: &AppHandle) -> Result<PathBuf, (&'static str, String)> {
+pub(crate) fn app_npm_cache<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<PathBuf, (&'static str, String)> {
     let app_cache_dir = app
         .path()
         .app_cache_dir()
@@ -628,31 +679,24 @@ fn app_npm_cache(app: &AppHandle) -> Result<PathBuf, (&'static str, String)> {
     prepare_app_npm_cache(app_cache_dir).map_err(|e| ("create", e))
 }
 
-async fn run_npm_install_with_retries(
+fn npm_install_attempted(ledger: &[NpmInstallAttempt], rung: &str) -> bool {
+    ledger.iter().any(|attempt| attempt.rung == rung)
+}
+
+fn npm_install_attempted_any(ledger: &[NpmInstallAttempt], rungs: &[&str]) -> bool {
+    rungs.iter().any(|rung| npm_install_attempted(ledger, rung))
+}
+
+async fn run_npm_install_local_recovery_ladder(
+    mut output: std::process::Output,
     npm: &str,
     path: &str,
     npm_cache: &Path,
     prefix: Option<&str>,
     base_args: Vec<String>,
-) -> Result<NpmInstallRun, String> {
-    let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
-    // Set by the mkdir remedy below (HQ-DESKTOP-5K) and carried out to the caller so
-    // it can tag the reported event. `Unknown` whenever that remedy did not run.
-    let mut missing_target_state = MissingTargetState::Unknown;
-
-    // First attempt: a plain (non-forced) global install.
-    let mut output = run_recorded_npm_install_attempt(
-        npm,
-        path,
-        npm_cache,
-        prefix,
-        base_args.clone(),
-        "plain",
-        false,
-        &mut ledger,
-    )
-    .await?;
-
+    ledger: &mut Vec<NpmInstallAttempt>,
+    missing_target_state: &mut MissingTargetState,
+) -> Result<std::process::Output, String> {
     // EEXIST bin collision: an existing `<prefix>/bin/hq` npm didn't create
     // blocks the bin-link, so npm bails rather than clobber it. Retry ONCE with
     // --force to overwrite the stale CLI the user is updating (HQ-SYNC-B) —
@@ -660,7 +704,17 @@ async fn run_npm_install_with_retries(
     // retry; every other failure falls straight through to the error below.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_bin_exists_failure(&detail, prefix) && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS {
+        if is_bin_exists_failure(&detail, prefix)
+            && !npm_install_attempted_any(
+                ledger,
+                &[
+                    "forced-bin-collision",
+                    "cleanup-forced-bin-collision",
+                    "mkdir-forced-bin-collision",
+                ],
+            )
+            && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
+        {
             log(
                 "hq-cli-update",
                 &format!("install hit EEXIST bin collision; retrying with --force: {detail}"),
@@ -675,7 +729,7 @@ async fn run_npm_install_with_retries(
                 forced,
                 "forced-bin-collision",
                 true,
-                &mut ledger,
+                ledger,
             )
             .await?;
         }
@@ -696,7 +750,9 @@ async fn run_npm_install_with_retries(
     // is the failure left untouched.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_partial_install_failure(&detail) {
+        if is_partial_install_failure(&detail)
+            && !npm_install_attempted_any(ledger, &["cleanup-plain", "cleanup-plain-npm-path"])
+        {
             // Resolve the cleanup scope. Prefer the resolved install prefix; when
             // no prefix resolved — the HQ-DESKTOP-5B state, where `hq` is bare or
             // non-npm-shaped so `hq_cli_install_prefix` returned None (true in
@@ -727,7 +783,7 @@ async fn run_npm_install_with_retries(
                     base_args.clone(),
                     rung,
                     false,
-                    &mut ledger,
+                    ledger,
                 )
                 .await?;
 
@@ -739,6 +795,7 @@ async fn run_npm_install_with_retries(
                 // directly produce that final output.
                 if !output.status.success()
                     && is_bin_exists_failure(&npm_output_detail(&output), prefix)
+                    && !npm_install_attempted(ledger, "cleanup-forced-bin-collision")
                     && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
                 {
                     let mut forced = base_args.clone();
@@ -751,7 +808,7 @@ async fn run_npm_install_with_retries(
                         forced,
                         "cleanup-forced-bin-collision",
                         true,
-                        &mut ledger,
+                        ledger,
                     )
                     .await?;
                 }
@@ -777,7 +834,9 @@ async fn run_npm_install_with_retries(
     // fails, nothing changes and the failure is reported exactly as today.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_missing_global_install_target(&detail, prefix) {
+        if is_missing_global_install_target(&detail, prefix)
+            && !npm_install_attempted_any(ledger, &["mkdir-plain", "mkdir-plain-npm-path"])
+        {
             if let Some((scope, rung)) =
                 missing_install_target_scope(prefix, &detail, cfg!(target_os = "windows"))
             {
@@ -792,7 +851,7 @@ async fn run_npm_install_with_retries(
                 })
                 .await
                 .unwrap_or(MissingTargetState::CreateFailed);
-                missing_target_state = state;
+                *missing_target_state = state;
                 if state == MissingTargetState::CreateFailed {
                     log(
                         "hq-cli-update",
@@ -817,7 +876,7 @@ async fn run_npm_install_with_retries(
                         base_args.clone(),
                         rung,
                         false,
-                        &mut ledger,
+                        ledger,
                     )
                     .await?;
 
@@ -829,6 +888,7 @@ async fn run_npm_install_with_retries(
                     // attempt cap.
                     if !output.status.success()
                         && is_bin_exists_failure(&npm_output_detail(&output), prefix)
+                        && !npm_install_attempted(ledger, "mkdir-forced-bin-collision")
                         && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
                     {
                         let mut forced = base_args.clone();
@@ -841,7 +901,7 @@ async fn run_npm_install_with_retries(
                             forced,
                             "mkdir-forced-bin-collision",
                             true,
-                            &mut ledger,
+                            ledger,
                         )
                         .await?;
                     }
@@ -867,6 +927,7 @@ async fn run_npm_install_with_retries(
     if !output.status.success() {
         let detail = npm_output_detail(&output);
         if is_windows_locked_binary_failure(output.status.code(), &detail)
+            && !npm_install_attempted(ledger, "windows-backoff-plain")
             && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
         {
             log(
@@ -881,13 +942,152 @@ async fn run_npm_install_with_retries(
                 path,
                 npm_cache,
                 prefix,
-                base_args,
+                base_args.clone(),
                 "windows-backoff-plain",
                 false,
-                &mut ledger,
+                ledger,
             )
             .await?;
         }
+    }
+
+    // Windows EBUSY while renaming a package under the selected prefix means a
+    // process still holds that install target open. Give the lock time to release
+    // and retry the plain install once. Never terminate or signal the holder.
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        let attempted_rungs: Vec<_> = ledger.iter().map(|attempt| attempt.rung).collect();
+        if should_retry_windows_busy_install_target(
+            output.status.code(),
+            &detail,
+            prefix,
+            &attempted_rungs,
+            MAX_NPM_INSTALL_ATTEMPTS,
+        ) {
+            log(
+                "hq-cli-update",
+                "install hit Windows EBUSY rename on the selected prefix; retrying once after backoff",
+            );
+            tokio::time::sleep(LOCKED_BINARY_RETRY_BACKOFF).await;
+            output = run_recorded_npm_install_attempt(
+                npm,
+                path,
+                npm_cache,
+                prefix,
+                base_args,
+                WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG,
+                false,
+                ledger,
+            )
+            .await?;
+        }
+    }
+
+    Ok(output)
+}
+
+async fn run_npm_install_with_retries(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: Option<&str>,
+    base_args: Vec<String>,
+) -> Result<NpmInstallRun, String> {
+    let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
+    let mut missing_target_state = MissingTargetState::Unknown;
+    let mut output = run_recorded_npm_install_attempt(
+        npm,
+        path,
+        npm_cache,
+        prefix,
+        base_args.clone(),
+        "plain",
+        false,
+        &mut ledger,
+    )
+    .await?;
+
+    let spec = base_args
+        .last()
+        .expect("npm install argv must end with the package spec");
+    let prefer_online_args =
+        crate::commands::install_deps::npm_args_with_option(&base_args, spec, "--prefer-online");
+    let public_registry_args =
+        crate::commands::install_deps::npm_args_with_public_registry(&prefer_online_args);
+    let mut local_recovery_due = true;
+
+    loop {
+        if output.status.success() || ledger.len() >= MAX_NPM_INSTALL_ATTEMPTS {
+            break;
+        }
+
+        let detail = npm_output_detail(&output);
+        if is_etarget_failure(&detail) {
+            if !npm_install_attempted(&ledger, "etarget-prefer-online") {
+                log(
+                    "hq-cli-update",
+                    "install hit ETARGET/notarget; retrying once with --prefer-online",
+                );
+                output = run_recorded_npm_install_attempt(
+                    npm,
+                    path,
+                    npm_cache,
+                    prefix,
+                    prefer_online_args.clone(),
+                    "etarget-prefer-online",
+                    false,
+                    &mut ledger,
+                )
+                .await?;
+                local_recovery_due = true;
+                continue;
+            }
+
+            if !npm_install_attempted(&ledger, "etarget-public-registry") {
+                log(
+                    "hq-cli-update",
+                    "ETARGET/notarget persisted after --prefer-online; retrying once with the public npm registry",
+                );
+                output = run_recorded_npm_install_attempt(
+                    npm,
+                    path,
+                    npm_cache,
+                    prefix,
+                    public_registry_args.clone(),
+                    "etarget-public-registry",
+                    false,
+                    &mut ledger,
+                )
+                .await?;
+                local_recovery_due = true;
+                continue;
+            }
+        }
+
+        if !local_recovery_due {
+            break;
+        }
+        let attempts_before_local_recovery = ledger.len();
+        output = run_npm_install_local_recovery_ladder(
+            output,
+            npm,
+            path,
+            npm_cache,
+            prefix,
+            base_args.clone(),
+            &mut ledger,
+            &mut missing_target_state,
+        )
+        .await?;
+        local_recovery_due = false;
+
+        if output.status.success() || is_etarget_failure(&npm_output_detail(&output)) {
+            continue;
+        }
+        if ledger.len() == attempts_before_local_recovery {
+            break;
+        }
+        break;
     }
 
     log_npm_install_attempt_ledger(&ledger);
@@ -1009,6 +1209,7 @@ async fn probe_install_environment(
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
+        registry_serving_lag_recurred: false,
     }
 }
 
@@ -1303,7 +1504,9 @@ async fn install_hq_cli_update_via_pnpm(
         let pnpm_home = pnpm_env.as_ref().map(|env| env.home.clone());
         tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = paths::spawn_command(&pnpm, &[]);
-            cmd.args(&args).env("PATH", &path);
+            cmd.args(&args)
+                .env("PATH", &path)
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
             // Without PNPM_HOME the child falls back to its own default, which
             // on a Dock-launched app is not necessarily the home that owns the
             // shim we are trying to replace.
@@ -1488,7 +1691,8 @@ async fn install_hq_cli_update_via_bun(
             let mut cmd = paths::spawn_command(&bun, &[]);
             cmd.args(&args)
                 .env("PATH", &path)
-                .env("BUN_INSTALL", &bun_home);
+                .env("BUN_INSTALL", &bun_home)
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
             cmd.output()
         })
         .await
@@ -2370,7 +2574,7 @@ async fn finalize_convergence(
         paths::home_dir().as_deref(),
     );
     let delivered_prefix_shim = delivered_prefix_shim_for(prefix, delivered_version.as_deref());
-    let outcome = decide_post_install(
+    let mut outcome = decide_post_install(
         &PostInstallContext::npm(
             before_bin,
             &post_install_hq,
@@ -2441,6 +2645,45 @@ async fn finalize_convergence(
         }
     }
 
+    // A foreign-managed copy may be locally repairable even when the original
+    // attempt did not identify it before installing. If the post-install copy is
+    // a drivable user prefix, make one bounded pinned install with that copy's own
+    // npm before preserving the non-blocking episode. This never edits PATH or
+    // shell settings; only a successful install that the resolver now observes at
+    // `latest` counts as convergence.
+    if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged)
+        && executed_copy_aim == ExecutedCopyAim::NotYetAimed
+    {
+        let home = paths::home_dir();
+        let user_aim =
+            select_ordinary_install_aim(&post_install_hq, &managed_roots, home.as_deref());
+        let gate = executed_copy_reaim_gate(
+            outcome.non_convergence_kind,
+            executed_copy_aim,
+            user_aim.is_some(),
+        );
+        match (gate, user_aim) {
+            (ExecutedCopyReaimGate::Attempt, Some(aim)) => {
+                return executed_copy_reaim_and_refinalize(
+                    app,
+                    before_bin,
+                    before_version,
+                    latest,
+                    already_blocked,
+                    aim,
+                    outcome,
+                )
+                .await;
+            }
+            (ExecutedCopyReaimGate::RefusedNoAim, None) => {
+                if let Some(report) = outcome.capture.as_mut() {
+                    report.executed_copy_reaim = ExecutedCopyReaim::RefusedNoAim;
+                }
+            }
+            _ => {}
+        }
+    }
+
     log("hq-cli-update", &outcome.log_line);
     let result = apply_post_install_with_app(app, &outcome);
     // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
@@ -2449,6 +2692,137 @@ async fn finalize_convergence(
     // check. Best-effort and never gates the capture (fail-loud): a failed write
     // simply means the next occurrence reports again.
     if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(error) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {error}"),
+            );
+        }
+    }
+    result
+}
+
+/// Build a one-shot re-aim using the executed user copy's own npm prefix and
+/// interpreter. Returning the args and child PATH separately keeps this
+/// selection testable without launching a package manager.
+fn executed_copy_reaim_plan(
+    aim: &UserPrefixAim,
+    latest: &str,
+    base_path: &str,
+) -> (Vec<String>, String) {
+    let args = install_argv(Some(&aim.prefix), Some(latest));
+    let path = Path::new(&aim.npm)
+        .parent()
+        .map(|npm_bin| paths::path_with_interpreter_hint(base_path, npm_bin))
+        .unwrap_or_else(|| base_path.to_string());
+    (args, path)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn executed_copy_reaim_and_refinalize(
+    app: &AppHandle,
+    before_bin: &str,
+    before_version: Option<&str>,
+    latest: &str,
+    already_blocked: bool,
+    aim: UserPrefixAim,
+    mut base_outcome: PostInstallOutcome,
+) -> Result<HqCliUpdateInfo, String> {
+    let base_path = paths::child_path();
+    let (args, path) = executed_copy_reaim_plan(&aim, latest, &base_path);
+    log(
+        "hq-cli-update",
+        &format!(
+            "re-aiming one update at the deferred executed copy (npm={})",
+            redact_home(&aim.npm)
+        ),
+    );
+
+    let reaim = match app_npm_cache(app) {
+        Err((category, error)) => {
+            report_npm_cache_setup_failure(category);
+            log(
+                "hq-cli-update",
+                &format!(
+                    "could not prepare re-aim npm cache: {}",
+                    redact_home(&error)
+                ),
+            );
+            ExecutedCopyReaim::PreparationFailed
+        }
+        Ok(npm_cache) => {
+            match run_npm_install_with_retries(&aim.npm, &path, &npm_cache, Some(&aim.prefix), args)
+                .await
+            {
+                Err(error) => {
+                    log(
+                        "hq-cli-update",
+                        &format!("re-aim npm install could not run: {}", redact_home(&error)),
+                    );
+                    ExecutedCopyReaim::SpawnFailed
+                }
+                Ok(run) => {
+                    let install_exit_ok = run.output.status.success();
+                    let resolved = if install_exit_ok {
+                        let hq = paths::resolve_bin("hq");
+                        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+                            .await
+                            .ok()
+                            .flatten()
+                    } else {
+                        None
+                    };
+                    let converged =
+                        install_exit_ok && install_converged(resolved.as_deref(), latest);
+                    let result = executed_copy_reaim_outcome(
+                        ExecutedCopyReaimGate::Attempt,
+                        Some(install_exit_ok),
+                        converged,
+                    );
+                    if result == ExecutedCopyReaim::Converged {
+                        return Box::pin(finalize_convergence(
+                            app,
+                            before_bin,
+                            &aim.npm,
+                            before_version,
+                            latest,
+                            Some(&aim.prefix),
+                            already_blocked,
+                        ))
+                        .await;
+                    }
+                    if !install_exit_ok {
+                        log(
+                            "hq-cli-update",
+                            &format!(
+                                "re-aim npm install exited unsuccessfully (status={:?})",
+                                run.output.status.code()
+                            ),
+                        );
+                    } else {
+                        log(
+                            "hq-cli-update",
+                            "re-aim npm install exited successfully but the executed CLI did not converge",
+                        );
+                    }
+                    result
+                }
+            }
+        }
+    };
+
+    if let Some(report) = base_outcome.capture.as_mut() {
+        report.executed_copy_reaim = reaim;
+    }
+    log(
+        "hq-cli-update",
+        &format!("executed-copy re-aim outcome: {}", reaim.telemetry_value()),
+    );
+    log("hq-cli-update", &base_outcome.log_line);
+    let result = apply_post_install_with_app(app, &base_outcome);
+    if let Some(key) = base_outcome.record_nonblocking_episode.as_deref() {
         let existing = non_convergent_episode_markers();
         let updated = non_convergent_episode_record(&existing, key, latest);
         if let Err(error) = record_non_convergent_episode_markers(&updated) {
@@ -2756,6 +3130,25 @@ fn persist_reported_episode(outcome: InstallFailureEpisode) {
             log(
                 "hq-cli-update",
                 "install-failure episode already reported for this (version, package, cause); not re-paging",
+            );
+        }
+        InstallFailureEpisode::DeferredTransient {
+            persist_keys: Some(keys),
+        } => {
+            if let Err(error) = record_install_failure_episode_markers(&keys) {
+                log(
+                    "hq-cli-update",
+                    &format!("could not persist registry serving-lag marker: {error}"),
+                );
+                report_registry_serving_lag_marker_unpersisted();
+            }
+        }
+        InstallFailureEpisode::DeferredTransient { persist_keys: None } => {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "pinned npmjs tarball 404 remains deferred within the {REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES}-minute window"
+                ),
             );
         }
         InstallFailureEpisode::Reported { persist_keys: None }
@@ -4372,6 +4765,350 @@ exit 0
                 );
             }
         }
+    }
+
+    #[test]
+    fn etarget_classifier_matches_codes_and_excludes_other_errors() {
+        assert!(is_etarget_failure("npm error code ETARGET"));
+        assert!(is_etarget_failure(
+            "npm error notarget No matching version found"
+        ));
+        assert!(!is_etarget_failure(
+            "npm error code EACCES permission denied"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn etarget_retries_once_with_prefer_online() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "prefer-online should recover ETARGET"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 2, "ETARGET gets exactly one online retry");
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(lines[1].contains("--prefer-online"));
+        assert_eq!(run.rungs, vec!["plain", "etarget-prefer-online"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repeated_etarget_uses_public_registry_once_after_prefer_online() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -le 2 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "public registry should recover repeated ETARGET"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            lines.len(),
+            3,
+            "one plain, one online, and one public-registry attempt"
+        );
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(lines[1].contains("--prefer-online"));
+        assert!(lines[2].contains("--prefer-online"));
+        assert!(lines[2].contains("--registry=https://registry.npmjs.org/"));
+        assert!(lines[2].contains("--@indigoai-us:registry=https://registry.npmjs.org/"));
+        assert_eq!(
+            run.rungs,
+            vec!["plain", "etarget-prefer-online", "etarget-public-registry"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prefer_online_output_uses_existing_bin_collision_recovery() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let prefix = temp.path().join("npm-prefix");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+prefix="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+if [ "$count" -eq 2 ]; then
+  printf '%s\n' 'npm error code EEXIST' "npm error path $prefix/bin/hq" >&2
+  exit 1
+fi
+case "$*" in
+  *--force*) exit 0 ;;
+esac
+exit 2
+"#,
+            state.display(),
+            attempts.display(),
+            prefix.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "the force retry should recover EEXIST"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 3);
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(lines[1].contains("--prefer-online"));
+        assert!(lines[2].contains("--force"));
+        assert_eq!(
+            run.rungs,
+            vec!["plain", "etarget-prefer-online", "forced-bin-collision"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn public_registry_output_uses_existing_bin_collision_recovery() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let prefix = temp.path().join("npm-prefix");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+prefix="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+if [ "$count" -le 2 ]; then
+  printf '%s\n' 'npm error code ETARGET' 'npm error notarget No matching version found' >&2
+  exit 1
+fi
+if [ "$count" -eq 3 ]; then
+  printf '%s\n' 'npm error code EEXIST' "npm error path $prefix/bin/hq" >&2
+  exit 1
+fi
+case "$*" in
+  *--force*) exit 0 ;;
+esac
+exit 2
+"#,
+            state.display(),
+            attempts.display(),
+            prefix.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "the force retry should recover EEXIST"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 4);
+        assert!(lines[1].contains("--prefer-online"));
+        assert!(lines[2].contains("--prefer-online"));
+        assert!(lines[2].contains("--registry=https://registry.npmjs.org/"));
+        assert!(lines[3].contains("--force"));
+        assert_eq!(
+            run.rungs,
+            vec![
+                "plain",
+                "etarget-prefer-online",
+                "etarget-public-registry",
+                "forced-bin-collision"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unrelated_npm_failure_does_not_trigger_etarget_retries() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+printf '%s\n' 'npm error code EACCES' 'npm error permission denied' >&2
+exit 1
+"#,
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.100.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 1, "unrelated failures get no ETARGET retry");
+        assert!(!lines[0].contains("--prefer-online"));
+        assert!(!lines[0].contains("--registry=https://registry.npmjs.org/"));
+        assert_eq!(run.rungs, vec!["plain"]);
     }
 
     #[cfg(unix)]

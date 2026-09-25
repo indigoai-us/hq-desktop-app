@@ -7,6 +7,8 @@
 // components) makes it unit-testable without a DOM — mirrors lib/dmRequests.ts
 // and lib/recipientPicker.ts. The components own the invoke calls + rendering.
 
+import type { NotifyLevel } from "./notify-level";
+
 /** A channel's posting policy — who may post into it. Tolerant of server
  * additions: the UI only branches on the values it knows. */
 export type ChannelPostPolicy = "all" | "owner" | string;
@@ -44,6 +46,9 @@ export interface Channel {
   postPolicy?: ChannelPostPolicy;
   visibility?: ChannelVisibility;
   membership?: ChannelMembership;
+  /** Caller's resolved notification level (`membership.notifyLevel`). Null
+   * for browse-only rows; absent on older servers. */
+  notifyLevel?: NotifyLevel | null;
   /** Unread message count for this channel (drives the left-rail badge). */
   unread?: number;
   /** Member count (shown on the header member-count button). */
@@ -64,6 +69,8 @@ export interface Channel {
    * payload for every scope; used as a fallback ordering signal for group DMs,
    * which ship no activity timestamp (`mergeConversations`). */
   createdAt?: string | null;
+  /** Channel creator uid, when the server sent it. */
+  createdBy?: string | null;
   /** Group-DM participant roster (the OTHER members — caller excluded),
    * server-supplied on the list endpoint so an unnamed group DM can be named by
    * its people ("Stefan, Hassaan"). Absent for named scopes and on older server
@@ -76,6 +83,40 @@ export interface Channel {
   /** US-009 channel fabric: server-computed subtitle label from the directory
    * row (e.g. "Project", "Company channel"). Absent on the legacy payload. */
   subtitle?: string | null;
+  /** True for the single channel created at company genesis (named after the
+   * company slug) — the ONLY `scope: "company"` channel that carries Office,
+   * CompanyHero, and company settings. Every other `scope: "company"` channel
+   * is a plain team channel. Optional/absent on older server payloads; use
+   * `isCompanyHomeChannel()` below rather than reading this field directly, so
+   * callers get the fallback behavior while the backend rolls the field out. */
+  isCompanyHome?: boolean;
+}
+
+/** Resolves whether a channel is THE company home channel (one per company,
+ * created at company genesis, named after the company slug). Prefers the
+ * server-supplied `isCompanyHome` flag; falls back to
+ * `scope === "company" && name === companySlug` while the backend lane that
+ * populates `isCompanyHome` is still rolling out. Do not use `scope ===
+ * "company"` alone to detect "the company channel" — many team channels share
+ * that scope. */
+export function isCompanyHomeChannel(
+  channel: Pick<Channel, "scope" | "name" | "isCompanyHome">,
+  companySlug: string | null | undefined,
+): boolean {
+  if (typeof channel.isCompanyHome === "boolean") return channel.isCompanyHome;
+  if (channel.scope !== "company" || !companySlug) return false;
+  // The wire `name` carries the raw channel name, which for a company-genesis
+  // channel is "#<slug>" (the directory row's `name` is never stripped of its
+  // leading "#" — only display helpers like `channelDisplayName` do that). A
+  // literal `channel.name === companySlug` comparison therefore NEVER matches
+  // (every company home channel would compare "#indigo" to "indigo"), which is
+  // exactly the bug that made every company show "no home channel yet." Strip
+  // the leading "#" (and normalize case/whitespace) on both sides before
+  // comparing so this fallback actually works while the backend rolls out the
+  // authoritative `isCompanyHome` flag.
+  const normalizedName = channel.name.trim().replace(/^#+/, "").trim().toLowerCase();
+  const normalizedSlug = companySlug.trim().replace(/^#+/, "").trim().toLowerCase();
+  return !!normalizedName && normalizedName === normalizedSlug;
 }
 
 /** A group-DM participant as surfaced on the channels list payload — just enough

@@ -20,6 +20,12 @@
   } from './lib/auth';
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
+  import { unexpectedSurfaceForState } from './lib/unexpected-startup-surface';
+  import {
+    resolveStartupState,
+    type StartupPhase,
+    type StartupProbeResult,
+  } from './lib/startup-gate';
   import { wizardModeForLifecycle } from './lib/onboarding-wizard';
   import { ListenerRegistry, subscribeWindowFocus } from './lib/listener-registry';
   import type { WorkspacesResult } from './lib/workspaces';
@@ -30,6 +36,8 @@
   import { RecordingActionAckCoordinator } from './lib/recordingActionAck';
   import {
     BannerActionRouter,
+    bannerOpenRoute,
+    shouldSuppressShareNotification,
     type BannerActionEvent,
     type NotificationActionKind,
   } from './lib/bannerActionRouter';
@@ -90,7 +98,12 @@
 
   let authenticated = $state(false);
   let expiresAt = $state('');
-  let checking = $state(true);
+  // Startup gate: `loading` until the backend probe has POSITIVELY resolved
+  // this machine's setup/session state. The Welcome card and the sign-in card
+  // are only ever shown from a resolved verdict — a failed probe holds the
+  // neutral loading surface and re-probes (see `checkAuth`).
+  let startupPhase = $state<StartupPhase>('loading');
+  let startupReprobeTimer: ReturnType<typeof setTimeout> | null = null;
   let lifecycleState = $state<string | null>(null);
   // US-005: when the server reports this person's recorded consent as stale
   // (pre-versioned, administrative, or below the current version), the blocking
@@ -712,7 +725,17 @@
       }
       if (action === 'open') {
         if (!data) throw new Error('DM event is unavailable');
-        await invoke('open_dm_detail', { event: data });
+        await invoke('open_desktop_alt_window', {
+          route: bannerOpenRoute('dm', data) ?? 'inbox',
+        });
+        return;
+      }
+    } else if (kind === 'mention') {
+      if (action === 'open') {
+        if (!data) throw new Error('Mention event is unavailable');
+        await invoke('open_desktop_alt_window', {
+          route: bannerOpenRoute('mention', data) ?? 'inbox',
+        });
         return;
       }
     } else if (kind === 'share') {
@@ -735,7 +758,9 @@
       }
       if (action === 'open') {
         if (!data) throw new Error('Share event is unavailable');
-        await invoke('open_share_detail', { events: [data] });
+        await invoke('open_desktop_alt_window', {
+          route: bannerOpenRoute('share', data) ?? 'inbox',
+        });
         return;
       }
     } else if (kind === 'update') {
@@ -886,14 +911,25 @@
     );
 
     // Native tray right-click menu (hq-tray-helper): Open desktop view +
-    // Sign Out. Signed-out users still get the workspace window so they can
-    // sign in there.
+    // Open Inbox + Sign Out. Signed-out users still get the workspace window
+    // so they can sign in there. Notification clicks no longer target the
+    // quick Inbox window (`open_dm_detail`); this tray item is the remaining
+    // explicit Inbox entry.
     unlisteners.push(
       await listen('tray:open-desktop', () => {
         void invoke('open_desktop_alt_window').catch((e) => {
           console.error('tray open_desktop_alt_window failed:', e);
           // Real open failure: keep first-run onboarding / sign-in reachable.
           void invoke('show_main_window').catch(console.error);
+        });
+      })
+    );
+
+    unlisteners.push(
+      await listen('tray:open-inbox', () => {
+        void invoke('open_desktop_alt_window', { route: 'inbox' }).catch((e) => {
+          console.error('tray open_desktop_alt_window (inbox) failed:', e);
+          void invoke('open_inbox_window').catch(console.error);
         });
       })
     );
@@ -1390,11 +1426,15 @@
         note: string | null;
         permission: string;
         createdAt: string;
-      }>>('share:new-events', async (_event) => {
-        // No-op for now — the notification handler in Rust owns the side
-        // effects (notification.show(), pending-events state, tray badge).
-        // This listener stays subscribed so a future in-window share-
-        // events list can hook here without needing a second registration.
+        dmEventId?: string;
+      }>>('share:new-events', async (event) => {
+        // Rust already drops shares that carry dmEventId. Keep the same
+        // guard here so a future in-window list never re-notifies a share
+        // that already landed as a DM.
+        const fresh = (event.payload ?? []).filter(
+          (item) => !shouldSuppressShareNotification(item),
+        );
+        void fresh;
       })
     );
 
@@ -1406,8 +1446,8 @@
     // thread emits `notification:share-action` with the full event payload.
     //
     // "copy" → write the templated prompt to the system clipboard.
-    // "open" → invoke open_share_detail with this single event so the
-    //          ShareDetail window focuses or opens with the right context.
+    // "claude" → open Claude Code with the templated prompt (dropdown).
+    // "open" → front the main window on inbox:dm:<issuerUid>.
     unlisteners.push(
       await listen<{
         action: 'claude' | 'copy' | 'open';
@@ -1416,6 +1456,8 @@
           eventId: string;
           issuerEmail: string;
           issuerDisplayName: string;
+          issuerPersonUid?: string;
+          issuerUid?: string;
           paths: string[];
           note: string | null;
           permission: string;
@@ -1439,7 +1481,8 @@
     // `notification:dm-action`:
     //   "copy" → write the sender's agent prompt to the clipboard so the
     //            recipient can paste it straight into their own agent session.
-    //   "open" → open the DM detail window (full message + details + Copy).
+    //   "open" → front the main window on inbox:dm:<fromPersonUid> (or
+    //            inbox:channel:<channelId>:<eventId> for channel-origin).
     unlisteners.push(
       await listen<{
         action: 'copy' | 'open';
@@ -1448,6 +1491,7 @@
           fromPersonUid: string;
           fromEmail: string;
           fromDisplayName: string;
+          channelId?: string;
           body: string;
           details?: string | null;
           prompt?: string | null;
@@ -1614,6 +1658,10 @@
 
     return () => {
       channelUnreadDisposed = true;
+      if (startupReprobeTimer !== null) {
+        clearTimeout(startupReprobeTimer);
+        startupReprobeTimer = null;
+      }
       clearChannelUnreadRetry();
       recordingActionAcks.dispose();
       listenerRegistry.dispose();
@@ -1656,30 +1704,88 @@
   // Long-term fix: migrate the notify paths to UNUserNotificationCenter via
   // objc2 so the whole app is a modern client.
 
-  async function checkAuth() {
-    try {
-      // `get_auth_state` validates freshness and performs the one silent
-      // refresh retry. Raw token-file presence must not override a failed
-      // verdict; it is captured first only to select the friendly reauth copy
-      // after validation clears an expired session.
-      lifecycleState = await invoke<string>('get_lifecycle_state').catch(() => null);
-      const hadStoredToken = await invoke<boolean>('has_stored_token');
-      const state = await invoke<{
-        authenticated: boolean;
-        expiresAt: string | null;
-      }>('get_auth_state');
+  /**
+   * One backend probe of the startup state.
+   *
+   * `get_auth_state` is the authority and is awaited FIRST: if it throws we
+   * could not tell whether this person is signed in, so the error propagates
+   * to the retry wrapper instead of being collapsed to "signed out". The two
+   * secondary signals are best-effort — an unknown lifecycle state simply
+   * means "no onboarding state to route to", which the auth verdict covers.
+   */
+  async function probeStartupState(): Promise<StartupProbeResult> {
+    // `get_auth_state` validates freshness and performs the one silent
+    // refresh retry.
+    const auth = await invoke<{ authenticated: boolean; expiresAt: string | null }>(
+      'get_auth_state',
+    );
+    // Raw token-file presence must not override a failed verdict; it is
+    // captured only to select the friendly reauth copy after validation
+    // clears an expired session.
+    const hadStoredToken = await invoke<boolean>('has_stored_token').catch(() => false);
+    const lifecycleState = await invoke<string>('get_lifecycle_state').catch((err) => {
+      console.warn('get_lifecycle_state unavailable; routing on the auth verdict alone:', err);
+      return null;
+    });
+    return { lifecycleState: lifecycleState ?? null, hadStoredToken, auth };
+  }
 
-      authenticated = shouldSkipSignIn(state);
-      expiresAt = state.expiresAt ?? '';
-      if (hadStoredToken && !state.authenticated) {
-        syncState = 'auth-error';
-        await invoke('set_tray_state', { state: 'reauth' });
-      }
-    } catch {
-      authenticated = false;
-    } finally {
-      checking = false;
+  /**
+   * Re-run the probe after a hold. Only armed while the gate is still
+   * unresolved, so a permanently broken probe keeps retrying quietly rather
+   * than dropping a set-up person onto a fresh-install card.
+   */
+  function scheduleStartupReprobe() {
+    if (startupReprobeTimer !== null) return;
+    startupReprobeTimer = setTimeout(() => {
+      startupReprobeTimer = null;
+      void checkAuth();
+    }, 5000);
+  }
+
+  async function checkAuth() {
+    const outcome = await resolveStartupState(probeStartupState, {
+      onRetry: (attempt, err) =>
+        console.warn(`startup auth probe attempt ${attempt} failed; retrying:`, err),
+    });
+
+    if (!outcome.ok) {
+      // We could not determine the session state. That is not a session loss:
+      // hold whatever surface is already up (loading on first launch) and try
+      // again, with the reason logged.
+      console.error(
+        `startup auth probe failed after ${outcome.attempts} attempt(s); not concluding signed-out:`,
+        outcome.error,
+      );
+      scheduleStartupReprobe();
+      return;
     }
+
+    const { lifecycleState: probedLifecycle, hadStoredToken, auth: state } = outcome.result;
+    lifecycleState = probedLifecycle;
+    authenticated = shouldSkipSignIn(state);
+    expiresAt = state.expiresAt ?? '';
+    if (hadStoredToken && !state.authenticated) {
+      syncState = 'auth-error';
+      await invoke('set_tray_state', { state: 'reauth' }).catch((err) => {
+        console.warn('set_tray_state(reauth) failed:', err);
+      });
+    }
+    startupPhase = 'resolved';
+
+    // Report to Sentry when a set-up machine sees the sign-in or onboarding
+    // surface. Non-blocking and fail-quiet: telemetry must never affect launch.
+    {
+      const unexpectedSurface = unexpectedSurfaceForState(lifecycleState, authenticated);
+      if (unexpectedSurface !== null) {
+        invoke('report_unexpected_startup_surface', {
+          surface: unexpectedSurface,
+          authCheckFailed: hadStoredToken && !state.authenticated,
+          probeAttempts: outcome.attempts,
+        }).catch(() => {});
+      }
+    }
+
     if (authenticated) void loadUnreadSummary();
     else resetUnreadSummary();
     // US-005: once signed in and NOT in first-run onboarding, ask the server
@@ -1766,7 +1872,7 @@
 </script>
 
 <main>
-  {#if checking}
+  {#if startupPhase !== 'resolved'}
     <div class="loading">
       <span class="dot-spinner"></span>
     </div>

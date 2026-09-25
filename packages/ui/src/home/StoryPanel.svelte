@@ -27,6 +27,9 @@
   import LabelChip from "../common/LabelChip.svelte";
   import OpenFileInClaudeCode from "../files/OpenFileInClaudeCode.svelte";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
+  import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import { identityAvatarSrc } from "../projects/project-view.js";
+  import type { StoryIdentity } from "../projects/projects-model.js";
   import "./tokens.css";
 
   interface Props {
@@ -271,6 +274,18 @@
     data-testid="v4-story-panel"
     data-embedded={embedded ? "true" : "false"}
   >
+    {#snippet identityLine(identity: StoryIdentity)}
+      <p class="identity-line">
+        <IdentityMark
+          size="small"
+          kind={identity.kind}
+          label={identity.displayName}
+          avatarUrl={identityAvatarSrc(identity)}
+          agentUid={identity.kind === "agent" ? identity.uid : null}
+        />
+        <span>{identity.displayName}</span>
+      </p>
+    {/snippet}
     <header class="panel-header">
       <div class="header-copy">
         <span class="hierarchy" data-testid="task-detail-hierarchy"
@@ -338,6 +353,23 @@
     {/if}
 
     <div class="panel-body">
+      <section class="section" data-testid="story-assignee">
+        <h3>Assignee</h3>
+        {#if story.assignee}
+          {@render identityLine(story.assignee)}
+        {:else}
+          <p>Unassigned</p>
+        {/if}
+      </section>
+
+      <section class="section" data-testid="story-last-actor">
+        <h3>Last actor</h3>
+        {#if story.lastActor}
+          {@render identityLine(story.lastActor)}
+        {:else}
+          <p>Not recorded</p>
+        {/if}
+      </section>
       {#if liveRun}
         <section
           class="live-monitor"
@@ -567,6 +599,16 @@
       inset 1px 0 0 var(--v4-glass-highlight);
   }
 
+  .identity-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    font-weight: 500;
+  }
+
   .panel-header,
   .panel-footer,
   .meta-row,
@@ -774,6 +816,14 @@
     color: var(--v4-text-2);
     font-size: var(--type-body, var(--text-base));
     line-height: 1.45;
+  }
+
+  .identity-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-weight: 500;
   }
 
   .section-title-row {

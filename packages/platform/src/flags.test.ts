@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
+  CLAUDE_PROVIDER_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
@@ -38,9 +39,10 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
-  it("maps meetings only", () => {
+  it("maps the meetings and Claude provider registry flags", () => {
     expect(registryKeyFor("meetings")).toBe(MEETINGS_REGISTRY_KEY);
     expect(registryKeyFor(MEETINGS_LEGACY_FLAG)).toBe("desktop.meetings");
+    expect(registryKeyFor(CLAUDE_PROVIDER_FLAG)).toBe(CLAUDE_PROVIDER_FLAG);
     expect(registryKeyFor("is_indigo_user")).toBeUndefined();
     expect(registryKeyFor("anything-else")).toBeUndefined();
   });

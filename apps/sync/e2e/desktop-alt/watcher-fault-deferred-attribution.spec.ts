@@ -49,6 +49,18 @@ const sessionEndInterceptSource = readRepoFile(
 const coreSource = readRepoFile('../../crates/hq-desktop-core/src/watcher_fault.rs');
 const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
 
+function sliceBetween(source: string, startAnchor: string, endAnchor: string, label: string): string {
+  const start = source.indexOf(startAnchor);
+  if (start === -1) {
+    throw new Error(`${label}: start anchor not found: ${startAnchor}`);
+  }
+  const end = source.indexOf(endAnchor, start + startAnchor.length);
+  if (end === -1) {
+    throw new Error(`${label}: end anchor not found after start: ${endAnchor}`);
+  }
+  return source.slice(start, end + endAnchor.length);
+}
+
 describe('watcher fault deferred attribution — source contracts', () => {
   it('takes the fault read OFF the terminal exit callback entirely', () => {
     // The old blocking, exit-path read is gone: no on-exit-path 4.5s wait, and no
@@ -214,9 +226,13 @@ describe('watcher fault deferred attribution — source contracts', () => {
     // The counters tag gains the `stale` key, and the independent egress guard's
     // ordered key set is updated in lockstep, or the tag degrades to [Filtered].
     expect(coreSource).toContain('stale:{}');
-    expect(telemetrySource).toContain(
-      '&["seen", "parsed", "stale", "rej_win", "rej_code", "sweeps", "ms"]',
-    );
+    const readCounterKeys = sliceBetween(
+      telemetrySource,
+      'const KEYS: &[&str] = &[',
+      '\n    ];',
+      'watcher fault read-counter egress keys',
+    ).replace(/\s/g, '');
+    expect(readCounterKeys).toBe('constKEYS:&[&str]=&["seen","parsed","stale","rej_win","rej_code","sweeps","ms",];');
   });
 });
 
@@ -259,13 +275,17 @@ const POST_FIX_BUDGET_MS = 60_000;
 
 /**
  * Model the fixed part of the envelope the exit path builds for a 0xC0000409
- * fault, independent of provenance. Matches the shipped fingerprint/message so the
- * both-directions comparison proves ONLY the watcher_fault_* fields differ.
+ * fault, independent of provenance. Matches the candidate's stable exit-class
+ * fingerprint/message so the both-directions comparison proves ONLY the
+ * watcher_fault_* fields differ.
  */
-function baseEnvelope(): SentryEnvelope {
-  return {
+function baseEnvelope(policy: Policy): SentryEnvelope {
+  const env: SentryEnvelope = {
     message: 'auto-sync watcher exited unexpectedly',
-    fingerprint: ['sync', 'auto-sync-watcher-termination', 'windows:fault:0xC0000409', 'none'],
+    fingerprint:
+      policy === 'pre-fix'
+        ? ['sync', 'auto-sync-watcher-termination', 'windows:fault:0xC0000409', 'none']
+        : ['sync-watcher-exit', 'stack_buffer_overrun'],
     tags: {
       runner_fatal_class: 'none',
       sync_route: 'watcher',
@@ -275,6 +295,8 @@ function baseEnvelope(): SentryEnvelope {
       runner_unmatched_stderr_shapes: 'ndjson_record:10,path_like:1,other:1',
     },
   };
+  if (policy === 'post-fix') env.tags.exit_class = 'stack_buffer_overrun';
+  return env;
 }
 
 /** Deterministic mirror of the pure `attribute_watcher_fault` binding decision. */
@@ -300,7 +322,7 @@ function attribute(record: FaultRecord, sampledPids: number[], s: Scenario): {
  * WER's asynchronous publication) and the outcome vocabulary.
  */
 function readAndEnvelope(scenario: Scenario, policy: Policy): SentryEnvelope {
-  const env = baseEnvelope();
+  const env = baseEnvelope(policy);
   const budget = policy === 'pre-fix' ? PRE_FIX_BUDGET_MS : POST_FIX_BUDGET_MS;
   const sampledPids = scenario.record ? [scenario.record.faultingPid] : [];
 
@@ -422,13 +444,20 @@ describe('watcher fault deferred attribution — envelope model (both directions
     expect(env.tags.watcher_fault_job_culprit_candidate).toBe('node_exe');
   });
 
-  it('grouping continuity: only the watcher_fault_* fields differ between policies', () => {
+  it('candidate uses stable fault grouping while preserving the historical base event', () => {
     const pre = readAndEnvelope(RECURRENCE, 'pre-fix');
     const post = readAndEnvelope(RECURRENCE, 'post-fix');
     expect(post.message).toBe(pre.message);
-    expect(post.fingerprint).toEqual(pre.fingerprint);
+    expect(pre.fingerprint).toEqual([
+      'sync',
+      'auto-sync-watcher-termination',
+      'windows:fault:0xC0000409',
+      'none',
+    ]);
+    expect(post.fingerprint).toEqual(['sync-watcher-exit', 'stack_buffer_overrun']);
+    expect(post.tags.exit_class).toBe('stack_buffer_overrun');
     for (const key of Object.keys(pre.tags)) {
-      if (!key.startsWith('watcher_fault_')) {
+      if (!key.startsWith('watcher_fault_') && key !== 'exit_class') {
         expect(post.tags[key]).toBe(pre.tags[key]);
       }
     }
@@ -462,7 +491,7 @@ type LanePolicy = 'pre-split' | 'post-split';
 
 /** Model the reported HQ-DESKTOP-5W envelope under each accounting policy. */
 function staleOnlyEnvelope(policy: LanePolicy): SentryEnvelope {
-  const env = baseEnvelope();
+  const env = baseEnvelope('post-fix');
   // The app's own live tree sampling still names node_exe as the culprit
   // CANDIDATE regardless of WER (a tree observation, never a fault attribution).
   env.tags.watcher_fault_job_images = 'node_exe,cmd_exe,npx_cmd';

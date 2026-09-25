@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
 import ChatSidebar from "./ChatSidebar.svelte";
 import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
@@ -57,6 +58,27 @@ const okTarget: EntryPointResult = {
   target: { channelId: "setup", cardId: "card_create_company_2", cardKind: null },
 };
 
+const CLOUD_PROVISION_OPTIONS: AgentProvisionOptionsView = {
+  defaultInstanceType: "t4g.medium",
+  catalogVersion: "test",
+  options: [
+    {
+      key: "basic",
+      productName: "Basic",
+      instanceType: "t4g.medium",
+      listCents: 1200,
+      default: true,
+      selectable: true,
+      netMonthlyCents: 1200,
+      deltaCents: null,
+      unavailableReason: null,
+      notBilled: false,
+      lanes: 1,
+      workers: 1,
+    },
+  ],
+};
+
 async function settle(times = 6): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await tick();
@@ -87,7 +109,13 @@ async function toHomeStep(): Promise<void> {
 function mountSidebar(props: Record<string, unknown>): void {
   component = mount(ChatSidebar, {
     target: host,
-    props: { api: createFixtureChatSidebarApi(), seedDirectory, ...props },
+    props: {
+      api: createFixtureChatSidebarApi(),
+      seedDirectory,
+      loadClaudeProviderFlag: async () => ok(false),
+      loadCloudProvisionOptions: async () => ok(CLOUD_PROVISION_OPTIONS),
+      ...props,
+    },
   });
 }
 
@@ -170,6 +198,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo", {
       name: expect.stringMatching(/\S/),
       handle: expect.stringMatching(/\S/),
+      runtime: "codex",
+      size: "basic",
+      authMode: "subscription",
     });
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
@@ -195,6 +226,9 @@ describe("ChatSidebar lifecycle entry points", () => {
       name: "Polar",
       handle: "polar",
       title: "Ad account analyst",
+      runtime: "codex",
+      size: "basic",
+      authMode: "subscription",
     });
   });
 
@@ -235,6 +269,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae", {
       name: expect.stringMatching(/\S/),
       handle: expect.stringMatching(/\S/),
+      runtime: "codex",
+      size: "basic",
+      authMode: "subscription",
     });
   });
 
@@ -286,6 +323,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
       name: expect.stringMatching(/\S/),
       handle: expect.stringMatching(/\S/),
+      runtime: "codex",
+      size: "basic",
+      authMode: "subscription",
     });
     expect(oncreatebot).not.toHaveBeenCalled();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
@@ -314,6 +354,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
       name: expect.stringMatching(/\S/),
       handle: expect.stringMatching(/\S/),
+      runtime: "codex",
+      size: "basic",
+      authMode: "subscription",
     });
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
@@ -426,7 +469,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
   });
 
-  it("blocks a bad or taken name, gates on a signed-in runtime, and never caps the bot count", async () => {
+  it("takes a free-form name, blocks a taken handle, gates on a signed-in runtime, and never caps the bot count", async () => {
     const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "x" }));
     // No per-person limit: the row stays enabled no matter how many bots exist.
     mountSidebar({ companies: [INDIGO], oncreatebot });
@@ -459,16 +502,31 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     click('[data-testid="create-bot-next"]');
     await settle();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
-    name.value = "Bad Name";
+    // Spaces and capitals are a display name now, not an error.
+    name.value = "Dr Love";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe("@dr-love");
+    // An emoji-only name has nothing to slugify: the handle is what blocks.
+    name.value = "🚀";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("Lowercase letters");
-    name.value = "scout";
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("no letters or digits");
+    // The handle field opens on its own so the block is fixable in place.
+    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
+    handle.value = "rocket";
+    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    handle.value = "";
+    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    name.value = "Scout";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("already have a bot named scout");
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("handle @scout");
     // A free name clears the block.
     name.value = "assistant";
     name.dispatchEvent(new Event("input", { bubbles: true }));

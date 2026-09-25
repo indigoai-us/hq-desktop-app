@@ -318,7 +318,7 @@ describe('hq-CLI updater recovers a prefix-less ENOTEMPTY wedge and absorbs a re
     expect(cli).toContain('fn clean_partial_hq_cli_install_scope(scope: &Path)');
     expect(cli).toContain('clean_partial_hq_cli_install_scope(&scope)');
     expect(cli).toContain('scope.join("hq-cli")');
-    expect(cli).toContain('.starts_with(".hq-cli-")');
+    expect(cli).toContain('.starts_with(&format!(".{package_name}-"))');
   });
 
   it('absorbs an EIDLETIMEOUT registry idle timeout like its transient siblings (HQ-DESKTOP-5C)', () => {

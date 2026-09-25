@@ -17,6 +17,15 @@ pub const TITLEBAR_TRAFFIC_LIGHT_X_PX: f64 = 20.0;
 /// AppKit `NSWindowButton` frame height in logical pixels.
 pub const MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX: f64 = 14.0;
 
+/// Measured gap between `traffic_light_position.y` and where macOS draws
+/// the centre of the lights. tao sizes the title-bar container to
+/// `button_height + y` and leaves the AppKit button origin alone, so the
+/// visual centre lands `y + offset` below the window top. Measured
+/// 2026-09-22 on macOS 26 against v0.10.302 (y=24 drew the lights at ~29px
+/// while the content centre was 24px). Re-measure if macOS moves the
+/// default button origin; never compensate through the titlebar height.
+pub const MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX: f64 = 5.0;
+
 /// Vertical centre of the titlebar content (flex `align-items: center`).
 pub fn titlebar_content_center_px(titlebar_height: f64) -> f64 {
     titlebar_height / 2.0
@@ -24,13 +33,11 @@ pub fn titlebar_content_center_px(titlebar_height: f64) -> f64 {
 
 /// Tauri 2 / wry `traffic_light_position` y inset.
 ///
-/// wry sizes the overlay title-bar container to `buttonHeight + y` and
-/// leaves each button's AppKit `origin.y` alone. With Overlay + hidden
-/// title, that leftover origin is half the button, so `y` is the visual
-/// centre of the lights. Setting it to the titlebar content centre
-/// middle-aligns them with the wordmark and date.
+/// The lights render `MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX` below `y`, so
+/// subtract it from the titlebar content centre to put their visual centre
+/// on the wordmark / date / sub-page Back line.
 pub fn traffic_light_y_px(titlebar_height: f64) -> f64 {
-    titlebar_content_center_px(titlebar_height)
+    titlebar_content_center_px(titlebar_height) - MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX
 }
 
 pub fn traffic_light_position(titlebar_height: f64) -> (f64, f64) {
@@ -49,19 +56,23 @@ mod tests {
         assert_eq!(TITLEBAR_HEIGHT_PX, 48.0);
         assert_eq!(TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX, 78.0);
         assert_eq!(MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX, 14.0);
+        assert_eq!(MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX, 5.0);
         assert_eq!(titlebar_content_center_px(TITLEBAR_HEIGHT_PX), 24.0);
-        assert_eq!(traffic_light_y_px(TITLEBAR_HEIGHT_PX), 24.0);
+        assert_eq!(traffic_light_y_px(TITLEBAR_HEIGHT_PX), 19.0);
         assert_eq!(
-            traffic_light_y_px(TITLEBAR_HEIGHT_PX),
+            traffic_light_y_px(TITLEBAR_HEIGHT_PX) + MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX,
             titlebar_content_center_px(TITLEBAR_HEIGHT_PX)
         );
-        assert_eq!(traffic_light_position(TITLEBAR_HEIGHT_PX), (20.0, 24.0));
+        assert_eq!(traffic_light_position(TITLEBAR_HEIGHT_PX), (20.0, 19.0));
     }
 
     #[test]
     fn follows_titlebar_height() {
-        assert_eq!(traffic_light_y_px(56.0), 28.0);
-        assert_eq!(traffic_light_y_px(40.0), 20.0);
-        assert_eq!(traffic_light_y_px(56.0), titlebar_content_center_px(56.0));
+        assert_eq!(traffic_light_y_px(56.0), 23.0);
+        assert_eq!(traffic_light_y_px(40.0), 15.0);
+        assert_eq!(
+            traffic_light_y_px(56.0) + MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX,
+            titlebar_content_center_px(56.0)
+        );
     }
 }

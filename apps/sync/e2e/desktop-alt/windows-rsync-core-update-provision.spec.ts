@@ -5,43 +5,64 @@ const coreUpdate = readRepoFile('src-tauri/src/commands/hq_core_update.rs');
 const installDeps = readRepoFile('src-tauri/src/commands/install_deps.rs');
 
 describe('Windows Core-update rsync provisioning', () => {
-  it('runs the best-effort preflight before constructing the rescue command', () => {
-    const preflight = '#[cfg(windows)]\n    ensure_managed_rsync_for_core_update_rescue().await;';
-    // `false` names the primary rescue construction; the managed-Git retry is
-    // deliberately the distinct `true` call below it.
-    const primaryRescueCommand = 'core_update_rescue_command(false)';
-    const managedGitRetryCommand = 'core_update_rescue_command(true)';
-    const preflightIndex = coreUpdate.indexOf(preflight);
-    const primaryRescueCommandIndex = coreUpdate.indexOf(primaryRescueCommand);
-    const managedGitRetryCommandIndex = coreUpdate.indexOf(managedGitRetryCommand);
+  it('checks a real rsync.exe on child_path and probes it before rescue spawn', () => {
+    const executableLookup =
+      'std::env::split_paths(&hq_desktop_core::paths::child_path())\n' +
+      '        .map(|dir| dir.join("rsync.exe"))\n' +
+      '        .find(|candidate| candidate.is_file())';
+    const versionProbe =
+      'CORE_UPDATE_RSYNC_VERSION_TIMEOUT,\n' +
+      '        tokio::task::spawn_blocking(move || ensure_rsync_version(&executable))';
+    const versionCommand = 'Command::new(rsync_exe)\n        .arg("--version")';
+    const preflight =
+      '#[cfg(windows)]\n    if let Err(reason) = ensure_managed_rsync_for_core_update_rescue().await {';
+    const rescueSpawn = 'let initial_exit_code = spawn_rescue_attempt(';
 
+    expect(installDeps).toContain(executableLookup);
+    expect(installDeps).toContain(
+      '#[cfg(windows)]\npub(crate) async fn ensure_rsync_for_core_update_rescue()',
+    );
+    expect(installDeps).toContain(versionProbe);
+    expect(installDeps).toContain(versionCommand);
+    expect(installDeps).toContain('CORE_UPDATE_RSYNC_VERSION_TIMEOUT: Duration = Duration::from_secs(10);');
     expect(coreUpdate).toContain(preflight);
-    expect(primaryRescueCommandIndex).toBeGreaterThan(-1);
-    expect(managedGitRetryCommandIndex).toBeGreaterThan(-1);
-    expect(preflightIndex).toBeLessThan(primaryRescueCommandIndex);
-    expect(primaryRescueCommandIndex).toBeLessThan(managedGitRetryCommandIndex);
+    expect(coreUpdate.indexOf(preflight)).toBeLessThan(
+      coreUpdate.indexOf(rescueSpawn),
+    );
   });
 
-  it('leaves non-Windows behavior untouched', () => {
-    expect(coreUpdate).toContain('#[cfg(windows)]\nasync fn ensure_managed_rsync_for_core_update_rescue()');
-    expect(installDeps).toContain('#[cfg(windows)]\npub(crate) async fn ensure_rsync_for_core_update_rescue()');
+  it('forces the bundle install with the 120 second provisioning deadline', () => {
+    expect(installDeps).toContain(
+      'pub(crate) const CORE_UPDATE_RSYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(120);',
+    );
+    expect(installDeps).toContain(
+      'install_rsync_with_progress_inner(&mut progress, true)\n        .await',
+    );
+    expect(installDeps).toContain(
+      'if !force_bundle_install && probe.installed && !managed_rsync.exists() {',
+    );
+    expect(installDeps).toContain(
+      'tokio::time::timeout(\n        CORE_UPDATE_RSYNC_PROVISION_TIMEOUT,',
+    );
   });
 
-  it('uses the existing installer when the rescue needs rsync or its path shim', () => {
-    expect(installDeps).toContain('|| check_dep_impl("rsync", None).installed');
-    expect(installDeps).toContain('rsync_shim_is_present,');
-    expect(installDeps).toContain(
-      'install_rsync_with_progress(|message| {',
+  it('returns a rescue_spawn diagnostic without spawning when provisioning fails', () => {
+    const diagnostic =
+      'let diagnostic = rsync_missing_rescue_diagnostic(&reason);';
+    const failureReturn = 'return Ok(CoreUpdateRescueRun {\n            result:';
+    const rescueSpawn = 'let initial_exit_code = spawn_rescue_attempt(';
+
+    expect(coreUpdate).toContain(
+      'HQ_RESCUE_FAILURE_KIND=rsync-missing',
     );
-    expect(installDeps).toContain('provision_rsync_for_core_update_within_deadline,');
-    expect(installDeps).toContain('CORE_UPDATE_RSYNC_PROVISION_TIMEOUT,');
-    expect(installDeps).toContain(
-      'if is_resolvable() && has_shim() =>',
+    expect(coreUpdate).toContain('rescue_error_kind: Some("rescue_spawn"),');
+    expect(coreUpdate).toContain(diagnostic);
+    expect(coreUpdate).toContain(failureReturn);
+    expect(coreUpdate.indexOf(diagnostic)).toBeLessThan(
+      coreUpdate.indexOf(rescueSpawn),
     );
-    expect(installDeps).toContain('RsyncRescueProvisioning::ShimRefreshed');
-    expect(installDeps).toContain('RsyncRescueProvisioning::ProvisioningTimedOut');
-    expect(installDeps).toContain('const CORE_UPDATE_RSYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(45);');
-    expect(coreUpdate).toContain('rsync was resolvable but its path shim was refreshed before rescue');
-    expect(coreUpdate).toContain('continuing with current rsync resolution');
+    expect(coreUpdate.indexOf(failureReturn)).toBeLessThan(
+      coreUpdate.indexOf(rescueSpawn),
+    );
   });
 });

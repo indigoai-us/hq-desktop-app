@@ -4,9 +4,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::messages::{ChannelMessage, MessageAttachment};
 use crate::paths;
 
 /// A single inbound DM as returned by `GET /v1/notify/inbox`.
@@ -34,6 +36,18 @@ pub struct DmEvent {
     /// thread pane instead of appending them to the main conversation list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_event_id: Option<String>,
+    /// `"file_share"` for a share written as a DM. Absent on ordinary messages
+    /// and on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
+    /// Vault-path file cards on a `file_share` DM. Absent-safe for old servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<MessageAttachment>>,
+    /// Declared audience: `"human"` | `"agent"` | `"both"`. Absent on messages
+    /// stored before this feature was shipped — treat as `"human"` per the
+    /// rollout decision. Mirrors `details` and `prompt` in the server contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
 }
 
 /// Per-counterparty DM unread rollup from `GET /v1/notify/inbox` (hq-pro
@@ -220,6 +234,481 @@ impl SeenChannelState {
     pub fn new() -> Self {
         SeenChannelState(Mutex::new(SeenChannelsInner::default()))
     }
+}
+
+/// Per-session mention watch: last-seen message cursor per channel plus a
+/// bounded set of message ids already considered, so a poll never re-notifies.
+pub const MENTION_SEEN_CAP: usize = 500;
+/// Notification body cap. Truncate with `chars()`, never a byte slice.
+pub const MENTION_BODY_MAX_CHARS: usize = 180;
+/// History fetches per mention-detect cycle. The rest rotate to the next cycle.
+pub const MENTION_FETCH_PER_CYCLE: usize = 4;
+/// At most this many mention notifications fire in one cycle (overflow → summary).
+pub const MENTION_NOTIFY_CAP: usize = 3;
+/// Mentions older than this relative to poll time are not delivered.
+pub const MENTION_FRESH_MAX_AGE: Duration = Duration::minutes(15);
+/// When the saved cursor is missing from the page, deliver at most the newest
+/// message if it is within this age.
+pub const MENTION_CURSOR_MISSING_MAX_AGE: Duration = Duration::minutes(10);
+
+pub struct MentionWatchInner {
+    pub initialized: bool,
+    /// channelId → newest event_id already considered this session.
+    pub last_event_by_channel: HashMap<String, String>,
+    /// Bounded FIFO of message ids already considered this session.
+    pub seen_message_ids: Vec<String>,
+    /// Channels waiting for a history fetch (id, name). FIFO; at most
+    /// [`MENTION_FETCH_PER_CYCLE`] are taken per detect cycle.
+    pub pending_fetches: Vec<(String, String)>,
+    /// True while a spawned detect task owns a fetch batch.
+    pub detect_in_flight: bool,
+    /// Instant mention watching began for this session. First-fetch
+    /// candidates must have `createdAt` at or after this instant so
+    /// backlog from before the app started is never notified.
+    pub watch_started_at: DateTime<Utc>,
+}
+
+impl Default for MentionWatchInner {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            last_event_by_channel: HashMap::new(),
+            seen_message_ids: Vec::new(),
+            pending_fetches: Vec::new(),
+            detect_in_flight: false,
+            watch_started_at: Utc::now(),
+        }
+    }
+}
+
+impl MentionWatchInner {
+    pub fn reset_for_session(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn has_seen(&self, event_id: &str) -> bool {
+        let id = event_id.trim();
+        !id.is_empty() && self.seen_message_ids.iter().any(|seen| seen == id)
+    }
+}
+
+pub struct MentionWatchState(pub Mutex<MentionWatchInner>);
+
+impl MentionWatchState {
+    pub fn new() -> Self {
+        MentionWatchState(Mutex::new(MentionWatchInner::default()))
+    }
+}
+
+/// True when `mentions[]` contains the signed-in person as `participantUid`.
+/// Match the person uid **or** the Cognito subject — live rows use either.
+/// Text that merely contains `@Name` does not count. Empty ids never match.
+pub fn message_mentions_person(
+    message: &ChannelMessage,
+    person_uid: &str,
+    cognito_sub: &str,
+) -> bool {
+    let me = person_uid.trim();
+    let sub = cognito_sub.trim();
+    message
+        .mentions
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .any(|mention| {
+            let uid = mention.participant_uid.trim();
+            !uid.is_empty() && ((!me.is_empty() && uid == me) || (!sub.is_empty() && uid == sub))
+        })
+}
+
+/// Own messages never count, even when they mention me. `fromPersonUid` on
+/// the wire may be the `prs_` person uid *or* the Cognito subject.
+pub fn is_self_authored(from_person_uid: &str, person_uid: &str, cognito_sub: &str) -> bool {
+    let from = from_person_uid.trim();
+    if from.is_empty() {
+        return false;
+    }
+    let person = person_uid.trim();
+    let sub = cognito_sub.trim();
+    (!person.is_empty() && from == person) || (!sub.is_empty() && from == sub)
+}
+
+/// A mention of me: structured `participantUid` match, not authored by me.
+pub fn is_mention_of_me(message: &ChannelMessage, person_uid: &str, cognito_sub: &str) -> bool {
+    !is_self_authored(&message.from_person_uid, person_uid, cognito_sub)
+        && message_mentions_person(message, person_uid, cognito_sub)
+}
+
+pub fn newest_event_id(messages_newest_first: &[ChannelMessage]) -> Option<String> {
+    messages_newest_first
+        .iter()
+        .map(|message| message.event_id.trim())
+        .find(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+/// First poll after launch: cursor starts at the newest message so opening
+/// the app does not replay old mentions.
+pub fn seed_mention_cursor(messages_newest_first: &[ChannelMessage]) -> Option<String> {
+    newest_event_id(messages_newest_first)
+}
+
+pub fn cursor_in_page(messages_newest_first: &[ChannelMessage], last_seen_event_id: &str) -> bool {
+    let seen = last_seen_event_id.trim();
+    !seen.is_empty()
+        && messages_newest_first
+            .iter()
+            .any(|message| message.event_id == seen)
+}
+
+/// Messages newer than `last_seen_event_id` in a newest-first page.
+///
+/// If the cursor is absent from the page, return nothing — the caller advances
+/// the cursor silently rather than treating the whole page as new.
+pub fn messages_newer_than<'a>(
+    messages_newest_first: &'a [ChannelMessage],
+    last_seen_event_id: &str,
+) -> Vec<&'a ChannelMessage> {
+    let seen = last_seen_event_id.trim();
+    if seen.is_empty() || !cursor_in_page(messages_newest_first, seen) {
+        return Vec::new();
+    }
+    messages_newest_first
+        .iter()
+        .take_while(|message| message.event_id != seen)
+        .collect()
+}
+
+const NAIVE_CREATED_AT_FMTS: &[&str] = &[
+    "%Y-%m-%dT%H:%M:%S%.f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S%.f",
+    "%Y-%m-%d %H:%M:%S",
+];
+
+/// Parse a message `createdAt`. RFC 3339 with offset, or a naive timestamp
+/// treated as UTC. Does not log — callers that have an event id use
+/// [`parse_message_created_at_logged`].
+pub fn parse_message_created_at(created_at: &str) -> Option<DateTime<Utc>> {
+    let raw = created_at.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(ts) = DateTime::parse_from_rfc3339(raw) {
+        return Some(ts.with_timezone(&Utc));
+    }
+    for fmt in NAIVE_CREATED_AT_FMTS {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(raw, fmt) {
+            return Some(naive.and_utc());
+        }
+    }
+    None
+}
+
+/// Like [`parse_message_created_at`], and logs `DM_NOTIFY_MENTION_BAD_TS
+/// event=<id>` (never the body) when parsing fails.
+pub fn parse_message_created_at_logged(created_at: &str, event_id: &str) -> Option<DateTime<Utc>> {
+    match parse_message_created_at(created_at) {
+        Some(ts) => Some(ts),
+        None => {
+            let id = event_id.trim();
+            if !id.is_empty() {
+                crate::logfile::log("dm-notify", &format!("DM_NOTIFY_MENTION_BAD_TS event={id}"));
+            }
+            None
+        }
+    }
+}
+
+/// True when `created_at` is at most `max_age` before `now`. Unparseable
+/// timestamps are not fresh. Future timestamps count as fresh.
+pub fn mention_created_within(created_at: &str, now: DateTime<Utc>, max_age: Duration) -> bool {
+    mention_created_within_for_event(created_at, now, max_age, "")
+}
+
+pub fn mention_created_within_for_event(
+    created_at: &str,
+    now: DateTime<Utc>,
+    max_age: Duration,
+    event_id: &str,
+) -> bool {
+    let Some(ts) = parse_message_created_at_logged(created_at, event_id) else {
+        return false;
+    };
+    now.signed_duration_since(ts) <= max_age
+}
+
+pub fn filter_mentions_by_age<'a>(
+    messages: Vec<&'a ChannelMessage>,
+    now: DateTime<Utc>,
+    max_age: Duration,
+) -> Vec<&'a ChannelMessage> {
+    messages
+        .into_iter()
+        .filter(|message| {
+            mention_created_within_for_event(&message.created_at, now, max_age, &message.event_id)
+        })
+        .collect()
+}
+
+/// Advance the per-channel last-seen cursor.
+///
+/// * No cursor (first fetch / after `reset_for_session`): seed at newest,
+///   and return rows whose `createdAt` is at or after `watch_started_at`.
+///   Unread delta is never used to pick "new" rows. Backlog from before
+///   mention watching began is never a candidate.
+/// * Cursor present in the page: messages strictly newer than that id.
+/// * Cursor missing from the page: advance to newest and deliver nothing,
+///   except the newest row when its `createdAt` is within 10 minutes of `now`.
+pub fn advance_mention_cursor<'a>(
+    messages_newest_first: &'a [ChannelMessage],
+    last_seen_event_id: Option<&str>,
+    now: DateTime<Utc>,
+    watch_started_at: DateTime<Utc>,
+) -> (Option<String>, Vec<&'a ChannelMessage>) {
+    let newest = newest_event_id(messages_newest_first);
+    let Some(seen) = last_seen_event_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return (
+            newest,
+            messages_at_or_after_watch_start(messages_newest_first, watch_started_at),
+        );
+    };
+    if cursor_in_page(messages_newest_first, seen) {
+        return (
+            newest.or_else(|| Some(seen.to_string())),
+            messages_newer_than(messages_newest_first, seen),
+        );
+    }
+    let newest_if_recent = messages_newest_first.first().filter(|message| {
+        mention_created_within_for_event(
+            &message.created_at,
+            now,
+            MENTION_CURSOR_MISSING_MAX_AGE,
+            &message.event_id,
+        )
+    });
+    (
+        newest.or_else(|| Some(seen.to_string())),
+        newest_if_recent.into_iter().collect(),
+    )
+}
+
+/// Rows whose `createdAt` is at or after `watch_started_at`. Unparseable
+/// timestamps are excluded.
+fn messages_at_or_after_watch_start<'a>(
+    messages_newest_first: &'a [ChannelMessage],
+    watch_started_at: DateTime<Utc>,
+) -> Vec<&'a ChannelMessage> {
+    messages_newest_first
+        .iter()
+        .filter(|message| {
+            parse_message_created_at_logged(&message.created_at, &message.event_id)
+                .is_some_and(|ts| ts >= watch_started_at)
+        })
+        .collect()
+}
+
+/// Fetch failure / timeout leaves the saved cursor untouched.
+pub fn mention_cursor_after_fetch<'a>(
+    current: Option<&str>,
+    fetch_succeeded: bool,
+    messages_newest_first: &'a [ChannelMessage],
+    now: DateTime<Utc>,
+    watch_started_at: DateTime<Utc>,
+) -> (Option<String>, Vec<&'a ChannelMessage>) {
+    if !fetch_succeeded {
+        return (current.map(str::to_string), Vec::new());
+    }
+    advance_mention_cursor(messages_newest_first, current, now, watch_started_at)
+}
+
+pub fn enqueue_mention_fetches(pending: &mut Vec<(String, String)>, incoming: &[(String, String)]) {
+    for (id, name) in incoming {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        if pending.iter().any(|(existing, _)| existing == id) {
+            continue;
+        }
+        pending.push((id.to_string(), name.clone()));
+    }
+}
+
+pub fn take_mention_fetch_batch(
+    pending: &mut Vec<(String, String)>,
+    cap: usize,
+) -> Vec<(String, String)> {
+    let n = cap.min(pending.len());
+    pending.drain(0..n).collect()
+}
+
+/// Re-queue failed fetches at most once per detect run so a dead channel
+/// cannot spin. `retried` is the set of channel ids already re-queued.
+pub fn requeue_failed_mention_fetches(
+    pending: &mut Vec<(String, String)>,
+    failed: &[(String, String)],
+    retried: &mut HashSet<String>,
+) {
+    let mut once = Vec::new();
+    for (id, name) in failed {
+        let id = id.trim();
+        if id.is_empty() || retried.contains(id) {
+            continue;
+        }
+        retried.insert(id.to_string());
+        once.push((id.to_string(), name.clone()));
+    }
+    enqueue_mention_fetches(pending, &once);
+}
+
+/// Spawn a detect task when something is waiting and nothing owns the drain.
+/// Growth while a detect is in flight is only enqueued — the in-flight run
+/// (or the next poll) takes the next batch.
+pub fn should_spawn_mention_detect(pending_len: usize, detect_in_flight: bool) -> bool {
+    pending_len > 0 && !detect_in_flight
+}
+
+/// One mention that qualified for a notification this cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionCapItem {
+    pub created_at: String,
+    pub channel_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionSummary {
+    pub extra_count: usize,
+    pub channel_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionCapPlan {
+    /// Indices into the input slice to deliver as individual notifications.
+    pub deliver_indices: Vec<usize>,
+    pub summary: Option<MentionSummary>,
+}
+
+/// At most [`MENTION_NOTIFY_CAP`] notifications per cycle. If more qualify,
+/// deliver the newest 2 plus one summary for the rest, routed to the first
+/// overflow channel (original scan order).
+pub fn plan_mention_cap(items: &[MentionCapItem]) -> MentionCapPlan {
+    if items.len() <= MENTION_NOTIFY_CAP {
+        return MentionCapPlan {
+            deliver_indices: (0..items.len()).collect(),
+            summary: None,
+        };
+    }
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by(|&a, &b| cmp_created_at_desc(&items[a].created_at, &items[b].created_at));
+    let newest_two = vec![order[0], order[1]];
+    let overflow: Vec<usize> = (0..items.len())
+        .filter(|index| !newest_two.contains(index))
+        .collect();
+    let channel_id = overflow
+        .first()
+        .map(|&index| items[index].channel_id.clone())
+        .unwrap_or_default();
+    MentionCapPlan {
+        deliver_indices: newest_two,
+        summary: Some(MentionSummary {
+            extra_count: overflow.len(),
+            channel_id,
+        }),
+    }
+}
+
+fn cmp_created_at_desc(a: &str, b: &str) -> std::cmp::Ordering {
+    match (parse_message_created_at(a), parse_message_created_at(b)) {
+        (Some(ta), Some(tb)) => tb.cmp(&ta),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.cmp(a),
+    }
+}
+
+pub fn mention_summary_title(extra_count: usize) -> String {
+    format!("You were mentioned {extra_count} more times")
+}
+
+/// Consider each message id at most once per session. Bounded FIFO.
+pub fn take_unseen_message_ids(
+    event_ids: &[String],
+    seen: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let known: HashSet<&str> = seen.iter().map(String::as_str).collect();
+    let fresh: Vec<String> = event_ids
+        .iter()
+        .filter(|id| !id.trim().is_empty() && !known.contains(id.as_str()))
+        .cloned()
+        .collect();
+    let mut updated = seen.to_vec();
+    updated.extend(fresh.iter().cloned());
+    if updated.len() > MENTION_SEEN_CAP {
+        updated.drain(0..updated.len() - MENTION_SEEN_CAP);
+    }
+    (fresh, updated)
+}
+
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
+pub fn mention_notification_title(author: &str, channel_name: &str) -> String {
+    let author = author.trim();
+    let author = if author.is_empty() { "Someone" } else { author };
+    let channel = channel_name.trim().trim_start_matches('#');
+    let channel = if channel.is_empty() {
+        "channel"
+    } else {
+        channel
+    };
+    format!("{author} mentioned you in #{channel}")
+}
+
+pub fn mention_notification_body(body: &str) -> String {
+    truncate_chars(body.trim(), MENTION_BODY_MAX_CHARS)
+}
+
+pub fn mention_route(channel_id: &str, message_id: &str) -> String {
+    let channel = channel_id.trim();
+    let message = message_id.trim();
+    if channel.is_empty() {
+        return "inbox".to_string();
+    }
+    if message.is_empty() {
+        format!("inbox:channel:{channel}")
+    } else {
+        format!("inbox:channel:{channel}:{message}")
+    }
+}
+
+/// No notification when that channel is open and focused in the desktop-alt
+/// window (`desktop-alt` webview), not the tray popover.
+pub fn should_suppress_mention_for_open_channel(
+    active_scope: Option<&str>,
+    channel_id: &str,
+    main_window_focused: bool,
+) -> bool {
+    if !main_window_focused {
+        return false;
+    }
+    let channel = channel_id.trim();
+    if channel.is_empty() {
+        return false;
+    }
+    let expected = format!("chan:{channel}");
+    active_scope
+        .map(str::trim)
+        .is_some_and(|scope| scope == expected)
+}
+
+pub fn should_suppress_duplicate_event(event_id: &str, already_notified: &[String]) -> bool {
+    let id = event_id.trim();
+    !id.is_empty() && already_notified.iter().any(|seen| seen == id)
 }
 
 // ── In-flight guard (separate from share-notify's so they never contend) ────────
@@ -542,6 +1031,16 @@ pub struct ThreadMessage {
     /// payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_count: Option<u32>,
+    /// `"file_share"` for a share written as a DM. Absent on ordinary rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
+    /// Vault-path file cards. Absent-safe for old servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<MessageAttachment>>,
+    /// Declared audience: `"human"` | `"agent"` | `"both"`. Absent on older
+    /// rows — treat as `"human"`. Mirrors `details` and `prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -652,6 +1151,10 @@ pub struct ThreadReply {
     /// attachment validation and loads bytes through the authorized vault API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachments: Option<serde_json::Value>,
+    /// Declared audience: `"human"` | `"agent"` | `"both"`. Absent on older
+    /// rows — treat as `"human"`. Mirrors `details` and `prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
 }
 
 /// The full thread view returned by `GET /v1/notify/threads`: the pinned root
@@ -809,9 +1312,37 @@ pub fn build_thread_reply_payload(
     }
 }
 
+/// True when the message is addressed only to agents (`audience == "agent"`).
+/// Absent audience or any other value is treated as `"human"` (non-agent).
+/// Used by the unread counter, OS notification path, and preview selection.
+pub fn is_agent_audience(audience: Option<&str>) -> bool {
+    matches!(audience, Some(a) if a.eq_ignore_ascii_case("agent"))
+}
+
+/// Filter a `DmEvent` slice to the subset a human should see in the unread
+/// count and OS notifications: everything whose audience is NOT `"agent"`.
+/// `"human"`, `"both"`, and absent all pass through.
+pub fn filter_human_visible_events(events: &[DmEvent]) -> Vec<&DmEvent> {
+    events
+        .iter()
+        .filter(|e| !is_agent_audience(e.audience.as_deref()))
+        .collect()
+}
+
+/// Return the newest event in `events` that is not agent-only, for use as
+/// the conversation preview when the "Show bot messages" toggle is off. The
+/// input is assumed newest-first (inbox/thread order). Returns `None` when
+/// all events are agent-only or the slice is empty.
+pub fn newest_non_agent_event<'a>(events: &'a [DmEvent]) -> Option<&'a DmEvent> {
+    events
+        .iter()
+        .find(|e| !is_agent_audience(e.audience.as_deref()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn active_thread_registry_keeps_other_window_seen_reply_suppression_on_selective_cleanup() {
@@ -1005,7 +1536,62 @@ mod tests {
             prompt: None,
             created_at: created_at.to_string(),
             root_event_id: None,
+            message_kind: None,
+            attachments: None,
+            audience: None,
         }
+    }
+
+    fn mk_dm_with_audience(event_id: &str, created_at: &str, audience: &str) -> DmEvent {
+        DmEvent {
+            audience: Some(audience.to_string()),
+            ..mk_dm(event_id, created_at)
+        }
+    }
+
+    #[test]
+    fn dm_event_deserializes_without_attachments_or_kind() {
+        let json = r#"{
+            "eventId": "evt_1",
+            "fromPersonUid": "prs_a",
+            "fromEmail": "a@b.com",
+            "fromDisplayName": "Ada",
+            "body": "hi",
+            "createdAt": "2026-09-21T00:00:00Z"
+        }"#;
+        let evt: DmEvent = serde_json::from_str(json).unwrap();
+        assert!(evt.attachments.is_none());
+        assert!(evt.message_kind.is_none());
+    }
+
+    #[test]
+    fn dm_event_deserializes_file_share_attachments_and_ignores_unknown_fields() {
+        let json = r#"{
+            "eventId": "evt_share",
+            "fromPersonUid": "prs_a",
+            "fromEmail": "a@b.com",
+            "fromDisplayName": "Ada",
+            "body": "Shared 2 file(s) with you.",
+            "createdAt": "2026-09-21T00:00:00Z",
+            "messageKind": "file_share",
+            "unknownServerField": true,
+            "attachments": [{
+                "id": "att_1",
+                "vaultPath": "indigo/reports/q1.md",
+                "name": "q1.md",
+                "sizeBytes": 1200,
+                "kind": "file",
+                "contentType": "text/markdown",
+                "companyUid": "cmp_indigo"
+            }]
+        }"#;
+        let evt: DmEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(evt.message_kind.as_deref(), Some("file_share"));
+        let attachments = evt.attachments.expect("attachments");
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].name, "q1.md");
+        assert_eq!(attachments[0].vault_path, "indigo/reports/q1.md");
+        assert_eq!(attachments[0].company_uid.as_deref(), Some("cmp_indigo"));
     }
 
     #[test]
@@ -1669,5 +2255,760 @@ mod tests {
         assert_eq!(dm.root_event_id.as_deref(), Some("evt_root"));
         let out = serde_json::to_value(&dm).expect("DmEvent serializes");
         assert_eq!(out["rootEventId"], "evt_root");
+    }
+
+    const ME: &str = "prs_01KQ2RY9VB1S105X2GZ2EPHKWY";
+    const MY_SUB: &str = "94b82448-aaaa-bbbb-cccc-ddddeeeeffff";
+
+    fn mk_channel_msg(json: &str) -> ChannelMessage {
+        serde_json::from_str(json).expect("ChannelMessage parses")
+    }
+
+    fn live_mention_json(event_id: &str, from: &str) -> String {
+        live_mention_json_at(event_id, from, "2026-09-23T12:00:00Z")
+    }
+
+    fn live_mention_json_at(event_id: &str, from: &str, created_at: &str) -> String {
+        format!(
+            r#"{{
+                "eventId": "{event_id}",
+                "fromPersonUid": "{from}",
+                "fromDisplayName": "Ada",
+                "body": "hey @Stefan look at this",
+                "createdAt": "{created_at}",
+                "direction": "in",
+                "mentions": [{{
+                    "participantUid": "prs_01KQ2RY9VB1S105X2GZ2EPHKWY",
+                    "participantType": "human",
+                    "displayName": "Stefan Johnson"
+                }}]
+            }}"#
+        )
+    }
+
+    fn poll_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-09-23T12:00:00Z")
+            .expect("fixed poll time")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn mention_detection_matches_participant_uid_live_shape() {
+        let mentioned = mk_channel_msg(&live_mention_json("evt_1", "prs_ada"));
+        assert!(is_mention_of_me(&mentioned, ME, MY_SUB));
+        assert!(message_mentions_person(&mentioned, ME, MY_SUB));
+        assert!(message_mentions_person(&mentioned, ME, ""));
+    }
+
+    #[test]
+    fn mention_detection_ignores_at_name_text_without_structured_mention() {
+        let text_only = mk_channel_msg(
+            r#"{
+                "eventId": "evt_text",
+                "fromPersonUid": "prs_ada",
+                "body": "hey @Stefan without a structured mention",
+                "createdAt": "2026-09-23T12:00:00Z",
+                "direction": "in"
+            }"#,
+        );
+        assert!(!message_mentions_person(&text_only, ME, MY_SUB));
+        assert!(!is_mention_of_me(&text_only, ME, MY_SUB));
+    }
+
+    #[test]
+    fn mention_detection_matches_cognito_sub_as_participant_uid() {
+        let mentioned = mk_channel_msg(&format!(
+            r#"{{
+                "eventId": "evt_sub",
+                "fromPersonUid": "prs_ada",
+                "fromDisplayName": "Ada",
+                "body": "hey",
+                "createdAt": "2026-09-23T12:00:00Z",
+                "direction": "in",
+                "mentions": [{{
+                    "participantUid": "{MY_SUB}",
+                    "participantType": "human",
+                    "displayName": "Stefan Johnson"
+                }}]
+            }}"#
+        ));
+        assert!(message_mentions_person(&mentioned, ME, MY_SUB));
+        assert!(message_mentions_person(&mentioned, "", MY_SUB));
+        assert!(!message_mentions_person(&mentioned, ME, ""));
+        assert!(is_mention_of_me(&mentioned, ME, MY_SUB));
+    }
+
+    #[test]
+    fn mention_detection_empty_participant_uid_never_matches() {
+        let mentioned = mk_channel_msg(
+            r#"{
+                "eventId": "evt_empty",
+                "fromPersonUid": "prs_ada",
+                "fromDisplayName": "Ada",
+                "body": "hey",
+                "createdAt": "2026-09-23T12:00:00Z",
+                "direction": "in",
+                "mentions": [{
+                    "participantType": "human",
+                    "displayName": "Stefan Johnson"
+                }]
+            }"#,
+        );
+        assert_eq!(mentioned.mentions.as_ref().unwrap()[0].participant_uid, "");
+        assert!(!message_mentions_person(&mentioned, ME, MY_SUB));
+        assert!(!is_mention_of_me(&mentioned, ME, MY_SUB));
+    }
+
+    #[test]
+    fn mention_detection_skips_self_authored_even_when_mentions_me() {
+        let as_person = mk_channel_msg(&live_mention_json("evt_self_prs", ME));
+        assert!(!is_mention_of_me(&as_person, ME, MY_SUB));
+        assert!(is_self_authored(ME, ME, MY_SUB));
+
+        let as_sub = mk_channel_msg(&live_mention_json("evt_self_sub", MY_SUB));
+        assert!(is_self_authored(MY_SUB, ME, MY_SUB));
+        assert!(!is_mention_of_me(&as_sub, ME, MY_SUB));
+    }
+
+    fn event_ids<'a>(messages: &'a [&ChannelMessage]) -> Vec<&'a str> {
+        messages.iter().map(|m| m.event_id.as_str()).collect()
+    }
+
+    #[test]
+    fn mention_cursor_first_poll_seeds_newest_without_replay() {
+        let older = mk_channel_msg(&live_mention_json("evt_old", "prs_ada"));
+        let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
+        let page = vec![newest, older];
+        // Watch started after these rows: backlog must not notify.
+        let watch_start = poll_now() + Duration::seconds(1);
+        let (cursor, consider) = advance_mention_cursor(&page, None, poll_now(), watch_start);
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert!(consider.is_empty());
+        assert_eq!(seed_mention_cursor(&page).as_deref(), Some("evt_new"));
+    }
+
+    #[test]
+    fn mention_cursor_advance_returns_messages_newer_than_last_seen() {
+        let oldest = mk_channel_msg(&live_mention_json("evt_old", "prs_ada"));
+        let mid = mk_channel_msg(&live_mention_json("evt_mid", "prs_ada"));
+        let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
+        let page = vec![newest, mid, oldest];
+        let (cursor, consider) =
+            advance_mention_cursor(&page, Some("evt_old"), poll_now(), poll_now());
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert_eq!(event_ids(&consider), vec!["evt_new", "evt_mid"]);
+    }
+
+    #[test]
+    fn mention_cursor_missing_from_page_advances_silently() {
+        let older = mk_channel_msg(&live_mention_json_at(
+            "evt_old",
+            "prs_ada",
+            "2026-09-23T10:00:00Z",
+        ));
+        let newest = mk_channel_msg(&live_mention_json_at(
+            "evt_new",
+            "prs_ada",
+            "2026-09-23T10:01:00Z",
+        ));
+        let page = vec![newest, older];
+        let (cursor, consider) =
+            advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now(), poll_now());
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert!(consider.is_empty());
+    }
+
+    #[test]
+    fn mention_cursor_missing_from_page_keeps_newest_if_within_ten_minutes() {
+        let newest = mk_channel_msg(&live_mention_json_at(
+            "evt_new",
+            "prs_ada",
+            "2026-09-23T11:55:00Z",
+        ));
+        let older = mk_channel_msg(&live_mention_json_at(
+            "evt_old",
+            "prs_ada",
+            "2026-09-23T11:50:00Z",
+        ));
+        let page = vec![newest, older];
+        let (cursor, consider) =
+            advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now(), poll_now());
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert_eq!(event_ids(&consider), vec!["evt_new"]);
+    }
+
+    #[test]
+    fn mention_first_fetch_delivers_mention_created_after_watch_start() {
+        let watch_start = poll_now() - Duration::minutes(2);
+        let older = mk_channel_msg(&live_mention_json_at(
+            "evt_old",
+            "prs_ada",
+            "2026-09-23T11:50:00Z",
+        ));
+        let at_start = mk_channel_msg(&live_mention_json_at(
+            "evt_at_start",
+            "prs_ada",
+            "2026-09-23T11:58:00Z",
+        ));
+        let newest = mk_channel_msg(&live_mention_json_at(
+            "evt_new",
+            "prs_ada",
+            "2026-09-23T12:00:00Z",
+        ));
+        let page = vec![newest, at_start, older];
+        let (cursor, consider) = advance_mention_cursor(&page, None, poll_now(), watch_start);
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert_eq!(event_ids(&consider), vec!["evt_new", "evt_at_start"]);
+    }
+
+    #[test]
+    fn mention_first_fetch_skips_mention_created_before_watch_start() {
+        let watch_start = poll_now();
+        let newest = mk_channel_msg(&live_mention_json_at(
+            "evt_new",
+            "prs_ada",
+            "2026-09-23T11:59:00Z",
+        ));
+        let page = vec![newest];
+        let (cursor, consider) = advance_mention_cursor(&page, None, poll_now(), watch_start);
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert!(consider.is_empty());
+    }
+
+    #[test]
+    fn mention_reset_for_session_moves_watch_start_forward() {
+        let mut watch = MentionWatchInner::default();
+        let early = poll_now() - Duration::hours(1);
+        watch.watch_started_at = early;
+        watch
+            .last_event_by_channel
+            .insert("chn_eng".into(), "evt_old".into());
+        watch.pending_fetches.push(("chn_eng".into(), "eng".into()));
+        watch.reset_for_session();
+        assert!(watch.last_event_by_channel.is_empty());
+        assert!(watch.pending_fetches.is_empty());
+        assert!(watch.watch_started_at > early);
+
+        let last_seen = watch
+            .last_event_by_channel
+            .get("chn_eng")
+            .map(String::as_str);
+        let before_ts = (watch.watch_started_at - Duration::seconds(1)).to_rfc3339();
+        let before = mk_channel_msg(&live_mention_json_at("evt_before", "prs_ada", &before_ts));
+        let page = vec![before];
+        let (cursor, consider) =
+            advance_mention_cursor(&page, last_seen, poll_now(), watch.watch_started_at);
+        assert_eq!(cursor.as_deref(), Some("evt_before"));
+        assert!(consider.is_empty());
+
+        let after_ts = (watch.watch_started_at + Duration::seconds(1)).to_rfc3339();
+        let after = mk_channel_msg(&live_mention_json_at("evt_after", "prs_ada", &after_ts));
+        let page = vec![after];
+        let (_, consider) =
+            advance_mention_cursor(&page, last_seen, poll_now(), watch.watch_started_at);
+        assert_eq!(event_ids(&consider), vec!["evt_after"]);
+    }
+
+    #[test]
+    fn mention_stale_created_at_is_filtered() {
+        let oldest = mk_channel_msg(&live_mention_json_at(
+            "evt_oldest",
+            "prs_ada",
+            "2026-09-23T11:30:00Z",
+        ));
+        let stale = mk_channel_msg(&live_mention_json_at(
+            "evt_stale",
+            "prs_ada",
+            "2026-09-23T11:40:00Z",
+        ));
+        let fresh = mk_channel_msg(&live_mention_json_at(
+            "evt_fresh",
+            "prs_ada",
+            "2026-09-23T11:50:00Z",
+        ));
+        let page = vec![fresh, stale, oldest];
+        let (_, consider) =
+            advance_mention_cursor(&page, Some("evt_oldest"), poll_now(), poll_now());
+        assert_eq!(
+            consider
+                .iter()
+                .map(|m| m.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["evt_fresh", "evt_stale"]
+        );
+        let fresh_only = filter_mentions_by_age(consider, poll_now(), MENTION_FRESH_MAX_AGE);
+        assert_eq!(
+            fresh_only
+                .iter()
+                .map(|m| m.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["evt_fresh"]
+        );
+    }
+
+    #[test]
+    fn mention_cycle_cap_delivers_newest_two_plus_summary() {
+        let items = vec![
+            MentionCapItem {
+                created_at: "2026-09-23T11:50:00Z".into(),
+                channel_id: "chn_a".into(),
+            },
+            MentionCapItem {
+                created_at: "2026-09-23T11:58:00Z".into(),
+                channel_id: "chn_b".into(),
+            },
+            MentionCapItem {
+                created_at: "2026-09-23T11:55:00Z".into(),
+                channel_id: "chn_c".into(),
+            },
+            MentionCapItem {
+                created_at: "2026-09-23T11:52:00Z".into(),
+                channel_id: "chn_d".into(),
+            },
+        ];
+        let plan = plan_mention_cap(&items);
+        assert_eq!(plan.deliver_indices, vec![1, 2]);
+        assert_eq!(
+            plan.summary,
+            Some(MentionSummary {
+                extra_count: 2,
+                channel_id: "chn_a".into(),
+            })
+        );
+        assert_eq!(mention_summary_title(2), "You were mentioned 2 more times");
+        let under_cap = plan_mention_cap(&items[..3]);
+        assert_eq!(under_cap.deliver_indices, vec![0, 1, 2]);
+        assert!(under_cap.summary.is_none());
+    }
+
+    #[test]
+    fn mention_fetch_failure_leaves_cursor_unchanged() {
+        let current = Some("evt_old");
+        let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
+        let page = vec![newest];
+        let (cursor, consider) =
+            mention_cursor_after_fetch(current, false, &page, poll_now(), poll_now());
+        assert_eq!(cursor.as_deref(), Some("evt_old"));
+        assert!(consider.is_empty());
+
+        let (ok_cursor, ok_consider) =
+            mention_cursor_after_fetch(current, true, &page, poll_now(), poll_now());
+        assert_eq!(ok_cursor.as_deref(), Some("evt_new"));
+        assert_eq!(
+            ok_consider
+                .iter()
+                .map(|m| m.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["evt_new"]
+        );
+    }
+
+    #[test]
+    fn mention_fetch_batch_caps_at_four_and_rotates_rest() {
+        let mut pending = vec![
+            ("c1".into(), "one".into()),
+            ("c2".into(), "two".into()),
+            ("c3".into(), "three".into()),
+            ("c4".into(), "four".into()),
+            ("c5".into(), "five".into()),
+            ("c6".into(), "six".into()),
+        ];
+        enqueue_mention_fetches(&mut pending, &[("c1".into(), "one".into())]);
+        assert_eq!(pending.len(), 6);
+        let batch = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        assert_eq!(
+            batch.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["c1", "c2", "c3", "c4"]
+        );
+        assert_eq!(
+            pending
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c5", "c6"]
+        );
+    }
+
+    #[test]
+    fn mention_drain_fetches_all_six_channels_across_batches() {
+        let mut pending = vec![
+            ("c1".into(), "one".into()),
+            ("c2".into(), "two".into()),
+            ("c3".into(), "three".into()),
+            ("c4".into(), "four".into()),
+            ("c5".into(), "five".into()),
+            ("c6".into(), "six".into()),
+        ];
+        let mut fetched = Vec::new();
+        while !pending.is_empty() {
+            let batch = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+            assert!(!batch.is_empty());
+            fetched.extend(batch.into_iter().map(|(id, _)| id));
+        }
+        assert_eq!(
+            fetched,
+            vec![
+                "c1".to_string(),
+                "c2".to_string(),
+                "c3".to_string(),
+                "c4".to_string(),
+                "c5".to_string(),
+                "c6".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn mention_growth_while_in_flight_is_fetched_on_next_batch() {
+        let mut pending = vec![
+            ("c1".into(), "one".into()),
+            ("c2".into(), "two".into()),
+            ("c3".into(), "three".into()),
+            ("c4".into(), "four".into()),
+        ];
+        let detect_in_flight = true;
+        let batch1 = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        enqueue_mention_fetches(
+            &mut pending,
+            &[("c5".into(), "five".into()), ("c6".into(), "six".into())],
+        );
+        assert!(detect_in_flight);
+        assert!(!should_spawn_mention_detect(
+            pending.len(),
+            detect_in_flight
+        ));
+        let batch2 = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        assert_eq!(
+            batch1.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["c1", "c2", "c3", "c4"]
+        );
+        assert_eq!(
+            batch2.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["c5", "c6"]
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn mention_failed_fetch_is_retried_once_then_dropped() {
+        let mut pending = vec![("dead".into(), "x".into())];
+        let mut retried = HashSet::new();
+        let batch = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        requeue_failed_mention_fetches(&mut pending, &batch, &mut retried);
+        assert_eq!(pending.len(), 1);
+        let retry = take_mention_fetch_batch(&mut pending, MENTION_FETCH_PER_CYCLE);
+        requeue_failed_mention_fetches(&mut pending, &retry, &mut retried);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn mention_spawn_when_pending_and_idle_even_without_growth() {
+        assert!(should_spawn_mention_detect(2, false));
+        assert!(!should_spawn_mention_detect(2, true));
+        assert!(!should_spawn_mention_detect(0, false));
+        assert!(!should_spawn_mention_detect(0, true));
+    }
+
+    #[test]
+    fn mention_created_at_accepts_naive_utc_and_logs_bad_ts() {
+        let naive = parse_message_created_at("2026-09-23T12:00:00").expect("naive utc");
+        let rfc = parse_message_created_at("2026-09-23T12:00:00Z").expect("rfc3339");
+        assert_eq!(naive, rfc);
+        assert!(parse_message_created_at("not-a-timestamp").is_none());
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let log_path = tmp.path().join("hq-sync.log");
+        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        assert!(parse_message_created_at_logged("nope", "evt_bad").is_none());
+        crate::logfile::log("dm-notify", "flush");
+        let body = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(body.contains("DM_NOTIFY_MENTION_BAD_TS event=evt_bad"));
+        assert!(!body.contains("nope"));
+    }
+
+    #[test]
+    fn mention_seen_set_drops_duplicate_ids() {
+        let (fresh, updated) = take_unseen_message_ids(
+            &["evt_1".into(), "evt_2".into(), "evt_1".into()],
+            &["evt_1".into()],
+        );
+        assert_eq!(fresh, vec!["evt_2".to_string()]);
+        assert_eq!(updated, vec!["evt_1".to_string(), "evt_2".to_string()]);
+        let (again, _) = take_unseen_message_ids(&["evt_2".into()], &updated);
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn mention_payload_title_body_and_route() {
+        assert_eq!(
+            mention_notification_title("Ada Lovelace", "engineering"),
+            "Ada Lovelace mentioned you in #engineering"
+        );
+        assert_eq!(
+            mention_route("chn_eng", "evt_1"),
+            "inbox:channel:chn_eng:evt_1"
+        );
+        let long: String = "é".repeat(MENTION_BODY_MAX_CHARS + 8);
+        let body = mention_notification_body(&long);
+        assert_eq!(body.chars().count(), MENTION_BODY_MAX_CHARS);
+        assert!(!body.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn mention_suppressed_when_channel_open_and_focused() {
+        assert!(should_suppress_mention_for_open_channel(
+            Some("chan:chn_eng"),
+            "chn_eng",
+            true,
+        ));
+        assert!(!should_suppress_mention_for_open_channel(
+            Some("chan:chn_eng"),
+            "chn_eng",
+            false,
+        ));
+        assert!(!should_suppress_mention_for_open_channel(
+            Some("chan:chn_other"),
+            "chn_eng",
+            true,
+        ));
+        assert!(!should_suppress_mention_for_open_channel(
+            Some("dm:prs_ada"),
+            "chn_eng",
+            true,
+        ));
+    }
+
+    #[test]
+    fn mention_duplicate_event_id_is_suppressed() {
+        assert!(should_suppress_duplicate_event(
+            "evt_1",
+            &["evt_0".into(), "evt_1".into()]
+        ));
+        assert!(!should_suppress_duplicate_event("evt_2", &["evt_1".into()]));
+        assert!(!should_suppress_duplicate_event("", &["evt_1".into()]));
+    }
+
+    // ── US-005: audience field and filtering ─────────────────────────────────
+
+    #[test]
+    fn dm_event_deserializes_audience_field_when_present() {
+        let json = r#"{
+            "eventId": "evt_1",
+            "fromPersonUid": "agt_bot",
+            "fromEmail": "bot@hq.ai",
+            "fromDisplayName": "Bot",
+            "body": "status: running",
+            "createdAt": "2026-09-23T10:00:00Z",
+            "audience": "agent"
+        }"#;
+        let dm: DmEvent = serde_json::from_str(json).expect("DmEvent with audience parses");
+        assert_eq!(dm.audience.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn dm_event_audience_absent_deserializes_as_none() {
+        let json = r#"{
+            "eventId": "evt_2",
+            "fromPersonUid": "prs_human",
+            "fromEmail": "h@b.com",
+            "fromDisplayName": "Human",
+            "body": "hello",
+            "createdAt": "2026-09-23T10:00:00Z"
+        }"#;
+        let dm: DmEvent = serde_json::from_str(json).expect("DmEvent without audience parses");
+        assert!(dm.audience.is_none());
+    }
+
+    #[test]
+    fn thread_message_deserializes_audience_field() {
+        let json = r#"{
+            "eventId": "evt_t1",
+            "fromPersonUid": "agt_bot",
+            "fromEmail": "b@b.com",
+            "fromDisplayName": "Bot",
+            "body": "progress update",
+            "createdAt": "2026-09-23T10:00:00Z",
+            "direction": "in",
+            "audience": "agent"
+        }"#;
+        let msg: ThreadMessage = serde_json::from_str(json).expect("ThreadMessage with audience parses");
+        assert_eq!(msg.audience.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn thread_reply_deserializes_audience_field() {
+        let json = r#"{
+            "eventId": "evt_r1",
+            "fromPersonUid": "agt_bot",
+            "body": "delegating",
+            "createdAt": "2026-09-23T10:00:00Z",
+            "audience": "agent"
+        }"#;
+        let reply: ThreadReply = serde_json::from_str(json).expect("ThreadReply with audience parses");
+        assert_eq!(reply.audience.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn thread_reply_audience_absent_is_none() {
+        let json = r#"{
+            "eventId": "evt_r2",
+            "fromPersonUid": "prs_human",
+            "body": "hey",
+            "createdAt": "2026-09-23T10:00:00Z"
+        }"#;
+        let reply: ThreadReply = serde_json::from_str(json).expect("ThreadReply without audience parses");
+        assert!(reply.audience.is_none());
+    }
+
+    #[test]
+    fn is_agent_audience_classifies_correctly() {
+        assert!(is_agent_audience(Some("agent")));
+        assert!(is_agent_audience(Some("Agent")));
+        assert!(is_agent_audience(Some("AGENT")));
+        assert!(!is_agent_audience(Some("human")));
+        assert!(!is_agent_audience(Some("both")));
+        assert!(!is_agent_audience(None));
+        assert!(!is_agent_audience(Some("")));
+    }
+
+    #[test]
+    fn filter_human_visible_excludes_agent_messages_counts_as_unread() {
+        // One human and two agent DMs: only the human one counts for unread.
+        let events = vec![
+            mk_dm_with_audience("e1", "2026-09-23T10:00:00Z", "human"),
+            mk_dm_with_audience("e2", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm_with_audience("e3", "2026-09-23T10:02:00Z", "agent"),
+        ];
+        let visible = filter_human_visible_events(&events);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].event_id, "e1");
+    }
+
+    #[test]
+    fn filter_human_visible_keeps_both_and_absent_audience() {
+        let events = vec![
+            mk_dm("e_absent", "2026-09-23T10:00:00Z"),
+            mk_dm_with_audience("e_both", "2026-09-23T10:01:00Z", "both"),
+            mk_dm_with_audience("e_human", "2026-09-23T10:02:00Z", "human"),
+            mk_dm_with_audience("e_agent", "2026-09-23T10:03:00Z", "agent"),
+        ];
+        let visible = filter_human_visible_events(&events);
+        assert_eq!(visible.len(), 3);
+        let ids: Vec<&str> = visible.iter().map(|e| e.event_id.as_str()).collect();
+        assert!(ids.contains(&"e_absent"));
+        assert!(ids.contains(&"e_both"));
+        assert!(ids.contains(&"e_human"));
+        assert!(!ids.contains(&"e_agent"));
+    }
+
+    #[test]
+    fn newest_non_agent_event_skips_leading_agent_messages() {
+        // Newest-first list: two agent messages then a human one.
+        let events = vec![
+            mk_dm_with_audience("e_agent1", "2026-09-23T10:02:00Z", "agent"),
+            mk_dm_with_audience("e_agent2", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm("e_human", "2026-09-23T10:00:00Z"),
+        ];
+        let preview = newest_non_agent_event(&events);
+        assert_eq!(preview.map(|e| e.event_id.as_str()), Some("e_human"));
+    }
+
+    #[test]
+    fn newest_non_agent_event_returns_none_when_all_agent() {
+        let events = vec![
+            mk_dm_with_audience("e1", "2026-09-23T10:00:00Z", "agent"),
+            mk_dm_with_audience("e2", "2026-09-23T10:01:00Z", "agent"),
+        ];
+        assert!(newest_non_agent_event(&events).is_none());
+    }
+
+    #[test]
+    fn newest_non_agent_event_returns_none_for_empty_slice() {
+        assert!(newest_non_agent_event(&[]).is_none());
+    }
+
+    #[test]
+    fn audience_field_round_trips_through_serialization() {
+        let mut dm = mk_dm("evt_rt", "2026-09-23T10:00:00Z");
+        dm.audience = Some("both".to_string());
+        let v = serde_json::to_value(&dm).expect("serializes");
+        assert_eq!(v["audience"], "both");
+        let back: DmEvent = serde_json::from_value(v).expect("deserializes");
+        assert_eq!(back.audience.as_deref(), Some("both"));
+    }
+
+    #[test]
+    fn audience_absent_not_emitted_in_serialization() {
+        let dm = mk_dm("evt_absent", "2026-09-23T10:00:00Z");
+        let v = serde_json::to_value(&dm).expect("serializes");
+        assert!(v.get("audience").is_none(), "absent audience must not emit a key");
+    }
+
+    // --- US-005 pipeline tests: partition_unnotified → filter_human_visible ---
+    // These mirror the real do_poll code path so the wiring is exercised, not
+    // just the pure helpers.
+
+    #[test]
+    fn do_poll_pipeline_agent_events_do_not_count_toward_unread() {
+        // Inbox: 1 human + 2 agent events, none previously seen.
+        let events = vec![
+            mk_dm_with_audience("h1", "2026-09-23T10:00:00Z", "human"),
+            mk_dm_with_audience("a1", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm_with_audience("a2", "2026-09-23T10:02:00Z", "agent"),
+        ];
+        let (fresh, _) = partition_unnotified(&events, &[]);
+        // All 3 are fresh (none previously notified).
+        assert_eq!(fresh.len(), 3);
+        // But only 1 is human-visible — this is the delta bump_unread receives.
+        let visible = filter_human_visible_events(&fresh);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].event_id, "h1");
+    }
+
+    #[test]
+    fn do_poll_pipeline_already_notified_agent_event_does_not_resurface() {
+        let events = vec![
+            mk_dm_with_audience("a_seen", "2026-09-23T10:00:00Z", "agent"),
+            mk_dm_with_audience("h_new", "2026-09-23T10:01:00Z", "human"),
+        ];
+        let already_notified = vec!["a_seen".to_string()];
+        let (fresh, _) = partition_unnotified(&events, &already_notified);
+        // Only h_new is fresh.
+        assert_eq!(fresh.len(), 1);
+        // And it is human-visible.
+        let visible = filter_human_visible_events(&fresh);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].event_id, "h_new");
+    }
+
+    #[test]
+    fn do_poll_pipeline_all_agent_events_yield_zero_unread_delta() {
+        let events = vec![
+            mk_dm_with_audience("a1", "2026-09-23T10:00:00Z", "agent"),
+            mk_dm_with_audience("a2", "2026-09-23T10:01:00Z", "agent"),
+        ];
+        let (fresh, _) = partition_unnotified(&events, &[]);
+        let visible = filter_human_visible_events(&fresh);
+        // bump_unread would receive 0 — the badge must not move.
+        assert_eq!(visible.len(), 0);
+    }
+
+    #[test]
+    fn do_poll_pipeline_banner_filter_suppresses_agent_audience() {
+        // Simulate the banner_worthy filter: exclude is_agent_audience.
+        let fresh = vec![
+            mk_dm_with_audience("h1", "2026-09-23T10:00:00Z", "human"),
+            mk_dm_with_audience("a1", "2026-09-23T10:01:00Z", "agent"),
+            mk_dm("absent1", "2026-09-23T10:02:00Z"),
+        ];
+        let banner_worthy: Vec<&DmEvent> = fresh
+            .iter()
+            .filter(|dm| !is_agent_audience(dm.audience.as_deref()))
+            .collect();
+        assert_eq!(banner_worthy.len(), 2);
+        let ids: Vec<&str> = banner_worthy.iter().map(|e| e.event_id.as_str()).collect();
+        assert!(ids.contains(&"h1"));
+        assert!(ids.contains(&"absent1"));
+        assert!(!ids.contains(&"a1"));
     }
 }
