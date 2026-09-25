@@ -1,9 +1,14 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { computeShellHash, normalizeCargoLock, normalizeCargoToml, normalizeTauriConf } from "./shell-hash.mjs";
+
+const execFileAsync = promisify(execFile);
 
 async function makeFixture() {
   const root = await mkdtemp(join(tmpdir(), "shell-hash-"));
@@ -140,5 +145,28 @@ describe("shell-hash", () => {
     await writeFile(join(root, "apps/sync/src/App.svelte"), "<p>changed</p>\n");
     const after = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
     expect(after).toBe(before);
+  });
+
+  // Regression: the CLI-entry check (`import.meta.url === file://${argv[1]}`)
+  // compared a URL against a raw OS path. process.argv[1] is a backslash path
+  // on Windows, which never equals a file:// URL, so `main()` silently never
+  // ran there — node exited 0 with empty stdout, and the release workflow's
+  // shell-windows-x64/arm64 jobs failed with "shell-hash.mjs returned an
+  // invalid key: " (empty). This can't reproduce the Windows path separator
+  // itself on a POSIX test runner, but it does exercise the exact invocation
+  // shape release.yml uses (a relative path from the working directory) and
+  // would have caught the "never runs, prints nothing" failure mode outright.
+  it("prints a 64-hex key when invoked as a CLI script, not just as a module", async () => {
+    const scriptPath = fileURLToPath(new URL("./shell-hash.mjs", import.meta.url));
+    const { stdout } = await execFileAsync("node", [
+      scriptPath,
+      "--root",
+      fileURLToPath(new URL("../", import.meta.url)),
+      "--toolchain",
+      "1.80.0",
+      "--target",
+      "x86_64-pc-windows-msvc",
+    ]);
+    expect(stdout.trim()).toMatch(/^[0-9a-f]{64}$/);
   });
 });

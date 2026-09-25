@@ -29,6 +29,15 @@ The release moves it under the version it ships in.
   so update checks, the tray menu, telemetry, and request headers report the
   release you actually installed even when the app shell was built for an
   earlier release.
+- Rebuilt the release pipeline so a UI-only change no longer rebuilds the
+  native app on any platform: the compiled shell (macOS, Windows x64, Windows
+  arm64) is built once, cached, and reused across releases; only the
+  interface is rebuilt and stamped in at release time. A warm release now
+  takes about 6 minutes for macOS and well under that for Windows once the
+  shell cache is populated, down from roughly 30 minutes end to end. Set
+  `legacy_build: true` on a manual release dispatch to fall back to the old
+  single-job build path for either platform if the new pipeline ever needs to
+  be bypassed. No visible change for users beyond faster releases.
 
 ## [0.10.328] — 2026-09-25
 

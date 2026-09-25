@@ -23,6 +23,7 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const SHELL_SOURCE_ROOTS = [
   "crates",
@@ -198,6 +199,10 @@ function parseArgs(argv) {
   return out;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// process.argv[1] is a raw OS path (backslashes on Windows); import.meta.url
+// is always a file:// URL. Comparing them directly never matches on Windows,
+// so this entry point silently never ran there — main() exited 0 with no
+// output, and the caller's own `KEY` regex check is what actually caught it.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv.slice(2)).then((code) => process.exit(code));
 }
