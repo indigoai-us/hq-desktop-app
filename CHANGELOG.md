@@ -8,6 +8,88 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The project board is back. A new Projects page (Cmd+6, or the board icon in
+  the title bar) shows one company's projects at a time as a board or a list.
+  Opening a project shows its tasks by status, with task details, files and
+  activity. Pick the company at the top of the page. It starts on the company
+  of the channel you have open.
+- A company's home channel now has a "Projects" tab next to Chat in the
+  header. Clicking it swaps the message feed for that company's project board
+  right there in the channel — the header (hero, title, gear, bell, member
+  pill, and the Chat | Projects pills) stays put and nothing shifts size.
+  Chat brings the feed and composer back.
+- Fixed the Library header's Back button still overlapping the green
+  traffic-light button on macOS — the shared gutter that keeps overlay
+  headers (Library, Settings, Meetings, Notifications, Shared Files, DM
+  requests) clear of the native window buttons was only 6px wider than the
+  button cluster itself, thin enough to overlap on some renders. Widened it
+  to a safer margin everywhere it's used, and added a test covering the DM
+  requests panel, which had the shared inset already but wasn't checked here.
+
+## [0.10.328] — 2026-09-25
+
+- Fixed the "Setting up…" spinner some Companies rows got stuck on: the
+  company board, activity feed, and home-channel requests were missing the
+  server's `/v1` URL prefix, so those requests always failed. Added a build-time
+  check that fails CI if the app ever calls a server route hq-pro does not
+  register, so this class of bug cannot ship again silently.
+- Fixed layout shifts when opening a company's home channel — the wallpaper
+  hero, the member-count and mute controls, and the message skeleton now hold
+  their final size from the first frame, so nothing jumps as the company's
+  real name, member count, and messages arrive.
+- Fixed a bug where clicking a company in the sidebar's "Companies" section
+  before it had a home channel yet showed a raw server error
+  ("home-channel HTTP 404 Not Found: ...") under the row — the request was
+  missing `/v1` in its URL. Clicking now quietly retries in the background
+  (with a brief "Setting up…" state), and if it still can't connect, the row
+  shows a plain "Tap to retry" hint instead of any error text — clicking it
+  again always retries.
+- Fixed the company channel header's settings gear rendering with a heavy,
+  doubled outline (a malformed SVG path). Switched the mute control from a
+  speaker icon to a bell (bell-slash when muted), to match the rest of the
+  header icon set.
+
+## [0.10.327] — 2026-09-25
+
+- Simplified how the desktop app finds a company's main channel: it now opens
+  the exact channel the server names (`homeChannelId`), instead of guessing
+  from the channel's scope and name. This removes the old on-demand lookup,
+  retry state, and spinner in the sidebar's "Companies" section — a company's
+  home channel opens immediately, or the row shows "No company channel yet."
+
+## [0.10.326] — 2026-09-25
+
+- On Windows, HQ waits for its own command processes to finish before replacing
+  the HQ CLI package and retries once if npm still reports a locked install
+  directory.
+
+## [0.10.325] — 2026-09-25
+
+- Meeting detection now runs on the newest Recall recording engine, which officially supports Zoom and Teams meetings joined from Chrome, not only from the Zoom and Teams apps. Google Meet in a browser was already supported. Safari, Edge, and Firefox are still not supported for Zoom or Teams, so join from Chrome (or a Chromium browser like Arc or Brave) if you want HQ to notice the meeting.
+
+- Fixed a bug where running the HQ installer after the desktop app was re-signed
+  (or after any macOS keychain read error such as errSecAuthFailed) deleted the
+  sign-in token file at ~/.hq/cognito-tokens.json, logging users out even though
+  the desktop app and CLI had kept them signed in. The installer now treats the
+  token file as a fallback when the keychain entry is missing, invalid, or
+  unreadable; the file is deleted only on explicit sign-out. When both the
+  keychain and the file hold valid tokens, the newer token (by expiresAt) wins.
+
+## [0.10.324] — 2026-09-25
+
+- Channel @mention notifications now work on installs whose local settings file does not record your person ID, and the first mention in a channel after the app starts now notifies too.
+- The desktop app now asks for (and transparently decodes) compressed
+  responses from the server, so the same data moves over the wire faster —
+  most noticeable on the channel list for people in large companies.
+
+## [0.10.323] — 2026-09-24
+
+- Fixed the channel list failing to load for people in companies with a lot of
+  channels. The app was giving that request the same short timeout as every
+  other one, so once a company's channel roster got large enough, the response
+  legitimately took longer to arrive and the request aborted partway through
+  with a decode error. It now gets a longer timeout of its own.
+- HQ Sync tells you to verify your email before it can show pending company invites.
 - Fixed a bug where every company in the sidebar's "Companies" section showed
   "no home channel yet," even companies with a working home channel. The
   fallback check that resolves a home channel while the server catches up was

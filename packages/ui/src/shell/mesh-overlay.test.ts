@@ -440,6 +440,8 @@ describe("createHybridSidebarApi", () => {
       sendChannelMessage: async () => {},
       sendDm: async () => {},
       searchMessages: async () => ({ results: [] }),
+      logToFile: async () => {},
+      ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     };
     const api = createHybridSidebarApi(live, () => overlay);
     const feed = await api.fetchChannelDirectory(null);
@@ -478,6 +480,8 @@ describe("createHybridSidebarApi", () => {
       sendChannelMessage: async () => {},
       sendDm: async () => {},
       searchMessages: async () => ({ results: [] }),
+      logToFile: async () => {},
+      ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     };
     const api = createHybridSidebarApi(live, () => seeded);
     const feed = await api.fetchChannelDirectory(null);
@@ -503,6 +507,8 @@ describe("createHybridSidebarApi optional live capabilities", () => {
       sendChannelMessage: async () => {},
       sendDm: async () => {},
       searchMessages: async () => ({ results: [] }),
+      logToFile: async () => {},
+      ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
       ...extra,
     };
   }

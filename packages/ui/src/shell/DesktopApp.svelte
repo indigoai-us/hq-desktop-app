@@ -159,6 +159,8 @@
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
+  import ProjectsHome from "../projects/ProjectsHome.svelte";
+  import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -612,6 +614,15 @@
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
     /**
+     * A company's home channel was just created/adopted client-side
+     * (`ensureCompanyHomeChannel`, from a Companies-row click) and the
+     * `companies` roster prop hasn't caught up yet. The host should patch
+     * its own roster copy and kick a background refresh so the persisted
+     * value matches; the shell already applies the id locally (see
+     * `resolvedHomeChannelIds`) so chrome is correct immediately either way.
+     */
+    onhomechannelresolved?: (companyUid: string, homeChannelId: string) => void;
+    /**
      * App-level event subscription (Tauri `listen`, or a web bridge), used to
      * observe sync outcomes the command result cannot report — see
      * `syncMembership`. Omitted on platforms without an event bus; the
@@ -821,6 +832,7 @@
     oncardaction,
     wakes = null,
     companies = null,
+    onhomechannelresolved,
     syncEvents = null,
     rosterStatus = null,
     onretryroster,
@@ -1333,9 +1345,12 @@
     | "meetings"
     | "library"
     | "shared-files"
+    | "projects"
     | "extra"
     | "dm-requests"
   >("conversation");
+  /** Company shown on the Projects page; null follows the selected channel. */
+  let projectsCompany = $state<string | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -2834,6 +2849,7 @@
   let cloudReachable = $state(true);
   let cloudError = $state<string | null>(null);
   let manifestError = $state<string | null>(null);
+  let emailVerificationRequired = $state(false);
   let syncWorkspaces = $state<Record<string, unknown>[]>([]);
   let hqFolderPath = $state<string | null>(null);
 
@@ -2860,6 +2876,7 @@
     }
     const envelope = (res.value ?? {}) as unknown as Partial<WorkspacesResult>;
     cloudReachable = envelope.cloudReachable !== false;
+    emailVerificationRequired = envelope.emailVerificationRequired === true;
     cloudError =
       typeof envelope.error === "string" && envelope.error.trim()
         ? envelope.error.trim()
@@ -2958,6 +2975,17 @@
         },
       },
     ];
+    if (adapter.kind !== "web") {
+      nav.push({
+        id: "command-go-projects",
+        label: "Projects",
+        detail: "Open a company's project board",
+        shortcut: shortcutLabel("view.projects"),
+        action: () => {
+          void navigate({ kind: "projects" });
+        },
+      });
+    }
     nav.push({
       id: "command-go-library",
       label: "Library",
@@ -3049,10 +3077,83 @@
     return [...nav, ...conversations];
   });
 
-  const watched = $derived(companies?.length ?? 0);
-  const companyNames = $derived(buildCompanyDisplayMap(companies ?? []));
+  /**
+   * companyUid → homeChannelId resolved client-side this session (a
+   * Companies-row click into a company whose roster row had no
+   * `homeChannelId` yet — see `ChatSidebar.openCompanyHome`). Overlaid onto
+   * `companies` below so the chrome predicate, the Companies row and any
+   * deep link all see it immediately, without waiting for the host to
+   * re-fetch the roster (`onhomechannelresolved` kicks that off separately).
+   */
+  let resolvedHomeChannelIds = $state<Record<string, string>>({});
+  function handleHomeChannelResolved(companyUid: string, homeChannelId: string): void {
+    const uid = companyUid.trim();
+    const id = homeChannelId.trim();
+    if (!uid || !id) return;
+    if (resolvedHomeChannelIds[uid] === id) return;
+    resolvedHomeChannelIds = { ...resolvedHomeChannelIds, [uid]: id };
+    onhomechannelresolved?.(uid, id);
+  }
+  /** `companies` patched with any `resolvedHomeChannelIds` the roster hasn't
+   * caught up on yet. Every downstream consumer (chrome, sidebar, settings)
+   * reads this instead of the raw prop. */
+  const effectiveCompanies = $derived.by(() => {
+    if (!companies || Object.keys(resolvedHomeChannelIds).length === 0) return companies;
+    let changed = false;
+    const patched = companies.map((c) => {
+      if (c.homeChannelId) return c;
+      const uid = (c.cloudUid ?? "").trim();
+      const resolved = uid ? resolvedHomeChannelIds[uid] : undefined;
+      if (!resolved) return c;
+      changed = true;
+      return { ...c, homeChannelId: resolved };
+    });
+    return changed ? patched : companies;
+  });
+  const watched = $derived(effectiveCompanies?.length ?? 0);
+  const companyNames = $derived(buildCompanyDisplayMap(effectiveCompanies ?? []));
   /** uid/slug → presigned company icon, for the header + member popover. */
-  const companyIcons = $derived(buildCompanyIconMap(companies ?? []));
+  const companyIcons = $derived(buildCompanyIconMap(effectiveCompanies ?? []));
+  /**
+   * channelId → company, built straight from the roster's own
+   * `homeChannelId` (never from the selected row). A channel opened through
+   * `requestChannelOpen` (a deep link, a notification, or the sidebar's
+   * Companies-row click before that company's channels are loaded) starts
+   * life as a bare stub — `{ id, kind: "channel", channelId }` — with no
+   * `channelScope` or `isCompanyHome` at all, and the self-heal effect that
+   * later adopts the real row only fires when the title or companyUid
+   * changes, which a same-titled stub never triggers. Deriving "is this the
+   * company's home channel" from the roster instead of the row's own fields
+   * means the header/settings/wallpaper chrome is correct on the very first
+   * paint, stub or not.
+   */
+  const companyByHomeChannelId = $derived.by(() => {
+    const map = new Map<string, Workspace>();
+    for (const c of effectiveCompanies ?? []) {
+      const id = (c.homeChannelId ?? "").trim();
+      if (id) map.set(id, c);
+    }
+    return map;
+  });
+  const selectedHomeCompany = $derived.by(() => {
+    const id = selectedRow?.channelId?.trim();
+    if (id) {
+      const byHomeId = companyByHomeChannelId.get(id);
+      if (byHomeId) return byHomeId;
+    }
+    // Reverse case: the server already marked this channel as the company's
+    // home (`isCompanyHome`) even though the roster's `homeChannelId` hasn't
+    // caught up — e.g. it was opened by id before `ensureCompanyHomeChannel`
+    // resolved. Match it to the roster by `companyUid` so chrome still gets
+    // the real company (name, icon, slug), not just the boolean fallback.
+    if (selectedRow?.kind === "channel" && selectedRow.isCompanyHome) {
+      const uid = (selectedRow.companyUid ?? "").trim();
+      if (uid) {
+        return (effectiveCompanies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid) ?? null;
+      }
+    }
+    return null;
+  });
   /**
    * Icon for the selected conversation's company: the row's server-stamped
    * icon first, then the roster. Company channels only — a project or personal
@@ -3061,14 +3162,17 @@
   const selectedCompanyIcon = $derived.by(() => {
     const row = selectedRow;
     if (!row || row.kind !== "channel") return null;
-    if ((row.channelScope ?? "").trim() !== "company") return null;
-    return row.iconUrl ?? companyIconUrl(row.companyUid, companyIcons);
+    if ((row.channelScope ?? "").trim() !== "company" && !selectedHomeCompany) return null;
+    const uid = row.companyUid ?? selectedHomeCompany?.cloudUid ?? null;
+    return row.iconUrl ?? companyIconUrl(uid, companyIcons);
   });
   const selectedIsCompanyChannel = $derived(
     selectedRow?.kind === "channel" &&
-      (selectedRow.channelScope ?? "").trim() === "company",
+      ((selectedRow.channelScope ?? "").trim() === "company" ||
+        Boolean(selectedHomeCompany)),
   );
   const selectedCompanySlug = $derived.by(() => {
+    if (selectedHomeCompany) return selectedHomeCompany.slug ?? "";
     const uid = (selectedRow?.companyUid ?? "").trim();
     if (!uid) return "";
     return (
@@ -3083,18 +3187,22 @@
     if (!row) return null;
     if (row.kind === "dm") return "Direct message";
     if (row.kind === "group") return "Group message";
-    const scope = row.channelScope ?? "channel";
+    const scope = row.channelScope ?? (selectedHomeCompany ? "company" : "channel");
     const kindLabel =
       scope === "project"
         ? "project channel"
         : scope === "company"
-          ? row.isCompanyHome
+          ? row.isCompanyHome || selectedHomeCompany
             ? "company home"
             : "team channel"
           : scope === "personal"
             ? "personal channel"
             : "channel";
-    const name = companyDisplayName(row.companyUid, companyNames);
+    const name =
+      companyDisplayName(row.companyUid, companyNames) ||
+      selectedHomeCompany?.displayName ||
+      selectedHomeCompany?.slug ||
+      "";
     return name ? `${name} · ${kindLabel}` : kindLabel;
   });
 
@@ -3122,17 +3230,23 @@
   // Only the ONE company-home channel per company (created at genesis, named
   // after the slug) carries CompanyHero/Office/settings chrome. Every other
   // `channelScope === "company"` row is a plain team channel and must render
-  // as a normal channel — see `isCompanyHome` on ConversationRow.
+  // as a normal channel — see `isCompanyHome` on ConversationRow. Matched
+  // against the roster's `homeChannelId` (`selectedHomeCompany`) rather than
+  // `selectedRow.isCompanyHome` alone: a channel opened before its row loaded
+  // (deep link, notification, or a Companies-row click into an unloaded
+  // company) is a bare stub with neither `channelScope` nor `isCompanyHome`
+  // set, and would otherwise never get the company chrome.
   const isCompanyChannel = $derived(
     selectedRow?.kind === "channel" &&
-      (selectedRow?.channelScope ?? "channel") === "company" &&
-      Boolean(selectedRow?.isCompanyHome) &&
+      (Boolean(selectedRow?.isCompanyHome) || Boolean(selectedHomeCompany)) &&
       !isSetupChannel(selectedRow.channelId) &&
       !isAgentChannel,
   );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
-  const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
+  const headerTitle = $derived(
+    resolveConversationTitle(selectedRow, railRows, selectedHomeCompany?.slug ?? null),
+  );
 
   /**
    * Company hero shows the company's display name ("Ramen Bae"), not the
@@ -3141,6 +3255,8 @@
   const companyHeroTitle = $derived(
     companyAppearanceName ||
       companyDisplayName(selectedRow?.companyUid, companyNames) ||
+      selectedHomeCompany?.displayName ||
+      selectedHomeCompany?.slug ||
       headerTitle,
   );
 
@@ -3553,6 +3669,43 @@
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
   }
 
+  /**
+   * A channel opened by id before it was in the loaded rows (a deep link, a
+   * notification, or the Companies-row click before that company's channels
+   * loaded) starts life as a bare stub — `channelScope`/`isCompanyHome`
+   * unset, title possibly the raw `chn_…` id. `fetchChannel` (the same
+   * channel-get call the timeline fetch already makes) returns the
+   * channel's own metadata alongside its messages; once it lands, adopt the
+   * real name/companyUid into the row so the header and composer stop
+   * showing the id. A no-op once the row has already hydrated (its own
+   * `channelScope` is set) or the payload carries no channel metadata.
+   */
+  function hydrateStubChannelRow(row: ConversationRow, raw: unknown): void {
+    if (row.kind !== "channel" || row.channelScope !== undefined) return;
+    if (!raw || typeof raw !== "object") return;
+    const channel = (raw as { channel?: unknown }).channel;
+    if (!channel || typeof channel !== "object") return;
+    const name = (channel as { name?: unknown }).name;
+    if (typeof name !== "string" || !name.trim()) return;
+    const companyUidRaw = (channel as { companyUid?: unknown }).companyUid;
+    const companyUid =
+      typeof companyUidRaw === "string" && companyUidRaw.trim()
+        ? companyUidRaw.trim()
+        : null;
+    const scopeRaw = (channel as { scope?: unknown }).scope;
+    const channelScope = typeof scopeRaw === "string" ? scopeRaw : "channel";
+    if (selectedRow?.id !== row.id) return;
+    selectedRow = {
+      ...selectedRow,
+      title: name.trim(),
+      companyUid: companyUid ?? selectedRow.companyUid,
+      channelScope,
+      isCompanyHome:
+        channelScope === "company" &&
+        companyByHomeChannelId.get(row.channelId ?? "") !== undefined,
+    };
+  }
+
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
@@ -3565,6 +3718,7 @@
     if (selectedRow?.id !== row.id) return;
     timelineHydrating = false;
     if (raw == null) return;
+    hydrateStubChannelRow(row, raw);
     historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
     let incoming = messagesForDisplay(raw);
     // An immediate readback can lag the accepted mutation. Preserve its
@@ -4643,8 +4797,22 @@
       ? selectedRow.memberCount
       : (channelStatus?.memberCount ?? 0),
   );
+  /**
+   * A joined channel/group always ends up with a member pill once its
+   * roster or status resolves — showing it from the first paint (with the
+   * "·" placeholder count already built into `memberPillCount`) reserves
+   * its slot in `.channel-header-trailing` so the count arriving later
+   * never nudges the title. Only a row we already know will never get one
+   * (not joined, browse-only, or a DM/group with no roster concept) skips
+   * it entirely.
+   */
   const showMemberPill = $derived(
-    Boolean(selectedRow) && (memberPillCount > 0 || channelStatus != null),
+    Boolean(selectedRow) &&
+      (memberPillCount > 0 ||
+        channelStatus != null ||
+        (selectedRow!.kind === "channel" &&
+          !selectedRow!.browseOnly &&
+          (selectedRow!.membership ?? "joined") === "joined")),
   );
 
   function unwrapAdapter<T>(
@@ -5528,6 +5696,8 @@
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
         return { kind: "shared-files" };
+      case "projects":
+        return { kind: "projects", company: projectsCompany };
       case "extra":
         if (extraPageId) return extraDestination(extraPageId, extraPageParam);
         return { kind: "messages" };
@@ -5893,6 +6063,13 @@
         extraPageId = null;
         extraPageParam = null;
         break;
+      case "projects":
+        projectsCompany = next.company ?? null;
+        view = "projects";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
       case "dm-requests":
         dmRequestsFocusPairKey = next.pairKey ?? null;
         view = "dm-requests";
@@ -5942,9 +6119,10 @@
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
-          // Office is hidden for company channels; route any stale deep
-          // link that targeted it back to Chat.
-          companyTab = "chat";
+          // Team/Settings/Atlas/Office are not desktop tabs; a stale deep
+          // link targeting one of those is normalized back to Chat by
+          // `canonicalizeDestination` before it ever reaches here.
+          companyTab = next.companyTab ?? "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
           const messageId = next.messageId?.trim() || "";
@@ -7572,6 +7750,19 @@
       group: "Views",
       run: () => openLibrary("skills"),
     },
+    ...(adapter.kind !== "web"
+      ? [
+          {
+            id: "view.projects",
+            keys: "Mod+6",
+            label: "Projects",
+            group: "Views",
+            run: () => {
+              void navigate({ kind: "projects" });
+            },
+          } satisfies ShortcutBinding,
+        ]
+      : []),
     {
       id: "conversation.next",
       keys: "Mod+Shift+]",
@@ -7870,6 +8061,9 @@
     onopenMeetings={() => {
       void navigate({ kind: "meetings" });
     }}
+    onopenProjects={isWeb ? undefined : () => {
+      void navigate({ kind: "projects" });
+    }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
@@ -7941,9 +8135,10 @@
     </div>
   {/if}
 
-  {#if adapter.isAvailable("canSync") && membershipsToPull.length > 0}
+  {#if adapter.isAvailable("canSync") && (membershipsToPull.length > 0 || emailVerificationRequired)}
     <MembershipSyncBanner
       memberships={membershipsToPull}
+      emailVerificationRequired={emailVerificationRequired}
       syncing={membershipSyncPending}
       error={membershipSyncError}
       onsync={() => void syncMembership()}
@@ -8046,7 +8241,8 @@
           offscreen={phoneViewport && sidebarCollapsed}
           api={sidebarApi}
           {wakes}
-          {companies}
+          companies={effectiveCompanies}
+          onhomechannelresolved={handleHomeChannelResolved}
           {self}
           {isAdmin}
           accountLabel={resolvedAccountLabel}
@@ -8128,7 +8324,19 @@
             onopensettings={() => openSettings("notifications")}
           />
         </div>
-        {#if view === "shared-files"}
+        {#if view === "projects"}
+          <div class="projects-host" data-testid="projects-host">
+            <ProjectsHome
+              {adapter}
+              {companies}
+              slug={projectsCompany}
+              preferredSlug={selectedCompanySlug || null}
+              onslugchange={(slug) => {
+                void navigate({ kind: "projects", company: slug });
+              }}
+            />
+          </div>
+        {:else if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
             onback={() => {
@@ -8341,7 +8549,9 @@
                   {onopenurl}
                   active={companyTab}
                   tabs={companyTabsForHost}
-                  onselect={(id) => pushConversationSurface({ companyTab: id })}
+                  onselect={(id) => {
+                    pushConversationSurface({ companyTab: id });
+                  }}
                 />
               {:else if isProjectChannel}
                 <nav
@@ -8584,6 +8794,15 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => void leaveCurrentDestination()}
             />
+          {:else if isCompanyChannel && companyTab === "projects"}
+            <div class="company-projects-stage" data-testid="company-projects-tab-host">
+              <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
+              <CompanyProjectsPage
+                {adapter}
+                slug={selectedCompanySlug}
+                companyUid={selectedRow.companyUid ?? null}
+              />
+            </div>
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"
@@ -9231,7 +9450,7 @@
   :global(html[data-ui-size="compact"]:not([data-platform="windows"]))
     .desktop-shell.has-window-controls {
     --titlebar-height: calc(48px / 0.9);
-    --titlebar-leading-inset: calc(78px / 0.9);
+    --titlebar-leading-inset: calc(96px / 0.9);
   }
 
   :global(html[data-ui-size="large"]) .desktop-shell {
@@ -9241,7 +9460,7 @@
   :global(html[data-ui-size="large"]:not([data-platform="windows"]))
     .desktop-shell.has-window-controls {
     --titlebar-height: calc(48px / 1.12);
-    --titlebar-leading-inset: calc(78px / 1.12);
+    --titlebar-leading-inset: calc(96px / 1.12);
   }
 
   .desktop-body {
@@ -9274,6 +9493,35 @@
     /* In-pane destinations (Meetings, Notifications) are not under the
        overlay traffic lights — don't inherit the window-chrome gutter. */
     --titlebar-leading-inset: 16px;
+  }
+
+  .projects-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .projects-host > :global(*) {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  /* Projects tab inside a company channel: the header stays fixed above
+     this content area, so this host owns the scroller (same pattern as
+     `.ph-body` in ProjectsHome) and the hero + board scroll away together. */
+  .company-projects-stage {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px 24px 24px;
+  }
+  .company-projects-stage :global(.company-projects) {
+    height: auto;
   }
 
   .extra-page-host {

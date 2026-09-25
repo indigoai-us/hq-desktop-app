@@ -73,7 +73,7 @@ let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let startSync: ReturnType<typeof vi.fn>;
 
-function buildAdapter(): PlatformAdapter {
+function buildAdapter(emailVerificationRequired?: boolean): PlatformAdapter {
   startSync = vi.fn(async () => ok(undefined));
   return {
     kind: "desktop",
@@ -96,6 +96,12 @@ function buildAdapter(): PlatformAdapter {
           source: "journal",
           hqFolderPath: "/tmp/hq",
         }),
+      ...(emailVerificationRequired === undefined
+        ? {}
+        : {
+            listSyncableWorkspaces: async () =>
+              ok({ emailVerificationRequired }),
+          }),
     },
   } as unknown as PlatformAdapter;
 }
@@ -147,6 +153,7 @@ function createSyncEventHost() {
 async function mountApp(
   companies: Workspace[] | null,
   syncEvents: { listen: (e: string, h: Listener) => Promise<() => void> } | null = null,
+  emailVerificationRequired?: boolean,
 ): Promise<void> {
   host = document.createElement("div");
   host.className = "desktop-shell chat-shell";
@@ -154,7 +161,7 @@ async function mountApp(
   component = mount(DesktopApp, {
     target: host,
     props: {
-      adapter: buildAdapter(),
+      adapter: buildAdapter(emailVerificationRequired),
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
       wakes: createChatWakeBus(),
@@ -175,6 +182,15 @@ describe("DesktopApp membership sync banner", () => {
     expect(banner?.textContent).toContain("Added to Acme");
     expect(banner?.textContent).not.toContain("Personal");
     expect(banner?.textContent).not.toContain("Globex");
+  });
+
+  it("shows an email-verification notice when pending invites are skipped", async () => {
+    await mountApp([], null, true);
+    const notice = host.querySelector('[data-testid="email-verification-notice"]');
+    expect(notice?.textContent?.trim()).toBe(
+      "Verify your email to see pending company invites.",
+    );
+    expect(host.querySelector('[data-testid="membership-sync-now"]')).toBeNull();
   });
 
   it("starts a real sync through the platform adapter when acted on", async () => {

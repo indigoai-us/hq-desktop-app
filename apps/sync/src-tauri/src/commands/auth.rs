@@ -479,6 +479,13 @@ pub async fn has_stored_token() -> Result<bool, String> {
     cognito::has_non_empty_stored_token().await
 }
 
+/// Preserve unreadable token-store state for startup diagnostics.
+#[tauri::command]
+pub async fn get_stored_token_presence() -> String {
+    let presence = cognito::stored_token_presence().await;
+    hq_desktop_core::unexpected_surface::stored_token_presence_label(presence).to_string()
+}
+
 /// Sign out: clear the locally stored Cognito tokens (file + in-memory cache)
 /// and reset the Sentry user scope. After this, `get_auth_state` / a relaunch
 /// both report unauthenticated — without it, a frontend-only sign-out leaves the

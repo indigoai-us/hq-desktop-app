@@ -494,3 +494,80 @@ describe('hq-CLI updater creates a missing npm global install target and escalat
     expect(cli).toContain('paths::managed_npm_prefix_in(&root)');
   });
 });
+
+describe('hq-CLI Windows EBUSY recovery waits for app commands and records the bounded retry (HQ-DESKTOP-7X)', () => {
+  const cli = readRepoFile('src-tauri/src/commands/hq_cli_update.rs');
+  const processRs = readRepoFile('src-tauri/src/commands/process.rs');
+  const syncRs = readRepoFile('src-tauri/src/commands/sync.rs');
+  const core = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+
+  it('quiesces app-owned processes for each executor and holds admission through retries', () => {
+    const installFlow = cli.slice(cli.indexOf('async fn install_hq_cli_update_once('));
+    const pnpmAt = installFlow.indexOf('install_hq_cli_update_via_pnpm(&app');
+    const pnpmQuiesceAt = installFlow.indexOf('wait_for_cli_install_quiescence(');
+    const npmQuiesceAt = installFlow.indexOf(
+      'wait_for_cli_install_quiescence(',
+      pnpmQuiesceAt + 1,
+    );
+    const npmInstallAt = installFlow.indexOf('run_npm_install_with_retries(&npm');
+    const managedRetryAt = installFlow.indexOf('match managed_toolchain_retry(');
+
+    expect(pnpmQuiesceAt).toBeGreaterThanOrEqual(0);
+    expect(pnpmAt).toBeGreaterThan(pnpmQuiesceAt);
+    expect(npmQuiesceAt).toBeGreaterThan(pnpmAt);
+    expect(npmInstallAt).toBeGreaterThan(npmQuiesceAt);
+    expect(managedRetryAt).toBeGreaterThan(npmInstallAt);
+    expect(installFlow).not.toContain('drop(_cli_process_quiescence)');
+    expect(installFlow).toContain('CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT');
+    expect(cli).toContain(
+      'const CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);',
+    );
+    expect(processRs).toContain('pub async fn wait_for_cli_install_quiescence(');
+    const quiescence = processRs.slice(
+      processRs.indexOf('pub async fn wait_for_cli_install_quiescence('),
+      processRs.indexOf('#[cfg(target_os = "windows")]\nfn windows_process_open_error_means_exited'),
+    );
+    expect(quiescence).toContain('UPDATE_QUIESCE_REQUESTED');
+    expect(quiescence).toContain('UPDATE_SENSITIVE_OPERATIONS');
+    expect(quiescence).toContain('.active');
+    expect(quiescence).toContain('.keys()');
+    expect(quiescence).toContain('.retired');
+    expect(quiescence).toContain('.values()');
+    expect(quiescence).toContain('process_could_hold_hq_cli_install_target');
+    expect(quiescence).not.toContain('cancel_process_for_generation(');
+
+    // These long-running runners execute the separately pinned hq-cloud package,
+    // so they do not hold the global hq-cli install target.
+    expect(processRs).toContain('SYNC_PROCESS_HANDLE: &str = "hq-sync"');
+    expect(processRs).toContain('SYNC_DAEMON_PROCESS_HANDLE: &str = "hq-sync-daemon"');
+    expect(processRs).toContain('RECALL_SDK_PROCESS_HANDLE: &str = "recall-sdk"');
+    expect(syncRs).toContain('test_build_sync_spawn_args_pins_hq_cloud_package');
+    expect(syncRs).toContain('assert_eq!(HQ_CLOUD_PACKAGE, "@indigoai-us/hq-cloud");');
+  });
+
+  it('keeps the one-shot EBUSY retry distinct from managed Node repair and reports its evidence', () => {
+    const retry = cli.slice(
+      cli.indexOf('// Windows EBUSY while renaming a package under the selected prefix'),
+      cli.indexOf('\n    Ok(output)', cli.indexOf('// Windows EBUSY while renaming a package under the selected prefix')),
+    );
+    expect(retry).toContain('is_windows_locked_install_target_failure(');
+    expect(retry).toContain('should_retry_windows_busy_install_target(');
+    expect(retry).toContain('WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG');
+    expect(retry).toContain('LOCKED_BINARY_RETRY_BACKOFF');
+    expect(retry).toContain('WindowsBusyRetryOutcome::NotArmed');
+    expect(retry).toContain('WindowsBusyRetryOutcome::Succeeded');
+    expect(retry).toContain('WindowsBusyRetryOutcome::Failed');
+    expect(retry).toContain('WindowsBusyRetryOutcome::OtherFailure');
+    const retryAttemptAt = retry.indexOf('WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG');
+    const finalFailureClassificationAt = retry.indexOf(
+      'else if is_windows_locked_install_target_failure(',
+      retryAttemptAt,
+    );
+    expect(finalFailureClassificationAt).toBeGreaterThan(retryAttemptAt);
+    expect(core).toContain('pub enum WindowsBusyRetryOutcome');
+    expect(core).toContain('pub fn lock_holder_class(self)');
+    expect(core).toContain('npm_lock_holder_class');
+    expect(core).toContain('npm_windows_busy_retry_attempts');
+    expect(core).toContain('npm_windows_busy_retry_outcome');
+  });
+});

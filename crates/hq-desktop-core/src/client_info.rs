@@ -72,6 +72,20 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// burning the whole 15s on a TCP handshake that's never going to complete.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Per-request timeout override for endpoints hq-pro documents as
+/// hydrate/fan-out routes with their own longer deadline — currently
+/// `GET /v1/notify/channels` (hq-pro `notify-channels-throttle-budget.ts`:
+/// "Concurrency of the GET /v1/notify/channels hydrate/roster fan-out",
+/// `vault-request-deadline.ts`: `notify_channels` gets a 28s route deadline).
+/// 2026-09 regression: the roster response for an account with many channels
+/// runs ~800KB and the server-side per-channel hydrate fan-out can legitimately
+/// take longer than the blanket 15s [`REQUEST_TIMEOUT`], so reqwest aborted the
+/// body read mid-stream and surfaced the opaque `error decoding response body`
+/// (wrapping a `TimedOut` source) logged as `*_BODY_READ_FAIL` /
+/// `DM_NOTIFY_CHAN_POLL_ERROR`. Set above the server's own 28s deadline with
+/// margin so the client waits at least as long as the server is willing to.
+pub const HYDRATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
+
 /// Build a HeaderMap with our standard client-attribution headers.
 ///
 /// All three header values are ASCII compile-time constants, so the
@@ -103,6 +117,15 @@ pub fn client_headers() -> HeaderMap {
 /// wraps its call in `tokio::time::timeout(2s)` for a tighter budget; that
 /// wrapper becomes redundant once the client itself has a default, but it
 /// stays as defense-in-depth for the bot-invite hot path.
+///
+/// With the `gzip`/`brotli` reqwest features enabled (Cargo.toml), this
+/// client automatically sends `Accept-Encoding: gzip, br` and transparently
+/// decodes a compressed response body — callers never see `Content-Encoding`
+/// or compressed bytes. `.bytes()`/`.json()` yield the decoded payload; a raw
+/// `content_length()` read still reflects the on-wire (possibly compressed)
+/// size, which is why size-bounded downloads elsewhere in this workspace
+/// (`vault_s3.rs`, `hq_work.rs::http_get_bytes`) build their own client with
+/// `.no_gzip().no_brotli()` instead of using this helper.
 pub fn build_client() -> Client {
     Client::builder()
         .default_headers(client_headers())
@@ -110,6 +133,21 @@ pub fn build_client() -> Client {
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .unwrap_or_else(|_| Client::new())
+}
+
+/// Walk a `reqwest::Error`'s `source()` chain into one line, so a decode
+/// failure logs the real underlying cause (e.g. `operation timed out`,
+/// a hyper body error, a serde error) instead of just reqwest's generic
+/// top-level message (`error decoding response body`). Never includes
+/// response bytes — callers pass those separately, truncated, when safe.
+pub fn describe_error_chain(err: &dyn std::error::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut cur = err.source();
+    while let Some(src) = cur {
+        parts.push(src.to_string());
+        cur = src.source();
+    }
+    parts.join(" <- ")
 }
 
 #[cfg(test)]
@@ -187,6 +225,50 @@ mod tests {
             elapsed < Duration::from_secs(20),
             "build_client() did not time out (elapsed {elapsed:?}) — \
              a timeout regression has shipped",
+        );
+    }
+
+    /// `build_client()` must negotiate compression: send `Accept-Encoding`
+    /// naming gzip, and transparently decode a gzip-encoded response body so
+    /// callers see the original bytes, not the compressed wire payload.
+    /// Regression test for enabling the `gzip`/`brotli` reqwest features.
+    #[tokio::test]
+    async fn build_client_sends_accept_encoding_and_decodes_gzip_body() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        use wiremock::matchers::{header_regex, method, path};
+
+        let original = br#"{"channels":[{"channelId":"chn_1","name":"general"}]}"#;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/notify/channels"))
+            .and(header_regex("accept-encoding", "gzip"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-encoding", "gzip")
+                    .insert_header("content-type", "application/json")
+                    .set_body_bytes(compressed),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_client();
+        let resp = client
+            .get(format!("{}/v1/notify/channels", server.uri()))
+            .send()
+            .await
+            .expect("request should succeed");
+        assert!(resp.status().is_success());
+        let body = resp.text().await.expect("body should decode");
+        assert_eq!(
+            body,
+            String::from_utf8(original.to_vec()).unwrap(),
+            "build_client() did not transparently decode the gzip response body",
         );
     }
 }

@@ -397,6 +397,13 @@ export function createChatSidebarApi(
     },
     fetchDmThread: (args) =>
       call<DmThreadResponse>(adapter.messaging.fetchDmThread(args)),
+    logToFile: async (tag, message) => {
+      await call<void>(adapter.appShell.logToFile(tag, message));
+    },
+    ensureCompanyHomeChannel: (companyUid) =>
+      call<{ homeChannelId: string }>(
+        adapter.company.ensureHomeChannel(companyUid),
+      ),
     markDmThreadRead: (withPersonUid) =>
       call<void>(adapter.messaging.markDmThreadRead(withPersonUid)),
     markChannelRead: (channelId) =>

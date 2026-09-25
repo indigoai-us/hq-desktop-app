@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.322"
+version = "0.10.328"
 edition = "2021"
 
 [build-dependencies]
@@ -28,7 +28,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "gzip", "brotli", "rustls-tls", "stream"] }
 dirs = "6"
 rfd = "0.15"
 # Onboarding content stage (commands/content.rs): decompress + parse the

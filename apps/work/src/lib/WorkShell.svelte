@@ -574,6 +574,25 @@
     void rosterRefresher.refresh();
   }
 
+  /**
+   * `ensureCompanyHomeChannel` resolved a home channel for a roster row that
+   * didn't have one yet (US "Amass has no homeChannelId until restart" heal).
+   * The shell already applies the id to its own patched copy immediately
+   * (`DesktopApp.effectiveCompanies`) for correct chrome this session; patch
+   * this roster too so a re-render from `companies` (e.g. after a sort) still
+   * carries it, then refresh from the server in the background so the
+   * persisted value matches instead of drifting until the next full reload.
+   */
+  function handleHomeChannelResolved(companyUid: string, homeChannelId: string): void {
+    const uid = companyUid.trim();
+    const id = homeChannelId.trim();
+    if (!uid || !id) return;
+    companies = companies.map((c) =>
+      !c.homeChannelId && (c.cloudUid ?? "").trim() === uid ? { ...c, homeChannelId: id } : c,
+    );
+    void rosterRefresher.refresh();
+  }
+
   function acceptAuthSession(
     next: NonNullable<ReturnType<typeof nativeTenantFromSession>>,
   ): void {
@@ -912,6 +931,7 @@
       onopenurl={hostOpenUrl ?? openUrl}
       {wakes}
       {companies}
+      onhomechannelresolved={handleHomeChannelResolved}
       {syncEvents}
       onsignin={startReauth}
       {rosterStatus}

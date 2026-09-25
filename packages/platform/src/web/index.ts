@@ -177,24 +177,33 @@ export const WEB_PATHS = {
   moderationListing: (id: string) =>
     `/v1/moderation/listings/${encodeURIComponent(id)}`,
 
+  /** Dead route — hq-pro has no handler for GET /v1/companies/{uid}/deployments. Allowlisted in scripts/route-contract-check.mjs pending removal or a real handler. */
   companyDeployments: (slug: string) =>
     `/v1/companies/${encodeURIComponent(slug)}/deployments`,
   companySecrets: (slug: string) =>
     `/v1/companies/${encodeURIComponent(slug)}/secrets`,
   companyMembers: (slug: string) =>
     `/v1/companies/${encodeURIComponent(slug)}/members`,
+  /** Dead route — hq-pro has no handler for GET /v1/companies/{uid}/telemetry. Allowlisted in scripts/route-contract-check.mjs pending removal or a real handler. */
   companyTelemetry: (slug: string) =>
     `/v1/companies/${encodeURIComponent(slug)}/telemetry`,
+  /** Dead route — hq-pro has no handler for POST /v1/companies/{uid}/claim-invite. Allowlisted in scripts/route-contract-check.mjs pending removal or a real handler. */
   companyClaimInvite: (slug: string) =>
     `/v1/companies/${encodeURIComponent(slug)}/claim-invite`,
+  /** Dead route — hq-pro has no handler for POST /v1/companies/{uid}/connect. Allowlisted in scripts/route-contract-check.mjs pending removal or a real handler. */
   companyConnect: (slug: string) =>
     `/v1/companies/${encodeURIComponent(slug)}/connect`,
+  /** Dead route — hq-pro has no handler for GET /v1/companies/{uid}/summary. Allowlisted in scripts/route-contract-check.mjs pending removal or a real handler. */
   companySummary: (slug: string) =>
     `/v1/companies/${encodeURIComponent(slug)}/summary`,
+  /** hq-pro registers this route WITHOUT the /v1 prefix (board-activity.ts). */
   companyBoard: (slug: string) =>
-    `/v1/companies/${encodeURIComponent(slug)}/board`,
+    `/companies/${encodeURIComponent(slug)}/board`,
+  /** hq-pro registers this route WITHOUT the /v1 prefix (board-activity.ts). */
   companyActivity: (slug: string) =>
-    `/v1/companies/${encodeURIComponent(slug)}/activity`,
+    `/companies/${encodeURIComponent(slug)}/activity`,
+  companyHomeChannel: (companyUid: string) =>
+    `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
 
   feedback: "/v1/feedback/bug-report",
 
@@ -979,6 +988,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getSummary: (slug) => this.get(WEB_PATHS.companySummary(slug)),
     getBoard: (slug) => this.get(WEB_PATHS.companyBoard(slug)),
     getActivity: (slug) => this.get(WEB_PATHS.companyActivity(slug)),
+    ensureHomeChannel: (companyUid) =>
+      this.post(WEB_PATHS.companyHomeChannel(companyUid)),
   };
 
   readonly feedback: PlatformAdapter["feedback"] = {
@@ -1155,6 +1166,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       ),
     // Native banners are desktop-only (US-001). Web stays a no-op.
     showOsNotification: async () => ok(undefined),
+    // No desktop support log on the web host — console is the best-effort sink.
+    logToFile: async (tag, message) => {
+      console.info(`[${tag}]`, message);
+      return ok(undefined);
+    },
   };
 
   readonly updates: PlatformAdapter["updates"] = {

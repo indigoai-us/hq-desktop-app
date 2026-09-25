@@ -4,13 +4,32 @@
  * Regression tests for the sidebar "Companies" section click → open-home
  * path. Bug report: "when I click on the companies nothing is happening" —
  * clicking a company row in the "All" scope did nothing when its home
- * channel wasn't resolvable yet. Root cause: a company with no resolved
- * home row rendered as a plain, non-interactive `<div>` — a click there was
- * a structural no-op, not a bug in the open logic itself. These tests pin:
- *  - a resolved home channel opens on click (fires `onselect`);
- *  - an unresolved home channel is still clickable, retries resolution, and
- *    (on failure) leaves a `[companies] open-home-failed` log line instead
- *    of silently doing nothing (policy: never swallow errors).
+ * channel wasn't resolvable yet.
+ *
+ * The company's home channel id (`Workspace.homeChannelId`) normally comes
+ * straight from the roster — no client-side name/scope matching. When it's
+ * missing (a new/legacy company still provisioning server-side), the click
+ * calls the idempotent `ensureCompanyHomeChannel` endpoint (`POST
+ * /v1/companies/{uid}/home-channel`) instead of any client-side resolution.
+ * These tests pin:
+ *  - a home channel already loaded in the sidebar opens on click (fires
+ *    `onselect`);
+ *  - a home channel NOT yet loaded (e.g. the "All" scope) still opens, via
+ *    the generic "open a channel by id" path (`requestChannelOpen`) that
+ *    notifications and deep links use;
+ *  - a company with no `homeChannelId` calls `ensureCompanyHomeChannel` on
+ *    click, shows a subtle loading state while in flight, then opens the
+ *    returned channel;
+ *  - a failed `ensureCompanyHomeChannel` call retries automatically (with
+ *    backoff, up to 3 attempts total) and logs each attempt via
+ *    `[companies] open-failed company=<slug> attempt=<n>/3 reason=<...>` —
+ *    never a silent no-op;
+ *  - once retries are exhausted, Corey's product rule (never a raw red
+ *    error, always a heal path) means the row shows a quiet "Tap to retry"
+ *    hint — never the raw error text — and stays clickable so a click
+ *    re-runs the ensure attempt from scratch;
+ *  - with no `ensureCompanyHomeChannel` seam at all, the row stays disabled
+ *    and a click logs `[companies] open-disabled …`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -43,15 +62,28 @@ const INDIGO: Workspace = {
   brokenReason: null,
   invitedBy: null,
   invitedAt: null,
+  homeChannelId: "chn_home_indigo",
 };
 
 /** A second company whose home channel is NOT in the initial directory feed
- * (mirrors a company the directory hasn't synced yet). */
+ * (mirrors a company the directory hasn't synced that channel yet), but
+ * WHOSE id the roster already knows — no resolution needed, just navigation. */
 const STALLED: Workspace = {
   ...INDIGO,
   slug: "stalled",
   displayName: "Stalled Co",
   cloudUid: "cmp_stalled",
+  homeChannelId: "chn_home_stalled",
+};
+
+/** A third company with no home channel yet at all (new/legacy company still
+ * provisioning server-side). */
+const PROVISIONING: Workspace = {
+  ...INDIGO,
+  slug: "provisioning",
+  displayName: "Provisioning Co",
+  cloudUid: "cmp_provisioning",
+  homeChannelId: null,
 };
 
 const homeChannelRow: ChannelDirectoryRow = {
@@ -80,6 +112,8 @@ function stubApi(overrides: Partial<ChatSidebarApi> = {}): ChatSidebarApi {
     sendChannelMessage: async () => {},
     sendDm: async () => {},
     searchMessages: async () => ({ results: [] }),
+    logToFile: async () => {},
+    ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     ...overrides,
   };
 }
@@ -133,31 +167,19 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     expect(openOptions?.automatic).toBeFalsy();
   });
 
-  it("a company with no resolved home channel yet is still clickable, and opens once resolution succeeds", async () => {
+  it("a company whose home channel isn't loaded yet still opens on click, via the generic open-by-id path", async () => {
     const onselect = vi.fn();
-    let attempts = 0;
+    const openSpy = vi.fn();
+    window.addEventListener("hq:open-channel", (e) =>
+      openSpy((e as CustomEvent).detail),
+    );
     component = mount(ChatSidebar, {
       target: host,
       props: {
-        api: stubApi({
-          listChannels: async () => {
-            attempts += 1;
-            // First (background) attempt: nothing yet. Second (click retry):
-            // the channel has arrived.
-            if (attempts < 2) return { channels: [] };
-            return {
-              channels: [
-                {
-                  channelId: "chn_home_stalled",
-                  name: "stalled",
-                  scope: "company",
-                  companyUid: "cmp_stalled",
-                  isCompanyHome: true,
-                },
-              ],
-            };
-          },
-        }),
+        api: stubApi(),
+        // Only Indigo's home channel is in the loaded directory feed —
+        // Stalled Co's home channel id is known from the roster, but the
+        // channel itself hasn't synced into this sidebar's rows yet.
         seedDirectory: [homeChannelRow],
         companies: [INDIGO, STALLED],
         scopeUid: "all",
@@ -165,39 +187,38 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
       },
     });
 
-    let disabledRow: HTMLButtonElement | null = null;
+    let row: HTMLButtonElement | null = null;
     await vi.waitFor(() => {
-      disabledRow = host.querySelector<HTMLButtonElement>(
-        '[data-testid="chat-companies-row-disabled-cmp_stalled"]',
+      row = host.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-companies-row-cmp_stalled"]',
       );
-      expect(disabledRow).toBeTruthy();
+      expect(row).toBeTruthy();
     });
-    // Background resolver's first attempt already ran and found nothing —
-    // the row must stay present (and clickable), never silently vanish.
-    expect(disabledRow!.getAttribute("aria-disabled")).not.toBe("true");
-    expect(disabledRow!.disabled).toBeFalsy();
-    // Boot auto-selects the first conversation; isolate the explicit click.
     onselect.mockClear();
 
-    disabledRow!.click();
-    await vi.waitFor(() =>
-      expect(
-        onselect.mock.calls.some(([row]) => row.channelId === "chn_home_stalled"),
-      ).toBe(true),
+    row!.click();
+    await tick();
+
+    // Not resolved through onselect (no local row) — instead the generic
+    // "open a channel by id" event fires with the roster's homeChannelId,
+    // the same path deep links and notifications use.
+    expect(openSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ channelId: "chn_home_stalled" }),
     );
   });
 
-  it("logs a tagged, non-silent failure when a click's retry still can't resolve the home channel", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("ensureCompanyHomeChannel and logToFile are required: a no-homeChannelId row still attempts ensure on click, never silently disables", async () => {
+    const logSpy = vi.fn(async () => undefined);
+    const ensureSpy = vi.fn(async () => {
+      throw new Error("server unreachable");
+    });
     const onselect = vi.fn();
     component = mount(ChatSidebar, {
       target: host,
       props: {
-        api: stubApi({
-          listChannels: async () => ({ channels: [] }),
-        }),
+        api: stubApi({ logToFile: logSpy, ensureCompanyHomeChannel: ensureSpy }),
         seedDirectory: [homeChannelRow],
-        companies: [INDIGO, STALLED],
+        companies: [INDIGO, PROVISIONING],
         scopeUid: "all",
         onselect,
       },
@@ -206,30 +227,177 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     let disabledRow: HTMLButtonElement | null = null;
     await vi.waitFor(() => {
       disabledRow = host.querySelector<HTMLButtonElement>(
-        '[data-testid="chat-companies-row-disabled-cmp_stalled"]',
+        '[data-testid="chat-companies-row-disabled-cmp_provisioning"]',
       );
       expect(disabledRow).toBeTruthy();
     });
-    warnSpy.mockClear();
-    // Boot auto-selects the first conversation; isolate the explicit click.
+    expect(disabledRow!.title).toBe("No company channel yet");
     onselect.mockClear();
+    logSpy.mockClear();
 
     disabledRow!.click();
-    await vi.waitFor(() => {
-      const failedLine = warnSpy.mock.calls.find(([line]) =>
-        typeof line === "string" && line.startsWith("[companies] open-home-failed"),
-      );
-      expect(failedLine).toBeTruthy();
+    await vi.waitFor(
+      () => {
+        expect(ensureSpy).toHaveBeenCalledWith("cmp_provisioning");
+        expect(logSpy).toHaveBeenCalledWith(
+          "companies",
+          expect.stringMatching(
+            /^open-failed company=provisioning attempt=1\/3 reason=server unreachable$/,
+          ),
+        );
+      },
+      { timeout: 3000 },
+    );
+    expect(onselect).not.toHaveBeenCalled();
+  });
+
+  it("a no-homeChannelId row calls ensureCompanyHomeChannel on click, shows a loading state, then opens the returned channel", async () => {
+    const onselect = vi.fn();
+    const openSpy = vi.fn();
+    window.addEventListener("hq:open-channel", (e) =>
+      openSpy((e as CustomEvent).detail),
+    );
+    let resolveEnsure!: (v: { homeChannelId: string }) => void;
+    const ensureCompanyHomeChannel = vi.fn(
+      () => new Promise<{ homeChannelId: string }>((resolve) => (resolveEnsure = resolve)),
+    );
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({ ensureCompanyHomeChannel }),
+        seedDirectory: [homeChannelRow],
+        companies: [INDIGO, PROVISIONING],
+        scopeUid: "all",
+        onselect,
+      },
     });
 
-    // Never a silent no-op: the failed company's home channel never opens,
-    // but the row itself reflects the failure (not just console noise) so a
-    // user without devtools open still learns the click did something.
-    expect(
-      onselect.mock.calls.some(([row]) => row.channelId === "chn_home_stalled"),
-    ).toBe(false);
+    let disabledRow: HTMLButtonElement | null = null;
     await vi.waitFor(() => {
-      expect(disabledRow!.title).toMatch(/couldn't open/i);
+      disabledRow = host.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-companies-row-disabled-cmp_provisioning"]',
+      );
+      expect(disabledRow).toBeTruthy();
     });
+
+    disabledRow!.click();
+    expect(ensureCompanyHomeChannel).toHaveBeenCalledWith("cmp_provisioning");
+    // Loading state while in flight — never a name/scope-matched heuristic.
+    await vi.waitFor(() => expect(disabledRow!.getAttribute("aria-busy")).toBe("true"));
+
+    resolveEnsure({ homeChannelId: "chn_home_provisioning" });
+    await vi.waitFor(() =>
+      expect(openSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ channelId: "chn_home_provisioning" }),
+      ),
+    );
+    // The row is no longer disabled once it has a resolved homeChannelId.
+    await vi.waitFor(() =>
+      expect(
+        host.querySelector('[data-testid="chat-companies-row-disabled-cmp_provisioning"]'),
+      ).toBeNull(),
+    );
+  });
+
+  it("a failed ensureCompanyHomeChannel call retries with backoff, then shows a quiet heal hint — never the raw error text", async () => {
+    const logSpy = vi.fn(async () => undefined);
+    const ensureCompanyHomeChannel = vi.fn(async () => {
+      throw new Error("upstream unavailable");
+    });
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({ ensureCompanyHomeChannel, logToFile: logSpy }),
+        seedDirectory: [homeChannelRow],
+        companies: [INDIGO, PROVISIONING],
+        scopeUid: "all",
+      },
+    });
+
+    let disabledRow: HTMLButtonElement | null = null;
+    await vi.waitFor(() => {
+      disabledRow = host.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-companies-row-disabled-cmp_provisioning"]',
+      );
+      expect(disabledRow).toBeTruthy();
+    });
+    logSpy.mockClear();
+
+    disabledRow!.click();
+
+    // Retries 3 times total, with backoff, before giving up.
+    await vi.waitFor(
+      () => expect(ensureCompanyHomeChannel).toHaveBeenCalledTimes(3),
+      { timeout: 3000 },
+    );
+    for (const attempt of [1, 2, 3]) {
+      expect(logSpy).toHaveBeenCalledWith(
+        "companies",
+        `open-failed company=provisioning attempt=${attempt}/3 reason=upstream unavailable`,
+      );
+    }
+
+    // Corey's product rule: never a raw red error, always a heal path. The
+    // row's tooltip and inline hint are a quiet, neutral "tap to retry" —
+    // never the raw server/error text.
+    await vi.waitFor(() => expect(disabledRow!.title).toBe("Tap to retry"));
+    expect(disabledRow!.title).not.toMatch(/upstream unavailable/);
+    expect(host.textContent).not.toMatch(/upstream unavailable/);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    const status = host.querySelector(
+      '[data-testid="chat-companies-row-status-cmp_provisioning"]',
+    );
+    expect(status?.textContent?.trim()).toBe("Tap to retry");
+
+    // The row stays clickable — a click is the heal path, re-running ensure.
+    logSpy.mockClear();
+    ensureCompanyHomeChannel.mockClear();
+    disabledRow!.click();
+    await vi.waitFor(() => expect(ensureCompanyHomeChannel).toHaveBeenCalledWith("cmp_provisioning"));
+  });
+
+  it("retries an AUTH_REQUIRED failure and succeeds once the token has refreshed", async () => {
+    const openSpy = vi.fn();
+    window.addEventListener("hq:open-channel", (e) =>
+      openSpy((e as CustomEvent).detail),
+    );
+    let callCount = 0;
+    const ensureCompanyHomeChannel = vi.fn(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("AUTH_REQUIRED: home-channel (HTTP 401 Unauthorized)");
+      }
+      return { homeChannelId: "chn_home_provisioning" };
+    });
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({ ensureCompanyHomeChannel }),
+        seedDirectory: [homeChannelRow],
+        companies: [INDIGO, PROVISIONING],
+        scopeUid: "all",
+      },
+    });
+
+    let disabledRow: HTMLButtonElement | null = null;
+    await vi.waitFor(() => {
+      disabledRow = host.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-companies-row-disabled-cmp_provisioning"]',
+      );
+      expect(disabledRow).toBeTruthy();
+    });
+
+    disabledRow!.click();
+
+    await vi.waitFor(
+      () =>
+        expect(openSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ channelId: "chn_home_provisioning" }),
+        ),
+      { timeout: 3000 },
+    );
+    expect(ensureCompanyHomeChannel).toHaveBeenCalledTimes(2);
+    // Never surfaced as a raw error at any point during the retry.
+    expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 });

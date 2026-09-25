@@ -60,7 +60,9 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
     expect(getCompanySecrets).toContain('let url = secrets_url(&vault_base()?, &company_uid)?;');
     expect(getCompanySecrets).toContain('build_client() .get(&url)');
     expect(getCompanySecrets).toContain('parse_secrets_response(status, &text)');
-    expect(urlBuilder).toContain('format!( "{}/secrets/{}", base.trim_end_matches(\'/\'), company_uid )');
+    expect(urlBuilder).toContain(
+      'crate::routes::path_for(crate::routes::SECRETS, company_uid)',
+    );
     expect(getCompanySecrets).not.toMatch(/\.(post|put|patch)\s*\(/);
     expect(getCompanySecrets).not.toMatch(/fetch[_-]?secret|read[_-]?secret|get[_-]?secret[_-]?value/i);
     expect(urlBuilder).not.toMatch(/\/secret\/|\/value|\/reveal|\/decrypt/i);
