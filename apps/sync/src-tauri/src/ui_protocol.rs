@@ -148,10 +148,27 @@ fn canonical_within(root: &Path, candidate: &Path) -> Option<PathBuf> {
 }
 
 fn not_found() -> Response<Cow<'static, [u8]>> {
+    empty_response(StatusCode::NOT_FOUND)
+}
+
+fn empty_response(status: StatusCode) -> Response<Cow<'static, [u8]>> {
     Response::builder()
-        .status(StatusCode::NOT_FOUND)
+        .status(status)
         .body(Cow::Borrowed(&[] as &[u8]))
-        .expect("empty ui 404 body")
+        .expect("empty ui response body")
+}
+
+/// Status for a request that resolved to no file. WebView2 requests
+/// `/favicon.ico` on its own; the UI bundle ships none, and a 404 there is
+/// logged as a console error (which the Windows pre-auth smoke rejects). The
+/// Tauri asset protocol this replaces never 404'd it, so answer 204 instead.
+/// Every other missing file stays a 404.
+pub fn missing_file_status(request_path: &str) -> StatusCode {
+    if request_path == "/favicon.ico" {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
 }
 
 pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
@@ -163,7 +180,7 @@ pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         };
         let path = request.uri().path();
         let Some(resolved) = resolve_request_path(&root, path) else {
-            return not_found();
+            return empty_response(missing_file_status(path));
         };
         if std::env::var_os("HQ_UI_TRACE").is_some() {
             eprintln!("[hq-ui] {path} -> {}", resolved.display());
@@ -238,6 +255,13 @@ mod tests {
         let resolved = resolve_request_path(&root, "/settings/profile").expect("resolves");
         assert_eq!(resolved.file_name().unwrap(), "index.html");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_favicon_is_no_content_but_other_missing_files_are_not_found() {
+        assert_eq!(missing_file_status("/favicon.ico"), StatusCode::NO_CONTENT);
+        assert_eq!(missing_file_status("/assets/missing.js"), StatusCode::NOT_FOUND);
+        assert_eq!(missing_file_status("/nested/favicon.ico"), StatusCode::NOT_FOUND);
     }
 
     #[test]
