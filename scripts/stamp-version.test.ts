@@ -28,6 +28,8 @@ describe("stamp-version", () => {
     expect(() => assertValidVersion("not-a-version")).toThrow();
     expect(() => assertValidVersion("1.2.3")).not.toThrow();
     expect(() => assertValidVersion("1.2.3-beta.4")).not.toThrow();
+    expect(() => assertValidVersion("0.0.0-shelltest.12")).not.toThrow();
+    expect(() => assertValidVersion("1.2.3-rc.1")).toThrow();
   });
 
   it("renders version.json with a trailing newline", () => {

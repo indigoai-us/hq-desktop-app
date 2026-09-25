@@ -242,7 +242,11 @@ describe("release workflow channel contract", () => {
 
     expect(dispatch).toContain("workflow_dispatch:");
     expect(dispatch).toMatch(/tag:\n\s+description:.*Existing tag/);
-    expect(dispatch).toMatch(/tag:[\s\S]*?required: true/);
+    // `tag` is optional only so a shelltest run can omit it; validate still
+    // refuses a dispatch without one unless shelltest is set.
+    expect(dispatch).toMatch(/tag:[\s\S]*?required: false/);
+    expect(jobBody("validate")).toContain("workflow_dispatch requires an existing release tag.");
+    expect(jobBody("validate")).toContain("shelltest creates its own throwaway tag; do not pass tag.");
     expect(jobBody("validate")).toContain(
       "ref: refs/tags/${{ steps.classify.outputs.tag }}",
     );
@@ -276,6 +280,12 @@ describe("release workflow channel contract", () => {
       "v0.10.35-beta.01",
       "v0.10.35-alpha.00",
     ];
+
+    // The shelltest shape is classified only inside the shelltest branch
+    // (see "keeps shelltest prereleases throwaway and never latest").
+    const shelltest = "^v0\\.0\\.0-shelltest\\.[1-9][0-9]*$";
+    expect(patterns[0].source).toBe(shelltest);
+    patterns.shift();
 
     expect(patterns.map((pattern) => pattern.source)).toEqual([
       "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
@@ -631,7 +641,12 @@ describe("release workflow channel contract", () => {
 
     expect(jobBody("macos")).toContain("needs: validate");
     expect(jobBody("windows")).toContain("needs: validate");
-    expect(workflow.match(/ref: refs\/tags\//g)).toHaveLength(4);
+    for (const job of ["shell-key", "shell-macos", "ui", "assemble-macos"]) {
+      expect(jobBody(job)).toMatch(/needs: (validate|\[validate,)/);
+    }
+    // validate, macos (legacy), windows, publish, and the four prebuilt-shell
+    // jobs each check out the exact tag.
+    expect(workflow.match(/ref: refs\/tags\//g)).toHaveLength(8);
   });
 
   it("hands both platform builds the same stamped version bytes", () => {
@@ -891,9 +906,9 @@ exec "$REAL_NODE" "$@"
   it("publishes prereleases without advancing the stable latest alias", () => {
     const publish = jobBody("publish");
 
-    expect(publish).toContain("needs: [validate, macos, windows]");
+    expect(publish).toContain("needs: [validate, shell-key, macos, assemble-macos, windows]");
     expect(publish).toContain(
-      "needs.macos.result == 'success' && needs.windows.result == 'success'",
+      "(needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && needs.windows.result == 'success'",
     );
     expect(publish).not.toContain("needs.windows.result == 'failure'");
     expect(publish).toContain("Validate complete release artifact set");
@@ -1043,6 +1058,66 @@ exec "$REAL_NODE" "$@"
     expect(publish).toContain("scripts/macos-artifact-smoke.mjs");
   });
 
+  it("keeps shelltest prereleases throwaway and never latest", () => {
+    const dispatch = workflow.slice(0, workflow.indexOf("\njobs:"));
+    expect(dispatch).toMatch(/shelltest:\n[\s\S]*?default: false\n\s+type: boolean/);
+    expect(dispatch).toMatch(/legacy_build:\n[\s\S]*?default: false\n\s+type: boolean/);
+
+    // Classified as a prerelease that is never latest, and only in a
+    // shelltest run: a pushed or dispatched v0.0.0-shelltest.N tag is rejected.
+    const classify = stepBody(jobBody("validate"), "Validate tag format and classify channel");
+    const branch = classify.slice(
+      classify.indexOf('if [ "$SHELLTEST" = "true" ]; then\n            if ! [['),
+      classify.indexOf("elif [[ \"$TAG\""),
+    );
+    expect(branch).toContain('CHANNEL="shelltest"');
+    expect(branch).toContain('PRERELEASE="true"');
+    expect(branch).toContain('MAKE_LATEST="false"');
+
+    const publish = jobBody("publish");
+    const step = stepBody(publish, "Publish shelltest prerelease (never latest)");
+    expect(step).toContain("--prerelease --latest=false");
+    expect(step).toContain('"$MAKE_LATEST" != "false"');
+    expect(step).toContain('LATEST_AFTER" != "$LATEST_BEFORE"');
+    expect(step).not.toContain("latest.json");
+    for (const name of [
+      "Generate latest.json",
+      "Create versionless download aliases",
+      "Resolve atomic release state",
+      "Publish verified GitHub release",
+      "Promote stable release to latest",
+    ]) {
+      expect(stepBody(publish, name), name).toMatch(/^        if: \$\{\{ inputs\.shelltest != true/);
+    }
+    expect(jobBody("sync-version")).toContain("inputs.shelltest != true");
+    expect(jobBody("announce-build")).toContain("inputs.shelltest != true");
+    expect(jobBody("announce-result")).toContain("inputs.shelltest != true");
+
+    const cleanup = jobBody("shelltest-cleanup");
+    expect(cleanup).toContain("if: ${{ always() && inputs.shelltest == true }}");
+    expect(cleanup).toContain("TAG: v0.0.0-shelltest.${{ github.run_number }}");
+    expect(cleanup).toContain('gh release delete "$TAG"');
+    expect(cleanup).toContain('"repos/${REPOSITORY}/git/refs/tags/${TAG}"');
+  });
+
+  it("verifies the bundled shell key against the tagged sources before publishing", () => {
+    const assemble = jobBody("assemble-macos");
+    expect(assemble).toContain('> "$APP/Contents/Resources/shell-key.txt"');
+    expect(assemble).toContain("scripts/stamp-version.mjs");
+    expect(assemble.indexOf("- name: Assemble app bundle")).toBeLessThan(
+      assemble.indexOf("- name: Sign app bundle"),
+    );
+    const verify = stepBody(jobBody("publish"), "Verify bundled shell key matches the tagged sources");
+    expect(verify).toContain("node scripts/shell-hash.mjs");
+    expect(verify).toContain("HQ.app/Contents/Resources/shell-key.txt");
+    expect(verify).toContain('if [ "$EXPECTED" != "$ACTUAL" ]; then');
+    const shell = jobBody("shell-macos");
+    expect(shell).toContain("actions/cache/restore@v4");
+    expect(shell).toContain("gh release create shell-cache");
+    expect(shell).toContain("--prerelease --latest=false");
+    expect(shell).toContain("actions/cache/save@v4");
+  });
+
   it("smokes the signed macOS app as a non-Indigo identity before publish", () => {
     const macos = jobBody("macos");
     const publish = jobBody("publish");
@@ -1054,7 +1129,13 @@ exec "$REAL_NODE" "$@"
     expect(macos.indexOf("- name: Sign app bundle")).toBeLessThan(
       macos.indexOf("- name: Non-Indigo artifact smoke"),
     );
-    expect(publish).toContain("needs: [validate, macos, windows]");
+    expect(publish).toContain("needs: [validate, shell-key, macos, assemble-macos, windows]");
+    // The prebuilt-shell path runs the identical smoke after signing.
+    const assemble = jobBody("assemble-macos");
+    expect(stepBody(assemble, "Non-Indigo artifact smoke").trimEnd()).toBe(smoke.trimEnd());
+    expect(assemble.indexOf("- name: Sign app bundle")).toBeLessThan(
+      assemble.indexOf("- name: Non-Indigo artifact smoke"),
+    );
     expect(smoke).not.toContain("continue-on-error");
     expect(macos).not.toMatch(
       /Non-Indigo artifact smoke[\s\S]*?continue-on-error: true/,

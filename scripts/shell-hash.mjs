@@ -34,7 +34,39 @@ const SHELL_SOURCE_FILES = [
   "apps/sync/src-tauri/Cargo.lock",
   "apps/sync/src-tauri/Cargo.toml",
   "apps/sync/src-tauri/build.rs",
+  // macOS bundle inputs: the platform config, the Info.plist template, the
+  // entitlements, the tray helper source, and the Recall sidecar files the
+  // bundle copies into Resources (its node_modules come from the lockfile).
+  "apps/sync/src-tauri/tauri.macos.conf.json",
+  "apps/sync/src-tauri/Info.plist",
+  "apps/sync/src-tauri/Entitlements.plist",
+  "apps/sync/src-tauri/helper/hq-tray-helper.swift",
+  "apps/sync/sidecar/recall-sdk-bridge/bridge.mjs",
+  "apps/sync/sidecar/recall-sdk-bridge/recording-tracker.mjs",
+  "apps/sync/sidecar/recall-sdk-bridge/package.json",
+  "apps/sync/sidecar/recall-sdk-bridge/pnpm-lock.yaml",
 ];
+
+// The app package's own version is stamped from the release tag into
+// Cargo.toml and Cargo.lock on every release. The shell reads its version at
+// runtime (version.json / Info.plist), so that field must not change the key.
+const APP_PACKAGE = "hq-sync-menubar";
+
+/** Blank the app package's own `version = "..."` line in Cargo.toml text. */
+export function normalizeCargoToml(text) {
+  return text.replace(
+    /(\[package\][^[]*?\n)version\s*=\s*"[^"]*"/,
+    '$1version = ""',
+  );
+}
+
+/** Blank the app package's version in Cargo.lock text. */
+export function normalizeCargoLock(text) {
+  return text.replace(
+    new RegExp(`(name = "${APP_PACKAGE}"\\r?\\n)version = "[^"]*"`),
+    '$1version = ""',
+  );
+}
 
 const SHELL_SOURCE_DIRS_SINGLE = [
   "apps/sync/src-tauri/capabilities",
@@ -113,10 +145,21 @@ export async function computeShellHash(root, { rustToolchain, targetTriple } = {
   for (const rel of files) {
     const abs = join(root, rel);
     let contents;
-    if (rel === "apps/sync/src-tauri/tauri.conf.json") {
-      contents = normalizeTauriConf(await readFile(abs, "utf8"));
-    } else {
-      contents = await readFile(abs);
+    try {
+      if (rel === "apps/sync/src-tauri/tauri.conf.json") {
+        contents = normalizeTauriConf(await readFile(abs, "utf8"));
+      } else if (rel === "apps/sync/src-tauri/Cargo.toml") {
+        contents = normalizeCargoToml(await readFile(abs, "utf8"));
+      } else if (rel === "apps/sync/src-tauri/Cargo.lock") {
+        contents = normalizeCargoLock(await readFile(abs, "utf8"));
+      } else {
+        contents = await readFile(abs);
+      }
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+      // Optional single file absent (e.g. a unit-test fixture). Hash the
+      // absence so adding the file later changes the key.
+      contents = "<absent>";
     }
     hash.update(`\0path=${rel}\0len=${contents.length}\0`);
     hash.update(contents);

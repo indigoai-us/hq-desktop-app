@@ -425,9 +425,8 @@ fn main() {
         window.url = ui_protocol::ui_url(entry);
     }
 
-    let builder = ui_protocol::register_protocol(crate::recovery::register_protocol(
-        tauri::Builder::default(),
-    ))
+    let builder = crate::recovery::register_protocol(tauri::Builder::default());
+    let builder = ui_protocol::register_protocol(builder)
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
             webview_asset_cache::handle_page_load(webview.label(), payload.event());

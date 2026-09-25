@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { computeShellHash, normalizeTauriConf } from "./shell-hash.mjs";
+import { computeShellHash, normalizeCargoLock, normalizeCargoToml, normalizeTauriConf } from "./shell-hash.mjs";
 
 async function makeFixture() {
   const root = await mkdtemp(join(tmpdir(), "shell-hash-"));
@@ -89,5 +89,56 @@ describe("shell-hash", () => {
     const a = normalizeTauriConf(JSON.stringify({ b: 1, a: 2, version: "1.0.0" }));
     const b = normalizeTauriConf(JSON.stringify({ a: 2, b: 1, version: "9.9.9" }));
     expect(a).toBe(b);
+  });
+
+  it("does not change when only the app package version in Cargo.toml / Cargo.lock changes", async () => {
+    const root = await makeFixture();
+    cleanup.push(root);
+    const toml = (v: string) => `[package]\nname = "hq-sync-menubar"\nversion = "${v}"\nedition = "2021"\n`;
+    const lock = (v: string) =>
+      `[[package]]\nname = "hq-sync-menubar"\nversion = "${v}"\n\n[[package]]\nname = "serde"\nversion = "1.0.0"\n`;
+    await writeFile(join(root, "apps/sync/src-tauri/Cargo.toml"), toml("0.10.328"));
+    await writeFile(join(root, "apps/sync/src-tauri/Cargo.lock"), lock("0.10.328"));
+    const before = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
+
+    await writeFile(join(root, "apps/sync/src-tauri/Cargo.toml"), toml("0.0.0-shelltest.7"));
+    await writeFile(join(root, "apps/sync/src-tauri/Cargo.lock"), lock("0.0.0-shelltest.7"));
+    const after = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
+
+    expect(after).toBe(before);
+  });
+
+  it("still changes when a dependency version in Cargo.lock changes", () => {
+    const lock = (v: string) => `[[package]]\nname = "hq-sync-menubar"\nversion = "1.0.0"\n\n[[package]]\nname = "serde"\nversion = "${v}"\n`;
+    expect(normalizeCargoLock(lock("1.0.0"))).not.toBe(normalizeCargoLock(lock("1.0.1")));
+    expect(normalizeCargoToml('[package]\nname = "x"\nversion = "1"\n[dependencies]\nserde = { version = "1" }\n')).toContain(
+      'serde = { version = "1" }',
+    );
+  });
+
+  it("changes when a bundled macOS input (Recall sidecar lockfile, tray helper) changes", async () => {
+    const root = await makeFixture();
+    cleanup.push(root);
+    const before = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
+
+    await mkdir(join(root, "apps/sync/sidecar/recall-sdk-bridge"), { recursive: true });
+    await writeFile(join(root, "apps/sync/sidecar/recall-sdk-bridge/pnpm-lock.yaml"), "lockfileVersion: 9\n");
+    const withSidecar = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
+    expect(withSidecar).not.toBe(before);
+
+    await mkdir(join(root, "apps/sync/src-tauri/helper"), { recursive: true });
+    await writeFile(join(root, "apps/sync/src-tauri/helper/hq-tray-helper.swift"), "print(1)\n");
+    const withHelper = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
+    expect(withHelper).not.toBe(withSidecar);
+  });
+
+  it("does not change for a frontend-only edit", async () => {
+    const root = await makeFixture();
+    cleanup.push(root);
+    const before = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
+    await mkdir(join(root, "apps/sync/src"), { recursive: true });
+    await writeFile(join(root, "apps/sync/src/App.svelte"), "<p>changed</p>\n");
+    const after = await computeShellHash(root, { rustToolchain: "1.80.0", targetTriple: "universal-apple-darwin" });
+    expect(after).toBe(before);
   });
 });

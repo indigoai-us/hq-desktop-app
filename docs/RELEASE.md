@@ -702,29 +702,53 @@ The publish job attaches these assets to the GitHub Release:
 
 Both macOS entries point at the universal `HQ.app.tar.gz` updater archive.
 
-## Prebuilt shell (design, ci/prebuilt-shell — foundational pieces landed, workflow restructuring not yet)
+## Prebuilt shell (ci/prebuilt-shell)
 
 Goal: make a UI-only release rebuild only the frontend, not the compiled Rust
-shell, cutting release time. Full design, current status, and what remains
-is in the PR description for branch `ci/prebuilt-shell`. Summary of the
-pieces that landed in that PR:
+shell. macOS now builds this way by default; Windows still uses its original
+jobs.
 
-- `scripts/shell-hash.mjs` — computes the shell cache key (Rust sources,
-  Cargo.lock/toml, build.rs, capabilities, icons, toolchain + target triple;
-  excludes the app version and frontend).
-- `scripts/stamp-version.mjs` — assemble-time version stamping: writes
-  `version.json` into the bundle Resources and patches macOS
-  `Info.plist` CFBundleShortVersionString/CFBundleVersion.
-- `crates/hq-desktop-core/src/runtime_version.rs` — runtime version
-  resolution (`HQ_APP_VERSION` test/dev override → macOS stamped Info.plist
-  `CFBundleShortVersionString` → `Resources/version.json` → compile-time
-  `APP_VERSION` fallback). Every app-version read in the app goes through
-  `apps/sync/src-tauri/src/app_version.rs`, and `main.rs` writes the
-  resolved version into Tauri's `PackageInfo` so the updater plugin's own
-  "current version" is the stamped one too.
+Pieces:
 
-Not yet done: the `release.yml` job restructuring (`shell-*`/`ui`/`assemble-*`
-jobs), `cache-warm.yml` wiring, the `legacy_build` fallback input, a live
-cold/warm dual run with measured timings, Windows exe stamping (rcedit),
-signing/notarization integration, and local install verification. See the PR
-body for why and for suggested next steps.
+- `scripts/shell-hash.mjs` computes the shell cache key from Rust sources,
+  Cargo.lock/Cargo.toml (with the app package's own version blanked),
+  build.rs, capabilities, icons, the macOS bundle inputs (platform config,
+  Info.plist, entitlements, tray helper source, Recall sidecar files and
+  lockfile), the rustc version and the target. The app version and the
+  frontend are excluded.
+- `scripts/stamp-version.mjs` writes `version.json` into the bundle Resources
+  and patches the macOS `Info.plist` version keys at assemble time.
+- `crates/hq-desktop-core/src/runtime_version.rs` resolves the app version at
+  runtime (`HQ_APP_VERSION` override, then the stamped `Info.plist`, then
+  `Resources/version.json`, then the compile-time `APP_VERSION`).
+
+`release.yml` macOS jobs:
+
+1. `shell-key` computes the key (and pins the rustc version it used).
+2. `shell-macos` restores `shell-macos-<key>` from the Actions cache, then
+   from the `shell-cache` prerelease (created on first use, never latest). On
+   a miss it builds the unsigned shell with the placeholder UI, uploads its
+   debug files to Sentry, and saves it to both stores.
+3. `ui` builds the frontend once.
+4. `assemble-macos` puts the UI into `Contents/Resources/ui`, writes
+   `Contents/Resources/shell-key.txt`, stamps the version, then signs,
+   notarizes, staples, builds the DMG and updater archive, and runs the
+   non-Indigo smoke with the same steps and secrets as the legacy job.
+5. `publish` recomputes the key from the tag and fails if it differs from
+   the bundled `shell-key.txt`.
+
+The legacy single-job macOS build is still available: dispatch the workflow
+with `legacy_build=true`.
+
+`HQ_BUILD_COMMIT` (the Sentry `build_commit` tag) is the commit that built the
+shell. When a cached shell is reused it is an older commit than the tag,
+which is correct for native crashes because that is the native code running.
+
+### Pipeline test (shelltest)
+
+`gh workflow run release.yml -R indigoai-us/hq-desktop-app --ref <branch> -f shelltest=true`
+creates the tag `v0.0.0-shelltest.<run_number>` at the branch head and runs
+the whole pipeline, including Windows. It publishes a prerelease that is never
+latest, with no `latest.json` and no versionless aliases. It skips version
+sync and the #hq-dev announcements. The `shelltest-cleanup` job always deletes
+the release and the tag at the end.

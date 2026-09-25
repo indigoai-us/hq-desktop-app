@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Release builds for macOS now reuse the compiled app shell when only the
+  interface changed, so those releases build faster. No visible change for
+  users.
 - Started the prebuilt-shell release pipeline: added a shell cache-key script,
   an assemble-time version stamping script, and a runtime version resolver so
   the compiled native shell no longer needs to know its own release version at

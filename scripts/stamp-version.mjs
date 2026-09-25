@@ -20,7 +20,7 @@
 // script — see the PR description for why.
 import { readFile, writeFile } from "node:fs/promises";
 
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:beta|alpha)\.(0|[1-9]\d*))?$/;
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:beta|alpha|shelltest)\.(0|[1-9]\d*))?$/;
 
 export function assertValidVersion(version) {
   if (!SEMVER.test(version)) {
