@@ -8,40 +8,21 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Release builds for Windows now reuse the compiled app shell when only the
-  interface changed, matching macOS. The packaging step no longer recompiles
-  the UI or the Recall sidecar on the Windows runner, which was failing every
+- Releases no longer rebuild the native app when only the interface changed.
+  The compiled app shell for macOS, Windows x64 and Windows arm64 is built
+  once per change to the native sources, cached, and reused across releases;
+  each release only builds the interface, stamps the release version into the
+  bundle (macOS Info.plist, Windows exe version and installer metadata, and a
+  `version.json` the app reads at runtime), then signs and packages. A release
+  with a warm cache takes about 8 minutes end to end instead of roughly 30.
+  Publishing fails if any bundle carries a shell that does not match the
+  tagged sources. If the new pipeline ever needs to be bypassed, dispatch the
+  release manually with `legacy_build: true` to use the old single-job build
+  on both platforms. No visible change for users.
+- The app now loads its interface from the installed bundle at runtime and
+  reports the installed release's version (update checks, tray menu,
+  telemetry, request headers) even when its shell was compiled for an earlier
   release. No visible change for users.
-- Release builds for macOS now reuse the compiled app shell when only the
-  interface changed, so those releases build faster. No visible change for
-  users.
-- Started the prebuilt-shell release pipeline: added a shell cache-key script,
-  an assemble-time version stamping script, and a runtime version resolver so
-  the compiled native shell no longer needs to know its own release version at
-  compile time. Groundwork for cutting UI-only release time; the workflow
-  restructuring that uses these pieces is still in progress (see
-  `docs/RELEASE.md`).
-- The desktop app's UI is now loaded from a runtime resource directory
-  instead of being compiled into the binary — the app can get a new UI
-  without a full rebuild. No visible change for users.
-- Fixed the runtime-loaded UI so it actually appears: the app's navigation
-  guard now allows the new UI address, every pop-up window (banners, call,
-  permissions, drift detail, new files, desktop view) loads from it, and a
-  bundle always prefers the UI assembled into it over a local dev build.
-- The app now reads its own version at runtime from the version stamped into
-  the installed bundle (macOS Info.plist, or `version.json` next to the app),
-  so update checks, the tray menu, telemetry, and request headers report the
-  release you actually installed even when the app shell was built for an
-  earlier release.
-- Rebuilt the release pipeline so a UI-only change no longer rebuilds the
-  native app on any platform: the compiled shell (macOS, Windows x64, Windows
-  arm64) is built once, cached, and reused across releases; only the
-  interface is rebuilt and stamped in at release time. A warm release now
-  takes about 6 minutes for macOS and well under that for Windows once the
-  shell cache is populated, down from roughly 30 minutes end to end. Set
-  `legacy_build: true` on a manual release dispatch to fall back to the old
-  single-job build path for either platform if the new pipeline ever needs to
-  be bypassed. No visible change for users beyond faster releases.
 
 ## [0.10.328] — 2026-09-25
 
