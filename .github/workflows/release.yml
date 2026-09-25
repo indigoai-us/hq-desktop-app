@@ -3404,6 +3404,8 @@ jobs:
           for ARCH in x64 arm64; do
             mkdir -p "$KEYS/msi-$ARCH"
             msiextract -C "$KEYS/msi-$ARCH" "release/HQ_${VERSION}_${ARCH}.msi" >/dev/null
+            echo "HQ_${VERSION}_${ARCH}.msi $(msiinfo export "release/HQ_${VERSION}_${ARCH}.msi" Property | grep -E '^ProductVersion' | tr '\t' '=' | tr -d '\r')" | tee -a "$GITHUB_STEP_SUMMARY"
+            find "$KEYS/msi-$ARCH" -type f -name version.json -exec cat {} \; | tee -a "$GITHUB_STEP_SUMMARY"
             FOUND="$(find "$KEYS/msi-$ARCH" -type f -name shell-key.txt | head -n 1)"
             if [ -n "$FOUND" ]; then cp "$FOUND" "$KEYS/windows-$ARCH.txt"; fi
           done
