@@ -17,6 +17,10 @@ The release moves it under the version it ships in.
 - The desktop app's UI is now loaded from a runtime resource directory
   instead of being compiled into the binary — the app can get a new UI
   without a full rebuild. No visible change for users.
+- Fixed the runtime-loaded UI so it actually appears: the app's navigation
+  guard now allows the new UI address, every pop-up window (banners, call,
+  permissions, drift detail, new files, desktop view) loads from it, and a
+  bundle always prefers the UI assembled into it over a local dev build.
 
 ## [0.10.328] — 2026-09-25
 

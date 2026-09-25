@@ -32,6 +32,17 @@ const CSP: &str = "img-src 'self' data: asset: blob: https://hq-marketplace-asse
 /// standalone with no `Resources/ui` assembled yet) — callers must treat
 /// that as every request 404ing rather than panicking.
 pub fn ui_root_dir() -> Option<PathBuf> {
+    // An assembled `Resources/ui` always wins, including in debug builds, so
+    // a locally built bundle serves exactly what was assembled into it (this
+    // is what lets a UI-only change be dropped into a bundle without a Rust
+    // rebuild). The dev `../dist` is only a fallback for `tauri dev` / bare
+    // `cargo run`, where no bundle exists.
+    if let Some(resources) = hq_desktop_core::runtime_version::resources_dir_from_current_exe() {
+        let ui_dir = resources.join("ui");
+        if ui_dir.is_dir() {
+            return ui_dir.canonicalize().ok();
+        }
+    }
     #[cfg(debug_assertions)]
     {
         let dev_dist = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dist");
@@ -39,13 +50,18 @@ pub fn ui_root_dir() -> Option<PathBuf> {
             return dev_dist.canonicalize().ok();
         }
     }
-    let resources = hq_desktop_core::runtime_version::resources_dir_from_current_exe()?;
-    let ui_dir = resources.join("ui");
-    if ui_dir.is_dir() {
-        ui_dir.canonicalize().ok()
-    } else {
-        None
-    }
+    None
+}
+
+/// Log, once per process, which directory the UI is served from (or that
+/// none was found). Makes "which UI is this bundle running?" answerable from
+/// the app log without attaching a debugger.
+fn log_ui_root_once(root: Option<&Path>) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| match root {
+        Some(dir) => eprintln!("[hq-ui] serving UI from {}", dir.display()),
+        None => eprintln!("[hq-ui] no UI directory found (no Resources/ui and no dev dist); every request will 404"),
+    });
 }
 
 /// Build the `WebviewUrl` a window should load for a given entry file
@@ -140,15 +156,24 @@ fn not_found() -> Response<Cow<'static, [u8]>> {
 
 pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.register_uri_scheme_protocol(SCHEME, |_ctx, request| {
-        let Some(root) = ui_root_dir() else {
+        let root = ui_root_dir();
+        log_ui_root_once(root.as_deref());
+        let Some(root) = root else {
             return not_found();
         };
         let path = request.uri().path();
         let Some(resolved) = resolve_request_path(&root, path) else {
             return not_found();
         };
-        let Ok(bytes) = std::fs::read(&resolved) else {
-            return not_found();
+        if std::env::var_os("HQ_UI_TRACE").is_some() {
+            eprintln!("[hq-ui] {path} -> {}", resolved.display());
+        }
+        let bytes = match std::fs::read(&resolved) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("[hq-ui] failed to read {}: {err}", resolved.display());
+                return not_found();
+            }
         };
         Response::builder()
             .header("Content-Type", mime_for(&resolved))
