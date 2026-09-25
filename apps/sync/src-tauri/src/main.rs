@@ -359,7 +359,17 @@ fn main() {
     // Wire the foundation crate's injected dependencies before anything reads them:
     //  - the user-facing client version (from build-time APP_VERSION), and
     //  - the feature-gate email-claim source (Cognito token read + JWT decode).
-    util::client_info::set_client_version(env!("APP_VERSION"));
+    // Prebuilt-shell pipeline: the shell binary is compiled once and reused
+    // across releases, so the real release version is stamped into
+    // Resources/version.txt at assemble time (stamp-version.mjs) and read
+    // back here — env!("APP_VERSION") is only the dev/fallback value now.
+    // See crates/hq-desktop-core/src/runtime_version.rs.
+    let resources_dir = hq_desktop_core::runtime_version::resources_dir_from_current_exe();
+    let resolved_version = hq_desktop_core::runtime_version::resolve_app_version(
+        resources_dir.as_deref(),
+        env!("APP_VERSION"),
+    );
+    util::client_info::set_client_version(resolved_version);
     util::feature_gate::set_email_claim_fetcher(|| {
         Box::pin(async {
             let tokens = commands::cognito::get_tokens().await.ok().flatten()?;

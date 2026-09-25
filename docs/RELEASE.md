@@ -701,3 +701,27 @@ The publish job attaches these assets to the GitHub Release:
 - `windows-aarch64`
 
 Both macOS entries point at the universal `HQ.app.tar.gz` updater archive.
+
+## Prebuilt shell (design, ci/prebuilt-shell — foundational pieces landed, workflow restructuring not yet)
+
+Goal: make a UI-only release rebuild only the frontend, not the compiled Rust
+shell, cutting release time. Full design, current status, and what remains
+is in the PR description for branch `ci/prebuilt-shell`. Summary of the
+pieces that landed in that PR:
+
+- `scripts/shell-hash.mjs` — computes the shell cache key (Rust sources,
+  Cargo.lock/toml, build.rs, capabilities, icons, toolchain + target triple;
+  excludes the app version and frontend).
+- `scripts/stamp-version.mjs` — assemble-time version stamping: writes
+  `version.txt` into the bundle Resources and patches macOS
+  `Info.plist` CFBundleShortVersionString/CFBundleVersion.
+- `crates/hq-desktop-core/src/runtime_version.rs` — runtime version
+  resolution (`HQ_APP_VERSION` env → stamped `version.txt` → compile-time
+  `APP_VERSION` fallback), wired into `client_info::CLIENT_VERSION` via
+  `main.rs`.
+
+Not yet done: the `release.yml` job restructuring (`shell-*`/`ui`/`assemble-*`
+jobs), `cache-warm.yml` wiring, the `legacy_build` fallback input, a live
+cold/warm dual run with measured timings, Windows exe stamping (rcedit),
+signing/notarization integration, and local install verification. See the PR
+body for why and for suggested next steps.

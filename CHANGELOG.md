@@ -8,6 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Started the prebuilt-shell release pipeline: added a shell cache-key script,
+  an assemble-time version stamping script, and a runtime version resolver so
+  the compiled native shell no longer needs to know its own release version at
+  compile time. Groundwork for cutting UI-only release time; the workflow
+  restructuring that uses these pieces is still in progress (see
+  `docs/RELEASE.md`).
+
 ## [0.10.328] — 2026-09-25
 
 - Fixed the "Setting up…" spinner some Companies rows got stuck on: the
