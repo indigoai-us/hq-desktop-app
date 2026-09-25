@@ -4315,25 +4315,18 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     );
     let runner_fatal_class_seen = runner_fatal_class != RunnerFatalClass::None
         && runner_fatal_class != RunnerFatalClass::Unknown;
-    let fatal_reason = if runner_fatal_class == RunnerFatalClass::Unknown {
-        Some("windows_fault_without_known_stderr_signature".to_string())
-    } else {
-        last_stderr
-            .filter(|line| {
-                hq_desktop_core::sync_outcome::classify_runner_fatal_diagnostic_class(line).seen()
-            })
-            .map(str::to_string)
-            .or_else(|| {
-                context
-                    .runner_fatal_lines
-                    .iter()
-                    .rev()
-                    .find(|line| {
-                        hq_desktop_core::sync_outcome::classify_runner_fatal_diagnostic_class(line)
-                            .seen()
-                    })
-                    .cloned()
-            })
+    let fatal_reason = match runner_fatal_class {
+        RunnerFatalClass::None => None,
+        RunnerFatalClass::Unknown => Some("windows_fault_without_known_stderr_signature"),
+        RunnerFatalClass::HeapOom => Some("v8_heap_exhaustion_marker_matched"),
+        RunnerFatalClass::V8Fatal => Some("v8_fatal_error_marker_matched"),
+        RunnerFatalClass::Abort => Some("node_abort_marker_matched"),
+        RunnerFatalClass::Fastfail => Some("windows_fastfail_marker_matched"),
+        RunnerFatalClass::LibuvAssert => Some("libuv_assertion_signature_matched"),
+        RunnerFatalClass::LibuvFatalSyscall => Some("libuv_syscall_signature_matched"),
+        RunnerFatalClass::NodeCheckAbort => Some("node_check_abort_signature_matched"),
+        RunnerFatalClass::NodeFatal => Some("node_fatal_signature_matched"),
+        _ => Some("runner_fatal_signature_matched"),
     };
 
     // Assertion identity (HQ-DESKTOP-50), derived from the SAME source as the
@@ -14341,7 +14334,7 @@ mod tests {
         assert_eq!(recorded_tag(event, "runner_fatal_class"), "heap_oom");
         assert_eq!(recorded_tag(event, "runner_fatal_source"), "stderr");
         let fatal_reason = recorded_string_extra(event, "runner_fatal_reason");
-        assert!(fatal_reason.starts_with("FATAL ERROR:"));
+        assert_eq!(fatal_reason, "v8_heap_exhaustion_marker_matched");
         assert!(fatal_reason.len() <= hq_telemetry::RUNNER_FATAL_REASON_LIMIT_BYTES);
         assert_eq!(recorded_tag(event, "watcher_job_process_count_bucket"), "unknown");
         assert_eq!(recorded_tag(event, "watcher_job_largest_process_kind"), "unknown");
