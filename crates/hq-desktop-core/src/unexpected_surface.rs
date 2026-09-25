@@ -1,3 +1,5 @@
+use crate::cognito::StoredTokenPresence;
+
 /// Returns true when the machine shows evidence it was already set up and
 /// signed in, making a sign-in or onboarding surface unexpected.
 pub fn prior_setup_detected(
@@ -39,6 +41,15 @@ pub fn token_presence_tag(presence: &str) -> &'static str {
         "present" => "present",
         "absent" => "absent",
         _ => "unknown",
+    }
+}
+
+/// Preserve the backend's tri-state token-store read result in diagnostics.
+pub fn stored_token_presence_label(presence: StoredTokenPresence) -> &'static str {
+    match presence {
+        StoredTokenPresence::Present => "present",
+        StoredTokenPresence::Absent => "absent",
+        StoredTokenPresence::Unreadable => "unknown",
     }
 }
 
@@ -274,6 +285,29 @@ mod tests {
             p.first_run_completed,
             p.token_file_exists,
         ));
+    }
+
+    #[test]
+    fn unreadable_token_store_stays_unknown_in_startup_diagnostics() {
+        assert_eq!(
+            stored_token_presence_label(StoredTokenPresence::Present),
+            "present"
+        );
+        assert_eq!(
+            stored_token_presence_label(StoredTokenPresence::Absent),
+            "absent"
+        );
+        assert_eq!(
+            stored_token_presence_label(StoredTokenPresence::Unreadable),
+            "unknown"
+        );
+        assert_eq!(
+            session_restore_state_tag(
+                false,
+                stored_token_presence_label(StoredTokenPresence::Unreadable),
+            ),
+            "unauthenticated_token_unknown"
+        );
     }
 
     #[test]

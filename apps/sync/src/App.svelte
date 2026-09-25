@@ -22,6 +22,7 @@
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { unexpectedSurfaceForState } from './lib/unexpected-startup-surface';
   import {
+    normalizeTokenPresence,
     resolveStartupState,
     startupSurface,
     type StartupPhase,
@@ -1723,8 +1724,8 @@
     // Raw token-file presence must not override a failed verdict; it is
     // captured only to select the friendly reauth copy after validation
     // clears an expired session.
-    const tokenPresence: StartupProbeResult['tokenPresence'] = await invoke<boolean>('has_stored_token')
-      .then((present) => (present ? 'present' : 'absent'))
+    const tokenPresence: StartupProbeResult['tokenPresence'] = await invoke<unknown>('get_stored_token_presence')
+      .then(normalizeTokenPresence)
       .catch((err) => {
         console.warn('startup token presence probe failed; recording unknown:', err);
         return 'unknown';

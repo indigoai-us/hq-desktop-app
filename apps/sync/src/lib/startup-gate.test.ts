@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  normalizeTokenPresence,
   resolveStartupState,
   startupSurface,
   type StartupProbeResult,
@@ -71,6 +72,15 @@ describe('startupSurface', () => {
     expect(
       startupSurface({ phase: 'resolved', lifecycleState: null, authenticated: true }),
     ).toBe('signed-in');
+  });
+});
+
+describe('normalizeTokenPresence', () => {
+  it('preserves backend tri-state and keeps unrecognized values unknown', () => {
+    expect(normalizeTokenPresence('present')).toBe('present');
+    expect(normalizeTokenPresence('absent')).toBe('absent');
+    expect(normalizeTokenPresence('unknown')).toBe('unknown');
+    expect(normalizeTokenPresence('unreadable')).toBe('unknown');
   });
 });
 
