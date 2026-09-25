@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Simplified how the desktop app finds a company's main channel: it now opens
+  the exact channel the server names (`homeChannelId`), instead of guessing
+  from the channel's scope and name. This removes the old on-demand lookup,
+  retry state, and spinner in the sidebar's "Companies" section — a company's
+  home channel opens immediately, or the row shows "No company channel yet."
 - The desktop app now asks for (and transparently decodes) compressed
   responses from the server, so the same data moves over the wire faster —
   most noticeable on the channel list for people in large companies.

@@ -38,6 +38,7 @@ use hq_desktop_core::desktop_alt::company_slug_for_hq_path;
 pub use hq_desktop_core::desktop_alt::{
     activity_url, board_url, bool_field, build_file_tree, build_node,
     canonical_hq_directory_for_listing, canonical_hq_relative_path, crm_projection_url,
+    home_channel_url, parse_home_channel_response,
     deployment_entry_from_value, deployment_last_deploy, deployment_matches_selected_slug,
     deployment_org_slug, deployment_rows, deployment_size, deployment_version, deployments_url,
     derive_initials, dir_has_visible_children, first_row_key_names, format_board_date,
@@ -215,6 +216,43 @@ pub async fn get_company_board(slug: String) -> Result<CompanyBoard, String> {
     );
 
     parse_board_response(status, &text)
+}
+
+/// Idempotent create-or-adopt of a company's single home channel
+/// (`POST /v1/companies/{uid}/home-channel`). The server creates the channel
+/// on first call for a company, or returns the existing one on any later
+/// call — never duplicates it. Used by the sidebar "Companies" section when
+/// a company row has no `homeChannelId` yet (new/legacy company): the click
+/// calls this instead of any client-side name/scope resolution.
+#[tauri::command]
+pub async fn ensure_company_home_channel(company_uid: String) -> Result<String, String> {
+    let company_uid = company_uid.trim();
+    if company_uid.is_empty() {
+        return Err("company uid is required".to_string());
+    }
+    let url = home_channel_url(&vault_base()?, company_uid)?;
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .post(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("home-channel request: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("home-channel read: {e}"))?;
+    eprintln!(
+        "[desktop-alt] home-channel POST {url} -> HTTP {} ({} bytes): {}",
+        status,
+        text.len(),
+        text.chars().take(200).collect::<String>()
+    );
+    parse_home_channel_response(status, &text)
 }
 
 /// Vault-API fallback for the CRM projection (hq-native-crm US-010).
@@ -1640,6 +1678,7 @@ mod window_router_tests {
             invited_at: None,
             branding_enabled: false,
             brand: None,
+            home_channel_id: None,
         }
     }
 

@@ -854,6 +854,7 @@ fn main() {
             commands::desktop_alt::get_desktop_active_company,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
+            commands::desktop_alt::ensure_company_home_channel,
             commands::desktop_alt::get_company_project_creators,
             commands::desktop_alt::get_company_activity,
             commands::desktop_alt::get_company_team_telemetry,

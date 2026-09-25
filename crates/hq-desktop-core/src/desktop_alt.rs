@@ -465,6 +465,44 @@ pub fn board_url(base: &str, company_uid: &str) -> Result<String, String> {
     ))
 }
 
+/// `POST /v1/companies/{uid}/home-channel` — idempotent create-or-adopt of
+/// the company's single main channel. Returns `{ homeChannelId }`; the
+/// server creates the channel on first call, or adopts the existing one on a
+/// later call for the same company (never duplicates it).
+pub fn home_channel_url(base: &str, company_uid: &str) -> Result<String, String> {
+    if !is_url_safe_id(company_uid) {
+        return Err(format!(
+            "company uid has invalid characters: {company_uid:?}"
+        ));
+    }
+    Ok(format!(
+        "{}/companies/{}/home-channel",
+        base.trim_end_matches('/'),
+        company_uid
+    ))
+}
+
+/// Parses the `POST /v1/companies/{uid}/home-channel` response into the
+/// resolved `homeChannelId`. Pure (no I/O) so the status/body handling is
+/// unit-testable without a live server.
+pub fn parse_home_channel_response(status: StatusCode, text: &str) -> Result<String, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: home-channel (HTTP {status})"));
+    }
+    if !status.is_success() {
+        return Err(format!("home-channel HTTP {status}: {text}"));
+    }
+    let parsed: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("home-channel parse: {e}"))?;
+    parsed
+        .get("homeChannelId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "home-channel response missing homeChannelId".to_string())
+}
+
 pub fn crm_projection_url(base: &str, company_uid: &str) -> Result<String, String> {
     if !is_url_safe_id(company_uid) {
         return Err(format!(
@@ -3706,6 +3744,7 @@ mod tests {
             invited_at: None,
             branding_enabled: false,
             brand: None,
+            home_channel_id: None,
         }
     }
 
@@ -3990,6 +4029,66 @@ mod tests {
         assert_eq!(
             super::activity_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
             "company uid has invalid characters: \"cmp/bad\""
+        );
+        assert_eq!(
+            super::home_channel_url("https://hqapi.getindigo.ai/", "cmp_01ABC-def.2").unwrap(),
+            "https://hqapi.getindigo.ai/companies/cmp_01ABC-def.2/home-channel"
+        );
+        assert_eq!(
+            super::home_channel_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
+            "company uid has invalid characters: \"cmp/bad\""
+        );
+    }
+
+    #[test]
+    fn parse_home_channel_response_extracts_the_id_on_success() {
+        assert_eq!(
+            super::parse_home_channel_response(
+                reqwest::StatusCode::OK,
+                r#"{"homeChannelId":"chn_home_acme"}"#,
+            )
+            .unwrap(),
+            "chn_home_acme"
+        );
+        // Created (first-ever call for the company) reads the same shape.
+        assert_eq!(
+            super::parse_home_channel_response(
+                reqwest::StatusCode::CREATED,
+                r#"{"homeChannelId":"chn_home_new"}"#,
+            )
+            .unwrap(),
+            "chn_home_new"
+        );
+    }
+
+    #[test]
+    fn parse_home_channel_response_surfaces_auth_required() {
+        let err = super::parse_home_channel_response(reqwest::StatusCode::UNAUTHORIZED, "")
+            .unwrap_err();
+        assert!(err.starts_with("AUTH_REQUIRED:"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_home_channel_response_rejects_non_success_status() {
+        let err = super::parse_home_channel_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "boom",
+        )
+        .unwrap_err();
+        assert!(err.contains("HTTP 500"), "got: {err}");
+        assert!(err.contains("boom"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_home_channel_response_rejects_missing_or_malformed_field() {
+        assert!(super::parse_home_channel_response(reqwest::StatusCode::OK, "{}").is_err());
+        assert!(super::parse_home_channel_response(
+            reqwest::StatusCode::OK,
+            r#"{"homeChannelId":""}"#,
+        )
+        .is_err());
+        assert!(
+            super::parse_home_channel_response(reqwest::StatusCode::OK, "not json").is_err()
         );
         assert_eq!(
             super::secrets_url("https://hqapi.getindigo.ai/", "cmp_01ABC-def.2").unwrap(),
@@ -4331,6 +4430,7 @@ mod tests {
                 invited_at: None,
                 branding_enabled: false,
                 brand: None,
+                home_channel_id: None,
             }
         }
 
@@ -4361,6 +4461,7 @@ mod tests {
                 invited_at: None,
                 branding_enabled: false,
                 brand: None,
+                home_channel_id: None,
             };
             let workspaces = vec![personal];
 
@@ -4400,6 +4501,7 @@ mod tests {
                 invited_at: None,
                 branding_enabled: false,
                 brand: None,
+                home_channel_id: None,
             };
             assert!(workspace_grants_company_file_access(
                 &[personal.clone()],

@@ -117,6 +117,21 @@ export interface ChatSidebarApi {
     withPersonUid: string;
     limit?: number;
   }): Promise<DmThreadResponse>;
+  /**
+   * Append one greppable, tagged line to the desktop support log
+   * (`~/.hq/logs/hq-sync.log`, `ui:{tag} {message}`). Optional: hosts without
+   * a real support log (or without the adapter's `appShell.logToFile` seam)
+   * fall back to console output.
+   */
+  logToFile?(tag: string, message: string): Promise<void>;
+  /**
+   * Idempotent create-or-adopt of a company's home channel
+   * (`POST /v1/companies/{uid}/home-channel`). Called when a Companies
+   * section row has no `homeChannelId` yet — creates the channel on the
+   * company's first call, or returns the existing one on any later call.
+   * Optional: hosts without the seam leave those rows permanently disabled.
+   */
+  ensureCompanyHomeChannel?(companyUid: string): Promise<{ homeChannelId: string }>;
 }
 
 // ---------------------------------------------------------------------------

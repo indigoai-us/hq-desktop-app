@@ -878,6 +878,14 @@ export interface CompanyApi {
   getSummary(slug: string): AdapterPromise<Json>;
   getBoard(slug: string): AdapterPromise<Json>;
   getActivity(slug: string): AdapterPromise<Json[]>;
+  /**
+   * Idempotent create-or-adopt of a company's single home channel
+   * (`POST /v1/companies/{uid}/home-channel`). The server creates the
+   * channel on the company's first call, or returns the existing one on any
+   * later call — never duplicates it. Takes the company's cloud uid (not
+   * slug) since callers already have it from the workspace roster.
+   */
+  ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
 }
 
 export interface ProjectsApi {
@@ -1122,6 +1130,13 @@ export interface AppShellApi {
     body: string;
     route?: string;
   }): AdapterPromise<void>;
+  /**
+   * Append one greppable, tagged line to the desktop support log
+   * (`~/.hq/logs/hq-sync.log` on the desktop host, `ui:{tag} {message}`).
+   * Diagnostic only — best-effort, never throws. Hosts without a real log
+   * file (e.g. web) fall back to console output.
+   */
+  logToFile(tag: string, message: string): AdapterPromise<void>;
 }
 
 /** Desktop-only group (capability: canSelfUpdate). */
