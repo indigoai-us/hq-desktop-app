@@ -250,10 +250,10 @@ const CANCELLATION_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
 /// crash classification.
 static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Blocks new HQ-owned child registrations while a Windows update is
-/// quiescing the process tree. The updater sets this before taking its process
-/// snapshot, so a watcher cannot slip into the install window after the
-/// snapshot but before the app exits.
+/// Blocks new HQ-owned child registrations while a Windows app or CLI update
+/// is quiescing command processes. The updater sets this before taking its
+/// process snapshot, so a child cannot slip into the install window after the
+/// snapshot but before the package replacement or app exit.
 static UPDATE_QUIESCE_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Blocks new `hq-sync` passes while an automatic/forced desktop update is
 /// waiting for in-flight transfers to drain, then installing. Distinct from
@@ -266,6 +266,22 @@ static SYNC_CYCLE_PAUSE_REQUESTED: AtomicBool = AtomicBool::new(false);
 static UPDATE_SENSITIVE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
 
 const SYNC_PROCESS_HANDLE: &str = "hq-sync";
+#[cfg(target_os = "windows")]
+const SYNC_DAEMON_PROCESS_HANDLE: &str = "hq-sync-daemon";
+#[cfg(target_os = "windows")]
+const RECALL_SDK_PROCESS_HANDLE: &str = "recall-sdk";
+
+/// The manual and watched sync runners are pinned to `@indigoai-us/hq-cloud`,
+/// and the Recall SDK runs as a bundled external binary. Neither uses the
+/// separate global `@indigoai-us/hq-cli` package being replaced by its updater.
+/// Generic child handles are opaque, so keep them in the quiescence set.
+#[cfg(target_os = "windows")]
+fn process_could_hold_hq_cli_install_target(handle: &str) -> bool {
+    !matches!(
+        handle,
+        SYNC_PROCESS_HANDLE | SYNC_DAEMON_PROCESS_HANDLE | RECALL_SDK_PROCESS_HANDLE
+    )
+}
 
 /// Whether a new process registration should be refused because an update is
 /// pausing fresh sync cycles. Only the sync pass itself is gated; the watch
@@ -3842,7 +3858,7 @@ pub fn terminate_all_for_exit(grace: Duration) {
     terminate_registered_processes_for_exit(&registered_processes_including_retired(), grace);
 }
 
-/// RAII lease for the updater's process-quiescence window.
+/// RAII lease for a Windows updater's process-quiescence window.
 ///
 /// A failed update preparation drops the lease and allows normal child
 /// spawning to resume. A successful preparation commits it, keeping the gate
@@ -3863,6 +3879,45 @@ impl Drop for UpdateQuiescenceGuard {
         if !self.committed {
             UPDATE_QUIESCE_REQUESTED.store(false, Ordering::SeqCst);
         }
+    }
+}
+
+/// Close admission for app-owned child processes and wait briefly for the
+/// already-running command processes to finish before replacing the global
+/// hq-cli package. The pinned hq-cloud sync runners and bundled Recall SDK are
+/// excluded. Keep the returned guard through every updater retry and re-aim;
+/// dropping it resumes normal process starts after the update returns.
+#[cfg(target_os = "windows")]
+pub async fn wait_for_cli_install_quiescence(
+    timeout: Duration,
+) -> Result<UpdateQuiescenceGuard, String> {
+    UPDATE_QUIESCE_REQUESTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map_err(|_| "another desktop update is already quiescing HQ processes".to_string())?;
+    let guard = UpdateQuiescenceGuard { committed: false };
+    let started = std::time::Instant::now();
+
+    loop {
+        let active_possible_cli_process = {
+            let registry = process_registry().lock().unwrap();
+            registry
+                .active
+                .keys()
+                .any(|handle| process_could_hold_hq_cli_install_target(handle))
+                || registry
+                    .retired
+                    .values()
+                    .any(|retired| process_could_hold_hq_cli_install_target(&retired.handle))
+        };
+        let active_sensitive_operation = UPDATE_SENSITIVE_OPERATIONS.load(Ordering::SeqCst) != 0;
+
+        if !active_possible_cli_process && !active_sensitive_operation {
+            return Ok(guard);
+        }
+        if started.elapsed() >= timeout {
+            return Err(crate::updater::UPDATE_DEFERRED_DURING_PROCESS_EXIT.to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -3932,6 +3987,18 @@ mod update_quiescence_tests {
         assert!(require_update_job_containment(&[]).is_ok());
         assert!(require_update_job_containment(&[contained.clone()]).is_ok());
         assert!(require_update_job_containment(&[contained, fallback]).is_err());
+    }
+
+    #[test]
+    fn cli_install_waits_for_opaque_app_children_but_not_known_other_runtimes() {
+        assert!(process_could_hold_hq_cli_install_target("app-owned-child"));
+        assert!(!process_could_hold_hq_cli_install_target(SYNC_PROCESS_HANDLE));
+        assert!(!process_could_hold_hq_cli_install_target(
+            SYNC_DAEMON_PROCESS_HANDLE
+        ));
+        assert!(!process_could_hold_hq_cli_install_target(
+            RECALL_SDK_PROCESS_HANDLE
+        ));
     }
 }
 

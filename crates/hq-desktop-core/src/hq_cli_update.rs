@@ -6000,6 +6000,70 @@ impl ManagedRetryOutcome {
     }
 }
 
+/// Outcome of the bounded Windows EBUSY package-target retry. This is separate
+/// from [`ManagedRetryOutcome`], which describes Node/npm repair and cannot
+/// release a process holding the selected install target open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowsBusyRetryOutcome {
+    /// The install did not finish with the selected-prefix EBUSY/rename shape.
+    #[default]
+    NotApplicable,
+    /// The shape matched, but the install attempt budget or repeat guard left no
+    /// retry available.
+    NotArmed,
+    /// The one bounded retry completed successfully.
+    Succeeded,
+    /// The one bounded retry ran and the install still failed.
+    Failed,
+    /// The bounded retry failed, but its final output no longer identifies the
+    /// selected install target as locked.
+    OtherFailure,
+}
+
+impl WindowsBusyRetryOutcome {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not-applicable",
+            Self::NotArmed => "not-armed",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::OtherFailure => "other-failure",
+        }
+    }
+
+    /// The final install output still proves that a process holds the target.
+    pub fn lock_holder_class(self) -> Option<&'static str> {
+        match self {
+            Self::NotArmed | Self::Failed => Some("unknown"),
+            Self::NotApplicable | Self::Succeeded | Self::OtherFailure => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod windows_busy_retry_outcome_tests {
+    use super::WindowsBusyRetryOutcome;
+
+    #[test]
+    fn lock_holder_is_unknown_only_when_the_lock_still_matches_the_final_outcome() {
+        assert_eq!(
+            WindowsBusyRetryOutcome::NotArmed.lock_holder_class(),
+            Some("unknown")
+        );
+        assert_eq!(
+            WindowsBusyRetryOutcome::Failed.lock_holder_class(),
+            Some("unknown")
+        );
+        for outcome in [
+            WindowsBusyRetryOutcome::NotApplicable,
+            WindowsBusyRetryOutcome::Succeeded,
+            WindowsBusyRetryOutcome::OtherFailure,
+        ] {
+            assert_eq!(outcome.lock_holder_class(), None);
+        }
+    }
+}
+
 /// Which ancestor of the derived `@indigoai-us` install scope the mkdir remedy
 /// (HQ-DESKTOP-5K) found missing, and how its creation went — the evidence that
 /// makes a non-converging occurrence self-diagnosing without the unreachable local
@@ -6128,6 +6192,12 @@ pub struct InstallEnvironment {
     /// component), defaulting to [`ManagedRetryOutcome::NotArmed`] so every existing
     /// caller reproduces today's grouping and only gains the new descriptive tag.
     pub managed_retry_outcome: ManagedRetryOutcome,
+    /// Number of Windows EBUSY package-target retries the install actually
+    /// started. Present only for the selected-prefix EBUSY/rename failure.
+    pub windows_busy_retry_attempts: Option<u8>,
+    /// Whether the bounded Windows EBUSY retry was not applicable, unarmed,
+    /// successful, or still failing. Tag/diagnostic only; never a grouping key.
+    pub windows_busy_retry_outcome: WindowsBusyRetryOutcome,
     /// For a missing-global-install-target failure (HQ-DESKTOP-5K), which ancestor
     /// of the install scope the mkdir remedy found missing and how its creation
     /// went. A pure tag/diagnostic addition (never a fingerprint, signature, or
@@ -6423,6 +6493,17 @@ pub fn report_install_failure_with_environment(
     if env.registry_serving_lag_recurred {
         npm_diagnostics.push_str(" registry_serving_lag=escalated");
     }
+    if let Some(attempts) = env.windows_busy_retry_attempts {
+        // The desktop can wait for its own registered command processes, but it
+        // cannot inspect Windows handles owned by antivirus or external tools.
+        if let Some(holder_class) = env.windows_busy_retry_outcome.lock_holder_class() {
+            npm_diagnostics.push_str(&format!(" lock_holder_class={holder_class}"));
+        }
+        npm_diagnostics.push_str(&format!(
+            " windows_busy_retry_attempts={attempts} windows_busy_retry_outcome={}",
+            env.windows_busy_retry_outcome.tag_value(),
+        ));
+    }
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
@@ -6513,6 +6594,16 @@ pub fn report_install_failure_with_environment(
                 "npm_managed_retry_outcome",
                 env.managed_retry_outcome.tag_value(),
             );
+            if let Some(attempts) = env.windows_busy_retry_attempts {
+                if let Some(holder_class) = env.windows_busy_retry_outcome.lock_holder_class() {
+                    scope.set_tag("npm_lock_holder_class", holder_class);
+                }
+                scope.set_tag("npm_windows_busy_retry_attempts", attempts.to_string());
+                scope.set_tag(
+                    "npm_windows_busy_retry_outcome",
+                    env.windows_busy_retry_outcome.tag_value(),
+                );
+            }
             // Which ancestor of the install scope was missing and how the mkdir
             // remedy went (HQ-DESKTOP-5K). Like `npm_managed_retry_outcome`, a tag
             // and `npm_diagnostics` key only — never a fingerprint, signature, or
@@ -15668,6 +15759,8 @@ mod tests {
             toolchain_source: NpmToolchainSource::UserPath,
             managed_toolchain_retry: false,
             managed_retry_outcome: ManagedRetryOutcome::NotArmed,
+            windows_busy_retry_attempts: None,
+            windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
             missing_target_state: MissingTargetState::Unknown,
             target_version: None,
             requested_spec_kind: RequestedSpecKind::Unknown,

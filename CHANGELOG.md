@@ -19,6 +19,9 @@ The release moves it under the version it ships in.
   token file as a fallback when the keychain entry is missing, invalid, or
   unreadable; the file is deleted only on explicit sign-out. When both the
   keychain and the file hold valid tokens, the newer token (by expiresAt) wins.
+- On Windows, HQ waits for its own command processes to finish before replacing
+  the HQ CLI package and retries once if npm still reports a locked install
+  directory.
 
 ## [0.10.324] — 2026-09-25
 
