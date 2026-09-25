@@ -18,6 +18,14 @@ The release moves it under the version it ships in.
   right there in the channel — the header (hero, title, gear, bell, member
   pill, and the Chat | Projects pills) stays put and nothing shifts size.
   Chat brings the feed and composer back.
+
+## [0.10.328] — 2026-09-25
+
+- Fixed the "Setting up…" spinner some Companies rows got stuck on: the
+  company board, activity feed, and home-channel requests were missing the
+  server's `/v1` URL prefix, so those requests always failed. Added a build-time
+  check that fails CI if the app ever calls a server route hq-pro does not
+  register, so this class of bug cannot ship again silently.
 - Fixed layout shifts when opening a company's home channel — the wallpaper
   hero, the member-count and mute controls, and the message skeleton now hold
   their final size from the first frame, so nothing jumps as the company's
@@ -29,6 +37,10 @@ The release moves it under the version it ships in.
   (with a brief "Setting up…" state), and if it still can't connect, the row
   shows a plain "Tap to retry" hint instead of any error text — clicking it
   again always retries.
+- Fixed the company channel header's settings gear rendering with a heavy,
+  doubled outline (a malformed SVG path). Switched the mute control from a
+  speaker icon to a bell (bell-slash when muted), to match the rest of the
+  header icon set.
 
 ## [0.10.327] — 2026-09-25
 

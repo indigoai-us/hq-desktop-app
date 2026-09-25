@@ -126,13 +126,16 @@ describe("ChannelMuteControl", () => {
     expect(host.querySelector('[role="menu"]')).toBeNull();
   });
 
-  it("draws a speaker, not a bell, and uses background highlight only", () => {
+  // Owner decision 2026-09-25: mute control now draws a bell (bell-slash when
+  // muted), replacing the earlier speaker glyph.
+  it("draws a bell, not a speaker, and uses background highlight only", () => {
     const source = readFileSync(
       resolve(process.cwd(), "src/chat/ChannelMuteControl.svelte"),
       "utf8",
     );
     expect(source).not.toMatch(/border-left/);
-    expect(source).not.toMatch(/bell/i);
+    expect(source).toMatch(/bell/i);
+    expect(source).not.toMatch(/speaker/i);
     expect(source).toMatch(/\.notify-item\.current\s*\{[^}]*background/);
   });
 });
