@@ -107,6 +107,8 @@ function stubApi(overrides: Partial<ChatSidebarApi> = {}): ChatSidebarApi {
     sendChannelMessage: async () => {},
     sendDm: async () => {},
     searchMessages: async () => ({ results: [] }),
+    logToFile: async () => {},
+    ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     ...overrides,
   };
 }
@@ -200,14 +202,16 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     );
   });
 
-  it("with no ensureCompanyHomeChannel seam at all, a no-homeChannelId row stays disabled and logs open-disabled on click", async () => {
+  it("ensureCompanyHomeChannel and logToFile are required: a no-homeChannelId row still attempts ensure on click, never silently disables", async () => {
     const logSpy = vi.fn(async () => undefined);
+    const ensureSpy = vi.fn(async () => {
+      throw new Error("server unreachable");
+    });
     const onselect = vi.fn();
     component = mount(ChatSidebar, {
       target: host,
       props: {
-        // stubApi() never sets ensureCompanyHomeChannel unless overridden.
-        api: stubApi({ logToFile: logSpy }),
+        api: stubApi({ logToFile: logSpy, ensureCompanyHomeChannel: ensureSpy }),
         seedDirectory: [homeChannelRow],
         companies: [INDIGO, PROVISIONING],
         scopeUid: "all",
@@ -228,10 +232,11 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
 
     disabledRow!.click();
     await vi.waitFor(() => {
+      expect(ensureSpy).toHaveBeenCalledWith("cmp_provisioning");
       expect(logSpy).toHaveBeenCalledWith(
         "companies",
         expect.stringMatching(
-          /^open-disabled company=provisioning reason=no-home-channel$/,
+          /^open-failed company=provisioning reason=server unreachable$/,
         ),
       );
     });

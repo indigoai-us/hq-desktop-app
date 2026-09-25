@@ -352,6 +352,8 @@ export function createHybridSidebarApi(
         ? { sendDmToEmail: live.sendDmToEmail.bind(live) }
         : {}),
     searchMessages: (args) => live.searchMessages(args),
+    logToFile: (tag, message) => live.logToFile(tag, message),
+    ensureCompanyHomeChannel: (companyUid) => live.ensureCompanyHomeChannel(companyUid),
   };
 }
 
@@ -395,6 +397,12 @@ export function createCacheSidebarApi(
       await persist.sendDm(args);
     },
     searchMessages: async () => ({ results: [] }),
+    logToFile: async (tag, message) => {
+      console.warn(`[${tag}] ${message}`);
+    },
+    ensureCompanyHomeChannel: async () => {
+      throw new Error("Opening a company's home channel is unavailable while offline");
+    },
     // Channel create/membership/send are live capabilities the host may wire
     // in. Forwarding them matters: the sidebar hides every "New channel"
     // affordance when `createChannel` is absent, so a cache api that drops

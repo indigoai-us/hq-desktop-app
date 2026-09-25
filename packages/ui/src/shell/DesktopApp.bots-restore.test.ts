@@ -665,6 +665,8 @@ describe("when HQ Cloud cannot list your bots", () => {
           { personUid: FLEET_UID, displayName: "izzy", lastActivityAt: iso, lastDmAt: iso },
         ],
       }),
+      logToFile: async () => {},
+      ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     } as ChatSidebarApi;
     // `izzy` is someone else's cloud bot: it is on the rail because it has
     // talked to this user, not because it exists (see the agent-stub rule).

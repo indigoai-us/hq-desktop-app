@@ -991,6 +991,21 @@
     ),
   );
 
+  /**
+   * DEBUG instrumentation (2026-09-25): proves, from `~/.hq/logs/hq-sync.log`,
+   * that the Companies section actually renders and that `homeChannelId`
+   * made it through the roster mapping — without requiring a click. Fires
+   * once per non-empty render of the section, not on every recompute.
+   */
+  let companySectionReadyLogged = false;
+  $effect(() => {
+    const rows = companySectionRows;
+    if (rows.length === 0 || companySectionReadyLogged) return;
+    companySectionReadyLogged = true;
+    const withHome = rows.filter((r) => Boolean(r.homeChannelId)).length;
+    companiesLog(`section ready count=${rows.length} withHome=${withHome}`);
+  });
+
   function toggleCompanyPin(companyUid: string): void {
     pinnedCompanies = pinnedCompanies.includes(companyUid)
       ? pinnedCompanies.filter((uid) => uid !== companyUid)
@@ -1002,14 +1017,15 @@
    * Writes one `[companies] …` line to the desktop support log
    * (`~/.hq/logs/hq-sync.log`) via `api.logToFile` — the TS→Rust bridge onto
    * `frontend_log` — so a company-home open (or disabled click) is greppable
-   * even with devtools closed. Hosts without the bridge fall back to console.
+   * even with devtools closed. `logToFile` is a required seam now; a failed
+   * write (permission, IPC, disk) is logged to the console instead of being
+   * silently swallowed, so a broken bridge is itself diagnosable.
    */
   function companiesLog(line: string): void {
-    if (api.logToFile) {
-      void api.logToFile("companies", line).catch(() => undefined);
-    } else {
-      console.warn(`[companies] ${line}`);
-    }
+    console.warn(`[companies] ${line}`);
+    void api.logToFile("companies", line).catch((err) => {
+      console.error("[companies] logToFile failed", err);
+    });
   }
 
   /**
@@ -1053,10 +1069,6 @@
     if (known) {
       companiesLog(`open company=${label} channel=${known}`);
       openHomeChannelId(known);
-      return;
-    }
-    if (!api.ensureCompanyHomeChannel) {
-      companiesLog(`open-disabled company=${label} reason=no-home-channel`);
       return;
     }
     if (companyHomeEnsuring[company.companyUid]) return;

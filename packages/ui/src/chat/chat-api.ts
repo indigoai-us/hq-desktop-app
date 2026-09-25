@@ -119,19 +119,23 @@ export interface ChatSidebarApi {
   }): Promise<DmThreadResponse>;
   /**
    * Append one greppable, tagged line to the desktop support log
-   * (`~/.hq/logs/hq-sync.log`, `ui:{tag} {message}`). Optional: hosts without
-   * a real support log (or without the adapter's `appShell.logToFile` seam)
-   * fall back to console output.
+   * (`~/.hq/logs/hq-sync.log`, `ui:{tag} {message}`). Required: a host that
+   * omits this seam previously left every log call a silently swallowed
+   * no-op (the Companies open path is diagnosed entirely through it), so
+   * shells without a real support log must still implement it — falling
+   * back to `console.log`/`console.error` is a legitimate implementation,
+   * just not an absent one.
    */
-  logToFile?(tag: string, message: string): Promise<void>;
+  logToFile(tag: string, message: string): Promise<void>;
   /**
    * Idempotent create-or-adopt of a company's home channel
    * (`POST /v1/companies/{uid}/home-channel`). Called when a Companies
    * section row has no `homeChannelId` yet — creates the channel on the
    * company's first call, or returns the existing one on any later call.
-   * Optional: hosts without the seam leave those rows permanently disabled.
+   * Required: a host that omits this seam leaves every homeChannelId-less
+   * Companies row permanently disabled with no way to recover.
    */
-  ensureCompanyHomeChannel?(companyUid: string): Promise<{ homeChannelId: string }>;
+  ensureCompanyHomeChannel(companyUid: string): Promise<{ homeChannelId: string }>;
 }
 
 // ---------------------------------------------------------------------------
