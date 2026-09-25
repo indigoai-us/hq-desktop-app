@@ -160,6 +160,7 @@
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import ProjectsHome from "../projects/ProjectsHome.svelte";
+  import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -6049,9 +6050,10 @@
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
-          // Office is hidden for company channels; route any stale deep
-          // link that targeted it back to Chat.
-          companyTab = "chat";
+          // Team/Settings/Atlas/Office are not desktop tabs; a stale deep
+          // link targeting one of those is normalized back to Chat by
+          // `canonicalizeDestination` before it ever reaches here.
+          companyTab = next.companyTab ?? "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
           const messageId = next.messageId?.trim() || "";
@@ -8479,13 +8481,6 @@
                   active={companyTab}
                   tabs={companyTabsForHost}
                   onselect={(id) => {
-                    if (id === "projects") {
-                      void navigate({
-                        kind: "projects",
-                        company: selectedCompanySlug || null,
-                      });
-                      return;
-                    }
                     pushConversationSurface({ companyTab: id });
                   }}
                 />
@@ -8730,6 +8725,15 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => void leaveCurrentDestination()}
             />
+          {:else if isCompanyChannel && companyTab === "projects"}
+            <div class="company-projects-stage" data-testid="company-projects-tab-host">
+              <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
+              <CompanyProjectsPage
+                {adapter}
+                slug={selectedCompanySlug}
+                companyUid={selectedRow.companyUid ?? null}
+              />
+            </div>
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"
@@ -9433,6 +9437,22 @@
   .projects-host > :global(*) {
     flex: 1 1 auto;
     min-height: 0;
+  }
+
+  /* Projects tab inside a company channel: the header stays fixed above
+     this content area, so this host owns the scroller (same pattern as
+     `.ph-body` in ProjectsHome) and the hero + board scroll away together. */
+  .company-projects-stage {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px 24px 24px;
+  }
+  .company-projects-stage :global(.company-projects) {
+    height: auto;
   }
 
   .extra-page-host {

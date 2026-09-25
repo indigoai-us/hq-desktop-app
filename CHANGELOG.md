@@ -13,9 +13,11 @@ The release moves it under the version it ships in.
   Opening a project shows its tasks by status, with task details, files and
   activity. Pick the company at the top of the page. It starts on the company
   of the channel you have open.
-- A company's home channel now has a "Projects" pill next to Chat in the
-  header. Clicking it opens that company's Projects page directly; going
-  back returns you to the channel.
+- A company's home channel now has a "Projects" tab next to Chat in the
+  header. Clicking it swaps the message feed for that company's project board
+  right there in the channel — the header (hero, title, gear, bell, member
+  pill, and the Chat | Projects pills) stays put and nothing shifts size.
+  Chat brings the feed and composer back.
 - Fixed layout shifts when opening a company's home channel — the wallpaper
   hero, the member-count and mute controls, and the message skeleton now hold
   their final size from the first frame, so nothing jumps as the company's

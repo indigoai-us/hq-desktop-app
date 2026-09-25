@@ -1,13 +1,15 @@
 // @vitest-environment happy-dom
 
 /**
- * The "Projects" pill next to Chat in a company home channel's header. It
- * lets the user jump to that company's Projects page without leaving the
- * channel-header chrome. Shown only on company home channels (same
- * predicate as the rest of the header chrome — hero, Office, settings
- * gear); a plain team channel renders none of that chrome, including this
- * pill. Selecting it navigates to `{ kind: "projects", company }` for the
- * channel's own company.
+ * The "Projects" pill next to Chat in a company home channel's header. It is
+ * an in-channel tab, not a link to the standalone Projects page: selecting it
+ * keeps the company header chrome (hero, title, gear, bell, member pill, and
+ * the Chat | Projects pills) mounted in place and swaps only the content area
+ * below it for that company's project board (CompanyProjectsPage, scoped to
+ * the channel's own company). Selecting Chat brings the feed and composer
+ * back. Shown only on company home channels (same predicate as the rest of
+ * the header chrome); a plain team channel renders none of that chrome,
+ * including this pill.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -85,6 +87,12 @@ function adapter(): PlatformAdapter {
       getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }),
     },
     shell: { detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }) },
+    projects: {
+      listLocal: async () => ok({ projects: [] }),
+    },
+    workMesh: {
+      getProjectView: async () => ({ ok: false as const, reason: "unavailable" }),
+    },
   } as unknown as PlatformAdapter;
 }
 
@@ -120,9 +128,13 @@ afterEach(async () => {
   document.body.innerHTML = "";
 });
 
-describe("Projects pill on company home channels", () => {
-  it("renders the Projects pill on a company home channel and navigates to that company's Projects page", async () => {
+describe("Projects tab on company home channels", () => {
+  it("renders the board below the header and keeps the hero/title/pills mounted", async () => {
     await mountShell(HOME_ROW);
+
+    const header = host.querySelector('[data-testid="channel-header"]');
+    expect(header, "channel header").toBeTruthy();
+    const headerHeightBefore = header!.getBoundingClientRect().height;
 
     const pill = host.querySelector<HTMLButtonElement>('[data-testid="company-tab-projects"]');
     expect(pill, "Projects pill on company home channel").toBeTruthy();
@@ -131,8 +143,42 @@ describe("Projects pill on company home channels", () => {
     pill!.click();
     await settle(8);
 
-    const projectsHost = host.querySelector('[data-testid="projects-host"]');
-    expect(projectsHost, "navigated to the Projects page").toBeTruthy();
+    // Stayed in the channel — no standalone Projects page.
+    expect(host.querySelector('[data-testid="projects-host"]')).toBeFalsy();
+
+    // Board renders below the still-mounted header chrome.
+    expect(host.querySelector('[data-testid="company-projects-tab-host"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="company-projects-page"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="company-hero"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="company-channel-tabs"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="company-console-gear"]')).toBeTruthy();
+
+    // The Projects pill is now the active one.
+    const activePill = host.querySelector<HTMLButtonElement>(
+      '[data-testid="company-tab-projects"]',
+    );
+    expect(activePill?.classList.contains("active")).toBe(true);
+
+    const headerHeightAfter = host
+      .querySelector('[data-testid="channel-header"]')!
+      .getBoundingClientRect().height;
+    expect(headerHeightAfter).toBe(headerHeightBefore);
+
+    // Chat brings the feed and composer back.
+    const chatPill = host.querySelector<HTMLButtonElement>('[data-testid="company-tab-chat"]');
+    expect(chatPill).toBeTruthy();
+    chatPill!.click();
+    await settle(8);
+
+    expect(host.querySelector('[data-testid="company-projects-tab-host"]')).toBeFalsy();
+    expect(host.querySelector('[data-testid="chat-stage"]')).toBeTruthy();
+    expect(chatPill!.classList.contains("active")).toBe(true);
+
+    const headerHeightRestored = host
+      .querySelector('[data-testid="channel-header"]')!
+      .getBoundingClientRect().height;
+    expect(headerHeightRestored).toBe(headerHeightBefore);
   });
 
   it("does not render the Projects pill on a plain team channel", async () => {
