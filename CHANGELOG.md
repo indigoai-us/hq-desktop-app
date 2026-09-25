@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Release builds for Windows now reuse the compiled app shell when only the
+  interface changed, matching macOS. The packaging step no longer recompiles
+  the UI or the Recall sidecar on the Windows runner, which was failing every
+  release. No visible change for users.
 - Release builds for macOS now reuse the compiled app shell when only the
   interface changed, so those releases build faster. No visible change for
   users.
