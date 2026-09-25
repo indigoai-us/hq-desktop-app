@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Channel @mention notifications now work on installs whose local settings file does not record your person ID, and the first mention in a channel after the app starts now notifies too.
+
 - The desktop app now asks for (and transparently decodes) compressed
   responses from the server, so the same data moves over the wire faster —
   most noticeable on the channel list for people in large companies.
