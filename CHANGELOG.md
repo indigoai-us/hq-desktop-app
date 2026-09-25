@@ -8,7 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.325] — 2026-09-25
+
 - Meeting detection now runs on the newest Recall recording engine, which officially supports Zoom and Teams meetings joined from Chrome, not only from the Zoom and Teams apps. Google Meet in a browser was already supported. Safari, Edge, and Firefox are still not supported for Zoom or Teams, so join from Chrome (or a Chromium browser like Arc or Brave) if you want HQ to notice the meeting.
+
 - Fixed a bug where running the HQ installer after the desktop app was re-signed
   (or after any macOS keychain read error such as errSecAuthFailed) deleted the
   sign-in token file at ~/.hq/cognito-tokens.json, logging users out even though
