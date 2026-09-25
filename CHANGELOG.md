@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.327] — 2026-09-25
+
 - Simplified how the desktop app finds a company's main channel: it now opens
   the exact channel the server names (`homeChannelId`), instead of guessing
   from the channel's scope and name. This removes the old on-demand lookup,
