@@ -160,10 +160,42 @@ mod tests {
 
 
 /// Append one renderer-supplied line to the support log. Diagnostic only: the
-/// renderer decides what to say, the tag is prefixed so lines are greppable.
+/// renderer decides what to say; the tag is written verbatim (no added
+/// prefix) so a caller like `companiesLog()` (tag `"companies"`) lands as
+/// `[companies] ...` — exactly what it promises — and stays greppable by that
+/// literal string.
 #[tauri::command]
 pub fn frontend_log(tag: String, message: String) {
     let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(40).collect();
     let message: String = message.chars().take(2000).collect();
-    crate::util::logfile::log(&format!("ui:{tag}"), &message);
+    crate::util::logfile::log(&tag, &message);
+}
+
+#[cfg(test)]
+mod frontend_log_tests {
+    use super::frontend_log;
+    use hq_desktop_core::logfile::LogOverrideGuard;
+    use std::fs;
+
+    /// The renderer's `companiesLog()` promises a `[companies] ...` line in
+    /// `~/.hq/logs/hq-sync.log`. This exercises the real `#[tauri::command]`
+    /// fn (not a mock), through the real `logfile` module, and asserts the
+    /// tag lands unprefixed.
+    #[test]
+    fn frontend_log_writes_the_tag_verbatim_no_prefix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("hq-sync.log");
+        let _guard = LogOverrideGuard::new(path.clone());
+
+        frontend_log(
+            "companies".to_string(),
+            "open company=indigo channel=chn_abc".to_string(),
+        );
+
+        let contents = fs::read_to_string(&path).expect("log file written");
+        assert!(
+            contents.contains("[companies] open company=indigo channel=chn_abc"),
+            "expected a literal `[companies] ...` line, got: {contents}"
+        );
+    }
 }

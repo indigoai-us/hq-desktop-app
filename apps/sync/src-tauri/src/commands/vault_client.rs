@@ -188,6 +188,12 @@ pub struct MembershipInfo {
     /// true. Rides the existing membership payload — no new endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brand: Option<CompanyBrand>,
+    /// The company's single main channel id (`chn_*`), set by hq-pro at
+    /// company genesis. Every company has exactly one home channel; clients
+    /// open it directly by id — never resolved client-side. Absent on legacy
+    /// responses while the server rolls this field out.
+    #[serde(default)]
+    pub home_channel_id: Option<String>,
 }
 
 impl MembershipInfo {

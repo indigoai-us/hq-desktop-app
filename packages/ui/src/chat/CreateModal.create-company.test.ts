@@ -49,6 +49,8 @@ function stubApi(): ChatSidebarApi {
     markDmThreadRead: async () => {},
     markChannelRead: async () => {},
     searchMessages: async () => ({ results: [] }),
+    logToFile: async () => {},
+    ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     createChannel: async () => ({ channelId: "chn_new" }),
     addChannelMember: async () => {},
     sendChannelMessage: async () => {},
