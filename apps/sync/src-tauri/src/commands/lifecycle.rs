@@ -476,6 +476,9 @@ pub fn report_unexpected_startup_surface(
     surface: String,
     auth_check_failed: bool,
     probe_attempts: u32,
+    authenticated: bool,
+    token_presence: String,
+    prior_surface: String,
 ) {
     // Read token file metadata without reading its contents.
     let (token_file_exists, token_file_age_minutes) = {
@@ -500,6 +503,16 @@ pub fn report_unexpected_startup_surface(
         .try_state::<LifecycleStateHandle>()
         .map(|h| lifecycle_state_str(h.current()).to_string())
         .unwrap_or_else(|| "unknown".into());
+    let elapsed_since_start = SETUP_LIFECYCLE_TIME.get().map(|started| started.elapsed());
+    let seconds_since_start = elapsed_since_start
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let diagnostic_tags = hq_desktop_core::unexpected_surface::startup_diagnostic_tags(
+        authenticated,
+        &token_presence,
+        elapsed_since_start.map(|elapsed| elapsed.as_millis()),
+        &prior_surface,
+    );
 
     let prior_setup = hq_desktop_core::unexpected_surface::prior_setup_detected(
         inputs.install_completed,
@@ -509,7 +522,7 @@ pub fn report_unexpected_startup_surface(
 
     // Always write the log line so diagnostics can find it.
     let log_line = format!(
-        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} from_updater_restart={} app_version={}",
+        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={}",
         surface,
         lc_state_str,
         inputs.install_completed,
@@ -525,6 +538,11 @@ pub fn report_unexpected_startup_surface(
         token_file_age_minutes.map(|v| v.to_string()).unwrap_or_else(|| "none".into()),
         auth_check_failed,
         probe_attempts,
+        diagnostic_tags.session_restore_state,
+        diagnostic_tags.token_present,
+        diagnostic_tags.keychain_status,
+        diagnostic_tags.ms_since_launch,
+        diagnostic_tags.prior_surface,
         std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
         env!("APP_VERSION"),
     );
@@ -541,10 +559,6 @@ pub fn report_unexpected_startup_surface(
         return;
     }
 
-    let seconds_since_start = SETUP_LIFECYCLE_TIME
-        .get()
-        .map(|t| t.elapsed().as_secs())
-        .unwrap_or(0);
     let from_updater_restart =
         std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
 
@@ -575,6 +589,9 @@ pub fn report_unexpected_startup_surface(
             scope.set_tag("lifecycle_state", &payload.lifecycle_state);
             scope.set_tag("app_version", payload.app_version);
             scope.set_tag("from_updater_restart", payload.from_updater_restart.to_string());
+            for (key, value) in diagnostic_tags.as_pairs() {
+                scope.set_tag(key, value);
+            }
             scope.set_extra("install_completed", serde_json::json!(payload.install_completed).into());
             scope.set_extra("first_run_completed", serde_json::json!(payload.first_run_completed).into());
             scope.set_extra("config_valid", serde_json::json!(payload.config_valid).into());
