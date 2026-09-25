@@ -115,10 +115,10 @@ describe('windows fatal-reason attribution — source contracts', () => {
   });
 
   it('a report-derived class NEVER overrides a stderr-derived one', () => {
-    // The deferred worker adopts a report class only when the current class is none;
+    // The deferred worker adopts a report class only when the current class is none or unknown;
     // the manual builder adopts it only when the stderr class is None — so macOS
     // heap_oom and every existing stderr attribution keep priority.
-    expect(daemonSource).toContain('current_class == "none"');
+    expect(daemonSource).toContain('matches!(current_class, "none" | "unknown")');
     expect(syncSource).toContain('stderr_class == RunnerFatalClass::None');
     expect(syncSource).toContain('"node_report"');
   });
