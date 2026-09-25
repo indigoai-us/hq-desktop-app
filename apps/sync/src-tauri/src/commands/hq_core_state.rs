@@ -6338,6 +6338,7 @@ error: clone failed";
 
     #[test]
     fn sentry_rsync_failure_reports_closed_diagnostics_without_changing_fingerprint() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         let raw = "rsync: [sender] link_stat \"/cygdrive/c/fixture-one/HQ/core/file\" failed: No such file or directory (2)\nrsync status 23\nrsync error: some files/attrs were not transferred (code 23)";
         let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
         assert_eq!(telemetry.rescue_step, "rsync");
