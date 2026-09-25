@@ -1832,7 +1832,7 @@ fn core_update_event_properties(
     properties.insert("result".to_string(), Value::String(result.to_string()));
     properties.insert(
         "desktopVersion".to_string(),
-        Value::String(env!("APP_VERSION").to_string()),
+        Value::String(crate::app_version::current().to_string()),
     );
     properties.insert(
         "autoUpdateEnabled".to_string(),
@@ -2182,7 +2182,7 @@ fn send_core_update_failure_report(
                     "attempt_number",
                     report.rescue_telemetry.attempt_number.to_string(),
                 );
-                sentry_scope.set_tag("app_version", env!("APP_VERSION"));
+                sentry_scope.set_tag("app_version", crate::app_version::current());
                 sentry_scope.set_tag("os_version", os_info::get().version().to_string());
                 sentry_scope.set_tag("suppressed_since_last", suppressed_since_last.to_string());
                 sentry_scope.set_extra(
@@ -2194,7 +2194,7 @@ fn send_core_update_failure_report(
                 );
                 sentry_scope.set_extra(
                     "coreUpdateAppVersion",
-                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                    sentry::protocol::Value::String(crate::app_version::current().to_string()),
                 );
                 sentry_scope.set_extra(
                     "managedGitRetryAttempted",

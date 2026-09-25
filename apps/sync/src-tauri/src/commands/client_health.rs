@@ -548,7 +548,7 @@ async fn collect_versions() -> ClientHealthVersions {
     .unwrap_or((None, None));
 
     ClientHealthVersions {
-        desktop: sanitized_version(env!("APP_VERSION")),
+        desktop: sanitized_version(crate::app_version::current()),
         cli: cli.as_deref().and_then(sanitized_version),
         core: core.as_deref().and_then(sanitized_version),
         sync_runner: sync_runner.as_deref().and_then(sanitized_version),
@@ -680,7 +680,7 @@ async fn emit_client_health_heartbeat_once() -> HeartbeatOutcome {
     emit_client_health_heartbeat_with_desktop(None).await
 }
 
-/// `desktop_override` replaces the compile-time `env!("APP_VERSION")` of THIS
+/// `desktop_override` replaces the compile-time `crate::app_version::current()` of THIS
 /// (possibly dying) process — used by the post-update heartbeat, where the
 /// truthful desktop version is the freshly INSTALLED target, not the build
 /// that is about to exit. A non-SemVer override fails closed to omission
@@ -1524,7 +1524,7 @@ mod tests {
         );
         assert_ne!(
             body["versions"]["desktop"],
-            env!("APP_VERSION"),
+            crate::app_version::current(),
             "compile-time version of the dying process must not cross the wire"
         );
         assert_eq!(

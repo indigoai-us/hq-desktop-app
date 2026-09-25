@@ -6,7 +6,7 @@
 // before signing.
 //
 // Writes:
-//   - <bundleResources>/version.txt   — read at runtime by
+//   - <bundleResources>/version.json  — {"version":"X.Y.Z"}, read at runtime by
 //     crates/hq-desktop-core/src/runtime_version.rs::resolve_app_version(),
 //     which the client-attribution headers, telemetry, and (pending) the
 //     About dialog use instead of the compile-time APP_VERSION/
@@ -29,9 +29,9 @@ export function assertValidVersion(version) {
   return version;
 }
 
-export function renderVersionTxt(version) {
+export function renderVersionJson(version) {
   assertValidVersion(version);
-  return `${version}\n`;
+  return `${JSON.stringify({ version })}\n`;
 }
 
 /** Patch CFBundleShortVersionString and CFBundleVersion in an XML plist's
@@ -54,7 +54,7 @@ export function patchInfoPlist(plistText, version) {
 
 export async function stampBundle({ version, resourcesDir, infoPlistPath }) {
   assertValidVersion(version);
-  await writeFile(`${resourcesDir}/version.txt`, renderVersionTxt(version), "utf8");
+  await writeFile(`${resourcesDir}/version.json`, renderVersionJson(version), "utf8");
   if (infoPlistPath) {
     const original = await readFile(infoPlistPath, "utf8");
     await writeFile(infoPlistPath, patchInfoPlist(original, version), "utf8");

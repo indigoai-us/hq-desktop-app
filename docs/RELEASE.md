@@ -713,12 +713,15 @@ pieces that landed in that PR:
   Cargo.lock/toml, build.rs, capabilities, icons, toolchain + target triple;
   excludes the app version and frontend).
 - `scripts/stamp-version.mjs` — assemble-time version stamping: writes
-  `version.txt` into the bundle Resources and patches macOS
+  `version.json` into the bundle Resources and patches macOS
   `Info.plist` CFBundleShortVersionString/CFBundleVersion.
 - `crates/hq-desktop-core/src/runtime_version.rs` — runtime version
-  resolution (`HQ_APP_VERSION` env → stamped `version.txt` → compile-time
-  `APP_VERSION` fallback), wired into `client_info::CLIENT_VERSION` via
-  `main.rs`.
+  resolution (`HQ_APP_VERSION` test/dev override → macOS stamped Info.plist
+  `CFBundleShortVersionString` → `Resources/version.json` → compile-time
+  `APP_VERSION` fallback). Every app-version read in the app goes through
+  `apps/sync/src-tauri/src/app_version.rs`, and `main.rs` writes the
+  resolved version into Tauri's `PackageInfo` so the updater plugin's own
+  "current version" is the stamped one too.
 
 Not yet done: the `release.yml` job restructuring (`shell-*`/`ui`/`assemble-*`
 jobs), `cache-warm.yml` wiring, the `legacy_build` fallback input, a live

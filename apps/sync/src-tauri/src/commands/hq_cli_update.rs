@@ -1892,10 +1892,10 @@ fn apply_post_install(
 /// way in the background loop's "auto-update failed" line and in the UI. The
 /// scheduled checker retries naturally.
 pub(crate) fn acquire_cli_install_lock(
-    app: &AppHandle,
+    _app: &AppHandle,
     tool: &str,
 ) -> Result<CliUpdateLockGuard, String> {
-    match acquire_cli_update_lock(tool, &app.package_info().version.to_string())? {
+    match acquire_cli_update_lock(tool, &crate::app_version::current().to_string())? {
         CliUpdateLockAttempt::Acquired(guard) => Ok(guard),
         CliUpdateLockAttempt::Held { holder } => {
             let msg = cli_install_lock_skip_message(&holder);
@@ -1954,13 +1954,13 @@ fn cli_install_lock_wait_backoff() -> Duration {
 /// deliberately keeps the immediate (non-waiting) helper — its scheduled checker
 /// retries naturally and it pages nothing.
 pub(crate) fn acquire_cli_install_lock_waiting(
-    app: &AppHandle,
+    _app: &AppHandle,
     tool: &str,
     budget: Duration,
     is_cancelled: impl FnMut() -> bool,
     mut on_wait: impl FnMut(&str),
 ) -> Result<CliUpdateLockGuard, String> {
-    let version = app.package_info().version.to_string();
+    let version = crate::app_version::current().to_string();
     let backoff = cli_install_lock_wait_backoff();
     let attempt = acquire_cli_update_lock_waiting_cancellable(
         tool,

@@ -44,6 +44,7 @@ mod meet_native;
 
 mod boot_watchdog;
 mod commands;
+mod app_version;
 mod deep_link;
 mod events;
 mod fd_limit;
@@ -341,7 +342,7 @@ fn main() {
 
     let _guard = hq_telemetry::init_with_identity(
         env!("SENTRY_DSN"),
-        env!("APP_VERSION"),
+        app_version::current(),
         option_env!("SENTRY_ENVIRONMENT"),
         SENTRY_IDENTITY,
     );
@@ -358,19 +359,18 @@ fn main() {
     commands::session_end_intercept::install_session_end_intercept();
 
     // Wire the foundation crate's injected dependencies before anything reads them:
-    //  - the user-facing client version (from build-time APP_VERSION), and
+    //  - the user-facing client version (runtime-resolved, see `app_version`), and
     //  - the feature-gate email-claim source (Cognito token read + JWT decode).
     // Prebuilt-shell pipeline: the shell binary is compiled once and reused
     // across releases, so the real release version is stamped into
-    // Resources/version.txt at assemble time (stamp-version.mjs) and read
-    // back here — env!("APP_VERSION") is only the dev/fallback value now.
+    // Info.plist + Resources/version.json at assemble time (stamp-version.mjs)
+    // and read back via `app_version` — crate::app_version::current() is only the dev/fallback value now.
     // See crates/hq-desktop-core/src/runtime_version.rs.
-    let resources_dir = hq_desktop_core::runtime_version::resources_dir_from_current_exe();
-    let resolved_version = hq_desktop_core::runtime_version::resolve_app_version(
-        resources_dir.as_deref(),
-        env!("APP_VERSION"),
+    util::client_info::set_client_version(app_version::current());
+    util::logfile::log(
+        "startup",
+        &format!("app version {} (source: {:?})", app_version::current(), app_version::source()),
     );
-    util::client_info::set_client_version(resolved_version);
     util::feature_gate::set_email_claim_fetcher(|| {
         Box::pin(async {
             let tokens = commands::cognito::get_tokens().await.ok().flatten()?;
@@ -400,6 +400,9 @@ fn main() {
     // first webview the process creates, so it decides the browser process the
     // driver has to find. Untouched (and `None`) on a normal launch.
     let mut context = tauri::generate_context!();
+    // The updater plugin (and any other plugin) reads `package_info().version`
+    // as "the running version"; make that the runtime-resolved one.
+    context.package_info_mut().version = app_version::semver();
     #[cfg(target_os = "windows")]
     {
         if let Some(args) = util::webview2_automation::automation_browser_args() {
@@ -1171,9 +1174,7 @@ fn main() {
             // hq-cli can attach the installed hq-sync version to feedback
             // submissions — the CLI has no other way to learn the running
             // menubar-app version. Best-effort; never aborts launch.
-            commands::config::record_sync_version(
-                &app.package_info().version.to_string(),
-            );
+            commands::config::record_sync_version(app_version::current());
 
             // Heal a LaunchAgent still pointing at a renamed bundle
             // (`HQ Sync.app` → `HQ.app`) before the default-on create/opt-out
@@ -1273,7 +1274,7 @@ fn main() {
                 let startup_app = app.handle().clone();
                 webview_asset_cache::evict_frontend_asset_cache_once(
                     app.handle(),
-                    env!("APP_VERSION"),
+                    app_version::current(),
                     move || {
                         if let Err(error) = setup_startup_surfaces(&startup_app, first_run) {
                             util::logfile::log(

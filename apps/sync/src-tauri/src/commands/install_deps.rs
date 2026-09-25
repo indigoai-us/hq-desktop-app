@@ -6794,7 +6794,7 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
             sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
             sentry_scope.set_extra("setup_run_id", sentry::protocol::Value::String(setup_correlation_id(&scope.setup_run_id)));
             sentry_scope.set_extra("setup_frontend_session_id", sentry::protocol::Value::String(setup_correlation_id(&scope.frontend_session_id)));
-            sentry_scope.set_extra("setup_app_version", sentry::protocol::Value::String(env!("APP_VERSION").to_string()));
+            sentry_scope.set_extra("setup_app_version", sentry::protocol::Value::String(crate::app_version::current().to_string()));
             sentry_scope.set_extra("setup_os_version", sentry::protocol::Value::String(os.version().to_string()));
             sentry_scope.set_extra("setup_command", sentry::protocol::Value::String(diagnostic.command));
             sentry_scope.set_extra("setup_exit_code", diagnostic.exit_code.map(|code| sentry::protocol::Value::Number(code.into())).unwrap_or(sentry::protocol::Value::Null));
@@ -6886,7 +6886,7 @@ fn send_setup_cancellation_cleanup_failure(
                 );
                 sentry_scope.set_extra(
                     "setup_app_version",
-                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                    sentry::protocol::Value::String(crate::app_version::current().to_string()),
                 );
                 sentry_scope.set_extra(
                     "setup_os_version",

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { assertValidVersion, patchInfoPlist, renderVersionTxt, stampBundle } from "./stamp-version.mjs";
+import { assertValidVersion, patchInfoPlist, renderVersionJson, stampBundle } from "./stamp-version.mjs";
 
 const SAMPLE_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
@@ -30,8 +30,8 @@ describe("stamp-version", () => {
     expect(() => assertValidVersion("1.2.3-beta.4")).not.toThrow();
   });
 
-  it("renders version.txt with a trailing newline", () => {
-    expect(renderVersionTxt("1.2.3")).toBe("1.2.3\n");
+  it("renders version.json with a trailing newline", () => {
+    expect(renderVersionJson("1.2.3")).toBe('{"version":"1.2.3"}\n');
   });
 
   it("patches both plist version keys and leaves everything else byte-identical", () => {
@@ -47,7 +47,7 @@ describe("stamp-version", () => {
     expect(() => patchInfoPlist(broken, "1.2.3")).toThrow(/CFBundleVersion/);
   });
 
-  it("stamps a bundle: writes version.txt and patches Info.plist on disk", async () => {
+  it("stamps a bundle: writes version.json and patches Info.plist on disk", async () => {
     const dir = await mkdtemp(join(tmpdir(), "stamp-version-"));
     cleanup.push(dir);
     const plistPath = join(dir, "Info.plist");
@@ -55,7 +55,7 @@ describe("stamp-version", () => {
 
     await stampBundle({ version: "2.3.4", resourcesDir: dir, infoPlistPath: plistPath });
 
-    expect(await readFile(join(dir, "version.txt"), "utf8")).toBe("2.3.4\n");
+    expect(await readFile(join(dir, "version.json"), "utf8")).toBe('{"version":"2.3.4"}\n');
     expect(await readFile(plistPath, "utf8")).toContain("<string>2.3.4</string>");
   });
 });

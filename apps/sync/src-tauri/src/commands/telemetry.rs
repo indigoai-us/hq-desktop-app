@@ -1034,7 +1034,7 @@ fn build_desktop_telemetry_event(
         event_name.as_str(),
         "desktop_onboarding_step" | "desktop_setup_completed"
     ) {
-        properties["appVersion"] = Value::String(env!("APP_VERSION").to_string());
+        properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
     RawTelemetryEvent {
         event_name,
@@ -1204,7 +1204,7 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         session_id: None,
         properties: json!({
             "platform": crate::commands::version_gate::platform_tag(),
-            "appVersion": env!("APP_VERSION"),
+            "appVersion": crate::app_version::current(),
         }),
     }
 }
@@ -1334,7 +1334,7 @@ fn build_version_heartbeat_batch(
 }
 
 fn heartbeat_app_version() -> String {
-    env!("APP_VERSION").to_string()
+    crate::app_version::current().to_string()
 }
 
 #[cfg(test)]
@@ -1932,7 +1932,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     file_paths.dedup();
 
     let machine_id = read_machine_id();
-    let installer_version = env!("CARGO_PKG_VERSION").to_string();
+    let installer_version = crate::app_version::current().to_string();
     // Resolved once per collection run — a login-shell probe, not worth
     // repeating per batch. None (CLI absent/unresolvable) omits the field.
     let cli_version = crate::commands::hq_cli_update::get_hq_cli_version().await;
@@ -2575,7 +2575,7 @@ mod codex_telemetry_tests {
             "no-consent",
         );
 
-        assert_eq!(event.properties["appVersion"], env!("APP_VERSION"));
+        assert_eq!(event.properties["appVersion"], crate::app_version::current());
         assert_eq!(event.properties["step"], "connector-import");
 
         let completed = build_desktop_telemetry_event(
@@ -2585,7 +2585,7 @@ mod codex_telemetry_tests {
             None,
             "no-consent",
         );
-        assert_eq!(completed.properties["appVersion"], env!("APP_VERSION"));
+        assert_eq!(completed.properties["appVersion"], crate::app_version::current());
     }
 
     #[test]
@@ -3166,7 +3166,7 @@ mod codex_telemetry_tests {
         );
         assert_eq!(first.occurred_at, retry.occurred_at);
         assert_eq!(first.idempotency_key, retry.idempotency_key);
-        assert_eq!(first.properties["appVersion"], env!("APP_VERSION"));
+        assert_eq!(first.properties["appVersion"], crate::app_version::current());
         let platform = first.properties["platform"].as_str().unwrap();
         assert!(
             crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
@@ -3182,7 +3182,7 @@ mod codex_telemetry_tests {
             serialized["idempotencyKey"],
             "hq-desktop-app:daily-active:2026-07-15"
         );
-        assert_eq!(serialized["properties"]["appVersion"], env!("APP_VERSION"));
+        assert_eq!(serialized["properties"]["appVersion"], crate::app_version::current());
         assert_eq!(serialized["properties"]["platform"], platform);
         for unexpected_key in ["machineId", "appVersion", "companyUid", "personUid"] {
             assert!(serialized.get(unexpected_key).is_none());
@@ -3442,7 +3442,7 @@ mod codex_telemetry_tests {
         assert_eq!(posts.len(), 1);
         let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
         assert_eq!(body["machineId"], "mid-heartbeat-consent");
-        assert_eq!(body["installerVersion"], env!("APP_VERSION"));
+        assert_eq!(body["installerVersion"], crate::app_version::current());
         assert_eq!(body["events"], json!([]));
         let client_name = posts[0]
             .headers

@@ -21,6 +21,11 @@ The release moves it under the version it ships in.
   guard now allows the new UI address, every pop-up window (banners, call,
   permissions, drift detail, new files, desktop view) loads from it, and a
   bundle always prefers the UI assembled into it over a local dev build.
+- The app now reads its own version at runtime from the version stamped into
+  the installed bundle (macOS Info.plist, or `version.json` next to the app),
+  so update checks, the tray menu, telemetry, and request headers report the
+  release you actually installed even when the app shell was built for an
+  earlier release.
 
 ## [0.10.328] — 2026-09-25
 
