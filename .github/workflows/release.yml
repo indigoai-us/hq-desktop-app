@@ -2186,6 +2186,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The compiled shell restored below only carries the Rust binary and
+      # the sidecar launcher .exe. tauri.conf.json also bundles the sidecar's
+      # JS (bridge.mjs, recording-tracker.mjs, node_modules) as a resource, so
+      # build.rs fails with "resource path ...node_modules doesn't exist"
+      # unless it's installed here too. Install only, never build — the
+      # sidecar's compiled launcher already came from the shell artifact, and
+      # `pnpm -C ... build` is what triggers the Node 22 Windows
+      # `spawnSync pnpm.cmd EINVAL` this job must avoid.
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
       - name: Download shell
         uses: actions/download-artifact@v4
         with:
@@ -2510,6 +2521,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # See the matching step in assemble-windows-x64: build.rs needs the
+      # sidecar's JS resources (node_modules etc.) installed, but never built,
+      # on this runner.
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
 
       - name: Download shell
         uses: actions/download-artifact@v4
