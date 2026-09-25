@@ -142,7 +142,7 @@ describe("DesktopApp home-channel title, opened by id before rows load", () => {
     component = mount(DesktopApp, {
       target: host,
       props: {
-        adapter: adapter({ fetchChannel }),
+        adapter: adapter({ fetchChannel: fetchChannel as unknown as PlatformAdapter["messaging"]["fetchChannel"] }),
         sidebarApi: createFixtureChatSidebarApi(),
         notificationsApi: createEmptyNotificationsApi(),
         self: { uid: "prs_test", displayName: "Stefan Johnson", email: "stefan@example.com" },
