@@ -72,7 +72,9 @@ describe('desktop-alt overlay traffic lights share the titlebar centre line', ()
 
   it('keeps the macOS traffic-light gutter as the same shared constant', () => {
     const tokens = readRepoFile('../../packages/ui/src/home/tokens.css');
-    expect(gutter).toBe(78);
+    // 96, not 78: the 78px gutter left ~6px of clearance past the traffic lights
+    // and the overlap kept resurfacing (#1036). 78 would reintroduce it.
+    expect(gutter).toBe(96);
     expect(rustF64Const('TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX')).toBe(gutter);
     expect(tokens).toMatch(
       /\.has-window-controls\s*\{[\s\S]*--titlebar-leading-inset:\s*96px/,
