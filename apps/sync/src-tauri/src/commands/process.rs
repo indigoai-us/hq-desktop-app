@@ -1022,6 +1022,8 @@ const WATCHER_PID_SAMPLE_CAP: usize = 256;
 pub struct WatcherJobSample {
     pub pids: Vec<u32>,
     pub images: hq_desktop_core::watcher_fault::WatcherJobImageDescriptor,
+    /// Dominant content-safe image kind among the distinct sampled PIDs.
+    pub largest_process_kind: Option<&'static str>,
 }
 
 /// Sampled live Job Object process images, keyed by process-registry generation
@@ -1056,7 +1058,8 @@ pub fn take_watcher_job_sample(generation: u64) -> WatcherJobSample {
         .remove(&generation)
         .unwrap_or_default();
     let mut images = hq_desktop_core::watcher_fault::WatcherJobImageDescriptor::default();
-    for image in map.values().copied() {
+    let sampled_images: Vec<_> = map.values().copied().collect();
+    for image in sampled_images.iter().copied() {
         // `None` (image unresolved) records nothing; every PID is still retained
         // below for WER binding. Absence never masquerades as an observation.
         images.record_optional(image);
@@ -1064,6 +1067,9 @@ pub fn take_watcher_job_sample(generation: u64) -> WatcherJobSample {
     WatcherJobSample {
         pids: map.into_keys().collect(),
         images,
+        largest_process_kind: hq_desktop_core::watcher_fault::largest_sampled_watcher_process_kind(
+            &sampled_images,
+        ),
     }
 }
 
@@ -7520,3 +7526,46 @@ mod child_env_tests {
 #[cfg(test)]
 #[path = "process_output_backpressure_tests.rs"]
 mod process_output_backpressure_tests;
+
+#[cfg(test)]
+mod watcher_job_sample_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn drained_job_sample_reports_the_largest_distinct_process_kind() {
+        let generation = u64::MAX;
+        let sampled: HashMap<u32, Option<hq_desktop_core::watcher_fault::WatcherFaultBinary>> = [
+            (
+                101,
+                Some(hq_desktop_core::watcher_fault::WatcherFaultBinary::NodeExe),
+            ),
+            (
+                102,
+                Some(hq_desktop_core::watcher_fault::WatcherFaultBinary::NodeExe),
+            ),
+            (
+                103,
+                Some(hq_desktop_core::watcher_fault::WatcherFaultBinary::CmdExe),
+            ),
+            (104, None),
+        ]
+        .into_iter()
+        .collect();
+        watcher_job_pid_samples()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(generation, sampled);
+
+        let sample = take_watcher_job_sample(generation);
+        assert_eq!(sample.pids.len(), 4);
+        assert_eq!(sample.largest_process_kind, Some("node_exe"));
+        assert_eq!(
+            sample.images.images_tag().as_deref(),
+            Some("node_exe,cmd_exe")
+        );
+        assert!(!watcher_job_pid_samples()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&generation));
+    }
+}

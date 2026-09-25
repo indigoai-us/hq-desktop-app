@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Windows sync crash reports now include bounded Node/V8 fatal details and sampled watcher process counts and kinds.
+
 ## [0.10.326] — 2026-09-25
 
 - On Windows, HQ waits for its own command processes to finish before replacing

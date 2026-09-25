@@ -809,6 +809,68 @@ impl WatcherJobImageDescriptor {
     }
 }
 
+/// Bucket the Job Object's cumulative process-start count for a watcher
+/// generation. The raw total remains available separately; these closed
+/// buckets keep the diagnostic tag useful without implying that it is a count
+/// of simultaneously live processes.
+pub fn watcher_job_process_count_bucket(count: Option<u32>) -> &'static str {
+    match count {
+        None => "unknown",
+        Some(0) => "zero",
+        Some(1..=5) => "1_to_5",
+        Some(6..=10) => "6_to_10",
+        Some(11..=25) => "11_to_25",
+        Some(26..=50) => "26_to_50",
+        Some(_) => "over_50",
+    }
+}
+
+/// Return the most common allow-listed process kind among distinct sampled PIDs.
+/// Loader DLLs and unresolved image reads are omitted. Ties return `mixed`; no
+/// observed process image returns `None`.
+pub fn largest_sampled_watcher_process_kind(
+    images: &[Option<WatcherFaultBinary>],
+) -> Option<&'static str> {
+    let tokens = [
+        WatcherFaultBinary::NodeExe.as_str(),
+        WatcherFaultBinary::NpxCmd.as_str(),
+        WatcherFaultBinary::CmdExe.as_str(),
+        WatcherFaultBinary::HqSyncMenubarExe.as_str(),
+        WatcherFaultBinary::Other.as_str(),
+    ];
+    let mut counts = [0_usize; 5];
+    for image in images.iter().flatten() {
+        let index = match image {
+            WatcherFaultBinary::NodeExe => Some(0),
+            WatcherFaultBinary::NpxCmd => Some(1),
+            WatcherFaultBinary::CmdExe => Some(2),
+            WatcherFaultBinary::HqSyncMenubarExe => Some(3),
+            WatcherFaultBinary::Other => Some(4),
+            WatcherFaultBinary::NtdllDll
+            | WatcherFaultBinary::KernelbaseDll
+            | WatcherFaultBinary::UcrtbaseDll
+            | WatcherFaultBinary::MsvcrtDll => None,
+        };
+        if let Some(index) = index {
+            counts[index] = counts[index].saturating_add(1);
+        }
+    }
+    let largest = counts.iter().copied().max().unwrap_or(0);
+    if largest == 0 {
+        return None;
+    }
+    let mut winners = counts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| (*count == largest).then_some(index));
+    let winner = winners.next()?;
+    if winners.next().is_some() {
+        Some("mixed")
+    } else {
+        Some(tokens[winner])
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Watcher Job Object survivors — the shim-vs-runner discriminator (HQ-DESKTOP-66)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2010,6 +2072,44 @@ mod tests {
         assert_eq!(unknown.culprit_candidate_token(), "other");
         let tag = unknown.images_tag().unwrap();
         assert!(!tag.contains("cognito") && !tag.contains("abc123") && !tag.contains("private"));
+    }
+
+    #[test]
+    fn watcher_job_process_diagnostics_bucket_and_count_sampled_kinds() {
+        assert_eq!(watcher_job_process_count_bucket(None), "unknown");
+        assert_eq!(watcher_job_process_count_bucket(Some(0)), "zero");
+        assert_eq!(watcher_job_process_count_bucket(Some(5)), "1_to_5");
+        assert_eq!(watcher_job_process_count_bucket(Some(6)), "6_to_10");
+        assert_eq!(watcher_job_process_count_bucket(Some(10)), "6_to_10");
+        assert_eq!(watcher_job_process_count_bucket(Some(11)), "11_to_25");
+        assert_eq!(watcher_job_process_count_bucket(Some(25)), "11_to_25");
+        assert_eq!(watcher_job_process_count_bucket(Some(26)), "26_to_50");
+        assert_eq!(watcher_job_process_count_bucket(Some(50)), "26_to_50");
+        assert_eq!(watcher_job_process_count_bucket(Some(51)), "over_50");
+
+        let plurality = [
+            Some(WatcherFaultBinary::NodeExe),
+            Some(WatcherFaultBinary::NodeExe),
+            Some(WatcherFaultBinary::CmdExe),
+            None,
+            Some(WatcherFaultBinary::NtdllDll),
+        ];
+        assert_eq!(
+            largest_sampled_watcher_process_kind(&plurality),
+            Some("node_exe")
+        );
+        assert_eq!(
+            largest_sampled_watcher_process_kind(&[
+                Some(WatcherFaultBinary::NodeExe),
+                Some(WatcherFaultBinary::CmdExe),
+            ]),
+            Some("mixed")
+        );
+        assert_eq!(largest_sampled_watcher_process_kind(&[None]), None);
+        assert_eq!(
+            largest_sampled_watcher_process_kind(&[Some(WatcherFaultBinary::NtdllDll)]),
+            None
+        );
     }
 
     #[test]
