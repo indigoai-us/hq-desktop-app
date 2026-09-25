@@ -55,6 +55,191 @@ pub fn redact_core_update_diagnostic_tail(value: &str) -> String {
     bounded_redacted_core_update_diagnostic_tail(&value)
 }
 
+/// Closed, path-free diagnostics extracted from a Core rescue's rsync error
+/// lines. The path shape describes only how a path printed by rsync was
+/// spelled after the Windows shim translated it; no path text is retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreUpdateRsyncDiagnostic {
+    pub stderr_class: &'static str,
+    pub translated_path_shape: &'static str,
+}
+
+const CORE_UPDATE_RSYNC_DIAGNOSTIC_LIMIT_BYTES: usize = 16 * 1024;
+
+/// Classify only rsync diagnostic lines from a bounded Core rescue tail.
+/// Results are fixed vocabulary for Sentry tags, so account paths and file
+/// names are inspected in memory but never copied into these dimensions.
+pub fn classify_core_update_rsync_diagnostic(
+    raw: &str,
+    is_rsync_failure: bool,
+) -> CoreUpdateRsyncDiagnostic {
+    if !is_rsync_failure {
+        return CoreUpdateRsyncDiagnostic {
+            stderr_class: "not_applicable",
+            translated_path_shape: "not_applicable",
+        };
+    }
+
+    let mut start = raw
+        .len()
+        .saturating_sub(CORE_UPDATE_RSYNC_DIAGNOSTIC_LIMIT_BYTES);
+    while !raw.is_char_boundary(start) {
+        start += 1;
+    }
+    let bounded = &raw[start..];
+    let lines: Vec<&str> = bounded
+        .lines()
+        .filter(|line| is_core_update_rsync_diagnostic_line(line))
+        .collect();
+    if lines.is_empty() {
+        return CoreUpdateRsyncDiagnostic {
+            stderr_class: "unclassified",
+            translated_path_shape: "unavailable",
+        };
+    }
+
+    let lower = lines
+        .iter()
+        .map(|line| line.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stderr_class = if (lower.contains("link_stat") || lower.contains("failed to open"))
+        && (lower.contains("no such file") || lower.contains("not found"))
+    {
+        "source_missing"
+    } else if lower.contains("vanished") {
+        "vanished_source"
+    } else if lower.contains("permission denied")
+        || lower.contains("operation not permitted")
+        || lower.contains("access is denied")
+        || lower.contains("eacces")
+        || lower.contains("eperm")
+    {
+        "permission_denied"
+    } else if lower.contains("file name too long")
+        || lower.contains("filename too long")
+        || lower.contains("path too long")
+        || lower.contains("enametoolong")
+    {
+        "path_too_long"
+    } else if lower.contains("resource busy")
+        || lower.contains("sharing violation")
+        || lower.contains("used by another process")
+        || lower.contains("text file busy")
+        || lower.contains("ebusy")
+    {
+        "file_locked"
+    } else if lower.contains("no space left") || lower.contains("enospc") {
+        "disk_full"
+    } else if lower.contains("input/output error")
+        || lower.contains("i/o error")
+        || lower.contains("eio")
+    {
+        "io_error"
+    } else if lower.contains("operation not supported") || lower.contains("unsupported") {
+        "unsupported_operation"
+    } else if lower.contains("protocol version")
+        || lower.contains("protocol data stream")
+        || lower.contains("connection unexpectedly closed")
+        || lower.contains("error in rsync protocol")
+    {
+        "protocol_error"
+    } else if lower.contains("partial transfer")
+        || lower.contains("code 23")
+        || lower.contains("code 24")
+    {
+        "partial_transfer"
+    } else {
+        "unclassified"
+    };
+
+    CoreUpdateRsyncDiagnostic {
+        stderr_class,
+        translated_path_shape: core_update_rsync_path_shape(&lines),
+    }
+}
+
+fn is_core_update_rsync_diagnostic_line(line: &str) -> bool {
+    let lower = line.trim_start().to_ascii_lowercase();
+    lower.starts_with("rsync:")
+        || lower.starts_with("rsync error:")
+        || lower.starts_with("file has vanished:")
+        || lower.starts_with("vanished file:")
+}
+
+fn core_update_rsync_path_shape(lines: &[&str]) -> &'static str {
+    let mut cygwin_drive = false;
+    let mut msys_drive = false;
+    let mut windows_drive = false;
+    let mut unc = false;
+    let mut posix_absolute = false;
+    let mut relative = false;
+
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        let bytes = lower.as_bytes();
+        cygwin_drive |= lower.split("/cygdrive/").skip(1).any(|tail| {
+            let tail = tail.as_bytes();
+            tail.len() >= 2 && tail[0].is_ascii_alphabetic() && tail[1] == b'/'
+        });
+        for index in 0..bytes.len().saturating_sub(2) {
+            let boundary = index == 0
+                || bytes[index - 1].is_ascii_whitespace()
+                || matches!(bytes[index - 1], b'"' | b'\'' | b'(' | b'[');
+            if boundary && bytes[index] == b'/' && bytes[index + 1] == b'/' {
+                unc = true;
+            }
+            let is_msys_drive = bytes[index] == b'/'
+                && bytes[index + 1].is_ascii_alphabetic()
+                && bytes[index + 2] == b'/'
+                && boundary;
+            if is_msys_drive {
+                msys_drive = true;
+            }
+            if bytes[index].is_ascii_alphabetic()
+                && bytes[index + 1] == b':'
+                && matches!(bytes[index + 2], b'/' | b'\\')
+            {
+                windows_drive = true;
+            }
+            let is_cygwin_drive = bytes[index..].starts_with(b"/cygdrive/")
+                && bytes.get(index + 10).is_some_and(u8::is_ascii_alphabetic)
+                && bytes.get(index + 11) == Some(&b'/');
+            if boundary
+                && bytes[index] == b'/'
+                && bytes[index + 1] != b'/'
+                && !is_msys_drive
+                && !is_cygwin_drive
+            {
+                posix_absolute = true;
+            }
+        }
+        relative |= (line.contains('/') || line.contains('\\')) && !lower.contains("://");
+    }
+
+    let shape_count = [cygwin_drive, msys_drive, windows_drive, unc, posix_absolute]
+        .into_iter()
+        .filter(|shape| *shape)
+        .count();
+    if shape_count > 1 {
+        "mixed"
+    } else if cygwin_drive {
+        "cygwin_drive"
+    } else if msys_drive {
+        "msys_drive"
+    } else if windows_drive {
+        "windows_drive"
+    } else if unc {
+        "unc"
+    } else if posix_absolute {
+        "posix_absolute"
+    } else if relative {
+        "relative"
+    } else {
+        "unavailable"
+    }
+}
+
 /// Maximum number of fatal stderr lines retained on a watcher-exit event.
 pub const RUNNER_FATAL_LINE_COUNT_LIMIT: usize = 3;
 const RUNNER_FATAL_LINE_INPUT_LIMIT_BYTES: usize = 1024;
@@ -1375,6 +1560,33 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "tls"
                 | "timeout"
                 | "unknown"
+        )),
+        "rsync_stderr_class" => Some(matches!(
+            value,
+            "source_missing"
+                | "vanished_source"
+                | "permission_denied"
+                | "path_too_long"
+                | "file_locked"
+                | "disk_full"
+                | "io_error"
+                | "unsupported_operation"
+                | "protocol_error"
+                | "partial_transfer"
+                | "unclassified"
+                | "not_applicable"
+        )),
+        "rsync_translated_path_shape" => Some(matches!(
+            value,
+            "cygwin_drive"
+                | "msys_drive"
+                | "windows_drive"
+                | "unc"
+                | "posix_absolute"
+                | "relative"
+                | "mixed"
+                | "unavailable"
+                | "not_applicable"
         )),
         // Existing install-failure events retain the child's numeric exit code;
         // Core update events use the closed semantic values below. Accept both
@@ -2733,6 +2945,10 @@ mod tests {
             ("rescue_error_class", "rsync_failed"),
             ("rescue_error_class", "rsync_partial"),
             ("rescue_error_class", "npx_resolve_failed"),
+            ("rsync_stderr_class", "source_missing"),
+            ("rsync_stderr_class", "unclassified"),
+            ("rsync_translated_path_shape", "cygwin_drive"),
+            ("rsync_translated_path_shape", "unavailable"),
             ("exit_code", "5"),
             ("git_source", "managed"),
             ("rsync_source", "system"),
@@ -2758,6 +2974,14 @@ mod tests {
         for (key, value) in [
             ("rescue_step", "/Users/ada/HQ"),
             ("rescue_error_class", "fatal: clone failed"),
+            (
+                "rsync_stderr_class",
+                "No such file: C:\\Users\\fixture\\secret",
+            ),
+            (
+                "rsync_translated_path_shape",
+                "/cygdrive/c/Users/fixture/secret",
+            ),
             ("git_source", "managed:/Users/ada"),
             ("git_version", "git version 2.44.0"),
             ("disk_free_bucket", "3 GiB"),
@@ -2770,6 +2994,29 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn core_update_rsync_diagnostics_are_closed_and_path_free() {
+        let missing_source = classify_core_update_rsync_diagnostic(
+            "rsync: [sender] link_stat \"/cygdrive/c/fixture-one/HQ/core/file\" failed: No such file or directory (2)\nrsync error: some files/attrs were not transferred (code 23)",
+            true,
+        );
+        assert_eq!(missing_source.stderr_class, "source_missing");
+        assert_eq!(missing_source.translated_path_shape, "cygwin_drive");
+        assert!(!missing_source.stderr_class.contains("fixture-one"));
+        assert!(!missing_source.translated_path_shape.contains("/"));
+
+        let permission_denied = classify_core_update_rsync_diagnostic(
+            "rsync: [receiver] open \"D:\\fixture-two\\HQ\\core\\file\" failed: Permission denied (13)",
+            true,
+        );
+        assert_eq!(permission_denied.stderr_class, "permission_denied");
+        assert_eq!(permission_denied.translated_path_shape, "windows_drive");
+
+        let unrelated = classify_core_update_rsync_diagnostic("git clone failed", false);
+        assert_eq!(unrelated.stderr_class, "not_applicable");
+        assert_eq!(unrelated.translated_path_shape, "not_applicable");
     }
 
     /// Diagnostic reporting remains fire-and-forget even when its work is
