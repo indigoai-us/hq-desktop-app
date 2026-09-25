@@ -176,6 +176,6 @@ describe("CompanyHero", () => {
     const hero = host.querySelector('[data-testid="company-hero"]');
     expect(hero?.getAttribute("data-wallpaper")).toBe("easel");
     expect(hero?.textContent).toContain("Ramen Bae");
-    expect(hero?.textContent).toContain("Artist's easel");
+    expect(hero?.textContent).not.toContain("Artist's easel");
   });
 });

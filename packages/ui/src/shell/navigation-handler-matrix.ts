@@ -133,6 +133,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openExtraPage: "push",
   openDmRequests: "push",
   handleDmRequestResolved: "push",
+  // Patches the in-memory roster / notifies the host so chrome resolves
+  // immediately; the selected conversation doesn't change.
+  handleHomeChannelResolved: "none",
   closeSettings: "replace",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",

@@ -17,20 +17,15 @@
       ? SETUP_HERO_ART.light
       : SETUP_HERO_ART.dark,
   );
-  const label = $derived(
-    wallpaper === "easel"
-      ? "Artist's easel"
-      : wallpaper === "monoliths"
-        ? "Chrome monoliths"
-        : "Aurora",
-  );
 </script>
 
+<!-- `data-wallpaper` stays for tests/the wallpaper picker; the wallpaper name
+     itself ("Aurora" / "Chrome monoliths" / "Artist's easel") is no longer
+     rendered as a label above the company name. -->
 <div class="company-hero" data-testid="company-hero" data-wallpaper={wallpaper ?? "aurora"}>
   <img class="company-hero-art" src={src} alt="" />
   <div class="company-hero-scrim" aria-hidden="true"></div>
   <div class="company-hero-copy">
-    <div class="company-hero-k">{label}</div>
     <h2 class="company-hero-title">{title}</h2>
   </div>
 </div>
@@ -66,14 +61,6 @@
     position: relative;
     z-index: 1;
     padding: 28px 20px 18px;
-  }
-
-  .company-hero-k {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: rgb(255 255 255 / 0.72);
   }
 
   .company-hero-title {

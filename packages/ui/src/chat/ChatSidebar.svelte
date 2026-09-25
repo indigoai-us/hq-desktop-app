@@ -214,6 +214,11 @@
     /** Wake events (web: bridged from the MeshClient). */
     wakes?: ChatWakeBus | null;
     companies?: Workspace[] | null;
+    /** A company's home channel was just created/adopted by `ensureCompanyHomeChannel`
+     *  (roster row had no `homeChannelId` yet). Lets the host patch its own
+     *  roster copy and refresh from the server, so chrome elsewhere (and a
+     *  restart) stays correct without waiting on this sidebar's own local cache. */
+    onhomechannelresolved?: (companyUid: string, homeChannelId: string) => void;
     /** Verified signed-in principal — tags the matching person row "you". */
     self?: SelfIdentity | null;
     /** Explicit admin/owner override; else derived from membership roles. */
@@ -379,6 +384,7 @@
     api,
     wakes = null,
     companies = null,
+    onhomechannelresolved,
     self = null,
     isAdmin = null,
     accountLabel = null,
@@ -1112,6 +1118,7 @@
       try {
         const { homeChannelId } = await api.ensureCompanyHomeChannel(company.companyUid);
         resolvedHomeChannelIds = { ...resolvedHomeChannelIds, [company.companyUid]: homeChannelId };
+        onhomechannelresolved?.(company.companyUid, homeChannelId);
         companiesLog(`open company=${label} channel=${homeChannelId}`);
         openHomeChannelId(homeChannelId, company);
         const { [company.companyUid]: _clear, ...rest } = companyHomeEnsuring;
