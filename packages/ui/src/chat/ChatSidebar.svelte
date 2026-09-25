@@ -132,10 +132,8 @@
     loadSetupPinDismissed,
     loadShowFilter,
     resolveCompanySectionRows,
-    findCompanyHomeRow,
     type CompanySectionRow,
     migratePinnedCompanySelection,
-    mergeResolvedCompanyChannels,
     mergeContactActivity,
     isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
@@ -512,16 +510,18 @@
     ) ?? [],
   );
   let companiesSectionMenuOpen = $state(false);
-  /** companyUids the on-demand home-channel resolver has already fetched (or
-   * is fetching) this session — never re-fetch the same company on every
-   * render. */
-  const attemptedCompanyHomeResolutions = new Set<string>();
-  /** companyUid → true while a click-triggered retry fetch is in flight, so
-   * a double-click doesn't fire two overlapping `listChannels` calls. */
-  let companyHomeRetrying = $state<Record<string, boolean>>({});
-  /** companyUid → last resolution-failure reason, shown on the disabled row
-   * so a click is never a silent no-op (policy: never swallow errors). */
-  let companyHomeErrors = $state<Record<string, string>>({});
+  /** companyUid → homeChannelId the client resolved this session via
+   * `ensureCompanyHomeChannel` (server didn't have it on the roster yet).
+   * Merged into `companySectionRows` ahead of the roster value so a click
+   * that just provisioned the channel doesn't wait for the next roster
+   * refresh to stop showing disabled. */
+  let resolvedHomeChannelIds = $state<Record<string, string>>({});
+  /** companyUid → true while an `ensureCompanyHomeChannel` call for that
+   * company is in flight (subtle loading state on the row). */
+  let companyHomeEnsuring = $state<Record<string, boolean>>({});
+  /** companyUid → last `ensureCompanyHomeChannel` failure reason, shown as
+   * the row's tooltip so a click never silently no-ops. */
+  let companyHomeEnsureError = $state<Record<string, string>>({});
   /** User unpinned #setup — sticky until they pin it again. */
   let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
   /** Rows with an unsent composer draft (Slack-style pencil marker). */
@@ -934,14 +934,15 @@
     savePins(pins, storage);
   }
 
-  /** companyUid → slug, the desktop fallback for `isCompanyHome` resolution
-   * while the backend flag rolls out (see channels.ts `isCompanyHomeChannel`). */
-  const companySlugByUid = $derived.by(() => {
+  /** companyUid → homeChannelId, from the roster (`Workspace.homeChannelId`) —
+   * resolves `isCompanyHome` by channel id (see channels.ts
+   * `isCompanyHomeChannel`). */
+  const homeChannelIdByUid = $derived.by(() => {
     const map = new Map<string, string>();
     for (const company of companies ?? []) {
       const uid = (company.cloudUid ?? "").trim();
-      const slug = (company.slug ?? "").trim();
-      if (uid && slug) map.set(uid, slug);
+      const homeChannelId = (company.homeChannelId ?? "").trim();
+      if (uid && homeChannelId) map.set(uid, homeChannelId);
     }
     return map;
   });
@@ -953,7 +954,7 @@
       recentDms,
       engagedAgentUids: engagedAgents,
       ownAgentUids,
-      companySlugByUid,
+      homeChannelIdByUid,
     }),
   );
 
@@ -963,9 +964,9 @@
    * `companies` order. Otherwise the section shows the
    * `DEFAULT_COMPANY_SECTION_LIMIT` most active companies (see
    * `companyActivityScore` / `rankCompaniesByActivity` in sidebar-model.ts).
-   * A company with no home channel yet is included with `homeRow: null` so
-   * the row can render disabled with a reason instead of silently vanishing
-   * — the resolver effect below tries to fetch it on demand.
+   * A company with no `homeChannelId` yet is included with `homeChannelId:
+   * null` so the row can render disabled ("No company channel yet") instead
+   * of silently vanishing.
    *
    * Home channels shown here are NOT removed from the regular channel list:
    * this section is additive, the same way the existing pin star only
@@ -980,12 +981,30 @@
         .map((c) => ({
           companyUid: (c.cloudUid as string).trim(),
           label: c.displayName || c.slug || c.cloudUid!,
+          slug: c.slug ?? null,
           iconUrl: companyIcons.get((c.cloudUid as string).trim()) ?? null,
+          homeChannelId:
+            c.homeChannelId ?? resolvedHomeChannelIds[(c.cloudUid as string).trim()] ?? null,
         })),
       allRows,
       pinnedCompanies,
     ),
   );
+
+  /**
+   * DEBUG instrumentation (2026-09-25): proves, from `~/.hq/logs/hq-sync.log`,
+   * that the Companies section actually renders and that `homeChannelId`
+   * made it through the roster mapping — without requiring a click. Fires
+   * once per non-empty render of the section, not on every recompute.
+   */
+  let companySectionReadyLogged = false;
+  $effect(() => {
+    const rows = companySectionRows;
+    if (rows.length === 0 || companySectionReadyLogged) return;
+    companySectionReadyLogged = true;
+    const withHome = rows.filter((r) => Boolean(r.homeChannelId)).length;
+    companiesLog(`section ready count=${rows.length} withHome=${withHome}`);
+  });
 
   function toggleCompanyPin(companyUid: string): void {
     pinnedCompanies = pinnedCompanies.includes(companyUid)
@@ -995,104 +1014,90 @@
   }
 
   /**
-   * Tagged, grep-able log line for the "Companies" section's open/resolve
-   * path (policy: never fail silently). Distinct from `sidebarLog` so a
-   * failed click always leaves a `[companies] open-home-failed` line in
-   * `~/.hq/logs` / devtools, even for users who never look at `[hq-sidebar]`
-   * noise.
+   * Writes one `[companies] …` line to the desktop support log
+   * (`~/.hq/logs/hq-sync.log`) via `api.logToFile` — the TS→Rust bridge onto
+   * `frontend_log` — so a company-home open (or disabled click) is greppable
+   * even with devtools closed. `logToFile` is a required seam now; a failed
+   * write (permission, IPC, disk) is logged to the console instead of being
+   * silently swallowed, so a broken bridge is itself diagnosable.
    */
-  function companiesLog(event: string, fields: Record<string, unknown>): void {
-    const parts = Object.entries(fields)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(" ");
-    console.warn(`[companies] ${event}${parts ? ` ${parts}` : ""}`);
+  function companiesLog(line: string): void {
+    console.warn(`[companies] ${line}`);
+    void api.logToFile("companies", line).catch((err) => {
+      console.error("[companies] logToFile failed", err);
+    });
   }
 
   /**
-   * One `listChannels({ companyUid })` attempt for a company whose home
-   * channel isn't in the currently-loaded directory feed (e.g. the directory
-   * hasn't synced that company's channels yet, or the caller's membership in
-   * it is stale locally). Reuse the SAME lane the owner-only "All company
-   * projects" view already uses (see the `companyProjectsSeq` effect above)
-   * — this is the mechanism deep links and the company switcher rely on
-   * elsewhere in the shell to resolve a channel that isn't cached yet.
-   * Returns the resolved home row, or `null` (and logs a reason) if the
-   * company still has no discoverable home channel.
+   * Companies section row click: the company's home channel id comes
+   * straight from the roster (`Workspace.homeChannelId`), so there's no
+   * client-side heuristic resolution needed to know WHICH channel to open.
+   * If it's already among this sidebar's loaded rows, open it the normal way
+   * (`openRow` — mark-read, draft clearing, etc.). Otherwise (e.g. the "All"
+   * scope hasn't loaded that company's channels yet) fall back to
+   * `requestChannelOpen`, the same generic "open a channel by id" path
+   * notifications and deep links use — the shell's navigation loads it by id
+   * the same way it would for any of those.
    */
-  async function resolveCompanyHomeOnce(
-    companyUid: string,
-    label: string,
-  ): Promise<ConversationRow | null> {
-    try {
-      const resp = await api.listChannels({
-        companyUid,
-        includeCompanyProjects: false,
+  function openHomeChannelId(
+    homeChannelId: string,
+    company?: { slug?: string | null; label?: string | null; companyUid?: string | null },
+  ): void {
+    const loaded = allRows.find((r) => r.channelId === homeChannelId);
+    if (loaded) {
+      void openRow(loaded);
+    } else {
+      // Not in the loaded rows yet: the stub row would otherwise paint the
+      // raw `chn_…` id as the title/composer placeholder until the full
+      // directory catches up. Seed it with the company's slug — the same
+      // label the row itself will carry once loaded — so the header never
+      // shows a raw id.
+      requestChannelOpen(homeChannelId, {
+        title: company?.slug || company?.label || null,
+        companyUid: company?.companyUid ?? null,
       });
-      const resolved = resp?.channels ?? [];
-      if (resolved.length > 0) {
-        channels = mergeResolvedCompanyChannels(channels, resolved);
-      }
-      const row = findCompanyHomeRow(allRows, companyUid);
-      if (!row) {
-        companiesLog("open-home-failed", {
-          company: label,
-          reason:
-            resolved.length === 0
-              ? "listChannels returned no channels for this company"
-              : "listChannels returned channels but none is the company home",
-        });
-        companyHomeErrors = { ...companyHomeErrors, [companyUid]: "no-home-channel" };
-      } else if (companyHomeErrors[companyUid]) {
-        const { [companyUid]: _drop, ...rest } = companyHomeErrors;
-        companyHomeErrors = rest;
-      }
-      return row;
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      companiesLog("open-home-failed", { company: label, reason });
-      companyHomeErrors = { ...companyHomeErrors, [companyUid]: reason };
-      return null;
     }
   }
 
   /**
-   * On-demand home-channel resolution (requirement 4): a company shown in
-   * the section with `homeRow: null` gets one background resolve attempt per
-   * session via `resolveCompanyHomeOnce`.
+   * Companies section row click. The company's home channel id normally
+   * comes straight from the roster (`Workspace.homeChannelId`) — no
+   * client-side resolution needed to know which channel to open. When it's
+   * missing (a new/legacy company still provisioning server-side), the click
+   * calls the idempotent `ensureCompanyHomeChannel` endpoint, which creates
+   * the channel on the company's first call or adopts the existing one on
+   * any later call, then opens it. One attempt per click — no background
+   * retry loop; a failure surfaces on the row (tooltip) and in the log.
    */
-  $effect(() => {
-    const missing = companySectionRows
-      .filter((c) => !c.homeRow)
-      .map((c) => ({ companyUid: c.companyUid, label: c.label }))
-      .filter((c) => !attemptedCompanyHomeResolutions.has(c.companyUid));
-    if (missing.length === 0) return;
-    for (const c of missing) attemptedCompanyHomeResolutions.add(c.companyUid);
-    void (async () => {
-      for (const c of missing) {
-        await resolveCompanyHomeOnce(c.companyUid, c.label);
-      }
-    })();
-  });
-
-  /**
-   * Click handler for a disabled ("still connecting") Companies row. The
-   * background resolver already tried once; a click never silently no-ops
-   * (policy: never swallow errors) — it retries immediately and either opens
-   * the resolved home channel or leaves a `[companies] open-home-failed`
-   * line plus an inline reason on the row.
-   */
-  async function retryCompanyHome(company: {
+  async function openCompanyHome(company: {
     companyUid: string;
     label: string;
+    slug?: string | null;
+    homeChannelId: string | null;
   }): Promise<void> {
-    if (companyHomeRetrying[company.companyUid]) return;
-    companyHomeRetrying = { ...companyHomeRetrying, [company.companyUid]: true };
+    const label = company.slug || company.label;
+    const known = company.homeChannelId ?? resolvedHomeChannelIds[company.companyUid] ?? null;
+    if (known) {
+      companiesLog(`open company=${label} channel=${known}`);
+      openHomeChannelId(known, company);
+      return;
+    }
+    if (companyHomeEnsuring[company.companyUid]) return;
+    companyHomeEnsuring = { ...companyHomeEnsuring, [company.companyUid]: true };
+    const { [company.companyUid]: _drop, ...clearedErrors } = companyHomeEnsureError;
+    companyHomeEnsureError = clearedErrors;
     try {
-      const row = await resolveCompanyHomeOnce(company.companyUid, company.label);
-      if (row) void openRow(row);
+      const { homeChannelId } = await api.ensureCompanyHomeChannel(company.companyUid);
+      resolvedHomeChannelIds = { ...resolvedHomeChannelIds, [company.companyUid]: homeChannelId };
+      companiesLog(`open company=${label} channel=${homeChannelId}`);
+      openHomeChannelId(homeChannelId, company);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      companiesLog(`open-failed company=${label} reason=${reason}`);
+      companyHomeEnsureError = { ...companyHomeEnsureError, [company.companyUid]: reason };
     } finally {
-      const { [company.companyUid]: _drop, ...rest } = companyHomeRetrying;
-      companyHomeRetrying = rest;
+      const { [company.companyUid]: _clear, ...rest } = companyHomeEnsuring;
+      companyHomeEnsuring = rest;
     }
   }
 
@@ -1114,7 +1119,7 @@
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
-      companySlugByUid,
+      homeChannelIdByUid,
     }),
   );
 
@@ -1129,7 +1134,7 @@
   const browseRows = $derived(
     browseOnlyCompanyProjectChannels(channels, companyProjectChannels).map(
       (c) => ({
-        ...normalizeChannel(c, { pinnedIds: pins, companySlugByUid }),
+        ...normalizeChannel(c, { pinnedIds: pins, homeChannelIdByUid }),
         browseOnly: true,
       }),
     ),
@@ -3051,14 +3056,13 @@
           </p>
         {:else}
           {#each companySectionRows as company (company.companyUid)}
-            {#if company.homeRow}
-              {@const row = company.homeRow}
+            {#if company.homeChannelId}
               <button
                 type="button"
                 class="chat-row chat-companies-row"
-                class:active={activeId === row.id}
+                class:active={activeId === `ch:${company.homeChannelId}`}
                 data-testid={`chat-companies-row-${company.companyUid}`}
-                onclick={() => openRow(row)}
+                onclick={() => openCompanyHome(company)}
               >
                 {#if company.iconUrl}
                   <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
@@ -3068,24 +3072,19 @@
                 <span class="chat-row-title">{company.label}</span>
               </button>
             {:else}
-              {@const retrying = companyHomeRetrying[company.companyUid] === true}
-              {@const failed = Boolean(companyHomeErrors[company.companyUid])}
+              {@const ensuring = companyHomeEnsuring[company.companyUid] === true}
+              {@const ensureError = companyHomeEnsureError[company.companyUid]}
               <button
                 type="button"
                 class="chat-row chat-row-disabled chat-companies-row"
-                class:chat-companies-row-failed={failed}
                 data-testid={`chat-companies-row-disabled-${company.companyUid}`}
-                aria-busy={retrying}
-                title={retrying
+                aria-busy={ensuring}
+                title={ensuring
                   ? "Connecting…"
-                  : failed
-                    ? "Couldn't open this company's home channel — click to retry"
-                    : "Still connecting this company's home channel… click to retry"}
-                onclick={() =>
-                  retryCompanyHome({
-                    companyUid: company.companyUid,
-                    label: company.label,
-                  })}
+                  : ensureError
+                    ? `Couldn't open this company's home channel — ${ensureError}`
+                    : "No company channel yet"}
+                onclick={() => openCompanyHome(company)}
               >
                 {#if company.iconUrl}
                   <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
@@ -3093,10 +3092,19 @@
                   <span class="chat-glyph" aria-hidden="true">·</span>
                 {/if}
                 <span class="chat-row-title">{company.label}</span>
-                <span class="chat-companies-row-status" aria-hidden="true">
-                  {retrying ? "…" : failed ? "Retry" : ""}
-                </span>
+                {#if ensuring}
+                  <span class="chat-companies-row-status" aria-hidden="true">…</span>
+                {/if}
               </button>
+              {#if ensureError && !ensuring}
+                <p
+                  class="chat-companies-row-inline-error"
+                  data-testid={`chat-companies-row-error-${company.companyUid}`}
+                  role="alert"
+                >
+                  Couldn't open — {ensureError}
+                </p>
+              {/if}
             {/if}
           {/each}
         {/if}
@@ -4326,10 +4334,6 @@
     cursor: default;
   }
 
-  .chat-companies-row-failed {
-    opacity: 0.75;
-  }
-
   .chat-companies-row-status {
     margin-left: auto;
     font-size: 11px;
@@ -4337,6 +4341,16 @@
     opacity: 0.8;
   }
 
+  /* Visible failure reason for a failed ensure-home-channel click — a
+     tooltip alone is invisible until the user hovers, so a failed 403 (or
+     any other ensure error) otherwise looks like nothing happened. */
+  .chat-companies-row-inline-error {
+    margin: 0 0 4px;
+    padding: 0 8px 0 28px;
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--ice-danger, #d33);
+  }
 
   /* Day-group header: name left, date right-aligned (D-13). */
   .chat-day-head {

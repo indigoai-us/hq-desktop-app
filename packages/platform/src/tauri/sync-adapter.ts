@@ -922,6 +922,12 @@ export function createSyncPlatformAdapter(
       getSummary: (slug) => call('get_company_summary', { slug }),
       getBoard: (slug) => call('get_company_board', { slug }),
       getActivity: (slug) => call('get_company_activity', { slug }),
+      ensureHomeChannel: async (companyUid) => {
+        const res = await call<string>('ensure_company_home_channel', {
+          companyUid,
+        });
+        return res.ok ? ok({ homeChannelId: res.value }) : res;
+      },
     },
 
     projects: {
@@ -1125,6 +1131,7 @@ export function createSyncPlatformAdapter(
         call('notification_request_permission'),
       openNotificationSettings: () => call('notification_open_settings'),
       showOsNotification: async () => HOST_OWNED,
+      logToFile: (tag, message) => call('frontend_log', { tag, message }),
     },
 
     updates: {

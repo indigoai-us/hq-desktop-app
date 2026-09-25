@@ -313,6 +313,7 @@ where
         } else {
             None
         };
+        let home_channel_id = membership_for_slug.and_then(|m| m.home_channel_id.clone());
 
         let (state, cloud_uid, bucket_name, broken_reason) = match (&entry.cloud_uid, cloud_entity_for_slug, cloud_reachable) {
             // Manifest says connected, cloud confirms (UIDs match) → Synced.
@@ -384,6 +385,7 @@ where
                 invited_at,
                 branding_enabled,
                 brand,
+                home_channel_id,
             },
         );
     }
@@ -432,6 +434,7 @@ where
         } else {
             None
         };
+        let home_channel_id = mem.home_channel_id.clone();
         by_slug.insert(
             entity.slug.clone(),
             Workspace {
@@ -452,6 +455,7 @@ where
                 invited_at: mem.invited_at.clone(),
                 branding_enabled,
                 brand,
+                home_channel_id,
             },
         );
     }
@@ -492,6 +496,7 @@ where
         // Personal vault never carries tenant branding.
         branding_enabled: false,
         brand: None,
+        home_channel_id: None,
     });
 
     ordered.extend(by_slug.into_values());
@@ -596,6 +601,7 @@ pub(crate) async fn fetch_cloud_roster(
             // Synthesized pending-invite rows never carry branding.
             branding_enabled: false,
             brand: None,
+            home_channel_id: None,
         });
     }
 
@@ -1813,6 +1819,7 @@ mod tests {
             invited_at: Some("2026-03-01T00:00:00Z".into()),
             branding_enabled: false,
             brand: None,
+            home_channel_id: None,
         }
     }
 
@@ -2151,6 +2158,77 @@ mod tests {
         assert!(result[1].broken_reason.is_none());
     }
 
+    /// The company's home channel id rides the membership enrichment
+    /// (same lane as branding/brand) straight onto the synced workspace row —
+    /// clients open it directly, no client-side channel resolution.
+    #[test]
+    fn manifest_uid_matches_cloud_membership_carries_home_channel_id() {
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let mut mem = membership("mem_1", "prs_x", "cmp_a", "active");
+        mem.home_channel_id = Some("chn_home_acme".to_string());
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            "cmp_a".to_string(),
+            company_entity("cmp_a", "acme", Some("Acme")),
+        );
+        let entries = vec![local_full(
+            "acme",
+            tmp.path(),
+            true,
+            Some("Acme"),
+            Some("cmp_a"),
+            Some("hq-vault-cmp-a"),
+        )];
+
+        let result = assemble_workspaces(
+            tmp.path(),
+            Some(&p),
+            &[mem],
+            &entities,
+            &entries,
+            true,
+            |_| None,
+        );
+        assert_eq!(
+            result[1].home_channel_id.as_deref(),
+            Some("chn_home_acme")
+        );
+    }
+
+    /// A legacy membership response that omits `homeChannelId` must not error
+    /// or panic — the field is `None` and the row still resolves.
+    #[test]
+    fn manifest_uid_matches_cloud_membership_without_home_channel_id_is_none() {
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let mem = membership("mem_1", "prs_x", "cmp_a", "active");
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            "cmp_a".to_string(),
+            company_entity("cmp_a", "acme", Some("Acme")),
+        );
+        let entries = vec![local_full(
+            "acme",
+            tmp.path(),
+            true,
+            Some("Acme"),
+            Some("cmp_a"),
+            Some("hq-vault-cmp-a"),
+        )];
+
+        let result = assemble_workspaces(
+            tmp.path(),
+            Some(&p),
+            &[mem],
+            &entities,
+            &entries,
+            true,
+            |_| None,
+        );
+        assert_eq!(result[1].home_channel_id, None);
+    }
+
     #[test]
     fn manifest_uid_disagrees_with_cloud_is_broken() {
         let tmp = TempDir::new().unwrap();
@@ -2293,6 +2371,25 @@ mod tests {
             assemble_workspaces(tmp.path(), Some(&p), &[mem], &entities, &[], true, |_| None);
         assert_eq!(result[1].state, WorkspaceState::CloudOnly);
         assert_eq!(result[1].membership_status.as_deref(), Some("pending"));
+    }
+
+    /// The home channel id rides the cloud-only branch too — a company the
+    /// caller hasn't synced locally yet still carries its home channel id so
+    /// the desktop client can open it.
+    #[test]
+    fn cloud_only_row_carries_home_channel_id() {
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let mut mem = membership("mem_1", "prs_x", "cmp_b", "active");
+        mem.home_channel_id = Some("chn_home_newco".to_string());
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_b".to_string(), company_entity("cmp_b", "newco", None));
+        let result =
+            assemble_workspaces(tmp.path(), Some(&p), &[mem], &entities, &[], true, |_| None);
+        assert_eq!(
+            result[1].home_channel_id.as_deref(),
+            Some("chn_home_newco")
+        );
     }
 
     /// Regression: a website-created company whose entity carries no name

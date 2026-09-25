@@ -507,6 +507,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getSummary: (slug) => this.call("get_summary", { slug }),
     getBoard: (slug) => this.call("get_board", { slug }),
     getActivity: (slug) => this.call("get_activity", { slug }),
+    ensureHomeChannel: (companyUid) =>
+      this.hqProJson("POST", `/v1/companies/${companyUid}/home-channel`),
   };
 
   readonly projects: PlatformAdapter["projects"] = {
@@ -631,6 +633,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     // `show_os_notification` command in its registered handler.
     showOsNotification: async () =>
       unavailable("host-owned", "The Sync host owns OS notification delivery."),
+    logToFile: (tag, message) => this.call("frontend_log", { tag, message }),
   };
 
   readonly updates: PlatformAdapter["updates"] = {

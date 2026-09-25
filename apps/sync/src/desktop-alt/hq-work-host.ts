@@ -583,6 +583,9 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
           },
         }
       : {}),
+    logToFile: (tag, message) => call<void>(adapter.appShell.logToFile(tag, message)),
+    ensureCompanyHomeChannel: (companyUid) =>
+      call<{ homeChannelId: string }>(adapter.company.ensureHomeChannel(companyUid)),
   };
 }
 

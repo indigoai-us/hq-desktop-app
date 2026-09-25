@@ -10,6 +10,12 @@ The release moves it under the version it ships in.
 
 - Windows sync crash reports now include bounded Node/V8 fatal details and sampled watcher process counts and kinds.
 
+- Simplified how the desktop app finds a company's main channel: it now opens
+  the exact channel the server names (`homeChannelId`), instead of guessing
+  from the channel's scope and name. This removes the old on-demand lookup,
+  retry state, and spinner in the sidebar's "Companies" section — a company's
+  home channel opens immediately, or the row shows "No company channel yet."
+
 ## [0.10.326] — 2026-09-25
 
 - On Windows, HQ waits for its own command processes to finish before replacing

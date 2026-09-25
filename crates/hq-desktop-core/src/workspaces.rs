@@ -82,6 +82,11 @@ pub struct Workspace {
     /// Tenant brand record when entitled; rides the membership payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brand: Option<CompanyBrand>,
+    /// The company's single home-channel id (`chn_*`), from the membership
+    /// enrichment. Clients open it directly — no client-side resolution.
+    /// `None` for the personal workspace and while the backend rolls out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_channel_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

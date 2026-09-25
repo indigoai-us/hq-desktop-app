@@ -195,6 +195,8 @@ export const WEB_PATHS = {
     `/v1/companies/${encodeURIComponent(slug)}/board`,
   companyActivity: (slug: string) =>
     `/v1/companies/${encodeURIComponent(slug)}/activity`,
+  companyHomeChannel: (companyUid: string) =>
+    `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
 
   feedback: "/v1/feedback/bug-report",
 
@@ -979,6 +981,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getSummary: (slug) => this.get(WEB_PATHS.companySummary(slug)),
     getBoard: (slug) => this.get(WEB_PATHS.companyBoard(slug)),
     getActivity: (slug) => this.get(WEB_PATHS.companyActivity(slug)),
+    ensureHomeChannel: (companyUid) =>
+      this.post(WEB_PATHS.companyHomeChannel(companyUid)),
   };
 
   readonly feedback: PlatformAdapter["feedback"] = {
@@ -1155,6 +1159,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       ),
     // Native banners are desktop-only (US-001). Web stays a no-op.
     showOsNotification: async () => ok(undefined),
+    // No desktop support log on the web host — console is the best-effort sink.
+    logToFile: async (tag, message) => {
+      console.info(`[${tag}]`, message);
+      return ok(undefined);
+    },
   };
 
   readonly updates: PlatformAdapter["updates"] = {
