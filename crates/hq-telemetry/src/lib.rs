@@ -191,6 +191,65 @@ fn is_core_update_rsync_diagnostic_line(line: &str) -> bool {
         || lower.starts_with("vanished file:")
 }
 
+fn has_quoted_relative_path_token(line: &str) -> bool {
+    let mut quote = None;
+    let mut token_start = 0;
+    let mut chars = line.char_indices().peekable();
+
+    while let Some((index, ch)) = chars.next() {
+        if let Some(delimiter) = quote {
+            if ch == '\\'
+                && chars
+                    .peek()
+                    .is_some_and(|(_, next)| *next == delimiter || *next == '\\')
+            {
+                chars.next();
+                continue;
+            }
+            if ch == delimiter {
+                if is_quoted_relative_path_token(&line[token_start..index]) {
+                    return true;
+                }
+                quote = None;
+            }
+        } else if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            token_start = index + ch.len_utf8();
+        }
+    }
+
+    false
+}
+
+fn is_quoted_relative_path_token(token: &str) -> bool {
+    if token.is_empty()
+        || token.contains("://")
+        || token.starts_with('/')
+        || token.starts_with('\\')
+        || token.chars().any(char::is_whitespace)
+    {
+        return false;
+    }
+
+    let bytes = token.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+    {
+        return false;
+    }
+
+    let components = token.split(['/', '\\']).collect::<Vec<_>>();
+    components.len() > 1
+        && components.iter().all(|component| {
+            !component.is_empty()
+                && component
+                    .chars()
+                    .all(|ch| ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-' | '~'))
+        })
+}
+
 fn core_update_rsync_path_shape(lines: &[&str]) -> &'static str {
     let mut cygwin_drive = false;
     let mut msys_drive = false;
@@ -238,7 +297,7 @@ fn core_update_rsync_path_shape(lines: &[&str]) -> &'static str {
                 posix_absolute = true;
             }
         }
-        relative |= (line.contains('/') || line.contains('\\')) && !lower.contains("://");
+        relative |= has_quoted_relative_path_token(line);
     }
 
     let shape_count = [cygwin_drive, msys_drive, windows_drive, unc, posix_absolute]
@@ -1619,9 +1678,10 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 && !value.contains('\\')
                 && !value.contains('\n')
                 && !value.contains('\r')
-                && !value.as_bytes().windows(2).any(|pair| {
-                    pair[0].is_ascii_alphabetic() && pair[1] == b':'
-                }),
+                && !value
+                    .as_bytes()
+                    .windows(2)
+                    .any(|pair| pair[0].is_ascii_alphabetic() && pair[1] == b':'),
         ),
         // Existing install-failure events retain the child's numeric exit code;
         // Core update events use the closed semantic values below. Accept both
@@ -2984,10 +3044,7 @@ mod tests {
             ("rsync_stderr_class", "unclassified"),
             ("rsync_translated_path_shape", "cygwin_drive"),
             ("rsync_translated_path_shape", "unavailable"),
-            (
-                "rsyncStderrReason",
-                "No such file or directory (2)",
-            ),
+            ("rsyncStderrReason", "No such file or directory (2)"),
             ("exit_code", "5"),
             ("git_source", "managed"),
             ("rsync_source", "system"),
@@ -3066,6 +3123,47 @@ mod tests {
         assert_eq!(unrelated.stderr_class, "not_applicable");
         assert!(unrelated.stderr_reason.is_none());
         assert_eq!(unrelated.translated_path_shape, "not_applicable");
+    }
+
+    #[test]
+    fn core_update_rsync_code_23_summary_has_unavailable_path_shape() {
+        let diagnostic = classify_core_update_rsync_diagnostic(
+            "rsync error: some files/attrs were not transferred (code 23)",
+            true,
+        );
+
+        assert_eq!(diagnostic.translated_path_shape, "unavailable");
+    }
+
+    #[test]
+    fn core_update_rsync_input_output_error_has_unavailable_path_shape() {
+        let diagnostic = classify_core_update_rsync_diagnostic("rsync: input/output error", true);
+
+        assert_eq!(diagnostic.translated_path_shape, "unavailable");
+    }
+
+    #[test]
+    fn core_update_rsync_quoted_relative_path_is_relative() {
+        let diagnostic = classify_core_update_rsync_diagnostic(
+            r#"rsync: [sender] link_stat "core/file" failed: No such file or directory (2)"#,
+            true,
+        );
+
+        assert_eq!(diagnostic.translated_path_shape, "relative");
+    }
+
+    #[test]
+    fn core_update_rsync_reason_redacts_path_without_losing_reason() {
+        let diagnostic = classify_core_update_rsync_diagnostic(
+            r#"rsync: connection to "/home/fixture-one/x" closed (code 12)"#,
+            true,
+        );
+        let reason = diagnostic.stderr_reason.as_deref().unwrap();
+
+        assert!(reason.contains("connection to"));
+        assert!(reason.contains("closed (code 12)"));
+        assert!(!reason.contains("/home/"));
+        assert!(!reason.contains("fixture-one"));
     }
 
     /// Diagnostic reporting remains fire-and-forget even when its work is
