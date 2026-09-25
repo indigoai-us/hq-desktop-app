@@ -2345,13 +2345,14 @@ fn queue_core_update_failure_report(
 struct CoreUpdateBaselinePersistenceWarningSignature {
     channel: Channel,
     error_category: RescueFailureCategory,
+    diagnostic_tags: CoreUpdateBaselinePersistenceDiagnosticTags,
 }
 
 static CORE_UPDATE_BASELINE_WARNING_SIGNATURES: OnceLock<
     Mutex<HashSet<CoreUpdateBaselinePersistenceWarningSignature>>,
 > = OnceLock::new();
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CoreUpdateBaselinePersistenceDiagnosticTags {
     write_path: &'static str,
     error_kind: &'static str,
@@ -2556,6 +2557,7 @@ fn report_core_update_baseline_persistence_warning_once(
     let signature = CoreUpdateBaselinePersistenceWarningSignature {
         channel: report.channel,
         error_category: report.error_category,
+        diagnostic_tags: report.diagnostic_tags,
     };
     if claim_core_update_baseline_warning_signature(signature) {
         send_core_update_baseline_persistence_warning(report);
@@ -6577,6 +6579,41 @@ error: clone failed";
             .as_str()
             .expect("warning retains a redacted diagnostic");
         assert!(!redacted.contains(temp.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn baseline_persistence_warnings_deduplicate_by_diagnostic_identity() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_baseline_warning_signatures_for_test();
+        let report_for = |write_path| {
+            let detail = format!(
+                "core update applied but baseline persistence failed: I/O failure [baseline_persistence_diagnostics write_path={write_path} error_kind=other directory_state=directory target_state=missing temp_state=missing permission_state=not_denied disk_state=not_storage_full concurrent_writer=no_evidence]"
+            );
+            core_update_baseline_persistence_warning_report("automatic", Channel::Release, &detail)
+        };
+        let first = report_for("write_temp");
+        let duplicate = report_for("write_temp");
+        let distinct = report_for("rename_temp");
+        assert_eq!(first.error_category, distinct.error_category);
+
+        let events = sentry::test::with_captured_events_options(
+            || {
+                report_core_update_baseline_persistence_warning_once(first);
+                report_core_update_baseline_persistence_warning_once(duplicate);
+                report_core_update_baseline_persistence_warning_once(distinct);
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(events.len(), 2);
+        let events = events
+            .into_iter()
+            .map(|event| hq_telemetry::before_send(event).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events[0].tags["persistence_write_path"], "write_temp");
+        assert_eq!(events[1].tags["persistence_write_path"], "rename_temp");
     }
 
     #[test]
