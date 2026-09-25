@@ -1868,7 +1868,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/shell-out"
-          tar -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar" target/x86_64-pc-windows-msvc binaries
+          tar --force-local -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar" target/x86_64-pc-windows-msvc binaries
           ls -la "$GITHUB_WORKSPACE/shell-out"
 
       - name: Save shell to the Actions cache
@@ -2090,7 +2090,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/shell-out"
-          tar -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-arm64.tar" target/aarch64-pc-windows-msvc binaries
+          tar --force-local -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-arm64.tar" target/aarch64-pc-windows-msvc binaries
           ls -la "$GITHUB_WORKSPACE/shell-out"
 
       - name: Save shell to the Actions cache
@@ -2196,7 +2196,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tar -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-x64.tar"
+          tar --force-local -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-x64.tar"
           test -f src-tauri/target/x86_64-pc-windows-msvc/release/hq-sync-menubar.exe
           test -f src-tauri/binaries/recall-desktop-sdk-x86_64-pc-windows-msvc.exe
 
@@ -2512,7 +2512,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tar -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-arm64.tar"
+          tar --force-local -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-arm64.tar"
           test -f src-tauri/target/aarch64-pc-windows-msvc/release/hq-sync-menubar.exe
           test -f src-tauri/binaries/recall-desktop-sdk-aarch64-pc-windows-msvc.exe
 
@@ -2777,7 +2777,7 @@ jobs:
           path: release-artifacts-aarch64-pc-windows-msvc/
 
   windows:
-    name: Build Windows ${{ matrix.target }} (legacy single job)
+    name: Build Windows (legacy single job)
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build == true }}
     runs-on: windows-latest
