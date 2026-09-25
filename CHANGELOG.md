@@ -8,6 +8,16 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The project board is back. A new Projects page (Cmd+6, or the board icon in
+  the title bar) shows one company's projects at a time as a board or a list.
+  Opening a project shows its tasks by status, with task details, files and
+  activity. Pick the company at the top of the page. It starts on the company
+  of the channel you have open.
+- A company's home channel now has a "Projects" tab next to Chat in the
+  header. Clicking it swaps the message feed for that company's project board
+  right there in the channel — the header (hero, title, gear, bell, member
+  pill, and the Chat | Projects pills) stays put and nothing shifts size.
+  Chat brings the feed and composer back.
 - Fixed the Library header's Back button still overlapping the green
   traffic-light button on macOS — the shared gutter that keeps overlay
   headers (Library, Settings, Meetings, Notifications, Shared Files, DM

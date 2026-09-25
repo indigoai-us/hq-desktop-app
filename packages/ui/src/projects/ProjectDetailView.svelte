@@ -340,6 +340,15 @@
   // Keep a stable alias so older contracts that look for board still see Tasks
   // as the board surface via data-testid="tab-board" on the Tasks control.
   const boardTabActive = $derived(tab === "tasks");
+  /** Board / List for the task board; the toggle lives on the tabs row. */
+  let taskViewMode = $state<"board" | "list">("board");
+  const showTaskViewToggle = $derived(
+    tab === "tasks" &&
+      !selectedStory &&
+      hasPrd &&
+      !storiesError &&
+      !storyRetrying,
+  );
 
   // ---- Files tab (project-scoped tree via existing list_hq_dir) ------------
   let selectedFilePath = $state<string | null>(null);
@@ -605,125 +614,159 @@
       <span class="crumb-current">{projectDisplayName(project)}</span>
     </nav>
 
-    <div class="toolbar-row">
-      <div class="toolbar-identity">
-        <h1 id="project-detail-title">{projectDisplayName(project)}</h1>
-        {#if project.description}
-          <p class="detail-description">{project.description}</p>
-        {/if}
-      </div>
-
-      <div class="toolbar-actions" data-testid="project-toolbar-actions">
-        <!-- Status control (writable; US-010 persists with optimistic UI). -->
-        <div
-          class="status-control"
-          data-status-control
-          data-testid="status-control"
-        >
-          <button
-            type="button"
-            class="status-badge status-{currentStatus}"
-            data-testid="status-trigger"
-            aria-haspopup="listbox"
-            aria-expanded={statusOpen}
-            aria-busy={statusSaving}
-            disabled={statusSaving}
-            onclick={() => (statusOpen = !statusOpen)}
-          >
-            <span class="status-dot" aria-hidden="true"></span>
-            <span>
-              {statusSaving
-                ? "Saving…"
-                : EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}
-            </span>
-            {#if !statusSaving}
-              <Caret tone="var(--v4-text-3)" />
-            {/if}
-          </button>
-          {#if statusOpen}
-            <ul class="status-menu" role="listbox" data-testid="status-menu">
-              {#each EDITABLE_PROJECT_STATUSES as status (status)}
-                <li>
-                  <button
-                    type="button"
-                    class="status-option"
-                    role="option"
-                    aria-selected={status === currentStatus}
-                    data-testid="status-option-{status}"
-                    onclick={() => selectStatus(status)}
-                  >
-                    <span class="status-dot status-{status}" aria-hidden="true"
-                    ></span>
-                    <span>{EDITABLE_PROJECT_STATUS_LABEL[status]}</span>
-                    {#if status === currentStatus}
-                      <span class="status-current">current</span>
-                    {/if}
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </div>
-
-        {#if statusError}
-          <span class="status-error" role="alert" data-testid="status-error">
-            {statusError}
-          </span>
-        {/if}
-
-        <button
-          type="button"
-          class="toolbar-action"
-          data-testid="open-project-claude"
-          disabled={claudeBusy}
-          onclick={() => void openProjectInClaude()}
-        >
-          {claudeBusy ? "Opening…" : "Open in Claude Code"}
-        </button>
-        {#if claudeMessage}
-          <span class="action-status" role="status">{claudeMessage}</span>
-        {/if}
-      </div>
+    <div class="toolbar-identity">
+      <h1 id="project-detail-title">{projectDisplayName(project)}</h1>
+      {#if project.description}
+        <p class="detail-description" title={project.description}>
+          {project.description}
+        </p>
+      {/if}
     </div>
 
-    <!-- Status row: company badge + content indicators. -->
-    <div class="status-row">
+    <!-- One meta row: writable status · company · PRD / README / goal / branch
+         indicators · Open in Claude Code (pushed right). -->
+    <div class="toolbar-actions meta-row" data-testid="project-toolbar-actions">
+      <!-- Status control (writable; US-010 persists with optimistic UI). -->
+      <div
+        class="status-control"
+        data-status-control
+        data-testid="status-control"
+      >
+        <button
+          type="button"
+          class="status-badge status-{currentStatus}"
+          data-testid="status-trigger"
+          aria-haspopup="listbox"
+          aria-expanded={statusOpen}
+          aria-busy={statusSaving}
+          disabled={statusSaving}
+          onclick={() => (statusOpen = !statusOpen)}
+        >
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>
+            {statusSaving
+              ? "Saving…"
+              : EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}
+          </span>
+          {#if !statusSaving}
+            <Caret tone="var(--v4-text-3)" />
+          {/if}
+        </button>
+        {#if statusOpen}
+          <ul class="status-menu" role="listbox" data-testid="status-menu">
+            {#each EDITABLE_PROJECT_STATUSES as status (status)}
+              <li>
+                <button
+                  type="button"
+                  class="status-option"
+                  role="option"
+                  aria-selected={status === currentStatus}
+                  data-testid="status-option-{status}"
+                  onclick={() => selectStatus(status)}
+                >
+                  <span class="status-dot status-{status}" aria-hidden="true"
+                  ></span>
+                  <span>{EDITABLE_PROJECT_STATUS_LABEL[status]}</span>
+                  {#if status === currentStatus}
+                    <span class="status-current">current</span>
+                  {/if}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+
+      {#if statusError}
+        <span class="status-error" role="alert" data-testid="status-error">
+          {statusError}
+        </span>
+      {/if}
+
       {#if project.company}
         <span class="badge company-badge" data-testid="company-badge">
-          <span class="status-dot" aria-hidden="true"></span>
           {project.company}
         </span>
       {/if}
 
       {#if hasPrd}
-        <span class="indicator" data-testid="indicator-prd">
-          <span aria-hidden="true">▤</span> PRD
+        <span
+          class="indicator"
+          data-testid="indicator-prd"
+          title={project.prdPath}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M4.5 2.5h5l2.5 2.5v8.5h-7.5zM9.5 2.5V5H12M6.5 8h3.5M6.5 10.5h3.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+          </svg>
+          PRD
         </span>
       {/if}
       {#if hasReadme}
         <span class="indicator" data-testid="indicator-readme">
-          <span aria-hidden="true">▦</span> README
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M3 3.5h4a1.5 1.5 0 0 1 1 .5 1.5 1.5 0 0 1 1-.5h4v9H9a1 1 0 0 0-1 1 1 1 0 0 0-1-1H3z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+          </svg>
+          README
         </span>
       {/if}
       {#if linkedGoal}
-        <span class="indicator goal-indicator" data-testid="detail-goal-chip">
-          <span aria-hidden="true">◎</span>
-          {linkedGoal.title}
+        <span
+          class="indicator goal-indicator"
+          data-testid="detail-goal-chip"
+          title={`Goal: ${linkedGoal.title}`}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <circle cx="8" cy="8" r="2" fill="currentColor" />
+          </svg>
+          <span class="indicator-text">{linkedGoal.title}</span>
         </span>
       {/if}
       {#if prd?.branchName}
-        <span class="indicator" data-testid="indicator-branch">
-          <span aria-hidden="true">⎇</span>
-          {prd.branchName}
+        <span
+          class="indicator"
+          data-testid="indicator-branch"
+          title={`Branch ${prd.branchName}`}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M5 3v10M5 9c0-2 6-1 6-4M5 13a1.5 1.5 0 1 0 0-.01M11 3.5a1.5 1.5 0 1 0 0 .01"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span class="indicator-text">{prd.branchName}</span>
         </span>
       {/if}
-      <div class="header-provenance" data-testid="project-detail-provenance">
-        <ProvenanceLine
-          provenance={detailProvenance}
-          kind="project"
-          unavailable={provenanceUnavailable}
-        />
-      </div>
+
+      <span class="meta-spacer" aria-hidden="true"></span>
+
+      {#if claudeMessage}
+        <span class="action-status" role="status">{claudeMessage}</span>
+      {/if}
+      <button
+        type="button"
+        class="toolbar-action"
+        data-testid="open-project-claude"
+        disabled={claudeBusy}
+        onclick={() => void openProjectInClaude()}
+      >
+        {claudeBusy ? "Opening…" : "Open in Claude Code"}
+      </button>
     </div>
 
     <!-- Compact summary strip — progress + task roll-up counts. -->
@@ -732,15 +775,11 @@
         <div class="kpi-tile kpi-stories">
           <span class="kpi-label">Stories</span>
           <span class="kpi-value"
-            >{kpi.complete}<span class="kpi-slash"> / </span>{kpi.total}</span
+            >{kpi.complete}<span class="kpi-slash">/</span>{kpi.total}</span
           >
-          <span class="kpi-bar" data-testid="detail-progress">
-            <span class="kpi-bar-fill" style="--fill: {kpi.progress.percent / 100}"
-            ></span>
-          </span>
         </div>
         <div class="kpi-tile">
-          <span class="kpi-label">In Progress</span>
+          <span class="kpi-label">In progress</span>
           <span class="kpi-value" class:is-zero={kpi.inProgress === 0}
             >{kpi.inProgress}</span
           >
@@ -760,54 +799,94 @@
           >
         </div>
       </div>
+      <!-- One thin project-progress bar under the whole stats row. -->
+      <span
+        class="kpi-bar"
+        data-testid="detail-progress"
+        role="progressbar"
+        aria-label="Stories complete"
+        aria-valuemin={0}
+        aria-valuemax={kpi.total}
+        aria-valuenow={kpi.complete}
+      >
+        <span class="kpi-bar-fill" style="--fill: {kpi.progress.percent / 100}"
+        ></span>
+      </span>
     {/if}
 
-    <nav
-      class="tabs workspace-tabs"
-      aria-label="Project sections"
-      data-testid="workspace-tabs"
-    >
-      <button
-        type="button"
-        class="tab"
-        class:active={tab === "overview"}
-        data-testid="tab-overview"
-        onclick={() => selectTab("overview")}
+    <div class="tabs-row">
+      <nav
+        class="tabs workspace-tabs"
+        aria-label="Project sections"
+        data-testid="workspace-tabs"
       >
-        Overview
-      </button>
-      <button
-        type="button"
-        class="tab"
-        class:active={boardTabActive}
-        data-testid="tab-board"
-        data-tab="tasks"
-        onclick={() => selectTab("tasks")}
-      >
-        Tasks
-        {#if kpi.total > 0}
-          <span class="tab-count">{kpi.total}</span>
-        {/if}
-      </button>
-      <button
-        type="button"
-        class="tab"
-        class:active={tab === "files"}
-        data-testid="tab-files"
-        onclick={() => selectTab("files")}
-      >
-        Files
-      </button>
-      <button
-        type="button"
-        class="tab"
-        class:active={tab === "activity"}
-        data-testid="tab-activity"
-        onclick={() => selectTab("activity")}
-      >
-        Activity
-      </button>
-    </nav>
+        <button
+          type="button"
+          class="tab"
+          class:active={tab === "overview"}
+          data-testid="tab-overview"
+          onclick={() => selectTab("overview")}
+        >
+          Overview
+        </button>
+        <button
+          type="button"
+          class="tab"
+          class:active={boardTabActive}
+          data-testid="tab-board"
+          data-tab="tasks"
+          onclick={() => selectTab("tasks")}
+        >
+          Tasks
+          {#if kpi.total > 0}
+            <span class="tab-count">{kpi.total}</span>
+          {/if}
+        </button>
+        <button
+          type="button"
+          class="tab"
+          class:active={tab === "files"}
+          data-testid="tab-files"
+          onclick={() => selectTab("files")}
+        >
+          Files
+        </button>
+        <button
+          type="button"
+          class="tab"
+          class:active={tab === "activity"}
+          data-testid="tab-activity"
+          onclick={() => selectTab("activity")}
+        >
+          Activity
+        </button>
+      </nav>
+
+      {#if showTaskViewToggle}
+        <div class="view-toggle" role="group" aria-label="Board view mode">
+          <button
+            type="button"
+            class="toggle-segment"
+            class:is-active={taskViewMode === "board"}
+            aria-pressed={taskViewMode === "board"}
+            data-testid="view-toggle-board"
+            onclick={() => (taskViewMode = "board")}
+          >
+            Board
+          </button>
+          <button
+            type="button"
+            class="toggle-segment"
+            class:is-active={taskViewMode === "list"}
+            aria-pressed={taskViewMode === "list"}
+            data-testid="view-toggle-list"
+            onclick={() => (taskViewMode = "list")}
+          >
+            List
+          </button>
+        </div>
+      {/if}
+    </div>
   </header>
 
   <div class="workspace-body" data-testid="project-workspace-body">
@@ -942,6 +1021,16 @@
                       <dd>{prd?.branchName ?? "not set"}</dd>
                     </div>
                   </dl>
+                  <div
+                    class="overview-provenance"
+                    data-testid="project-detail-provenance"
+                  >
+                    <ProvenanceLine
+                      provenance={detailProvenance}
+                      kind="project"
+                      unavailable={provenanceUnavailable}
+                    />
+                  </div>
                 {/if}
               </section>
 
@@ -1045,6 +1134,8 @@
                 loading={storiesLoading}
                 {now}
                 onselect={onselectStory}
+                bind:viewMode={taskViewMode}
+                showToolbar={false}
               />
             {/if}
           </div>
@@ -1176,19 +1267,22 @@
     min-width: 0;
   }
 
+  /* Separators get the same 6px on both sides; the back button's hover fill
+     bleeds outward via negative margins so it never changes the spacing. */
   .breadcrumb {
     display: flex;
     align-items: center;
-    gap: var(--v4-space-1);
-    margin-bottom: var(--v4-space-2);
+    gap: 6px;
+    margin: 0 0 6px;
     min-width: 0;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 12px;
+    line-height: 22px;
   }
 
   .crumb-company {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
     text-transform: capitalize;
@@ -1197,14 +1291,15 @@
   .back-button {
     display: inline-flex;
     align-items: center;
-    gap: var(--v4-space-1);
-    padding: var(--v4-space-1) var(--v4-space-2);
+    height: 22px;
+    margin: 0 -5px;
+    padding: 0 5px;
     border: 0;
     border-radius: var(--v4-radius-button);
     background: transparent;
-    color: var(--v4-text-2);
+    color: var(--v4-text-3);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 12px;
     font-weight: 500;
     cursor: pointer;
     transition:
@@ -1218,98 +1313,119 @@
   }
 
   .back-button:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
+    outline-offset: 1px;
   }
 
   .crumb-sep {
+    flex: 0 0 auto;
     color: var(--v4-text-3);
+    opacity: 0.6;
   }
 
   .crumb-current {
+    min-width: 0;
     overflow: hidden;
-    color: var(--v4-text-2);
-    font-size: var(--type-secondary, var(--text-sm));
+    color: var(--v4-text-3);
+    font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .toolbar-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--v4-space-3);
-    min-width: 0;
-  }
-
   .toolbar-identity {
     min-width: 0;
-    flex: 1 1 200px;
-  }
-
-  .toolbar-actions {
-    display: flex;
-    flex-wrap: wrap;
-    flex-shrink: 0;
-    align-items: center;
-    gap: var(--v4-space-2);
   }
 
   #project-detail-title {
     margin: 0;
+    overflow: hidden;
     color: var(--v4-text-1);
     font-family: var(--font-sans);
-    font-size: var(--type-detail, var(--text-lg));
+    font-size: 22px;
     font-weight: 600;
-    letter-spacing: 0;
-    line-height: 1.15;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .detail-description {
-    margin: var(--v4-row-stack-gap, 3px) 0 0;
+    display: -webkit-box;
+    max-width: 78ch;
+    margin: 4px 0 0;
+    overflow: hidden;
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
-  .status-row {
+  /* Status · company · indicators · Open in Claude Code (pushed right). */
+  .toolbar-actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--v4-space-2);
-    margin-top: var(--v4-space-3);
+    gap: 6px 8px;
+    min-width: 0;
+    margin-top: 12px;
   }
 
-  .header-provenance {
-    flex: 1 0 100%;
-    min-width: 0;
+  .meta-spacer {
+    flex: 1 1 auto;
   }
 
   .badge,
   .status-badge {
     display: inline-flex;
     align-items: center;
-    gap: var(--v4-space-1);
-    padding: 3px 10px;
+    gap: 6px;
+    height: 24px;
+    padding: 0 9px;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-pill);
-    background: var(--v4-raised);
+    background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: var(--type-secondary, var(--text-sm));
+    font: inherit;
+    font-size: 12px;
     font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .company-badge {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .toolbar-action {
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 11px;
+    border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
-    cursor: pointer;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg, var(--v4-text-1));
     font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background 140ms ease,
+      border-color 140ms ease;
   }
 
   .toolbar-action:hover {
-    border-color: var(--v4-control-border);
     background: var(--v4-active-row);
     color: var(--v4-text-1);
+  }
+
+  .toolbar-action:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
+    outline-offset: 2px;
   }
 
   .toolbar-action:disabled {
@@ -1319,7 +1435,7 @@
 
   .action-status {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 12px;
   }
 
   .status-control {
@@ -1339,10 +1455,9 @@
   }
 
   .status-badge:focus-visible {
-    outline: 2px solid var(--v4-text-1);
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
     outline-offset: 2px;
   }
-
 
   .status-dot {
     width: 6px;
@@ -1353,7 +1468,7 @@
 
   .status-planned .status-dot,
   .status-dot.status-planned {
-    background: var(--v4-text-2);
+    background: var(--v4-text-3);
   }
   .status-prd_created .status-dot,
   .status-dot.status-prd_created {
@@ -1445,49 +1560,70 @@
   .indicator {
     display: inline-flex;
     align-items: center;
-    gap: var(--v4-space-1);
+    gap: 4px;
+    min-width: 0;
+    max-width: 240px;
+    height: 24px;
+    padding: 0 4px;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 12px;
+    white-space: nowrap;
   }
 
+  .indicator svg {
+    flex: 0 0 auto;
+    width: 13px;
+    height: 13px;
+  }
+
+  .indicator-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Four compact stat tiles in one row, sentence-case labels. */
   .kpi-strip {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0;
-    margin-top: var(--v4-space-4);
-    max-width: 760px;
+    max-width: 720px;
+    margin-top: 16px;
   }
 
   .kpi-tile {
     display: flex;
     flex-direction: column;
-    gap: var(--v4-row-stack-gap, 3px);
+    gap: 2px;
     min-width: 0;
-    padding: 11px 14px;
+    padding: 2px 16px;
     border: 0;
     border-radius: 0;
     background: transparent;
   }
 
+  .kpi-tile:first-child {
+    padding-left: 0;
+  }
+
   .kpi-tile + .kpi-tile {
-    border-left: 1px solid var(--v4-hairline);
+    border-left: 1px solid var(--v4-rowline);
   }
 
   .kpi-label {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 500;
     letter-spacing: 0;
-    text-transform: uppercase;
   }
 
   .kpi-value {
     color: var(--v4-text-1);
     font-family: var(--font-sans);
-    font-size: var(--type-section, var(--text-kpi));
+    font-size: 19px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    line-height: 1.1;
+    line-height: 1.25;
   }
 
   .kpi-value.is-zero {
@@ -1499,15 +1635,17 @@
   }
 
   .kpi-slash {
+    margin: 0 1px;
     color: var(--v4-text-3);
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .kpi-bar {
     display: block;
     width: 100%;
-    height: 4px;
-    margin-top: var(--v4-space-1);
+    max-width: 720px;
+    height: 2px;
+    margin-top: 10px;
     overflow: hidden;
     border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
@@ -1531,11 +1669,23 @@
     }
   }
 
+  /* Tabs + (on Tasks) the Board/List control share one hairline row. */
+  .tabs-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+    margin-top: 16px;
+    border-bottom: 1px solid var(--v4-hairline);
+  }
+
   .tabs {
     display: inline-flex;
     flex-wrap: wrap;
-    gap: var(--v4-space-2);
-    margin-top: var(--v4-space-4);
+    gap: 4px;
+    margin: 0;
     padding: 0;
     border: 0;
     border-radius: 0;
@@ -1546,14 +1696,16 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: var(--v4-space-1) var(--v4-space-3);
+    height: 34px;
+    margin-bottom: -1px;
+    padding: 0 10px;
     border: 0;
-    border-bottom: 1px solid transparent;
+    border-bottom: 2px solid transparent;
     border-radius: 0;
     background: transparent;
-    color: var(--v4-text-2);
+    color: var(--v4-text-3);
     font: inherit;
-    font-size: var(--type-body, var(--text-sm));
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     transition:
@@ -1561,26 +1713,82 @@
       color 140ms ease;
   }
 
+  .tab:first-child {
+    padding-left: 0;
+  }
+
   .tab:hover {
-    border-bottom-color: var(--v4-rowline);
     color: var(--v4-text-1);
   }
 
   .tab.active {
-    border-bottom-color: var(--v4-text-2);
+    border-bottom-color: var(--v4-text-1);
     background: transparent;
     color: var(--v4-text-1);
   }
 
   .tab:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
+    outline-offset: -2px;
   }
 
   .tab-count {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Segmented Board / List control (tasks tab only). */
+  .view-toggle {
+    display: inline-flex;
+    gap: 2px;
+    margin-bottom: 4px;
+    padding: 2px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+  }
+
+  .toggle-segment {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--v4-text-3);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      background 140ms ease,
+      color 140ms ease;
+  }
+
+  .toggle-segment:hover {
+    color: var(--v4-text-1);
+  }
+
+  .toggle-segment.is-active {
+    background: var(--v4-raised);
+    box-shadow: inset 0 0 0 1px var(--v4-hairline);
+    color: var(--v4-text-1);
+  }
+
+  .toggle-segment:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 1px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tab,
+    .toggle-segment,
+    .toolbar-action,
+    .status-badge {
+      transition: none;
+    }
   }
 
   .workspace-body {
@@ -2354,6 +2562,10 @@
     white-space: nowrap;
   }
 
+  .overview-provenance {
+    margin-top: 12px;
+  }
+
   .kr-list,
   .overview-task-rail {
     display: flex;
@@ -2410,16 +2622,9 @@
 
   /* Responsive: keep breadcrumb/status/actions visible; board can scroll.
      Task rail collapses safely; primary close/open actions stay visible. */
-  @container project-detail (max-width: 900px) {
-    .toolbar-actions {
-      width: 100%;
-      flex: 1 1 100%;
-      justify-content: flex-start;
-    }
-
-    .toolbar-action {
-      max-width: 100%;
-      white-space: normal;
+  @container project-detail (max-width: 560px) {
+    .meta-spacer {
+      display: none;
     }
   }
 
@@ -2462,11 +2667,14 @@
     }
 
     .kpi-tile:nth-child(odd) {
+      padding-left: 0;
       border-left: 0;
     }
 
     .kpi-tile:nth-child(n + 3) {
-      border-top: 1px solid var(--v4-hairline);
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--v4-rowline);
     }
 
     .task-workspace {

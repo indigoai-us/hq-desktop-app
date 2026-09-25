@@ -13,6 +13,7 @@ import { parseAtlasGraph, type AtlasGraph } from "./atlas-model.js";
 
 export const COMPANY_CHANNEL_TABS = [
   { id: "chat", label: "Chat" },
+  { id: "projects", label: "Projects" },
 ] as const;
 
 /**
@@ -37,7 +38,7 @@ export type CompanyChannelTabId =
 /** Tabs whose content comes from the company-tab endpoint. */
 export type CompanyTabSurfaceId = Exclude<
   CompanyChannelTabId,
-  "chat" | "office"
+  "chat" | "office" | "projects"
 >;
 
 /** Host capabilities that decide which gated company tabs are listed. */
@@ -63,7 +64,7 @@ export function companyChannelTabsFor(
 export function isCompanyTabSurfaceId(
   id: CompanyChannelTabId,
 ): id is CompanyTabSurfaceId {
-  return id !== "chat" && id !== "office";
+  return id !== "chat" && id !== "office" && id !== "projects";
 }
 
 export interface CompanyTabSectionModel {

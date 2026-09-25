@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * Company channel header: optional in-app tabs (Office) plus a gear that
-   * opens the company in the HQ console. Team and Settings are not desktop
+   * Company channel header: the Chat | Projects tabs plus a gear that opens
+   * the company in the HQ console. Team, Settings, and Atlas are not desktop
    * tabs.
    */
   import { companyConsoleUrl } from "../common/hq-console.js";
@@ -11,7 +11,6 @@
   } from "./tabs/tab-model.js";
 
   const HIDDEN_TABS = new Set<CompanyChannelTabId>([
-    "chat",
     "team",
     "settings",
     "atlas",

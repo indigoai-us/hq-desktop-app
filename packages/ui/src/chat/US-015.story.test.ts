@@ -10,8 +10,8 @@ import {
 import { parseLifecycleCard } from "./messaging/channelMessageModels.js";
 
 describe("US-015: Company channel tabs and the Team tab", () => {
-  it("exposes only Chat as a desktop company-channel tab", () => {
-    expect(COMPANY_CHANNEL_TABS.map((t) => t.label)).toEqual(["Chat"]);
+  it("exposes only Chat and Projects as desktop company-channel tabs", () => {
+    expect(COMPANY_CHANNEL_TABS.map((t) => t.label)).toEqual(["Chat", "Projects"]);
     expect(COMPANY_CHANNEL_TABS.some((t) => (t.id as string) === "team")).toBe(false);
     expect(COMPANY_CHANNEL_TABS.some((t) => (t.id as string) === "settings")).toBe(false);
     expect(COMPANY_CHANNEL_TABS.some((t) => (t.id as string) === "atlas")).toBe(false);
