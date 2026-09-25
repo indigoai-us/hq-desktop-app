@@ -49,6 +49,9 @@ on:
       - ".github/workflows/release.yml"
       - ".github/workflows/windows-check.yml"
       - "scripts/shell-hash.mjs"
+      - "scripts/prune-shell-cache.mjs"
+      - "apps/sync/src-tauri/tauri.windows.conf.json"
+      - "apps/sync/src-tauri/tauri.windows.release.conf.json"
   schedule:
     - cron: "17 6 * * 1"   # weekly; caches unused for 7 days are evicted and stable rustc bumps change the key
   workflow_dispatch:
@@ -384,8 +387,15 @@ jobs:
           TOOLCHAIN="$(rustc --version | awk '{print $2}')"
           TARGET="universal-apple-darwin"
           KEY="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$TARGET")"
+          if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-hash.mjs returned an invalid key: $KEY"
+            exit 1
+          fi
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
-          echo "macOS shell key $KEY" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Build with exactly the toolchain the key names (rust-toolchain.toml
+          # pins only "stable"), as release.yml's shell jobs do.
+          echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+          echo "macOS shell key $KEY (rustc $TOOLCHAIN)" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Check whether this key is already warm
         id: warm
@@ -427,6 +437,13 @@ jobs:
       - name: Install Recall sidecar dependencies
         if: steps.warm.outputs.already-warm != 'true'
         run: pnpm run sidecar:install
+
+      - name: Stamp build commit identity
+        if: steps.warm.outputs.already-warm != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Build unsigned universal shell
         if: steps.warm.outputs.already-warm != 'true'
@@ -479,6 +496,35 @@ jobs:
           echo "::error::Upload of $ASSET to shell-cache failed after 5 attempts."
           exit 1
 
+      - name: Prune old macos shells from the shell-cache release
+        if: steps.warm.outputs.already-warm != 'true'
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target macos --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 macos shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
+
   warm-shell-windows-x64:
     name: Warm prebuilt shell (Windows x64)
     runs-on: windows-latest
@@ -512,8 +558,15 @@ jobs:
           set -euo pipefail
           TOOLCHAIN="$(rustc --version | awk '{print $2}')"
           KEY="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$RUST_TARGET")"
+          if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-hash.mjs returned an invalid key: $KEY"
+            exit 1
+          fi
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
-          echo "Windows x64 shell key $KEY" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Build with exactly the toolchain the key names (rust-toolchain.toml
+          # pins only "stable"), as release.yml's shell jobs do.
+          echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+          echo "Windows x64 shell key $KEY (rustc $TOOLCHAIN)" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Check whether this key is already warm
         id: warm
@@ -562,6 +615,13 @@ jobs:
             throw "Recall sidecar launcher was not produced at $launcher"
           }
 
+      - name: Stamp build commit identity
+        if: steps.warm.outputs.already-warm != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Compile unsigned Windows x64 shell
         if: steps.warm.outputs.already-warm != 'true'
         env:
@@ -575,7 +635,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/shell-out"
-          tar -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar" target/x86_64-pc-windows-msvc binaries
+          tar --force-local -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar" target/x86_64-pc-windows-msvc binaries
 
       - name: Save shell to the Actions cache
         if: steps.warm.outputs.already-warm != 'true'
@@ -612,6 +672,35 @@ jobs:
           echo "::error::Upload of $ASSET to shell-cache failed after 5 attempts."
           exit 1
 
+      - name: Prune old windows-x64 shells from the shell-cache release
+        if: steps.warm.outputs.already-warm != 'true'
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target windows-x64 --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 windows-x64 shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
+
   warm-shell-windows-arm64:
     name: Warm prebuilt shell (Windows arm64)
     runs-on: windows-latest
@@ -645,8 +734,15 @@ jobs:
           set -euo pipefail
           TOOLCHAIN="$(rustc --version | awk '{print $2}')"
           KEY="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$RUST_TARGET")"
+          if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-hash.mjs returned an invalid key: $KEY"
+            exit 1
+          fi
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
-          echo "Windows arm64 shell key $KEY" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Build with exactly the toolchain the key names (rust-toolchain.toml
+          # pins only "stable"), as release.yml's shell jobs do.
+          echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+          echo "Windows arm64 shell key $KEY (rustc $TOOLCHAIN)" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Check whether this key is already warm
         id: warm
@@ -657,7 +753,7 @@ jobs:
           SHELL_KEY: ${{ steps.key.outputs.key }}
         run: |
           set -euo pipefail
-          ASSET="shell-windows-x64-${SHELL_KEY}.tar"
+          ASSET="shell-windows-arm64-${SHELL_KEY}.tar"
           if gh release view shell-cache -R "$REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "$ASSET"; then
             echo "already-warm=true" >> "$GITHUB_OUTPUT"
             echo "$ASSET already exists; nothing to warm."
@@ -725,6 +821,13 @@ jobs:
             throw "Recall sidecar launcher was not produced at $launcher"
           }
 
+      - name: Stamp build commit identity
+        if: steps.warm.outputs.already-warm != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Compile unsigned Windows arm64 shell
         if: steps.warm.outputs.already-warm != 'true'
         env:
@@ -738,14 +841,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/shell-out"
-          tar -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar" target/aarch64-pc-windows-msvc binaries
+          tar --force-local -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-arm64.tar" target/aarch64-pc-windows-msvc binaries
 
       - name: Save shell to the Actions cache
         if: steps.warm.outputs.already-warm != 'true'
         uses: actions/cache/save@v4
         with:
-          path: shell-out/shell-windows-x64.tar
-          key: shell-windows-x64-${{ steps.key.outputs.key }}
+          path: shell-out/shell-windows-arm64.tar
+          key: shell-windows-arm64-${{ steps.key.outputs.key }}
 
       - name: Upload shell to the shell-cache release
         if: steps.warm.outputs.already-warm != 'true'
@@ -756,14 +859,14 @@ jobs:
           SHELL_KEY: ${{ steps.key.outputs.key }}
         run: |
           set -euo pipefail
-          ASSET="shell-windows-x64-${SHELL_KEY}.tar"
+          ASSET="shell-windows-arm64-${SHELL_KEY}.tar"
           if ! gh release view shell-cache -R "$REPOSITORY" >/dev/null 2>&1; then
             gh release create shell-cache -R "$REPOSITORY" --prerelease --latest=false \
               --title "Shell cache" \
               --notes "Build cache for the prebuilt macOS/Windows app shell, keyed by scripts/shell-hash.mjs. Not a release; never install from here." \
               || gh release view shell-cache -R "$REPOSITORY" >/dev/null
           fi
-          cp shell-out/shell-windows-x64.tar "$RUNNER_TEMP/$ASSET"
+          cp shell-out/shell-windows-arm64.tar "$RUNNER_TEMP/$ASSET"
           for attempt in 1 2 3 4 5; do
             if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
               echo "Uploaded $ASSET to the shell-cache release."
@@ -774,3 +877,32 @@ jobs:
           done
           echo "::error::Upload of $ASSET to shell-cache failed after 5 attempts."
           exit 1
+
+      - name: Prune old windows-arm64 shells from the shell-cache release
+        if: steps.warm.outputs.already-warm != 'true'
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target windows-arm64 --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 windows-arm64 shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
