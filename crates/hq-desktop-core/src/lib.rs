@@ -58,6 +58,7 @@ pub mod cpu_throttle;
 pub mod daemon;
 pub mod deep_link;
 pub mod desktop_alt;
+pub mod routes;
 pub mod dm_notify;
 pub mod drift_scope;
 pub mod events;

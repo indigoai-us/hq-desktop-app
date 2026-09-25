@@ -8,6 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed the "Setting up…" spinner some Companies rows got stuck on: the
+  company board, activity feed, and home-channel requests were missing the
+  server's `/v1` URL prefix, so those requests always failed. Added a build-time
+  check that fails CI if the app ever calls a server route hq-pro does not
+  register, so this class of bug cannot ship again silently.
+
 ## [0.10.327] — 2026-09-25
 
 - Simplified how the desktop app finds a company's main channel: it now opens

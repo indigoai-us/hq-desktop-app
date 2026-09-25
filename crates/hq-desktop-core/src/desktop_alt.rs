@@ -459,9 +459,9 @@ pub fn board_url(base: &str, company_uid: &str) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "{}/companies/{}/board",
+        "{}{}",
         base.trim_end_matches('/'),
-        company_uid
+        crate::routes::path_for(crate::routes::BOARD, company_uid)
     ))
 }
 
@@ -476,9 +476,9 @@ pub fn home_channel_url(base: &str, company_uid: &str) -> Result<String, String>
         ));
     }
     Ok(format!(
-        "{}/companies/{}/home-channel",
+        "{}{}",
         base.trim_end_matches('/'),
-        company_uid
+        crate::routes::path_for(crate::routes::HOME_CHANNEL, company_uid)
     ))
 }
 
@@ -510,9 +510,9 @@ pub fn crm_projection_url(base: &str, company_uid: &str) -> Result<String, Strin
         ));
     }
     Ok(format!(
-        "{}/companies/{}/crm-projection",
+        "{}{}",
         base.trim_end_matches('/'),
-        company_uid
+        crate::routes::path_for(crate::routes::CRM_PROJECTION, company_uid)
     ))
 }
 
@@ -523,9 +523,9 @@ pub fn activity_url(base: &str, company_uid: &str) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "{}/companies/{}/activity",
+        "{}{}",
         base.trim_end_matches('/'),
-        company_uid
+        crate::routes::path_for(crate::routes::ACTIVITY, company_uid)
     ))
 }
 
@@ -551,9 +551,9 @@ pub fn secrets_url(base: &str, company_uid: &str) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "{}/secrets/{}",
+        "{}{}",
         base.trim_end_matches('/'),
-        company_uid
+        crate::routes::path_for(crate::routes::SECRETS, company_uid)
     ))
 }
 
@@ -4032,7 +4032,7 @@ mod tests {
         );
         assert_eq!(
             super::home_channel_url("https://hqapi.getindigo.ai/", "cmp_01ABC-def.2").unwrap(),
-            "https://hqapi.getindigo.ai/companies/cmp_01ABC-def.2/home-channel"
+            "https://hqapi.getindigo.ai/v1/companies/cmp_01ABC-def.2/home-channel"
         );
         assert_eq!(
             super::home_channel_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
