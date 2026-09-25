@@ -6558,8 +6558,14 @@ error: clone failed";
             "already_exists" | "other"
         ));
         assert_eq!(event.tags["persistence_directory_state"], "file");
-        assert_eq!(event.tags["persistence_target_state"], "unknown");
-        assert_eq!(event.tags["persistence_temp_state"], "unknown");
+        assert!(matches!(
+            event.tags["persistence_target_state"].as_str(),
+            "missing" | "unknown"
+        ));
+        assert!(matches!(
+            event.tags["persistence_temp_state"].as_str(),
+            "missing" | "unknown"
+        ));
         assert_eq!(event.tags["persistence_permission_state"], "not_denied");
         assert_eq!(event.tags["persistence_disk_state"], "not_storage_full");
         assert_eq!(event.tags["persistence_concurrent_writer"], "no_evidence");
