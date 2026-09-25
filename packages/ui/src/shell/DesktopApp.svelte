@@ -3049,6 +3049,32 @@
   /** uid/slug → presigned company icon, for the header + member popover. */
   const companyIcons = $derived(buildCompanyIconMap(companies ?? []));
   /**
+   * channelId → company, built straight from the roster's own
+   * `homeChannelId` (never from the selected row). A channel opened through
+   * `requestChannelOpen` (a deep link, a notification, or the sidebar's
+   * Companies-row click before that company's channels are loaded) starts
+   * life as a bare stub — `{ id, kind: "channel", channelId }` — with no
+   * `channelScope` or `isCompanyHome` at all, and the self-heal effect that
+   * later adopts the real row only fires when the title or companyUid
+   * changes, which a same-titled stub never triggers. Deriving "is this the
+   * company's home channel" from the roster instead of the row's own fields
+   * means the header/settings/wallpaper chrome is correct on the very first
+   * paint, stub or not.
+   */
+  const companyByHomeChannelId = $derived.by(() => {
+    const map = new Map<string, Workspace>();
+    for (const c of companies ?? []) {
+      const id = (c.homeChannelId ?? "").trim();
+      if (id) map.set(id, c);
+    }
+    return map;
+  });
+  const selectedHomeCompany = $derived.by(() => {
+    const id = selectedRow?.channelId?.trim();
+    if (!id) return null;
+    return companyByHomeChannelId.get(id) ?? null;
+  });
+  /**
    * Icon for the selected conversation's company: the row's server-stamped
    * icon first, then the roster. Company channels only — a project or personal
    * channel header keeps its `#`.
@@ -3056,14 +3082,17 @@
   const selectedCompanyIcon = $derived.by(() => {
     const row = selectedRow;
     if (!row || row.kind !== "channel") return null;
-    if ((row.channelScope ?? "").trim() !== "company") return null;
-    return row.iconUrl ?? companyIconUrl(row.companyUid, companyIcons);
+    if ((row.channelScope ?? "").trim() !== "company" && !selectedHomeCompany) return null;
+    const uid = row.companyUid ?? selectedHomeCompany?.cloudUid ?? null;
+    return row.iconUrl ?? companyIconUrl(uid, companyIcons);
   });
   const selectedIsCompanyChannel = $derived(
     selectedRow?.kind === "channel" &&
-      (selectedRow.channelScope ?? "").trim() === "company",
+      ((selectedRow.channelScope ?? "").trim() === "company" ||
+        Boolean(selectedHomeCompany)),
   );
   const selectedCompanySlug = $derived.by(() => {
+    if (selectedHomeCompany) return selectedHomeCompany.slug ?? "";
     const uid = (selectedRow?.companyUid ?? "").trim();
     if (!uid) return "";
     return (
@@ -3078,18 +3107,22 @@
     if (!row) return null;
     if (row.kind === "dm") return "Direct message";
     if (row.kind === "group") return "Group message";
-    const scope = row.channelScope ?? "channel";
+    const scope = row.channelScope ?? (selectedHomeCompany ? "company" : "channel");
     const kindLabel =
       scope === "project"
         ? "project channel"
         : scope === "company"
-          ? row.isCompanyHome
+          ? row.isCompanyHome || selectedHomeCompany
             ? "company home"
             : "team channel"
           : scope === "personal"
             ? "personal channel"
             : "channel";
-    const name = companyDisplayName(row.companyUid, companyNames);
+    const name =
+      companyDisplayName(row.companyUid, companyNames) ||
+      selectedHomeCompany?.displayName ||
+      selectedHomeCompany?.slug ||
+      "";
     return name ? `${name} · ${kindLabel}` : kindLabel;
   });
 
@@ -3117,11 +3150,15 @@
   // Only the ONE company-home channel per company (created at genesis, named
   // after the slug) carries CompanyHero/Office/settings chrome. Every other
   // `channelScope === "company"` row is a plain team channel and must render
-  // as a normal channel — see `isCompanyHome` on ConversationRow.
+  // as a normal channel — see `isCompanyHome` on ConversationRow. Matched
+  // against the roster's `homeChannelId` (`selectedHomeCompany`) rather than
+  // `selectedRow.isCompanyHome` alone: a channel opened before its row loaded
+  // (deep link, notification, or a Companies-row click into an unloaded
+  // company) is a bare stub with neither `channelScope` nor `isCompanyHome`
+  // set, and would otherwise never get the company chrome.
   const isCompanyChannel = $derived(
     selectedRow?.kind === "channel" &&
-      (selectedRow?.channelScope ?? "channel") === "company" &&
-      Boolean(selectedRow?.isCompanyHome) &&
+      (Boolean(selectedRow?.isCompanyHome) || Boolean(selectedHomeCompany)) &&
       !isSetupChannel(selectedRow.channelId) &&
       !isAgentChannel,
   );
@@ -3136,6 +3173,8 @@
   const companyHeroTitle = $derived(
     companyAppearanceName ||
       companyDisplayName(selectedRow?.companyUid, companyNames) ||
+      selectedHomeCompany?.displayName ||
+      selectedHomeCompany?.slug ||
       headerTitle,
   );
 
