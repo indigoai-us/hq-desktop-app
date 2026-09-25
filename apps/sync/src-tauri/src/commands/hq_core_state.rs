@@ -2351,11 +2351,116 @@ static CORE_UPDATE_BASELINE_WARNING_SIGNATURES: OnceLock<
     Mutex<HashSet<CoreUpdateBaselinePersistenceWarningSignature>>,
 > = OnceLock::new();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CoreUpdateBaselinePersistenceDiagnosticTags {
+    write_path: &'static str,
+    error_kind: &'static str,
+    directory_state: &'static str,
+    target_state: &'static str,
+    temp_state: &'static str,
+    permission_state: &'static str,
+    disk_state: &'static str,
+    concurrent_writer: &'static str,
+}
+
+impl CoreUpdateBaselinePersistenceDiagnosticTags {
+    fn unknown() -> Self {
+        Self {
+            write_path: "unknown",
+            error_kind: "unknown",
+            directory_state: "unknown",
+            target_state: "unknown",
+            temp_state: "unknown",
+            permission_state: "unknown",
+            disk_state: "unknown",
+            concurrent_writer: "unknown",
+        }
+    }
+
+    fn from_detail(detail: &str) -> Self {
+        let Some(start) = detail.rfind("[baseline_persistence_diagnostics ") else {
+            return Self::unknown();
+        };
+        let marker = detail[start..].split(']').next().unwrap_or_default();
+        let value = |key: &str| {
+            marker
+                .split_ascii_whitespace()
+                .find_map(|field| field.strip_prefix(&format!("{key}=")))
+                .unwrap_or("unknown")
+        };
+        let bounded = |value: &str, allowed: &[&'static str]| {
+            allowed
+                .iter()
+                .copied()
+                .find(|item| *item == value)
+                .unwrap_or("unknown")
+        };
+
+        Self {
+            write_path: bounded(
+                value("write_path"),
+                &[
+                    "validate_key",
+                    "create_directory",
+                    "serialize",
+                    "write_temp",
+                    "remove_target",
+                    "rename_temp",
+                ],
+            ),
+            error_kind: bounded(
+                value("error_kind"),
+                &[
+                    "invalid_input",
+                    "serialization",
+                    "not_found",
+                    "permission_denied",
+                    "already_exists",
+                    "storage_full",
+                    "out_of_memory",
+                    "interrupted",
+                    "other",
+                ],
+            ),
+            directory_state: bounded(
+                value("directory_state"),
+                &["file", "directory", "other", "missing", "unknown"],
+            ),
+            target_state: bounded(
+                value("target_state"),
+                &["file", "directory", "other", "missing", "unknown"],
+            ),
+            temp_state: bounded(
+                value("temp_state"),
+                &["file", "directory", "other", "missing", "unknown"],
+            ),
+            permission_state: bounded(
+                value("permission_state"),
+                &["denied", "not_denied", "unknown"],
+            ),
+            disk_state: bounded(
+                value("disk_state"),
+                &["storage_full", "not_storage_full", "unknown"],
+            ),
+            concurrent_writer: bounded(
+                value("concurrent_writer"),
+                &[
+                    "shared_temp_preexisting",
+                    "temp_consumed_target_present",
+                    "no_evidence",
+                    "unknown",
+                ],
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CoreUpdateBaselinePersistenceWarningReport {
     source: &'static str,
     channel: Channel,
     error_category: RescueFailureCategory,
+    diagnostic_tags: CoreUpdateBaselinePersistenceDiagnosticTags,
     detail: String,
 }
 
@@ -2369,6 +2474,7 @@ fn core_update_baseline_persistence_warning_report(
         channel,
         error_category: classify_spawn_error(detail)
             .unwrap_or_else(|| classify_rescue_stderr_failure(detail)),
+        diagnostic_tags: CoreUpdateBaselinePersistenceDiagnosticTags::from_detail(detail),
         detail: hq_telemetry::redact_core_update_diagnostic_tail(detail),
     }
 }
@@ -2397,6 +2503,38 @@ fn send_core_update_baseline_persistence_warning(
                 sentry_scope.set_tag("channel", channel_label(report.channel));
                 sentry_scope.set_tag("platform", core_update_sentry_platform());
                 sentry_scope.set_tag("source", report.source);
+                sentry_scope.set_tag(
+                    "persistence_write_path",
+                    report.diagnostic_tags.write_path,
+                );
+                sentry_scope.set_tag(
+                    "persistence_error_kind",
+                    report.diagnostic_tags.error_kind,
+                );
+                sentry_scope.set_tag(
+                    "persistence_directory_state",
+                    report.diagnostic_tags.directory_state,
+                );
+                sentry_scope.set_tag(
+                    "persistence_target_state",
+                    report.diagnostic_tags.target_state,
+                );
+                sentry_scope.set_tag(
+                    "persistence_temp_state",
+                    report.diagnostic_tags.temp_state,
+                );
+                sentry_scope.set_tag(
+                    "persistence_permission_state",
+                    report.diagnostic_tags.permission_state,
+                );
+                sentry_scope.set_tag(
+                    "persistence_disk_state",
+                    report.diagnostic_tags.disk_state,
+                );
+                sentry_scope.set_tag(
+                    "persistence_concurrent_writer",
+                    report.diagnostic_tags.concurrent_writer,
+                );
                 sentry_scope.set_extra(
                     "baselinePersistenceDetail",
                     sentry::protocol::Value::String(report.detail),
@@ -2852,6 +2990,7 @@ pub(crate) struct AppliedRescueBaseline {
     pub(crate) commit: String,
     pub(crate) baseline_persisted: bool,
     pub(crate) refresh_pending: bool,
+    pub(crate) persistence_diagnostic: Option<String>,
 }
 
 fn optional_core_tree_client(token: Option<&str>) -> Result<reqwest::Client, String> {
@@ -2891,9 +3030,11 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
                 .into_iter()
                 .map(|(path, (sha, _))| (path, sha))
                 .collect();
-            if let Err(error) = hq_desktop_core::drift_scope::persist_core_drift_baseline(
-                hq_folder, &source, &commit, blobs,
-            ) {
+            if let Err(error) =
+                hq_desktop_core::drift_scope::persist_core_drift_baseline_with_diagnostics(
+                    hq_folder, &source, &commit, blobs,
+                )
+            {
                 log(
                     "hq-core-state",
                     &format!(
@@ -2910,6 +3051,7 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
                     commit,
                     baseline_persisted: false,
                     refresh_pending: true,
+                    persistence_diagnostic: Some(error.to_string()),
                 });
             }
             let mut refresh_pending = false;
@@ -2944,6 +3086,7 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
                 commit,
                 baseline_persisted: true,
                 refresh_pending,
+                persistence_diagnostic: None,
             })
         }
         Err(fetch_error) => {
@@ -2981,17 +3124,21 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
             };
 
             let mut baseline_persisted = false;
+            let mut persistence_diagnostic = None;
             if let Some(blobs) = local_blobs {
-                match hq_desktop_core::drift_scope::persist_core_drift_baseline(
+                match hq_desktop_core::drift_scope::persist_core_drift_baseline_with_diagnostics(
                     hq_folder, &source, &commit, blobs,
                 ) {
                     Ok(()) => baseline_persisted = true,
-                    Err(error) => log(
-                        "hq-core-state",
-                        &format!(
-                            "could not persist the local fallback Core baseline {source}@{commit}: {error}"
-                        ),
-                    ),
+                    Err(error) => {
+                        log(
+                            "hq-core-state",
+                            &format!(
+                                "could not persist local fallback baseline {source}@{commit}: {error}"
+                            ),
+                        );
+                        persistence_diagnostic = Some(error.to_string());
+                    }
                 }
             }
             persist_baseline_refresh_target(
@@ -3004,6 +3151,7 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
                 commit,
                 baseline_persisted,
                 refresh_pending: true,
+                persistence_diagnostic,
             })
         }
     }
@@ -6358,6 +6506,14 @@ error: clone failed";
             "baseline warnings must not merge with Core-update-failed issues"
         );
         assert_eq!(event.tags["operation"], "baseline_persistence");
+        assert_eq!(event.tags["persistence_write_path"], "unknown");
+        assert_eq!(event.tags["persistence_error_kind"], "unknown");
+        assert_eq!(event.tags["persistence_directory_state"], "unknown");
+        assert_eq!(event.tags["persistence_target_state"], "unknown");
+        assert_eq!(event.tags["persistence_temp_state"], "unknown");
+        assert_eq!(event.tags["persistence_permission_state"], "unknown");
+        assert_eq!(event.tags["persistence_disk_state"], "unknown");
+        assert_eq!(event.tags["persistence_concurrent_writer"], "unknown");
         assert_eq!(event.tags["channel"], "release");
         assert_eq!(event.tags["source"], "automatic");
         let redacted = event.extra["baselinePersistenceDetail"]
@@ -6366,6 +6522,55 @@ error: clone failed";
         assert!(redacted.contains("HTTP 403 Forbidden"));
         assert!(!redacted.contains("/home/alice"));
         assert!(!redacted.contains("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn baseline_persistence_warning_emits_bounded_write_diagnostics() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_baseline_warning_signatures_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("core/workspace/core-drift-baselines");
+        std::fs::create_dir_all(directory.parent().unwrap()).unwrap();
+        std::fs::write(&directory, b"block baseline directory creation").unwrap();
+        let error = hq_desktop_core::drift_scope::persist_core_drift_baseline(
+            temp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef",
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap_err();
+        let detail = format!("core update applied but baseline persistence failed: {error}");
+        let report =
+            core_update_baseline_persistence_warning_report("automatic", Channel::Release, &detail);
+        let events = sentry::test::with_captured_events_options(
+            || send_core_update_baseline_persistence_warning(report),
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+        let event = hq_telemetry::before_send(events.into_iter().next().unwrap()).unwrap();
+
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(event.tags["persistence_write_path"], "create_directory");
+        assert!(matches!(
+            event.tags["persistence_error_kind"].as_str(),
+            "already_exists" | "other"
+        ));
+        assert_eq!(event.tags["persistence_directory_state"], "file");
+        assert_eq!(event.tags["persistence_target_state"], "unknown");
+        assert_eq!(event.tags["persistence_temp_state"], "unknown");
+        assert_eq!(event.tags["persistence_permission_state"], "not_denied");
+        assert_eq!(event.tags["persistence_disk_state"], "not_storage_full");
+        assert_eq!(event.tags["persistence_concurrent_writer"], "no_evidence");
+        assert!(!event
+            .tags
+            .values()
+            .any(|value| value.contains(temp.path().to_str().unwrap())));
+        let redacted = event.extra["baselinePersistenceDetail"]
+            .as_str()
+            .expect("warning retains a redacted diagnostic");
+        assert!(!redacted.contains(temp.path().to_str().unwrap()));
     }
 
     #[test]

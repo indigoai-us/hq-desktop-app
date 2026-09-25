@@ -19,6 +19,7 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::io;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -43,35 +44,220 @@ fn baseline_key(source_repo: &str, commit: &str) -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreDriftBaselinePersistenceDiagnostic {
+    pub write_path: &'static str,
+    pub error_kind: &'static str,
+    pub directory_state: &'static str,
+    pub target_state: &'static str,
+    pub temp_state: &'static str,
+    pub permission_state: &'static str,
+    pub disk_state: &'static str,
+    pub concurrent_writer: &'static str,
+}
+
+impl CoreDriftBaselinePersistenceDiagnostic {
+    pub fn marker(self) -> String {
+        format!(
+            concat!(
+                "[baseline_persistence_diagnostics write_path={} error_kind={} directory_state={} ",
+                "target_state={} temp_state={} permission_state={} ",
+                "disk_state={} concurrent_writer={}]",
+            ),
+            self.write_path,
+            self.error_kind,
+            self.directory_state,
+            self.target_state,
+            self.temp_state,
+            self.permission_state,
+            self.disk_state,
+            self.concurrent_writer,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CoreDriftBaselinePersistenceError {
+    pub diagnostic: CoreDriftBaselinePersistenceDiagnostic,
+    detail: String,
+}
+
+impl std::fmt::Display for CoreDriftBaselinePersistenceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} {}", self.detail, self.diagnostic.marker())
+    }
+}
+
+impl std::error::Error for CoreDriftBaselinePersistenceError {}
+
+fn persistence_path_state(path: &Path) -> &'static str {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => "file",
+        Ok(metadata) if metadata.is_dir() => "directory",
+        Ok(_) => "other",
+        Err(error) if error.kind() == io::ErrorKind::NotFound => "missing",
+        Err(_) => "unknown",
+    }
+}
+
+fn persistence_error_kind(kind: io::ErrorKind) -> &'static str {
+    match kind {
+        io::ErrorKind::NotFound => "not_found",
+        io::ErrorKind::PermissionDenied => "permission_denied",
+        io::ErrorKind::AlreadyExists => "already_exists",
+        io::ErrorKind::StorageFull => "storage_full",
+        io::ErrorKind::OutOfMemory => "out_of_memory",
+        io::ErrorKind::InvalidInput => "invalid_input",
+        io::ErrorKind::Interrupted => "interrupted",
+        _ => "other",
+    }
+}
+
+fn baseline_persistence_error(
+    write_path: &'static str,
+    error_kind: &'static str,
+    detail: String,
+    directory: &Path,
+    target: &Path,
+    temp: &Path,
+    temp_preexisting: bool,
+) -> Box<CoreDriftBaselinePersistenceError> {
+    let directory_state = persistence_path_state(directory);
+    let target_state = persistence_path_state(target);
+    let temp_state = persistence_path_state(temp);
+    let permission_state = match error_kind {
+        "permission_denied" => "denied",
+        "invalid_input" | "unknown" | "serialization" | "other" => "unknown",
+        _ => "not_denied",
+    };
+    let disk_state = match error_kind {
+        "storage_full" => "storage_full",
+        "invalid_input" | "unknown" | "serialization" | "other" => "unknown",
+        _ => "not_storage_full",
+    };
+    let concurrent_writer = if temp_preexisting {
+        "shared_temp_preexisting"
+    } else if write_path == "rename_temp" && temp_state == "missing" && target_state == "file" {
+        "temp_consumed_target_present"
+    } else {
+        "no_evidence"
+    };
+
+    Box::new(CoreDriftBaselinePersistenceError {
+        diagnostic: CoreDriftBaselinePersistenceDiagnostic {
+            write_path,
+            error_kind,
+            directory_state,
+            target_state,
+            temp_state,
+            permission_state,
+            disk_state,
+            concurrent_writer,
+        },
+        detail,
+    })
+}
+
 pub fn persist_core_drift_baseline(
     hq_folder: &Path,
     source_repo: &str,
     commit: &str,
     normalized_blobs: BTreeMap<String, String>,
 ) -> Result<(), String> {
+    persist_core_drift_baseline_with_diagnostics(hq_folder, source_repo, commit, normalized_blobs)
+        .map_err(|error| error.to_string())
+}
+
+pub fn persist_core_drift_baseline_with_diagnostics(
+    hq_folder: &Path,
+    source_repo: &str,
+    commit: &str,
+    normalized_blobs: BTreeMap<String, String>,
+) -> Result<(), Box<CoreDriftBaselinePersistenceError>> {
+    let dir = hq_folder.join(BASELINE_DIR);
     if source_repo.trim().is_empty() || commit.trim().len() < 7 {
-        return Err("refusing to persist an unkeyed core drift baseline".into());
+        let unknown = dir.join("unknown.json");
+        let temp = unknown.with_extension("json.tmp");
+        return Err(baseline_persistence_error(
+            "validate_key",
+            "invalid_input",
+            "refusing to persist an unkeyed core drift baseline".into(),
+            &dir,
+            &unknown,
+            &temp,
+            false,
+        ));
     }
+
     let baseline = CoreDriftBaseline {
         schema_version: BASELINE_SCHEMA_VERSION,
         source_repo: source_repo.to_string(),
         commit: commit.to_string(),
         normalized_blobs,
     };
-    let dir = hq_folder.join(BASELINE_DIR);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("create baseline directory {}: {e}", dir.display()))?;
     let path = dir.join(baseline_key(source_repo, commit));
     let temp = path.with_extension(format!("json.tmp-{}", std::process::id()));
-    let bytes = serde_json::to_vec_pretty(&baseline)
-        .map_err(|e| format!("serialize core drift baseline: {e}"))?;
-    std::fs::write(&temp, bytes)
-        .map_err(|e| format!("write baseline temp {}: {e}", temp.display()))?;
+    let temp_preexisting = matches!(
+        persistence_path_state(&temp),
+        "file" | "directory" | "other"
+    );
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        baseline_persistence_error(
+            "create_directory",
+            persistence_error_kind(error.kind()),
+            format!("create baseline directory {}: {error}", dir.display()),
+            &dir,
+            &path,
+            &temp,
+            temp_preexisting,
+        )
+    })?;
+    let bytes = serde_json::to_vec_pretty(&baseline).map_err(|error| {
+        baseline_persistence_error(
+            "serialize",
+            "serialization",
+            format!("serialize core drift baseline: {error}"),
+            &dir,
+            &path,
+            &temp,
+            temp_preexisting,
+        )
+    })?;
+    std::fs::write(&temp, bytes).map_err(|error| {
+        baseline_persistence_error(
+            "write_temp",
+            persistence_error_kind(error.kind()),
+            format!("write baseline temp {}: {error}", temp.display()),
+            &dir,
+            &path,
+            &temp,
+            temp_preexisting,
+        )
+    })?;
     if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("replace existing baseline {}: {e}", path.display()))?;
+        std::fs::remove_file(&path).map_err(|error| {
+            baseline_persistence_error(
+                "remove_target",
+                persistence_error_kind(error.kind()),
+                format!("replace existing baseline {}: {error}", path.display()),
+                &dir,
+                &path,
+                &temp,
+                temp_preexisting,
+            )
+        })?;
     }
-    std::fs::rename(&temp, &path).map_err(|e| format!("commit baseline {}: {e}", path.display()))
+    std::fs::rename(&temp, &path).map_err(|error| {
+        baseline_persistence_error(
+            "rename_temp",
+            persistence_error_kind(error.kind()),
+            format!("commit baseline {}: {error}", path.display()),
+            &dir,
+            &path,
+            &temp,
+            temp_preexisting,
+        )
+    })
 }
 
 pub fn load_core_drift_baseline(
@@ -702,6 +888,34 @@ contributes:
             load_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn baseline_persistence_failures_report_bounded_diagnostics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let directory = tmp.path().join(BASELINE_DIR);
+        std::fs::create_dir_all(directory.parent().unwrap()).unwrap();
+        std::fs::write(&directory, b"block baseline directory creation").unwrap();
+
+        let error = persist_core_drift_baseline(
+            tmp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef",
+            BTreeMap::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("[baseline_persistence_diagnostics "));
+        assert!(error.contains("write_path=create_directory"));
+        assert!(error.contains("directory_state=file"));
+        assert!(error.contains("permission_state=not_denied"));
+        assert!(error.contains("disk_state=not_storage_full"));
+        assert!(error.contains("concurrent_writer=no_evidence"));
+        let marker = error
+            .split_once("[baseline_persistence_diagnostics ")
+            .unwrap()
+            .1;
+        assert!(!marker.contains(tmp.path().to_str().unwrap()));
     }
 
     #[test]
