@@ -378,6 +378,7 @@ jobs:
       - name: Compute shell key
         id: key
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           TOOLCHAIN="$(rustc --version | awk '{print $2}')"
@@ -506,6 +507,7 @@ jobs:
       - name: Compute shell key
         id: key
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           TOOLCHAIN="$(rustc --version | awk '{print $2}')"
@@ -638,6 +640,7 @@ jobs:
       - name: Compute shell key
         id: key
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           TOOLCHAIN="$(rustc --version | awk '{print $2}')"
