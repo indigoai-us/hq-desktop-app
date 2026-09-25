@@ -17,20 +17,21 @@ const SETTINGS_PAGE = '../../packages/ui/src/settings/SettingsPage.svelte';
 const MEETINGS = '../../packages/ui/src/meetings/MeetingsPage.svelte';
 const NOTIFICATIONS = '../../packages/ui/src/inbox/NotificationsView.svelte';
 const SHARED_FILES = '../../packages/ui/src/inbox/SharedFilesOverlay.svelte';
+const DM_REQUESTS = '../../packages/ui/src/chat/DmRequestsPanel.svelte';
 
 describe('sub-page headers reserve the window-controls inset', () => {
   it('defines one shared height and leading-inset CSS variable', () => {
     const tokens = readRepoFile(TOKENS);
     const layout = readRepoFile(LAYOUT);
     expect(layout).toContain('export const TITLEBAR_HEIGHT_PX = 48');
-    expect(layout).toContain('export const TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX = 78');
+    expect(layout).toContain('export const TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX = 96');
     expect(layout).toContain('export const TITLEBAR_WINDOWS_LEADING_INSET_PX = 12');
     expect(layout).toContain('--titlebar-height');
     expect(layout).toContain('--titlebar-leading-inset');
     expect(tokens).toContain('--titlebar-height: 48px');
     expect(tokens).toContain('--titlebar-leading-inset: 16px');
     expect(tokens).toMatch(
-      /\.has-window-controls\s*\{[\s\S]*--titlebar-leading-inset:\s*78px/,
+      /\.has-window-controls\s*\{[\s\S]*--titlebar-leading-inset:\s*96px/,
     );
     expect(tokens).toMatch(
       /html\[data-platform=["']windows["']\]\s*\{[\s\S]*--titlebar-leading-inset:\s*12px/,
@@ -57,6 +58,7 @@ describe('sub-page headers reserve the window-controls inset', () => {
       MEETINGS,
       NOTIFICATIONS,
       SHARED_FILES,
+      DM_REQUESTS,
     ]) {
       const source = readRepoFile(file);
       expect(source, file).toContain('<PageHeader');
