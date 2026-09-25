@@ -14,6 +14,9 @@ The release moves it under the version it ships in.
   compile time. Groundwork for cutting UI-only release time; the workflow
   restructuring that uses these pieces is still in progress (see
   `docs/RELEASE.md`).
+- The desktop app's UI is now loaded from a runtime resource directory
+  instead of being compiled into the binary — the app can get a new UI
+  without a full rebuild. No visible change for users.
 
 ## [0.10.328] — 2026-09-25
 

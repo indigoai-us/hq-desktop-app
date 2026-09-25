@@ -53,6 +53,7 @@ mod intro_window;
 mod recovery;
 mod titlebar_layout;
 mod tray;
+mod ui_protocol;
 mod tray_helper;
 mod updater;
 mod util;
@@ -398,7 +399,6 @@ fn main() {
     // `msedgewebview2.exe` through `additionalBrowserArgs`, and this is the
     // first webview the process creates, so it decides the browser process the
     // driver has to find. Untouched (and `None`) on a normal launch.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
     {
@@ -408,8 +408,23 @@ fn main() {
             }
         }
     }
+    // Prebuilt-shell pipeline: `generate_context!()` bakes in only the tiny
+    // placeholder at `shell-placeholder/` (so the compiled binary doesn't
+    // change when the real UI changes) — the actual frontend is served at
+    // runtime by `ui_protocol` from `Resources/ui/`. Retarget every declared
+    // window's url from the baked-in placeholder to that runtime origin.
+    // See `docs/RELEASE.md`.
+    for window in &mut context.config_mut().app.windows {
+        let entry = match window.label.as_str() {
+            "desktop-alt" => "desktop-alt.html",
+            _ => "index.html",
+        };
+        window.url = ui_protocol::ui_url(entry);
+    }
 
-    let builder = crate::recovery::register_protocol(tauri::Builder::default())
+    let builder = ui_protocol::register_protocol(crate::recovery::register_protocol(
+        tauri::Builder::default(),
+    ))
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
             webview_asset_cache::handle_page_load(webview.label(), payload.event());
