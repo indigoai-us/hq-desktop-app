@@ -17,7 +17,8 @@
 //     tools installed).
 //
 // Windows exe version-resource stamping (rcedit) is NOT implemented in this
-// script — see the PR description for why.
+// script — see scripts/stamp-exe-version.mjs, invoked separately in the
+// Windows assemble jobs.
 import { readFile, writeFile } from "node:fs/promises";
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:beta|alpha|shelltest)\.(0|[1-9]\d*))?$/;

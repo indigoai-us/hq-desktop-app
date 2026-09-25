@@ -24,6 +24,7 @@
     "ci:local:fast": "bash scripts/ci-local.sh --fast"
   },
   "devDependencies": {
+    "rcedit": "^2.3.0",
     "tsx": "^4.21.0",
     "turbo": "^2.3.3",
     "vitest": "^4.1.5"

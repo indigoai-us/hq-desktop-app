@@ -2271,19 +2271,10 @@ jobs:
         run: |
           set -euo pipefail
           EXE="src-tauri/target/x86_64-pc-windows-msvc/release/hq-sync-menubar.exe"
-          # rcedit rewrites the file's own Win32 VERSIONINFO resource (what
-          # Explorer/Task Manager/the MSI installer show); the shell was
-          # compiled version-agnostic, so this must happen here, after the
-          # cached shell is restored and before signing. set-file-version /
-          # set-product-version need a bare X.X.X.X; strip any prerelease
-          # suffix and pad to four fields.
-          NUMERIC="$(node -e 'const v=process.env.RELEASE_VERSION.split("-")[0].split(".");while(v.length<4)v.push("0");console.log(v.slice(0,4).join("."))')"
-          npx --yes rcedit@2 "$EXE" \
-            --set-file-version "$NUMERIC" \
-            --set-product-version "$NUMERIC" \
-            --set-version-string FileVersion "$RELEASE_VERSION" \
-            --set-version-string ProductVersion "$RELEASE_VERSION"
-          echo "Stamped $EXE with $RELEASE_VERSION ($NUMERIC)"
+          # rcedit is a devDependency; node resolves it directly (its npm
+          # package has no `bin`, so `npx rcedit@2 ...` can never work — see
+          # scripts/stamp-exe-version.mjs for the full story).
+          node ../../scripts/stamp-exe-version.mjs "$EXE"
 
       # cargo build is a no-op here (the restored target dir already matches
       # this exact shell key); this run only re-links the bundle (fresh
@@ -2587,19 +2578,10 @@ jobs:
         run: |
           set -euo pipefail
           EXE="src-tauri/target/aarch64-pc-windows-msvc/release/hq-sync-menubar.exe"
-          # rcedit rewrites the file's own Win32 VERSIONINFO resource (what
-          # Explorer/Task Manager/the MSI installer show); the shell was
-          # compiled version-agnostic, so this must happen here, after the
-          # cached shell is restored and before signing. set-file-version /
-          # set-product-version need a bare X.X.X.X; strip any prerelease
-          # suffix and pad to four fields.
-          NUMERIC="$(node -e 'const v=process.env.RELEASE_VERSION.split("-")[0].split(".");while(v.length<4)v.push("0");console.log(v.slice(0,4).join("."))')"
-          npx --yes rcedit@2 "$EXE" \
-            --set-file-version "$NUMERIC" \
-            --set-product-version "$NUMERIC" \
-            --set-version-string FileVersion "$RELEASE_VERSION" \
-            --set-version-string ProductVersion "$RELEASE_VERSION"
-          echo "Stamped $EXE with $RELEASE_VERSION ($NUMERIC)"
+          # rcedit is a devDependency; node resolves it directly (its npm
+          # package has no `bin`, so `npx rcedit@2 ...` can never work — see
+          # scripts/stamp-exe-version.mjs for the full story).
+          node ../../scripts/stamp-exe-version.mjs "$EXE"
 
       # cargo build is a no-op here (the restored target dir already matches
       # this exact shell key); this run only re-links the bundle (fresh
