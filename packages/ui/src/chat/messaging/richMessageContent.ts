@@ -187,8 +187,21 @@ export interface SetupDoneBlock {
   kind: "setupDone";
 }
 
+/**
+ * Suggested replies: two to four short answers or next questions the agent
+ * writes for its own message, so the person always has an easy way to carry
+ * on. Like `setupDone` it renders nothing inline; the host decides where (and
+ * whether) to show them, and a click sends the chosen text as the person's
+ * reply. Items are sanitized plain text.
+ */
+export interface SuggestionsBlock {
+  kind: "suggestions";
+  items: string[];
+}
+
 export type RichBlock =
   | SetupDoneBlock
+  | SuggestionsBlock
   | StatBlock
   | TableBlock
   | ChartBlock
@@ -206,6 +219,7 @@ export interface RichContentModel {
 /** Block-type names the schema knows about (informational; genui is unsupported). */
 export const KNOWN_BLOCK_KINDS = new Set<string>([
   "setupDone",
+  "suggestions",
   "stat",
   "table",
   "chart",
@@ -229,6 +243,18 @@ const MAX_CELL_LEN = 500;
 const MAX_LABEL_LEN = 200;
 const MAX_KV_ITEMS = 50;
 const MAX_DECISION_OPTIONS = 10;
+const MAX_SUGGESTIONS = 4;
+const MAX_SUGGESTION_LEN = 80;
+
+/**
+ * Block kinds the host places itself (a finish card, reply buttons) rather
+ * than drawing inside the message bubble. They add nothing to the bubble and
+ * a message carrying only these has no visible content of its own.
+ */
+export const HOST_PLACED_BLOCK_KINDS: ReadonlySet<RichBlock["kind"]> = new Set([
+  "setupDone",
+  "suggestions",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -471,12 +497,31 @@ function parseDecisionBlock(raw: Record<string, unknown>): DecisionBlock | null 
   };
 }
 
+function parseSuggestionsBlock(raw: Record<string, unknown>): SuggestionsBlock | null {
+  const rawItems = Array.isArray(raw.items) ? raw.items : [];
+  const items: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of rawItems) {
+    if (items.length >= MAX_SUGGESTIONS) break;
+    const source = isRecord(entry) ? entry.label : entry;
+    // Room for the ellipsis toSafeText adds, so a label never exceeds the cap.
+    const label = toSafeText(source, MAX_SUGGESTION_LEN - 1).replace(/\s+/g, " ").trim();
+    const key = label.toLowerCase();
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    items.push(label);
+  }
+  return items.length > 0 ? { kind: "suggestions", items } : null;
+}
+
 function parseBlock(raw: unknown): RichBlock | null {
   if (!isRecord(raw)) return null;
   const kind = typeof raw.kind === "string" ? raw.kind : "";
   switch (kind) {
     case "setupDone":
       return { kind: "setupDone" };
+    case "suggestions":
+      return parseSuggestionsBlock(raw);
     case "stat":
       return parseStatBlock(raw);
     case "table":
@@ -559,8 +604,12 @@ interface EnvelopeSpan {
   start: number;
   /** Index after the last character to cut. */
   end: number;
-  /** The envelope itself. */
-  rich: RichContentModel;
+  /**
+   * The envelope itself, or null for a well-formed envelope whose blocks this
+   * version does not know (a newer kind). That envelope is still cut from the
+   * text, so a newer agent never shows raw machine text to an older app.
+   */
+  rich: RichContentModel | null;
 }
 
 /** End index of the JSON object starting at `open`, or -1. String-aware, so a
@@ -598,6 +647,16 @@ function withSurroundingFence(body: string, start: number, end: number): [number
   return [start - (openFence[0].length - openFence[1].length), end + closeFence[0].length];
 }
 
+/**
+ * A versioned envelope (`{"v": 1, "blocks": [{"kind": …}, …]}`) in which every
+ * block names a kind, none of which this version parses. Recognised as ours so
+ * it can be lifted out of the text instead of shown as JSON.
+ */
+function isUnknownEnvelope(raw: unknown): boolean {
+  if (!isRecord(raw) || raw.v !== RICH_CONTENT_VERSION || !Array.isArray(raw.blocks)) return false;
+  return raw.blocks.length > 0 && raw.blocks.every((b) => isRecord(b) && typeof b.kind === "string");
+}
+
 function findEnvelopeSpan(body: string): EnvelopeSpan | null {
   if (!body.includes('"blocks"')) return null;
   for (let i = body.indexOf("{"); i !== -1; i = body.indexOf("{", i + 1)) {
@@ -606,13 +665,14 @@ function findEnvelopeSpan(body: string): EnvelopeSpan | null {
     if (!head.includes('"v"') && !head.includes('"blocks"')) continue;
     const end = jsonObjectEnd(body, i);
     if (end === -1) continue;
-    let rich: RichContentModel | null = null;
+    let raw: unknown = null;
     try {
-      rich = parseRichContent(JSON.parse(body.slice(i, end)));
+      raw = JSON.parse(body.slice(i, end));
     } catch {
-      rich = null;
+      continue;
     }
-    if (!rich) continue;
+    const rich = parseRichContent(raw);
+    if (!rich && !isUnknownEnvelope(raw)) continue;
     const [from, to] = withSurroundingFence(body, i, end);
     return { start: from, end: to, rich };
   }
@@ -667,6 +727,7 @@ export function richContentForMessage(message: {
 function blockToPlainText(block: RichBlock): string {
   switch (block.kind) {
     case "setupDone":
+    case "suggestions":
       return "";
     case "markdown":
       return block.text;
@@ -746,5 +807,13 @@ export function messageHasVisibleContent(message: {
   if (message.prompt?.trim() || message.details?.trim()) return true;
   const { text, rich } = richContentForMessage(message);
   if (text.trim()) return true;
-  return rich?.blocks.some((block) => block.kind !== "setupDone") ?? false;
+  return rich?.blocks.some((block) => !HOST_PLACED_BLOCK_KINDS.has(block.kind)) ?? false;
+}
+
+/** The suggested replies a message carries, or an empty list. */
+export function suggestionsForMessage(message: { body?: string | null; richContent?: unknown }): string[] {
+  const block = richContentForMessage(message).rich?.blocks.find(
+    (b): b is SuggestionsBlock => b.kind === "suggestions",
+  );
+  return block ? [...block.items] : [];
 }

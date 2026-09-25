@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The setup bot's messages can now end with suggested replies: a few buttons
+  under its newest message with the likely answers to its question, or the
+  next questions to ask. Clicking one sends it as your reply. They go away
+  once you reply.
 - The project board is back. A new Projects page (Cmd+6, or the board icon in
   the title bar) shows one company's projects at a time as a board or a list.
   Opening a project shows its tasks by status, with task details, files and

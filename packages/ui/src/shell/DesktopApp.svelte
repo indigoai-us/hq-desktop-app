@@ -69,7 +69,11 @@
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
-  import { messageMarksSetupDone } from "../chat/messaging/richMessageContent.js";
+  import {
+    messageHasVisibleContent,
+    messageMarksSetupDone,
+    suggestionsForMessage,
+  } from "../chat/messaging/richMessageContent.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -90,6 +94,7 @@
     findSetupBotContact,
     firstSignedInRuntime,
     setupFinaleDue,
+    setupSuggestionsDue,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_INTRO,
@@ -2260,6 +2265,17 @@
   });
   $effect(() => {
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
+  });
+  /**
+   * The setup bot's suggested replies for its newest message: recommended
+   * answers to what it just asked, or next questions. Setup bot only for now.
+   */
+  const setupSuggestedReplies = $derived.by((): string[] => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return [];
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupSuggestionsDue(timeline, bot.agentUid, messageHasVisibleContent, suggestionsForMessage);
   });
   /**
    * The finish card, once put away, stays away.
@@ -9109,6 +9125,7 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
+                  suggestedReplies={setupSuggestedReplies}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />

@@ -295,6 +295,34 @@ export function setupFinaleDue(
 }
 
 /**
+ * The suggested replies to show under the setup bot's conversation. Pure.
+ *
+ * Only the bot's newest message with something to read counts, and only until
+ * the person writes again: a reply (typed or clicked) puts them away, and a
+ * newer bot message without suggestions replaces them with nothing, so old
+ * buttons never linger under a conversation that moved on. Messages with
+ * nothing visible (a lone finish marker) are skipped when finding the newest.
+ *
+ * `messages` is the timeline, oldest first.
+ */
+export function setupSuggestionsDue(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  hasVisibleContent: (message: { body?: string | null; richContent?: unknown }) => boolean,
+  suggestionsFor: (message: { body?: string | null; richContent?: unknown }) => string[],
+): string[] {
+  const uid = botUid.trim();
+  if (!uid) return [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if ((message.fromPersonUid ?? "").trim() !== uid) return [];
+    if (!hasVisibleContent(message) && suggestionsFor(message).length === 0) continue;
+    return suggestionsFor(message);
+  }
+  return [];
+}
+
+/**
  * The other way through setup, for people who already work in a coding tool:
  * shown on #welcome next to Run Setup, big enough to notice.
  */
