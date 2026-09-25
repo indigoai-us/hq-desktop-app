@@ -60,6 +60,6 @@ describe('SETUP_WELCOME_MESSAGES', () => {
     const hrefs = SETUP_WELCOME_MESSAGES.flatMap((message) => message.links ?? []).map(
       (link) => link.href,
     );
-    expect(hrefs).toContain('https://docs.getindigo.ai');
+    expect(hrefs).toContain('https://docs.hq.computer');
   });
 });

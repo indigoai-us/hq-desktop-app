@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
+
 ## [0.10.329] — 2026-09-25
 
 - The project board is back. A new Projects page (Cmd+6, or the board icon in
@@ -17,11 +19,11 @@ The release moves it under the version it ships in.
   of the channel you have open.
 - A company's home channel now has a "Projects" tab next to Chat in the
   header. Clicking it swaps the message feed for that company's project board
-  right there in the channel — the header (hero, title, gear, bell, member
+  right there in the channel - the header (hero, title, gear, bell, member
   pill, and the Chat | Projects pills) stays put and nothing shifts size.
   Chat brings the feed and composer back.
 - Fixed the Library header's Back button still overlapping the green
-  traffic-light button on macOS — the shared gutter that keeps overlay
+  traffic-light button on macOS - the shared gutter that keeps overlay
   headers (Library, Settings, Meetings, Notifications, Shared Files, DM
   requests) clear of the native window buttons was only 6px wider than the
   button cluster itself, thin enough to overlap on some renders. Widened it
