@@ -214,6 +214,11 @@
     /** Wake events (web: bridged from the MeshClient). */
     wakes?: ChatWakeBus | null;
     companies?: Workspace[] | null;
+    /** A company's home channel was just created/adopted by `ensureCompanyHomeChannel`
+     *  (roster row had no `homeChannelId` yet). Lets the host patch its own
+     *  roster copy and refresh from the server, so chrome elsewhere (and a
+     *  restart) stays correct without waiting on this sidebar's own local cache. */
+    onhomechannelresolved?: (companyUid: string, homeChannelId: string) => void;
     /** Verified signed-in principal — tags the matching person row "you". */
     self?: SelfIdentity | null;
     /** Explicit admin/owner override; else derived from membership roles. */
@@ -379,6 +384,7 @@
     api,
     wakes = null,
     companies = null,
+    onhomechannelresolved,
     self = null,
     isAdmin = null,
     accountLabel = null,
@@ -519,9 +525,11 @@
   /** companyUid → true while an `ensureCompanyHomeChannel` call for that
    * company is in flight (subtle loading state on the row). */
   let companyHomeEnsuring = $state<Record<string, boolean>>({});
-  /** companyUid → last `ensureCompanyHomeChannel` failure reason, shown as
-   * the row's tooltip so a click never silently no-ops. */
-  let companyHomeEnsureError = $state<Record<string, string>>({});
+  /** companyUid → true once `ensureCompanyHomeChannel` has exhausted its
+   * retries for that company. Never carries the raw error text — Corey's
+   * product rule is no raw red errors, always a heal path. The row stays
+   * clickable; a click re-runs the ensure attempt from scratch. */
+  let companyHomeFailed = $state<Record<string, boolean>>({});
   /** User unpinned #setup — sticky until they pin it again. */
   let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
   /** Rows with an unsent composer draft (Slack-style pencil marker). */
@@ -1059,6 +1067,19 @@
     }
   }
 
+  /** Up to 3 tries total (the initial attempt plus 2 retries) before the row
+   * falls back to the quiet "tap to retry" heal state. */
+  const ENSURE_HOME_CHANNEL_MAX_ATTEMPTS = 3;
+  /** Backoff between attempts, indexed by the attempt that just failed
+   * (attempt 1 failing waits `[0]` before attempt 2, etc). An AUTH_REQUIRED
+   * failure reuses the same schedule — the wait gives the background token
+   * refresh a chance to land before the retry. */
+  const ENSURE_HOME_CHANNEL_RETRY_DELAYS_MS = [400, 1200];
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   /**
    * Companies section row click. The company's home channel id normally
    * comes straight from the roster (`Workspace.homeChannelId`) — no
@@ -1066,8 +1087,14 @@
    * missing (a new/legacy company still provisioning server-side), the click
    * calls the idempotent `ensureCompanyHomeChannel` endpoint, which creates
    * the channel on the company's first call or adopts the existing one on
-   * any later call, then opens it. One attempt per click — no background
-   * retry loop; a failure surfaces on the row (tooltip) and in the log.
+   * any later call, then opens it.
+   *
+   * Corey's product rule: never show a raw red error, always have a heal
+   * path. So a failure here is never surfaced verbatim — it retries
+   * automatically (with backoff, up to `ENSURE_HOME_CHANNEL_MAX_ATTEMPTS`
+   * tries), and if it still fails the row falls back to a quiet "tap to
+   * retry" state that re-runs this same function on the next click. The raw
+   * reason only ever reaches the support log via `companiesLog`.
    */
   async function openCompanyHome(company: {
     companyUid: string;
@@ -1084,21 +1111,32 @@
     }
     if (companyHomeEnsuring[company.companyUid]) return;
     companyHomeEnsuring = { ...companyHomeEnsuring, [company.companyUid]: true };
-    const { [company.companyUid]: _drop, ...clearedErrors } = companyHomeEnsureError;
-    companyHomeEnsureError = clearedErrors;
-    try {
-      const { homeChannelId } = await api.ensureCompanyHomeChannel(company.companyUid);
-      resolvedHomeChannelIds = { ...resolvedHomeChannelIds, [company.companyUid]: homeChannelId };
-      companiesLog(`open company=${label} channel=${homeChannelId}`);
-      openHomeChannelId(homeChannelId, company);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      companiesLog(`open-failed company=${label} reason=${reason}`);
-      companyHomeEnsureError = { ...companyHomeEnsureError, [company.companyUid]: reason };
-    } finally {
-      const { [company.companyUid]: _clear, ...rest } = companyHomeEnsuring;
-      companyHomeEnsuring = rest;
+    const { [company.companyUid]: _drop, ...clearedFailed } = companyHomeFailed;
+    companyHomeFailed = clearedFailed;
+
+    for (let attempt = 1; attempt <= ENSURE_HOME_CHANNEL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const { homeChannelId } = await api.ensureCompanyHomeChannel(company.companyUid);
+        resolvedHomeChannelIds = { ...resolvedHomeChannelIds, [company.companyUid]: homeChannelId };
+        onhomechannelresolved?.(company.companyUid, homeChannelId);
+        companiesLog(`open company=${label} channel=${homeChannelId}`);
+        openHomeChannelId(homeChannelId, company);
+        const { [company.companyUid]: _clear, ...rest } = companyHomeEnsuring;
+        companyHomeEnsuring = rest;
+        return;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        companiesLog(
+          `open-failed company=${label} attempt=${attempt}/${ENSURE_HOME_CHANNEL_MAX_ATTEMPTS} reason=${reason}`,
+        );
+        if (attempt < ENSURE_HOME_CHANNEL_MAX_ATTEMPTS) {
+          await delay(ENSURE_HOME_CHANNEL_RETRY_DELAYS_MS[attempt - 1] ?? 1200);
+        }
+      }
     }
+    companyHomeFailed = { ...companyHomeFailed, [company.companyUid]: true };
+    const { [company.companyUid]: _clear, ...rest } = companyHomeEnsuring;
+    companyHomeEnsuring = rest;
   }
 
   let lastEmittedRows: ConversationRow[] | null = null;
@@ -3073,16 +3111,16 @@
               </button>
             {:else}
               {@const ensuring = companyHomeEnsuring[company.companyUid] === true}
-              {@const ensureError = companyHomeEnsureError[company.companyUid]}
+              {@const failed = companyHomeFailed[company.companyUid] === true}
               <button
                 type="button"
                 class="chat-row chat-row-disabled chat-companies-row"
                 data-testid={`chat-companies-row-disabled-${company.companyUid}`}
                 aria-busy={ensuring}
                 title={ensuring
-                  ? "Connecting…"
-                  : ensureError
-                    ? `Couldn't open this company's home channel — ${ensureError}`
+                  ? "Setting up…"
+                  : failed
+                    ? "Tap to retry"
                     : "No company channel yet"}
                 onclick={() => openCompanyHome(company)}
               >
@@ -3093,18 +3131,23 @@
                 {/if}
                 <span class="chat-row-title">{company.label}</span>
                 {#if ensuring}
-                  <span class="chat-companies-row-status" aria-hidden="true">…</span>
+                  <span
+                    class="chat-companies-row-status"
+                    data-testid={`chat-companies-row-status-${company.companyUid}`}
+                    aria-hidden="true"
+                  >
+                    Setting up…
+                  </span>
+                {:else if failed}
+                  <span
+                    class="chat-companies-row-status chat-companies-row-status-muted"
+                    data-testid={`chat-companies-row-status-${company.companyUid}`}
+                    aria-hidden="true"
+                  >
+                    Tap to retry
+                  </span>
                 {/if}
               </button>
-              {#if ensureError && !ensuring}
-                <p
-                  class="chat-companies-row-inline-error"
-                  data-testid={`chat-companies-row-error-${company.companyUid}`}
-                  role="alert"
-                >
-                  Couldn't open — {ensureError}
-                </p>
-              {/if}
             {/if}
           {/each}
         {/if}
@@ -4341,15 +4384,13 @@
     opacity: 0.8;
   }
 
-  /* Visible failure reason for a failed ensure-home-channel click — a
-     tooltip alone is invisible until the user hovers, so a failed 403 (or
-     any other ensure error) otherwise looks like nothing happened. */
-  .chat-companies-row-inline-error {
-    margin: 0 0 4px;
-    padding: 0 8px 0 28px;
-    font-size: 11px;
-    line-height: 1.3;
-    color: var(--ice-danger, #d33);
+  /* Quiet heal-path hint after ensure-home-channel exhausts its retries.
+     Never red, never the raw server/error text — Corey's product rule is no
+     raw red errors and always a heal path. The row stays clickable; a click
+     re-runs the ensure attempt. */
+  .chat-companies-row-status-muted {
+    color: var(--t3, inherit);
+    opacity: 0.65;
   }
 
   /* Day-group header: name left, date right-aligned (D-13). */

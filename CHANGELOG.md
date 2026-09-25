@@ -8,6 +8,22 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed layout shifts when opening a company's home channel — the wallpaper
+  hero, the member-count and mute controls, and the message skeleton now hold
+  their final size from the first frame, so nothing jumps as the company's
+  real name, member count, and messages arrive.
+- Fixed a bug where clicking a company in the sidebar's "Companies" section
+  before it had a home channel yet showed a raw server error
+  ("home-channel HTTP 404 Not Found: ...") under the row — the request was
+  missing `/v1` in its URL. Clicking now quietly retries in the background
+  (with a brief "Setting up…" state), and if it still can't connect, the row
+  shows a plain "Tap to retry" hint instead of any error text — clicking it
+  again always retries.
+- Fixed the company channel header's settings gear rendering with a heavy,
+  doubled outline (a malformed SVG path). Switched the mute control from a
+  speaker icon to a bell (bell-slash when muted), to match the rest of the
+  header icon set.
+
 ## [0.10.327] — 2026-09-25
 
 - Simplified how the desktop app finds a company's main channel: it now opens

@@ -20,9 +20,14 @@
  *  - a company with no `homeChannelId` calls `ensureCompanyHomeChannel` on
  *    click, shows a subtle loading state while in flight, then opens the
  *    returned channel;
- *  - a failed `ensureCompanyHomeChannel` call surfaces a tooltip reason and
- *    logs `[companies] open-failed company=<slug> reason=<...>` — never a
- *    silent no-op, and never a retry loop;
+ *  - a failed `ensureCompanyHomeChannel` call retries automatically (with
+ *    backoff, up to 3 attempts total) and logs each attempt via
+ *    `[companies] open-failed company=<slug> attempt=<n>/3 reason=<...>` —
+ *    never a silent no-op;
+ *  - once retries are exhausted, Corey's product rule (never a raw red
+ *    error, always a heal path) means the row shows a quiet "Tap to retry"
+ *    hint — never the raw error text — and stays clickable so a click
+ *    re-runs the ensure attempt from scratch;
  *  - with no `ensureCompanyHomeChannel` seam at all, the row stays disabled
  *    and a click logs `[companies] open-disabled …`.
  */
@@ -231,15 +236,18 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     logSpy.mockClear();
 
     disabledRow!.click();
-    await vi.waitFor(() => {
-      expect(ensureSpy).toHaveBeenCalledWith("cmp_provisioning");
-      expect(logSpy).toHaveBeenCalledWith(
-        "companies",
-        expect.stringMatching(
-          /^open-failed company=provisioning reason=server unreachable$/,
-        ),
-      );
-    });
+    await vi.waitFor(
+      () => {
+        expect(ensureSpy).toHaveBeenCalledWith("cmp_provisioning");
+        expect(logSpy).toHaveBeenCalledWith(
+          "companies",
+          expect.stringMatching(
+            /^open-failed company=provisioning attempt=1\/3 reason=server unreachable$/,
+          ),
+        );
+      },
+      { timeout: 3000 },
+    );
     expect(onselect).not.toHaveBeenCalled();
   });
 
@@ -291,7 +299,7 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     );
   });
 
-  it("a failed ensureCompanyHomeChannel call surfaces a tooltip reason and logs open-failed, without retrying", async () => {
+  it("a failed ensureCompanyHomeChannel call retries with backoff, then shows a quiet heal hint — never the raw error text", async () => {
     const logSpy = vi.fn(async () => undefined);
     const ensureCompanyHomeChannel = vi.fn(async () => {
       throw new Error("upstream unavailable");
@@ -316,22 +324,80 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     logSpy.mockClear();
 
     disabledRow!.click();
-    await vi.waitFor(() => {
+
+    // Retries 3 times total, with backoff, before giving up.
+    await vi.waitFor(
+      () => expect(ensureCompanyHomeChannel).toHaveBeenCalledTimes(3),
+      { timeout: 3000 },
+    );
+    for (const attempt of [1, 2, 3]) {
       expect(logSpy).toHaveBeenCalledWith(
         "companies",
-        "open-failed company=provisioning reason=upstream unavailable",
+        `open-failed company=provisioning attempt=${attempt}/3 reason=upstream unavailable`,
       );
-    });
-    expect(disabledRow!.title).toMatch(/upstream unavailable/);
+    }
 
-    // A tooltip alone is invisible without a hover — the failure must also
-    // show inline on the row so it isn't a silent no-op.
-    const inlineError = host.querySelector(
-      '[data-testid="chat-companies-row-error-cmp_provisioning"]',
+    // Corey's product rule: never a raw red error, always a heal path. The
+    // row's tooltip and inline hint are a quiet, neutral "tap to retry" —
+    // never the raw server/error text.
+    await vi.waitFor(() => expect(disabledRow!.title).toBe("Tap to retry"));
+    expect(disabledRow!.title).not.toMatch(/upstream unavailable/);
+    expect(host.textContent).not.toMatch(/upstream unavailable/);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    const status = host.querySelector(
+      '[data-testid="chat-companies-row-status-cmp_provisioning"]',
     );
-    expect(inlineError?.textContent).toMatch(/Couldn't open — upstream unavailable/);
+    expect(status?.textContent?.trim()).toBe("Tap to retry");
 
-    // One attempt per click, no background retry loop.
-    expect(ensureCompanyHomeChannel).toHaveBeenCalledTimes(1);
+    // The row stays clickable — a click is the heal path, re-running ensure.
+    logSpy.mockClear();
+    ensureCompanyHomeChannel.mockClear();
+    disabledRow!.click();
+    await vi.waitFor(() => expect(ensureCompanyHomeChannel).toHaveBeenCalledWith("cmp_provisioning"));
+  });
+
+  it("retries an AUTH_REQUIRED failure and succeeds once the token has refreshed", async () => {
+    const openSpy = vi.fn();
+    window.addEventListener("hq:open-channel", (e) =>
+      openSpy((e as CustomEvent).detail),
+    );
+    let callCount = 0;
+    const ensureCompanyHomeChannel = vi.fn(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("AUTH_REQUIRED: home-channel (HTTP 401 Unauthorized)");
+      }
+      return { homeChannelId: "chn_home_provisioning" };
+    });
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({ ensureCompanyHomeChannel }),
+        seedDirectory: [homeChannelRow],
+        companies: [INDIGO, PROVISIONING],
+        scopeUid: "all",
+      },
+    });
+
+    let disabledRow: HTMLButtonElement | null = null;
+    await vi.waitFor(() => {
+      disabledRow = host.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-companies-row-disabled-cmp_provisioning"]',
+      );
+      expect(disabledRow).toBeTruthy();
+    });
+
+    disabledRow!.click();
+
+    await vi.waitFor(
+      () =>
+        expect(openSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ channelId: "chn_home_provisioning" }),
+        ),
+      { timeout: 3000 },
+    );
+    expect(ensureCompanyHomeChannel).toHaveBeenCalledTimes(2);
+    // Never surfaced as a raw error at any point during the retry.
+    expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 });
