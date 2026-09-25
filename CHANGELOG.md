@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
+
 ## [0.10.328] — 2026-09-25
 
 - Fixed the "Setting up…" spinner some Companies rows got stuck on: the
