@@ -416,6 +416,48 @@ describe("findCompanyHomeRow + on-demand resolution scenario coverage", () => {
     ];
     expect(findCompanyHomeRow(rows, "cmp_acme")?.channelId).toBe("acme");
   });
+
+  /**
+   * Regression coverage for the live Indigo/Liverecover repro: a company's
+   * home channel must still resolve when `isCompanyHome` never landed on the
+   * row true — either because the server sent `false` on every channel, or
+   * omitted the field entirely (e.g. the row was normalized before the local
+   * company list, and therefore its slug, had loaded). `findCompanyHomeRow`
+   * itself is the second-chance fallback here — it does not depend on
+   * `normalizeChannel` having had the slug on hand earlier.
+   */
+  it("slug fallback: resolves via '#slug' rawName match when isCompanyHome is false on every channel of the company", () => {
+    const rows = [
+      normalizeChannel(channel({ channelId: "chn_home", name: "#acme", isCompanyHome: false })),
+      normalizeChannel(channel({ channelId: "chn_team", name: "marketing", isCompanyHome: false })),
+    ];
+    expect(findCompanyHomeRow(rows, "cmp_acme")).toBeNull(); // no slug: cannot fall back
+    expect(findCompanyHomeRow(rows, "cmp_acme", "acme")?.channelId).toBe("chn_home");
+  });
+
+  it("slug fallback: resolves via '#slug' rawName match when isCompanyHome is missing on every channel of the company", () => {
+    const rows = [
+      normalizeChannel(channel({ channelId: "chn_home", name: "#acme" })),
+      normalizeChannel(channel({ channelId: "chn_team", name: "marketing" })),
+    ];
+    expect(findCompanyHomeRow(rows, "cmp_acme", "acme")?.channelId).toBe("chn_home");
+  });
+
+  it("an explicit isCompanyHome === true row always wins over a conflicting slug match", () => {
+    const rows = [
+      // Named like the slug but explicitly NOT the home channel.
+      normalizeChannel(channel({ channelId: "chn_named_like_slug", name: "#acme", isCompanyHome: false })),
+      normalizeChannel(channel({ channelId: "chn_real_home", name: "renamed-home", isCompanyHome: true })),
+    ];
+    expect(findCompanyHomeRow(rows, "cmp_acme", "acme")?.channelId).toBe("chn_real_home");
+  });
+
+  it("slug fallback ignores rows from other companies", () => {
+    const rows = [
+      normalizeChannel(channel({ channelId: "chn_other", companyUid: "cmp_other", name: "#acme" })),
+    ];
+    expect(findCompanyHomeRow(rows, "cmp_acme", "acme")).toBeNull();
+  });
 });
 
 describe("loadPinnedCompanies / savePinnedCompanies", () => {

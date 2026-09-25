@@ -588,6 +588,12 @@ export interface MessagingApi {
    */
   setChannelNotifyLevel?(channelId: string, level: NotifyLevel): AdapterPromise<Json>;
   listChannels(opts?: ListChannelsOptions): AdapterPromise<ChannelSummary[]>;
+  /**
+   * Appends one line to the native support log (Tauri `frontend_log`
+   * command). Optional: adapters without a native log file (e.g. plain web)
+   * omit it.
+   */
+  logDiagnostic?(tag: string, message: string): AdapterPromise<void>;
   fetchChannelDirectory(cursor?: string): AdapterPromise<Json>;
   createChannel(payload: Json): AdapterPromise<Json>;
   /** POST /v1/notify/channels/{id}/members — add a person to a channel. */

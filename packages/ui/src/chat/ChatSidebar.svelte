@@ -981,6 +981,7 @@
           companyUid: (c.cloudUid as string).trim(),
           label: c.displayName || c.slug || c.cloudUid!,
           iconUrl: companyIcons.get((c.cloudUid as string).trim()) ?? null,
+          slug: c.slug ?? null,
         })),
       allRows,
       pinnedCompanies,
@@ -1005,7 +1006,13 @@
     const parts = Object.entries(fields)
       .map(([k, v]) => `${k}=${v}`)
       .join(" ");
-    console.warn(`[companies] ${event}${parts ? ` ${parts}` : ""}`);
+    const message = `[companies] ${event}${parts ? ` ${parts}` : ""}`;
+    console.warn(message);
+    // console.warn alone is invisible in release builds (devtools disabled) —
+    // mirror to the native support log so a failed/slow open shows up in a
+    // user's `~/.hq/logs/hq-sync.log` bug report. Best-effort: never let a
+    // logging failure mask the original event.
+    void api.logDiagnostic?.("companies", message).catch(() => {});
   }
 
   /**
@@ -1022,7 +1029,9 @@
   async function resolveCompanyHomeOnce(
     companyUid: string,
     label: string,
+    slug?: string | null,
   ): Promise<ConversationRow | null> {
+    const startedAt = Date.now();
     try {
       const resp = await api.listChannels({
         companyUid,
@@ -1032,7 +1041,7 @@
       if (resolved.length > 0) {
         channels = mergeResolvedCompanyChannels(channels, resolved);
       }
-      const row = findCompanyHomeRow(allRows, companyUid);
+      const row = findCompanyHomeRow(allRows, companyUid, slug);
       if (!row) {
         companiesLog("open-home-failed", {
           company: label,
@@ -1042,9 +1051,15 @@
               : "listChannels returned channels but none is the company home",
         });
         companyHomeErrors = { ...companyHomeErrors, [companyUid]: "no-home-channel" };
-      } else if (companyHomeErrors[companyUid]) {
-        const { [companyUid]: _drop, ...rest } = companyHomeErrors;
-        companyHomeErrors = rest;
+      } else {
+        companiesLog("open-home ok", {
+          company: label,
+          ms: Date.now() - startedAt,
+        });
+        if (companyHomeErrors[companyUid]) {
+          const { [companyUid]: _drop, ...rest } = companyHomeErrors;
+          companyHomeErrors = rest;
+        }
       }
       return row;
     } catch (err) {
@@ -1063,13 +1078,13 @@
   $effect(() => {
     const missing = companySectionRows
       .filter((c) => !c.homeRow)
-      .map((c) => ({ companyUid: c.companyUid, label: c.label }))
+      .map((c) => ({ companyUid: c.companyUid, label: c.label, slug: c.slug }))
       .filter((c) => !attemptedCompanyHomeResolutions.has(c.companyUid));
     if (missing.length === 0) return;
     for (const c of missing) attemptedCompanyHomeResolutions.add(c.companyUid);
     void (async () => {
       for (const c of missing) {
-        await resolveCompanyHomeOnce(c.companyUid, c.label);
+        await resolveCompanyHomeOnce(c.companyUid, c.label, c.slug);
       }
     })();
   });
@@ -1084,11 +1099,12 @@
   async function retryCompanyHome(company: {
     companyUid: string;
     label: string;
+    slug?: string | null;
   }): Promise<void> {
     if (companyHomeRetrying[company.companyUid]) return;
     companyHomeRetrying = { ...companyHomeRetrying, [company.companyUid]: true };
     try {
-      const row = await resolveCompanyHomeOnce(company.companyUid, company.label);
+      const row = await resolveCompanyHomeOnce(company.companyUid, company.label, company.slug);
       if (row) void openRow(row);
     } finally {
       const { [company.companyUid]: _drop, ...rest } = companyHomeRetrying;
@@ -3058,7 +3074,10 @@
                 class="chat-row chat-companies-row"
                 class:active={activeId === row.id}
                 data-testid={`chat-companies-row-${company.companyUid}`}
-                onclick={() => openRow(row)}
+                onclick={() => {
+                  companiesLog("open-home ok", { company: company.label, ms: 0 });
+                  openRow(row);
+                }}
               >
                 {#if company.iconUrl}
                   <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
@@ -3085,6 +3104,7 @@
                   retryCompanyHome({
                     companyUid: company.companyUid,
                     label: company.label,
+                    slug: company.slug,
                   })}
               >
                 {#if company.iconUrl}

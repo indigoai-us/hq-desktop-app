@@ -187,6 +187,97 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     );
   });
 
+  /**
+   * Live-repro regression: the server can send `isCompanyHome: false` (not
+   * just absent) on the resolved channel — this is what Indigo/Liverecover
+   * actually returned. The "#slug" fallback in `findCompanyHomeRow` must
+   * still resolve it using the company's slug, independent of that flag.
+   */
+  it("resolves via the '#slug' fallback even when the server tags every channel isCompanyHome: false", async () => {
+    const onselect = vi.fn();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          listChannels: async () => ({
+            channels: [
+              {
+                channelId: "chn_home_stalled",
+                name: "#stalled",
+                scope: "company",
+                companyUid: "cmp_stalled",
+                isCompanyHome: false,
+              },
+            ],
+          }),
+        }),
+        seedDirectory: [homeChannelRow],
+        companies: [INDIGO, STALLED],
+        scopeUid: "all",
+        onselect,
+      },
+    });
+
+    let disabledRow: HTMLButtonElement | null = null;
+    await vi.waitFor(() => {
+      disabledRow = host.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-companies-row-disabled-cmp_stalled"]',
+      );
+      expect(disabledRow).toBeTruthy();
+    });
+    onselect.mockClear();
+
+    disabledRow!.click();
+    await vi.waitFor(() =>
+      expect(
+        onselect.mock.calls.some(([row]) => row.channelId === "chn_home_stalled"),
+      ).toBe(true),
+    );
+  });
+
+  /**
+   * A successful open must also reach the native support log, not just
+   * `console.warn` (invisible in release builds — devtools are disabled).
+   */
+  it("mirrors a successful resolve to the native log bridge (api.logDiagnostic)", async () => {
+    const onselect = vi.fn();
+    const logDiagnostic = vi.fn(async (_tag: string, _message: string) => {});
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          logDiagnostic,
+          listChannels: async () => ({
+            channels: [
+              {
+                channelId: "chn_home_stalled",
+                name: "stalled",
+                scope: "company",
+                companyUid: "cmp_stalled",
+                isCompanyHome: true,
+              },
+            ],
+          }),
+        }),
+        seedDirectory: [homeChannelRow],
+        companies: [INDIGO, STALLED],
+        scopeUid: "all",
+        onselect,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        logDiagnostic.mock.calls.some(
+          ([tag, message]) =>
+            tag === "companies" &&
+            typeof message === "string" &&
+            message.startsWith("[companies] open-home ok"),
+        ),
+      ).toBe(true);
+    });
+  });
+
   it("logs a tagged, non-silent failure when a click's retry still can't resolve the home channel", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const onselect = vi.fn();

@@ -61,6 +61,14 @@ export interface ChatSidebarApi {
     companyUid: string;
     includeCompanyProjects: boolean;
   }): Promise<ChannelsResponse | null>;
+  /**
+   * Appends one line to the Rust-side support log (`~/.hq/logs/hq-sync.log`),
+   * the desktop `frontend_log` command. `console.warn` alone is invisible in
+   * release builds (devtools disabled), so any diagnostic that must survive a
+   * user bug report goes through here too. Optional: hosts without a native
+   * log file (e.g. plain web) omit it and callers degrade to console-only.
+   */
+  logDiagnostic?(tag: string, message: string): Promise<void>;
   /** the desktop `mark_dm_thread_read` command. */
   markDmThreadRead(withPersonUid: string): Promise<void>;
   /** the desktop `mark_channel_read` command. */

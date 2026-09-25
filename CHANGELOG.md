@@ -8,6 +8,18 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed clicking Indigo or Liverecover (and any other company whose home
+  channel the server hadn't tagged yet) in the sidebar's "Companies" section
+  showing "…" and then "Retry" forever. The client's "#slug" fallback for
+  finding a company's home channel only ran at the moment a channel row was
+  first built, using whatever company list had loaded by then — if the local
+  company list (and its slug) hadn't loaded yet, or the server sent
+  `isCompanyHome: false` on every channel, the fallback never got a second
+  chance to run. The lookup now re-checks the slug fallback directly whenever
+  a company's home channel is resolved, independent of when the row was
+  built. A failed or slow open, and now a successful one too, writes a
+  `[companies]` line to the app's own log file so it shows up in a bug report
+  even with devtools disabled.
 - The desktop app now asks for (and transparently decodes) compressed
   responses from the server, so the same data moves over the wire faster —
   most noticeable on the channel list for people in large companies.

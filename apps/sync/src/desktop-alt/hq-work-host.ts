@@ -504,6 +504,13 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
           },
         }
       : {}),
+    ...(adapter.messaging.logDiagnostic
+      ? {
+          logDiagnostic: async (tag: string, message: string) => {
+            await call<void>(adapter.messaging.logDiagnostic!(tag, message));
+          },
+        }
+      : {}),
     listChannels: async (args) => {
       const channels = await call<unknown>(adapter.messaging.listChannels(args));
       if (Array.isArray(channels)) {

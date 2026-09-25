@@ -79,6 +79,14 @@ export interface ConversationRow {
    * `isCompanyHomeChannel()` in channels.ts for the resolution rule.
    */
   isCompanyHome?: boolean;
+  /**
+   * Raw (un-humanized) wire `name` of the underlying channel, e.g. "#indigo".
+   * Only carried for channel/group rows. Lets `findCompanyHomeRow` re-check
+   * the "#slug" fallback directly against a row even when the row's
+   * `isCompanyHome` was computed without a company slug on hand (e.g. the
+   * local company list hadn't loaded yet when the row was normalized).
+   */
+  rawName?: string;
   /** Underlying person uid when kind is dm. */
   personUid?: string;
   email?: string | null;
@@ -663,6 +671,7 @@ export function normalizeChannel(
     kind: isGroup ? "group" : "channel",
     ...(isGroup ? {} : { channelScope: channel.scope }),
     ...(isGroup ? {} : { isCompanyHome }),
+    ...(isGroup ? {} : { rawName: channel.name }),
     title: channelDisplayName(channel, {
       projectTitles: options.projectTitles,
     }),
@@ -1638,19 +1647,39 @@ export function savePinnedCompanies(
  * own (non-browse-only) channel rows. Used by both the sidebar's "Companies"
  * section and the shell's slug-based channel lookup (`companyChannelRowForSlug`)
  * so there is exactly one place that decides "which row is the company home."
+ *
+ * Primarily trusts each row's pre-computed `isCompanyHome` (from
+ * `isCompanyHomeChannel()` at normalize time). But that computation depends on
+ * a company slug being available THEN — if the local company list hadn't
+ * loaded yet, or the slug map missed an entry, every row for that company can
+ * come back `isCompanyHome: false`/absent even though a "#slug" channel is
+ * right there. `companySlug`, when passed, is a second-chance fallback: among
+ * this company's `channelScope === "company"` rows, match `rawName` against
+ * "#slug" (case/whitespace/leading-# insensitive) directly, independent of
+ * whatever the row's `isCompanyHome` flag says. An explicit
+ * `isCompanyHome === true` row always wins over the slug fallback when both
+ * exist.
  */
 export function findCompanyHomeRow(
   rows: ReadonlyArray<ConversationRow>,
   companyUid: string,
+  companySlug?: string | null,
 ): ConversationRow | null {
   const needle = companyUid.trim();
   if (!needle) return null;
+  const candidates = rows.filter((row) => {
+    if (row.kind !== "channel" || row.browseOnly) return false;
+    if ((row.channelScope ?? "") !== "company") return false;
+    return (row.companyUid ?? "").trim() === needle;
+  });
+  const flagged = candidates.find((row) => row.isCompanyHome === true);
+  if (flagged) return flagged;
+  const slug = companySlug?.trim().replace(/^#+/, "").trim().toLowerCase();
+  if (!slug) return null;
   return (
-    rows.find((row) => {
-      if (row.kind !== "channel" || row.browseOnly) return false;
-      if ((row.channelScope ?? "") !== "company") return false;
-      if (!row.isCompanyHome) return false;
-      return (row.companyUid ?? "").trim() === needle;
+    candidates.find((row) => {
+      const name = (row.rawName ?? "").trim().replace(/^#+/, "").trim().toLowerCase();
+      return !!name && name === slug;
     }) ?? null
   );
 }
@@ -1660,6 +1689,10 @@ export interface CompanySectionRow {
   companyUid: string;
   label: string;
   iconUrl?: string | null;
+  /** Company slug, threaded through so a later on-demand resolve/retry can
+   * still use the "#slug" fallback in `findCompanyHomeRow` even though this
+   * row itself was built once, up front. */
+  slug?: string | null;
   /** The company's home-channel row, when one exists yet. Absent when the
    * company has no home channel (new/legacy company still provisioning) —
    * the section shows it disabled with a reason rather than hiding it, so a
@@ -1788,6 +1821,7 @@ export function resolveCompanySectionRows(
     companyUid: string;
     label: string;
     iconUrl?: string | null;
+    slug?: string | null;
   }>,
   rows: ReadonlyArray<ConversationRow>,
   pinnedCompanyUids: readonly string[] | null,
@@ -1805,7 +1839,8 @@ export function resolveCompanySectionRows(
     companyUid: c.companyUid,
     label: c.label,
     iconUrl: c.iconUrl ?? null,
-    homeRow: findCompanyHomeRow(rows, c.companyUid),
+    slug: c.slug ?? null,
+    homeRow: findCompanyHomeRow(rows, c.companyUid, c.slug),
   }));
 }
 

@@ -448,6 +448,7 @@ export function createSyncPlatformAdapter(
     },
 
     messaging: {
+      logDiagnostic: (tag, message) => call('frontend_log', { tag, message }),
       listChannels: async (opts) => {
         const result = await call<unknown>('list_channels', {
           companyUid: opts?.companyUid,
