@@ -9316,7 +9316,7 @@
   :global(html[data-ui-size="compact"]:not([data-platform="windows"]))
     .desktop-shell.has-window-controls {
     --titlebar-height: calc(48px / 0.9);
-    --titlebar-leading-inset: calc(78px / 0.9);
+    --titlebar-leading-inset: calc(96px / 0.9);
   }
 
   :global(html[data-ui-size="large"]) .desktop-shell {
@@ -9326,7 +9326,7 @@
   :global(html[data-ui-size="large"]:not([data-platform="windows"]))
     .desktop-shell.has-window-controls {
     --titlebar-height: calc(48px / 1.12);
-    --titlebar-leading-inset: calc(78px / 1.12);
+    --titlebar-leading-inset: calc(96px / 1.12);
   }
 
   .desktop-body {

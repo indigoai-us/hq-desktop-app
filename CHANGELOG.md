@@ -8,6 +8,14 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixed the Library header's Back button still overlapping the green
+  traffic-light button on macOS — the shared gutter that keeps overlay
+  headers (Library, Settings, Meetings, Notifications, Shared Files, DM
+  requests) clear of the native window buttons was only 6px wider than the
+  button cluster itself, thin enough to overlap on some renders. Widened it
+  to a safer margin everywhere it's used, and added a test covering the DM
+  requests panel, which had the shared inset already but wasn't checked here.
+
 ## [0.10.328] — 2026-09-25
 
 - Fixed the "Setting up…" spinner some Companies rows got stuck on: the

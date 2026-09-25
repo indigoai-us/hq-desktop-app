@@ -75,7 +75,7 @@ describe('desktop-alt overlay traffic lights share the titlebar centre line', ()
     expect(gutter).toBe(78);
     expect(rustF64Const('TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX')).toBe(gutter);
     expect(tokens).toMatch(
-      /\.has-window-controls\s*\{[\s\S]*--titlebar-leading-inset:\s*78px/,
+      /\.has-window-controls\s*\{[\s\S]*--titlebar-leading-inset:\s*96px/,
     );
     expect(titleBar).toContain('--titlebar-leading-inset');
     expect(titleBar).toContain('has-window-controls');
