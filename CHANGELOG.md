@@ -25,6 +25,8 @@ The release moves it under the version it ships in.
   button cluster itself, thin enough to overlap on some renders. Widened it
   to a safer margin everywhere it's used, and added a test covering the DM
   requests panel, which had the shared inset already but wasn't checked here.
+- Failed Windows Core updates now include a bounded rsync error class and
+  translated path shape in diagnostics, without adding local paths.
 
 ## [0.10.328] — 2026-09-25
 
