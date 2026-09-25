@@ -657,6 +657,7 @@ fn main() {
             commands::vault_s3::vault_s3_put,
             commands::vault_s3::vault_s3_get,
             commands::auth::has_stored_token,
+            commands::auth::get_stored_token_presence,
             commands::auth::begin_reauth,
             commands::auth::refresh_tokens,
             commands::auth::sign_out,

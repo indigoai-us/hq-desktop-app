@@ -923,14 +923,26 @@ async fn run_replace_from_staging_inner(
                     ),
                 );
                 if result.refresh_pending {
+                    let detail = result
+                        .persistence_diagnostic
+                        .as_ref()
+                        .map(|diagnostic| {
+                            format!(
+                                "{} {diagnostic}",
+                                "staging update applied but baseline persistence failed:"
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            format!(
+                                "staging update applied; baseline refresh pending for {repo}@{}",
+                                result.commit
+                            )
+                        });
                     crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
                         update_source,
                         crate::commands::hq_core_state::Channel::Staging,
                         "hq-core-staging",
-                        &format!(
-                            "staging update applied; baseline refresh pending for {repo}@{}",
-                            result.commit
-                        ),
+                        &detail,
                     );
                 }
                 (result.baseline_persisted, result.refresh_pending)
