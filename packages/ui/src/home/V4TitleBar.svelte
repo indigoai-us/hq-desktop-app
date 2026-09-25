@@ -67,6 +67,8 @@
     onaccount?: () => void;
     onOpenSettings?: (tab?: SettingsTab) => void;
     onopenMeetings?: () => void;
+    /** Opens the Projects page. Omitted on hosts without local files. */
+    onopenProjects?: () => void;
     onopenNotifications?: () => void;
     primaryAction?: { label: string; onselect: () => void };
     /**
@@ -155,6 +157,7 @@
     sidebarCollapsed = false,
     ontogglesidebar,
     onopenMeetings,
+    onopenProjects,
     onopenNotifications,
     primaryAction,
     brand = null,
@@ -807,6 +810,30 @@
         </div>
       {/if}
     </div>
+    {#if onopenProjects}
+      <Tooltip label="Projects">
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-icon-btn"
+            data-testid="titlebar-projects"
+            aria-label="Projects"
+            aria-describedby={describedBy || undefined}
+            onclick={() => {
+              coreOpen = false;
+              launchOpen = false;
+              onopenProjects?.();
+            }}
+          >
+            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="1.75" y="2.25" width="3.5" height="11.5" rx="1" stroke="currentColor" stroke-width="1.2" />
+              <rect x="6.25" y="2.25" width="3.5" height="8" rx="1" stroke="currentColor" stroke-width="1.2" />
+              <rect x="10.75" y="2.25" width="3.5" height="5.5" rx="1" stroke="currentColor" stroke-width="1.2" />
+            </svg>
+          </button>
+        {/snippet}
+      </Tooltip>
+    {/if}
     {#if canRevealFolder}
       <Tooltip label={revealTooltip}>
         {#snippet trigger(describedBy: string)}

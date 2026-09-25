@@ -10,6 +10,28 @@ The release moves it under the version it ships in.
 
 - Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
 
+## [0.10.329] — 2026-09-25
+
+- The project board is back. A new Projects page (Cmd+6, or the board icon in
+  the title bar) shows one company's projects at a time as a board or a list.
+  Opening a project shows its tasks by status, with task details, files and
+  activity. Pick the company at the top of the page. It starts on the company
+  of the channel you have open.
+- A company's home channel now has a "Projects" tab next to Chat in the
+  header. Clicking it swaps the message feed for that company's project board
+  right there in the channel - the header (hero, title, gear, bell, member
+  pill, and the Chat | Projects pills) stays put and nothing shifts size.
+  Chat brings the feed and composer back.
+- Fixed the Library header's Back button still overlapping the green
+  traffic-light button on macOS - the shared gutter that keeps overlay
+  headers (Library, Settings, Meetings, Notifications, Shared Files, DM
+  requests) clear of the native window buttons was only 6px wider than the
+  button cluster itself, thin enough to overlap on some renders. Widened it
+  to a safer margin everywhere it's used, and added a test covering the DM
+  requests panel, which had the shared inset already but wasn't checked here.
+- Failed Windows Core updates now include a bounded rsync error class and
+  translated path shape in diagnostics, without adding local paths.
+
 ## [0.10.328] — 2026-09-25
 
 - Fixed the "Setting up…" spinner some Companies rows got stuck on: the
