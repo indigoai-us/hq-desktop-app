@@ -3073,6 +3073,15 @@
                   <span class="chat-companies-row-status" aria-hidden="true">…</span>
                 {/if}
               </button>
+              {#if ensureError && !ensuring}
+                <p
+                  class="chat-companies-row-inline-error"
+                  data-testid={`chat-companies-row-error-${company.companyUid}`}
+                  role="alert"
+                >
+                  Couldn't open — {ensureError}
+                </p>
+              {/if}
             {/if}
           {/each}
         {/if}
@@ -4307,6 +4316,17 @@
     font-size: 11px;
     color: var(--ice-ink, inherit);
     opacity: 0.8;
+  }
+
+  /* Visible failure reason for a failed ensure-home-channel click — a
+     tooltip alone is invisible until the user hovers, so a failed 403 (or
+     any other ensure error) otherwise looks like nothing happened. */
+  .chat-companies-row-inline-error {
+    margin: 0 0 4px;
+    padding: 0 8px 0 28px;
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--ice-danger, #d33);
   }
 
   /* Day-group header: name left, date right-aligned (D-13). */

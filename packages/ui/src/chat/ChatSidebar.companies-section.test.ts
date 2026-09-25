@@ -319,6 +319,13 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     });
     expect(disabledRow!.title).toMatch(/upstream unavailable/);
 
+    // A tooltip alone is invisible without a hover — the failure must also
+    // show inline on the row so it isn't a silent no-op.
+    const inlineError = host.querySelector(
+      '[data-testid="chat-companies-row-error-cmp_provisioning"]',
+    );
+    expect(inlineError?.textContent).toMatch(/Couldn't open — upstream unavailable/);
+
     // One attempt per click, no background retry loop.
     expect(ensureCompanyHomeChannel).toHaveBeenCalledTimes(1);
   });
