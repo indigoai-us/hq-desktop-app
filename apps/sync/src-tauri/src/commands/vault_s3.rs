@@ -85,6 +85,16 @@ fn s3_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(180))
         .connect_timeout(Duration::from_secs(10))
+        // The workspace-wide `gzip`/`brotli` reqwest features (added for the
+        // hq-pro channel-list client) would otherwise decode any
+        // Content-Encoding this host sends transparently, which makes the
+        // pre-read `content_length_exceeds` check below observe the
+        // on-wire (possibly compressed) size instead of the decoded byte
+        // count it's meant to bound. S3 objects are not served pre-compressed
+        // in practice, but disable both so the size gate stays exact even if
+        // that ever changes.
+        .no_gzip()
+        .no_brotli()
         .build()
         .map_err(|e| format!("vault S3 client: {e}"))
 }

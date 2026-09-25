@@ -787,8 +787,15 @@ fn http_get_text(url: &str) -> Result<String, String> {
 
 fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
     require_https(url)?;
+    // `.no_gzip().no_brotli()`: the workspace-wide reqwest compression
+    // features would otherwise transparently decode a compressed response,
+    // and `content_length()` below reads the (possibly compressed) header
+    // to enforce `MAX_INSTALLER_BYTES` before the body is fully read — that
+    // bound must stay a bound on the actual decoded byte count.
     let response = reqwest::blocking::Client::builder()
         .timeout(HTTP_TIMEOUT)
+        .no_gzip()
+        .no_brotli()
         .build()
         .map_err(|e| format!("HQ Work HTTP client: {e}"))?
         .get(url)
