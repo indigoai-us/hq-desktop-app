@@ -1023,6 +1023,7 @@
     companyUid: string,
     label: string,
   ): Promise<ConversationRow | null> {
+    const startedAt = performance.now();
     try {
       const resp = await api.listChannels({
         companyUid,
@@ -1042,9 +1043,15 @@
               : "listChannels returned channels but none is the company home",
         });
         companyHomeErrors = { ...companyHomeErrors, [companyUid]: "no-home-channel" };
-      } else if (companyHomeErrors[companyUid]) {
-        const { [companyUid]: _drop, ...rest } = companyHomeErrors;
-        companyHomeErrors = rest;
+      } else {
+        if (companyHomeErrors[companyUid]) {
+          const { [companyUid]: _drop, ...rest } = companyHomeErrors;
+          companyHomeErrors = rest;
+        }
+        companiesLog("open-home ok", {
+          company: label,
+          ms: Math.round(performance.now() - startedAt),
+        });
       }
       return row;
     } catch (err) {
@@ -3058,7 +3065,10 @@
                 class="chat-row chat-companies-row"
                 class:active={activeId === row.id}
                 data-testid={`chat-companies-row-${company.companyUid}`}
-                onclick={() => openRow(row)}
+                onclick={() => {
+                  companiesLog("open-home ok", { company: company.label, ms: 0 });
+                  openRow(row);
+                }}
               >
                 {#if company.iconUrl}
                   <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />

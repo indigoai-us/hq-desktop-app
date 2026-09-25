@@ -134,6 +134,7 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
   });
 
   it("a company with no resolved home channel yet is still clickable, and opens once resolution succeeds", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const onselect = vi.fn();
     let attempts = 0;
     component = mount(ChatSidebar, {
@@ -185,6 +186,14 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
         onselect.mock.calls.some(([row]) => row.channelId === "chn_home_stalled"),
       ).toBe(true),
     );
+
+    // Policy: never fail silently — a successful resolve leaves a tagged,
+    // grep-able success line too, not just silence on the happy path.
+    const okLine = warnSpy.mock.calls.find(
+      ([line]) => typeof line === "string" && line.startsWith("[companies] open-home ok"),
+    );
+    expect(okLine).toBeTruthy();
+    expect(okLine![0]).toMatch(/company=Stalled Co ms=\d+/);
   });
 
   it("logs a tagged, non-silent failure when a click's retry still can't resolve the home channel", async () => {
