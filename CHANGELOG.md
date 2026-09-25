@@ -19,6 +19,10 @@ The release moves it under the version it ships in.
   (with a brief "Setting up…" state), and if it still can't connect, the row
   shows a plain "Tap to retry" hint instead of any error text — clicking it
   again always retries.
+- Fixed the company channel header's settings gear rendering with a heavy,
+  doubled outline (a malformed SVG path). Switched the mute control from a
+  speaker icon to a bell (bell-slash when muted), to match the rest of the
+  header icon set.
 
 ## [0.10.327] — 2026-09-25
 
