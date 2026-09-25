@@ -40,10 +40,33 @@ pub struct Contact {
     pub last_message_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_direction: Option<String>,
+    /// Audience of the last message: "human" | "agent" | "both". Absent on
+    /// older servers. When present and equal to "agent", the preview fields
+    /// should be hidden unless the US-006 "show bot messages" toggle is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_audience: Option<String>,
     /// Presigned avatar GET URL from hq-pro (contacts + company members).
     /// Absent/null on older servers or people without a photo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+}
+
+/// Clear the conversation preview fields on contacts whose last message is
+/// agent-only, unless `show_bot_messages` is true (US-006 toggle, default off).
+/// Called in `list_contacts` / `list_company_members` so the frontend never
+/// renders an agent-only snippet in the DM rail unless the user opted in.
+pub fn apply_contact_preview_filter(contacts: &mut [Contact], show_bot_messages: bool) {
+    if show_bot_messages {
+        return;
+    }
+    for c in contacts.iter_mut() {
+        let audience = c.last_message_audience.as_deref().unwrap_or("").to_lowercase();
+        if audience == "agent" {
+            c.last_message_body = None;
+            c.last_message_preview = None;
+            c.last_message_text = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +163,14 @@ pub struct Channel {
     /// to them as "added".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// True for the single company-home channel (created at company genesis,
+    /// named after the company slug) — the only `scope == "company"` channel
+    /// that carries Office/company-settings chrome. `#[serde(default)]` so
+    /// older server payloads that don't send this yet still parse; the
+    /// desktop UI falls back to `scope == "company" && name == companySlug`
+    /// when absent (see `isCompanyHomeChannel` in the TS `channels.ts`).
+    #[serde(default)]
+    pub is_company_home: bool,
 }
 
 /// Deserialization shape for [`Channel`]. The server's `membership` is either
@@ -185,6 +216,8 @@ struct ChannelWire {
     membership_source: Option<String>,
     #[serde(default)]
     created_by: Option<String>,
+    #[serde(default)]
+    is_company_home: bool,
 }
 
 impl From<ChannelWire> for Channel {
@@ -231,6 +264,7 @@ impl From<ChannelWire> for Channel {
             notify_level,
             membership_source,
             created_by: wire.created_by,
+            is_company_home: wire.is_company_home,
         }
     }
 }
@@ -1286,5 +1320,74 @@ mod esc_query_tests {
     #[test]
     fn encodes_non_ascii_as_utf8_bytes() {
         assert_eq!(esc_query("é"), "%C3%A9");
+    }
+}
+
+#[cfg(test)]
+mod contact_preview_filter_tests {
+    use super::{apply_contact_preview_filter, Contact};
+
+    fn make_contact(audience: Option<&str>) -> Contact {
+        Contact {
+            person_uid: "uid1".into(),
+            email: "a@b.com".into(),
+            display_name: "Alice".into(),
+            company_uid: None,
+            source: None,
+            connection_state: None,
+            last_message_at: None,
+            last_activity_at: None,
+            last_dm_at: None,
+            last_message_body: Some("hello".into()),
+            last_message_preview: Some("hello".into()),
+            last_message_text: Some("hello".into()),
+            last_message_direction: Some("inbound".into()),
+            last_message_audience: audience.map(str::to_string),
+            avatar_url: None,
+        }
+    }
+
+    #[test]
+    fn clears_preview_when_audience_is_agent_and_toggle_off() {
+        let mut contacts = vec![make_contact(Some("agent"))];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_none());
+        assert!(contacts[0].last_message_preview.is_none());
+        assert!(contacts[0].last_message_text.is_none());
+    }
+
+    #[test]
+    fn keeps_preview_when_audience_is_agent_and_toggle_on() {
+        let mut contacts = vec![make_contact(Some("agent"))];
+        apply_contact_preview_filter(&mut contacts, true);
+        assert!(contacts[0].last_message_body.is_some());
+    }
+
+    #[test]
+    fn keeps_preview_for_human_audience() {
+        let mut contacts = vec![make_contact(Some("human"))];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_some());
+    }
+
+    #[test]
+    fn keeps_preview_for_both_audience() {
+        let mut contacts = vec![make_contact(Some("both"))];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_some());
+    }
+
+    #[test]
+    fn keeps_preview_when_audience_absent() {
+        let mut contacts = vec![make_contact(None)];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_some());
+    }
+
+    #[test]
+    fn clears_preview_for_uppercase_agent_audience() {
+        let mut contacts = vec![make_contact(Some("AGENT"))];
+        apply_contact_preview_filter(&mut contacts, false);
+        assert!(contacts[0].last_message_body.is_none());
     }
 }

@@ -53,7 +53,7 @@ use futures_util::{stream, FutureExt, StreamExt, TryStreamExt};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -509,6 +509,7 @@ type CloudOutcome = Result<
         Option<EntityInfo>,
         Vec<MembershipInfo>,
         BTreeMap<String, EntityInfo>,
+        bool,
     ),
     String,
 >;
@@ -525,10 +526,12 @@ type CloudOutcome = Result<
 /// company" even though their company already existed. The person lookup is
 /// kept only for what the Personal row needs (uid, bucket, display name).
 ///
-/// The three independent reads (persons, memberships, pending-by-email) run
-/// concurrently; only the entity fan-out depends on the membership list.
+/// Person and membership reads always run. Email-keyed invites are skipped
+/// only when Cognito explicitly marks the caller's email unverified. The reads
+/// run concurrently; only the entity fan-out depends on the membership list.
 pub(crate) async fn fetch_cloud_roster(
     vault: &VaultClient,
+    email_verified: Option<bool>,
 ) -> Result<
     (
         Option<EntityInfo>,
@@ -537,10 +540,17 @@ pub(crate) async fn fetch_cloud_roster(
     ),
     String,
 > {
+    let pending_by_email_request = async {
+        if email_verified == Some(false) {
+            Ok(Vec::new())
+        } else {
+            vault.list_pending_invites_by_email().await
+        }
+    };
     let (persons, my_memberships, pending_by_email) = tokio::join!(
         vault.list_entities_by_type("person"),
         vault.list_my_memberships(),
-        vault.list_pending_invites_by_email(),
+        pending_by_email_request,
     );
 
     let mut persons = persons.map_err(|e| format!("list person entities: {e}"))?;
@@ -642,48 +652,129 @@ pub(crate) async fn fetch_cloud_roster(
     Ok((person, memberships, entities))
 }
 
+const EMAIL_VERIFICATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+fn email_claim_refresh_allowed(
+    last_refreshes: &mut BTreeMap<String, Instant>,
+    identity: &str,
+    now: Instant,
+) -> bool {
+    last_refreshes.retain(|_, refreshed_at| {
+        now.duration_since(*refreshed_at) < EMAIL_VERIFICATION_REFRESH_INTERVAL
+    });
+    let allowed = last_refreshes.get(identity).map_or(true, |refreshed_at| {
+        now.duration_since(*refreshed_at) >= EMAIL_VERIFICATION_REFRESH_INTERVAL
+    });
+    if allowed {
+        last_refreshes.insert(identity.to_string(), now);
+    }
+    allowed
+}
+
+fn should_force_email_claim_refresh(identity: &str) -> bool {
+    static LAST_REFRESHES: OnceLock<Mutex<BTreeMap<String, Instant>>> = OnceLock::new();
+    let mut last_refreshes = LAST_REFRESHES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .expect("email-verification refresh tracker lock poisoned");
+    email_claim_refresh_allowed(&mut last_refreshes, identity, Instant::now())
+}
+
+fn token_email_verified(tokens: &hq_desktop_core::cognito::CognitoTokens) -> Option<bool> {
+    tokens
+        .id_token
+        .as_deref()
+        .and_then(|token| hq_desktop_core::cognito::decode_id_token_claims(token).ok())
+        .and_then(|claims| claims.email_verified)
+}
+
+async fn refresh_tokens_and_email_verification_required<F, Fut>(
+    tokens: hq_desktop_core::cognito::CognitoTokens,
+    refresh: F,
+) -> Result<(hq_desktop_core::cognito::CognitoTokens, bool), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<hq_desktop_core::cognito::CognitoTokens, String>>,
+{
+    let claims = tokens
+        .id_token
+        .as_deref()
+        .and_then(|token| hq_desktop_core::cognito::decode_id_token_claims(token).ok());
+    let email_verified = claims.as_ref().and_then(|claims| claims.email_verified);
+    let identity = claims.and_then(|claims| claims.sub.or(claims.email));
+    let should_refresh = email_verified == Some(false)
+        && identity
+            .as_deref()
+            .map_or(false, should_force_email_claim_refresh);
+    let tokens = if should_refresh {
+        refresh().await?
+    } else {
+        tokens
+    };
+    let email_verification_required = token_email_verified(&tokens) == Some(false);
+    Ok((tokens, email_verification_required))
+}
+
 #[tauri::command]
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
     let hq_folder_path = hq_root.to_string_lossy().to_string();
     let (mut local_companies, manifest_error) = bounded_local_discovery(&hq_root).await;
 
+    let mut initial_email_verification_required = false;
     let cloud_outcome: CloudOutcome = async {
         let vault_url = resolve_vault_api_url()?;
-        let jwt = resolve_jwt().await?;
-        let vault = VaultClient::new(&vault_url, &jwt);
-        fetch_cloud_roster(&vault).await
+        let tokens = hq_desktop_core::cognito::get_valid_tokens().await?;
+        let initial_email_verified = token_email_verified(&tokens);
+        initial_email_verification_required = initial_email_verified == Some(false);
+        let (tokens, email_verification_required) = refresh_tokens_and_email_verification_required(
+            tokens,
+            hq_desktop_core::cognito::refresh_tokens,
+        )
+        .await?;
+        let vault = VaultClient::new(&vault_url, &tokens.access_token);
+        let (person, memberships, entities) =
+            fetch_cloud_roster(&vault, token_email_verified(&tokens)).await?;
+        Ok((person, memberships, entities, email_verification_required))
     }
     .await;
 
-    let (cloud_reachable, error, person, memberships, entities) = match cloud_outcome {
-        Ok((p, m, e)) => {
-            // Answer "did the app see my company" from the support log.
-            let slugs: Vec<String> = e.values().map(|entity| entity.slug.clone()).collect();
-            log(
-                "workspaces",
-                &format!(
-                    "cloud roster: person={} memberships={} companies={:?}",
-                    p.as_ref()
-                        .map(|person| person.uid.as_str())
-                        .unwrap_or("none"),
-                    m.len(),
-                    slugs
-                ),
-            );
-            (true, None, p, m, e)
-        }
-        Err(e) => {
-            // Surface cloud errors to the persistent log alongside the UI
-            // tooltip — the menubar's "Cloud unreachable" notice gives the
-            // user a hover-tooltip with the message, but the log is the
-            // canonical place to grep when reproducing or debugging without
-            // a popover open. Pre-v0.1.25 schema mismatches (missing
-            // membership uid) propagated as silent failures here.
-            log("workspaces", &format!("cloud branch failed: {e}"));
-            (false, Some(e), None, Vec::new(), BTreeMap::new())
-        }
-    };
+    let (cloud_reachable, error, person, memberships, entities, email_verification_required) =
+        match cloud_outcome {
+            Ok((p, m, e, email_verification_required)) => {
+                // Answer "did the app see my company" from the support log.
+                let slugs: Vec<String> = e.values().map(|entity| entity.slug.clone()).collect();
+                log(
+                    "workspaces",
+                    &format!(
+                        "cloud roster: person={} memberships={} companies={:?}",
+                        p.as_ref()
+                            .map(|person| person.uid.as_str())
+                            .unwrap_or("none"),
+                        m.len(),
+                        slugs
+                    ),
+                );
+                (true, None, p, m, e, email_verification_required)
+            }
+            Err(e) => {
+                // Surface cloud errors to the persistent log alongside the UI
+                // tooltip — the menubar's "Cloud unreachable" notice gives the
+                // user a hover-tooltip with the message, but the log is the
+                // canonical place to grep when reproducing or debugging without
+                // a popover open. Pre-v0.1.25 schema mismatches (missing
+                // membership uid) propagated as silent failures here.
+                log("workspaces", &format!("cloud branch failed: {e}"));
+                (
+                    false,
+                    Some(e),
+                    None,
+                    Vec::new(),
+                    BTreeMap::new(),
+                    initial_email_verification_required,
+                )
+            }
+        };
 
     // Auto-clean manifest entries whose cloud_uid points at a cloud entity
     // that's no longer there (deleted via hq-console). Stripping the manifest
@@ -726,6 +817,7 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         error,
         hq_folder_path,
         manifest_error,
+        email_verification_required,
     })
 }
 
@@ -1453,6 +1545,165 @@ mod node_self_repair_tests {
 
 #[cfg(test)]
 mod tests {
+    fn tokens_with_claims(
+        sub: &str,
+        email_verified: Option<bool>,
+    ) -> hq_desktop_core::cognito::CognitoTokens {
+        use base64::Engine as _;
+        let mut payload = serde_json::json!({
+            "sub": sub,
+            "email": "member@example.com"
+        });
+        if let Some(email_verified) = email_verified {
+            payload["email_verified"] = serde_json::Value::Bool(email_verified);
+        }
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).expect("claims serialize"));
+        hq_desktop_core::cognito::CognitoTokens {
+            access_token: "access".into(),
+            id_token: Some(format!("header.{encoded}.signature")),
+            refresh_token: "refresh".into(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    fn tokens_with_email_verification(
+        sub: &str,
+        email_verified: bool,
+    ) -> hq_desktop_core::cognito::CognitoTokens {
+        tokens_with_claims(sub, Some(email_verified))
+    }
+
+    #[tokio::test]
+    async fn refreshes_unverified_email_claim_before_rechecking_pending_invites() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let refresh_calls = Arc::clone(&calls);
+        let (tokens, email_verification_required) =
+            super::refresh_tokens_and_email_verification_required(
+                tokens_with_email_verification("sub-refresh-verified", false),
+                move || async move {
+                    refresh_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(tokens_with_email_verification("sub-refresh-verified", true))
+                },
+            )
+            .await
+            .expect("token refresh succeeds");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!email_verification_required);
+        assert_eq!(super::token_email_verified(&tokens), Some(true));
+
+        let verified = tokens_with_email_verification("sub-already-verified", true);
+        let (unchanged, email_verification_required) =
+            super::refresh_tokens_and_email_verification_required(verified.clone(), || async {
+                Err("verified identity must not refresh".to_string())
+            })
+            .await
+            .expect("verified token is reused");
+        assert_eq!(unchanged, verified);
+        assert!(!email_verification_required);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn missing_email_verification_claim_does_not_force_refresh_or_show_notice() {
+        let tokens = tokens_with_claims("sub-missing-email-verification", None);
+        let (actual_tokens, email_verification_required) =
+            super::refresh_tokens_and_email_verification_required(tokens.clone(), || async {
+                Err("missing claim must not trigger a refresh".to_string())
+            })
+            .await
+            .expect("missing verification claim reuses the current token");
+
+        assert_eq!(actual_tokens, tokens);
+        assert!(!email_verification_required);
+    }
+
+    #[tokio::test]
+    async fn refreshed_unverified_email_keeps_verification_notice_required() {
+        let (tokens, email_verification_required) =
+            super::refresh_tokens_and_email_verification_required(
+                tokens_with_email_verification("sub-refresh-still-unverified", false),
+                || async {
+                    Ok(tokens_with_email_verification(
+                        "sub-refresh-still-unverified",
+                        false,
+                    ))
+                },
+            )
+            .await
+            .expect("token refresh succeeds");
+
+        assert!(email_verification_required);
+        assert_eq!(super::token_email_verified(&tokens), Some(false));
+    }
+
+    #[tokio::test]
+    async fn unverified_email_force_refresh_is_limited_to_once_per_five_minutes_per_identity() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let refresh_calls = Arc::clone(&calls);
+        let token = tokens_with_email_verification("sub-refresh-limit", false);
+        let (first_tokens, first_required) = super::refresh_tokens_and_email_verification_required(
+            token.clone(),
+            move || async move {
+                refresh_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(tokens_with_email_verification("sub-refresh-limit", false))
+            },
+        )
+        .await
+        .expect("first refresh succeeds");
+        let (second_tokens, second_required) =
+            super::refresh_tokens_and_email_verification_required(token.clone(), || async {
+                panic!("second call must remain within the identity refresh interval")
+            })
+            .await
+            .expect("second call reuses the still-valid unverified claim");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(first_required);
+        assert!(second_required);
+        assert_eq!(first_tokens, second_tokens);
+        assert_eq!(second_tokens, token);
+    }
+
+    #[test]
+    fn email_claim_refresh_interval_expires_after_five_minutes_per_identity() {
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let mut last_refreshes = BTreeMap::new();
+        assert!(super::email_claim_refresh_allowed(
+            &mut last_refreshes,
+            "sub-one",
+            start,
+        ));
+        assert!(!super::email_claim_refresh_allowed(
+            &mut last_refreshes,
+            "sub-one",
+            start + Duration::from_secs(299),
+        ));
+        assert!(super::email_claim_refresh_allowed(
+            &mut last_refreshes,
+            "sub-two",
+            start + Duration::from_secs(299),
+        ));
+        assert!(super::email_claim_refresh_allowed(
+            &mut last_refreshes,
+            "sub-one",
+            start + Duration::from_secs(300),
+        ));
+    }
+
     #[tokio::test]
     async fn stalled_local_discovery_yields_and_reuses_the_pending_job() {
         use futures_util::FutureExt;
@@ -1731,7 +1982,7 @@ mod tests {
             .await;
 
         let vault = VaultClient::new(&server.uri(), "test-token");
-        let (person, memberships, entities) = fetch_cloud_roster(&vault).await.unwrap();
+        let (person, memberships, entities) = fetch_cloud_roster(&vault, Some(true)).await.unwrap();
 
         // Personal row still keys off the oldest person.
         assert_eq!(person.as_ref().map(|p| p.uid.as_str()), Some("prs_oldest"));
@@ -1754,6 +2005,73 @@ mod tests {
         assert_eq!(rows[1].slug, "acme");
         assert_eq!(rows[1].kind, WorkspaceKind::Company);
         assert_eq!(rows[1].role.as_deref(), Some("owner"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn cloud_roster_skips_pending_email_for_unverified_caller() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "entities": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "memberships": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/pending-by-email"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(&server.uri(), "test-token");
+        let (person, memberships, entities) =
+            fetch_cloud_roster(&vault, Some(false)).await.unwrap();
+
+        assert!(person.is_none());
+        assert!(memberships.is_empty());
+        assert!(entities.is_empty());
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn cloud_roster_fetches_pending_email_when_verification_claim_is_missing() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "entities": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "memberships": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/pending-by-email"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "invites": [] })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(&server.uri(), "test-token");
+        let (person, memberships, entities) = fetch_cloud_roster(&vault, None).await.unwrap();
+
+        assert!(person.is_none());
+        assert!(memberships.is_empty());
+        assert!(entities.is_empty());
         server.verify().await;
     }
 

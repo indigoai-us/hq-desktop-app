@@ -46,14 +46,15 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use crate::commands::cognito;
 use crate::commands::messages::Channel;
 use crate::commands::sync::resolve_vault_api_url;
-use crate::util::client_info::build_client;
+use crate::util::client_info::{build_client, describe_error_chain, HYDRATE_REQUEST_TIMEOUT};
 use crate::util::logfile::log;
 
 pub use hq_desktop_core::dm_notify::{
     build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
     build_threads_url, classify_send_response, clear_in_flight, diff_requests,
     dm_notifications_enabled, effective_reply_count, enqueue_mention_fetches, esc_thread_seg,
-    filter_mentions_by_age, is_mention_of_me, mention_cursor_after_fetch,
+    filter_human_visible_events, filter_mentions_by_age, is_agent_audience, is_mention_of_me,
+    mention_cursor_after_fetch,
     mention_notification_body, mention_notification_title, mention_route, mention_summary_title,
     normalize_scope, partition_unnotified, plan_mention_cap, read_cursor_entry_for_account,
     requeue_failed_mention_fetches, respond_action_path, respond_action_state,
@@ -2555,9 +2556,14 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
         .begin_snapshot();
 
     let url = format!("{}/v1/notify/channels", base_url);
+    // Hydrate/roster fan-out route (hq-pro `notify_channels` gets a 28s route
+    // deadline) — override the blanket client timeout, which is too short
+    // once the account has enough channels to push the response past a few
+    // hundred KB. See [`HYDRATE_REQUEST_TIMEOUT`].
     let resp = build_client()
         .get(&url)
         .header("authorization", format!("Bearer {}", auth.access_token))
+        .timeout(HYDRATE_REQUEST_TIMEOUT)
         .send()
         .await;
 
@@ -2581,7 +2587,12 @@ async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
             {
                 Ok(b) => b,
                 Err(e) => {
-                    log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_ERROR parse: {e}"));
+                    let chain = describe_error_chain(&e);
+                    let kind = if e.is_timeout() { "timeout" } else { "other" };
+                    log(
+                        LOG_TAG,
+                        &format!("DM_NOTIFY_CHAN_POLL_ERROR parse: kind={kind} chain={chain}"),
+                    );
                     return;
                 }
             }
@@ -3551,8 +3562,12 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
     // live. The count is reset when the Messages window opens. Keep the
     // account-owned state under the generation check, but do not retain that
     // lock while showing banners or ACKing the server.
+    // Only count human-visible events toward the unread badge (US-005): agent-
+    // only messages must not increment the unread counter or emit the
+    // dm:unread-summary event with a higher count than the user can act on.
+    let human_visible_count = filter_human_visible_events(&fresh).len() as u32;
     if with_current_notification_auth_snapshot(app, auth, || {
-        bump_unread(app, fresh.len() as u32);
+        bump_unread(app, human_visible_count);
         // Windows parity: persist exactly the DMs whose notifications are
         // emitted so dismissed toasts remain visible in local history.
         crate::commands::notification_history::record_dm_events(&fresh);
@@ -3583,14 +3598,17 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
     let banner_worthy: Vec<DmEvent> = fresh
         .iter()
         .filter(|dm| {
-            !hq_desktop_core::agent_join::is_agent_join_notice(
-                &dm.from_person_uid,
-                &dm.from_email,
-                &dm.from_display_name,
-                &dm.body,
-                dm.details.as_deref(),
-                dm.prompt.as_deref(),
-            ) && !should_suppress_duplicate_event(&dm.event_id, &mention_notified)
+            // US-005: never show OS banners for agent-audience messages.
+            !is_agent_audience(dm.audience.as_deref())
+                && !hq_desktop_core::agent_join::is_agent_join_notice(
+                    &dm.from_person_uid,
+                    &dm.from_email,
+                    &dm.from_display_name,
+                    &dm.body,
+                    dm.details.as_deref(),
+                    dm.prompt.as_deref(),
+                )
+                && !should_suppress_duplicate_event(&dm.event_id, &mention_notified)
         })
         .cloned()
         .collect();
@@ -3883,6 +3901,7 @@ mod tests {
             notify_level: None,
             membership_source: None,
             created_by: None,
+            is_company_home: false,
         }
     }
 
@@ -3930,6 +3949,7 @@ mod tests {
             direction: "in".to_string(),
             root_event_id: None,
             reply_count: None,
+            audience: None,
         };
 
         let payload = thread_reply_wake_payload(
@@ -4054,6 +4074,7 @@ mod tests {
             notify_level: None,
             membership_source: None,
             created_by: None,
+            is_company_home: false,
         }
     }
 

@@ -28,8 +28,13 @@ aws-credential-types = "=1.2.14"
 aws-smithy-runtime-api = { version = "=1.12.0", features = ["client"] }
 aws-sigv4 = { version = "=1.4.3", features = ["http1"] }
 # client_info builds the shared attribution reqwest::Client; release_channel needs
-# strict SemVer ordering for channel resolution.
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+# strict SemVer ordering for channel resolution. gzip/brotli let the shared
+# client negotiate Accept-Encoding and transparently decode compressed
+# hq-pro responses (e.g. GET /v1/notify/channels); enabling the reqwest
+# feature affects every reqwest::Client in the workspace, which is why
+# size-limited downloads (vault_s3.rs, hq_work.rs) explicitly opt out with
+# `.no_gzip().no_brotli()` to keep Content-Length meaning the raw byte count.
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "rustls-tls"] }
 semver = "1"
 sha1 = "0.10"
 sha2 = "0.10"
@@ -64,3 +69,5 @@ winreg = "0.55"
 sentry = { version = "^0.35", features = ["test"] }
 # client_info's build_client timeout regression test stands up a mock server.
 wiremock = "0.6"
+# client_info's gzip-decode regression test hand-compresses a mock response body.
+flate2 = "1"

@@ -8,12 +8,52 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Channel @mention notifications now work on installs whose local settings file does not record your person ID.
+- Channel @mention notifications now work on installs whose local settings file does not record your person ID, and the first mention in a channel after the app starts now notifies too.
+
+- The desktop app now asks for (and transparently decodes) compressed
+  responses from the server, so the same data moves over the wire faster —
+  most noticeable on the channel list for people in large companies.
+
+## [0.10.323] — 2026-09-24
+
+- Fixed the channel list failing to load for people in companies with a lot of
+  channels. The app was giving that request the same short timeout as every
+  other one, so once a company's channel roster got large enough, the response
+  legitimately took longer to arrive and the request aborted partway through
+  with a decode error. It now gets a longer timeout of its own.
+- HQ Sync tells you to verify your email before it can show pending company invites.
+
+- Fixed a bug where every company in the sidebar's "Companies" section showed
+  "no home channel yet," even companies with a working home channel. The
+  fallback check that resolves a home channel while the server catches up was
+  comparing the channel's raw name (which carries a leading "#", e.g.
+  "#indigo") against the bare company slug ("indigo") — they could never
+  match. The "Companies" section rows are now compact (name only, single
+  line) and default to your 3 most active companies by recent message
+  activity; pinning any company from the header's pin menu switches the
+  section to show only your pinned companies. A company whose home channel
+  isn't loaded yet is now resolved on demand instead of staying stuck.
+- Messages now separates people from bots. A new "Show bot messages" toggle at
+  the top of Messages is off by default, so your inbox, unread badge, and
+  notifications only carry messages meant for you. Agent-to-agent chatter is one
+  toggle away and never counts toward unread or fires a notification. A thread
+  whose recent messages are all from bots stays listed and shows how many are
+  hidden; turning the toggle on reveals them with a small "agent" label.
+
+## [0.10.322] — 2026-09-24
+
+- Each company now has exactly one "company home" channel (settings,
+  wallpaper). Other channels created inside a company are plain team
+  channels. A new "Companies" section in the sidebar pins each company's
+  home channel, and you can choose which companies show there.
+- Company home channels show Chat only — the Office tab is hidden for
+  company channels for now (the underlying calling code is unchanged).
 
 ## [0.10.321] — 2026-09-24
 
 - Auto-sync memory alerts now include a bounded memory class and, for
   multi-process trees, the largest child's process type.
+- Added internal telemetry to diagnose cases where a machine that was already set up and signed in shows the sign-in or setup screen on startup. No new information about your account is collected; the report records which setup state the app read at launch (such as whether setup markers were present), whether a token file existed and how old it was in minutes (not its contents), and which screen appeared. This data goes only to the development team and is used to find the cause if the sign-in screen returns on a configured machine.
 
 ## [0.10.320] — 2026-09-24
 
