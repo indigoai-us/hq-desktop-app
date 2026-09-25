@@ -1367,7 +1367,10 @@ pub fn cli_install_needed(local: Option<&str>, latest: &str, hq_installed: bool)
 /// 5.115.4: the create-bot flow passes `--kind`/`--company` for company bots
 /// and relies on the bot-kinds contract (hq-cli #596/#598/#599/#605); an
 /// older CLI answers `unknown option '--kind'`.
-pub const HQ_CLI_MIN_VERSION: &str = "5.115.4";
+///
+/// 5.152.1: the welcome-channel setup bot flow was broken on Windows; hq-cli
+/// #755 fixed it. A CLI below this cannot serve the Windows setup bot either.
+pub const HQ_CLI_MIN_VERSION: &str = "5.152.1";
 
 /// Is a *readable* installed version below [`HQ_CLI_MIN_VERSION`]?
 ///
@@ -16998,6 +17001,24 @@ mod tests {
         );
         assert!(cli_below_floor(Some("0.0.1")));
         assert!(!cli_below_floor(Some(HQ_CLI_MIN_VERSION)));
+    }
+
+    /// hq-cli #755 (the Windows setup-bot fix) first shipped in 5.152.1: a
+    /// CLI at 5.152.0 must still be repaired, and 5.152.1 must not.
+    #[test]
+    fn floor_repair_boundary_is_the_windows_setup_bot_fix() {
+        assert!(cli_below_floor(Some("5.152.0")));
+        assert!(!cli_below_floor(Some("5.152.1")));
+        assert_eq!(
+            launch_cli_check(Some("5.152.0")),
+            LaunchCliCheck::RepairNow {
+                local: "5.152.0".to_string()
+            }
+        );
+        assert_eq!(
+            launch_cli_check(Some("5.152.1")),
+            LaunchCliCheck::Scheduled
+        );
     }
 
     /// An ordinary upgrade honours the opt-out; a floor repair does not.
