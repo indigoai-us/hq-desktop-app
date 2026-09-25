@@ -641,12 +641,21 @@ describe("release workflow channel contract", () => {
 
     expect(jobBody("macos")).toContain("needs: validate");
     expect(jobBody("windows")).toContain("needs: validate");
-    for (const job of ["shell-key", "shell-macos", "ui", "assemble-macos"]) {
+    for (const job of [
+      "shell-key",
+      "shell-macos",
+      "ui",
+      "assemble-macos",
+      "shell-windows-x64",
+      "shell-windows-arm64",
+      "assemble-windows-x64",
+      "assemble-windows-arm64",
+    ]) {
       expect(jobBody(job)).toMatch(/needs: (validate|\[validate,)/);
     }
-    // validate, macos (legacy), windows, publish, and the four prebuilt-shell
-    // jobs each check out the exact tag.
-    expect(workflow.match(/ref: refs\/tags\//g)).toHaveLength(8);
+    // validate, macos (legacy), windows (legacy), publish, and the eight
+    // prebuilt-shell jobs each check out the exact tag.
+    expect(workflow.match(/ref: refs\/tags\//g)).toHaveLength(12);
   });
 
   it("hands both platform builds the same stamped version bytes", () => {
@@ -906,9 +915,9 @@ exec "$REAL_NODE" "$@"
   it("publishes prereleases without advancing the stable latest alias", () => {
     const publish = jobBody("publish");
 
-    expect(publish).toContain("needs: [validate, shell-key, macos, assemble-macos, windows]");
+    expect(publish).toContain("needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]");
     expect(publish).toContain(
-      "(needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && needs.windows.result == 'success'",
+      "(needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && (needs.windows.result == 'success' || (needs.assemble-windows-x64.result == 'success' && needs.assemble-windows-arm64.result == 'success'))",
     );
     expect(publish).not.toContain("needs.windows.result == 'failure'");
     expect(publish).toContain("Validate complete release artifact set");
@@ -1100,6 +1109,30 @@ exec "$REAL_NODE" "$@"
     expect(cleanup).toContain('"repos/${REPOSITORY}/git/refs/tags/${TAG}"');
   });
 
+  it("takes the latest.json version from the stamped release version", () => {
+    const generate = stepBody(jobBody("publish"), "Generate latest.json");
+    expect(generate).toContain("RELEASE_VERSION: ${{ needs.validate.outputs.version }}");
+    expect(generate).toContain('VERSION="$RELEASE_VERSION"');
+    expect(generate).toContain('"$VERSION" != "${TAG#v}"');
+  });
+
+  it("stamps the exe version resource in both Windows assemble jobs before bundling", () => {
+    for (const arch of ["x64", "arm64"]) {
+      const body = jobBody(`assemble-windows-${arch}`);
+      expect(body).toContain("node ../../scripts/stamp-exe-version.mjs");
+      expect(body.indexOf("- name: Stamp exe version resource")).toBeLessThan(body.indexOf("- name: Tauri bundle"));
+      expect(body).toContain("--config $env:TAURI_MSI_VERSION_CONFIG");
+    }
+  });
+
+  it("prunes each target's shell-cache assets to the newest six", () => {
+    for (const target of ["macos", "windows-x64", "windows-arm64"]) {
+      const prune = stepBody(jobBody(`shell-${target}`), `Prune old ${target} shells from the shell-cache release`);
+      expect(prune).toContain(`node scripts/prune-shell-cache.mjs --target ${target} --keep 6 --protect "$CURRENT_KEY"`);
+      expect(prune).toContain("gh release delete-asset shell-cache");
+    }
+  });
+
   it("verifies the bundled shell key against the tagged sources before publishing", () => {
     const assemble = jobBody("assemble-macos");
     expect(assemble).toContain('> "$APP/Contents/Resources/shell-key.txt"');
@@ -1107,10 +1140,23 @@ exec "$REAL_NODE" "$@"
     expect(assemble.indexOf("- name: Assemble app bundle")).toBeLessThan(
       assemble.indexOf("- name: Sign app bundle"),
     );
-    const verify = stepBody(jobBody("publish"), "Verify bundled shell key matches the tagged sources");
+    for (const arch of ["x64", "arm64"]) {
+      const stamp = stepBody(jobBody(`assemble-windows-${arch}`), "Write runtime version.json and shell key");
+      expect(stamp).toContain(`needs.shell-windows-${arch}.outputs.key`);
+      expect(stamp).toContain('> "$STAMP_DIR/shell-key.txt"');
+      expect(stamp).toContain('"assemble-stamp/shell-key.txt":"shell-key.txt"');
+      expect(stamp).toContain('"assemble-stamp/version.json":"version.json"');
+      expect(jobBody(`assemble-windows-${arch}`)).toContain("--config $env:TAURI_ASSEMBLE_STAMP_CONFIG");
+      expect(jobBody(`shell-windows-${arch}`)).toContain("toolchain: ${{ steps.key.outputs.toolchain }}");
+    }
+    const verify = stepBody(jobBody("publish"), "Verify bundled shell keys match the tagged sources");
     expect(verify).toContain("node scripts/shell-hash.mjs");
     expect(verify).toContain("HQ.app/Contents/Resources/shell-key.txt");
-    expect(verify).toContain('if [ "$EXPECTED" != "$ACTUAL" ]; then');
+    expect(verify).toContain("msiextract");
+    expect(verify).toContain("node .release-control/scripts/verify-shell-key.mjs");
+    for (const label of ['"macOS universal"', '"Windows x64"', '"Windows arm64"']) {
+      expect(verify).toContain(`--check ${label}`);
+    }
     const shell = jobBody("shell-macos");
     expect(shell).toContain("actions/cache/restore@v4");
     expect(shell).toContain("gh release create shell-cache");
@@ -1129,7 +1175,7 @@ exec "$REAL_NODE" "$@"
     expect(macos.indexOf("- name: Sign app bundle")).toBeLessThan(
       macos.indexOf("- name: Non-Indigo artifact smoke"),
     );
-    expect(publish).toContain("needs: [validate, shell-key, macos, assemble-macos, windows]");
+    expect(publish).toContain("needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]");
     // The prebuilt-shell path runs the identical smoke after signing.
     const assemble = jobBody("assemble-macos");
     const untilLaunch = (body: string) => body.slice(0, body.indexOf("--launch"));

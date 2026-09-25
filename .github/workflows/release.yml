@@ -1403,6 +1403,38 @@ jobs:
           echo "macOS shell $SHELL_KEY: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
           test -s shell-out/shell-macos.tar.gz
 
+      # Keep the shell-cache release bounded: the newest 6 assets for this
+      # target stay, older ones are deleted. Only this target's assets are
+      # considered, and the key this run used is never deleted. Best effort:
+      # a failed prune is logged and never fails the release.
+      - name: Prune old macos shells from the shell-cache release
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ needs.shell-key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target macos --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 macos shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
+
       - name: Upload shell artifact
         uses: actions/upload-artifact@v4
         with:
@@ -1743,6 +1775,7 @@ jobs:
       RUST_TARGET: x86_64-pc-windows-msvc
     outputs:
       key: ${{ steps.key.outputs.key }}
+      toolchain: ${{ steps.key.outputs.toolchain }}
     defaults:
       run:
         working-directory: apps/sync
@@ -1774,7 +1807,10 @@ jobs:
             echo "::error::shell-hash.mjs returned an invalid key: $KEY"
             exit 1
           fi
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
           echo "Windows x64 shell key $KEY (rustc $TOOLCHAIN, $RUST_TARGET)" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Restore shell from the Actions cache
@@ -1914,6 +1950,38 @@ jobs:
           echo "Windows x64 shell ${{ steps.key.outputs.key }}: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
           test -s shell-out/shell-windows-x64.tar
 
+      # Keep the shell-cache release bounded: the newest 6 assets for this
+      # target stay, older ones are deleted. Only this target's assets are
+      # considered, and the key this run used is never deleted. Best effort:
+      # a failed prune is logged and never fails the release.
+      - name: Prune old windows-x64 shells from the shell-cache release
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target windows-x64 --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 windows-x64 shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
+
       - name: Upload shell artifact
         uses: actions/upload-artifact@v4
         with:
@@ -1935,6 +2003,7 @@ jobs:
       RUST_TARGET: aarch64-pc-windows-msvc
     outputs:
       key: ${{ steps.key.outputs.key }}
+      toolchain: ${{ steps.key.outputs.toolchain }}
     defaults:
       run:
         working-directory: apps/sync
@@ -1966,7 +2035,10 @@ jobs:
             echo "::error::shell-hash.mjs returned an invalid key: $KEY"
             exit 1
           fi
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
           echo "Windows arm64 shell key $KEY (rustc $TOOLCHAIN, $RUST_TARGET)" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Restore shell from the Actions cache
@@ -2136,6 +2208,38 @@ jobs:
           echo "Windows arm64 shell ${{ steps.key.outputs.key }}: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
           test -s shell-out/shell-windows-arm64.tar
 
+      # Keep the shell-cache release bounded: the newest 6 assets for this
+      # target stay, older ones are deleted. Only this target's assets are
+      # considered, and the key this run used is never deleted. Best effort:
+      # a failed prune is logged and never fails the release.
+      - name: Prune old windows-arm64 shells from the shell-cache release
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target windows-arm64 --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 windows-arm64 shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
+
       - name: Upload shell artifact
         uses: actions/upload-artifact@v4
         with:
@@ -2239,15 +2343,34 @@ jobs:
           fi
           echo "Building version $actual"
 
-      - name: Write runtime version.json
+      # version.json and shell-key.txt must ship INSIDE the installers, next
+      # to the installed exe (Windows resource dir = install dir), where the
+      # runtime version resolver and the publish-time stale-shell check read
+      # them. Files merely written into target/ are not bundled, so a
+      # generated --config overlay adds them to bundle.resources (tauri merges
+      # --config files as a JSON merge patch; the ui/ mapping is repeated so
+      # the overlay stands on its own).
+      - name: Write runtime version.json and shell key
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SHELL_KEY: ${{ needs.shell-windows-x64.outputs.key }}
         run: |
           set -euo pipefail
-          node ../../scripts/stamp-version.mjs \
-            --version "$RELEASE_VERSION" \
-            --resources-dir src-tauri/target/x86_64-pc-windows-msvc/release
+          if ! [[ "$SHELL_KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-windows-x64 did not report a valid shell key: $SHELL_KEY"
+            exit 1
+          fi
+          STAMP_DIR="src-tauri/assemble-stamp"
+          rm -rf "$STAMP_DIR"
+          mkdir -p "$STAMP_DIR"
+          node ../../scripts/stamp-version.mjs --version "$RELEASE_VERSION" --resources-dir "$STAMP_DIR"
+          printf '%s\n' "$SHELL_KEY" > "$STAMP_DIR/shell-key.txt"
+          CONFIG="$RUNNER_TEMP/tauri.windows.assemble-stamp.conf.json"
+          cat > "$CONFIG" <<'JSON'
+          {"bundle":{"resources":{"../dist/":"ui/","assemble-stamp/version.json":"version.json","assemble-stamp/shell-key.txt":"shell-key.txt"}}}
+          JSON
+          echo "TAURI_ASSEMBLE_STAMP_CONFIG=$CONFIG" >> "$GITHUB_ENV"
 
       - name: Generate Windows MSI version overlay
         shell: pwsh
@@ -2298,7 +2421,7 @@ jobs:
       - name: Tauri bundle (x86_64-pc-windows-msvc)
         env:
           RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
-        run: pnpm tauri bundle --target x86_64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
+        run: pnpm tauri bundle --target x86_64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG --config $env:TAURI_ASSEMBLE_STAMP_CONFIG
 
       - name: Install Sentry CLI
         shell: pwsh
@@ -2557,15 +2680,34 @@ jobs:
           fi
           echo "Building version $actual"
 
-      - name: Write runtime version.json
+      # version.json and shell-key.txt must ship INSIDE the installers, next
+      # to the installed exe (Windows resource dir = install dir), where the
+      # runtime version resolver and the publish-time stale-shell check read
+      # them. Files merely written into target/ are not bundled, so a
+      # generated --config overlay adds them to bundle.resources (tauri merges
+      # --config files as a JSON merge patch; the ui/ mapping is repeated so
+      # the overlay stands on its own).
+      - name: Write runtime version.json and shell key
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SHELL_KEY: ${{ needs.shell-windows-arm64.outputs.key }}
         run: |
           set -euo pipefail
-          node ../../scripts/stamp-version.mjs \
-            --version "$RELEASE_VERSION" \
-            --resources-dir src-tauri/target/aarch64-pc-windows-msvc/release
+          if ! [[ "$SHELL_KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-windows-arm64 did not report a valid shell key: $SHELL_KEY"
+            exit 1
+          fi
+          STAMP_DIR="src-tauri/assemble-stamp"
+          rm -rf "$STAMP_DIR"
+          mkdir -p "$STAMP_DIR"
+          node ../../scripts/stamp-version.mjs --version "$RELEASE_VERSION" --resources-dir "$STAMP_DIR"
+          printf '%s\n' "$SHELL_KEY" > "$STAMP_DIR/shell-key.txt"
+          CONFIG="$RUNNER_TEMP/tauri.windows.assemble-stamp.conf.json"
+          cat > "$CONFIG" <<'JSON'
+          {"bundle":{"resources":{"../dist/":"ui/","assemble-stamp/version.json":"version.json","assemble-stamp/shell-key.txt":"shell-key.txt"}}}
+          JSON
+          echo "TAURI_ASSEMBLE_STAMP_CONFIG=$CONFIG" >> "$GITHUB_ENV"
 
       - name: Generate Windows MSI version overlay
         shell: pwsh
@@ -2612,7 +2754,7 @@ jobs:
       - name: Tauri bundle (aarch64-pc-windows-msvc)
         env:
           RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
-        run: pnpm tauri bundle --target aarch64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
+        run: pnpm tauri bundle --target aarch64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG --config $env:TAURI_ASSEMBLE_STAMP_CONFIG
 
       - name: Install Sentry CLI
         shell: pwsh
@@ -3132,7 +3274,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [validate, shell-key, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]
+    needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]
     concurrency:
       # Serialize all tags, not only reruns of one tag. Otherwise two stable
       # builds can finish out of order and the older one can replace latest.
@@ -3164,6 +3306,7 @@ jobs:
             scripts/release-asset-contract.mjs
             scripts/release-stable-order.mjs
             scripts/macos-artifact-smoke.mjs
+            scripts/verify-shell-key.mjs
             .github/scripts/check-changelog.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -3235,27 +3378,41 @@ jobs:
           console.log(`Validated all ${expected.length} versioned release artifacts for ${version}`);
           NODE
 
-      # The shell inside the bundle must be the one the tagged sources
-      # produce. Recompute the key from this checkout and compare it with the
-      # key assemble-macos wrote into the bundle, so a stale or mismatched
-      # cached shell can never be published.
-      - name: Verify bundled shell key matches the tagged sources
+      # The shell inside every bundle must be the one the tagged sources
+      # produce. Each assemble job writes the key of the shell it restored
+      # into its bundle as shell-key.txt (macOS: Contents/Resources; Windows:
+      # the install dir, via the MSI/NSIS resources). Recompute each target's
+      # key from this checkout with the toolchain its shell job used and
+      # compare, so a stale or mismatched cached shell can never be published.
+      - name: Verify bundled shell keys match the tagged sources
         if: ${{ inputs.legacy_build != true }}
         env:
-          TOOLCHAIN: ${{ needs.shell-key.outputs.toolchain }}
-          TARGET: ${{ needs.shell-key.outputs.target }}
+          MAC_TOOLCHAIN: ${{ needs.shell-key.outputs.toolchain }}
+          MAC_TARGET: ${{ needs.shell-key.outputs.target }}
+          WIN_X64_TOOLCHAIN: ${{ needs.shell-windows-x64.outputs.toolchain }}
+          WIN_ARM64_TOOLCHAIN: ${{ needs.shell-windows-arm64.outputs.toolchain }}
           VERSION: ${{ needs.validate.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$TOOLCHAIN" && test -n "$TARGET"
-          EXPECTED="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$TARGET")"
-          ACTUAL="$(tar -xzOf "release/HQ_${VERSION}_universal.app.tar.gz" HQ.app/Contents/Resources/shell-key.txt | tr -d '[:space:]')"
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "::error::Bundled shell key $ACTUAL does not match the key recomputed from the tag ($EXPECTED)."
-            exit 1
-          fi
-          echo "Bundled shell key matches the tagged sources: $ACTUAL"
+          test -n "$MAC_TOOLCHAIN" && test -n "$MAC_TARGET" && test -n "$WIN_X64_TOOLCHAIN" && test -n "$WIN_ARM64_TOOLCHAIN"
+          sudo apt-get install -y --no-install-recommends msitools >/dev/null
+          KEYS="$RUNNER_TEMP/shell-keys"
+          rm -rf "$KEYS"
+          mkdir -p "$KEYS/macos"
+          tar -xzOf "release/HQ_${VERSION}_universal.app.tar.gz" HQ.app/Contents/Resources/shell-key.txt > "$KEYS/macos/shell-key.txt"
+          for ARCH in x64 arm64; do
+            mkdir -p "$KEYS/msi-$ARCH"
+            msiextract -C "$KEYS/msi-$ARCH" "release/HQ_${VERSION}_${ARCH}.msi" >/dev/null
+            FOUND="$(find "$KEYS/msi-$ARCH" -type f -name shell-key.txt | head -n 1)"
+            if [ -n "$FOUND" ]; then cp "$FOUND" "$KEYS/windows-$ARCH.txt"; fi
+          done
+          hash() { node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$1" --target "$2"; }
+          node .release-control/scripts/verify-shell-key.mjs \
+            --check "macOS universal" "$(hash "$MAC_TOOLCHAIN" "$MAC_TARGET")" "$KEYS/macos/shell-key.txt" \
+            --check "Windows x64" "$(hash "$WIN_X64_TOOLCHAIN" x86_64-pc-windows-msvc)" "$KEYS/windows-x64.txt" \
+            --check "Windows arm64" "$(hash "$WIN_ARM64_TOOLCHAIN" aarch64-pc-windows-msvc)" "$KEYS/windows-arm64.txt" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       # shelltest: publish a throwaway prerelease with the build artifacts
       # only. No latest.json, no versionless aliases, never latest.
@@ -3290,14 +3447,21 @@ jobs:
           fi
           echo "Published $TAG as a prerelease; GitHub latest is still $LATEST_AFTER." | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # The manifest version is the stamped release version (the same value
+      # validate wrote into every bundle), and must equal the tag's version.
       - name: Generate latest.json
         if: ${{ inputs.shelltest != true }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
+          VERSION="$RELEASE_VERSION"
+          if [ -z "$VERSION" ] || [ "$VERSION" != "${TAG#v}" ]; then
+            echo "::error::Stamped release version '$VERSION' does not match tag $TAG."
+            exit 1
+          fi
           BASE="https://github.com/${REPOSITORY}/releases/download/${TAG}"
 
           # The preceding completeness gate guarantees one signed universal
