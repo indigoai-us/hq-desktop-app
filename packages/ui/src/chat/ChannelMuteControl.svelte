@@ -1,10 +1,10 @@
 <script lang="ts">
   /**
-   * Channel-header mute control. A speaker icon (speaker-slash when muted)
-   * toggles Muted against the channel's last non-muted level; the chevron (or
-   * a right-click on the speaker) opens the four levels with a check on the
-   * current one. It uses a speaker glyph so it is never confused with the
-   * titlebar inbox icon. The host owns the optimistic paint, the server write,
+   * Channel-header mute control. A bell icon (bell-slash when muted) toggles
+   * Muted against the channel's last non-muted level; the chevron (or a
+   * right-click on the bell) opens the four levels with a check on the
+   * current one. Uses a bell glyph per owner decision 2026-09-25 (previous
+   * icon replaced). The host owns the optimistic paint, the server write,
    * and the rollback (`changeNotifyLevel`).
    */
   import {
@@ -104,16 +104,19 @@
   >
     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
       <path
-        d="M2.75 6.25h2.2L8.25 3.5v9L4.95 9.75h-2.2v-3.5Z"
+        d="M8 2.5a3.3 3.3 0 0 0-3.3 3.3v2.1c0 .55-.2 1.08-.57 1.49L3 10.75h10l-1.13-1.35a2.3 2.3 0 0 1-.57-1.49V5.8A3.3 3.3 0 0 0 8 2.5Z"
         stroke="currentColor"
         stroke-width="1.2"
         stroke-linejoin="round"
       />
+      <path
+        d="M6.6 12.5a1.5 1.5 0 0 0 2.8 0"
+        stroke="currentColor"
+        stroke-width="1.2"
+        stroke-linecap="round"
+      />
       {#if muted}
-        <path d="M10.5 6.25l3 3.5M13.5 6.25l-3 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-      {:else}
-        <path d="M10.4 6a2.8 2.8 0 0 1 0 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-        <path d="M12.1 4.4a5.1 5.1 0 0 1 0 7.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+        <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
       {/if}
     </svg>
   </button>

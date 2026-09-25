@@ -612,6 +612,15 @@
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
     /**
+     * A company's home channel was just created/adopted client-side
+     * (`ensureCompanyHomeChannel`, from a Companies-row click) and the
+     * `companies` roster prop hasn't caught up yet. The host should patch
+     * its own roster copy and kick a background refresh so the persisted
+     * value matches; the shell already applies the id locally (see
+     * `resolvedHomeChannelIds`) so chrome is correct immediately either way.
+     */
+    onhomechannelresolved?: (companyUid: string, homeChannelId: string) => void;
+    /**
      * App-level event subscription (Tauri `listen`, or a web bridge), used to
      * observe sync outcomes the command result cannot report — see
      * `syncMembership`. Omitted on platforms without an event bus; the
@@ -815,6 +824,7 @@
     oncardaction,
     wakes = null,
     companies = null,
+    onhomechannelresolved,
     syncEvents = null,
     rosterStatus = null,
     onretryroster,
@@ -3044,10 +3054,43 @@
     return [...nav, ...conversations];
   });
 
-  const watched = $derived(companies?.length ?? 0);
-  const companyNames = $derived(buildCompanyDisplayMap(companies ?? []));
+  /**
+   * companyUid → homeChannelId resolved client-side this session (a
+   * Companies-row click into a company whose roster row had no
+   * `homeChannelId` yet — see `ChatSidebar.openCompanyHome`). Overlaid onto
+   * `companies` below so the chrome predicate, the Companies row and any
+   * deep link all see it immediately, without waiting for the host to
+   * re-fetch the roster (`onhomechannelresolved` kicks that off separately).
+   */
+  let resolvedHomeChannelIds = $state<Record<string, string>>({});
+  function handleHomeChannelResolved(companyUid: string, homeChannelId: string): void {
+    const uid = companyUid.trim();
+    const id = homeChannelId.trim();
+    if (!uid || !id) return;
+    if (resolvedHomeChannelIds[uid] === id) return;
+    resolvedHomeChannelIds = { ...resolvedHomeChannelIds, [uid]: id };
+    onhomechannelresolved?.(uid, id);
+  }
+  /** `companies` patched with any `resolvedHomeChannelIds` the roster hasn't
+   * caught up on yet. Every downstream consumer (chrome, sidebar, settings)
+   * reads this instead of the raw prop. */
+  const effectiveCompanies = $derived.by(() => {
+    if (!companies || Object.keys(resolvedHomeChannelIds).length === 0) return companies;
+    let changed = false;
+    const patched = companies.map((c) => {
+      if (c.homeChannelId) return c;
+      const uid = (c.cloudUid ?? "").trim();
+      const resolved = uid ? resolvedHomeChannelIds[uid] : undefined;
+      if (!resolved) return c;
+      changed = true;
+      return { ...c, homeChannelId: resolved };
+    });
+    return changed ? patched : companies;
+  });
+  const watched = $derived(effectiveCompanies?.length ?? 0);
+  const companyNames = $derived(buildCompanyDisplayMap(effectiveCompanies ?? []));
   /** uid/slug → presigned company icon, for the header + member popover. */
-  const companyIcons = $derived(buildCompanyIconMap(companies ?? []));
+  const companyIcons = $derived(buildCompanyIconMap(effectiveCompanies ?? []));
   /**
    * channelId → company, built straight from the roster's own
    * `homeChannelId` (never from the selected row). A channel opened through
@@ -3063,7 +3106,7 @@
    */
   const companyByHomeChannelId = $derived.by(() => {
     const map = new Map<string, Workspace>();
-    for (const c of companies ?? []) {
+    for (const c of effectiveCompanies ?? []) {
       const id = (c.homeChannelId ?? "").trim();
       if (id) map.set(id, c);
     }
@@ -3071,8 +3114,22 @@
   });
   const selectedHomeCompany = $derived.by(() => {
     const id = selectedRow?.channelId?.trim();
-    if (!id) return null;
-    return companyByHomeChannelId.get(id) ?? null;
+    if (id) {
+      const byHomeId = companyByHomeChannelId.get(id);
+      if (byHomeId) return byHomeId;
+    }
+    // Reverse case: the server already marked this channel as the company's
+    // home (`isCompanyHome`) even though the roster's `homeChannelId` hasn't
+    // caught up — e.g. it was opened by id before `ensureCompanyHomeChannel`
+    // resolved. Match it to the roster by `companyUid` so chrome still gets
+    // the real company (name, icon, slug), not just the boolean fallback.
+    if (selectedRow?.kind === "channel" && selectedRow.isCompanyHome) {
+      const uid = (selectedRow.companyUid ?? "").trim();
+      if (uid) {
+        return (effectiveCompanies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid) ?? null;
+      }
+    }
+    return null;
   });
   /**
    * Icon for the selected conversation's company: the row's server-stamped
@@ -4717,8 +4774,22 @@
       ? selectedRow.memberCount
       : (channelStatus?.memberCount ?? 0),
   );
+  /**
+   * A joined channel/group always ends up with a member pill once its
+   * roster or status resolves — showing it from the first paint (with the
+   * "·" placeholder count already built into `memberPillCount`) reserves
+   * its slot in `.channel-header-trailing` so the count arriving later
+   * never nudges the title. Only a row we already know will never get one
+   * (not joined, browse-only, or a DM/group with no roster concept) skips
+   * it entirely.
+   */
   const showMemberPill = $derived(
-    Boolean(selectedRow) && (memberPillCount > 0 || channelStatus != null),
+    Boolean(selectedRow) &&
+      (memberPillCount > 0 ||
+        channelStatus != null ||
+        (selectedRow!.kind === "channel" &&
+          !selectedRow!.browseOnly &&
+          (selectedRow!.membership ?? "joined") === "joined")),
   );
 
   function unwrapAdapter<T>(
@@ -8059,7 +8130,8 @@
           offscreen={phoneViewport && sidebarCollapsed}
           api={sidebarApi}
           {wakes}
-          {companies}
+          companies={effectiveCompanies}
+          onhomechannelresolved={handleHomeChannelResolved}
           {self}
           {isAdmin}
           accountLabel={resolvedAccountLabel}
