@@ -9,7 +9,13 @@
 pub const TITLEBAR_HEIGHT_PX: f64 = 48.0;
 
 /// Leading gutter that clears the native traffic-light cluster on macOS.
-pub const TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX: f64 = 78.0;
+///
+/// The cluster (x=20, ~52px wide at the standard AppKit 12px-button /
+/// 20px-center-spacing layout) left only ~6px of clearance at the old 78px
+/// value, thin enough that a slightly larger button render overlapped the
+/// Back control. Keep in lockstep with
+/// `packages/ui/src/home/titlebar-layout.ts`.
+pub const TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX: f64 = 96.0;
 
 /// Leading inset of the close button. Matches the other overlay windows.
 pub const TITLEBAR_TRAFFIC_LIGHT_X_PX: f64 = 20.0;
@@ -54,7 +60,7 @@ mod tests {
     #[test]
     fn centres_traffic_lights_on_the_titlebar_midline() {
         assert_eq!(TITLEBAR_HEIGHT_PX, 48.0);
-        assert_eq!(TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX, 78.0);
+        assert_eq!(TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX, 96.0);
         assert_eq!(MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX, 14.0);
         assert_eq!(MACOS_TRAFFIC_LIGHT_CENTER_OFFSET_PX, 5.0);
         assert_eq!(titlebar_content_center_px(TITLEBAR_HEIGHT_PX), 24.0);

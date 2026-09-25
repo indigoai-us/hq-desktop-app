@@ -20,8 +20,15 @@ export const TITLEBAR_HEIGHT_PX = 48;
  * Leading gutter that clears the native traffic-light cluster on macOS.
  * Windows overrides this to 12px (native caption buttons live in the OS
  * title bar above the HQ toolbar).
+ *
+ * The traffic-light cluster (x=20, ~52px wide at the standard 12px-button /
+ * 20px-center-spacing AppKit layout) only leaves ~6px of clearance at the
+ * old 78px value — thin enough that a slightly larger button render (a
+ * newer macOS traffic-light style, Retina rounding, or an accessibility
+ * "larger buttons" setting) overlaps the Back control. 96px keeps a real
+ * ~24px margin so this can't recur from cosmetic AppKit changes.
  */
-export const TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX = 78;
+export const TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX = 96;
 
 /** Leading inset of the close button. Matches the other overlay windows. */
 export const TITLEBAR_TRAFFIC_LIGHT_X_PX = 20;
