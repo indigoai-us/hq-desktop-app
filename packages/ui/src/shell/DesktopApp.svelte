@@ -8478,7 +8478,16 @@
                   {onopenurl}
                   active={companyTab}
                   tabs={companyTabsForHost}
-                  onselect={(id) => pushConversationSurface({ companyTab: id })}
+                  onselect={(id) => {
+                    if (id === "projects") {
+                      void navigate({
+                        kind: "projects",
+                        company: selectedCompanySlug || null,
+                      });
+                      return;
+                    }
+                    pushConversationSurface({ companyTab: id });
+                  }}
                 />
               {:else if isProjectChannel}
                 <nav
