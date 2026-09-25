@@ -141,8 +141,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          existing="$(gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null || true)"
-          if [ -n "$existing" ]; then
+          # `gh api` prints the 404 body on stdout, so branch on its exit code.
+          if existing="$(gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null)"; then
             if [ "$existing" != "$GITHUB_SHA" ]; then
               echo "::error::${TAG} already exists at ${existing}, not ${GITHUB_SHA}."
               exit 1
