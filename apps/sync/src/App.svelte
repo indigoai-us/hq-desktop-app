@@ -23,6 +23,7 @@
   import { unexpectedSurfaceForState } from './lib/unexpected-startup-surface';
   import {
     resolveStartupState,
+    startupSurface,
     type StartupPhase,
     type StartupProbeResult,
   } from './lib/startup-gate';
@@ -1722,12 +1723,18 @@
     // Raw token-file presence must not override a failed verdict; it is
     // captured only to select the friendly reauth copy after validation
     // clears an expired session.
-    const hadStoredToken = await invoke<boolean>('has_stored_token').catch(() => false);
+    const tokenPresence: StartupProbeResult['tokenPresence'] = await invoke<boolean>('has_stored_token')
+      .then((present) => (present ? 'present' : 'absent'))
+      .catch((err) => {
+        console.warn('startup token presence probe failed; recording unknown:', err);
+        return 'unknown';
+      });
+    const hadStoredToken = tokenPresence === 'present';
     const lifecycleState = await invoke<string>('get_lifecycle_state').catch((err) => {
       console.warn('get_lifecycle_state unavailable; routing on the auth verdict alone:', err);
       return null;
     });
-    return { lifecycleState: lifecycleState ?? null, hadStoredToken, auth };
+    return { lifecycleState: lifecycleState ?? null, hadStoredToken, tokenPresence, auth };
   }
 
   /**
@@ -1761,7 +1768,9 @@
       return;
     }
 
-    const { lifecycleState: probedLifecycle, hadStoredToken, auth: state } = outcome.result;
+    const priorSurface = startupSurface({ phase: startupPhase, lifecycleState, authenticated });
+    const { lifecycleState: probedLifecycle, hadStoredToken, tokenPresence, auth: state } =
+      outcome.result;
     lifecycleState = probedLifecycle;
     authenticated = shouldSkipSignIn(state);
     expiresAt = state.expiresAt ?? '';
@@ -1782,7 +1791,12 @@
           surface: unexpectedSurface,
           authCheckFailed: hadStoredToken && !state.authenticated,
           probeAttempts: outcome.attempts,
-        }).catch(() => {});
+          authenticated,
+          tokenPresence,
+          priorSurface,
+        }).catch((err) => {
+          console.warn('failed to report unexpected startup surface:', err);
+        });
       }
     }
 

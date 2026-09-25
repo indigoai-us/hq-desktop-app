@@ -17,6 +17,8 @@ export type StartupProbeResult = {
   lifecycleState: string | null;
   /** Raw token-file presence hint, for reauth copy selection. */
   hadStoredToken: boolean;
+  /** Bounded observation used to diagnose startup auth restoration. */
+  tokenPresence: 'present' | 'absent' | 'unknown';
   auth: { authenticated: boolean; expiresAt: string | null };
 };
 

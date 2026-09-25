@@ -8,12 +8,14 @@ import {
 const signedIn: StartupProbeResult = {
   lifecycleState: 'SteadyState',
   hadStoredToken: true,
+  tokenPresence: 'present',
   auth: { authenticated: true, expiresAt: '2030-01-01T00:00:00Z' },
 };
 
 const notSetUp: StartupProbeResult = {
   lifecycleState: 'NeedsInstall',
   hadStoredToken: false,
+  tokenPresence: 'absent',
   auth: { authenticated: false, expiresAt: null },
 };
 
@@ -116,6 +118,18 @@ describe('resolveStartupState', () => {
 
     expect(probe).toHaveBeenCalledTimes(1);
     expect(outcome).toEqual({ ok: true, result: notSetUp, attempts: 1 });
+  });
+
+  it('preserves unknown token presence when the auth verdict resolves', async () => {
+    const result: StartupProbeResult = {
+      ...signedIn,
+      hadStoredToken: false,
+      tokenPresence: 'unknown',
+    };
+
+    const outcome = await resolveStartupState(async () => result, { sleep: async () => {} });
+
+    expect(outcome).toEqual({ ok: true, result, attempts: 1 });
   });
 
   it('backs off between attempts', async () => {
