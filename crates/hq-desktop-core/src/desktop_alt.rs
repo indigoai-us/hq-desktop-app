@@ -476,7 +476,7 @@ pub fn home_channel_url(base: &str, company_uid: &str) -> Result<String, String>
         ));
     }
     Ok(format!(
-        "{}/companies/{}/home-channel",
+        "{}/v1/companies/{}/home-channel",
         base.trim_end_matches('/'),
         company_uid
     ))
@@ -4032,7 +4032,7 @@ mod tests {
         );
         assert_eq!(
             super::home_channel_url("https://hqapi.getindigo.ai/", "cmp_01ABC-def.2").unwrap(),
-            "https://hqapi.getindigo.ai/companies/cmp_01ABC-def.2/home-channel"
+            "https://hqapi.getindigo.ai/v1/companies/cmp_01ABC-def.2/home-channel"
         );
         assert_eq!(
             super::home_channel_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
