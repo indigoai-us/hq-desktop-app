@@ -2258,6 +2258,22 @@ jobs:
           "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Windows MSI ProductVersion: $actual"
 
+      # This job never compiles anything: the shell (exe + Recall sidecar
+      # launcher) was restored from the shell-windows-x64 artifact above and
+      # the UI was downloaded pre-built. tauri.windows.release.conf.json's
+      # beforeBuildCommand ("pnpm run build && pnpm -C sidecar/recall-sdk-bridge
+      # build") is only needed on the shell job that actually compiles the
+      # sidecar; running it again here fails on Node 22 Windows runners with
+      # `spawnSync pnpm.cmd EINVAL` (pnpm.cmd needs shell:true to spawn, and
+      # Tauri's bundler invokes it without one). Override it to a no-op so
+      # `tauri build` only re-links and packages the already-built bundle.
+      - name: Skip beforeBuildCommand (shell + UI already staged)
+        shell: pwsh
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.no-before-build.conf.json"
+          Set-Content -Path $configPath -Value '{"build":{"beforeBuildCommand":""}}'
+          "TAURI_NO_BEFORE_BUILD_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Stamp build commit identity
         shell: bash
         run: |
@@ -2279,10 +2295,12 @@ jobs:
       # cargo build is a no-op here (the restored target dir already matches
       # this exact shell key); this run only re-links the bundle (fresh
       # version resource, dist/, msi overlay) and packages msi/nsis/updater.
+      # beforeBuildCommand is overridden to "" (see the skip step above) so
+      # this never re-runs the UI or sidecar build on the assemble runner.
       - name: Tauri build (x86_64-pc-windows-msvc)
         env:
           RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
-        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG --config $env:TAURI_NO_BEFORE_BUILD_CONFIG
 
       - name: Install Sentry CLI
         shell: pwsh
@@ -2565,6 +2583,18 @@ jobs:
           "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Windows MSI ProductVersion: $actual"
 
+      # See the matching step in assemble-windows-x64: this job never
+      # compiles anything (shell + UI are restored/downloaded), so
+      # tauri.windows.release.conf.json's beforeBuildCommand must not run
+      # again here — it dies with `spawnSync pnpm.cmd EINVAL` on Node 22
+      # Windows runners.
+      - name: Skip beforeBuildCommand (shell + UI already staged)
+        shell: pwsh
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.no-before-build.conf.json"
+          Set-Content -Path $configPath -Value '{"build":{"beforeBuildCommand":""}}'
+          "TAURI_NO_BEFORE_BUILD_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Stamp build commit identity
         shell: bash
         run: |
@@ -2586,10 +2616,12 @@ jobs:
       # cargo build is a no-op here (the restored target dir already matches
       # this exact shell key); this run only re-links the bundle (fresh
       # version resource, dist/, msi overlay) and packages msi/nsis/updater.
+      # beforeBuildCommand is overridden to "" (see the skip step above) so
+      # this never re-runs the UI or sidecar build on the assemble runner.
       - name: Tauri build (aarch64-pc-windows-msvc)
         env:
           RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
-        run: pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
+        run: pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG --config $env:TAURI_NO_BEFORE_BUILD_CONFIG
 
       - name: Install Sentry CLI
         shell: pwsh
