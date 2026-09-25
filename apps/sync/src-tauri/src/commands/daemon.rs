@@ -3170,6 +3170,7 @@ pub(crate) fn read_runner_diagnostic_report(
 /// content-safe stack shape/signature. Pure — a test proves the patch with no I/O.
 fn apply_report_to_fault_tags(
     tags: &mut Vec<(String, String)>,
+    extras: &mut Vec<(String, sentry::protocol::Value)>,
     report: &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport,
 ) {
     set_payload_tag(tags, "runner_report_read", report.read.as_str().to_string());
@@ -3195,6 +3196,10 @@ fn apply_report_to_fault_tags(
             "runner_fatal_source",
             report.fatal_source().to_string(),
         );
+        // The exit path may have recorded this stderr-only explanation before the
+        // report read. Once the report names a cause, that placeholder would
+        // contradict the adopted class, so remove it from the deferred payload.
+        extras.retain(|(key, _)| key != "runner_fatal_reason");
     }
 }
 
@@ -3254,7 +3259,7 @@ fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
             // class never overrides a stderr-derived one (see apply_report_to_fault_tags).
             if let Some(report_dir) = payload.read.report_dir.clone() {
                 let report = read_runner_diagnostic_report(&report_dir);
-                apply_report_to_fault_tags(&mut payload.tags, &report);
+                apply_report_to_fault_tags(&mut payload.tags, &mut payload.extras, &report);
             }
             let resolution = if outcome.is_some() {
                 "read_resolved"
@@ -3500,14 +3505,18 @@ fn reset_pending_runner_report_registry_for_test() {
 /// fault worker and the manual route use, so a report-derived class still never
 /// overrides a stderr-derived one and the three seams can never drift. Shared by the
 /// deferred worker and the recording test double so both observe the same result.
-fn apply_deferred_runner_report(report_dir: &Path, tags: &mut Vec<(String, String)>) {
+fn apply_deferred_runner_report(
+    report_dir: &Path,
+    tags: &mut Vec<(String, String)>,
+    extras: &mut Vec<(String, sentry::protocol::Value)>,
+) {
     let report = read_runner_diagnostic_report(report_dir);
-    apply_report_to_fault_tags(tags, &report);
+    apply_report_to_fault_tags(tags, extras, &report);
 }
 
 /// Read a held-back non-fault capture's report, apply its verdict, and send it.
 fn send_deferred_runner_report_capture(mut payload: DeferredRunnerReportCapture) {
-    apply_deferred_runner_report(&payload.report_dir, &mut payload.tags);
+    apply_deferred_runner_report(&payload.report_dir, &mut payload.tags, &mut payload.extras);
     let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
     let tags: Vec<(&str, String)> = payload
         .tags
@@ -7865,13 +7874,26 @@ mod tests {
                 .iter()
                 .map(|(key, value)| ((*key).to_string(), value.clone()))
                 .collect();
-            apply_deferred_runner_report(&report_dir, &mut applied);
+            let mut applied_extras: Vec<(String, sentry::protocol::Value)> = extras
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect();
+            apply_deferred_runner_report(&report_dir, &mut applied, &mut applied_extras);
             let applied_refs: Vec<(&str, String)> = applied
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.clone()))
                 .collect();
+            let applied_extra_refs: Vec<(&str, sentry::protocol::Value)> = applied_extras
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone()))
+                .collect();
             self.deferred_runner_report
-                .push(recorded_capture(message, fingerprint, &applied_refs, extras));
+                .push(recorded_capture(
+                    message,
+                    fingerprint,
+                    &applied_refs,
+                    &applied_extra_refs,
+                ));
         }
     }
 
@@ -8965,11 +8987,28 @@ mod tests {
         ]
     }
 
+    fn report_extras_with_reason(reason: &str) -> Vec<(String, sentry::protocol::Value)> {
+        vec![(
+            "runner_fatal_reason".to_string(),
+            sentry::protocol::Value::String(reason.to_string()),
+        )]
+    }
+
     fn report_tag_of<'a>(tags: &'a [(String, String)], key: &str) -> &'a str {
         tags.iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
             .unwrap_or("")
+    }
+
+    fn report_reason_of(extras: &[(String, sentry::protocol::Value)]) -> Option<&str> {
+        extras
+            .iter()
+            .find(|(key, _)| key == "runner_fatal_reason")
+            .and_then(|(_, value)| match value {
+                sentry::protocol::Value::String(reason) => Some(reason.as_str()),
+                _ => None,
+            })
     }
 
     fn unique_report_dir(label: &str) -> PathBuf {
@@ -8990,12 +9029,15 @@ mod tests {
         assert!(report.named_cause());
         for current_class in ["none", "unknown"] {
             let mut tags = report_tags_with_class(current_class);
-            apply_report_to_fault_tags(&mut tags, &report);
+            let mut extras =
+                report_extras_with_reason("windows_fault_without_known_stderr_signature");
+            apply_report_to_fault_tags(&mut tags, &mut extras, &report);
             assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "heap_oom");
             assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "node_report");
             assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
             assert_ne!(report_tag_of(&tags, "runner_stack_shape"), "all_redacted");
             assert_eq!(report_tag_of(&tags, "runner_stack_signature").len(), 16);
+            assert_eq!(report_reason_of(&extras), None);
         }
     }
 
@@ -9014,24 +9056,35 @@ mod tests {
             "runner_stack_shape",
             "node_check_abort>v8_abort".to_string(),
         );
-        apply_report_to_fault_tags(&mut tags, &report);
+        let mut extras = report_extras_with_reason("stderr_named_cause");
+        apply_report_to_fault_tags(&mut tags, &mut extras, &report);
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "libuv_assert");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "stderr");
-        assert_eq!(report_tag_of(&tags, "runner_stack_shape"), "node_check_abort>v8_abort");
+        assert_eq!(
+            report_tag_of(&tags, "runner_stack_shape"),
+            "node_check_abort>v8_abort"
+        );
         // Only the read provenance is recorded.
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
+        assert_eq!(report_reason_of(&extras), Some("stderr_named_cause"));
     }
 
     #[test]
     fn apply_report_records_absence_without_naming_a_cause() {
         let mut tags = report_tags_with_class("none");
+        let mut extras = report_extras_with_reason("windows_fault_without_known_stderr_signature");
         apply_report_to_fault_tags(
             &mut tags,
+            &mut extras,
             &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport::absent(),
         );
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "none");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "none");
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_absent");
+        assert_eq!(
+            report_reason_of(&extras),
+            Some("windows_fault_without_known_stderr_signature")
+        );
     }
 
     #[test]

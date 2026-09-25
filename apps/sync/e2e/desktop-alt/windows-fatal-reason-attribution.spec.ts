@@ -100,7 +100,14 @@ describe('windows fatal-reason attribution — source contracts', () => {
     // NOT in the terminal exit callback that gates emit_exit_then_deregister.
     expect(daemonSource).toContain('fn spawn_deferred_watcher_fault_capture(');
     expect(daemonSource).toContain('let report = read_runner_diagnostic_report(&report_dir);');
-    expect(daemonSource).toContain('apply_report_to_fault_tags(&mut payload.tags, &report);');
+    expect(daemonSource).toContain(
+      'apply_report_to_fault_tags(&mut payload.tags, &mut payload.extras, &report);',
+    );
+    // When the Node report supplies the cause, the deferred payload drops the
+    // stderr-only placeholder reason so its extras agree with the adopted class.
+    expect(daemonSource).toContain(
+      'extras.retain(|(key, _)| key != "runner_fatal_reason");',
+    );
     // The reader is a single bounded read (no directory listing) that removes the
     // report directory after reading, bounding disk on a crash-looping machine.
     expect(daemonSource).toContain('pub(crate) fn read_runner_diagnostic_report(');
