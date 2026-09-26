@@ -681,7 +681,9 @@ fn core_update_stage_markers(raw: &str) -> Vec<String> {
 
 fn core_update_stage_token(marker: &str) -> &'static str {
     let marker = marker.to_ascii_lowercase();
-    if marker.contains("clone") || marker.contains("cloning") {
+    if marker.starts_with("preserved subpaths (backed up + restored across the overlay)") {
+        "unknown"
+    } else if marker.contains("clone") || marker.contains("cloning") {
         "clone"
     } else if marker.contains("rsync") {
         "rsync"
@@ -2344,7 +2346,11 @@ fn core_update_sentry_failure_report(
             1 + u32::from(details.managed_git_retry.attempted()),
         )
     });
-    let category_step = core_update_rescue_step_for_category(details.rescue_failure_category);
+    let category_step = if details.rescue_telemetry.is_some() {
+        core_update_rescue_step_for_category(details.rescue_failure_category)
+    } else {
+        "unknown"
+    };
     if category_step != "unknown" {
         rescue_telemetry.rescue_step = category_step;
     }
@@ -6201,6 +6207,50 @@ error: clone failed";
         );
 
         assert_eq!(telemetry.rescue_step, "clone");
+    }
+
+    #[test]
+    fn preserved_subpaths_setup_heading_is_not_a_restore_stage() {
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(
+            "==> Preserved subpaths (backed up + restored across the overlay):\n",
+            1,
+        );
+
+        assert_eq!(telemetry.rescue_step, "unknown");
+        assert_eq!(
+            core_update_stage_token("==> Backed up personal -> shuttle/id"),
+            "restore"
+        );
+        assert_eq!(
+            core_update_stage_token("==> Restoring preserved sub-paths ..."),
+            "restore"
+        );
+    }
+
+    #[test]
+    fn network_category_maps_to_clone_only_with_rescue_output() {
+        let mut details = core_update_sentry_test_details();
+        details.rescue_failure_category = RescueFailureCategory::Network;
+
+        let without_rescue = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            "network",
+            details,
+        );
+        assert_eq!(without_rescue.rescue_telemetry.rescue_step, "unknown");
+
+        let rescue_telemetry = CoreUpdateRescueTelemetry::from_raw("", 1);
+        details.rescue_telemetry = Some(&rescue_telemetry);
+        let with_rescue = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            "network",
+            details,
+        );
+        assert_eq!(with_rescue.rescue_telemetry.rescue_step, "clone");
     }
 
     #[test]
