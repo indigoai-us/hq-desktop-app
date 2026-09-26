@@ -59,12 +59,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, LazyLock, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::{mpsc, Condvar, LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use fs2::FileExt;
@@ -83,15 +82,96 @@ const LOG_TAG: &str = "git-mirror";
 /// is [`try_acquire_mirror_lock`].
 static MIRROR_LOCK: Mutex<()> = Mutex::new(());
 
-/// Snapshot of the hq-flags rollout gate supplied by the desktop adapter.
-/// Missing or unreadable flag values are written as `false` by that adapter.
-static SCOPE_QUARANTINE_MOVE_NOT_DELETION_ENABLED: AtomicBool = AtomicBool::new(false);
+#[derive(Default)]
+struct ScopeQuarantineGateState {
+    snapshot: Option<bool>,
+    first_mirror_decision: Option<bool>,
+}
+
+/// Sticky hq-flags snapshot shared by manual and daemon mirror passes. The
+/// first pass waits for this snapshot; later passes use the latest delivered
+/// value without waiting again.
+struct ScopeQuarantineGate {
+    state: Mutex<ScopeQuarantineGateState>,
+    snapshot_ready: Condvar,
+}
+
+impl ScopeQuarantineGate {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ScopeQuarantineGateState::default()),
+            snapshot_ready: Condvar::new(),
+        }
+    }
+
+    fn set_snapshot(&self, enabled: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.snapshot = Some(enabled);
+        self.snapshot_ready.notify_all();
+    }
+
+    fn resolve_first_mirror(&self, timeout: Duration) -> ScopeQuarantineGateDecision {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(enabled) = state.first_mirror_decision {
+            return ScopeQuarantineGateDecision {
+                enabled: state.snapshot.unwrap_or(enabled),
+                timed_out: false,
+            };
+        }
+
+        let deadline = Instant::now() + timeout;
+        while state.snapshot.is_none() {
+            let now = Instant::now();
+            if now >= deadline {
+                state.first_mirror_decision = Some(false);
+                return ScopeQuarantineGateDecision {
+                    enabled: false,
+                    timed_out: true,
+                };
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let (next, wait) = self
+                .snapshot_ready
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            state = next;
+            if let Some(enabled) = state.first_mirror_decision {
+                return ScopeQuarantineGateDecision {
+                    enabled,
+                    timed_out: false,
+                };
+            }
+            if wait.timed_out() && state.snapshot.is_none() {
+                state.first_mirror_decision = Some(false);
+                return ScopeQuarantineGateDecision {
+                    enabled: false,
+                    timed_out: true,
+                };
+            }
+        }
+
+        let enabled = state.snapshot.unwrap_or(false);
+        state.first_mirror_decision = Some(enabled);
+        ScopeQuarantineGateDecision {
+            enabled,
+            timed_out: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScopeQuarantineGateDecision {
+    enabled: bool,
+    timed_out: bool,
+}
+
+static SCOPE_QUARANTINE_GATE: LazyLock<ScopeQuarantineGate> =
+    LazyLock::new(ScopeQuarantineGate::new);
 
 /// Update the cached hq-flags value used by both manual and daemon mirrors.
-/// The default is deliberately false so a renderer that has not resolved the
-/// registry yet keeps the existing mirror behavior.
+/// A missing or unreadable flag is sent as `false` by the desktop adapter.
 pub fn set_scope_quarantine_move_not_deletion_enabled(enabled: bool) {
-    SCOPE_QUARANTINE_MOVE_NOT_DELETION_ENABLED.store(enabled, Ordering::Release);
+    SCOPE_QUARANTINE_GATE.set_snapshot(enabled);
 }
 
 /// Guards pushes independently from local snapshots. Only one push may run at
@@ -2594,8 +2674,28 @@ pub fn spawn_mirror_after_sync(hq_folder: &str) {
 /// other. Never panics, never propagates errors — everything ends up in the
 /// log under `git-mirror`.
 pub fn mirror_after_sync(hq_folder: &str) {
+    mirror_after_sync_with_flag_snapshot_timeout(hq_folder, Duration::ZERO);
+}
+
+/// Wait for the first hq-flags snapshot before taking the first mirror image.
+/// The app passes its existing startup watchdog bound; a timeout uses the old
+/// default-off path for this pass and is logged once.
+pub fn mirror_after_sync_with_flag_snapshot_timeout(hq_folder: &str, timeout: Duration) {
+    mirror_after_sync_with_gate(hq_folder, timeout, &SCOPE_QUARANTINE_GATE);
+}
+
+fn mirror_after_sync_with_gate(hq_folder: &str, timeout: Duration, gate: &ScopeQuarantineGate) {
     if !Path::new(hq_folder).join(".git").exists() {
         return;
+    }
+    let gate_decision = gate.resolve_first_mirror(timeout);
+    if gate_decision.timed_out {
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: mirror flag snapshot was not ready within {timeout:?}; using the default-off path for this first pass"
+            ),
+        );
     }
     let _guard = match MIRROR_LOCK.try_lock() {
         Ok(g) => g,
@@ -2662,9 +2762,7 @@ pub fn mirror_after_sync(hq_folder: &str) {
         }
     };
 
-    let scope_quarantine_moves_enabled =
-        SCOPE_QUARANTINE_MOVE_NOT_DELETION_ENABLED.load(Ordering::Acquire);
-    let outcome = match run_mirror(hq_folder, &git_dir, scope_quarantine_moves_enabled) {
+    let outcome = match run_mirror(hq_folder, &git_dir, gate_decision.enabled) {
         Ok(outcome) => outcome,
         Err(e) => {
             log(LOG_TAG, &format!("{hq_folder}: {e}"));
@@ -4054,10 +4152,11 @@ struct StagedDeletionRecord {
     path: String,
 }
 
-/// Restore staged source paths only when a regular-file copy exists under one
-/// scope-shrink journal directory and Git hashes that copy to the exact HEAD
-/// blob. The path-only reset changes the index, not the worktree; unrelated
-/// staged paths remain staged and a later mirror pass can repeat the check.
+/// Restore staged source paths only when a regular-file copy exists under a
+/// scope-shrink journal and its lifecycle is newer than the last HEAD commit
+/// containing that path. A file that returned to scope and was committed has a
+/// newer path commit than its old quarantine directory, so a later deliberate
+/// deletion remains staged for the existing bulk-delete guard.
 fn restore_scope_quarantine_move_index_entries(hq_folder: &str) -> Result<usize, String> {
     let roots = scope_quarantine_journal_roots(Path::new(hq_folder));
     if roots.is_empty() {
@@ -4065,7 +4164,7 @@ fn restore_scope_quarantine_move_index_entries(hq_folder: &str) -> Result<usize,
     }
 
     let records = staged_deletion_records(hq_folder)?;
-    let mut restored_paths = Vec::new();
+    let mut candidates = Vec::new();
     for record in records {
         // Symlinks and submodules have different Git blob semantics. Leave
         // them on the existing deletion path rather than guessing.
@@ -4077,40 +4176,229 @@ fn restore_scope_quarantine_move_index_entries(hq_folder: &str) -> Result<usize,
             continue;
         }
 
-        let matching_copy_exists = roots.iter().any(|root| {
+        // Keep the freshest matching copy when a path appears in more than one
+        // journal. The containing directory's mtime records when this journal
+        // entry was moved; the file's own mtime survives a rename and is not
+        // useful provenance.
+        let mut freshest_matching_move: Option<(&Path, SystemTime)> = None;
+        for root in &roots {
             let Some(copy) = regular_file_below(root, relative) else {
-                return false;
+                continue;
             };
-            hash_quarantined_copy(hq_folder, &record.path, &copy)
+            if !hash_quarantined_copy(hq_folder, &record.path, &copy)
                 .is_some_and(|blob| blob == record.blob)
-        });
-        if matching_copy_exists {
-            restored_paths.push(record.path);
+            {
+                continue;
+            }
+            let Some(modified) = copy
+                .parent()
+                .and_then(|parent| fs::metadata(parent).ok())
+                .and_then(|metadata| metadata.modified().ok())
+            else {
+                continue;
+            };
+            if freshest_matching_move.map_or(true, |(_, current)| modified > current) {
+                freshest_matching_move = Some((root.as_path(), modified));
+            }
+        }
+        if let Some((_, journal_modified)) = freshest_matching_move {
+            candidates.push((record.path, journal_modified));
         }
     }
 
-    if restored_paths.is_empty() {
+    if candidates.is_empty() {
         return Ok(0);
     }
 
-    // This is Git's path form of reset: it copies selected entries from HEAD
-    // into the index without checking files out. `--literal-pathspecs` keeps
-    // tracked filenames such as `:(glob)*` from being interpreted as patterns.
-    let mut args = vec!["--literal-pathspecs", "reset", "-q", "HEAD", "--"];
-    args.extend(restored_paths.iter().map(String::as_str));
-    let out = git_output(hq_folder, &args, GIT_INDEX_TIMEOUT)
-        .map_err(|_| "git reset of quarantined mirror paths failed to run".to_string())?;
+    let Some(head_commit_time) = head_commit_time(hq_folder) else {
+        // Provenance could not be established. Leave every source deletion on
+        // the existing guarded path rather than treating uncertainty as a move.
+        return Ok(0);
+    };
+    let uncertain = candidates
+        .iter()
+        .filter(|(_, journal_modified)| *journal_modified < head_commit_time)
+        .collect::<Vec<_>>();
+    let latest_commits = if uncertain.is_empty() {
+        HashMap::new()
+    } else {
+        let paths = uncertain
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        let since = uncertain
+            .iter()
+            .map(|(_, modified)| *modified)
+            .min()
+            .unwrap_or(head_commit_time);
+        let Some(latest_commits) = latest_path_commit_times(hq_folder, &paths, since) else {
+            // If Git history cannot establish whether the path was later
+            // returned to scope, preserve the staged deletion rather than
+            // treating an unverified quarantine copy as current provenance.
+            return Ok(0);
+        };
+        latest_commits
+    };
+
+    let restored_paths = candidates
+        .into_iter()
+        .filter_map(|(path, journal_modified)| {
+            let last_path_commit = latest_commits.get(&path);
+            let journal_is_current = journal_modified >= head_commit_time
+                || last_path_commit.map_or(true, |committed_at| journal_modified >= *committed_at);
+            journal_is_current.then_some(path)
+        })
+        .collect::<Vec<_>>();
+
+    reset_quarantined_mirror_paths(hq_folder, &restored_paths)
+}
+
+/// Reset only the selected source deletions to their HEAD entries. NUL-delimited
+/// pathspec files avoid putting thousands of long filenames in Git's argv,
+/// which exceeds Windows' command-line limit.
+fn reset_quarantined_mirror_paths(hq_folder: &str, paths: &[String]) -> Result<usize, String> {
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let pathspec = write_pathspec_file(hq_folder, "mirror-quarantine-reset-", paths)?;
+    let pathspec_arg = format!("--pathspec-from-file={}", pathspec.path().display());
+    let out = git_output(
+        hq_folder,
+        &[
+            "--literal-pathspecs",
+            "reset",
+            "-q",
+            "HEAD",
+            &pathspec_arg,
+            "--pathspec-file-nul",
+        ],
+        GIT_INDEX_TIMEOUT,
+    )
+    .map_err(|_| "git reset of quarantined mirror paths failed to run".to_string())?;
     if !out.status.success() {
         return Err(format!(
             "git reset of {} quarantined mirror paths failed (exit {})",
-            restored_paths.len(),
+            paths.len(),
             out.status
                 .code()
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "signal".to_string())
         ));
     }
-    Ok(restored_paths.len())
+    Ok(paths.len())
+}
+
+fn write_pathspec_file(
+    hq_folder: &str,
+    prefix: &str,
+    paths: &[String],
+) -> Result<tempfile::NamedTempFile, String> {
+    let metadata_dir = Path::new(hq_folder).join(".hq");
+    let mut file = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempfile_in(metadata_dir)
+        .map_err(|_| "could not create a temporary Git pathspec file".to_string())?;
+    for path in paths {
+        file.write_all(path.as_bytes())
+            .and_then(|()| file.write_all(&[0]))
+            .map_err(|_| "could not write a temporary Git pathspec file".to_string())?;
+    }
+    file.flush()
+        .map_err(|_| "could not flush a temporary Git pathspec file".to_string())?;
+    Ok(file)
+}
+
+fn head_commit_time(hq_folder: &str) -> Option<SystemTime> {
+    let out = git_output(
+        hq_folder,
+        &["log", "-1", "--format=%ct", "HEAD"],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let seconds = String::from_utf8(out.stdout)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
+}
+
+/// Return the newest commit timestamp for each requested path that changed
+/// after `since`. One bounded-by-date Git history walk avoids one Git process
+/// per quarantined file; unrelated paths are discarded while parsing.
+fn latest_path_commit_times(
+    hq_folder: &str,
+    paths: &[String],
+    since: SystemTime,
+) -> Option<HashMap<String, SystemTime>> {
+    let since_seconds = since
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_sub(1);
+    let since_date = chrono::DateTime::<Utc>::from_timestamp(since_seconds as i64, 0)?
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
+    let since_arg = format!("--since={since_date}");
+    let out = git_output(
+        hq_folder,
+        &[
+            "log",
+            "-z",
+            "--name-only",
+            "--format=%x00%ct%x00",
+            &since_arg,
+            "HEAD",
+        ],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+
+    let wanted = paths
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let mut newest = HashMap::new();
+    let mut timestamp = None;
+    let fields = out.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let mut index = 0;
+    while index < fields.len() {
+        if fields[index].is_empty() {
+            index += 1;
+            let Some(field) = fields.get(index) else {
+                break;
+            };
+            let Some(seconds) = std::str::from_utf8(field).ok()?.trim().parse::<u64>().ok() else {
+                break;
+            };
+            timestamp = UNIX_EPOCH.checked_add(Duration::from_secs(seconds));
+            index += 1;
+            // `git log --format` leaves one empty NUL field between the
+            // formatted commit header and the first pathname.
+            if fields.get(index).is_some_and(|field| field.is_empty()) {
+                index += 1;
+            }
+            continue;
+        }
+        if let Some(committed_at) = timestamp {
+            // `git log --format` separates the commit header from its first
+            // NUL-delimited pathname with one newline. Remove only that framing
+            // byte; a filename that itself starts with a newline remains intact.
+            let path = fields[index].strip_prefix(b"\n").unwrap_or(fields[index]);
+            if let Ok(path) = std::str::from_utf8(path) {
+                if wanted.contains(path) {
+                    newest.entry(path.to_string()).or_insert(committed_at);
+                }
+            }
+        }
+        index += 1;
+    }
+    Some(newest)
 }
 
 /// Read raw staged deletion metadata so each source path is paired with the
@@ -7977,6 +8265,159 @@ mod tests {
             "a quarantine path alone is insufficient without a matching Git blob"
         );
         reset_refusal_report_state();
+    }
+
+    #[test]
+    fn pending_quarantine_flag_wait_is_bounded_and_late_snapshot_applies_next_pass() {
+        let gate = std::sync::Arc::new(ScopeQuarantineGate::new());
+        let waiter_gate = std::sync::Arc::clone(&gate);
+        let (decision_tx, decision_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let decision = waiter_gate.resolve_first_mirror(Duration::from_millis(75));
+            decision_tx.send(decision).unwrap();
+        });
+
+        assert!(matches!(
+            decision_rx.recv_timeout(Duration::from_millis(15)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        let timed_out = decision_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the pending flag wait reaches its bound");
+        assert_eq!(
+            timed_out,
+            ScopeQuarantineGateDecision {
+                enabled: false,
+                timed_out: true,
+            },
+            "timeout preserves the historical default-off path for this first pass"
+        );
+        gate.set_snapshot(true);
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO),
+            ScopeQuarantineGateDecision {
+                enabled: true,
+                timed_out: false,
+            },
+            "a late snapshot is used by subsequent mirror passes"
+        );
+        waiter.join().expect("flag wait completes");
+    }
+
+    #[test]
+    fn stale_scope_quarantine_journal_does_not_restore_a_deliberate_deletion() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_scope_quarantine_repo(tmp.path(), 1);
+        move_scope_files_to_quarantine(tmp.path(), 1, false);
+        let source = tmp.path().join("companies/indigo/file-0000.md");
+        let stale_copy = tmp
+            .path()
+            .join(".hq/scope-quarantine/journal-001/companies/indigo/file-0000.md");
+
+        // Record the old shrink operation, then return the exact content to the
+        // tracked scope while the old journal copy remains behind.
+        git_ok(tmp.path(), &["add", "-A"]);
+        std::thread::sleep(Duration::from_secs(2));
+        git_ok(tmp.path(), &["commit", "-q", "-m", "old scope shrink"]);
+        fs::copy(&stale_copy, &source).expect("the file returns to current scope");
+        git_ok(tmp.path(), &["add", "-A"]);
+        git_ok(
+            tmp.path(),
+            &["commit", "-q", "-m", "file returned to scope"],
+        );
+
+        fs::remove_file(&source).expect("user deliberately deletes the returned file");
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(tmp.path().to_str().unwrap())
+                .expect("classify stale quarantine provenance"),
+            0,
+            "a stale journal must not reset a deletion after the path returned to scope"
+        );
+        assert_eq!(
+            count_staged_deletions(tmp.path().to_str().unwrap())
+                .expect("read staged deletion")
+                .count,
+            1,
+            "the deliberate deletion remains staged"
+        );
+        git_ok(tmp.path(), &["reset", "-q"]);
+
+        let before_delete_commit = rev_count(tmp.path());
+        run_mirror_at_with_quarantine_flag(tmp.path(), true)
+            .expect("the deliberate deletion follows the existing mirror path");
+        assert_eq!(
+            rev_count(tmp.path()),
+            before_delete_commit + 1,
+            "the deliberate deletion is committed"
+        );
+        let show = git(
+            tmp.path(),
+            &[
+                "show",
+                "--format=",
+                "--name-status",
+                "HEAD",
+                "--",
+                "companies/indigo/file-0000.md",
+            ],
+        );
+        assert!(show.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&show.stdout).trim(),
+            "D\tcompanies/indigo/file-0000.md",
+            "the resulting mirror commit records the source deletion"
+        );
+        reset_refusal_report_state();
+    }
+
+    #[test]
+    fn quarantine_reset_handles_5000_long_paths_without_oversized_argv() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        let long_directory = "d".repeat(100);
+        let mut paths = Vec::with_capacity(5_000);
+        for index in 0..5_000 {
+            let relative = format!(
+                "companies/{long_directory}/file-{index:04}-{}.md",
+                "x".repeat(60)
+            );
+            let source = tmp.path().join(&relative);
+            fs::create_dir_all(source.parent().unwrap()).unwrap();
+            fs::write(&source, format!("large path fixture {index}\n")).unwrap();
+            paths.push(relative);
+        }
+        git_ok(tmp.path(), &["add", "-A"]);
+        git_ok(tmp.path(), &["commit", "-q", "-m", "seed long path tree"]);
+
+        for path in &paths {
+            fs::remove_file(tmp.path().join(path)).unwrap();
+        }
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_eq!(
+            count_staged_deletions(tmp.path().to_str().unwrap())
+                .expect("read large staged deletion set")
+                .count,
+            5_000
+        );
+        assert_eq!(
+            reset_quarantined_mirror_paths(tmp.path().to_str().unwrap(), &paths)
+                .expect("reset large quarantine move set"),
+            5_000,
+            "all matching paths fit through Git's NUL-delimited pathspec file"
+        );
+        assert_eq!(
+            count_staged_deletions(tmp.path().to_str().unwrap())
+                .expect("read staged deletions after reset")
+                .count,
+            0,
+            "the large path set is removed from the deletion set"
+        );
     }
 
     #[test]
