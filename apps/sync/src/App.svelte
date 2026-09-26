@@ -26,6 +26,7 @@
     afterFanoutPlan,
     afterSyncComplete,
     formatPollOnlyStatus,
+    shouldRefreshPollOnlyTrayStatus,
     type RealtimeMode,
   } from './lib/poll-only-status';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
@@ -647,6 +648,14 @@
   }
 
   async function refreshPollOnlyTrayStatus(minPollMs: number, maxPollMs: number) {
+    if (!shouldRefreshPollOnlyTrayStatus(
+      realtimeMode,
+      syncState,
+      manualSyncActive,
+      externalSyncActive,
+      transferActive,
+    )) return;
+
     let lastSyncAt: string | null = null;
     try {
       const status = await invoke<{ lastSyncAt: string | null }>('get_sync_status');
@@ -655,6 +664,14 @@
       // Keep the state informative if the local journal is temporarily unreadable.
       warnPollOnlyStatusFailure('journal read', error);
     }
+    if (!shouldRefreshPollOnlyTrayStatus(
+      realtimeMode,
+      syncState,
+      manualSyncActive,
+      externalSyncActive,
+      transferActive,
+    )) return;
+
     const detail = formatPollOnlyStatus(lastSyncAt, minPollMs, maxPollMs);
     await invoke('set_tray_state', { state: 'poll-only', detail }).catch((error: unknown) => {
       warnPollOnlyStatusFailure('tray update', error);
@@ -667,6 +684,13 @@
     const maxPollMs = pollOnlyMaxPollMs;
     void refreshPollOnlyTrayStatus(minPollMs, maxPollMs);
     const timer = setInterval(() => {
+      if (!shouldRefreshPollOnlyTrayStatus(
+        realtimeMode,
+        syncState,
+        manualSyncActive,
+        externalSyncActive,
+        transferActive,
+      )) return;
       void refreshPollOnlyTrayStatus(minPollMs, maxPollMs);
     }, 60_000);
     return () => clearInterval(timer);

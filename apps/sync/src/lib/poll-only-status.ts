@@ -1,5 +1,28 @@
 export type RealtimeMode = 'poll-only' | 'realtime';
 export type SyncDisplayState = 'idle' | 'syncing' | 'poll-only';
+export type PollOnlyTraySyncState =
+  | 'idle'
+  | 'syncing'
+  | 'poll-only'
+  | 'error'
+  | 'conflict'
+  | 'setup-needed'
+  | 'auth-error'
+  | 'reauth';
+
+export function shouldRefreshPollOnlyTrayStatus(
+  realtimeMode: RealtimeMode | null,
+  syncState: PollOnlyTraySyncState,
+  manualSyncActive: boolean,
+  externalSyncActive: boolean,
+  transferActive: boolean,
+): boolean {
+  return realtimeMode === 'poll-only'
+    && syncState === 'poll-only'
+    && !manualSyncActive
+    && !externalSyncActive
+    && !transferActive;
+}
 
 export function afterFanoutPlan(
   realtimeMode: RealtimeMode | null,
