@@ -328,6 +328,7 @@ async fn install_hq_core_update_observed(
                         run.result.npx_resolution,
                     ),
                 npx_resolution: Some(run.result.npx_resolution),
+                pre_rescue_materialization: false,
                 managed_git_retry: run.managed_git_retry,
             },
         ),
