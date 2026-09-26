@@ -3989,15 +3989,43 @@ enum NativeCoreAutoUpdateOutcome {
 enum AutomaticCoreUpdatePreinstall {
     Proceed,
     DeferForPrewarm,
+    DeferForSync,
 }
 
-async fn automatic_core_update_preinstall<Wait, WaitFuture>(
+fn defer_automatic_core_update_for_sync(
+    candidate: CoreAutoUpdateCandidate<'_>,
+) -> NativeCoreAutoUpdateOutcome {
+    log(
+        "hq-core-update",
+        "native auto-update deferred: sync in progress",
+    );
+    emit_core_update_event(
+        "core_update_skipped",
+        "automatic",
+        "deferred",
+        Some(candidate.channel),
+        candidate.local_version,
+        Some(candidate.target_version),
+        true,
+        Some(candidate.is_eligible),
+        Some(candidate.version_behind),
+        Duration::ZERO,
+        None,
+        None,
+        Some("sync_in_progress"),
+    );
+    NativeCoreAutoUpdateOutcome::DeferredForSync
+}
+
+async fn automatic_core_update_preinstall<Wait, WaitFuture, SyncCheck>(
     wait_enabled: bool,
     wait_for_prewarm: Wait,
+    sync_in_progress_after_wait: SyncCheck,
 ) -> AutomaticCoreUpdatePreinstall
 where
     Wait: FnOnce() -> WaitFuture,
     WaitFuture: Future<Output = hq_desktop_core::prewarm::PrewarmWaitOutcome>,
+    SyncCheck: FnOnce() -> bool,
 {
     if !wait_enabled {
         return AutomaticCoreUpdatePreinstall::Proceed;
@@ -4006,7 +4034,11 @@ where
     match wait_for_prewarm().await {
         hq_desktop_core::prewarm::PrewarmWaitOutcome::NotRunning
         | hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed => {
-            AutomaticCoreUpdatePreinstall::Proceed
+            if sync_in_progress_after_wait() {
+                AutomaticCoreUpdatePreinstall::DeferForSync
+            } else {
+                AutomaticCoreUpdatePreinstall::Proceed
+            }
         }
         hq_desktop_core::prewarm::PrewarmWaitOutcome::TimedOut => {
             AutomaticCoreUpdatePreinstall::DeferForPrewarm
@@ -4190,28 +4222,7 @@ where
             );
             NativeCoreAutoUpdateOutcome::SkippedAutomaticUpdatesDisabled
         }
-        CoreAutoUpdateDecision::DeferForSync => {
-            log(
-                "hq-core-update",
-                "native auto-update deferred: sync in progress",
-            );
-            emit_core_update_event(
-                "core_update_skipped",
-                "automatic",
-                "deferred",
-                Some(candidate.channel),
-                candidate.local_version,
-                Some(candidate.target_version),
-                true,
-                Some(candidate.is_eligible),
-                Some(candidate.version_behind),
-                Duration::ZERO,
-                None,
-                None,
-                Some("sync_in_progress"),
-            );
-            NativeCoreAutoUpdateOutcome::DeferredForSync
-        }
+        CoreAutoUpdateDecision::DeferForSync => defer_automatic_core_update_for_sync(candidate),
         CoreAutoUpdateDecision::Install => {
             // Do not gate on `state.is_eligible`: that field means Indigo
             // staging-email eligibility. Release-channel client users (the
@@ -4334,8 +4345,14 @@ where
                     return NativeCoreAutoUpdateOutcome::SkippedRetryInterval;
                 }
             }
-            if before_install().await == AutomaticCoreUpdatePreinstall::DeferForPrewarm {
-                return NativeCoreAutoUpdateOutcome::DeferredForPrewarm;
+            match before_install().await {
+                AutomaticCoreUpdatePreinstall::DeferForPrewarm => {
+                    return NativeCoreAutoUpdateOutcome::DeferredForPrewarm;
+                }
+                AutomaticCoreUpdatePreinstall::DeferForSync => {
+                    return defer_automatic_core_update_for_sync(candidate);
+                }
+                AutomaticCoreUpdatePreinstall::Proceed => {}
             }
             // The prewarm wait happens before taking the update guard. A
             // manual update remains available while automatic work is deferred.
@@ -4630,9 +4647,11 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
         || async {
             let wait_enabled =
                 crate::commands::hq_pro::feature_flag_enabled(CORE_UPDATE_PREWARM_FLAG).await;
-            let decision = automatic_core_update_preinstall(wait_enabled, || {
-                hq_desktop_core::prewarm::wait_for_active_prewarm(CORE_UPDATE_PREWARM_WAIT)
-            })
+            let decision = automatic_core_update_preinstall(
+                wait_enabled,
+                || hq_desktop_core::prewarm::wait_for_active_prewarm(CORE_UPDATE_PREWARM_WAIT),
+                crate::updater::sync_in_progress,
+            )
             .await;
             if decision == AutomaticCoreUpdatePreinstall::DeferForPrewarm {
                 let count =
@@ -4877,10 +4896,14 @@ mod tests {
         coordinator.prewarm_started();
         let wait_calls = Arc::new(AtomicUsize::new(0));
         let wait_calls_for_gate = Arc::clone(&wait_calls);
-        let decision = automatic_core_update_preinstall(false, || {
-            wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
-            coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT)
-        })
+        let decision = automatic_core_update_preinstall(
+            false,
+            || {
+                wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
+                coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT)
+            },
+            || panic!("flag-off path must preserve today's behavior"),
+        )
         .await;
         assert_eq!(decision, AutomaticCoreUpdatePreinstall::Proceed);
         assert_eq!(wait_calls.load(Ordering::Acquire), 0);
@@ -4988,14 +5011,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sync_starting_during_prewarm_defers_before_install() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "c154-sync-started-during-prewarm",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let decision = automatic_core_update_preinstall(
+            true,
+            || async { hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed },
+            || true,
+        )
+        .await;
+        assert_eq!(decision, AutomaticCoreUpdatePreinstall::DeferForSync);
+
+        let installs = Arc::new(AtomicUsize::new(0));
+        let installs_for_call = Arc::clone(&installs);
+        let outcome = execute_native_core_auto_update_with_clock_and_preinstall(
+            candidate,
+            true,
+            false,
+            Instant::now,
+            Some(home.path()),
+            || async { decision },
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                installs_for_call.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, NativeCoreAutoUpdateOutcome::DeferredForSync);
+        assert_eq!(installs.load(Ordering::Acquire), 0);
+        let manual_guard =
+            try_begin_core_update().expect("a sync deferral must not hold the Core update guard");
+        drop(manual_guard);
+    }
+
+    #[tokio::test]
     async fn automatic_prewarm_wait_does_not_hold_the_update_guard() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let coordinator = hq_desktop_core::prewarm::PrewarmCoordinator::new();
         coordinator.prewarm_started();
 
-        let mut waiting = Box::pin(automatic_core_update_preinstall(true, || {
-            coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT)
-        }));
+        let mut waiting = Box::pin(automatic_core_update_preinstall(
+            true,
+            || coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT),
+            || false,
+        ));
         let first_poll =
             std::future::poll_fn(|context| std::task::Poll::Ready(waiting.as_mut().poll(context)))
                 .await;

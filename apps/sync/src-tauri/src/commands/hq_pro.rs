@@ -8,7 +8,8 @@
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::future::Future;
+use std::time::Duration;
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -16,11 +17,7 @@ use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "hq_pro";
-const FLAG_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const FLAG_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-
-static FEATURE_FLAG_CACHE: tokio::sync::Mutex<Option<(Instant, HashMap<String, bool>)>> =
-    tokio::sync::Mutex::const_new(None);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,41 +157,37 @@ pub async fn hq_pro_fetch(
 
 /// Resolve a configured hq-flags value through hq-pro's shared evaluator.
 /// Missing values and read failures return false so rollout flags keep today's
-/// behavior until the registry explicitly enables them. The transport has its
-/// own two-second bound and cached values are refreshed at most every five
-/// minutes, matching the desktop platform adapter's flag refresh cadence.
+/// behavior until the registry explicitly enables them. The resolver applies
+/// user and company scope, so each eligible update check reads the current
+/// authenticated scope instead of reusing a process-global cached snapshot.
 pub(crate) async fn feature_flag_enabled(flag: &str) -> bool {
-    let mut cache = FEATURE_FLAG_CACHE.lock().await;
-    if let Some((refreshed_at, values)) = cache.as_ref() {
-        if refreshed_at.elapsed() < FLAG_REFRESH_INTERVAL {
-            return values.get(flag).copied().unwrap_or(false);
-        }
-    }
+    feature_flag_enabled_with_fetch(flag, || {
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+    })
+    .await
+}
 
-    let response = tokio::time::timeout(
-        FLAG_REQUEST_TIMEOUT,
-        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None),
-    )
-    .await;
-    let values = match response {
+async fn feature_flag_enabled_with_fetch<Fetch, FetchFuture>(flag: &str, fetch: Fetch) -> bool
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    match tokio::time::timeout(FLAG_REQUEST_TIMEOUT, fetch()).await {
         Ok(Ok(response)) => match parse_feature_flag_response(response.status, &response.body) {
-            Some(values) => values,
+            Some(values) => values.get(flag).copied().unwrap_or(false),
             None => {
                 if response.status == 200 {
                     log(LOG_TAG, "HQ_FLAGS_RESOLVE_INVALID_RESPONSE");
                 }
-                HashMap::new()
+                false
             }
         },
-        Ok(Err(_)) => HashMap::new(),
+        Ok(Err(_)) => false,
         Err(_) => {
             log(LOG_TAG, "HQ_FLAGS_RESOLVE_TIMEOUT");
-            HashMap::new()
+            false
         }
-    };
-    let enabled = values.get(flag).copied().unwrap_or(false);
-    *cache = Some((Instant::now(), values));
-    enabled
+    }
 }
 
 fn parse_configured_feature_flags(body: &str) -> Option<HashMap<String, bool>> {
@@ -290,12 +283,33 @@ mod tests {
         let unconfigured = r#"{"version":1,"flags":{}}"#;
         let malformed = "not-json";
         let values = parse_feature_flag_response(200, unconfigured).unwrap();
-        assert_eq!(
-            values.get("desktop.core-update-waits-for-prewarm"),
-            None
-        );
+        assert_eq!(values.get("desktop.core-update-waits-for-prewarm"), None);
         assert!(parse_feature_flag_response(200, malformed).is_none());
         assert!(parse_feature_flag_response(503, unconfigured).is_none());
+    }
+
+    #[tokio::test]
+    async fn feature_flag_resolution_uses_a_fresh_scoped_snapshot_each_time() {
+        let flag = "desktop.core-update-waits-for-prewarm";
+        let first_scope = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        let second_scope = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":false}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+
+        assert!(first_scope);
+        assert!(!second_scope);
     }
 
     #[test]
