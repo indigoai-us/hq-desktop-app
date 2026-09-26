@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.330] — 2026-09-26
+
 - Releases no longer rebuild the native app when only the interface changed.
   The compiled app shell for macOS, Windows x64 and Windows arm64 is built
   once per change to the native sources, cached, and reused across releases;
