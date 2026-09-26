@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When enabled, automatic Core updates wait for startup cache preparation before
+  running the rescue. If the wait limit expires, the update moves to a later
+  automatic check; manual updates keep their current behavior. The rollout flag
+  defaults off.
+
 ## [0.10.336] — 2026-09-26
 
 - Interface fixes can now reach installed apps within a couple of minutes,

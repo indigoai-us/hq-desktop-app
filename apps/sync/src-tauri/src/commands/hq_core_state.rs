@@ -73,6 +73,8 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
 const CORE_STATE_REUSE_WINDOW: Duration = Duration::from_secs(15);
 
 static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+const CORE_UPDATE_PREWARM_FLAG: &str = "desktop.core-update-waits-for-prewarm";
+const CORE_UPDATE_PREWARM_WAIT: Duration = hq_desktop_core::prewarm::AUTOMATIC_UPDATE_PREWARM_WAIT;
 const MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES: u8 = 3;
 const CONSECUTIVE_FAILURE_CAP_SKIP_REASON: &str = "consecutive_failure_cap_reached";
 const RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON: &str = "retry_interval_not_elapsed";
@@ -150,6 +152,11 @@ pub struct CoreState {
     pub user_only_count: u32,
     /// ISO-8601 timestamp of when the scan ran.
     pub scanned_at: String,
+    /// Number of automatic Core updates deferred because startup prewarm did
+    /// not finish inside its bounded wait. Available in the existing state
+    /// response for diagnostics; this does not emit a Sentry event.
+    #[serde(default)]
+    pub prewarm_deferral_count: u64,
 }
 
 struct RecentCoreState {
@@ -1260,7 +1267,8 @@ pub(crate) fn preserve_restore_failure_notice(rescue_output: &str) -> Option<Str
 
     for line in rescue_output.lines() {
         let trimmed = line.trim();
-        if trimmed.eq_ignore_ascii_case("==> Could not restore these preserved paths after the update:")
+        if trimmed
+            .eq_ignore_ascii_case("==> Could not restore these preserved paths after the update:")
         {
             in_restore_section = true;
             continue;
@@ -1462,7 +1470,9 @@ fn persisted_baseline_refresh_target(
     channel: Channel,
     injected_path: Option<&std::path::Path>,
 ) -> Option<BaselineRefreshTarget> {
-    let path = baseline_refresh_menubar_path(injected_path).ok().flatten()?;
+    let path = baseline_refresh_menubar_path(injected_path)
+        .ok()
+        .flatten()?;
     let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
     let value = menubar
         .get(BASELINE_REFRESH_PENDING_KEY)
@@ -1526,7 +1536,9 @@ fn persisted_automatic_no_retry_target(
     channel: Channel,
     injected_path: Option<&std::path::Path>,
 ) -> Option<String> {
-    let path = baseline_refresh_menubar_path(injected_path).ok().flatten()?;
+    let path = baseline_refresh_menubar_path(injected_path)
+        .ok()
+        .flatten()?;
     let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
     menubar
         .get(AUTOMATIC_NO_RETRY_TARGETS_KEY)
@@ -1621,8 +1633,7 @@ fn automatic_target_eligibility_with_path(
 ) -> AutomaticTargetEligibility {
     let persisted_baseline_refresh_pending =
         persisted_baseline_refresh_target(channel, injected_path).is_some();
-    let persisted_no_retry_target =
-        persisted_automatic_no_retry_target(channel, injected_path);
+    let persisted_no_retry_target = persisted_automatic_no_retry_target(channel, injected_path);
     let states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -1642,7 +1653,8 @@ fn automatic_target_eligibility_with_path(
         }
         return AutomaticTargetEligibility::Eligible;
     }
-    if state.no_retry_after_applied_failure || persisted_no_retry_target.as_deref() == Some(target) {
+    if state.no_retry_after_applied_failure || persisted_no_retry_target.as_deref() == Some(target)
+    {
         AutomaticTargetEligibility::NoRetryAfterAppliedFailure
     } else if state.baseline_refresh_pending || persisted_baseline_refresh_pending {
         AutomaticTargetEligibility::BaselineRefreshPending
@@ -2128,6 +2140,15 @@ fn claim_core_update_sentry_capture(
     report: &CoreUpdateSentryFailureReport,
     now: Instant,
 ) -> Option<u32> {
+    // A deferred automatic update can fail again when it reaches the real
+    // rescue attempt. Preserve each observed lock-contention failure instead
+    // of allowing the generic Sentry cooldown to hide it.
+    if report.source == "automatic"
+        && report.error_category == RescueFailureCategory::LockContention
+    {
+        return Some(0);
+    }
+
     let key = core_update_sentry_rate_key(report);
     let mut limits = CORE_UPDATE_SENTRY_RATE_LIMITS
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -2346,11 +2367,7 @@ fn core_update_sentry_failure_report(
             1 + u32::from(details.managed_git_retry.attempted()),
         )
     });
-    let category_step = if details.rescue_telemetry.is_some() {
-        core_update_rescue_step_for_category(details.rescue_failure_category)
-    } else {
-        "unknown"
-    };
+    let category_step = core_update_rescue_step_for_category(details.rescue_failure_category);
     if category_step != "unknown" {
         rescue_telemetry.rescue_step = category_step;
     }
@@ -2572,14 +2589,8 @@ fn send_core_update_baseline_persistence_warning(
                 sentry_scope.set_tag("channel", channel_label(report.channel));
                 sentry_scope.set_tag("platform", core_update_sentry_platform());
                 sentry_scope.set_tag("source", report.source);
-                sentry_scope.set_tag(
-                    "persistence_write_path",
-                    report.diagnostic_tags.write_path,
-                );
-                sentry_scope.set_tag(
-                    "persistence_error_kind",
-                    report.diagnostic_tags.error_kind,
-                );
+                sentry_scope.set_tag("persistence_write_path", report.diagnostic_tags.write_path);
+                sentry_scope.set_tag("persistence_error_kind", report.diagnostic_tags.error_kind);
                 sentry_scope.set_tag(
                     "persistence_directory_state",
                     report.diagnostic_tags.directory_state,
@@ -2588,18 +2599,12 @@ fn send_core_update_baseline_persistence_warning(
                     "persistence_target_state",
                     report.diagnostic_tags.target_state,
                 );
-                sentry_scope.set_tag(
-                    "persistence_temp_state",
-                    report.diagnostic_tags.temp_state,
-                );
+                sentry_scope.set_tag("persistence_temp_state", report.diagnostic_tags.temp_state);
                 sentry_scope.set_tag(
                     "persistence_permission_state",
                     report.diagnostic_tags.permission_state,
                 );
-                sentry_scope.set_tag(
-                    "persistence_disk_state",
-                    report.diagnostic_tags.disk_state,
-                );
+                sentry_scope.set_tag("persistence_disk_state", report.diagnostic_tags.disk_state);
                 sentry_scope.set_tag(
                     "persistence_concurrent_writer",
                     report.diagnostic_tags.concurrent_writer,
@@ -2954,14 +2959,8 @@ pub(crate) fn core_drift_baseline_before_rescue(
     if source != source_repo {
         return None;
     }
-    hq_desktop_core::drift_scope::load_core_drift_baseline(hq_folder, &source, &commit).map(
-        |baseline| {
-            baseline
-                .normalized_blobs
-                .into_keys()
-                .collect()
-        },
-    )
+    hq_desktop_core::drift_scope::load_core_drift_baseline(hq_folder, &source, &commit)
+        .map(|baseline| baseline.normalized_blobs.into_keys().collect())
 }
 
 fn normalize_rescue_path_relative(
@@ -2981,7 +2980,9 @@ fn normalize_rescue_path_relative(
 
     let relative = candidate[root.len() + 1..].trim_matches('/');
     if relative.is_empty()
-        || relative.split('/').any(|component| component.is_empty() || component == "." || component == "..")
+        || relative
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
     {
         return None;
     }
@@ -3013,9 +3014,9 @@ fn skipped_rescue_paths(
         let Some(path) = line.strip_prefix("warning: snapshot skipped ") else {
             continue;
         };
-        let Some(path) = path.strip_suffix(
-            ". It was not backed up and was left untouched. The update continued.",
-        ) else {
+        let Some(path) = path
+            .strip_suffix(". It was not backed up and was left untouched. The update continued.")
+        else {
             continue;
         };
         let Some(relative) = normalize_rescue_path_relative(hq_folder, path.trim()) else {
@@ -3126,12 +3127,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                         "could not persist authoritative Core baseline {source}@{commit}: {error}; keeping refresh pending"
                     ),
                 );
-                persist_baseline_refresh_target(
-                    channel,
-                    &source,
-                    &commit,
-                    injected_path,
-                )?;
+                persist_baseline_refresh_target(channel, &source, &commit, injected_path)?;
                 return Ok(AppliedRescueBaseline {
                     commit,
                     baseline_persisted: false,
@@ -3141,9 +3137,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                 });
             }
             let mut refresh_pending = false;
-            if let Err(error) =
-                clear_persisted_baseline_refresh_target(channel, injected_path)
-            {
+            if let Err(error) = clear_persisted_baseline_refresh_target(channel, injected_path) {
                 log(
                     "hq-core-state",
                     &format!(
@@ -3151,12 +3145,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                     ),
                 );
                 if let Err(persist_error) =
-                    persist_baseline_refresh_target(
-                        channel,
-                        &source,
-                        &commit,
-                        injected_path,
-                    )
+                    persist_baseline_refresh_target(channel, &source, &commit, injected_path)
                 {
                     log(
                         "hq-core-state",
@@ -3228,12 +3217,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                     }
                 }
             }
-            persist_baseline_refresh_target(
-                channel,
-                &source,
-                &commit,
-                injected_path,
-            )?;
+            persist_baseline_refresh_target(channel, &source, &commit, injected_path)?;
             Ok(AppliedRescueBaseline {
                 commit,
                 baseline_persisted,
@@ -3253,7 +3237,10 @@ fn refresh_pending_baseline_from_tree_with_path(
     remote_tree: Result<BTreeMap<String, (String, u64)>, String>,
 ) -> Result<(), String> {
     let stamp = read_local_source_stamp(hq_folder).map_err(|error| {
-        format!("pending baseline refresh has no local stamp {}", error.marker())
+        format!(
+            "pending baseline refresh has no local stamp {}",
+            error.marker()
+        )
     })?;
     let source = stamp.source;
     let commit = stamp.commit;
@@ -3268,9 +3255,7 @@ fn refresh_pending_baseline_from_tree_with_path(
         .into_iter()
         .map(|(path, (sha, _))| (path, sha))
         .collect();
-    hq_desktop_core::drift_scope::persist_core_drift_baseline(
-        hq_folder, &source, &commit, blobs,
-    )?;
+    hq_desktop_core::drift_scope::persist_core_drift_baseline(hq_folder, &source, &commit, blobs)?;
     clear_persisted_baseline_refresh_target(channel, injected_path)?;
     Ok(())
 }
@@ -3858,6 +3843,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         unchanged_count,
         user_only_count,
         scanned_at: chrono::Utc::now().to_rfc3339(),
+        prewarm_deferral_count: hq_desktop_core::prewarm::automatic_update_deferral_count(),
     };
 
     log(
@@ -3981,6 +3967,7 @@ enum NativeCoreAutoUpdateOutcome {
     Ignored,
     SkippedAutomaticUpdatesDisabled,
     DeferredForSync,
+    DeferredForPrewarm,
     SkippedAlreadyInProgress,
     SkippedAlreadyAttempted,
     SkippedBaselineRefreshPending,
@@ -3991,6 +3978,35 @@ enum NativeCoreAutoUpdateOutcome {
     SucceededWithBaselinePersistenceFailure,
     FailedExit(i32),
     Failed(CoreUpdateErrorKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutomaticCoreUpdatePreinstall {
+    Proceed,
+    DeferForPrewarm,
+}
+
+async fn automatic_core_update_preinstall<Wait, WaitFuture>(
+    wait_enabled: bool,
+    wait_for_prewarm: Wait,
+) -> AutomaticCoreUpdatePreinstall
+where
+    Wait: FnOnce() -> WaitFuture,
+    WaitFuture: Future<Output = hq_desktop_core::prewarm::PrewarmWaitOutcome>,
+{
+    if !wait_enabled {
+        return AutomaticCoreUpdatePreinstall::Proceed;
+    }
+
+    match wait_for_prewarm().await {
+        hq_desktop_core::prewarm::PrewarmWaitOutcome::NotRunning
+        | hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed => {
+            AutomaticCoreUpdatePreinstall::Proceed
+        }
+        hq_desktop_core::prewarm::PrewarmWaitOutcome::TimedOut => {
+            AutomaticCoreUpdatePreinstall::DeferForPrewarm
+        }
+    }
 }
 
 /// The rescue exit code is the user-facing update result. The baseline bit is
@@ -4057,12 +4073,36 @@ where
     F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
     Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
 {
-    execute_native_core_auto_update_with_clock(
+    execute_native_core_auto_update_with_preinstall(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        || async { AutomaticCoreUpdatePreinstall::Proceed },
+        install,
+    )
+    .await
+}
+
+async fn execute_native_core_auto_update_with_preinstall<Before, BeforeFuture, F, Fut>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    before_install: Before,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    Before: FnOnce() -> BeforeFuture,
+    BeforeFuture: Future<Output = AutomaticCoreUpdatePreinstall>,
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
+{
+    execute_native_core_auto_update_with_clock_and_preinstall(
         candidate,
         auto_updates,
         sync_in_progress,
         Instant::now,
         None,
+        before_install,
         install,
     )
     .await
@@ -4077,6 +4117,40 @@ async fn execute_native_core_auto_update_with_clock<F, Fut, Now>(
     install: F,
 ) -> NativeCoreAutoUpdateOutcome
 where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
+    Now: Fn() -> Instant,
+{
+    execute_native_core_auto_update_with_clock_and_preinstall(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        now,
+        injected_path,
+        || async { AutomaticCoreUpdatePreinstall::Proceed },
+        install,
+    )
+    .await
+}
+
+async fn execute_native_core_auto_update_with_clock_and_preinstall<
+    Before,
+    BeforeFuture,
+    F,
+    Fut,
+    Now,
+>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    now: Now,
+    injected_path: Option<&std::path::Path>,
+    before_install: Before,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    Before: FnOnce() -> BeforeFuture,
+    BeforeFuture: Future<Output = AutomaticCoreUpdatePreinstall>,
     F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
     Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
     Now: Fn() -> Instant,
@@ -4137,31 +4211,6 @@ where
             // Do not gate on `state.is_eligible`: that field means Indigo
             // staging-email eligibility. Release-channel client users (the
             // majority of HQ installs) must receive automatic Core updates.
-            let run_guard = match try_begin_core_update() {
-                Ok(guard) => guard,
-                Err(error) => {
-                    log(
-                        "hq-core-update",
-                        "native auto-update skipped: another Core update is in progress",
-                    );
-                    emit_core_update_event(
-                        "core_update_skipped",
-                        "automatic",
-                        "skipped",
-                        Some(candidate.channel),
-                        candidate.local_version,
-                        Some(candidate.target_version),
-                        true,
-                        Some(candidate.is_eligible),
-                        Some(candidate.version_behind),
-                        Duration::ZERO,
-                        None,
-                        Some(error.kind().label()),
-                        Some(error.kind().label()),
-                    );
-                    return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
-                }
-            };
             match automatic_target_eligibility_with_path(
                 candidate.channel,
                 candidate.target_version,
@@ -4280,6 +4329,36 @@ where
                     return NativeCoreAutoUpdateOutcome::SkippedRetryInterval;
                 }
             }
+            if before_install().await == AutomaticCoreUpdatePreinstall::DeferForPrewarm {
+                return NativeCoreAutoUpdateOutcome::DeferredForPrewarm;
+            }
+            // The prewarm wait happens before taking the update guard. A
+            // manual update remains available while automatic work is deferred.
+            let run_guard = match try_begin_core_update() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: another Core update is in progress",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        Some(error.kind().label()),
+                        Some(error.kind().label()),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
+                }
+            };
             log(
                 "hq-core-update",
                 &format!(
@@ -4460,12 +4539,7 @@ where
         return false;
     }
 
-    let remote_tree = fetcher(
-        source.clone(),
-        stamped_commit.clone(),
-        token,
-    )
-    .await;
+    let remote_tree = fetcher(source.clone(), stamped_commit.clone(), token).await;
     match remote_tree {
         Ok(tree) => match refresh_pending_baseline_from_tree_with_path(
             hq_folder,
@@ -4475,8 +4549,7 @@ where
             Ok(tree),
         ) {
             Ok(()) => {
-                if let Err(error) =
-                    clear_persisted_baseline_refresh_target(channel, injected_path)
+                if let Err(error) = clear_persisted_baseline_refresh_target(channel, injected_path)
                 {
                     log(
                         "hq-core-state",
@@ -4545,10 +4618,29 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
         return;
     }
     let app_for_install = (*app).clone();
-    let outcome = execute_native_core_auto_update(
+    let outcome = execute_native_core_auto_update_with_preinstall(
         CoreAutoUpdateCandidate::from(state),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
         crate::updater::sync_in_progress(),
+        || async {
+            let wait_enabled =
+                crate::commands::hq_pro::feature_flag_enabled(CORE_UPDATE_PREWARM_FLAG).await;
+            let decision = automatic_core_update_preinstall(wait_enabled, || {
+                hq_desktop_core::prewarm::wait_for_active_prewarm(CORE_UPDATE_PREWARM_WAIT)
+            })
+            .await;
+            if decision == AutomaticCoreUpdatePreinstall::DeferForPrewarm {
+                let count =
+                    hq_desktop_core::prewarm::record_automatic_update_deferral();
+                log(
+                    "hq-core-update",
+                    &format!(
+                        "native auto-update deferred until the next cycle: startup prewarm exceeded its bound; deferrals={count}"
+                    ),
+                );
+            }
+            decision
+        },
         move |channel, run_guard, observation| {
             let app_for_install = app_for_install.clone();
             async move {
@@ -4766,6 +4858,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn flag_off_keeps_the_existing_lock_contention_failure_path() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "c154-flag-off-lock-contention",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let coordinator = hq_desktop_core::prewarm::PrewarmCoordinator::new();
+        coordinator.prewarm_started();
+        let wait_calls = Arc::new(AtomicUsize::new(0));
+        let wait_calls_for_gate = Arc::clone(&wait_calls);
+        let decision = automatic_core_update_preinstall(false, || {
+            wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
+            coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT)
+        })
+        .await;
+        assert_eq!(decision, AutomaticCoreUpdatePreinstall::Proceed);
+        assert_eq!(wait_calls.load(Ordering::Acquire), 0);
+
+        let reports = Arc::new(AtomicUsize::new(0));
+        let reports_for_install = Arc::clone(&reports);
+        let attempted_at = Instant::now();
+        let outcome = execute_native_core_auto_update_with_clock_and_preinstall(
+            candidate,
+            true,
+            false,
+            || attempted_at,
+            Some(home.path()),
+            || async { decision },
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                let error = CoreUpdateError::new(
+                    CoreUpdateErrorKind::RescueSpawn,
+                    "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
+                );
+                let report = report_for_core_update_error(&error);
+                assert_eq!(report.error_category, RescueFailureCategory::LockContention);
+                reports_for_install.fetch_add(1, Ordering::AcqRel);
+                Err(error)
+            },
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            NativeCoreAutoUpdateOutcome::Failed(CoreUpdateErrorKind::RescueSpawn)
+        );
+        assert_eq!(reports.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn prewarm_deferral_has_no_failure_capture_and_later_real_failures_report_each_time() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "c154-defer-then-real-lock-failure",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let reports = Arc::new(AtomicUsize::new(0));
+        let installs = Arc::new(AtomicUsize::new(0));
+        let attempted_at = Instant::now();
+        let deferred_installs = Arc::clone(&installs);
+        let deferred = execute_native_core_auto_update_with_clock_and_preinstall(
+            candidate,
+            true,
+            false,
+            || attempted_at,
+            Some(home.path()),
+            || async { AutomaticCoreUpdatePreinstall::DeferForPrewarm },
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                deferred_installs.fetch_add(1, Ordering::AcqRel);
+                Err(CoreUpdateError::new(
+                    CoreUpdateErrorKind::RescueSpawn,
+                    "deferred work must not invoke the installer",
+                ))
+            },
+        )
+        .await;
+
+        assert_eq!(deferred, NativeCoreAutoUpdateOutcome::DeferredForPrewarm);
+        assert_eq!(installs.load(Ordering::Acquire), 0);
+        assert_eq!(reports.load(Ordering::Acquire), 0);
+
+        for failure_number in 1..=2 {
+            let reports_for_install = Arc::clone(&reports);
+            let failure_at = attempted_at + CHECK_INTERVAL * failure_number;
+            let outcome = execute_native_core_auto_update_with_clock_and_preinstall(
+                candidate,
+                true,
+                false,
+                || failure_at,
+                Some(home.path()),
+                || async { AutomaticCoreUpdatePreinstall::Proceed },
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    let error = CoreUpdateError::new(
+                        CoreUpdateErrorKind::RescueSpawn,
+                        "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
+                    );
+                    let report = report_for_core_update_error(&error);
+                    assert_eq!(report.error_category, RescueFailureCategory::LockContention);
+                    assert_eq!(report.rescue_telemetry.rescue_step, "npm-cache");
+                    reports_for_install.fetch_add(1, Ordering::AcqRel);
+                    Err(error)
+                },
+            )
+            .await;
+
+            assert_eq!(
+                outcome,
+                NativeCoreAutoUpdateOutcome::Failed(CoreUpdateErrorKind::RescueSpawn)
+            );
+        }
+
+        assert_eq!(reports.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn automatic_prewarm_wait_does_not_hold_the_update_guard() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let coordinator = hq_desktop_core::prewarm::PrewarmCoordinator::new();
+        coordinator.prewarm_started();
+
+        let mut waiting = Box::pin(automatic_core_update_preinstall(true, || {
+            coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT)
+        }));
+        let first_poll =
+            std::future::poll_fn(|context| std::task::Poll::Ready(waiting.as_mut().poll(context)))
+                .await;
+        assert!(first_poll.is_pending());
+
+        // A manual update can still acquire the shared run guard while the
+        // automatic task waits for prewarm. Finishing prewarm then releases
+        // the automatic waiter without needing that guard.
+        let manual_guard = try_begin_core_update()
+            .expect("an automatic prewarm wait must not hold the update guard");
+        drop(manual_guard);
+        coordinator.prewarm_finished();
+        assert_eq!(waiting.await, AutomaticCoreUpdatePreinstall::Proceed);
+    }
+
+    #[tokio::test]
     async fn pending_baseline_refresh_survives_restart_without_spawning_installer() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let home = TempDir::new().unwrap();
@@ -4804,7 +5045,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(retry, NativeCoreAutoUpdateOutcome::SkippedBaselineRefreshPending);
+        assert_eq!(
+            retry,
+            NativeCoreAutoUpdateOutcome::SkippedBaselineRefreshPending
+        );
         assert_eq!(calls.load(Ordering::Acquire), 0);
         let menubar = hq_desktop_core::first_run::read_menubar_obj(&menubar_path);
         assert_eq!(
@@ -4861,7 +5105,8 @@ mod tests {
         );
         let fetch_calls = Arc::new(AtomicUsize::new(0));
         let failed_fetch_calls = Arc::clone(&fetch_calls);
-        assert!(retry_pending_baseline_refresh_at_with_path(
+        assert!(
+            retry_pending_baseline_refresh_at_with_path(
             Channel::Release,
             root.path(),
             None,
@@ -4871,7 +5116,8 @@ mod tests {
                 Err("HTTP 403".to_string())
             },
         )
-        .await);
+            .await
+        );
 
         let installer_calls = Arc::new(AtomicUsize::new(0));
         let installer_calls_for_attempt = Arc::clone(&installer_calls);
@@ -4901,7 +5147,8 @@ mod tests {
         assert_eq!(installer_calls.load(Ordering::Acquire), 0);
 
         let successful_fetch_calls = Arc::clone(&fetch_calls);
-        assert!(retry_pending_baseline_refresh_at_with_path(
+        assert!(
+            retry_pending_baseline_refresh_at_with_path(
             Channel::Release,
             root.path(),
             None,
@@ -4911,11 +5158,10 @@ mod tests {
                 Ok(remote)
             },
         )
-        .await);
-        assert_eq!(fetch_calls.load(Ordering::Acquire), 2);
-        assert!(
-            persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)).is_none()
+            .await
         );
+        assert_eq!(fetch_calls.load(Ordering::Acquire), 2);
+        assert!(persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)).is_none());
         let baseline =
             hq_desktop_core::drift_scope::load_core_drift_baseline(root.path(), source, &commit)
                 .unwrap();
@@ -6046,6 +6292,24 @@ error: clone failed";
     }
 
     #[test]
+    fn production_shaped_lock_contention_without_parsed_telemetry_maps_to_npm_cache() {
+        let error = CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
+        );
+        let details = core_update_failure_details(&error);
+        assert!(details.rescue_telemetry.is_none());
+        assert_eq!(
+            details.rescue_failure_category,
+            RescueFailureCategory::LockContention
+        );
+
+        let report = report_for_core_update_error(&error);
+        assert_eq!(report.error_category, RescueFailureCategory::LockContention);
+        assert_eq!(report.rescue_telemetry.rescue_step, "npm-cache");
+    }
+
+    #[test]
     fn core_update_error_report_keeps_origin_main_dimensions() {
         let cases = [
             (
@@ -6127,14 +6391,9 @@ error: clone failed";
 
     #[test]
     fn every_core_update_failure_uses_one_issue_fingerprint() {
-        let first = core_update_sentry_fingerprint(
-            "rescue_exit",
-            RescueFailureCategory::MissingDependency,
-        );
-        let second = core_update_sentry_fingerprint(
-            "network",
-            RescueFailureCategory::Tls,
-        );
+        let first =
+            core_update_sentry_fingerprint("rescue_exit", RescueFailureCategory::MissingDependency);
+        let second = core_update_sentry_fingerprint("network", RescueFailureCategory::Tls);
 
         assert_eq!(first.as_slice(), ["desktop-core-update-failed"].as_slice());
         assert_eq!(second.as_slice(), ["desktop-core-update-failed"].as_slice());
@@ -6282,13 +6541,21 @@ error: clone failed";
                 "rsync",
                 "timeout",
             ),
-            ("==> npm install\nnpm ERR! code ENOENT", "npm-install", "npm_enoent"),
+            (
+                "==> npm install\nnpm ERR! code ENOENT",
+                "npm-install",
+                "npm_enoent",
+            ),
             (
                 "rsync version 3.2.7 protocol version 31\nnpm ERR! code EACCES",
                 "npm-install",
                 "eacces",
             ),
-            ("rsync version 3.2.7 protocol version 31", "unknown", "unknown"),
+            (
+                "rsync version 3.2.7 protocol version 31",
+                "unknown",
+                "unknown",
+            ),
             ("error: EACCES", "unknown", "eacces"),
             ("error: ENOSPC", "unknown", "enospc"),
             ("fatal: Could not resolve host", "unknown", "dns"),
@@ -6311,10 +6578,8 @@ error: clone failed";
         assert_eq!(telemetry.rescue_error_class, "unknown");
         assert_eq!(telemetry.rescue_step, "verify");
 
-        let marker_telemetry = CoreUpdateRescueTelemetry::from_raw(
-            "==> Verify /Users/ada/T2026-09-22T17:00:00Z\n",
-            1,
-        );
+        let marker_telemetry =
+            CoreUpdateRescueTelemetry::from_raw("==> Verify /Users/ada/T2026-09-22T17:00:00Z\n", 1);
         assert!(marker_telemetry
             .stage_markers
             .iter()
@@ -6605,19 +6870,17 @@ error: clone failed";
             events[0].tags["rsync_translated_path_shape"],
             "cygwin_drive"
         );
-        assert!(events[0].tags.values().all(|value| {
-            !value.contains("fixture-one") && !value.contains("/cygdrive/")
-        }));
+        assert!(events[0]
+            .tags
+            .values()
+            .all(|value| { !value.contains("fixture-one") && !value.contains("/cygdrive/") }));
         let reason = events[0].extra["rsyncStderrReason"].as_str().unwrap();
         assert!(reason.contains("No such file or directory"));
         assert!(!reason.contains("fixture-one"));
         let rescue_reason = events[0].extra["rescueErrorReason"].as_str().unwrap();
         assert!(rescue_reason.contains("rsync status 23"));
         assert!(!rescue_reason.contains("fixture-one"));
-        assert_eq!(
-            events[0].fingerprint,
-            vec!["desktop-core-update-failed"]
-        );
+        assert_eq!(events[0].fingerprint, vec!["desktop-core-update-failed"]);
     }
 
     #[test]
@@ -6686,7 +6949,11 @@ error: clone failed";
             },
         );
 
-        assert_eq!(events.len(), 3, "identical rescue dimensions must rate-limit");
+        assert_eq!(
+            events.len(),
+            3,
+            "identical rescue dimensions must rate-limit"
+        );
         assert_eq!(events[0].fingerprint, vec!["desktop-core-update-failed"]);
         assert_eq!(events[1].fingerprint, vec!["desktop-core-update-failed"]);
         assert_eq!(events[2].fingerprint, vec!["desktop-core-update-failed"]);
@@ -6710,6 +6977,62 @@ error: clone failed";
             events[0].extra["rescueStderrTail"],
             sentry::protocol::Value::String("fatal: could not clone Core source".to_string())
         );
+    }
+
+    #[test]
+    fn automatic_lock_contention_failures_are_reported_every_time() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let report = |source| CoreUpdateSentryFailureReport {
+            source,
+            channel: Channel::Release,
+            exit_code: None,
+            error_kind: "rescue_spawn",
+            error_category: RescueFailureCategory::LockContention,
+            rescue_stderr_tail: None,
+            rescue_telemetry: CoreUpdateRescueTelemetry {
+                rescue_step: "npm-cache",
+                rescue_error_class: "lock-contention",
+                ..Default::default()
+            },
+            npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+        };
+        let start = Instant::now();
+        let events = sentry::test::with_captured_events_options(
+            || {
+                report_core_update_failure_at(report("automatic"), start);
+                report_core_update_failure_at(
+                    report("automatic"),
+                    start + Duration::from_secs(1),
+                );
+                report_core_update_failure_at(
+                    report("manual"),
+                    start + Duration::from_secs(2),
+                );
+                report_core_update_failure_at(
+                    report("manual"),
+                    start + Duration::from_secs(3),
+                );
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            events.len(),
+            3,
+            "automatic lock-contention must report each time while manual reports retain the existing cooldown"
+        );
+        for event in events {
+            assert_eq!(event.tags["errorCategory"], "lock-contention");
+            assert_eq!(event.tags["rescue_step"], "npm-cache");
+        }
+        assert_eq!(events[0].tags["source"], "automatic");
+        assert_eq!(events[1].tags["source"], "automatic");
+        assert_eq!(events[2].tags["source"], "manual");
     }
 
     #[test]
@@ -7193,8 +7516,7 @@ error: clone failed";
         assert!(result.baseline_persisted);
         assert!(!result.refresh_pending);
         let baseline =
-            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &commit)
-                .unwrap();
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &commit).unwrap();
         assert_eq!(
             baseline.normalized_blobs,
             BTreeMap::from([(
@@ -7238,8 +7560,7 @@ error: clone failed";
         assert!(!persisted.baseline_persisted);
         assert!(persisted.refresh_pending);
         assert!(
-            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &commit)
-                .is_none()
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root, source, &commit).is_none()
         );
     }
 
