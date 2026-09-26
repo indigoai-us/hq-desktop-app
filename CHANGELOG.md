@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - HQ no longer restarts for an update while you are using it or while a meeting is being recorded. A card in the sidebar lets you choose when to apply pending updates.
 
+## [0.10.337] — 2026-09-26
+
 - When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
   holder, HQ keeps the current CLI available and retries on later launches. It
   reports a persistent failure after three attempts.
