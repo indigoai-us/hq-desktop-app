@@ -645,6 +645,7 @@ fn main() {
             ui_hot_update::ui_hot_boot_failed,
             ui_hot_update::ui_hot_reload,
             ui_hot_update::ui_hot_call_active,
+            ui_hot_update::ui_hot_check_now,
             ui_hot_update::set_ui_hot_updates,
             commands::meet_transcript_projection::meet_transcript_project,
             commands::meet_transcript_projection::meet_personal_transcript_project,
@@ -1078,6 +1079,7 @@ fn main() {
             }
             ui_hot_update::init(app.handle());
             ui_hot_update::on_startup(app.handle());
+            ui_hot_update::setup_checker(app.handle());
             commands::watcher_exit_lifecycle::initialize_watcher_exit_lifecycle();
             #[cfg(target_os = "macos")]
             commands::watcher_exit_lifecycle::initialize_macos_power_observer();

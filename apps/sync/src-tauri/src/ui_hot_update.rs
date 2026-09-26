@@ -348,3 +348,227 @@ pub fn emit_updated(version: &str) {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Background check: poll ui-latest-<channel>.json, download, verify, apply.
+// ---------------------------------------------------------------------------
+
+const FEED_BASE: &str = "https://github.com/indigoai-us/hq-desktop-app/releases/download/ui-updates";
+/// Same cadence as the updater's prerelease checks.
+const CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const FIRST_CHECK_DELAY: Duration = Duration::from_secs(10);
+const RETRY_BASE: Duration = Duration::from_secs(5 * 60);
+const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+
+static CHECK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Pointer URL for a channel. `HQ_UI_HOT_FEED` overrides the base (a
+/// directory URL holding `ui-latest-<channel>.json`).
+pub fn pointer_url(channel: &str) -> String {
+    let base = std::env::var("HQ_UI_HOT_FEED").unwrap_or_else(|_| FEED_BASE.to_string());
+    format!("{}/ui-latest-{channel}.json", base.trim_end_matches('/'))
+}
+
+/// Retry delay after `failures` consecutive failed checks: 5, 10, 20, then
+/// capped at the regular interval.
+pub fn retry_delay(failures: u32) -> Duration {
+    let factor = 1u32 << failures.saturating_sub(1).min(8);
+    (RETRY_BASE * factor).min(CHECK_INTERVAL)
+}
+
+fn updater_pubkey(app: &AppHandle) -> Option<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|u| u.get("pubkey"))
+        .and_then(|k| k.as_str())
+        .map(str::to_string)
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    // No transparent decompression, so the size cap is a cap on real bytes.
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .default_headers(hq_desktop_core::client_info::client_headers())
+        .no_gzip()
+        .no_brotli()
+        .build()
+        .map_err(|e| format!("http client: {e}"))
+}
+
+async fn get_bytes(client: &reqwest::Client, url: &str, cap: usize) -> Result<Vec<u8>, String> {
+    if !url.starts_with("https://") && !(cfg!(debug_assertions) && url.starts_with("http://127.0.0.1")) {
+        return Err(format!("refusing non-https url {url}"));
+    }
+    let mut resp = client.get(url).send().await.map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("GET {url}: HTTP {}", resp.status()));
+    }
+    if resp.content_length().is_some_and(|n| n as usize > cap) {
+        return Err(format!("GET {url}: body over {cap} bytes"));
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("GET {url}: {e}"))? {
+        out.extend_from_slice(&chunk);
+        if out.len() > cap {
+            return Err(format!("GET {url}: body over {cap} bytes"));
+        }
+    }
+    Ok(out)
+}
+
+/// Result of one check, for the log and the `ui_hot_check_now` command.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckReport {
+    pub outcome: String,
+    pub ui_version: Option<String>,
+    pub detail: String,
+    pub elapsed_ms: u128,
+}
+
+/// One check. `Err` means a transient failure worth a backoff retry.
+pub async fn check_once(app: &AppHandle) -> Result<CheckReport, String> {
+    let _guard = CHECK_LOCK.lock().await;
+    let started = std::time::Instant::now();
+    let report = |outcome: &str, version: Option<String>, detail: String| CheckReport {
+        outcome: outcome.into(),
+        ui_version: version,
+        detail,
+        elapsed_ms: started.elapsed().as_millis(),
+    };
+    let mode = mode();
+    let Some(channel) = mode.channel() else {
+        return Ok(report("disabled", None, "uiHotUpdates=off".into()));
+    };
+    let Some(root) = hot_root() else {
+        return Ok(report("disabled", None, "no app data dir".into()));
+    };
+    let Some(shell_key) = shell_key() else {
+        return Ok(report("disabled", None, "no shell-key.txt in this bundle".into()));
+    };
+    let Some(pubkey) = updater_pubkey(app) else {
+        return Ok(report("disabled", None, "no updater pubkey configured".into()));
+    };
+    let client = http_client()?;
+    let url = pointer_url(channel);
+    let pointer_bytes = get_bytes(&client, &url, 64 * 1024).await?;
+    let pointer: ui_hot::UiPointer = serde_json::from_slice(&pointer_bytes)
+        .map_err(|e| format!("pointer {url}: {e}"))?;
+    let version = pointer.ui_version.clone();
+    log(&format!("check: {channel} pointer {url} -> {version}"));
+    let app_version = crate::app_version::current();
+    let state = ui_hot::read_state(root);
+    if state.active.as_deref() == Some(version.as_str()) {
+        return Ok(report("current", Some(version), "already active".into()));
+    }
+    if state.bad.contains(&version) {
+        return Ok(report("skipped", Some(version), "marked bad on this machine".into()));
+    }
+    let gate = ui_hot::UiManifest {
+        ui_version: pointer.ui_version.clone(),
+        shell_keys: pointer.shell_keys.clone(),
+        sha256: pointer.sha256.clone(),
+        created_at: pointer.created_at.clone(),
+        min_app_version: pointer.min_app_version.clone(),
+    };
+    if let Err(reason) = ui_hot::check_manifest(&gate, &shell_key, app_version) {
+        log(&format!("check: {version} not for this app ({reason:?}); keeping current UI"));
+        return Ok(report("incompatible", Some(version), format!("{reason:?}")));
+    }
+    let download_started = std::time::Instant::now();
+    let archive = get_bytes(&client, &pointer.url, ui_hot::MAX_ARCHIVE_BYTES).await?;
+    log(&format!(
+        "downloaded {version}: {} bytes in {} ms",
+        archive.len(),
+        download_started.elapsed().as_millis()
+    ));
+    let root = root.to_path_buf();
+    let applied = tokio::task::spawn_blocking(move || {
+        ui_hot::apply_bundle(&root, &pointer, &archive, &pubkey, &shell_key, app_version)
+    })
+    .await
+    .map_err(|e| format!("apply task: {e}"))?;
+    match applied {
+        Ok(ui_hot::ApplyOutcome::Applied) => {
+            log(&format!(
+                "verified sha256 + signature and applied {version} ({} ms since check start)",
+                started.elapsed().as_millis()
+            ));
+            crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+                "desktop_ui_hot_applied",
+                serde_json::json!({ "uiVersion": version, "appVersion": app_version }),
+            );
+            emit_updated(&version);
+            Ok(report("applied", Some(version), "verified and activated".into()))
+        }
+        Ok(ui_hot::ApplyOutcome::AlreadyActive) => {
+            Ok(report("current", Some(version), "already active".into()))
+        }
+        Err(err) => {
+            log(&format!("rejected {version}: {err}"));
+            sentry::capture_message(
+                &format!("ui hot bundle rejected: {version}: {err}"),
+                sentry::Level::Warning,
+            );
+            Ok(report("rejected", Some(version), err.to_string()))
+        }
+    }
+}
+
+/// Launch check plus the 30-minute schedule, with backoff on failures.
+pub fn setup_checker(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(FIRST_CHECK_DELAY).await;
+        let mut failures: u32 = 0;
+        loop {
+            let next = match check_once(&handle).await {
+                Ok(r) => {
+                    failures = 0;
+                    if r.outcome != "disabled" && r.outcome != "current" {
+                        log(&format!("check: {} {:?} ({})", r.outcome, r.ui_version, r.detail));
+                    }
+                    CHECK_INTERVAL
+                }
+                Err(err) => {
+                    failures = failures.saturating_add(1);
+                    let delay = retry_delay(failures);
+                    log(&format!("check failed ({err}); retrying in {}s", delay.as_secs()));
+                    delay
+                }
+            };
+            tokio::time::sleep(next).await;
+        }
+    });
+}
+
+/// Run a check now (Settings / support / proofs).
+#[tauri::command]
+pub async fn ui_hot_check_now(app: AppHandle) -> Result<CheckReport, String> {
+    check_once(&app).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_url_uses_channel_file() {
+        std::env::remove_var("HQ_UI_HOT_FEED");
+        assert_eq!(
+            pointer_url("beta"),
+            "https://github.com/indigoai-us/hq-desktop-app/releases/download/ui-updates/ui-latest-beta.json"
+        );
+    }
+
+    #[test]
+    fn retry_backoff_doubles_and_caps() {
+        assert_eq!(retry_delay(1), Duration::from_secs(300));
+        assert_eq!(retry_delay(2), Duration::from_secs(600));
+        assert_eq!(retry_delay(3), Duration::from_secs(1200));
+        assert_eq!(retry_delay(4), CHECK_INTERVAL);
+        assert_eq!(retry_delay(50), CHECK_INTERVAL);
+    }
+}
