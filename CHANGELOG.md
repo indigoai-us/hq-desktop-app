@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Windows releases no longer fail to save the prebuilt native app, because it is now compressed and trimmed to stay under GitHub's 2 GiB file limit.
+
 ## [0.10.340] — 2026-09-26
 
 - Update holds now apply to manual installs too, and a recording that ends with an error no longer blocks updates.
