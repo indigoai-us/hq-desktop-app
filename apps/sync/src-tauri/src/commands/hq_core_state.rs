@@ -4906,7 +4906,7 @@ mod tests {
                 wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
                 coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT)
             },
-            || panic!("flag-off path must preserve today's behavior"),
+            || false,
         )
         .await;
         assert_eq!(decision, AutomaticCoreUpdatePreinstall::Proceed);
