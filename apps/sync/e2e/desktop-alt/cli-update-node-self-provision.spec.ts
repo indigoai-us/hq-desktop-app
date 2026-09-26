@@ -569,11 +569,16 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     expect(retry).toContain('WindowsBusyRetryOutcome::Failed');
     expect(retry).toContain('WindowsBusyRetryOutcome::OtherFailure');
     const retryAttemptAt = retry.indexOf('windows_busy_install_target_retry_rung(retry_number)');
-    const finalFailureClassificationAt = retry.indexOf(
-      'else if is_windows_locked_install_target_failure(',
+    const retryInstallAt = retry.indexOf(
+      'output = run_recorded_npm_install_attempt(',
       retryAttemptAt,
     );
-    expect(finalFailureClassificationAt).toBeGreaterThan(retryAttemptAt);
+    const finalFailureClassificationAt = retry.indexOf(
+      'if !is_windows_locked_install_target_failure(',
+      retryInstallAt,
+    );
+    expect(retryInstallAt).toBeGreaterThan(retryAttemptAt);
+    expect(finalFailureClassificationAt).toBeGreaterThan(retryInstallAt);
     expect(core).toContain('pub enum WindowsBusyRetryOutcome');
     expect(core).toContain('pub fn lock_holder_class(self)');
     expect(core).toContain('npm_lock_holder_class');
