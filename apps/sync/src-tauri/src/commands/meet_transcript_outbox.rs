@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
+use tauri::Manager;
 use tokio::sync::Mutex;
 const MAX_ROWS: usize = 5000;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -320,12 +321,26 @@ pub async fn meet_transcript_outbox_enqueue(
         .lock_owned()
         .await;
     let path = authorized(&window, &account_id).await?;
-    tokio::task::spawn_blocking(move || {
+    // Hold off auto-updates while a transcript row is being persisted to the
+    // outbox file. This protects the window between "recording stopped" and
+    // "transcript saved" so an update restart cannot corrupt a row mid-write.
+    let app = window.app_handle().clone();
+    {
+        if let Some(holds) = app.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
+            holds.0.acquire(hq_desktop_core::update_gate::HoldReason::TranscriptFinishing);
+        }
+    }
+    let result = tokio::task::spawn_blocking(move || {
         let _guard = _guard;
         enqueue(&path, row, &audience)
     })
-    .await
-    .map_err(|_| "Outbox worker failed")?
+    .await;
+    {
+        if let Some(holds) = app.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
+            holds.0.release(hq_desktop_core::update_gate::HoldReason::TranscriptFinishing);
+        }
+    }
+    result.map_err(|_| "Outbox worker failed")?
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

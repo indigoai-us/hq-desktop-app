@@ -54,6 +54,7 @@ mod intro_window;
 mod recovery;
 mod titlebar_layout;
 mod tray;
+mod ui_hot_update;
 mod ui_protocol;
 mod tray_helper;
 mod updater;
@@ -548,6 +549,8 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate::default())
+        .manage(commands::update_gate::UpdateHoldsState::default())
+        .manage(commands::update_gate::AppFocusState::default())
         .manage(updater::DownloadedUpdate::default())
         .manage(crate::boot_watchdog::WatchdogRuntime::default())
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
@@ -575,6 +578,9 @@ fn main() {
         // context menu's "Quit" item (see tray.rs MENU_QUIT). This matches
         // native Cocoa NSStatusItem apps like Bartender, Rectangle, Raycast.
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                commands::update_gate::on_window_focus_changed(window.app_handle(), *focused);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Only hide the main popover window — let other windows
                 // (e.g. new-files-detail) close normally.
@@ -639,6 +645,13 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            ui_hot_update::get_ui_hot_status,
+            ui_hot_update::ui_hot_boot_ok,
+            ui_hot_update::ui_hot_boot_failed,
+            ui_hot_update::ui_hot_reload,
+            ui_hot_update::ui_hot_call_active,
+            ui_hot_update::ui_hot_check_now,
+            ui_hot_update::set_ui_hot_updates,
             commands::meet_transcript_projection::meet_transcript_project,
             commands::meet_transcript_projection::meet_personal_transcript_project,
             commands::meet_transcript_outbox::meet_transcript_outbox_enqueue,
@@ -696,6 +709,9 @@ fn main() {
             commands::hq_work::get_hq_work_handoff_card_shown,
             commands::hq_work::mark_hq_work_handoff_card_shown,
             commands::status::get_sync_status,
+            commands::git_mirror::register_mirror_quarantine_move_not_deletion_generation,
+            commands::git_mirror::unregister_mirror_quarantine_move_not_deletion_generation,
+            commands::git_mirror::set_mirror_quarantine_move_not_deletion,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
             commands::first_run::is_first_run,
@@ -803,6 +819,10 @@ fn main() {
             tray::set_tray_state,
             tray::finish_replay_intro,
             updater::check_for_updates,
+            commands::update_gate::update_hold_acquire,
+            commands::update_gate::update_hold_release,
+            commands::update_gate::update_gate_status,
+            updater::update_install_pending,
             updater::reinstall_latest_release,
             crate::recovery::shell_ready,
             crate::recovery::reset_local_ui_state,
@@ -1070,6 +1090,9 @@ fn main() {
             if commands::headless_install::maybe_run(app.handle()) {
                 return Ok(());
             }
+            ui_hot_update::init(app.handle());
+            ui_hot_update::on_startup(app.handle());
+            ui_hot_update::setup_checker(app.handle());
             commands::watcher_exit_lifecycle::initialize_watcher_exit_lifecycle();
             #[cfg(target_os = "macos")]
             commands::watcher_exit_lifecycle::initialize_macos_power_observer();

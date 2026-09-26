@@ -7,6 +7,9 @@
 
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::future::Future;
+use std::time::Duration;
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -14,6 +17,7 @@ use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "hq_pro";
+const FLAG_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +155,59 @@ pub async fn hq_pro_fetch(
     })
 }
 
+/// Resolve a configured hq-flags value through hq-pro's shared evaluator.
+/// Missing values and read failures return false so rollout flags keep today's
+/// behavior until the registry explicitly enables them. The resolver applies
+/// user and company scope, so each eligible update check reads the current
+/// authenticated scope instead of reusing a process-global cached snapshot.
+pub(crate) async fn feature_flag_enabled(flag: &str) -> bool {
+    feature_flag_enabled_with_fetch(flag, || {
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+    })
+    .await
+}
+
+async fn feature_flag_enabled_with_fetch<Fetch, FetchFuture>(flag: &str, fetch: Fetch) -> bool
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    match tokio::time::timeout(FLAG_REQUEST_TIMEOUT, fetch()).await {
+        Ok(Ok(response)) => match parse_feature_flag_response(response.status, &response.body) {
+            Some(values) => values.get(flag).copied().unwrap_or(false),
+            None => {
+                if response.status == 200 {
+                    log(LOG_TAG, "HQ_FLAGS_RESOLVE_INVALID_RESPONSE");
+                }
+                false
+            }
+        },
+        Ok(Err(_)) => false,
+        Err(_) => {
+            log(LOG_TAG, "HQ_FLAGS_RESOLVE_TIMEOUT");
+            false
+        }
+    }
+}
+
+fn parse_configured_feature_flags(body: &str) -> Option<HashMap<String, bool>> {
+    let response: serde_json::Value = serde_json::from_str(body).ok()?;
+    let _version = response.get("version")?.as_number()?;
+    let flags = response.get("flags")?.as_object()?;
+    let mut values = HashMap::with_capacity(flags.len());
+    for (key, value) in flags {
+        values.insert(key.clone(), value.as_bool()?);
+    }
+    Some(values)
+}
+
+fn parse_feature_flag_response(status: u16, body: &str) -> Option<HashMap<String, bool>> {
+    if status != 200 {
+        return None;
+    }
+    parse_configured_feature_flags(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +266,84 @@ mod tests {
         let mut blank = reqwest::header::HeaderMap::new();
         blank.insert(reqwest::header::RETRY_AFTER, "   ".parse().unwrap());
         assert_eq!(retry_after_header(&blank), None);
+    }
+
+    #[test]
+    fn configured_feature_flag_uses_the_hq_flags_resolver_value() {
+        let body = r#"{"version":1,"flags":{"desktop.core-update-waits-for-prewarm":true}}"#;
+        let values = parse_feature_flag_response(200, body).unwrap();
+        assert_eq!(
+            values.get("desktop.core-update-waits-for-prewarm"),
+            Some(&true)
+        );
+    }
+
+    #[test]
+    fn missing_or_unreadable_feature_flag_keeps_the_gate_off() {
+        let unconfigured = r#"{"version":1,"flags":{}}"#;
+        let malformed = "not-json";
+        let values = parse_feature_flag_response(200, unconfigured).unwrap();
+        assert_eq!(values.get("desktop.core-update-waits-for-prewarm"), None);
+        assert!(parse_feature_flag_response(200, malformed).is_none());
+        assert!(parse_feature_flag_response(503, unconfigured).is_none());
+    }
+
+    #[tokio::test]
+    async fn feature_flag_resolution_uses_a_fresh_scoped_snapshot_each_time() {
+        let flag = "desktop.core-update-waits-for-prewarm";
+        let first_scope = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        let second_scope = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":false}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+
+        assert!(first_scope);
+        assert!(!second_scope);
+    }
+
+    #[tokio::test]
+    async fn malformed_flag_snapshots_fail_closed_and_valid_snapshot_enables_rollout() {
+        let flag = "desktop.core-update-waits-for-prewarm";
+        let missing_version = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"flags":{{"{flag}":true}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert!(!missing_version);
+
+        let malformed_other_flag = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":true,"another.flag":"true"}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert!(!malformed_other_flag);
+
+        let valid = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert!(valid);
     }
 
     #[test]

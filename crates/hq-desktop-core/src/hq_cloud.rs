@@ -670,7 +670,20 @@
 /// A desktop holding a cached 6.16.52 satisfies `~6.16.52` forever and would
 /// retain the older runner; changing this requested spec is what moves npm's
 /// cache key and delivers these fixes.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.53";
+///
+/// `~6.16.53` -> `~6.18.5`: move the hq-cloud minor line onto 6.18 so the
+/// desktop pill and `hq rescue` stay on ONE line while hq-cli takes hq-cloud
+/// 6.18.5. That release lets the desktop's first push (`hq sync push
+/// --creds-from-stdin`) upload files inside trailing-slash private folders
+/// through presigned PUTs (hq-cloud#637); the pre-vended child credentials are
+/// denied direct writes there. hq-cli bundles its own hq-cloud, so the fix
+/// reaches the first push through hq-cli; this pin moves for rescue parity and
+/// to deliver the 6.16.54-6.18.5 runner fixes. 6.17 and 6.18 add outpost
+/// heartbeat and session-host bins and change no runner flag the desktop
+/// passes. `RESCUE_CONTRACT_FLOOR` moves to 6.18.0 in lockstep, mirrored in
+/// hq-cli's rescue parity test. The runner-error vocabulary was re-derived for
+/// this pin (see `runner_error_shape::CAUSE_VOCABULARY_SOURCE_VERSION`).
+pub const HQ_CLOUD_VERSION: &str = "~6.18.5";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -739,8 +752,8 @@ pub const AREA_COLLISION_HEAL_MIN_HQ_CLOUD: &str = "6.16.26";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
-/// into `.claude/settings.local.json` semantics (hq-cloud 6.16 line; carried
-/// unchanged from 6.15). This is
+/// into `.claude/settings.local.json` semantics (hq-cloud 6.18 line; carried
+/// unchanged from 6.15 through 6.16). This is
 /// the single cross-surface source of truth for rescue-engine parity: the
 /// desktop `HQ_CLOUD_VERSION` pin above must have a lower bound >= this floor
 /// AND stay on its minor line, and the hq-cli `@indigoai-us/hq-cloud` dependency
@@ -751,7 +764,7 @@ pub const AREA_COLLISION_HEAL_MIN_HQ_CLOUD: &str = "6.16.26";
 /// `src/commands/rescue.parity.test.ts`; keep the two in lockstep. See
 /// `version_pin_lower_bound_is_at_least_rescue_contract_floor` below for the
 /// desktop guard.
-pub const RESCUE_CONTRACT_FLOOR: &str = "6.16.0";
+pub const RESCUE_CONTRACT_FLOOR: &str = "6.18.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -798,7 +811,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.53");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.5");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

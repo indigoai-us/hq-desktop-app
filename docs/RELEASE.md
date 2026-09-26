@@ -752,3 +752,73 @@ the whole pipeline, including Windows. It publishes a prerelease that is never
 latest, with no `latest.json` and no versionless aliases. It skips version
 sync and the #hq-dev announcements. The `shelltest-cleanup` job always deletes
 the release and the tag at the end.
+
+## UI hot updates
+
+Interface-only changes can reach installed apps without an installer,
+notarization, or restart. Off by default: the `uiHotUpdates` key in
+`~/.hq/menubar.json` is `off` (default), `beta`, or `stable`.
+
+**Where bundles live.** Never inside the signed `.app` (writing into
+`Contents/Resources` breaks the code signature and can reset permissions).
+Bundles go to `<app data dir>/ui/` (macOS: `~/Library/Application
+Support/<bundle id>/ui/`): `state.json` holds the active pointer plus the
+good/bad ledger and is written via tmp file + rename; each bundle is
+`bundles/<uiVersion>/{manifest.json,dist/}`.
+
+**Format.** `ui-<version>.tar.gz` contains `hq-ui-manifest.json`
+(`uiVersion`, `shellKeys[]`, `createdAt`, optional `minAppVersion`) and
+`dist/`. It is signed with the Tauri updater's minisign key (`tauri signer
+sign`) and verified with the updater public key from `tauri.conf.json` using
+the same `minisign-verify` call as the updater plugin. `ui-manifest.json` next
+to it adds the archive's sha256. Code: `crates/hq-desktop-core/src/ui_hot.rs`,
+`apps/sync/src-tauri/src/ui_hot_update.rs`, `scripts/ui-bundle.mjs`.
+
+**Gates before a hot bundle is served** (otherwise `Resources/ui` is used):
+setting not `off`; the running shell's key (`Resources/shell-key.txt`, from
+`scripts/shell-hash.mjs`) is in the signed manifest; the bundle's base version
+(`uiVersion` before `+`) is not older than the app, so a native release with
+newer UI is never shadowed; `minAppVersion` satisfied; not marked bad;
+`dist/index.html` present. After a native release that changes the shell,
+old bundles are ignored until a bundle for the new key is published.
+
+**Apply.** The app checks `ui-latest-<channel>.json` 10 s after launch and
+every 30 minutes (5/10/20 min backoff on failure). Download → size cap →
+sha256 → signature → extract to a staging dir → signed manifest must match
+the pointer and pass the gates → rename into place → flip `state.json`. Any
+failure leaves the current UI untouched. Then: if no window is visible and no
+sync or call is running, reload; with the desktop window open, reload when no
+composer holds text and no call is active, otherwise show "Interface updated —
+reload".
+
+**Rollback.** When the first page is served from a hot bundle, the UI must call
+`ui_hot_boot_ok` within 30 s. A miss, or a fatal error in the first 30 s
+(`ui_hot_boot_failed`), marks the bundle bad, falls back to the newest
+confirmed-good bundle or `Resources/ui`, logs `[ui-hot] rollback`, reports to
+Sentry and the `desktop_ui_hot_rollback` event, and reloads. The last two
+confirmed-good bundles are kept; older ones are pruned.
+
+**Version reporting.** `get_ui_hot_status` returns app version, UI version,
+source (`hot`/`builtin`), mode, and shell key. Settings shows "Interface
+<version>" under the app version when a hot bundle is live. Client requests
+carry `x-hq-ui-version`. The Tauri updater, `latest.json`, and version
+comparison are unchanged.
+
+**Publishing.**
+- Tagged releases: the `ui-bundle` job in `release.yml` runs after `publish`
+  and attaches `ui-<version>.tar.gz`, `.sig`, and `ui-manifest.json` built
+  from the same `ui-dist` for the release's three shell keys. The asset
+  contract ignores exactly these names.
+- UI-only: run **UI-only publish** (`ui-publish.yml`) with `ref`, `channel`
+  (`beta`/`stable`), and optional `extra_shell_keys`. It picks the channel's
+  base release, refuses if `ref` changed native shell sources since that
+  release, reads shell keys from the release's `ui-manifest.json`, builds and
+  signs the UI, uploads the archive to the rolling `ui-updates` prerelease
+  (`--latest=false`), then moves `ui-latest-<channel>.json`. It never touches
+  `latest.json`. Releases published before this feature have no
+  `ui-manifest.json`, so the first UI-only publish needs a tagged release
+  from this code first.
+
+**Local verification (debug builds only).** `HQ_UI_HOT_FEED=file:///dir` or
+`http://127.0.0.1:...`, `HQ_UI_HOT_CHECK_SECS`, `HQ_UI_HOT_BEACON_SECS`,
+`HQ_UI_HOT_UPDATES`, `HQ_UI_HOT_ROOT`. Release builds accept https feeds only.

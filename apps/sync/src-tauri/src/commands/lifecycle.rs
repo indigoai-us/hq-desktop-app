@@ -7,6 +7,7 @@ use hq_desktop_core::lifecycle::{
     classify_lifecycle, hq_root_valid, menubar_flags, probe_hq_root,
     should_backfill_welcome_setup_pending, HqRootProbe, LifecycleInputs, LifecycleState,
 };
+use hq_desktop_core::paths::ResolvedProgramKind;
 use serde_json::{Map, Value};
 use std::sync::{OnceLock, RwLock};
 use std::time::Instant;
@@ -41,6 +42,10 @@ pub struct LifecycleInputsHandle {
     pub inputs: LifecycleInputs,
     pub tools_present: bool,
     pub bundled_cli_ready: bool,
+    pub hq_root_probe: Option<HqRootProbe>,
+    pub hq_program_kind: Option<ResolvedProgramKind>,
+    pub node_program_kind: Option<ResolvedProgramKind>,
+    pub require_local_toolchain_demoted: bool,
 }
 
 /// Time at which setup_lifecycle started, used to compute seconds since
@@ -112,6 +117,10 @@ pub fn setup_lifecycle(app: &AppHandle) {
             },
             tools_present: false,
             bundled_cli_ready: false,
+            hq_root_probe: None,
+            hq_program_kind: None,
+            node_program_kind: None,
+            require_local_toolchain_demoted: false,
         });
         return;
     }
@@ -203,11 +212,18 @@ pub fn setup_lifecycle(app: &AppHandle) {
     // (feedback #2290). Not applied on Windows, where this readiness check
     // is not certified.
     #[cfg(not(windows))]
-    let (verdict, tools_present, bundled_cli_ready) = {
-        let hq_resolved =
-            paths::resolve_bin_with_kind("hq").kind != paths::ResolvedProgramKind::NotResolved;
-        let node_resolved =
-            paths::resolve_bin_with_kind("node").kind != paths::ResolvedProgramKind::NotResolved;
+    let (
+        verdict,
+        tools_present,
+        bundled_cli_ready,
+        hq_program_kind,
+        node_program_kind,
+        require_local_toolchain_demoted,
+    ) = {
+        let hq_program = paths::resolve_bin_with_kind("hq");
+        let node_program = paths::resolve_bin_with_kind("node");
+        let hq_resolved = hq_program.kind != ResolvedProgramKind::NotResolved;
+        let node_resolved = node_program.kind != ResolvedProgramKind::NotResolved;
         let tools_present = tools_present_for_lifecycle_gate(hq_resolved, node_resolved);
         let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
         // When the install evidence itself could not be read, a "tools are
@@ -219,12 +235,40 @@ pub fn setup_lifecycle(app: &AppHandle) {
         } else {
             hq_desktop_core::lifecycle::require_local_toolchain(classified, tools_present)
         };
-        (verdict, tools_present, bundled_cli_ready)
+        let require_local_toolchain_demoted = !evidence_unreadable
+            && classified.state != verdict.state
+            && verdict.state == LifecycleState::NeedsInstall;
+        (
+            verdict,
+            tools_present,
+            bundled_cli_ready,
+            Some(hq_program.kind),
+            Some(node_program.kind),
+            require_local_toolchain_demoted,
+        )
     };
     #[cfg(windows)]
     let verdict = classify_lifecycle(inputs);
     #[cfg(windows)]
-    let (tools_present, bundled_cli_ready) = (true, true);
+    let (
+        tools_present,
+        bundled_cli_ready,
+        hq_program_kind,
+        node_program_kind,
+        require_local_toolchain_demoted,
+    ) = {
+        // Windows does not use require_local_toolchain for lifecycle routing,
+        // but collect the same resolver observations for startup diagnostics.
+        let hq_program = paths::resolve_bin_with_kind("hq");
+        let node_program = paths::resolve_bin_with_kind("node");
+        (
+            true,
+            true,
+            Some(hq_program.kind),
+            Some(node_program.kind),
+            false,
+        )
+    };
 
     if verdict.needs_install_backfill {
         match menubar_path.as_ref() {
@@ -350,6 +394,10 @@ pub fn setup_lifecycle(app: &AppHandle) {
         inputs,
         tools_present,
         bundled_cli_ready,
+        hq_root_probe: Some(root_probe),
+        hq_program_kind,
+        node_program_kind,
+        require_local_toolchain_demoted,
     });
 }
 
@@ -512,6 +560,13 @@ pub fn report_unexpected_startup_surface(
         &token_presence,
         elapsed_since_start.map(|elapsed| elapsed.as_millis()),
         &prior_surface,
+        hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
+            inputs: *inputs,
+            hq_root_probe: state.hq_root_probe,
+            hq_program_kind: state.hq_program_kind,
+            node_program_kind: state.node_program_kind,
+            require_local_toolchain_demoted: state.require_local_toolchain_demoted,
+        },
     );
 
     let prior_setup = hq_desktop_core::unexpected_surface::prior_setup_detected(

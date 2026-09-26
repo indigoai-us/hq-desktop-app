@@ -3896,6 +3896,77 @@ jobs:
             --tag "$TAG" \
             --make-latest "$MAKE_LATEST"
 
+  # UI hot updates (docs/RELEASE.md "UI hot updates"): attach the signed
+  # interface bundle built from the SAME ui-dist this release assembled, for
+  # the shell keys this release shipped. Runs after publication so the
+  # 15-asset product contract and latest.json are untouched; the asset
+  # contract ignores these three names. Its ui-manifest.json is also where
+  # the ui-only publish workflow reads the release's shell keys from.
+  ui-bundle:
+    name: Attach UI hot-update bundle
+    needs: [validate, publish, shell-key, shell-windows-x64, shell-windows-arm64, ui]
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.ui.result == 'success' && inputs.legacy_build != true && inputs.shelltest != true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout release control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: |
+            scripts/ui-bundle.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download UI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ${{ runner.temp }}/ui-dist
+
+      - name: Pack UI bundle
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          KEY_MACOS: ${{ needs.shell-key.outputs.key }}
+          KEY_WIN_X64: ${{ needs.shell-windows-x64.outputs.key }}
+          KEY_WIN_ARM64: ${{ needs.shell-windows-arm64.outputs.key }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          for k in "$KEY_MACOS" "$KEY_WIN_X64" "$KEY_WIN_ARM64"; do
+            if [ -n "$k" ]; then ARGS+=(--shell-key "$k"); fi
+          done
+          ARCHIVE="$(node scripts/ui-bundle.mjs pack --dist "$RUNNER_TEMP/ui-dist" \
+            --ui-version "$RELEASE_VERSION" "${ARGS[@]}" --out "$RUNNER_TEMP/ui-out")"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Sign UI bundle with the updater key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$ARCHIVE" > /dev/null
+          test -s "$ARCHIVE.sig"
+
+      - name: Attach to the release
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for asset in "$ARCHIVE" "$ARCHIVE.sig" "$RUNNER_TEMP/ui-out/ui-manifest.json"; do
+            gh release upload "$TAG" "$asset" -R "$REPOSITORY" --clobber
+          done
+          echo "UI bundle attached: $(basename "$ARCHIVE")" | tee -a "$GITHUB_STEP_SUMMARY"
+
   # Replaces the release pull request. Cutting a release is `git push origin
   # vX.Y.Z`; the version commit lands on main here, after the release is
   # already public. Runs last on purpose — a branch this cannot push must never

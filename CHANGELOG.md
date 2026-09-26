@@ -14,6 +14,54 @@ The release moves it under the version it ships in.
   card at the end of setup can also offer to put the bot in Slack; clicking it
   asks the bot to walk you through it.
 
+- When enabled, automatic Core updates wait for startup cache preparation before
+  running the rescue. If the wait limit expires, the update moves to a later
+  automatic check; manual updates keep their current behavior. The rollout flag
+  defaults off.
+
+## [0.10.340] — 2026-09-26
+- Update holds now apply to manual installs too, and a recording that ends with an error no longer blocks updates.
+- When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
+- Release builds no longer recompile the native app every time. The job that
+  prepares the native pieces after each merge now installs its build targets
+  correctly and is no longer cancelled by the next merge, so a normal release
+  assembles from the prepared pieces instead of building them from scratch.
+- Core tests no longer start `npx` in the background or leave npm cache files
+  in temporary home folders.
+
+## [0.10.339] — 2026-09-26
+
+- HQ no longer restarts for an update while you are using it or while a meeting is being recorded. A card in the sidebar lets you choose when to apply pending updates.
+
+## [0.10.337] — 2026-09-26
+
+- When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
+  holder, HQ keeps the current CLI available and retries on later launches. It
+  reports a persistent failure after three attempts.
+
+## [0.10.336] — 2026-09-26
+
+- Interface fixes can now reach installed apps within a couple of minutes,
+  without a new installer or a restart. The app downloads a signed interface
+  update, checks it was built for this exact version of the app, and offers
+  "Interface updated — reload" (or reloads on its own when nothing would be
+  lost). If an update fails to start, the app goes back to the previous
+  interface by itself. Off by default for now; Settings shows which interface
+  version is running.
+- When the app shows sign-in or onboarding to someone who already finished
+  setup, its error report now records which setup checks passed or failed.
+  The report contains short fixed values only, with no file paths or account
+  details. This helps us find why some people are sent back to onboarding
+  after an update.
+
+## [0.10.334] — 2026-09-26
+
+- The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
+  line tool now uses, so Update / Restore and `hq rescue` keep running the same
+  engine. It brings the sync fixes released since 6.16.53.
+
+## [0.10.333] — 2026-09-26
+
 - On Windows, setup no longer fails when an old content folder link points
   to a folder that has since been removed. Setup removes the old link and
   creates it again. If linking still fails, the error report now says which

@@ -7,6 +7,7 @@
    * supplies native authority and delivery seams.
    */
   import { getVersion } from '@tauri-apps/api/app';
+  import { readUiHotStatus } from '../lib/ui-hot';
   import { invoke as tauriInvoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import WorkShell from '@hq/work/WorkShell';
@@ -34,7 +35,7 @@
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
-  import { flushSync, onMount, tick, untrack, type ComponentProps } from 'svelte';
+  import { flushSync, onDestroy, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
@@ -76,6 +77,10 @@
 
   const adapter = createSyncPlatformAdapter({
     invoke: (command, args) => invokeFn(command, args),
+    primeMirrorQuarantineGate: true,
+  });
+  onDestroy(() => {
+    void adapter.dispose?.();
   });
   const wakes = createChatWakeBus();
   const navigation = createEmbeddedNavigationController();
@@ -87,6 +92,7 @@
   let companies = $state<Workspace[] | null>(null);
   let capabilities = $state<NativeWorkShellCapabilities | null>(null);
   let version = $state('0.0.0');
+  let uiVersion = $state<string | null>(null);
   type Lifecycle =
     | 'loading'
     | 'ready'
@@ -381,6 +387,9 @@
         if (request === hydration && expectedGeneration === authGeneration) version = next;
       })
       .catch(() => undefined);
+    void readUiHotStatus(tauriInvoke).then((status) => {
+      uiVersion = status?.source === 'hot' ? status.uiVersion : null;
+    });
   }
 
   async function retryWorkspaces(): Promise<void> {
@@ -908,6 +917,7 @@
         {version}
         {updateWakeSeq}
         refreshAppVersion={getVersion}
+        {uiVersion}
         {packagesEvents}
         onOpenConsole={openApprovedExternalUrl}
         onopenurl={openBrowserUrl}

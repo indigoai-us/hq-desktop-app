@@ -21,6 +21,9 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+static HOME_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 use hq_desktop_core::runner_target::{
     ensure_runner_target_runnable, npx_cache_entry_hash, pinned_package_spec, probe_runner_target,
@@ -55,6 +58,9 @@ fn materialize_fixture_cache(cache_root: &Path, script_mode: u32) -> PathBuf {
 
 #[test]
 fn pre_spawn_gate_sees_and_heals_the_poisoned_npx_cache() {
+    let _environment = HOME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let cache_root = tmp.path().join("npm-cache");
     std::fs::create_dir_all(&cache_root).unwrap();

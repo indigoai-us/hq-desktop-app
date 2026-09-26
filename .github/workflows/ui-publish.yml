@@ -1,0 +1,191 @@
+name: UI-only publish
+
+# Ship an interface-only change to installed apps without a native release
+# (docs/RELEASE.md "UI hot updates"). Builds only the frontend from `ref`,
+# packs it for the shell keys of the channel's current release, signs it with
+# the Tauri updater key, and publishes it to the rolling `ui-updates`
+# prerelease with a `ui-latest-<channel>.json` pointer that apps poll.
+#
+# Never touches latest.json, the app updater's pointer, or any vX.Y.Z release.
+# Refuses when `ref` changed native shell sources since the base release: a
+# UI must never run on a shell it was not built against, so that change needs
+# a native release instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build the UI from"
+        required: true
+        default: main
+        type: string
+      channel:
+        description: "Pointer to publish (beta or stable)"
+        required: true
+        default: beta
+        type: choice
+        options: [beta, stable]
+      extra_shell_keys:
+        description: "Additional shell keys to include (comma-separated; e.g. a local debug shell for verification)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, sign, and publish UI bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      CHANNEL: ${{ inputs.channel }}
+    steps:
+      - name: Record start time
+        run: echo "STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: control
+          sparse-checkout: |
+            scripts/ui-bundle.mjs
+            scripts/shell-hash.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve base release
+        id: base
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPOSITORY/releases?per_page=100" > releases.json
+          read -r TAG VERSION < <(node control/scripts/ui-bundle.mjs select-base --releases releases.json --channel "$CHANNEL")
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Base release for $CHANNEL: $TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout UI ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: src
+          persist-credentials: false
+
+      - name: Checkout base release
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.base.outputs.tag }}
+          path: base
+          persist-credentials: false
+
+      - name: Refuse native shell changes since the base release
+        run: |
+          set -euo pipefail
+          # Same toolchain/target on both sides: the keys are equal exactly
+          # when every shell input (Rust, Cargo, tauri.conf, icons, ...) is.
+          A="$(node control/scripts/shell-hash.mjs --root "$PWD/src" --toolchain compare --target compare)"
+          B="$(node control/scripts/shell-hash.mjs --root "$PWD/base" --toolchain compare --target compare)"
+          if [ "$A" != "$B" ]; then
+            echo "::error::${{ inputs.ref }} changes native shell sources since ${{ steps.base.outputs.tag }}. Ship a native release instead of a UI-only bundle."
+            exit 1
+          fi
+          echo "SHA=$(git -C src rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Resolve shell keys
+        env:
+          EXTRA: ${{ inputs.extra_shell_keys }}
+        run: |
+          set -euo pipefail
+          if ! gh release download "${{ steps.base.outputs.tag }}" -R "$REPOSITORY" -p ui-manifest.json -D base-manifest; then
+            echo "::warning::${{ steps.base.outputs.tag }} has no ui-manifest.json (it predates UI hot updates); only extra_shell_keys apply."
+          fi
+          node control/scripts/ui-bundle.mjs keys --manifest base-manifest/ui-manifest.json --extra "$EXTRA" > keys.txt
+          echo "Shell keys: $(wc -l < keys.txt | tr -d ' ')" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: src/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: src/apps/sync/pnpm-lock.yaml
+
+      - name: Build UI
+        working-directory: src/apps/sync
+        env:
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Pack UI bundle
+        run: |
+          set -euo pipefail
+          UI_VERSION="$(node control/scripts/ui-bundle.mjs version --app-version "${{ steps.base.outputs.version }}" --sha "$SHA")"
+          ARGS=()
+          while read -r k; do ARGS+=(--shell-key "$k"); done < keys.txt
+          ARCHIVE="$(node control/scripts/ui-bundle.mjs pack --dist src/apps/sync/dist --ui-version "$UI_VERSION" "${ARGS[@]}" --out ui-out)"
+          echo "UI_VERSION=$UI_VERSION" >> "$GITHUB_ENV"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Sign UI bundle with the updater key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$ARCHIVE" > /dev/null
+          test -s "$ARCHIVE.sig"
+
+      - name: Publish to ui-updates
+        run: |
+          set -euo pipefail
+          if ! gh release view ui-updates -R "$REPOSITORY" > /dev/null 2>&1; then
+            gh release create ui-updates -R "$REPOSITORY" --prerelease --latest=false \
+              --title "UI updates (rolling)" \
+              --notes "Signed interface-only bundles for installed apps. Not an app release; see docs/RELEASE.md \"UI hot updates\"."
+          fi
+          NAME="$(basename "$ARCHIVE")"
+          # Archive and signature first; the pointer only moves once both exist.
+          gh release upload ui-updates "$ARCHIVE" "$ARCHIVE.sig" -R "$REPOSITORY" --clobber
+          URL="https://github.com/$REPOSITORY/releases/download/ui-updates/$NAME"
+          node control/scripts/ui-bundle.mjs pointer --manifest ui-out/ui-manifest.json --sig "$ARCHIVE.sig" \
+            --url "$URL" --channel "$CHANNEL" --out "ui-latest-$CHANNEL.json"
+          gh release upload ui-updates "ui-latest-$CHANNEL.json" -R "$REPOSITORY" --clobber
+          ELAPSED=$(( $(date +%s) - STARTED_AT ))
+          {
+            echo "Published $UI_VERSION to $CHANNEL"
+            echo "Pointer: https://github.com/$REPOSITORY/releases/download/ui-updates/ui-latest-$CHANNEL.json"
+            echo "Bundle available ${ELAPSED}s after job start"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Prune old bundles
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPOSITORY/releases/tags/ui-updates" --jq '.assets' > assets.json
+          REFERENCED=""
+          for ch in beta stable; do
+            if gh release download ui-updates -R "$REPOSITORY" -p "ui-latest-$ch.json" -O "ptr-$ch.json" 2>/dev/null; then
+              REFERENCED="$REFERENCED,$(node -e 'const p=require(process.argv[1]);process.stdout.write(p.url.split("/").pop())' "$PWD/ptr-$ch.json")"
+            fi
+          done
+          node control/scripts/ui-bundle.mjs prune-plan --assets assets.json --keep 10 --referenced "$REFERENCED" > prune.txt
+          while read -r name; do
+            [ -n "$name" ] && gh release delete-asset ui-updates "$name" -R "$REPOSITORY" -y
+          done < prune.txt

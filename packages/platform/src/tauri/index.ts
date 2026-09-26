@@ -680,6 +680,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       return this.call("set_hq_cli_update_dismissed", { version });
     },
     availableChannels: () => this.call("available_channels"),
+    queryUpdateGate: () => this.call('update_gate_status'),
+    installPendingUpdate: () => this.call('update_install_pending'),
   };
 
   readonly packages: PlatformAdapter["packages"] = {
