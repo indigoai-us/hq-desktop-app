@@ -95,11 +95,11 @@ where
         .map_err(|_| stamp_error("core_yaml_parse_error", "none", "none"))?;
     let yaml_top_level_keys = bounded_yaml_top_level_keys(&yaml);
     let yaml_stamp_key = yaml.as_mapping().map_or("none", |mapping| {
-        if mapping.contains_key(&serde_yaml::Value::String(
+        if mapping.contains_key(serde_yaml::Value::String(
             "replaced_from_source".to_string(),
         )) {
             "replaced_from_source"
-        } else if mapping.contains_key(&serde_yaml::Value::String(
+        } else if mapping.contains_key(serde_yaml::Value::String(
             "replaced_from_staging".to_string(),
         )) {
             "replaced_from_staging"
