@@ -31,6 +31,8 @@ use tauri::Monitor;
 pub enum TrayState {
     Idle,
     Syncing,
+    /// No live event stream is available; periodic sync remains active.
+    PollOnly,
     /// Sync is ready to continue after a quick sign-in. Reuses the neutral
     /// idle icon so auth expiry never paints the menu bar red.
     Reauth,
@@ -49,6 +51,7 @@ impl TrayState {
         match s.to_lowercase().as_str() {
             "idle" => Some(Self::Idle),
             "syncing" => Some(Self::Syncing),
+            "poll-only" => Some(Self::PollOnly),
             "reauth" => Some(Self::Reauth),
             "error" => Some(Self::Error),
             "conflict" => Some(Self::Conflict),
@@ -62,6 +65,7 @@ impl TrayState {
         match self {
             Self::Idle => "HQ — Idle",
             Self::Syncing => "HQ — Syncing…",
+            Self::PollOnly => "HQ: Poll-only",
             Self::Reauth => "HQ — Sign in to keep syncing",
             Self::Error => "HQ — Error",
             Self::Conflict => "HQ — Conflict",
@@ -76,6 +80,17 @@ impl TrayState {
 
 /// Global current tray state.
 static CURRENT_STATE: OnceLock<Arc<Mutex<TrayState>>> = OnceLock::new();
+static POLL_ONLY_DETAIL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn poll_only_detail() -> &'static Mutex<Option<String>> {
+    POLL_ONLY_DETAIL.get_or_init(|| Mutex::new(None))
+}
+
+fn set_poll_only_detail(detail: Option<String>) {
+    if let Ok(mut current) = poll_only_detail().lock() {
+        *current = detail;
+    }
+}
 
 fn current_state() -> &'static Arc<Mutex<TrayState>> {
     CURRENT_STATE.get_or_init(|| Arc::new(Mutex::new(TrayState::Idle)))
@@ -298,7 +313,7 @@ pub fn set_prompt_badge(app: &AppHandle, count: usize) {
                 .map(|s| *s)
                 .unwrap_or(TrayState::Idle);
             set_state_icon(&tray, state);
-            let _ = tray.set_tooltip(Some(state.tooltip()));
+            refresh_tray_tooltip(app);
         }
     }
 }
@@ -338,7 +353,7 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
     };
 
     match state {
-        TrayState::Idle | TrayState::Reauth => {
+        TrayState::Idle | TrayState::PollOnly | TrayState::Reauth => {
             ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png")))
         }
         TrayState::Syncing => {
@@ -1207,6 +1222,9 @@ fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
 
 /// Update the tray icon to reflect a new state.
 pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
+    if state != TrayState::PollOnly {
+        set_poll_only_detail(None);
+    }
     // Update global state
     if let Ok(mut current) = current_state().lock() {
         *current = state;
@@ -1340,8 +1358,19 @@ fn setup_sync_listeners(app: &AppHandle) {
 /// `set_share_badge`, and `clear_share_badge` so the tooltip is always
 /// consistent with both the tray state and the share badge.
 fn refresh_tray_tooltip(app: &AppHandle) {
+    let state = get_current_state();
+    let base = if state == TrayState::PollOnly {
+        poll_only_detail()
+            .lock()
+            .ok()
+            .and_then(|detail| detail.clone())
+            .map(|detail| format!("HQ: {detail}"))
+            .unwrap_or_else(|| state.tooltip().to_string())
+    } else {
+        state.tooltip().to_string()
+    };
     let tooltip = compose_tray_tooltip(
-        get_current_state().tooltip(),
+        &base,
         SHARE_BADGE_COUNT.load(Ordering::SeqCst),
         SESSION_BADGE_COUNT.load(Ordering::SeqCst),
     );
@@ -1405,15 +1434,28 @@ pub fn clear_session_badge(app: &AppHandle) {
 
 /// Tauri command: let the frontend explicitly set tray icon state.
 ///
-/// Accepts: "idle", "syncing", "reauth", "error", "conflict" (case-insensitive).
+/// Accepts: "idle", "syncing", "poll-only", "reauth", "error", "conflict".
 #[tauri::command]
-pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
+pub fn set_tray_state(
+    app: AppHandle,
+    state: String,
+    detail: Option<String>,
+) -> Result<(), String> {
     let tray_state = TrayState::from_str_loose(&state).ok_or_else(|| {
         format!(
-            "Invalid tray state: '{}'. Expected: idle, syncing, reauth, error, conflict, prompt",
+            "Invalid tray state: '{}'. Expected: idle, syncing, poll-only, reauth, error, conflict, prompt",
             state
         )
     })?;
+    if tray_state == TrayState::PollOnly {
+        set_poll_only_detail(Some(
+            detail
+                .unwrap_or_else(|| "Live updates are off".to_string())
+                .chars()
+                .take(180)
+                .collect(),
+        ));
+    }
     update_tray_icon(&app, tray_state);
     Ok(())
 }
@@ -1579,6 +1621,7 @@ mod tests {
             TrayState::from_str_loose("SYNCING"),
             Some(TrayState::Syncing)
         );
+        assert_eq!(TrayState::from_str_loose("poll-only"), Some(TrayState::PollOnly));
         assert_eq!(TrayState::from_str_loose("Error"), Some(TrayState::Error));
         assert_eq!(TrayState::from_str_loose("reauth"), Some(TrayState::Reauth));
         assert_eq!(
@@ -1595,6 +1638,7 @@ mod tests {
     fn test_tray_state_tooltip() {
         assert_eq!(TrayState::Idle.tooltip(), "HQ — Idle");
         assert_eq!(TrayState::Syncing.tooltip(), "HQ — Syncing…");
+        assert_eq!(TrayState::PollOnly.tooltip(), "HQ: Poll-only");
         assert_eq!(TrayState::Reauth.tooltip(), "HQ — Sign in to keep syncing");
         assert_eq!(TrayState::Error.tooltip(), "HQ — Error");
         assert_eq!(TrayState::Conflict.tooltip(), "HQ — Conflict");
@@ -1609,12 +1653,13 @@ mod tests {
         for state in &[
             TrayState::Idle,
             TrayState::Syncing,
+            TrayState::PollOnly,
             TrayState::Reauth,
             TrayState::Error,
             TrayState::Conflict,
         ] {
             let bytes: &[u8] = match state {
-                TrayState::Idle | TrayState::Reauth | TrayState::Prompt => {
+                TrayState::Idle | TrayState::PollOnly | TrayState::Reauth | TrayState::Prompt => {
                     include_bytes!("../icons/tray-idle@2x.png")
                 }
                 TrayState::Syncing => include_bytes!("../icons/tray-syncing@2x.png"),
@@ -1657,6 +1702,7 @@ mod tests {
         match state {
             TrayState::Idle
             | TrayState::Syncing
+            | TrayState::PollOnly
             | TrayState::Reauth
             | TrayState::Error
             | TrayState::Conflict

@@ -39,6 +39,19 @@ pub struct SyncFanoutPlanEvent {
     pub companies: Vec<SyncCompanyRef>,
 }
 
+/// `{type: "realtime-mode", mode, minPollMs?, maxPollMs?}`
+/// Additive status from hq-cloud's watch loop. This event describes realtime
+/// availability; it does not claim that a sync pass completed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncRealtimeModeEvent {
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub min_poll_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_poll_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncCompanyRef {
@@ -289,6 +302,7 @@ pub enum SyncEvent {
     SetupNeeded,
     AuthError(SyncAuthErrorEvent),
     FanoutPlan(SyncFanoutPlanEvent),
+    RealtimeMode(SyncRealtimeModeEvent),
     /// Stage-1 result for a single company / direction. Optional in the
     /// protocol — older runners (hq-cloud <5.5.0) skip it. When present,
     /// arrives before any `Progress` events for that company.
@@ -360,6 +374,7 @@ pub fn parse_sync_line(line: &str) -> Option<SyncEvent> {
 pub const EVENT_SYNC_SETUP_NEEDED: &str = "sync:setup-needed";
 pub const EVENT_SYNC_AUTH_ERROR: &str = "sync:auth-error";
 pub const EVENT_SYNC_FANOUT_PLAN: &str = "sync:fanout-plan";
+pub const EVENT_SYNC_REALTIME_MODE: &str = "sync:realtime-mode";
 /// Per-company / per-direction Stage-1 result from the runner (≥hq-cloud@5.5.0).
 /// Frontend uses these to refine the progress denominator established
 /// by the upstream `EVENT_SYNC_TOTALS` pre-pass.
@@ -744,6 +759,22 @@ mod tests {
             event,
             SyncEvent::AuthError(SyncAuthErrorEvent {
                 message: "Token expired".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn poll_only_realtime_mode_line_is_parsed_as_a_known_event() {
+        let line = r#"{"type":"realtime-mode","mode":"poll-only","minPollMs":60000,"maxPollMs":600000}"#;
+        let parsed = parse_sync_line(line);
+        assert!(parsed.is_some(), "poll-only status line should be recognized");
+        assert_eq!(
+            serde_json::to_value(parsed.unwrap()).unwrap(),
+            serde_json::json!({
+                "type": "realtime-mode",
+                "mode": "poll-only",
+                "minPollMs": 60000,
+                "maxPollMs": 600000
             })
         );
     }
