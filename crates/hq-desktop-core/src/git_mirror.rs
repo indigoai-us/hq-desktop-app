@@ -4271,7 +4271,10 @@ where
             }
         }
         if let Some((_, journal_modified)) = freshest_matching_move {
-            candidates.push((record.path, journal_modified));
+            candidates.push((
+                record.path,
+                truncate_system_time_to_seconds(journal_modified),
+            ));
         }
     }
 
@@ -4295,7 +4298,9 @@ where
     };
     let uncertain = candidates
         .iter()
-        .filter(|(_, journal_modified)| *journal_modified < head_commit_time)
+        .filter(|(_, journal_modified)| {
+            journal_requires_path_history(*journal_modified, head_commit_time)
+        })
         .collect::<Vec<_>>();
     let latest_commits = if uncertain.is_empty() {
         HashMap::new()
@@ -4322,8 +4327,8 @@ where
         .into_iter()
         .filter_map(|(path, journal_modified)| {
             let last_path_commit = latest_commits.get(&path);
-            let journal_is_current = journal_modified >= head_commit_time
-                || last_path_commit.map_or(true, |committed_at| journal_modified >= *committed_at);
+            let journal_is_current = journal_modified > head_commit_time
+                || last_path_commit.map_or(true, |committed_at| journal_modified > *committed_at);
             journal_is_current.then_some(path)
         })
         .collect::<Vec<_>>();
@@ -4402,6 +4407,30 @@ fn head_commit_time(hq_folder: &str) -> Option<SystemTime> {
         .parse::<u64>()
         .ok()?;
     UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
+}
+
+fn journal_requires_path_history(
+    journal_modified: SystemTime,
+    head_commit_time: SystemTime,
+) -> bool {
+    truncate_system_time_to_seconds(journal_modified) <= head_commit_time
+}
+
+fn truncate_system_time_to_seconds(value: SystemTime) -> SystemTime {
+    match value.duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => UNIX_EPOCH
+            .checked_add(Duration::from_secs(elapsed.as_secs()))
+            .unwrap_or(value),
+        Err(error) => {
+            let elapsed = error.duration();
+            let seconds = elapsed
+                .as_secs()
+                .saturating_add(u64::from(elapsed.subsec_nanos() > 0));
+            UNIX_EPOCH
+                .checked_sub(Duration::from_secs(seconds))
+                .unwrap_or(value)
+        }
+    }
 }
 
 /// Return the newest commit timestamp for each requested path that changed
@@ -8201,6 +8230,59 @@ mod tests {
         out
     }
 
+    fn git_at_seconds(dir: &Path, args: &[&str], seconds: u64) -> Output {
+        let date = format!("@{seconds} +0000");
+        Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date)
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git available in test env")
+    }
+
+    fn git_ok_at_seconds(dir: &Path, args: &[&str], seconds: u64) -> Output {
+        let out = git_at_seconds(dir, args, seconds);
+        assert!(
+            out.status.success(),
+            "git {args:?} at {seconds} failed in {dir:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
+    fn set_modified(path: &Path, modified: SystemTime) {
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .expect("open directory to set its timestamp")
+        };
+        #[cfg(not(windows))]
+        let file = File::open(path).expect("open directory to set its timestamp");
+        file.set_modified(modified)
+            .expect("set directory timestamp");
+    }
+
+    fn future_test_second() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after the Unix epoch")
+            .as_secs()
+            + 86_400
+    }
+
     fn init_repo(dir: &Path) {
         // An empty template dir keeps an inherited `init.templateDir` from
         // seeding hooks into the fixture at init time.
@@ -8328,6 +8410,11 @@ mod tests {
                 fs::write(&destination, format!("changed content {i}\n")).unwrap();
             }
         }
+        let head_time = head_commit_time(dir.to_str().unwrap()).expect("fixture HEAD has a time");
+        set_modified(
+            &quarantine.join("companies/indigo"),
+            head_time + Duration::from_secs(1),
+        );
     }
 
     fn staged_deletion_count_then_reset(dir: &Path) -> usize {
@@ -9056,6 +9143,116 @@ mod tests {
             "the resulting mirror commit records the source deletion"
         );
         reset_refusal_report_state();
+    }
+
+    #[test]
+    fn same_second_journal_is_routed_through_path_history() {
+        let head_second = future_test_second();
+        let head_commit_time = UNIX_EPOCH + Duration::from_secs(head_second);
+        let journal_modified = head_commit_time + Duration::from_millis(700);
+
+        assert!(
+            journal_requires_path_history(journal_modified, head_commit_time),
+            "a journal in the same whole second as HEAD must consult path history"
+        );
+    }
+
+    #[test]
+    fn same_second_journal_tie_keeps_the_deliberate_deletion_guarded() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_scope_quarantine_repo(tmp.path(), 1);
+        let source = tmp.path().join("companies/indigo/file-0000.md");
+        move_scope_files_to_quarantine(tmp.path(), 1, false);
+        let copy = tmp
+            .path()
+            .join(".hq/scope-quarantine/journal-001/companies/indigo/file-0000.md");
+        let head_second = future_test_second();
+        let journal_modified =
+            UNIX_EPOCH + Duration::from_secs(head_second) + Duration::from_millis(700);
+
+        git_ok(tmp.path(), &["add", "-A"]);
+        git_ok_at_seconds(
+            tmp.path(),
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "scope shrink before same-second return",
+            ],
+            head_second - 1,
+        );
+        set_modified(copy.parent().unwrap(), journal_modified);
+        fs::copy(&copy, &source).expect("return the quarantined file to scope");
+        git_ok(tmp.path(), &["add", "-A"]);
+        git_ok_at_seconds(
+            tmp.path(),
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "file returned in journal timestamp second",
+            ],
+            head_second,
+        );
+
+        fs::remove_file(&source).expect("user deliberately deletes the returned file");
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(tmp.path().to_str().unwrap())
+                .expect("check same-second journal provenance"),
+            0,
+            "a same-second journal tie must not restore a later path deletion"
+        );
+        assert_eq!(
+            count_staged_deletions(tmp.path().to_str().unwrap())
+                .expect("read staged source deletion")
+                .count,
+            1,
+            "the tie leaves the deliberate deletion staged for the existing guard"
+        );
+
+        git_ok(tmp.path(), &["reset", "-q"]);
+        let before_delete_commit = rev_count(tmp.path());
+        run_mirror_at_with_quarantine_flag(tmp.path(), true)
+            .expect("same-second provenance keeps the deletion on the guarded path");
+        assert_eq!(
+            rev_count(tmp.path()),
+            before_delete_commit + 1,
+            "the existing mirror path commits the deliberate deletion"
+        );
+        let show = git(
+            tmp.path(),
+            &[
+                "show",
+                "--format=",
+                "--name-status",
+                "HEAD",
+                "--",
+                "companies/indigo/file-0000.md",
+            ],
+        );
+        assert!(show.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&show.stdout).trim(),
+            "D\tcompanies/indigo/file-0000.md",
+            "the guarded mirror commit records the source deletion"
+        );
+        reset_refusal_report_state();
+    }
+
+    #[test]
+    fn journal_one_second_after_head_keeps_the_fast_path() {
+        let head_commit_time = UNIX_EPOCH + Duration::from_secs(future_test_second());
+        let journal_modified = head_commit_time + Duration::from_secs(1);
+
+        assert!(
+            !journal_requires_path_history(journal_modified, head_commit_time),
+            "a journal one whole second newer than HEAD must avoid the path-history lookup"
+        );
     }
 
     #[test]
