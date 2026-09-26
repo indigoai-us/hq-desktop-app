@@ -9,9 +9,15 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
+
+## [0.10.334] — 2026-09-26
+
 - The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
   line tool now uses, so Update / Restore and `hq rescue` keep running the same
   engine. It brings the sync fixes released since 6.16.53.
+
+## [0.10.333] — 2026-09-26
+
 - On Windows, setup no longer fails when an old content folder link points
   to a folder that has since been removed. Setup removes the old link and
   creates it again. If linking still fails, the error report now says which
