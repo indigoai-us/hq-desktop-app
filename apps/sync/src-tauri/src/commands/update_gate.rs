@@ -108,11 +108,13 @@ pub fn update_hold_release(
 
 #[tauri::command]
 pub fn update_gate_status(
+    app: AppHandle,
     holds: State<'_, UpdateHoldsState>,
     focus: State<'_, AppFocusState>,
 ) -> UpdateGateStatus {
-    // pending_version omitted: frontend can read it from get_update_status.
-    current_gate_status(&holds, &focus, None, UpdateTrigger::Automatic)
+    crate::updater::sync_probed_holds(&holds);
+    let pending_version = crate::updater::extract_pending_version(&app);
+    current_gate_status(&holds, &focus, pending_version, UpdateTrigger::Automatic)
 }
 
 // ── Focus tracking ─────────────────────────────────────────────────────────────
@@ -195,5 +197,55 @@ mod tests {
         holds.0.acquire(HoldReason::CoreUpdateInProgress);
         let d = decide(UpdateTrigger::Manual, AppFocus::Unfocused, &holds.0);
         assert!(matches!(d, UpdateDecision::Defer { .. }));
+    }
+
+    // --- probed-hold tests (Finding 2) ---
+
+    #[test]
+    fn core_update_hold_defers_manual_install() {
+        let holds = UpdateHoldsState::default();
+        let focus = AppFocusState::default();
+        // Simulate what sync_probed_holds does when core update is in progress.
+        holds.0.acquire(HoldReason::CoreUpdateInProgress);
+        let d = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        assert!(
+            matches!(d, UpdateDecision::Defer { .. }),
+            "CoreUpdateInProgress must defer Manual: {d:?}"
+        );
+    }
+
+    #[test]
+    fn core_update_hold_cleared_allows_manual_install() {
+        let holds = UpdateHoldsState::default();
+        let focus = AppFocusState::default();
+        holds.0.acquire(HoldReason::CoreUpdateInProgress);
+        holds.0.release(HoldReason::CoreUpdateInProgress);
+        let d = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        assert_eq!(d, UpdateDecision::InstallNow);
+    }
+
+    #[test]
+    fn upload_in_flight_hold_defers_manual_install() {
+        let holds = UpdateHoldsState::default();
+        let focus = AppFocusState::default();
+        holds.0.acquire(HoldReason::UploadInFlight);
+        let d = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        assert!(
+            matches!(d, UpdateDecision::Defer { .. }),
+            "UploadInFlight must defer Manual: {d:?}"
+        );
+    }
+
+    #[test]
+    fn gate_status_reports_probed_reasons() {
+        let holds = UpdateHoldsState::default();
+        let focus = AppFocusState::default();
+        holds.0.acquire(HoldReason::CoreUpdateInProgress);
+        holds.0.acquire(HoldReason::UploadInFlight);
+        let status = current_gate_status(&holds, &focus, Some("1.2.3".to_string()), UpdateTrigger::Manual);
+        assert!(status.reasons.contains(&HoldReason::CoreUpdateInProgress));
+        assert!(status.reasons.contains(&HoldReason::UploadInFlight));
+        assert!(matches!(status.decision, UpdateDecision::Defer { .. }));
+        assert_eq!(status.pending_version, Some("1.2.3".to_string()));
     }
 }

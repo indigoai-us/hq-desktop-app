@@ -624,6 +624,33 @@ fn discovered_update(version: String, body: Option<String>, date: Option<String>
     }
 }
 
+/// Sync the externally-probed holds into the registry so they are current at
+/// decision time on every manual install path. Mirrors the inline probe block
+/// in the automatic waiter loop.
+pub(crate) fn sync_probed_holds(holds: &crate::commands::update_gate::UpdateHoldsState) {
+    if crate::commands::hq_core_state::is_core_update_in_progress() {
+        holds.0.acquire(HoldReason::CoreUpdateInProgress);
+    } else {
+        holds.0.release(HoldReason::CoreUpdateInProgress);
+    }
+    if sync_in_progress() {
+        holds.0.acquire(HoldReason::UploadInFlight);
+    } else {
+        holds.0.release(HoldReason::UploadInFlight);
+    }
+}
+
+/// Return the pending update version string, if any, from managed state.
+pub(crate) fn extract_pending_version(app: &AppHandle) -> Option<String> {
+    app.try_state::<PendingUpdate>().and_then(|pu| {
+        let guard = pu.0.lock().unwrap_or_else(|e| e.into_inner());
+        match &guard.status {
+            PendingUpdateStatus::Pending(info) => Some(info.version.clone()),
+            _ => None,
+        }
+    })
+}
+
 fn begin_check(ledger: &mut PendingUpdateLedger) -> UpdateCheckTicket {
     ledger.latest_check_id = ledger.latest_check_id.wrapping_add(1);
     UpdateCheckTicket(ledger.latest_check_id)
@@ -971,6 +998,7 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
         app.try_state::<UpdateHoldsState>(),
         app.try_state::<AppFocusState>(),
     ) {
+        sync_probed_holds(&holds);
         let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
         if let UpdateDecision::Defer { reason } = gate {
             return Err(format!("update held: {reason:?}"));
@@ -1247,18 +1275,8 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                         app.try_state::<UpdateHoldsState>(),
                         app.try_state::<AppFocusState>(),
                     ) {
-                        // CoreUpdateInProgress: backed by CORE_UPDATE_RUNNING AtomicBool.
-                        if crate::commands::hq_core_state::is_core_update_in_progress() {
-                            holds.0.acquire(HoldReason::CoreUpdateInProgress);
-                        } else {
-                            holds.0.release(HoldReason::CoreUpdateInProgress);
-                        }
-                        // UploadInFlight: backed by the existing sync_in_progress() probe.
-                        if sync_in_progress() {
-                            holds.0.acquire(HoldReason::UploadInFlight);
-                        } else {
-                            holds.0.release(HoldReason::UploadInFlight);
-                        }
+                        // Sync externally-probed holds before deciding.
+                        sync_probed_holds(&holds);
                         let gate = decide(UpdateTrigger::Automatic, focus.app_focus(), &holds.0);
                         if let UpdateDecision::Defer { ref reason } = gate {
                             // Log at most once per minute.
@@ -1354,6 +1372,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         app.try_state::<UpdateHoldsState>(),
         app.try_state::<AppFocusState>(),
     ) {
+        sync_probed_holds(&holds);
         let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
         if let UpdateDecision::Defer { reason } = gate {
             return Err(format!("update held: {reason:?}"));
@@ -2010,6 +2029,7 @@ pub async fn update_install_pending(app: AppHandle) -> Result<(), String> {
     let focus = app
         .try_state::<AppFocusState>()
         .ok_or_else(|| "focus state not initialised".to_string())?;
+    sync_probed_holds(&holds);
     let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
     if let UpdateDecision::Defer { reason } = gate {
         return Err(format!("update held: {reason:?}"));
