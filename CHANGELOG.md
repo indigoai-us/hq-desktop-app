@@ -17,6 +17,8 @@ The release moves it under the version it ships in.
   prepares the native pieces after each merge now installs its build targets
   correctly and is no longer cancelled by the next merge, so a normal release
   assembles from the prepared pieces instead of building them from scratch.
+- Core tests no longer start `npx` in the background or leave npm cache files
+  in temporary home folders.
 
 ## [0.10.339] — 2026-09-26
 
