@@ -38,6 +38,8 @@ use crate::commands::config::MenubarPrefs;
 use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
+use crate::commands::update_gate::{AppFocusState, UpdateHoldsState};
+use hq_desktop_core::update_gate::{decide, UpdateDecision, UpdateTrigger};
 use crate::util::release_channel::{
     effective_channel, fetch_update_feed_policy, resolve_channel_endpoint, should_offer_update,
     should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
@@ -266,6 +268,8 @@ const PRERELEASE_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(1_800);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 /// How often the auto-install waiter re-checks for a sync-idle gap.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Tauri event emitted when the gate defers an automatic install.
+const UPDATE_GATE_DEFERRED_EVENT: &str = "update-gate://deferred";
 /// After a package is staged, wait this long for a natural idle gap before
 /// pausing new sync cycles and installing anyway. Sync is effectively always
 /// "active" on real installs, so an unbounded deferral leaves users on the
@@ -1222,6 +1226,34 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                 }
                 DeferralDecision::InstallNow | DeferralDecision::PauseThenInstall => {
                     log_deferral_decision(InstallTrigger::Automatic, decision, &version, remaining);
+                    // Focus + hold gate: defer if app is focused, a hold is active,
+                    // or an HQ core update is running.
+                    if crate::commands::hq_core_state::is_core_update_in_progress() {
+                        log("updater", "[updater] deferred: CoreUpdateInProgress");
+                        tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                        continue;
+                    }
+                    if let (Some(holds), Some(focus)) = (
+                        app.try_state::<UpdateHoldsState>(),
+                        app.try_state::<AppFocusState>(),
+                    ) {
+                        let gate = decide(UpdateTrigger::Automatic, focus.app_focus(), &holds.0);
+                        if let UpdateDecision::Defer { reason } = gate {
+                            log(
+                                "updater",
+                                &format!("[updater] deferred: {:?}", reason),
+                            );
+                            let status = crate::commands::update_gate::current_gate_status(
+                                &holds,
+                                &focus,
+                                Some(version.clone()),
+                                UpdateTrigger::Automatic,
+                            );
+                            let _ = app.emit(UPDATE_GATE_DEFERRED_EVENT, &status);
+                            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                            continue;
+                        }
+                    }
                     let Some(_install_guard) =
                         UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
                     else {
@@ -1908,6 +1940,24 @@ pub fn setup_update_checker(app: &AppHandle) {
             tokio::time::sleep(next_check).await;
         }
     });
+}
+
+/// Install the pending update when manual trigger and no holds block it.
+/// Focus does not block manual installs. Used by the Phase 2 sidebar card
+/// "Restart to update" button.
+#[tauri::command]
+pub async fn update_install_pending(app: AppHandle) -> Result<(), String> {
+    let holds = app
+        .try_state::<UpdateHoldsState>()
+        .ok_or_else(|| "update gate state not initialised".to_string())?;
+    let focus = app
+        .try_state::<AppFocusState>()
+        .ok_or_else(|| "focus state not initialised".to_string())?;
+    let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+    if let UpdateDecision::Defer { reason } = gate {
+        return Err(format!("update held: {reason:?}"));
+    }
+    install_update(app).await
 }
 
 #[cfg(test)]
