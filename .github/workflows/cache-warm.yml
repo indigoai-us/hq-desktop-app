@@ -55,13 +55,23 @@ on:
   schedule:
     - cron: "17 6 * * 1"   # weekly; caches unused for 7 days are evicted and stable rustc bumps change the key
   workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Build the shells even when their key is already on shell-cache (verification only; the stored shells are not replaced)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+# Never cancel an in-progress warm: a shell build takes 20-30 minutes and
+# main merges more often than that, so cancel-in-progress threw away every
+# warm before it could store anything. GitHub keeps at most one pending run
+# per group (a newer push replaces the pending one), and each shell job
+# no-ops when its key is already on shell-cache, so queued runs stay cheap.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -391,7 +401,10 @@ jobs:
             echo "::error::shell-hash.mjs returned an invalid key: $KEY"
             exit 1
           fi
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
           # Build with exactly the toolchain the key names (rust-toolchain.toml
           # pins only "stable"), as release.yml's shell jobs do.
           echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
@@ -415,38 +428,38 @@ jobs:
           fi
 
       - uses: pnpm/action-setup@v4
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
 
       - uses: actions/setup-node@v4
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
-      - uses: dtolnay/rust-toolchain@master
-        if: steps.warm.outputs.already-warm != 'true'
+      - uses: ./.github/actions/pinned-rust-toolchain
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         with:
-          toolchain: stable
+          toolchain: ${{ steps.key.outputs.toolchain }}
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install dependencies
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         run: pnpm install --frozen-lockfile
 
       - name: Install Recall sidecar dependencies
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         run: pnpm run sidecar:install
 
       - name: Stamp build commit identity
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: bash
         run: |
           set -euo pipefail
           echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Build unsigned universal shell
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         env:
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
         run: |
@@ -454,7 +467,7 @@ jobs:
             --config '{"build":{"beforeBuildCommand":""},"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Package shell
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: bash
         run: |
           set -euo pipefail
@@ -562,7 +575,10 @@ jobs:
             echo "::error::shell-hash.mjs returned an invalid key: $KEY"
             exit 1
           fi
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
           # Build with exactly the toolchain the key names (rust-toolchain.toml
           # pins only "stable"), as release.yml's shell jobs do.
           echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
@@ -586,25 +602,31 @@ jobs:
           fi
 
       - uses: pnpm/action-setup@v4
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
 
       - uses: actions/setup-node@v4
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
+      - uses: ./.github/actions/pinned-rust-toolchain
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
+        with:
+          toolchain: ${{ steps.key.outputs.toolchain }}
+          targets: x86_64-pc-windows-msvc
+
       - name: Install dependencies
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         run: pnpm install --frozen-lockfile
 
       - name: Install Recall sidecar dependencies
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         run: pnpm run sidecar:install
 
       - name: Build Recall SDK sidecar (x86_64-pc-windows-msvc)
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: pwsh
         env:
           RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
@@ -616,21 +638,21 @@ jobs:
           }
 
       - name: Stamp build commit identity
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: bash
         run: |
           set -euo pipefail
           echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Compile unsigned Windows x64 shell
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         env:
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
           RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
         run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
 
       - name: Package shell
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: bash
         run: |
           set -euo pipefail
@@ -738,7 +760,10 @@ jobs:
             echo "::error::shell-hash.mjs returned an invalid key: $KEY"
             exit 1
           fi
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
           # Build with exactly the toolchain the key names (rust-toolchain.toml
           # pins only "stable"), as release.yml's shell jobs do.
           echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
@@ -762,25 +787,31 @@ jobs:
           fi
 
       - uses: pnpm/action-setup@v4
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
 
       - uses: actions/setup-node@v4
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
+      - uses: ./.github/actions/pinned-rust-toolchain
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
+        with:
+          toolchain: ${{ steps.key.outputs.toolchain }}
+          targets: aarch64-pc-windows-msvc
+
       - name: Install dependencies
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         run: pnpm install --frozen-lockfile
 
       - name: Install Recall sidecar dependencies
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         run: pnpm run sidecar:install
 
       - name: Download native ARM64 Node runtime for Recall launcher
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: pwsh
         run: |
           $version = node -p "process.version"
@@ -810,7 +841,7 @@ jobs:
           "RECALL_SIDECAR_NODE_EXECUTABLE=$nodeExe" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build Recall SDK sidecar (aarch64-pc-windows-msvc)
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: pwsh
         env:
           RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
@@ -822,21 +853,21 @@ jobs:
           }
 
       - name: Stamp build commit identity
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: bash
         run: |
           set -euo pipefail
           echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Compile unsigned Windows arm64 shell
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         env:
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
           RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
         run: pnpm tauri build --no-bundle --target aarch64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
 
       - name: Package shell
-        if: steps.warm.outputs.already-warm != 'true'
+        if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild
         shell: bash
         run: |
           set -euo pipefail
