@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.336] — 2026-09-26
+
 - Interface fixes can now reach installed apps within a couple of minutes,
   without a new installer or a restart. The app downloads a signed interface
   update, checks it was built for this exact version of the app, and offers
