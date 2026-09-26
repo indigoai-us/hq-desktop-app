@@ -32,6 +32,17 @@ const CSP: &str = "img-src 'self' data: asset: blob: https://hq-marketplace-asse
 /// standalone with no `Resources/ui` assembled yet) — callers must treat
 /// that as every request 404ing rather than panicking.
 pub fn ui_root_dir() -> Option<PathBuf> {
+    // A verified UI hot bundle (outside the signed bundle, in the app data
+    // dir) wins over `Resources/ui` when its gates pass; the choice is cached
+    // per page load. See `ui_hot_update`.
+    if crate::ui_hot_update::hot_root().is_some() {
+        return crate::ui_hot_update::served_root();
+    }
+    builtin_ui_root_dir()
+}
+
+/// `Resources/ui` (or the dev `../dist`), ignoring hot bundles.
+pub fn builtin_ui_root_dir() -> Option<PathBuf> {
     // An assembled `Resources/ui` always wins, including in debug builds, so
     // a locally built bundle serves exactly what was assembled into it (this
     // is what lets a UI-only change be dropped into a bundle without a Rust
@@ -172,7 +183,8 @@ pub fn missing_file_status(request_path: &str) -> StatusCode {
 }
 
 pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    builder.register_uri_scheme_protocol(SCHEME, |_ctx, request| {
+    builder.register_uri_scheme_protocol(SCHEME, |ctx, request| {
+        crate::ui_hot_update::init(ctx.app_handle());
         let root = ui_root_dir();
         log_ui_root_once(root.as_deref());
         let Some(root) = root else {
