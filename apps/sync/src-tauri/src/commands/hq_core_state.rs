@@ -7106,16 +7106,6 @@ error: clone failed";
         );
     }
 
-    fn is_core_update_sentry_event(event: &sentry::protocol::Event<'static>) -> bool {
-        matches!(
-            event.message.as_deref(),
-            Some(
-                "Desktop Core update failed"
-                    | "Desktop Core update applied but baseline persistence failed"
-            )
-        )
-    }
-
     fn queue_core_update_sentry_retry_test_report() {
         queue_core_update_failure_report(
             "automatic",
@@ -7230,7 +7220,11 @@ error: clone failed";
         transport
             .take_events()
             .into_iter()
-            .filter(is_core_update_sentry_event)
+            .filter(|event| {
+                expected_messages
+                    .iter()
+                    .any(|expected| *expected == event.message.as_deref().unwrap_or_default())
+            })
             .collect()
     }
 
