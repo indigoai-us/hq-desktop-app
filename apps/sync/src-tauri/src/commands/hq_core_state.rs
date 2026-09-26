@@ -3990,6 +3990,7 @@ enum NativeCoreAutoUpdateOutcome {
     DeferredForSync,
     DeferredForPrewarm,
     SkippedAlreadyInProgress,
+    SkippedTargetAlreadyInstalled,
     SkippedAlreadyAttempted,
     SkippedBaselineRefreshPending,
     SkippedNoRetryAfterAppliedFailure,
@@ -4059,6 +4060,48 @@ fn defer_automatic_core_update_for_sync(
     NativeCoreAutoUpdateOutcome::DeferredForSync
 }
 
+fn automatic_core_update_target_already_installed(state: &CoreState) -> bool {
+    match state.channel {
+        Channel::Release => get_local_version()
+            .as_deref()
+            .is_some_and(|local_version| !semver_lt(local_version, &state.target_version)),
+        Channel::Staging => {
+            let hq_folder = hq_core_staging::resolve_hq_folder();
+            local_source_stamp(&hq_folder).is_some_and(|(source, commit)| {
+                source == state.target_repo
+                    && (commit == state.target_ref
+                        || commit.starts_with(&state.target_ref)
+                        || state.target_ref.starts_with(&commit))
+            })
+        }
+    }
+}
+
+fn skip_automatic_core_update_for_installed_target(
+    candidate: CoreAutoUpdateCandidate<'_>,
+) -> NativeCoreAutoUpdateOutcome {
+    log(
+        "hq-core-update",
+        "native auto-update skipped: target is already installed",
+    );
+    emit_core_update_event(
+        "core_update_skipped",
+        "automatic",
+        "skipped",
+        Some(candidate.channel),
+        None,
+        Some(candidate.target_version),
+        true,
+        Some(candidate.is_eligible),
+        None,
+        Duration::ZERO,
+        None,
+        None,
+        Some("target_already_installed"),
+    );
+    NativeCoreAutoUpdateOutcome::SkippedTargetAlreadyInstalled
+}
+
 async fn automatic_core_update_preinstall<Wait, WaitFuture, AutoUpdatesEnabled, SyncCheck>(
     wait_enabled: bool,
     wait_for_prewarm: Wait,
@@ -4072,7 +4115,9 @@ where
     SyncCheck: FnOnce() -> bool,
 {
     if !wait_enabled {
-        return if sync_in_progress_after_wait() {
+        return if !auto_updates_enabled_after_wait() {
+            AutomaticCoreUpdatePreinstall::SkipAutomaticUpdatesDisabled
+        } else if sync_in_progress_after_wait() {
             AutomaticCoreUpdatePreinstall::DeferForSync
         } else {
             AutomaticCoreUpdatePreinstall::Proceed
@@ -4236,6 +4281,44 @@ async fn execute_native_core_auto_update_with_clock_and_preinstall<
     install: F,
 ) -> NativeCoreAutoUpdateOutcome
 where
+    Before: FnOnce() -> BeforeFuture,
+    BeforeFuture: Future<Output = AutomaticCoreUpdatePreinstall>,
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
+    Now: Fn() -> Instant,
+{
+    execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        now,
+        injected_path,
+        || false,
+        before_install,
+        install,
+    )
+    .await
+}
+
+async fn execute_native_core_auto_update_with_clock_and_preinstall_and_target_check<
+    TargetAlreadyInstalled,
+    Before,
+    BeforeFuture,
+    F,
+    Fut,
+    Now,
+>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    now: Now,
+    injected_path: Option<&std::path::Path>,
+    target_already_installed_after_guard: TargetAlreadyInstalled,
+    before_install: Before,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    TargetAlreadyInstalled: FnOnce() -> bool,
     Before: FnOnce() -> BeforeFuture,
     BeforeFuture: Future<Output = AutomaticCoreUpdatePreinstall>,
     F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
@@ -4415,6 +4498,10 @@ where
                     return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
                 }
             };
+            if target_already_installed_after_guard() {
+                drop(run_guard);
+                return skip_automatic_core_update_for_installed_target(candidate);
+            }
             log(
                 "hq-core-update",
                 &format!(
@@ -4674,10 +4761,13 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
         return;
     }
     let app_for_install = (*app).clone();
-    let outcome = execute_native_core_auto_update_with_preinstall(
+    let outcome = execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
         CoreAutoUpdateCandidate::from(state),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
         crate::updater::sync_in_progress(),
+        Instant::now,
+        None,
+        || automatic_core_update_target_already_installed(state),
         || async {
             let wait_enabled =
                 crate::commands::hq_pro::feature_flag_enabled(CORE_UPDATE_PREWARM_FLAG).await;
@@ -4782,7 +4872,7 @@ mod tests {
     use super::*;
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     };
     use tempfile::TempDir;
 
@@ -5002,6 +5092,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_updates_disabled_during_flag_off_path_skip_before_guard_or_install() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "15.0.117-flag-off-opt-out",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let wait_calls = Arc::new(AtomicUsize::new(0));
+        let wait_calls_for_gate = Arc::clone(&wait_calls);
+        let auto_update_checks = Arc::new(AtomicUsize::new(0));
+        let auto_update_checks_for_gate = Arc::clone(&auto_update_checks);
+        let installs = Arc::new(AtomicUsize::new(0));
+        let installs_for_call = Arc::clone(&installs);
+
+        let outcome = execute_native_core_auto_update_with_clock_and_preinstall(
+            candidate,
+            true,
+            false,
+            Instant::now,
+            Some(home.path()),
+            move || async move {
+                automatic_core_update_preinstall(
+                    false,
+                    move || {
+                        wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
+                        async { hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed }
+                    },
+                    move || {
+                        auto_update_checks_for_gate.fetch_add(1, Ordering::AcqRel);
+                        false
+                    },
+                    || false,
+                )
+                .await
+            },
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                installs_for_call.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            NativeCoreAutoUpdateOutcome::SkippedAutomaticUpdatesDisabled
+        );
+        assert_eq!(auto_update_checks.load(Ordering::Acquire), 1);
+        assert_eq!(wait_calls.load(Ordering::Acquire), 0);
+        assert_eq!(installs.load(Ordering::Acquire), 0);
+        let manual_guard = try_begin_core_update()
+            .expect("the flag-off opt-out must skip before taking the update guard");
+        drop(manual_guard);
+    }
+
+    #[tokio::test]
     async fn prewarm_deferral_has_no_failure_capture_and_later_real_failures_report_each_time() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let home = TempDir::new().unwrap();
@@ -5173,6 +5322,86 @@ mod tests {
         let manual_guard = try_begin_core_update()
             .expect("an opt-out after prewarm must skip before taking the update guard");
         drop(manual_guard);
+    }
+
+    #[tokio::test]
+    async fn manual_update_finishing_during_prewarm_wait_skips_stale_automatic_candidate() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "15.0.117-manual-update-during-prewarm",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let installed_version = Arc::new(Mutex::new(Some("15.0.4".to_string())));
+        let installed_version_for_wait = Arc::clone(&installed_version);
+        let installs = Arc::new(AtomicUsize::new(0));
+        let installs_for_call = Arc::clone(&installs);
+        let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+        let (resume_wait_tx, resume_wait_rx) = tokio::sync::oneshot::channel();
+
+        let automatic = tokio::spawn(async move {
+            execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
+                candidate,
+                true,
+                false,
+                Instant::now,
+                None,
+                move || {
+                    installed_version_for_wait
+                        .lock()
+                        .expect("installed version mutex is available")
+                        .as_deref()
+                        == Some("15.0.117-manual-update-during-prewarm")
+                },
+                move || async move {
+                    automatic_core_update_preinstall(
+                        true,
+                        move || async move {
+                            let _ = waiting_tx.send(());
+                            resume_wait_rx
+                                .await
+                                .expect("test releases the prewarm wait");
+                            hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed
+                        },
+                        || true,
+                        || false,
+                    )
+                    .await
+                },
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    installs_for_call.fetch_add(1, Ordering::AcqRel);
+                    Ok(CoreUpdateAutoInstall::new(0, true))
+                },
+            )
+            .await
+        });
+
+        waiting_rx
+            .await
+            .expect("automatic update entered its prewarm wait");
+        let manual_guard = try_begin_core_update()
+            .expect("the manual update remains available while automatic work waits");
+        *installed_version
+            .lock()
+            .expect("installed version mutex is available") =
+            Some("15.0.117-manual-update-during-prewarm".to_string());
+        drop(manual_guard);
+        resume_wait_tx
+            .send(())
+            .expect("automatic update is still waiting for prewarm");
+
+        assert_eq!(
+            automatic.await.expect("automatic update task completes"),
+            NativeCoreAutoUpdateOutcome::SkippedTargetAlreadyInstalled
+        );
+        assert_eq!(installs.load(Ordering::Acquire), 0);
+        let retry_guard = try_begin_core_update()
+            .expect("skipping an already-installed target releases the update guard");
+        drop(retry_guard);
     }
 
     #[tokio::test]
