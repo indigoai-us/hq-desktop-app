@@ -689,7 +689,7 @@ fn core_update_stage_token(marker: &str) -> &'static str {
         "rsync"
     } else if marker.contains("overlay") {
         "rsync"
-    } else if marker.contains("restore") || marker.contains("backed up") {
+    } else if marker.contains("restor") || marker.contains("backed up") {
         "restore"
     } else if marker.contains("npm cache") || marker.contains("npm-cache") {
         "npm-cache"
