@@ -1685,6 +1685,8 @@ export interface CallsApi {
 export interface PlatformAdapter {
   /** Which host this adapter targets. */
   readonly kind: "web" | "desktop";
+  /** Release any host-owned process registrations when the adapter is torn down. */
+  readonly dispose?: () => Promise<void>;
   /** Capability flags for this platform. */
   readonly capabilities: Readonly<Capabilities>;
   /** Convenience helper over `capabilities`. */
