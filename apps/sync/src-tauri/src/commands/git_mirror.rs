@@ -42,7 +42,7 @@ mod tests {
         process::{Command, Output},
         sync::mpsc,
         thread,
-        time::Duration,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use super::{mirror_after_sync, set_mirror_quarantine_move_not_deletion};
@@ -79,6 +79,24 @@ mod tests {
             .expect("revision count")
     }
 
+    fn set_modified(path: &Path, modified: SystemTime) {
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .expect("open directory to set its timestamp")
+        };
+        #[cfg(not(windows))]
+        let file = fs::File::open(path).expect("open directory to set its timestamp");
+        file.set_modified(modified)
+            .expect("set directory timestamp");
+    }
+
     fn seed_scope_shrink_repo(dir: &Path) {
         git_ok(dir, &["init", "-q", "-b", "main", "--template="]);
         git_ok(dir, &["config", "core.hooksPath", "/dev/null"]);
@@ -100,7 +118,16 @@ mod tests {
         let destination =
             dir.join(".hq/scope-quarantine/journal-startup/companies/indigo/shrunk.md");
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
-        fs::rename(source, destination).unwrap();
+        fs::rename(source, &destination).unwrap();
+        let head_seconds: u64 =
+            String::from_utf8_lossy(&git_ok(dir, &["show", "-s", "--format=%ct", "HEAD"]).stdout)
+                .trim()
+                .parse()
+                .expect("fixture HEAD commit time");
+        set_modified(
+            destination.parent().unwrap(),
+            UNIX_EPOCH + Duration::from_secs(head_seconds + 1),
+        );
     }
 
     #[test]
