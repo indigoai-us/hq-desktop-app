@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
+  holder, HQ keeps the current CLI available and retries on later launches. It
+  reports a persistent failure after three attempts.
 - The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
   line tool now uses, so Update / Restore and `hq rescue` keep running the same
   engine. It brings the sync fixes released since 6.16.53.
