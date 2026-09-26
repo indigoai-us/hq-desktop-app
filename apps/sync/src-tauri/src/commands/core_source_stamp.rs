@@ -5,6 +5,7 @@ use std::path::Path;
 const STAMP_MARKER: &str = "[baseline_persistence_stamp ";
 const MAX_YAML_KEYS: usize = 12;
 const MAX_YAML_KEY_LENGTH: usize = 64;
+const MAX_YAML_TAG_VALUE_LENGTH: usize = 200;
 
 #[derive(Debug, Deserialize)]
 struct LocalCoreYaml {
@@ -298,11 +299,7 @@ fn bounded_yaml_top_level_keys(value: &serde_yaml::Value) -> String {
         .collect::<Vec<_>>();
     keys.sort();
     keys.dedup();
-    if keys.is_empty() {
-        "none".to_string()
-    } else {
-        keys.join(",")
-    }
+    join_bounded_yaml_keys(keys)
 }
 
 fn bounded_marker_yaml_keys(value: &str) -> String {
@@ -323,10 +320,25 @@ fn bounded_marker_yaml_keys(value: &str) -> String {
         .collect::<Vec<_>>();
     keys.sort();
     keys.dedup();
-    if keys.is_empty() {
+    join_bounded_yaml_keys(keys)
+}
+
+fn join_bounded_yaml_keys(keys: impl IntoIterator<Item = String>) -> String {
+    let mut joined = String::new();
+    for key in keys.into_iter().take(MAX_YAML_KEYS) {
+        let separator_length = usize::from(!joined.is_empty());
+        if joined.len() + separator_length + key.len() > MAX_YAML_TAG_VALUE_LENGTH {
+            break;
+        }
+        if !joined.is_empty() {
+            joined.push(',');
+        }
+        joined.push_str(&key);
+    }
+    if joined.is_empty() {
         "none".to_string()
     } else {
-        keys.join(",")
+        joined
     }
 }
 
@@ -478,15 +490,38 @@ mod tests {
         assert_eq!(tags.state, "stamp_available");
         assert_eq!(tags.key, "replaced_from_source");
         let noisy = (0..20)
-            .map(|index| format!("key{index}"))
+            .map(|index| format!("k{index:02}{}", "x".repeat(61)))
             .collect::<Vec<_>>()
             .join(",");
         let noisy = format!(
             "[baseline_persistence_stamp state=stamp_block_missing key=none yaml_keys={noisy},bad%key]"
         );
         let tags = persistence_stamp_tags_from_detail(&noisy);
-        assert_eq!(tags.yaml_top_level_keys.split(',').count(), 12);
+        assert_eq!(tags.yaml_top_level_keys.split(',').count(), 3);
         assert!(!tags.yaml_top_level_keys.contains("bad%key"));
-        assert!(tags.yaml_top_level_keys.len() <= 12 * 64 + 11);
+        assert!(tags.yaml_top_level_keys.len() <= 200);
+        assert!(tags
+            .yaml_top_level_keys
+            .split(',')
+            .all(|key| key.len() <= 64));
+    }
+
+    #[test]
+    fn yaml_key_tag_stays_within_sentry_value_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let yaml = (0..12)
+            .map(|index| format!("key{index:02}{}: value", "x".repeat(61)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write_canonical_stamp(temp.path(), &yaml);
+
+        let tags = tags_for_failure(temp.path());
+
+        assert_eq!(tags.state, "stamp_block_missing");
+        assert!(tags.yaml_top_level_keys.len() <= 200);
+        assert!(tags
+            .yaml_top_level_keys
+            .split(',')
+            .all(|key| key.len() == 64));
     }
 }

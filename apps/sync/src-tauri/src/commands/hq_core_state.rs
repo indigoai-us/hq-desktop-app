@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use super::core_source_stamp::{
     available_stamp_marker, local_source_stamp, persistence_stamp_tags_from_detail,
-    read_local_source_stamp,
+    read_local_source_stamp, ReadableLocalSourceStamp,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -3005,6 +3005,17 @@ impl AppliedRescueBaseline {
     }
 }
 
+fn required_local_source_stamp(
+    hq_folder: &std::path::Path,
+) -> Result<ReadableLocalSourceStamp, String> {
+    read_local_source_stamp(hq_folder).map_err(|error| {
+        format!(
+            "rescue completed without a replaced_from_source.last_sync_sha stamp {}",
+            error.marker()
+        )
+    })
+}
+
 fn optional_core_tree_client(token: Option<&str>) -> Result<reqwest::Client, String> {
     let mut headers = crate::util::client_info::client_headers();
     headers.insert(
@@ -3032,12 +3043,27 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
     injected_path: Option<&std::path::Path>,
     remote_tree: Result<BTreeMap<String, (String, u64)>, String>,
 ) -> Result<AppliedRescueBaseline, String> {
-    let stamp = read_local_source_stamp(hq_folder).map_err(|error| {
-        format!(
-            "rescue completed without a replaced_from_source.last_sync_sha stamp {}",
-            error.marker()
-        )
-    })?;
+    let stamp = required_local_source_stamp(hq_folder)?;
+    persist_applied_rescue_baseline_from_stamp_with_path(
+        hq_folder,
+        previous_baseline_paths,
+        rescue_output,
+        channel,
+        injected_path,
+        stamp,
+        remote_tree,
+    )
+}
+
+fn persist_applied_rescue_baseline_from_stamp_with_path(
+    hq_folder: &std::path::Path,
+    previous_baseline_paths: Option<&BTreeSet<String>>,
+    rescue_output: &str,
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+    stamp: ReadableLocalSourceStamp,
+    remote_tree: Result<BTreeMap<String, (String, u64)>, String>,
+) -> Result<AppliedRescueBaseline, String> {
     let source = stamp.source.clone();
     let commit = stamp.commit.clone();
     let stamp_key = stamp.key;
@@ -3245,16 +3271,20 @@ where
     F: FnOnce(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
-    let (source, commit) = local_source_stamp(hq_folder).ok_or_else(|| {
-        "rescue completed without a replaced_from_source.last_sync_sha stamp".to_string()
-    })?;
-    let remote_tree = fetcher(source, commit, token.map(str::to_string)).await;
-    persist_applied_rescue_baseline_from_tree_with_path(
+    let stamp = required_local_source_stamp(hq_folder)?;
+    let remote_tree = fetcher(
+        stamp.source.clone(),
+        stamp.commit.clone(),
+        token.map(str::to_string),
+    )
+    .await;
+    persist_applied_rescue_baseline_from_stamp_with_path(
         hq_folder,
         previous_baseline_paths,
         rescue_output,
         channel,
         injected_path,
+        stamp,
         remote_tree,
     )
 }
@@ -6728,6 +6758,25 @@ error: clone failed";
         let detail = event.extra["baselinePersistenceDetail"].as_str().unwrap();
         assert!(detail.contains("state=core_yaml_missing"));
         assert!(!detail.contains(temp.path().to_str().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn production_rescue_reader_reports_typed_stamp_failure_before_fetch() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = persist_applied_rescue_baseline_with_fetcher_and_path(
+            temp.path(),
+            None,
+            "",
+            Channel::Release,
+            None,
+            None,
+            |_, _, _| async { panic!("fetcher must not run when the stamp is unreadable") },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("state=core_yaml_missing"));
+        assert!(error.contains("key=none"));
     }
 
     #[test]
