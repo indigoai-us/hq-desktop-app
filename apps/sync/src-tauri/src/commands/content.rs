@@ -2072,6 +2072,25 @@ mod windows_junction_tests {
     }
 
     #[test]
+    fn remove_existing_windows_entry_removes_junction_with_missing_target() {
+        let dir = setup();
+        let target = dir.path().join("removed-target");
+        fs::create_dir(&target).expect("create junction target");
+        let link = dir.path().join("content-link");
+        create_junction(&target, &link).expect("create junction");
+        fs::remove_dir_all(&target).expect("remove junction target");
+
+        let link_metadata = fs::symlink_metadata(&link).expect("stale junction entry remains");
+        remove_existing_windows_entry(&link, &link_metadata)
+            .expect("remove stale directory junction without following target");
+
+        assert!(
+            fs::symlink_metadata(&link).is_err(),
+            "stale junction entry should be removed"
+        );
+    }
+
+    #[test]
     fn fallback_routes_missing_or_dir_target_to_junction_not_copy() {
         // Only an existing file copies; an existing dir or a not-yet-created dir
         // target must use the junction path.
