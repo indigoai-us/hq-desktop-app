@@ -849,7 +849,6 @@ const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
     "create_symlink_parent",
     "remove_existing_link",
     "create_symlink",
-    "copy_directory_fallback",
 ];
 
 const SYMLINK_ERROR_IO_KIND_VALUES: &[&str] = &[

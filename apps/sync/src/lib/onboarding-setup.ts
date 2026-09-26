@@ -87,7 +87,6 @@ export const SYMLINK_ERROR_OPERATIONS = [
   'create_symlink_parent',
   'remove_existing_link',
   'create_symlink',
-  'copy_directory_fallback',
 ] as const;
 
 export type SymlinkErrorOperation = (typeof SYMLINK_ERROR_OPERATIONS)[number];

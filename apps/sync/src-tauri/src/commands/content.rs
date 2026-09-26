@@ -305,12 +305,30 @@ fn classify_content_http_status(
     status: reqwest::StatusCode,
 ) -> (OnboardingErrorCategory, ContentErrorKind) {
     match status.as_u16() {
-        404 => (OnboardingErrorCategory::NotFound, ContentErrorKind::HttpNotFound),
-        401 | 403 => (OnboardingErrorCategory::Permission, ContentErrorKind::HttpForbidden),
-        408 | 504 => (OnboardingErrorCategory::Timeout, ContentErrorKind::HttpTimeout),
-        429 => (OnboardingErrorCategory::Network, ContentErrorKind::HttpRateLimited),
-        500..=599 => (OnboardingErrorCategory::Network, ContentErrorKind::HttpServerError),
-        _ => (OnboardingErrorCategory::Network, ContentErrorKind::HttpStatusError),
+        404 => (
+            OnboardingErrorCategory::NotFound,
+            ContentErrorKind::HttpNotFound,
+        ),
+        401 | 403 => (
+            OnboardingErrorCategory::Permission,
+            ContentErrorKind::HttpForbidden,
+        ),
+        408 | 504 => (
+            OnboardingErrorCategory::Timeout,
+            ContentErrorKind::HttpTimeout,
+        ),
+        429 => (
+            OnboardingErrorCategory::Network,
+            ContentErrorKind::HttpRateLimited,
+        ),
+        500..=599 => (
+            OnboardingErrorCategory::Network,
+            ContentErrorKind::HttpServerError,
+        ),
+        _ => (
+            OnboardingErrorCategory::Network,
+            ContentErrorKind::HttpStatusError,
+        ),
     }
 }
 
@@ -322,18 +340,36 @@ fn classify_content_io_error(
     let os_classification = if is_windows {
         match raw_os_error {
             Some(206) => Some((OnboardingErrorCategory::Disk, ContentErrorKind::PathTooLong)),
-            Some(32 | 33) => Some((OnboardingErrorCategory::Permission, ContentErrorKind::FileLocked)),
-            Some(2 | 3) => Some((OnboardingErrorCategory::NotFound, ContentErrorKind::MissingPath)),
-            Some(5) => Some((OnboardingErrorCategory::Permission, ContentErrorKind::PermissionDenied)),
+            Some(32 | 33) => Some((
+                OnboardingErrorCategory::Permission,
+                ContentErrorKind::FileLocked,
+            )),
+            Some(2 | 3) => Some((
+                OnboardingErrorCategory::NotFound,
+                ContentErrorKind::MissingPath,
+            )),
+            Some(5) => Some((
+                OnboardingErrorCategory::Permission,
+                ContentErrorKind::PermissionDenied,
+            )),
             Some(112) => Some((OnboardingErrorCategory::Disk, ContentErrorKind::DiskFull)),
             _ => None,
         }
     } else {
         match raw_os_error {
             Some(36) => Some((OnboardingErrorCategory::Disk, ContentErrorKind::PathTooLong)),
-            Some(16) => Some((OnboardingErrorCategory::Permission, ContentErrorKind::FileLocked)),
-            Some(2) => Some((OnboardingErrorCategory::NotFound, ContentErrorKind::MissingPath)),
-            Some(13) => Some((OnboardingErrorCategory::Permission, ContentErrorKind::PermissionDenied)),
+            Some(16) => Some((
+                OnboardingErrorCategory::Permission,
+                ContentErrorKind::FileLocked,
+            )),
+            Some(2) => Some((
+                OnboardingErrorCategory::NotFound,
+                ContentErrorKind::MissingPath,
+            )),
+            Some(13) => Some((
+                OnboardingErrorCategory::Permission,
+                ContentErrorKind::PermissionDenied,
+            )),
             Some(28) => Some((OnboardingErrorCategory::Disk, ContentErrorKind::DiskFull)),
             _ => None,
         }
@@ -342,7 +378,10 @@ fn classify_content_io_error(
         return classification;
     }
     match kind {
-        io::ErrorKind::NotFound => (OnboardingErrorCategory::NotFound, ContentErrorKind::MissingPath),
+        io::ErrorKind::NotFound => (
+            OnboardingErrorCategory::NotFound,
+            ContentErrorKind::MissingPath,
+        ),
         io::ErrorKind::PermissionDenied => (
             OnboardingErrorCategory::Permission,
             ContentErrorKind::PermissionDenied,
@@ -351,7 +390,10 @@ fn classify_content_io_error(
             OnboardingErrorCategory::Timeout,
             ContentErrorKind::FileOperationTimeout,
         ),
-        _ => (OnboardingErrorCategory::Unknown, ContentErrorKind::FilesystemError),
+        _ => (
+            OnboardingErrorCategory::Unknown,
+            ContentErrorKind::FilesystemError,
+        ),
     }
 }
 
@@ -368,12 +410,6 @@ struct ContentFailureDiagnostics {
     operation: &'static str,
     io_kind: Option<&'static str>,
     error_code: Option<i32>,
-}
-
-#[derive(Debug, Clone)]
-struct PendingSymlinkCopy {
-    source: PathBuf,
-    destination: PathBuf,
 }
 
 impl ContentOperationFailure {
@@ -494,21 +530,27 @@ fn record_content_request_failure(
     error: &reqwest::Error,
 ) {
     let (category, kind) = if error.is_timeout() {
-        (OnboardingErrorCategory::Timeout, ContentErrorKind::HttpTimeout)
+        (
+            OnboardingErrorCategory::Timeout,
+            ContentErrorKind::HttpTimeout,
+        )
     } else if error.is_connect() {
-        (OnboardingErrorCategory::Network, ContentErrorKind::HttpConnect)
+        (
+            OnboardingErrorCategory::Network,
+            ContentErrorKind::HttpConnect,
+        )
     } else if error.is_body() {
         (OnboardingErrorCategory::Network, ContentErrorKind::HttpBody)
     } else {
-        (OnboardingErrorCategory::Network, ContentErrorKind::HttpRequest)
+        (
+            OnboardingErrorCategory::Network,
+            ContentErrorKind::HttpRequest,
+        )
     };
     record_content_failure(failure_scope, category, kind);
 }
 
-fn record_content_io_failure(
-    failure_scope: Option<&OnboardingFailureScope>,
-    error: &io::Error,
-) {
+fn record_content_io_failure(failure_scope: Option<&OnboardingFailureScope>, error: &io::Error) {
     let (category, kind) =
         classify_content_io_error(error.kind(), error.raw_os_error(), cfg!(windows));
     record_content_failure(failure_scope, category, kind);
@@ -1056,6 +1098,7 @@ fn is_under_known_symlink(relative: &str, symlink_relatives: &[String]) -> bool 
 fn create_symlink_with_failure(
     target: &Path,
     link_path: &Path,
+    _cancel: Option<&AtomicBool>,
 ) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -1088,14 +1131,6 @@ fn create_symlink_with_failure(
             "create_symlink",
         )
     })
-}
-
-#[cfg(unix)]
-fn create_symlink_for_template(
-    target: &Path,
-    link_path: &Path,
-) -> Result<Option<PendingSymlinkCopy>, ContentOperationFailure> {
-    create_symlink_with_failure(target, link_path).map(|()| None)
 }
 
 #[cfg(windows)]
@@ -1179,9 +1214,102 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), ContentOperati
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn fallback_uses_copy(resolved_target: &Path) -> bool {
     resolved_target.is_file()
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsSymlinkFallback {
+    CopyFile,
+    Junction,
+}
+
+#[cfg(any(windows, test))]
+fn choose_windows_symlink_fallback(
+    resolved_target: &Path,
+    privilege_missing: bool,
+) -> Option<WindowsSymlinkFallback> {
+    if !privilege_missing {
+        return None;
+    }
+    if fallback_uses_copy(resolved_target) {
+        Some(WindowsSymlinkFallback::CopyFile)
+    } else {
+        Some(WindowsSymlinkFallback::Junction)
+    }
+}
+
+#[cfg(any(windows, test))]
+fn copy_stream_with_cancellation<R, W, C>(
+    reader: &mut R,
+    writer: &mut W,
+    mut is_cancelled: C,
+) -> io::Result<()>
+where
+    R: Read,
+    W: Write,
+    C: FnMut() -> bool,
+{
+    let mut buffer = [0_u8; EXTRACT_READ_CHUNK_BYTES];
+    loop {
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "content copy cancelled",
+            ));
+        }
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
+        }
+        let mut written = 0;
+        while written < read {
+            if is_cancelled() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "content copy cancelled",
+                ));
+            }
+            let count = writer.write(&buffer[written..read])?;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write copied content",
+                ));
+            }
+            written += count;
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn copy_file_with_cancellation(
+    source: &Path,
+    destination: &Path,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<()> {
+    if is_content_cancelled(cancel) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "content copy cancelled",
+        ));
+    }
+    if fs::symlink_metadata(destination)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "copy destination is a link",
+        ));
+    }
+    let mut source = fs::File::open(source)?;
+    let mut destination = fs::File::create(destination)?;
+    copy_stream_with_cancellation(&mut source, &mut destination, || {
+        is_content_cancelled(cancel)
+    })
 }
 
 /// Copy the bytes of `target` to `link_path` as a privilege-free substitute
@@ -1191,6 +1319,7 @@ fn fallback_uses_copy(resolved_target: &Path) -> bool {
 fn copy_file_fallback(
     target: &Path,
     link_path: &Path,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(), ContentOperationFailure> {
     let abs_target = lexical_absolute(target);
     if !abs_target.is_file() {
@@ -1205,9 +1334,15 @@ fn copy_file_fallback(
             }),
         });
     }
-    std::fs::copy(&abs_target, link_path)
-        .map(|_| ())
-        .map_err(|error| {
+    copy_file_with_cancellation(&abs_target, link_path, cancel).map_err(|error| {
+        if is_content_cancelled(cancel) {
+            ContentOperationFailure {
+                message: "Template setup was cancelled.".to_string(),
+                category: OnboardingErrorCategory::Cancelled,
+                kind: ContentErrorKind::Cancelled,
+                diagnostics: None,
+            }
+        } else {
             ContentOperationFailure::from_io(
                 "failed to copy symlink target",
                 error,
@@ -1215,90 +1350,8 @@ fn copy_file_fallback(
                 ContentErrorKind::SymlinkCreationFailed,
                 "copy_file_fallback",
             )
-        })
-}
-
-fn materialize_symlink_copy_fallback(
-    fallback: &PendingSymlinkCopy,
-    install_root: &Path,
-) -> io::Result<()> {
-    let root = fs::canonicalize(install_root)?;
-    let source = fs::canonicalize(&fallback.source)?;
-    let destination_parent = fallback
-        .destination
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing destination parent"))?;
-    let destination_parent = fs::canonicalize(destination_parent)?;
-    if !source.starts_with(&root) || !destination_parent.starts_with(&root) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "symlink copy path resolves outside the install root",
-        ));
-    }
-    let destination = destination_parent.join(
-        fallback
-            .destination
-            .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing destination name"))?,
-    );
-    if source == destination || destination.starts_with(&source) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "symlink copy destination overlaps its source",
-        ));
-    }
-
-    if let Ok(metadata) = fs::symlink_metadata(&destination) {
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "symlink copy destination is not a plain directory",
-            ));
         }
-    }
-
-    let mut queue = vec![(source, destination, std::collections::HashSet::new())];
-    while let Some((source, destination, mut ancestors)) = queue.pop() {
-        let source = fs::canonicalize(source)?;
-        if !source.starts_with(&root) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "nested link target resolves outside the install root",
-            ));
-        }
-        if !ancestors.insert(source.clone()) {
-            continue;
-        }
-        fs::create_dir_all(&destination)?;
-        for entry in fs::read_dir(&source)? {
-            let entry = entry?;
-            let source_entry = entry.path();
-            let destination_entry = destination.join(entry.file_name());
-            let entry_type = entry.file_type()?;
-            if entry_type.is_dir() {
-                queue.push((source_entry, destination_entry, ancestors.clone()));
-            } else if entry_type.is_file() {
-                fs::copy(source_entry, destination_entry)?;
-            } else if entry_type.is_symlink() {
-                let resolved = fs::canonicalize(&source_entry)?;
-                if !resolved.starts_with(&root) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "nested link target resolves outside the install root",
-                    ));
-                }
-                let metadata = fs::metadata(&resolved)?;
-                if metadata.is_dir() {
-                    if !ancestors.contains(&resolved) {
-                        queue.push((resolved, destination_entry, ancestors.clone()));
-                    }
-                } else if metadata.is_file() {
-                    fs::copy(resolved, destination_entry)?;
-                }
-            }
-        }
-    }
-    Ok(())
+    })
 }
 
 /// Remove an entry blocking a symlink create, handling the three Windows
@@ -1337,24 +1390,17 @@ fn remove_existing_windows_entry(path: &Path, md: &std::fs::Metadata) -> std::io
 fn create_symlink_with_failure(
     target: &Path,
     link_path: &Path,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(), ContentOperationFailure> {
-    create_windows_symlink_with_failure(target, link_path, false).map(|_| ())
-}
-
-#[cfg(windows)]
-fn create_symlink_for_template(
-    target: &Path,
-    link_path: &Path,
-) -> Result<Option<PendingSymlinkCopy>, ContentOperationFailure> {
-    create_windows_symlink_with_failure(target, link_path, true)
+    create_windows_symlink_with_failure(target, link_path, cancel)
 }
 
 #[cfg(windows)]
 fn create_windows_symlink_with_failure(
     target: &Path,
     link_path: &Path,
-    defer_directory_copy: bool,
-) -> Result<Option<PendingSymlinkCopy>, ContentOperationFailure> {
+    cancel: Option<&AtomicBool>,
+) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             ContentOperationFailure::from_io(
@@ -1365,18 +1411,6 @@ fn create_windows_symlink_with_failure(
                 "create_symlink_parent",
             )
         })?;
-    }
-    if let Ok(md) = std::fs::symlink_metadata(link_path) {
-        remove_existing_windows_entry(link_path, &md)
-            .map_err(|error| {
-                ContentOperationFailure::from_io(
-                    "failed to replace existing symlink entry",
-                    error,
-                    true,
-                    ContentErrorKind::SymlinkCreationFailed,
-                    "remove_existing_link",
-                )
-            })?;
     }
 
     // Tar stores POSIX targets; Windows reparse points need backslashes or
@@ -1390,6 +1424,18 @@ fn create_windows_symlink_with_failure(
         .map(|m| m.is_dir())
         .unwrap_or(false);
 
+    if let Ok(md) = std::fs::symlink_metadata(link_path) {
+        remove_existing_windows_entry(link_path, &md).map_err(|error| {
+            ContentOperationFailure::from_io(
+                "failed to replace existing symlink entry",
+                error,
+                true,
+                ContentErrorKind::SymlinkCreationFailed,
+                "remove_existing_link",
+            )
+        })?;
+    }
+
     let result = if target_is_dir {
         std::os::windows::fs::symlink_dir(&win_target, link_path)
     } else {
@@ -1397,38 +1443,29 @@ fn create_windows_symlink_with_failure(
     };
 
     match result {
-        Ok(()) => Ok(None),
+        Ok(()) => Ok(()),
         Err(error) => {
             let privilege_missing = error.raw_os_error() == Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD);
-            let fallback = if target_is_dir || privilege_missing {
-                Some(create_junction(&resolved_target, link_path).map(|()| None))
-            } else if fallback_uses_copy(&resolved_target) {
-                Some(copy_file_fallback(&resolved_target, link_path).map(|()| None))
-            } else {
-                None
-            };
-
-            if let Some(fallback) = fallback {
-                match fallback {
-                    Ok(pending) => Ok(pending),
-                    Err(_fallback_error) if defer_directory_copy && resolved_target.is_dir() => {
-                        Ok(Some(PendingSymlinkCopy {
-                            source: resolved_target,
-                            destination: link_path.to_path_buf(),
-                        }))
-                    }
-                    Err(fallback_error) => {
-                        Err(fallback_error.with_context("HQ_SYMLINK_FALLBACK: fallback failed"))
-                    }
+            match choose_windows_symlink_fallback(&resolved_target, privilege_missing) {
+                Some(WindowsSymlinkFallback::CopyFile) => {
+                    copy_file_fallback(&resolved_target, link_path, cancel).map_err(
+                        |fallback_error| {
+                            fallback_error.with_context("HQ_SYMLINK_FALLBACK: fallback failed")
+                        },
+                    )
                 }
-            } else {
-                Err(ContentOperationFailure::from_io(
+                Some(WindowsSymlinkFallback::Junction) => {
+                    create_junction(&resolved_target, link_path).map_err(|fallback_error| {
+                        fallback_error.with_context("HQ_SYMLINK_FALLBACK: fallback failed")
+                    })
+                }
+                None => Err(ContentOperationFailure::from_io(
                     "failed to create symlink",
                     error,
                     true,
                     ContentErrorKind::SymlinkCreationFailed,
                     "create_symlink",
-                ))
+                )),
             }
         }
     }
@@ -1437,7 +1474,7 @@ fn create_windows_symlink_with_failure(
 /// Compatibility wrapper used by the legacy symlink command. The template
 /// extractor uses the typed failure so it can record bounded diagnostics.
 pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
-    create_symlink_with_failure(target, link_path).map_err(|failure| failure.message)
+    create_symlink_with_failure(target, link_path, None).map_err(|failure| failure.message)
 }
 
 // ---------------------------------------------------------------------------
@@ -1537,8 +1574,6 @@ fn extract_tarball_with_progress(
     })?;
 
     let mut symlink_relatives: Vec<String> = Vec::new();
-    let mut pending_symlink_copies: Vec<PendingSymlinkCopy> = Vec::new();
-
     for entry in entries {
         if is_content_cancelled(cancel) {
             return Err(content_cancelled_error(failure_scope));
@@ -1635,16 +1670,15 @@ fn extract_tarball_with_progress(
                     );
                     continue;
                 }
-                if let Some(pending_copy) =
-                    create_symlink_for_template(Path::new(&link_target), &dest).map_err(
-                        |failure| {
-                            record_content_operation_failure(failure_scope, &failure);
-                            failure.message
-                        },
-                    )?
-                {
-                    pending_symlink_copies.push(pending_copy);
-                }
+                create_symlink_with_failure(Path::new(&link_target), &dest, cancel).map_err(
+                    |failure| {
+                        if failure.kind == ContentErrorKind::Cancelled {
+                            return content_cancelled_error(failure_scope);
+                        }
+                        record_content_operation_failure(failure_scope, &failure);
+                        failure.message
+                    },
+                )?;
                 symlink_relatives.push(normalized);
             }
             EntryType::Regular | EntryType::Continuous => {
@@ -1664,24 +1698,21 @@ fn extract_tarball_with_progress(
                     if is_content_cancelled(cancel) {
                         return Err(content_cancelled_error(failure_scope));
                     }
-                    let n = entry
-                        .read(&mut buf)
-                        .map_err(|e| {
-                            record_content_failure(
-                                failure_scope,
-                                OnboardingErrorCategory::Checksum,
-                                ContentErrorKind::ArchiveInvalid,
-                            );
-                            format!("failed to read {relative} from archive: {e}")
-                        })?;
+                    let n = entry.read(&mut buf).map_err(|e| {
+                        record_content_failure(
+                            failure_scope,
+                            OnboardingErrorCategory::Checksum,
+                            ContentErrorKind::ArchiveInvalid,
+                        );
+                        format!("failed to read {relative} from archive: {e}")
+                    })?;
                     if n == 0 {
                         break;
                     }
-                    file.write_all(&buf[..n])
-                        .map_err(|e| {
-                            record_content_io_failure(failure_scope, &e);
-                            format!("failed to write {dest:?}: {e}")
-                        })?;
+                    file.write_all(&buf[..n]).map_err(|e| {
+                        record_content_io_failure(failure_scope, &e);
+                        format!("failed to write {dest:?}: {e}")
+                    })?;
                     extracted_bytes = extracted_bytes.saturating_add(n as u64);
                     if progress_throttle.should_emit() {
                         if let Some(progress) = progress {
@@ -1708,20 +1739,6 @@ fn extract_tarball_with_progress(
                 // symlink, and '5' directory typeflags).
             }
         }
-    }
-
-    for pending_copy in &pending_symlink_copies {
-        materialize_symlink_copy_fallback(pending_copy, target_dir).map_err(|error| {
-            let failure = ContentOperationFailure::from_io(
-                "failed to copy symlink directory fallback",
-                error,
-                cfg!(windows),
-                ContentErrorKind::SymlinkCreationFailed,
-                "copy_directory_fallback",
-            );
-            record_content_operation_failure(failure_scope, &failure);
-            failure.message
-        })?;
     }
 
     if let Some(progress) = progress {
@@ -1884,15 +1901,24 @@ mod tests {
     fn classifies_http_status_failures_with_a_specific_category_and_kind() {
         assert_eq!(
             classify_content_http_status(reqwest::StatusCode::NOT_FOUND),
-            (OnboardingErrorCategory::NotFound, ContentErrorKind::HttpNotFound),
+            (
+                OnboardingErrorCategory::NotFound,
+                ContentErrorKind::HttpNotFound
+            ),
         );
         assert_eq!(
             classify_content_http_status(reqwest::StatusCode::FORBIDDEN),
-            (OnboardingErrorCategory::Permission, ContentErrorKind::HttpForbidden),
+            (
+                OnboardingErrorCategory::Permission,
+                ContentErrorKind::HttpForbidden
+            ),
         );
         assert_eq!(
             classify_content_http_status(reqwest::StatusCode::TOO_MANY_REQUESTS),
-            (OnboardingErrorCategory::Network, ContentErrorKind::HttpRateLimited),
+            (
+                OnboardingErrorCategory::Network,
+                ContentErrorKind::HttpRateLimited
+            ),
         );
     }
 
@@ -1904,15 +1930,24 @@ mod tests {
         );
         assert_eq!(
             classify_content_io_error(std::io::ErrorKind::Other, Some(32), true),
-            (OnboardingErrorCategory::Permission, ContentErrorKind::FileLocked),
+            (
+                OnboardingErrorCategory::Permission,
+                ContentErrorKind::FileLocked
+            ),
         );
         assert_eq!(
             classify_content_io_error(std::io::ErrorKind::NotFound, Some(3), true),
-            (OnboardingErrorCategory::NotFound, ContentErrorKind::MissingPath),
+            (
+                OnboardingErrorCategory::NotFound,
+                ContentErrorKind::MissingPath
+            ),
         );
         assert_eq!(
             classify_content_io_error(std::io::ErrorKind::PermissionDenied, Some(5), true),
-            (OnboardingErrorCategory::Permission, ContentErrorKind::PermissionDenied),
+            (
+                OnboardingErrorCategory::Permission,
+                ContentErrorKind::PermissionDenied
+            ),
         );
         assert_eq!(
             classify_content_io_error(std::io::ErrorKind::Other, Some(112), true),
@@ -1928,10 +1963,7 @@ mod tests {
         );
 
         assert_eq!(failure.category, OnboardingErrorCategory::SpawnFailed);
-        assert_eq!(
-            failure.kind,
-            ContentErrorKind::SymlinkHelperSpawnFailed
-        );
+        assert_eq!(failure.kind, ContentErrorKind::SymlinkHelperSpawnFailed);
     }
 
     #[test]
@@ -1963,7 +1995,10 @@ mod tests {
         )
         .expect("archive failure should have scoped diagnostic detail");
         assert_eq!(detail.error_category, "checksum");
-        assert_eq!(detail.error_kind.as_deref(), Some("content_archive_invalid"));
+        assert_eq!(
+            detail.error_kind.as_deref(),
+            Some("content_archive_invalid")
+        );
     }
 
     #[test]
@@ -2324,27 +2359,6 @@ mod windows_junction_tests {
     }
 
     #[test]
-    fn fallback_routes_missing_or_dir_target_to_junction_not_copy() {
-        // Only an existing file copies; an existing dir or a not-yet-created dir
-        // target must use the junction path.
-        let dir = setup();
-
-        let file_target = dir.path().join("CLAUDE.md");
-        fs::write(&file_target, b"x").expect("seed file");
-        assert!(fallback_uses_copy(&file_target), "existing file -> copy");
-
-        let dir_target = dir.path().join("skills");
-        fs::create_dir(&dir_target).expect("seed dir");
-        assert!(!fallback_uses_copy(&dir_target), "existing dir -> junction");
-
-        let missing = dir.path().join(".claude").join("skills");
-        assert!(
-            !fallback_uses_copy(&missing),
-            "not-yet-created dir target -> junction (not copy)"
-        );
-    }
-
-    #[test]
     fn create_junction_handles_forward_slash_link_path() {
         // cmd's mklink builtin parses the first `/segment` in a forward-slash
         // link path as a switch, so the junction fallback must backslash-normalize.
@@ -2368,32 +2382,101 @@ mod windows_junction_tests {
         fs::write(link.join("probe.txt"), b"ok").expect("write through junction");
         assert!(target.join("probe.txt").exists());
     }
+
+    #[test]
+    fn copy_file_fallback_copies_the_existing_file_target() {
+        let dir = setup();
+        let target = dir.path().join("CLAUDE.md");
+        let link = dir.path().join("CLAUDE-copy.md");
+        fs::write(&target, b"template content").expect("seed file target");
+
+        copy_file_fallback(&target, &link, None)
+            .expect("copy file target without symlink privilege");
+
+        assert_eq!(
+            fs::read(link).expect("read copied target"),
+            b"template content"
+        );
+    }
 }
 
 #[cfg(test)]
-mod symlink_copy_fallback_tests {
+mod windows_symlink_fallback_selection_tests {
     use super::*;
 
     #[test]
-    fn deferred_directory_copy_includes_content_extracted_after_link_creation() {
+    fn privilege_missing_uses_file_copy_and_directory_junction_fallbacks() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let source = dir.path().join("real-skills");
-        let destination = dir.path().join("linked-skills");
-        let fallback = PendingSymlinkCopy {
-            source: source.clone(),
-            destination: destination.clone(),
-        };
-
-        fs::create_dir_all(&source).expect("create junction target");
-        fs::write(source.join("after-link.md"), b"usable content")
-            .expect("extract target after symlink");
-        materialize_symlink_copy_fallback(&fallback, dir.path())
-            .expect("copy the completed directory target");
+        let file_target = dir.path().join("CLAUDE.md");
+        fs::write(&file_target, b"file target").expect("write file target");
+        let directory_target = dir.path().join("skills");
+        fs::create_dir(&directory_target).expect("create directory target");
+        let missing_target = dir.path().join(".claude").join("skills");
 
         assert_eq!(
-            fs::read(destination.join("after-link.md")).expect("copied content"),
-            b"usable content"
+            choose_windows_symlink_fallback(&file_target, true),
+            Some(WindowsSymlinkFallback::CopyFile)
         );
+        assert_eq!(
+            choose_windows_symlink_fallback(&directory_target, true),
+            Some(WindowsSymlinkFallback::Junction)
+        );
+        assert_eq!(
+            choose_windows_symlink_fallback(&missing_target, true),
+            Some(WindowsSymlinkFallback::Junction)
+        );
+    }
+
+    #[test]
+    fn non_privilege_errors_do_not_trigger_file_or_junction_fallbacks() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file_target = dir.path().join("CLAUDE.md");
+        fs::write(&file_target, b"file target").expect("write file target");
+        let directory_target = dir.path().join("skills");
+        fs::create_dir(&directory_target).expect("create directory target");
+        let missing_target = dir.path().join(".claude").join("skills");
+
+        assert_eq!(choose_windows_symlink_fallback(&file_target, false), None);
+        assert_eq!(
+            choose_windows_symlink_fallback(&directory_target, false),
+            None
+        );
+        assert_eq!(
+            choose_windows_symlink_fallback(&missing_target, false),
+            None
+        );
+    }
+
+    #[test]
+    fn file_copy_stops_when_cancellation_is_requested() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let source = dir.path().join("source.md");
+        let destination = dir.path().join("copy.md");
+        fs::write(&source, vec![b'x'; EXTRACT_READ_CHUNK_BYTES * 2]).expect("write source");
+        let cancelled = AtomicBool::new(true);
+
+        let error = copy_file_with_cancellation(&source, &destination, Some(&cancelled))
+            .expect_err("stop before mutating a cancelled destination");
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn file_copy_checks_cancellation_between_chunks() {
+        let contents = vec![b'x'; EXTRACT_READ_CHUNK_BYTES * 2];
+        let mut reader = io::Cursor::new(contents);
+        let mut writer = Vec::new();
+        let mut checks = 0;
+
+        let error = copy_stream_with_cancellation(&mut reader, &mut writer, || {
+            checks += 1;
+            checks == 3
+        })
+        .expect_err("stop copying when cancellation arrives");
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(writer.len(), EXTRACT_READ_CHUNK_BYTES);
     }
 }
 
