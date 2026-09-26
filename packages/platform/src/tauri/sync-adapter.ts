@@ -86,8 +86,6 @@ const HOST_OWNED = unavailable(
   'The Sync host owns this surface natively; the embedded UI does not drive it.',
 );
 
-let nextMirrorQuarantineAdapterGeneration = 0;
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -163,8 +161,12 @@ export function createSyncPlatformAdapter(
   void config.fetch;
   const invokeFn = config.invoke;
   const requestPolicy = config.requestPolicy ?? {};
-  const mirrorQuarantineGeneration = ++nextMirrorQuarantineAdapterGeneration;
   let mirrorQuarantineRevision = 0;
+  let mirrorQuarantineGenerationPromise: AdapterPromise<number> | null = null;
+  let mirrorQuarantineDisposed = false;
+  let mirrorQuarantineDisposePromise: Promise<void> | null = null;
+  let mirrorQuarantineWindowLifecycleInstalled = false;
+  let unsubscribeMirrorQuarantineFlag: (() => void) | null = null;
   const flags = createFeatureFlagGate({
     // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
     endpoint: '',
@@ -184,23 +186,80 @@ export function createSyncPlatformAdapter(
     }
   }
 
+  function mirrorQuarantineGenerationResult(): AdapterPromise<number> {
+    if (!mirrorQuarantineGenerationPromise) {
+      if (typeof window !== 'undefined' && !mirrorQuarantineWindowLifecycleInstalled) {
+        window.addEventListener('beforeunload', onMirrorQuarantineWindowEnd);
+        window.addEventListener('pagehide', onMirrorQuarantineWindowEnd);
+        mirrorQuarantineWindowLifecycleInstalled = true;
+      }
+      mirrorQuarantineGenerationPromise = call<number>(
+        'register_mirror_quarantine_move_not_deletion_generation',
+      );
+    }
+    return mirrorQuarantineGenerationPromise;
+  }
+
+  function disposeMirrorQuarantineGate(): Promise<void> {
+    if (mirrorQuarantineDisposePromise) return mirrorQuarantineDisposePromise;
+    mirrorQuarantineDisposed = true;
+    unsubscribeMirrorQuarantineFlag?.();
+    unsubscribeMirrorQuarantineFlag = null;
+    if (typeof window !== 'undefined' && mirrorQuarantineWindowLifecycleInstalled) {
+      window.removeEventListener('beforeunload', onMirrorQuarantineWindowEnd);
+      window.removeEventListener('pagehide', onMirrorQuarantineWindowEnd);
+      mirrorQuarantineWindowLifecycleInstalled = false;
+    }
+    mirrorQuarantineDisposePromise = (async () => {
+      if (!mirrorQuarantineGenerationPromise) return;
+      const generation = await mirrorQuarantineGenerationPromise;
+      if (!generation.ok) {
+        console.warn(
+          'Could not unregister mirror quarantine generation',
+          generation.message,
+        );
+        return;
+      }
+      const unregistered = await call<void>(
+        'unregister_mirror_quarantine_move_not_deletion_generation',
+        { generation: generation.value },
+      );
+      if (!unregistered.ok) {
+        console.warn(
+          'Could not unregister mirror quarantine generation',
+          unregistered.message,
+        );
+      }
+    })();
+    return mirrorQuarantineDisposePromise;
+  }
+
+  function onMirrorQuarantineWindowEnd(): void {
+    void disposeMirrorQuarantineGate();
+  }
+
   async function updateMirrorQuarantineFlag(): AdapterPromise<void> {
+    if (mirrorQuarantineDisposed) return ok(undefined);
     const revision = ++mirrorQuarantineRevision;
     const configured = await flags.resolve(
       MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
       () => Promise.resolve(ok(false)),
     );
-    // The Rust setter orders snapshots by adapter generation and per-adapter
-    // revision. A destroyed adapter's late result cannot replace its successor.
+    if (mirrorQuarantineDisposed) return ok(undefined);
+    const generation = await mirrorQuarantineGenerationResult();
+    if (!generation.ok) return generation;
+    if (mirrorQuarantineDisposed) return ok(undefined);
+    // Revisions order refreshes within the Rust-issued identity for this live
+    // webview. Rust combines all live webview snapshots with logical AND.
     return call('set_mirror_quarantine_move_not_deletion', {
       enabled: configured.ok && configured.value,
-      generation: mirrorQuarantineGeneration,
+      generation: generation.value,
       revision,
     });
   }
 
   if (config.primeMirrorQuarantineGate) {
-    flags.subscribe(
+    unsubscribeMirrorQuarantineFlag = flags.subscribe(
       MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
       () => Promise.resolve(ok(false)),
       () => {
@@ -366,6 +425,7 @@ export function createSyncPlatformAdapter(
     kind: 'desktop',
     capabilities: TAURI_CAPABILITIES,
     calls,
+    dispose: disposeMirrorQuarantineGate,
     isAvailable: (cap: Capability): boolean => TAURI_CAPABILITIES[cap],
 
     identity: {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { createSyncPlatformAdapter } from '@hq/platform';
   import { startTraySync } from './lib/traySync';
@@ -80,6 +81,9 @@
   const traySyncAdapter = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
     primeMirrorQuarantineGate: true,
+  });
+  onDestroy(() => {
+    void traySyncAdapter.dispose?.();
   });
 
   interface Config {

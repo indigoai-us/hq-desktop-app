@@ -30,6 +30,19 @@ pub fn spawn_mirror_after_sync(hq_folder: &str) {
 /// Cache the current hq-flags snapshot for mirrors launched by either sync
 /// event path. A missing registry row or failed read is sent as `false`.
 #[tauri::command]
+pub fn register_mirror_quarantine_move_not_deletion_generation() -> Result<u64, String> {
+    hq_desktop_core::git_mirror::register_scope_quarantine_move_not_deletion_generation()
+}
+
+/// Remove a closing/reloading webview from the process-wide mirror gate.
+#[tauri::command]
+pub fn unregister_mirror_quarantine_move_not_deletion_generation(generation: u64) {
+    hq_desktop_core::git_mirror::unregister_scope_quarantine_move_not_deletion_generation(
+        generation,
+    );
+}
+
+#[tauri::command]
 pub fn set_mirror_quarantine_move_not_deletion(generation: u64, revision: u64, enabled: bool) {
     hq_desktop_core::git_mirror::set_scope_quarantine_move_not_deletion_enabled(
         generation, revision, enabled,
@@ -47,7 +60,11 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use super::{mirror_after_sync, set_mirror_quarantine_move_not_deletion};
+    use super::{
+        mirror_after_sync, register_mirror_quarantine_move_not_deletion_generation,
+        set_mirror_quarantine_move_not_deletion,
+        unregister_mirror_quarantine_move_not_deletion_generation,
+    };
 
     fn git(dir: &Path, args: &[&str]) -> Output {
         Command::new("git")
@@ -136,6 +153,8 @@ mod tests {
     fn first_mirror_waits_for_flag_snapshot_before_committing_scope_deletion() {
         let tmp = tempfile::tempdir().unwrap();
         seed_scope_shrink_repo(tmp.path());
+        let generation = register_mirror_quarantine_move_not_deletion_generation()
+            .expect("allocate a process-wide mirror gate generation");
         let before = revision_count(tmp.path());
         let hq_folder = tmp.path().to_str().unwrap().to_string();
         let (started_tx, started_rx) = mpsc::channel();
@@ -160,7 +179,7 @@ mod tests {
             "a pending flag read must not let the first mirror pass commit the scope shrink"
         );
 
-        set_mirror_quarantine_move_not_deletion(1, 1, true);
+        set_mirror_quarantine_move_not_deletion(generation, 1, true);
         finished_rx
             .recv_timeout(Duration::from_secs(10))
             .expect("the first pass continues when the snapshot resolves");
@@ -170,5 +189,6 @@ mod tests {
             before,
             "the resolved enabled snapshot keeps the quarantine move out of the deletion commit"
         );
+        unregister_mirror_quarantine_move_not_deletion_generation(generation);
     }
 }

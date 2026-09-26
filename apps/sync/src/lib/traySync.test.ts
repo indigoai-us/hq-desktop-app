@@ -34,10 +34,12 @@ describe('tray Sync Now flag preflight', () => {
             }),
           };
         }
+        if (cmd === 'register_mirror_quarantine_move_not_deletion_generation') return 1;
         if (cmd === 'set_mirror_quarantine_move_not_deletion') {
           rustGate = args?.enabled === true;
           return null;
         }
+        if (cmd === 'unregister_mirror_quarantine_move_not_deletion_generation') return null;
         if (cmd === 'start_sync') {
           expect(rustGate).toBe(true);
           return null;
@@ -52,10 +54,12 @@ describe('tray Sync Now flag preflight', () => {
 
     expect(calls.map(({ cmd }) => cmd)).toEqual([
       'hq_pro_fetch',
+      'register_mirror_quarantine_move_not_deletion_generation',
       'set_mirror_quarantine_move_not_deletion',
       'start_sync',
     ]);
-    expect(calls[1]?.args).toMatchObject({ enabled: true });
+    expect(calls[2]?.args).toMatchObject({ enabled: true, generation: 1 });
     expect(elapsedMs).toBeLessThan(1_000);
+    await adapter.dispose?.();
   });
 });

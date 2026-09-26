@@ -62,7 +62,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{mpsc, Condvar, LazyLock, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc, Condvar, LazyLock, Mutex,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -84,8 +87,7 @@ static MIRROR_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 struct ScopeQuarantineGateState {
-    snapshot: Option<bool>,
-    snapshot_revision: Option<(u64, u64)>,
+    generations: HashMap<u64, Option<(u64, bool)>>,
     first_mirror_decision: Option<bool>,
 }
 
@@ -105,32 +107,66 @@ impl ScopeQuarantineGate {
         }
     }
 
-    fn set_snapshot(&self, generation: u64, revision: u64, enabled: bool) -> bool {
+    fn register_generation(&self, generation: u64) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let incoming = (generation, revision);
-        if state
-            .snapshot_revision
-            .is_some_and(|current| incoming <= current)
-        {
+        if generation == 0 || state.generations.contains_key(&generation) {
             return false;
         }
-        state.snapshot = Some(enabled);
-        state.snapshot_revision = Some(incoming);
+        state.generations.insert(generation, None);
         self.snapshot_ready.notify_all();
         true
     }
 
+    fn set_snapshot(&self, generation: u64, revision: u64, enabled: bool) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(current) = state.generations.get_mut(&generation) else {
+            return false;
+        };
+        if current.is_some_and(|(current_revision, _)| revision <= current_revision) {
+            return false;
+        }
+        *current = Some((revision, enabled));
+        self.snapshot_ready.notify_all();
+        true
+    }
+
+    fn unregister_generation(&self, generation: u64) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let removed = state.generations.remove(&generation).is_some();
+        if removed {
+            self.snapshot_ready.notify_all();
+        }
+        removed
+    }
+
+    fn effective_enabled(state: &ScopeQuarantineGateState) -> bool {
+        !state.generations.is_empty()
+            && state
+                .generations
+                .values()
+                .all(|snapshot| snapshot.is_some_and(|(_, enabled)| enabled))
+    }
+
+    fn has_resolved_snapshot(state: &ScopeQuarantineGateState) -> bool {
+        !state.generations.is_empty()
+            && (state
+                .generations
+                .values()
+                .any(|snapshot| snapshot.is_some_and(|(_, enabled)| !enabled))
+                || state.generations.values().all(Option::is_some))
+    }
+
     fn resolve_first_mirror(&self, timeout: Duration) -> ScopeQuarantineGateDecision {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(enabled) = state.first_mirror_decision {
+        if state.first_mirror_decision.is_some() {
             return ScopeQuarantineGateDecision {
-                enabled: state.snapshot.unwrap_or(enabled),
+                enabled: Self::effective_enabled(&state),
                 timed_out: false,
             };
         }
 
         let deadline = Instant::now() + timeout;
-        while state.snapshot.is_none() {
+        while !Self::has_resolved_snapshot(&state) {
             let now = Instant::now();
             if now >= deadline {
                 state.first_mirror_decision = Some(false);
@@ -145,13 +181,13 @@ impl ScopeQuarantineGate {
                 .wait_timeout(state, remaining)
                 .unwrap_or_else(|error| error.into_inner());
             state = next;
-            if let Some(enabled) = state.first_mirror_decision {
+            if state.first_mirror_decision.is_some() {
                 return ScopeQuarantineGateDecision {
-                    enabled,
+                    enabled: Self::effective_enabled(&state),
                     timed_out: false,
                 };
             }
-            if wait.timed_out() && state.snapshot.is_none() {
+            if wait.timed_out() && !Self::has_resolved_snapshot(&state) {
                 state.first_mirror_decision = Some(false);
                 return ScopeQuarantineGateDecision {
                     enabled: false,
@@ -160,7 +196,7 @@ impl ScopeQuarantineGate {
             }
         }
 
-        let enabled = state.snapshot.unwrap_or(false);
+        let enabled = Self::effective_enabled(&state);
         state.first_mirror_decision = Some(enabled);
         ScopeQuarantineGateDecision {
             enabled,
@@ -177,6 +213,26 @@ struct ScopeQuarantineGateDecision {
 
 static SCOPE_QUARANTINE_GATE: LazyLock<ScopeQuarantineGate> =
     LazyLock::new(ScopeQuarantineGate::new);
+static NEXT_SCOPE_QUARANTINE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Allocate and register a process-wide identity for one live adapter window.
+pub fn register_scope_quarantine_move_not_deletion_generation() -> Result<u64, String> {
+    let previous = NEXT_SCOPE_QUARANTINE_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| "mirror quarantine generation space exhausted".to_string())?;
+    let generation = previous + 1;
+    if !SCOPE_QUARANTINE_GATE.register_generation(generation) {
+        return Err("mirror quarantine generation was already registered".to_string());
+    }
+    Ok(generation)
+}
+
+/// Remove a closing/reloading adapter from the effective process-wide gate.
+pub fn unregister_scope_quarantine_move_not_deletion_generation(generation: u64) {
+    SCOPE_QUARANTINE_GATE.unregister_generation(generation);
+}
 
 /// Update the cached hq-flags value used by both manual and daemon mirrors.
 /// A missing or unreadable flag is sent as `false` by the desktop adapter.
@@ -9231,6 +9287,7 @@ mod tests {
     #[test]
     fn pending_quarantine_flag_wait_is_bounded_and_late_snapshot_applies_next_pass() {
         let gate = std::sync::Arc::new(ScopeQuarantineGate::new());
+        assert!(gate.register_generation(1));
         let waiter_gate = std::sync::Arc::clone(&gate);
         let (decision_tx, decision_rx) = std::sync::mpsc::channel();
         let waiter = std::thread::spawn(move || {
@@ -9253,7 +9310,7 @@ mod tests {
             },
             "timeout preserves the historical default-off path for this first pass"
         );
-        gate.set_snapshot(1, 1, true);
+        assert!(gate.set_snapshot(1, 1, true));
         assert_eq!(
             gate.resolve_first_mirror(Duration::ZERO),
             ScopeQuarantineGateDecision {
@@ -9268,6 +9325,7 @@ mod tests {
     #[test]
     fn zero_timeout_without_a_snapshot_keeps_the_first_pass_flag_off() {
         let gate = ScopeQuarantineGate::new();
+        assert!(gate.register_generation(1));
         assert_eq!(
             gate.resolve_first_mirror(Duration::ZERO),
             ScopeQuarantineGateDecision {
@@ -9276,7 +9334,7 @@ mod tests {
             },
             "an unresolved zero-timeout snapshot must use the default-off first-pass decision"
         );
-        gate.set_snapshot(1, 1, true);
+        assert!(gate.set_snapshot(1, 1, true));
         assert_eq!(
             gate.resolve_first_mirror(Duration::ZERO),
             ScopeQuarantineGateDecision {
@@ -9288,25 +9346,95 @@ mod tests {
     }
 
     #[test]
-    fn late_older_mirror_flag_prime_cannot_replace_the_newer_generation() {
+    fn mirror_flag_generations_require_every_live_window_to_report_true() {
         let gate = ScopeQuarantineGate::new();
+        assert!(gate.register_generation(1));
+        assert!(gate.register_generation(2));
+        assert!(gate.set_snapshot(1, 1, true));
         assert!(gate.set_snapshot(2, 1, true));
-        assert!(
-            !gate.set_snapshot(1, 99, false),
-            "an older adapter generation that resolves late must be ignored"
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO).enabled,
+            true,
+            "the gate is on only after each live generation reports on"
         );
+        assert!(gate.set_snapshot(1, 2, false));
         assert!(
-            !gate.set_snapshot(2, 1, false),
-            "a duplicate update revision must be ignored"
+            !gate.set_snapshot(1, 1, true),
+            "a late lower revision within one generation must be ignored"
         );
-        assert!(gate.set_snapshot(2, 2, false));
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO).enabled,
+            false,
+            "one live window reporting off turns the process gate off"
+        );
+    }
+
+    #[test]
+    fn a_new_true_generation_cannot_override_another_live_false_generation() {
+        let gate = ScopeQuarantineGate::new();
+        assert!(gate.register_generation(1));
+        assert!(gate.register_generation(2));
+        assert!(gate.set_snapshot(1, 1, false));
+        assert!(gate.set_snapshot(2, 1, true));
+        assert!(gate.register_generation(3));
+        assert!(gate.set_snapshot(3, 1, true));
         assert_eq!(
             gate.resolve_first_mirror(Duration::ZERO),
             ScopeQuarantineGateDecision {
                 enabled: false,
                 timed_out: false,
             },
-            "a newer refresh on the current adapter remains authoritative"
+            "another live generation's false snapshot keeps the process gate off"
+        );
+    }
+
+    #[test]
+    fn process_generation_allocator_returns_distinct_registered_ids() {
+        let first = register_scope_quarantine_move_not_deletion_generation()
+            .expect("allocate first webview generation");
+        let second = register_scope_quarantine_move_not_deletion_generation()
+            .expect("allocate second webview generation");
+        assert_ne!(first, second, "separate webviews need distinct process IDs");
+        unregister_scope_quarantine_move_not_deletion_generation(first);
+        unregister_scope_quarantine_move_not_deletion_generation(second);
+    }
+
+    #[test]
+    fn closing_one_window_then_receiving_off_from_the_survivor_keeps_gate_off() {
+        let gate = ScopeQuarantineGate::new();
+        assert!(gate.register_generation(1));
+        assert!(gate.register_generation(2));
+        assert!(gate.set_snapshot(1, 1, true));
+        assert!(gate.set_snapshot(2, 1, true));
+        assert!(gate.unregister_generation(2));
+        assert!(gate.set_snapshot(1, 2, false));
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO).enabled,
+            false,
+            "the surviving generation's flag-off update controls the remaining gate"
+        );
+    }
+
+    #[test]
+    fn closing_then_reopening_uses_only_the_live_generations() {
+        let gate = ScopeQuarantineGate::new();
+        assert!(gate.register_generation(1));
+        assert!(gate.register_generation(2));
+        assert!(gate.set_snapshot(1, 1, true));
+        assert!(gate.set_snapshot(2, 1, true));
+        assert!(gate.unregister_generation(1));
+        assert!(gate.unregister_generation(2));
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO).enabled,
+            false,
+            "the empty gate is off"
+        );
+        assert!(gate.register_generation(3));
+        assert!(gate.set_snapshot(3, 1, true));
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO).enabled,
+            true,
+            "a fresh generation can enable the gate after all old windows close"
         );
     }
 

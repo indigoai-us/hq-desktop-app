@@ -8,7 +8,7 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount, type Component, type ComponentProps } from "svelte";
+  import { onDestroy, onMount, type Component, type ComponentProps } from "svelte";
   import {
     createSyncPlatformAdapter,
     resolveHostPlatform,
@@ -264,6 +264,9 @@
         fetch: workFetch,
         onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       });
+  onDestroy(() => {
+    void adapter.dispose?.();
+  });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(nativeInvoke) : null;
 
