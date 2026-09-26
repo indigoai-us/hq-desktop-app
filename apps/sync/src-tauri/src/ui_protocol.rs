@@ -194,6 +194,9 @@ pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         let Some(resolved) = resolve_request_path(&root, path) else {
             return empty_response(missing_file_status(path));
         };
+        if resolved.extension().is_some_and(|e| e == "html") {
+            crate::ui_hot_update::note_document(path);
+        }
         if std::env::var_os("HQ_UI_TRACE").is_some() {
             eprintln!("[hq-ui] {path} -> {}", resolved.display());
         }

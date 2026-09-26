@@ -90,9 +90,12 @@ export function pack({ dist, uiVersion, shellKeys, minAppVersion, out, createdAt
   }
 }
 
-export function buildPointer({ manifest, signature, url, channel }) {
+export function buildPointer({ manifest, signature, url, channel, allowLocal = false }) {
   if (!CHANNELS.includes(channel)) throw new Error(`ui-bundle: channel must be one of ${CHANNELS.join(", ")}`);
-  if (!/^https:\/\//.test(url)) throw new Error("ui-bundle: --url must be https");
+  // file:// and loopback URLs are for local verification against a debug
+  // build only (release builds refuse them).
+  const local = allowLocal && /^(file:\/\/|http:\/\/127\.0\.0\.1)/.test(url);
+  if (!/^https:\/\//.test(url) && !local) throw new Error("ui-bundle: --url must be https");
   const sig = String(signature).trim();
   if (!sig) throw new Error("ui-bundle: empty signature");
   if (!/^[0-9a-f]{64}$/.test(manifest.sha256 ?? "")) throw new Error("ui-bundle: manifest has no sha256");
@@ -182,7 +185,13 @@ function main(argv) {
     process.stderr.write(`ui-bundle: ${manifest.uiVersion} sha256=${manifest.sha256} keys=${manifest.shellKeys.length}\n`);
   } else if (command === "pointer") {
     const manifest = JSON.parse(readFileSync(opts.manifest, "utf8"));
-    const pointer = buildPointer({ manifest, signature: readFileSync(opts.sig, "utf8"), url: opts.url, channel: opts.channel });
+    const pointer = buildPointer({
+      manifest,
+      signature: readFileSync(opts.sig, "utf8"),
+      url: opts.url,
+      channel: opts.channel,
+      allowLocal: opts.allowLocal === "true",
+    });
     writeFileSync(opts.out, `${JSON.stringify(pointer, null, 2)}\n`);
     process.stdout.write(`${opts.out}\n`);
   } else if (command === "select-base") {

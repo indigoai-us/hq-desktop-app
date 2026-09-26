@@ -78,6 +78,8 @@ describe("ui-bundle", () => {
     expect(() => buildPointer({ manifest, signature: "s", url: "http://x", channel: "beta" })).toThrow(/https/);
     expect(() => buildPointer({ manifest, signature: "s", url: "https://x", channel: "nightly" })).toThrow(/channel/);
     expect(() => buildPointer({ manifest, signature: " ", url: "https://x", channel: "beta" })).toThrow(/signature/);
+    expect(() => buildPointer({ manifest, signature: "s", url: "file:///tmp/x", channel: "beta" })).toThrow(/https/);
+    expect(buildPointer({ manifest, signature: "s", url: "file:///tmp/x", channel: "beta", allowLocal: true }).url).toBe("file:///tmp/x");
   });
 
   it("selects the base release per channel, skipping drafts and non-version tags", () => {

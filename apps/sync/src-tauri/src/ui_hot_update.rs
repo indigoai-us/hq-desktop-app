@@ -27,6 +27,10 @@ static HOT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static SERVED: RwLock<Option<Served>> = RwLock::new(None);
 static BEACON_SEEN: AtomicBool = AtomicBool::new(false);
+/// The beacon timer runs at most once per served root, and only after a page
+/// was actually served from the hot bundle (a hidden window that never loads
+/// must not count as a failed boot).
+static BEACON_ARMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone)]
 struct Served {
@@ -150,6 +154,21 @@ pub fn invalidate() {
         *guard = None;
     }
     BEACON_SEEN.store(false, Ordering::SeqCst);
+    BEACON_ARMED.store(false, Ordering::SeqCst);
+}
+
+/// Called by `ui_protocol` for every HTML document it serves.
+pub fn note_document(path: &str) {
+    let hot = served_hot_version();
+    log(&format!(
+        "document {path} served from {}",
+        hot.as_deref().map(|v| format!("hot UI {v}")).unwrap_or_else(|| "builtin UI".into())
+    ));
+    if hot.is_some() && !BEACON_ARMED.swap(true, Ordering::SeqCst) {
+        if let Some(app) = APP.get() {
+            start_beacon_watch(app.clone());
+        }
+    }
 }
 
 /// The live UI version: the hot bundle's `uiVersion`, else the app version
@@ -181,7 +200,6 @@ pub fn reload_all(app: &AppHandle) {
             log(&format!("reload {} failed: {err}", window.label()));
         }
     }
-    start_beacon_watch(app.clone());
 }
 
 fn beacon_timeout() -> Duration {
@@ -215,8 +233,9 @@ pub fn roll_back(app: &AppHandle, reason: &str) {
     reload_all(app);
 }
 
-/// After a hot bundle is served, wait for the UI's health beacon.
-pub fn start_beacon_watch(app: AppHandle) {
+/// After a hot bundle's first document is served, wait for the UI's health
+/// beacon.
+fn start_beacon_watch(app: AppHandle) {
     let Some(version) = served_hot_version() else {
         return;
     };
@@ -243,7 +262,6 @@ pub fn on_startup(app: &AppHandle) {
         ui_version(),
         ui_source()
     ));
-    start_beacon_watch(app.clone());
 }
 
 #[derive(Debug, Serialize)]
@@ -397,9 +415,22 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("http client: {e}"))
 }
 
+/// Debug builds only: `file://` and loopback feeds, for local verification
+/// without publishing anything. Release builds accept https only.
+fn local_feed_allowed(url: &str) -> bool {
+    cfg!(debug_assertions) && (url.starts_with("file://") || url.starts_with("http://127.0.0.1"))
+}
+
 async fn get_bytes(client: &reqwest::Client, url: &str, cap: usize) -> Result<Vec<u8>, String> {
-    if !url.starts_with("https://") && !(cfg!(debug_assertions) && url.starts_with("http://127.0.0.1")) {
+    if !url.starts_with("https://") && !local_feed_allowed(url) {
         return Err(format!("refusing non-https url {url}"));
+    }
+    if let Some(path) = url.strip_prefix("file://") {
+        let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+        if bytes.len() > cap {
+            return Err(format!("{path}: over {cap} bytes"));
+        }
+        return Ok(bytes);
     }
     let mut resp = client.get(url).send().await.map_err(|e| format!("GET {url}: {e}"))?;
     if !resp.status().is_success() {
@@ -500,7 +531,7 @@ pub async fn check_once(app: &AppHandle) -> Result<CheckReport, String> {
                 "desktop_ui_hot_applied",
                 serde_json::json!({ "uiVersion": version, "appVersion": app_version }),
             );
-            emit_updated(&version);
+            after_apply(app, &version);
             Ok(report("applied", Some(version), "verified and activated".into()))
         }
         Ok(ui_hot::ApplyOutcome::AlreadyActive) => {
@@ -517,6 +548,37 @@ pub async fn check_once(app: &AppHandle) -> Result<CheckReport, String> {
     }
 }
 
+/// A bundle was applied in the background. When the desktop window is open,
+/// let it decide (reload when idle, otherwise the toast). When no window is
+/// in use, reload right away unless a sync or call is running; otherwise the
+/// new UI is served from the next reload or launch.
+fn after_apply(app: &AppHandle, version: &str) {
+    let desktop_visible = app
+        .get_webview_window("desktop-alt")
+        .is_some_and(|w| w.is_visible().unwrap_or(false));
+    if desktop_visible {
+        log(&format!("{version} ready; asking the desktop window to reload"));
+        emit_updated(version);
+        return;
+    }
+    if ui_hot_call_active(app.clone()) || crate::updater::sync_in_progress() {
+        log(&format!("{version} ready; reload deferred (sync or call active)"));
+        return;
+    }
+    log(&format!("{version} ready; no window in use, reloading now"));
+    reload_all(app);
+}
+
+fn check_interval() -> Duration {
+    // Debug builds only: a short interval for local verification.
+    if cfg!(debug_assertions) {
+        if let Some(secs) = std::env::var("HQ_UI_HOT_CHECK_SECS").ok().and_then(|s| s.parse().ok()) {
+            return Duration::from_secs(secs);
+        }
+    }
+    CHECK_INTERVAL
+}
+
 /// Launch check plus the 30-minute schedule, with backoff on failures.
 pub fn setup_checker(app: &AppHandle) {
     let handle = app.clone();
@@ -530,11 +592,11 @@ pub fn setup_checker(app: &AppHandle) {
                     if r.outcome != "disabled" && r.outcome != "current" {
                         log(&format!("check: {} {:?} ({})", r.outcome, r.ui_version, r.detail));
                     }
-                    CHECK_INTERVAL
+                    check_interval()
                 }
                 Err(err) => {
                     failures = failures.saturating_add(1);
-                    let delay = retry_delay(failures);
+                    let delay = retry_delay(failures).min(check_interval().max(Duration::from_secs(1)));
                     log(&format!("check failed ({err}); retrying in {}s", delay.as_secs()));
                     delay
                 }
