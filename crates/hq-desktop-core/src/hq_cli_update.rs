@@ -6665,6 +6665,46 @@ mod windows_busy_deferral_tests {
     }
 
     #[test]
+    fn changed_resolved_version_keeps_existing_install_failure_path() {
+        let before_resolved_version = "5.207.0";
+        let after_resolved_version = "5.208.0";
+        let command_liveness_version = "5.207.0";
+
+        let old_cli_unchanged = windows_busy_cli_version_unchanged(
+            Some(before_resolved_version),
+            Some(after_resolved_version),
+            Some(command_liveness_version),
+        );
+        assert!(!old_cli_unchanged);
+        assert_eq!(
+            decide(true, old_cli_unchanged, confirmed_no_holder(), None),
+            None
+        );
+        assert!(install_failure_report(Some(-4082), DETAIL, Some(PREFIX)).is_some());
+    }
+
+    #[test]
+    fn each_missing_version_probe_input_fails_closed() {
+        let version = "5.207.0";
+
+        assert!(!windows_busy_cli_version_unchanged(
+            None,
+            Some(version),
+            Some(version),
+        ));
+        assert!(!windows_busy_cli_version_unchanged(
+            Some(version),
+            None,
+            Some(version),
+        ));
+        assert!(!windows_busy_cli_version_unchanged(
+            Some(version),
+            Some(version),
+            None,
+        ));
+    }
+
+    #[test]
     fn flag_off_real_holder_incomplete_query_or_unusable_cli_keeps_existing_path() {
         let no_holder = confirmed_no_holder();
         assert_eq!(decide(false, true, no_holder, None), None);
