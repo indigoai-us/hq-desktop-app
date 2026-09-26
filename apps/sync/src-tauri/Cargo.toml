@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.330"
+version = "0.10.334"
 edition = "2021"
 
 [build-dependencies]
@@ -163,6 +163,7 @@ windows = { version = "0.58", features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_RestartManager",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
     "Win32_UI_Shell",

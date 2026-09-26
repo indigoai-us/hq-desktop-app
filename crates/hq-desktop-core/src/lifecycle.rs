@@ -660,6 +660,63 @@ mod tests {
     }
 
     #[test]
+    fn updater_restart_reads_persisted_setup_and_consent_before_routing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        let inputs_from_disk = |menubar: &Map<String, Value>| {
+            let (install_completed, first_run_completed, had_machine_id) = menubar_flags(menubar);
+            let consent_answered = menubar
+                .get("telemetryOptInAnsweredAt")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty());
+            LifecycleInputs {
+                install_completed,
+                first_run_completed,
+                had_machine_id,
+                config_valid: false,
+                hq_root_valid: true,
+                has_auth: true,
+                install_in_progress: false,
+                consent_answered,
+                evidence_unreadable: false,
+            }
+        };
+
+        // A post-update process synchronously reads the same persisted markers
+        // before lifecycle classification. No update-specific read or write is
+        // needed to recover them.
+        std::fs::write(
+            &path,
+            r#"{"installCompleted":true,"firstRunCompleted":true,"machineId":"saved","telemetryOptInAnsweredAt":"2026-09-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        let completed = match crate::first_run::read_menubar(&path) {
+            crate::first_run::MenubarRead::Object(menubar) => menubar,
+            other => panic!("expected readable post-update settings, got {other:?}"),
+        };
+        assert_eq!(
+            classify_lifecycle(inputs_from_disk(&completed)).state,
+            LifecycleState::SteadyState
+        );
+
+        // A persisted unanswered consent remains first-run onboarding after
+        // restart; the lifecycle must not infer consent from auth or setup.
+        std::fs::write(
+            &path,
+            r#"{"installCompleted":true,"firstRunCompleted":false,"machineId":"saved"}"#,
+        )
+        .unwrap();
+        let unanswered = match crate::first_run::read_menubar(&path) {
+            crate::first_run::MenubarRead::Object(menubar) => menubar,
+            other => panic!("expected readable post-update settings, got {other:?}"),
+        };
+        assert_eq!(
+            classify_lifecycle(inputs_from_disk(&unanswered)).state,
+            LifecycleState::InstalledFirstRun
+        );
+    }
+
+    #[test]
     fn classify_steady_state_for_completed_install_and_completed_first_run() {
         let verdict = classify_lifecycle(LifecycleInputs {
             install_completed: true,

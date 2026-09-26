@@ -1182,6 +1182,9 @@
     failedDependency?: unknown;
     errorCategory?: unknown;
     errorKind?: unknown;
+    errorOperation?: unknown;
+    errorIoKind?: unknown;
+    errorCode?: unknown;
   };
 
   async function stageFailureTelemetryDetails(
@@ -1206,6 +1209,9 @@
       errorCategory: timeoutCategory ?? nativeDetail?.errorCategory,
       errorKind: timeoutKind ?? nativeDetail?.errorKind,
       failedDependency: nativeDetail?.failedDependency,
+      errorOperation: nativeDetail?.errorOperation,
+      errorIoKind: nativeDetail?.errorIoKind,
+      errorCode: nativeDetail?.errorCode,
     });
   }
 

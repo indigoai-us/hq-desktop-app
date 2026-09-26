@@ -302,6 +302,7 @@ mod tests {
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
+            auto_record_meetings: None,
             default_recording_company_uid: None,
             telemetry_enabled: None,
             claude_projects_dir: None,

@@ -928,14 +928,16 @@ async fn run_replace_from_staging_inner(
                         .as_ref()
                         .map(|diagnostic| {
                             format!(
-                                "{} {diagnostic}",
-                                "staging update applied but baseline persistence failed:"
+                                "{} {diagnostic} {}",
+                                "staging update applied but baseline persistence failed:",
+                                result.persistence_stamp_marker(),
                             )
                         })
                         .unwrap_or_else(|| {
                             format!(
-                                "staging update applied; baseline refresh pending for {repo}@{}",
-                                result.commit
+                                "staging update applied; baseline refresh pending for {repo}@{} {}",
+                                result.commit,
+                                result.persistence_stamp_marker(),
                             )
                         });
                     crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(

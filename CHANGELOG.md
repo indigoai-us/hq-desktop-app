@@ -15,6 +15,36 @@ The release moves it under the version it ships in.
   lost). If an update fails to start, the app goes back to the previous
   interface by itself. Off by default for now; Settings shows which interface
   version is running.
+- When the app shows sign-in or onboarding to someone who already finished
+  setup, its error report now records which setup checks passed or failed.
+  The report contains short fixed values only, with no file paths or account
+  details. This helps us find why some people are sent back to onboarding
+  after an update.
+
+## [0.10.334] — 2026-09-26
+
+- The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
+  line tool now uses, so Update / Restore and `hq rescue` keep running the same
+  engine. It brings the sync fixes released since 6.16.53.
+
+## [0.10.333] — 2026-09-26
+
+- On Windows, setup no longer fails when an old content folder link points
+  to a folder that has since been removed. Setup removes the old link and
+  creates it again. If linking still fails, the error report now says which
+  step failed and why.
+
+## [0.10.331] — 2026-09-26
+
+- New "Record meetings automatically" switch in Settings → Meetings. When it
+  is on, HQ starts recording as soon as it detects a call — Slack huddles,
+  Zoom, Google Meet, Teams and Webex — instead of waiting for you to click
+  Record. It is off by default. Calls a scheduled HQ bot is already recording
+  are not recorded twice, and you still get the "meeting detected" alert.
+- On Windows, the HQ CLI updater identifies the process holding its package
+  files, waits for HQ's own processes, and retries around short-lived scanners.
+  If you have the HQ CLI open in a terminal, the app leaves it running and
+  checks for the update again later.
 
 ## [0.10.330] — 2026-09-26
 
