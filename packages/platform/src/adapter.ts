@@ -1392,6 +1392,12 @@ export interface LocalBotCreateInput {
   kind?: LocalBotKind;
   /** Company slugs for a company bot — one `--company <slug>` each; required when kind is company. */
   companies?: string[];
+  /**
+   * The human name people see ("Pickles"), `hq bot create --display-name`.
+   * The handle (`name`) stays the key; an hq CLI too old for the flag creates
+   * the bot without it.
+   */
+  displayName?: string;
 }
 
 /**

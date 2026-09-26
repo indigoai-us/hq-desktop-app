@@ -24,9 +24,26 @@
     ondismiss: () => void;
     /** A launch failure, in plain words. */
     launchError?: string | null;
+    /**
+     * The Slack offer's button label ("Put Pickles in Slack"), set only when
+     * the bot offered it (someone who started their own company). Null hides it.
+     */
+    slackLabel?: string | null;
+    /** Ask the bot to walk the person through its Slack bot. */
+    onslack?: () => void;
   }
 
-  let { hasClaude, hasCodex, onclaude, oncodex, onopenurl, ondismiss, launchError = null }: Props = $props();
+  let {
+    hasClaude,
+    hasCodex,
+    onclaude,
+    oncodex,
+    onopenurl,
+    ondismiss,
+    launchError = null,
+    slackLabel = null,
+    onslack,
+  }: Props = $props();
 
   const hasTools = $derived(hasClaude || hasCodex);
 </script>
@@ -66,6 +83,17 @@
       {#if launchError}
         <p class="launch-error" role="alert" data-testid="setup-bot-finale-error">{launchError}</p>
       {/if}
+    </div>
+  {/if}
+
+  {#if slackLabel && onslack}
+    <div class="group">
+      <p class="lead">{SETUP_BOT_FINALE_COPY.slackLead}</p>
+      <div class="actions">
+        <SetupButton data-testid="setup-bot-finale-slack" onclick={() => onslack?.()}>
+          {slackLabel}
+        </SetupButton>
+      </div>
     </div>
   {/if}
 

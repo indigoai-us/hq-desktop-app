@@ -721,6 +721,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         memory: input.memory ?? null,
         kind: input.kind ?? null,
         companies: input.companies ?? null,
+        displayName: input.displayName ?? null,
       }),
     workers: () => this.call("local_bots_workers"),
     start: (name) => this.call("local_bots_start", { name }),
