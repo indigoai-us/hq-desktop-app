@@ -2658,6 +2658,9 @@ mod codex_telemetry_tests {
                 "setupRunId",
                 "npxResolved",
                 "npxResolution",
+                "errorOperation",
+                "errorIoKind",
+                "errorCode",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
