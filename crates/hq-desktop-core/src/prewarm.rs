@@ -17,13 +17,11 @@
 //!
 //! ## Why fire-and-forget is safe
 //!
-//! Prewarm is a pure side-effect with no state to surface. If it
-//! succeeds, the next sync is fast. If it fails (offline, npm registry
-//! down), the next sync will either reuse whatever is cached or fail
-//! with the same network error. Pre-warm failure and sync failure are
-//! independent — there's nothing to roll back, retry, or report. We log
-//! one stderr line per attempt for offline debugging and drop the
-//! `JoinHandle`.
+//! The startup task still has no user-facing result or join handle. Its
+//! completion state lets an opted-in automatic Core update wait before it
+//! attempts the same cache materialization. Once prewarm finishes, success
+//! lets the update continue and failure leaves the next materialization to
+//! produce its normal diagnosis. The task logs one stderr line per attempt.
 //!
 //! ## Why cache materialization is locked
 //!
@@ -56,10 +54,13 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use fs2::FileExt;
+use tokio::sync::watch;
 
 use crate::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION};
 use crate::paths;
@@ -72,6 +73,97 @@ const MATERIALIZATION_LOCK_RETRY: Duration = Duration::from_millis(100);
 const MATERIALIZATION_LOCK_TIMEOUT_MESSAGE: &str =
     "HQ Sync is still preparing its npm cache in another window. \
      Wait a moment, then try Sync again.";
+
+/// Maximum time an automatic Core update waits for this process's startup
+/// prewarm. On expiry the update is deferred to the next automatic cycle.
+pub const AUTOMATIC_UPDATE_PREWARM_WAIT: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrewarmWaitOutcome {
+    NotRunning,
+    Completed,
+    TimedOut,
+}
+
+/// Broadcasts whether one or more startup prewarm tasks are still active.
+/// Automatic update waiters do not acquire the materialization lock until this
+/// reports completion, so prewarm never waits on an update that is waiting for
+/// prewarm.
+#[derive(Clone)]
+pub struct PrewarmCoordinator {
+    in_flight: watch::Sender<usize>,
+}
+
+impl Default for PrewarmCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrewarmCoordinator {
+    pub fn new() -> Self {
+        let (in_flight, _receiver) = watch::channel(0);
+        Self { in_flight }
+    }
+
+    pub fn prewarm_started(&self) {
+        self.in_flight
+            .send_modify(|count| *count = count.saturating_add(1));
+    }
+
+    pub fn prewarm_finished(&self) {
+        self.in_flight
+            .send_modify(|count| *count = count.saturating_sub(1));
+    }
+
+    pub async fn wait_for_active(&self, wait: Duration) -> PrewarmWaitOutcome {
+        let mut receiver = self.in_flight.subscribe();
+        if *receiver.borrow() == 0 {
+            return PrewarmWaitOutcome::NotRunning;
+        }
+
+        let completed = tokio::time::timeout(wait, async move {
+            while *receiver.borrow() > 0 {
+                if receiver.changed().await.is_err() {
+                    return;
+                }
+            }
+        })
+        .await;
+
+        match completed {
+            Ok(()) => PrewarmWaitOutcome::Completed,
+            Err(_) => PrewarmWaitOutcome::TimedOut,
+        }
+    }
+}
+
+static PREWARM_COORDINATOR: OnceLock<PrewarmCoordinator> = OnceLock::new();
+static AUTOMATIC_UPDATE_DEFERRALS: AtomicU64 = AtomicU64::new(0);
+
+fn process_prewarm_coordinator() -> &'static PrewarmCoordinator {
+    PREWARM_COORDINATOR.get_or_init(PrewarmCoordinator::new)
+}
+
+pub async fn wait_for_active_prewarm(wait: Duration) -> PrewarmWaitOutcome {
+    process_prewarm_coordinator().wait_for_active(wait).await
+}
+
+pub fn record_automatic_update_deferral() -> u64 {
+    AUTOMATIC_UPDATE_DEFERRALS.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+pub fn automatic_update_deferral_count() -> u64 {
+    AUTOMATIC_UPDATE_DEFERRALS.load(Ordering::Relaxed)
+}
+
+struct PrewarmCompletionGuard(PrewarmCoordinator);
+
+impl Drop for PrewarmCompletionGuard {
+    fn drop(&mut self) {
+        self.0.prewarm_finished();
+    }
+}
 
 /// `LockFileEx` reports lock contention with raw Win32 errors instead of
 /// `ErrorKind::WouldBlock`: 32 is `ERROR_SHARING_VIOLATION` and 33 is
@@ -248,8 +340,28 @@ fn run_materialization_payload() -> Result<(), String> {
 /// Safe to call repeatedly — if the cache is already warm, npx is a
 /// ~100ms no-op. Concurrent invocations serialize only the materialization
 /// payload, preventing a shared-cache write race.
+fn spawn_prewarm_with(
+    coordinator: PrewarmCoordinator,
+    body: impl FnOnce() + Send + 'static,
+) -> thread::JoinHandle<()> {
+    spawn_prewarm_with_spawner(coordinator, body, |task| thread::spawn(task))
+}
+
+fn spawn_prewarm_with_spawner(
+    coordinator: PrewarmCoordinator,
+    body: impl FnOnce() + Send + 'static,
+    spawn_thread: impl FnOnce(Box<dyn FnOnce() + Send + 'static>) -> thread::JoinHandle<()>,
+) -> thread::JoinHandle<()> {
+    coordinator.prewarm_started();
+    spawn_thread(Box::new(move || {
+        let _completion = PrewarmCompletionGuard(coordinator);
+        body();
+    }))
+}
+
 pub fn spawn_prewarm() {
-    thread::spawn(|| {
+    let coordinator = process_prewarm_coordinator().clone();
+    drop(spawn_prewarm_with(coordinator, || {
         let started = Instant::now();
         let elapsed = started.elapsed();
         match materialize_hq_cloud_cache() {
@@ -269,32 +381,113 @@ pub fn spawn_prewarm() {
                 );
             }
         }
-    });
+    }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future as _;
+    use std::sync::mpsc;
 
-    /// Smoke test: `spawn_prewarm` must not block the caller. If the
-    /// background thread tried to `join`, this test would time out.
-    ///
-    /// We don't assert the subprocess succeeded — on CI npx may not be
-    /// on PATH, and that's exactly the failure mode `spawn_prewarm`
-    /// logs-and-drops.
+    /// Smoke test: spawning the detached prewarm body must not block the
+    /// caller. The injected no-op keeps this test independent of npx.
     #[test]
-    fn test_spawn_prewarm_is_non_blocking() {
+    fn test_spawn_prewarm_with_is_non_blocking() {
         let started = Instant::now();
-        spawn_prewarm();
+        let handle = spawn_prewarm_with(PrewarmCoordinator::new(), || {});
         let elapsed = started.elapsed();
         // 500ms is generous; the call should return in microseconds.
-        // If this fails, someone accidentally made spawn_prewarm await
-        // the child — which would block the Tauri setup callback.
+        // If this fails, the testable spawn path stopped returning promptly.
         assert!(
             elapsed.as_millis() < 500,
-            "spawn_prewarm blocked for {:?} — must return immediately",
+            "spawn_prewarm_with blocked for {:?} — must return immediately",
             elapsed,
         );
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawned_prewarm_tracks_body_until_it_returns() {
+        let coordinator = PrewarmCoordinator::new();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let handle = spawn_prewarm_with(coordinator.clone(), move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        });
+
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(*coordinator.in_flight.subscribe().borrow(), 1);
+
+        let mut update_wait = Box::pin(coordinator.wait_for_active(Duration::from_secs(1)));
+        let first_poll = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(update_wait.as_mut().poll(context))
+        })
+        .await;
+        assert!(first_poll.is_pending());
+
+        release_tx.send(()).unwrap();
+        assert_eq!(update_wait.await, PrewarmWaitOutcome::Completed);
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawned_prewarm_clears_active_count_when_body_panics() {
+        let coordinator = PrewarmCoordinator::new();
+        let handle = spawn_prewarm_with(coordinator.clone(), || {
+            panic!("intentional prewarm body panic");
+        });
+
+        assert!(handle.join().is_err(), "the test body must panic");
+        assert_eq!(*coordinator.in_flight.subscribe().borrow(), 0);
+        assert_eq!(
+            coordinator.wait_for_active(Duration::from_secs(1)).await,
+            PrewarmWaitOutcome::NotRunning,
+        );
+    }
+
+    #[tokio::test]
+    async fn prewarm_is_registered_before_thread_starts() {
+        let coordinator = PrewarmCoordinator::new();
+        let coordinator_at_spawn = coordinator.clone();
+        let (spawn_checked_tx, spawn_checked_rx) = mpsc::channel();
+        let (start_task_tx, start_task_rx) = mpsc::channel();
+        let (entered_tx, entered_rx) = mpsc::channel();
+
+        let handle = spawn_prewarm_with_spawner(
+            coordinator.clone(),
+            move || {
+                entered_tx.send(()).unwrap();
+            },
+            move |task| {
+                assert_eq!(
+                    *coordinator_at_spawn.in_flight.subscribe().borrow(),
+                    1,
+                    "prewarm must be registered before thread::spawn is called",
+                );
+                spawn_checked_tx.send(()).unwrap();
+                thread::spawn(move || {
+                    start_task_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+                    task();
+                })
+            },
+        );
+
+        spawn_checked_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let mut update_wait = Box::pin(coordinator.wait_for_active(Duration::from_secs(1)));
+        let first_poll = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(update_wait.as_mut().poll(context))
+        })
+        .await;
+        assert!(first_poll.is_pending());
+
+        start_task_tx.send(()).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(update_wait.await, PrewarmWaitOutcome::Completed);
+        handle.join().unwrap();
     }
 
     #[test]
@@ -354,5 +547,65 @@ mod tests {
 
         let not_executable = npx_materialization_error(Some(126), "");
         assert!(not_executable.contains("not executable"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn automatic_update_waits_past_the_original_thirty_second_lock_timeout() {
+        let coordinator = PrewarmCoordinator::new();
+        let materialization_lock = tokio::sync::Mutex::new(());
+        let prewarm_lock_guard = materialization_lock.lock().await;
+        coordinator.prewarm_started();
+
+        let mut update_wait = Box::pin(coordinator.wait_for_active(AUTOMATIC_UPDATE_PREWARM_WAIT));
+        let first_poll = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(update_wait.as_mut().poll(context))
+        })
+        .await;
+        assert!(first_poll.is_pending());
+
+        tokio::time::advance(Duration::from_secs(31)).await;
+        let after_thirty_one_seconds = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(update_wait.as_mut().poll(context))
+        })
+        .await;
+        assert!(after_thirty_one_seconds.is_pending());
+
+        // The update does not try to take the materialization lock while it
+        // waits. Prewarm releases that lock before publishing completion.
+        drop(prewarm_lock_guard);
+        coordinator.prewarm_finished();
+        assert_eq!(
+            update_wait.await,
+            PrewarmWaitOutcome::Completed,
+            "an in-process prewarm lasting beyond the old 30s lock wait must not fail the update",
+        );
+        assert!(materialization_lock.try_lock().is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn automatic_update_prewarm_wait_is_bounded() {
+        let coordinator = PrewarmCoordinator::new();
+        coordinator.prewarm_started();
+
+        let mut update_wait = Box::pin(coordinator.wait_for_active(AUTOMATIC_UPDATE_PREWARM_WAIT));
+        let first_poll = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(update_wait.as_mut().poll(context))
+        })
+        .await;
+        assert!(first_poll.is_pending());
+
+        tokio::time::advance(AUTOMATIC_UPDATE_PREWARM_WAIT).await;
+        assert_eq!(update_wait.await, PrewarmWaitOutcome::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn automatic_update_does_not_wait_when_prewarm_never_started() {
+        let coordinator = PrewarmCoordinator::new();
+        assert_eq!(
+            coordinator
+                .wait_for_active(AUTOMATIC_UPDATE_PREWARM_WAIT)
+                .await,
+            PrewarmWaitOutcome::NotRunning,
+        );
     }
 }

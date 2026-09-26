@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When enabled, automatic Core updates wait for startup cache preparation before
+  running the rescue. If the wait limit expires, the update moves to a later
+  automatic check; manual updates keep their current behavior. The rollout flag
+  defaults off.
 - HQ no longer restarts for an update while you are using it or while a meeting is being recorded. A card in the sidebar lets you choose when to apply pending updates.
 
 - When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
