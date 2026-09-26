@@ -19,6 +19,12 @@
     shouldSkipSignIn,
   } from './lib/auth';
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
+  import {
+    afterFanoutPlan,
+    afterSyncComplete,
+    formatPollOnlyStatus,
+    type RealtimeMode,
+  } from './lib/poll-only-status';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { unexpectedSurfaceForState } from './lib/unexpected-startup-surface';
   import {
@@ -120,7 +126,11 @@
   // on the main window without touching the first-run flags; clears when the
   // film ends or is skipped.
   let replayIntro = $state(false);
-  let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
+  let syncState = $state<'idle' | 'syncing' | 'poll-only' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
+  let realtimeMode = $state<RealtimeMode | null>(null);
+  let pollOnlyMinPollMs = $state(60_000);
+  let pollOnlyMaxPollMs = $state(600_000);
+  let transferActive = $state(false);
   // True while a manual "Sync Now" owns the progress UI — its richer
   // stdout-driven stream (fanout-aware) drives the card. Gates out the
   // cross-process file-watcher so the two sources never fight. Set on the Sync
@@ -612,6 +622,41 @@
     }
   }
 
+  const warnedPollOnlyStatusOperations = new Set<string>();
+
+  function warnPollOnlyStatusFailure(operation: string, error: unknown) {
+    if (warnedPollOnlyStatusOperations.has(operation)) return;
+    warnedPollOnlyStatusOperations.add(operation);
+    const kind = error instanceof Error ? error.name : 'unknown error';
+    console.warn(`Poll-only tray status ${operation} failed (${kind})`);
+  }
+
+  async function refreshPollOnlyTrayStatus(minPollMs: number, maxPollMs: number) {
+    let lastSyncAt: string | null = null;
+    try {
+      const status = await invoke<{ lastSyncAt: string | null }>('get_sync_status');
+      lastSyncAt = status.lastSyncAt;
+    } catch (error) {
+      // Keep the state informative if the local journal is temporarily unreadable.
+      warnPollOnlyStatusFailure('journal read', error);
+    }
+    const detail = formatPollOnlyStatus(lastSyncAt, minPollMs, maxPollMs);
+    await invoke('set_tray_state', { state: 'poll-only', detail }).catch((error: unknown) => {
+      warnPollOnlyStatusFailure('tray update', error);
+    });
+  }
+
+  $effect(() => {
+    if (realtimeMode !== 'poll-only') return;
+    const minPollMs = pollOnlyMinPollMs;
+    const maxPollMs = pollOnlyMaxPollMs;
+    void refreshPollOnlyTrayStatus(minPollMs, maxPollMs);
+    const timer = setInterval(() => {
+      void refreshPollOnlyTrayStatus(minPollMs, maxPollMs);
+    }, 60_000);
+    return () => clearInterval(timer);
+  });
+
   async function handleSyncNow() {
     if (syncState === 'syncing') return;
     syncState = 'syncing';
@@ -1012,11 +1057,38 @@
     // here.
 
     unlisteners.push(
+      await listen<{
+        mode: RealtimeMode;
+        minPollMs?: number;
+        maxPollMs?: number;
+      }>('sync:realtime-mode', async (event) => {
+        realtimeMode = event.payload.mode;
+        if (event.payload.mode === 'poll-only') {
+          pollOnlyMinPollMs = event.payload.minPollMs ?? 60_000;
+          pollOnlyMaxPollMs = event.payload.maxPollMs ?? 600_000;
+          if (!manualSyncActive && !externalSyncActive && !transferActive) {
+            syncState = 'poll-only';
+            await refreshPollOnlyTrayStatus(pollOnlyMinPollMs, pollOnlyMaxPollMs);
+          }
+        } else if (!manualSyncActive && !externalSyncActive && !transferActive) {
+          if (syncState === 'poll-only') {
+            syncState = 'idle';
+            await invoke('set_tray_state', { state: 'idle' });
+          }
+        }
+      })
+    );
+
+    unlisteners.push(
       await listen<{ companies: Array<{ uid: string; slug: string; name?: string }> }>(
         'sync:fanout-plan',
         async (event) => {
-          syncState = 'syncing';
-          await invoke('set_tray_state', { state: 'syncing' });
+          syncState = afterFanoutPlan(realtimeMode, transferActive);
+          if (syncState === 'poll-only') {
+            await refreshPollOnlyTrayStatus(pollOnlyMinPollMs, pollOnlyMaxPollMs);
+          } else {
+            await invoke('set_tray_state', { state: 'syncing' });
+          }
         }
       )
     );
@@ -1025,6 +1097,7 @@
       await listen<{ company: string; path: string; bytes: number; message?: string }>(
         'sync:progress',
         async (event) => {
+          transferActive = true;
           syncState = 'syncing';
           // Cumulative transfer counter — the runner emits sync:progress
           // only for files it actually moves, so each event counts as one.
@@ -1050,6 +1123,7 @@
       }>('sync:external-progress', async (event) => {
         if (manualSyncActive) return;
         externalSyncActive = true;
+        transferActive = true;
         syncState = 'syncing';
         const p = event.payload;
         await invoke('set_tray_state', { state: 'syncing' });
@@ -1060,8 +1134,13 @@
       await listen('sync:external-idle', async () => {
         if (!externalSyncActive) return;
         externalSyncActive = false;
-        syncState = 'idle';
-        await invoke('set_tray_state', { state: 'idle' });
+        transferActive = false;
+        syncState = afterSyncComplete(realtimeMode);
+        if (syncState === 'poll-only') {
+          await refreshPollOnlyTrayStatus(pollOnlyMinPollMs, pollOnlyMaxPollMs);
+        } else {
+          await invoke('set_tray_state', { state: 'idle' });
+        }
       })
     );
 
@@ -1079,11 +1158,12 @@
     // `sync:personal-first-push-complete` carries nothing this window acts on.
     unlisteners.push(
       await listen('sync:personal-first-push-scan', () => {
-        syncState = 'syncing';
+        if (realtimeMode !== 'poll-only') syncState = 'syncing';
       })
     );
     unlisteners.push(
       await listen('sync:personal-first-push-progress', async () => {
+        transferActive = true;
         syncState = 'syncing';
         await invoke('set_tray_state', { state: 'syncing' });
       })
@@ -1128,10 +1208,15 @@
         manualSyncTelemetryPending = false;
         manualSyncActive = false;
         externalSyncActive = false;
+        transferActive = false;
         // Only flip to idle if nothing raised conflict/error mid-stream
         if (syncState !== 'conflict' && syncState !== 'error') {
-          syncState = 'idle';
-          await invoke('set_tray_state', { state: 'idle' });
+          syncState = afterSyncComplete(realtimeMode);
+          if (syncState === 'poll-only') {
+            await refreshPollOnlyTrayStatus(pollOnlyMinPollMs, pollOnlyMaxPollMs);
+          } else {
+            await invoke('set_tray_state', { state: 'idle' });
+          }
         }
         // Refresh SyncStats so "last synced" updates immediately
         syncStatsRefresh?.();
