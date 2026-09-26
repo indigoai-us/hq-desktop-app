@@ -13,6 +13,10 @@ The release moves it under the version it ships in.
   Zoom, Google Meet, Teams and Webex — instead of waiting for you to click
   Record. It is off by default. Calls a scheduled HQ bot is already recording
   are not recorded twice, and you still get the "meeting detected" alert.
+- On Windows, the HQ CLI updater identifies the process holding its package
+  files, waits for HQ's own processes, and retries around short-lived scanners.
+  If you have the HQ CLI open in a terminal, the app leaves it running and
+  checks for the update again later.
 
 ## [0.10.330] — 2026-09-26
 
