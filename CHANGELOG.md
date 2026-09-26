@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.331] — 2026-09-26
+
 - New "Record meetings automatically" switch in Settings → Meetings. When it
   is on, HQ starts recording as soon as it detects a call — Slack huddles,
   Zoom, Google Meet, Teams and Webex — instead of waiting for you to click
