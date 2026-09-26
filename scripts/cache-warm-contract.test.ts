@@ -27,6 +27,7 @@ describe("cache-warm.yml prebuilt-shell warmers", () => {
     expect(workflow).toContain('- "scripts/shell-hash.mjs"');
     expect(workflow).toContain('- "crates/**"');
     expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).toMatch(/rebuild:\n(\s+.*\n)*?\s+type: boolean\n\s+default: false/);
   });
 
   it("lets an in-progress warm finish instead of cancelling it on the next push", () => {
@@ -56,6 +57,16 @@ describe("cache-warm.yml prebuilt-shell warmers", () => {
       expect(step).toContain(`targets: ${triples}`);
       // A "stable"-channel install after the pin would put targets on the wrong toolchain.
       expect(body.slice(pin)).not.toMatch(/toolchain: stable/);
+    });
+
+    it(`${job} can be forced to rebuild without replacing a stored shell`, () => {
+      const body = jobBody(job);
+      const build = body.indexOf("pnpm tauri build");
+      const buildIf = body.slice(body.lastIndexOf("- name:", build), build);
+      expect(buildIf).toContain("if: steps.warm.outputs.already-warm != 'true' || inputs.rebuild");
+      const store = body.slice(body.indexOf("- name: Save shell to the Actions cache"));
+      expect(store).not.toContain("inputs.rebuild");
+      expect(store).toContain("if: steps.warm.outputs.already-warm != 'true'");
     });
 
 
