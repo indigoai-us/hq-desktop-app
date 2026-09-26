@@ -7077,6 +7077,13 @@ error: clone failed";
         report: impl FnOnce(),
     ) -> Vec<sentry::protocol::Event<'static>> {
         let expected_count = expected_messages.len();
+        // Binding the client to the process hub below makes it visible to every
+        // thread. The pending-baseline-refresh tests (serialized by
+        // CORE_UPDATE_TEST_LOCK, not the Sentry lock) record a real
+        // "Desktop Core update applied but baseline persistence failed"
+        // warning through the process hub, so one running concurrently lands
+        // an extra Core update event in this transport. Hold their lock too.
+        let _update_lock = CORE_UPDATE_TEST_LOCK.blocking_lock();
         let transport = Arc::new(CountingTestTransport::default());
         let options = sentry::ClientOptions {
             dsn: Some(
