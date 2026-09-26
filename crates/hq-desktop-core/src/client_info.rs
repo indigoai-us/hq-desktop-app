@@ -40,13 +40,14 @@ pub const CLIENT_NAME: &str = "hq-desktop-app";
 /// invariant "the app is not the runner" is test-enforced in one place.
 pub const SYNC_RUNNER_CLIENT_NAME: &str = "hq-sync";
 
-// The user-facing version is injected at startup by the binary (which reads it
-// from `env!("APP_VERSION")`, emitted by its build.rs from package.json), so this
-// module carries no build-env coupling and can live in a shared crate.
+// The user-facing version is injected at startup by the binary, which resolves
+// it at runtime (stamped Info.plist / Resources/version.json, compile-time
+// `APP_VERSION` only as a fallback; see `runtime_version`), so this module
+// carries no build-env coupling and can live in a shared crate.
 static CLIENT_VERSION_CELL: OnceLock<String> = OnceLock::new();
 
-/// Register the user-facing client version. Call once at startup with
-/// `env!("APP_VERSION")`. Idempotent; later calls are ignored.
+/// Register the user-facing client version. Call once at startup with the
+/// runtime-resolved app version. Idempotent; later calls are ignored.
 pub fn set_client_version(v: &str) {
     let _ = CLIENT_VERSION_CELL.set(v.to_string());
 }
@@ -93,15 +94,21 @@ pub const HYDRATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 /// let Ok(...)` defensively — silently dropping a header is safer than
 /// panicking inside a Tauri command handler.
 pub fn client_headers() -> HeaderMap {
+    client_headers_for(client_version())
+}
+
+/// [`client_headers`] for an explicit version (the registered one is the
+/// runtime-resolved app version; see `runtime_version`).
+pub fn client_headers_for(version: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    let user_agent = format!("{}/{}", CLIENT_NAME, client_version());
+    let user_agent = format!("{}/{}", CLIENT_NAME, version);
     if let Ok(v) = HeaderValue::from_str(&user_agent) {
         headers.insert(reqwest::header::USER_AGENT, v);
     }
     if let Ok(v) = HeaderValue::from_str(CLIENT_NAME) {
         headers.insert("x-hq-client-name", v);
     }
-    if let Ok(v) = HeaderValue::from_str(client_version()) {
+    if let Ok(v) = HeaderValue::from_str(version) {
         headers.insert("x-hq-client-version", v);
     }
     headers
@@ -189,6 +196,33 @@ mod tests {
         assert!(
             !user_agent.starts_with("hq-sync/"),
             "user-agent must not impersonate the sync runner",
+        );
+    }
+
+    /// The attribution headers carry the version stamped into the bundle at
+    /// assemble time, not the shell's compile-time version: a cached shell
+    /// compiled at 0.10.328 and assembled as 0.10.400 must report 0.10.400.
+    #[test]
+    fn client_headers_carry_the_stamped_runtime_version() {
+        let _guard = crate::runtime_version::TEST_ENV_LOCK.lock().unwrap();
+        let resources = std::env::temp_dir().join(format!(
+            "hq-client-info-stamped-{}/Contents/Resources",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("version.json"), r#"{"version":"0.10.400"}"#).unwrap();
+        let (resolved, _) =
+            crate::runtime_version::resolve_from(Some(&resources), "0.10.328", false);
+        std::fs::remove_dir_all(resources.parent().unwrap().parent().unwrap()).ok();
+
+        let headers = client_headers_for(&resolved);
+        assert_eq!(
+            headers.get("x-hq-client-version").and_then(|v| v.to_str().ok()),
+            Some("0.10.400"),
+        );
+        assert_eq!(
+            headers.get(reqwest::header::USER_AGENT).and_then(|v| v.to_str().ok()),
+            Some("hq-desktop-app/0.10.400"),
         );
     }
 

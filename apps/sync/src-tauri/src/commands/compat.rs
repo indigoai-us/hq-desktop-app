@@ -226,7 +226,7 @@ pub fn download_staging_tarball() -> Result<Vec<u8>, String> {
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .header(
             reqwest::header::USER_AGENT,
-            format!("hq-sync-menubar/{}", env!("CARGO_PKG_VERSION")),
+            format!("hq-sync-menubar/{}", crate::app_version::current()),
         )
         .bearer_auth(token)
         .send()
@@ -277,7 +277,7 @@ pub struct MenubarStatus {
 pub fn menubar_installed() -> MenubarStatus {
     MenubarStatus {
         installed: true,
-        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        version: Some(crate::app_version::current().to_string()),
         exe_path: std::env::current_exe()
             .ok()
             .map(|p| p.to_string_lossy().into_owned()),

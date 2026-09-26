@@ -100,6 +100,7 @@ pub mod runner_diagnostic_report;
 pub mod runner_error_shape;
 pub mod runner_target;
 pub mod runtime_diagnosis;
+pub mod runtime_version;
 pub mod scope_gate;
 pub mod session_continuation;
 pub mod settings;

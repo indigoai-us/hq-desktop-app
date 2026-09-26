@@ -454,7 +454,7 @@ pub async fn open_share_detail(app: AppHandle, events: Vec<ShareEvent>) -> Resul
     tauri::WebviewWindowBuilder::new(
         &app,
         SHARE_DETAIL_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
+        crate::ui_protocol::ui_url("index.html"),
     )
     .title("Shared with Me")
     .inner_size(640.0, 560.0)

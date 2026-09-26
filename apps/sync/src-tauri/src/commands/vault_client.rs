@@ -334,7 +334,7 @@ pub struct TelemetryOptInResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UsageBatch {
     pub machine_id: String,
-    /// The DESKTOP APP version (CARGO_PKG_VERSION) — legacy field name kept
+    /// The DESKTOP APP version (runtime-resolved, see `app_version`) — legacy field name kept
     /// for wire compatibility; the server reads it as appVersion.
     pub installer_version: String,
     /// Installed hq CLI version, when resolvable. Feeds the staff version
