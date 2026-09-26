@@ -340,11 +340,28 @@ fn run_materialization_payload() -> Result<(), String> {
 /// Safe to call repeatedly — if the cache is already warm, npx is a
 /// ~100ms no-op. Concurrent invocations serialize only the materialization
 /// payload, preventing a shared-cache write race.
+fn spawn_prewarm_with(
+    coordinator: PrewarmCoordinator,
+    body: impl FnOnce() + Send + 'static,
+) -> thread::JoinHandle<()> {
+    spawn_prewarm_with_spawner(coordinator, body, |task| thread::spawn(task))
+}
+
+fn spawn_prewarm_with_spawner(
+    coordinator: PrewarmCoordinator,
+    body: impl FnOnce() + Send + 'static,
+    spawn_thread: impl FnOnce(Box<dyn FnOnce() + Send + 'static>) -> thread::JoinHandle<()>,
+) -> thread::JoinHandle<()> {
+    coordinator.prewarm_started();
+    spawn_thread(Box::new(move || {
+        let _completion = PrewarmCompletionGuard(coordinator);
+        body();
+    }))
+}
+
 pub fn spawn_prewarm() {
     let coordinator = process_prewarm_coordinator().clone();
-    coordinator.prewarm_started();
-    thread::spawn(move || {
-        let _completion = PrewarmCompletionGuard(coordinator);
+    drop(spawn_prewarm_with(coordinator, || {
         let started = Instant::now();
         let elapsed = started.elapsed();
         match materialize_hq_cloud_cache() {
@@ -364,33 +381,113 @@ pub fn spawn_prewarm() {
                 );
             }
         }
-    });
+    }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::future::Future as _;
+    use std::sync::mpsc;
 
-    /// Smoke test: `spawn_prewarm` must not block the caller. If the
-    /// background thread tried to `join`, this test would time out.
-    ///
-    /// We don't assert the subprocess succeeded — on CI npx may not be
-    /// on PATH, and that's exactly the failure mode `spawn_prewarm`
-    /// logs-and-drops.
+    /// Smoke test: spawning the detached prewarm body must not block the
+    /// caller. The injected no-op keeps this test independent of npx.
     #[test]
-    fn test_spawn_prewarm_is_non_blocking() {
+    fn test_spawn_prewarm_with_is_non_blocking() {
         let started = Instant::now();
-        spawn_prewarm();
+        let handle = spawn_prewarm_with(PrewarmCoordinator::new(), || {});
         let elapsed = started.elapsed();
         // 500ms is generous; the call should return in microseconds.
-        // If this fails, someone accidentally made spawn_prewarm await
-        // the child — which would block the Tauri setup callback.
+        // If this fails, the testable spawn path stopped returning promptly.
         assert!(
             elapsed.as_millis() < 500,
-            "spawn_prewarm blocked for {:?} — must return immediately",
+            "spawn_prewarm_with blocked for {:?} — must return immediately",
             elapsed,
         );
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawned_prewarm_tracks_body_until_it_returns() {
+        let coordinator = PrewarmCoordinator::new();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let handle = spawn_prewarm_with(coordinator.clone(), move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        });
+
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(*coordinator.in_flight.subscribe().borrow(), 1);
+
+        let mut update_wait = Box::pin(coordinator.wait_for_active(Duration::from_secs(1)));
+        let first_poll = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(update_wait.as_mut().poll(context))
+        })
+        .await;
+        assert!(first_poll.is_pending());
+
+        release_tx.send(()).unwrap();
+        assert_eq!(update_wait.await, PrewarmWaitOutcome::Completed);
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawned_prewarm_clears_active_count_when_body_panics() {
+        let coordinator = PrewarmCoordinator::new();
+        let handle = spawn_prewarm_with(coordinator.clone(), || {
+            panic!("intentional prewarm body panic");
+        });
+
+        assert!(handle.join().is_err(), "the test body must panic");
+        assert_eq!(*coordinator.in_flight.subscribe().borrow(), 0);
+        assert_eq!(
+            coordinator.wait_for_active(Duration::from_secs(1)).await,
+            PrewarmWaitOutcome::NotRunning,
+        );
+    }
+
+    #[tokio::test]
+    async fn prewarm_is_registered_before_thread_starts() {
+        let coordinator = PrewarmCoordinator::new();
+        let coordinator_at_spawn = coordinator.clone();
+        let (spawn_checked_tx, spawn_checked_rx) = mpsc::channel();
+        let (start_task_tx, start_task_rx) = mpsc::channel();
+        let (entered_tx, entered_rx) = mpsc::channel();
+
+        let handle = spawn_prewarm_with_spawner(
+            coordinator.clone(),
+            move || {
+                entered_tx.send(()).unwrap();
+            },
+            move |task| {
+                assert_eq!(
+                    *coordinator_at_spawn.in_flight.subscribe().borrow(),
+                    1,
+                    "prewarm must be registered before thread::spawn is called",
+                );
+                spawn_checked_tx.send(()).unwrap();
+                thread::spawn(move || {
+                    start_task_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+                    task();
+                })
+            },
+        );
+
+        spawn_checked_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let mut update_wait = Box::pin(coordinator.wait_for_active(Duration::from_secs(1)));
+        let first_poll = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(update_wait.as_mut().poll(context))
+        })
+        .await;
+        assert!(first_poll.is_pending());
+
+        start_task_tx.send(()).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(update_wait.await, PrewarmWaitOutcome::Completed);
+        handle.join().unwrap();
     }
 
     #[test]
