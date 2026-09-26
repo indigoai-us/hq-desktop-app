@@ -584,7 +584,9 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     expect(core).toContain('npm_lock_holder_class');
     expect(core).toContain('npm_windows_busy_retry_attempts');
     expect(core).toContain('npm_windows_busy_retry_outcome');
-    expect(core).toContain('windows_busy_install_target_retry_delay(retry_number)');
+    expect(core).toContain(
+      'pub fn windows_busy_install_target_retry_delay(retry_number: usize)',
+    );
     expect(core).toContain(
       'if env.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli',
     );
