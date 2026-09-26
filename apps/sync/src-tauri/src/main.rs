@@ -696,6 +696,7 @@ fn main() {
             commands::hq_work::get_hq_work_handoff_card_shown,
             commands::hq_work::mark_hq_work_handoff_card_shown,
             commands::status::get_sync_status,
+            commands::git_mirror::set_mirror_quarantine_move_not_deletion,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
             commands::first_run::is_first_run,

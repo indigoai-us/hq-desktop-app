@@ -250,7 +250,10 @@
   // authenticated command bridge because a static build has no /api routes.
   const workFetch: HqProFetch = hostFetch ?? hqProFetch;
   const adapter: PlatformAdapter = runtime === "desktop"
-    ? createSyncPlatformAdapter({ invoke: nativeInvoke })
+    ? createSyncPlatformAdapter({
+        invoke: nativeInvoke,
+        primeMirrorQuarantineGate: true,
+      })
     : new WebPlatformAdapter({
         baseUrl: resolveHqProApiUrl(),
         fetch: workFetch,

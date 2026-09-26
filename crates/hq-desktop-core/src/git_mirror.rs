@@ -62,6 +62,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -81,6 +82,17 @@ const LOG_TAG: &str = "git-mirror";
 /// This only serializes threads inside one process. The cross-process half
 /// is [`try_acquire_mirror_lock`].
 static MIRROR_LOCK: Mutex<()> = Mutex::new(());
+
+/// Snapshot of the hq-flags rollout gate supplied by the desktop adapter.
+/// Missing or unreadable flag values are written as `false` by that adapter.
+static SCOPE_QUARANTINE_MOVE_NOT_DELETION_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Update the cached hq-flags value used by both manual and daemon mirrors.
+/// The default is deliberately false so a renderer that has not resolved the
+/// registry yet keeps the existing mirror behavior.
+pub fn set_scope_quarantine_move_not_deletion_enabled(enabled: bool) {
+    SCOPE_QUARANTINE_MOVE_NOT_DELETION_ENABLED.store(enabled, Ordering::Release);
+}
 
 /// Guards pushes independently from local snapshots. Only one push may run at
 /// a time, but `MIRROR_LOCK` remains available while it does.
@@ -2650,7 +2662,9 @@ pub fn mirror_after_sync(hq_folder: &str) {
         }
     };
 
-    let outcome = match run_mirror(hq_folder, &git_dir) {
+    let scope_quarantine_moves_enabled =
+        SCOPE_QUARANTINE_MOVE_NOT_DELETION_ENABLED.load(Ordering::Acquire);
+    let outcome = match run_mirror(hq_folder, &git_dir, scope_quarantine_moves_enabled) {
         Ok(outcome) => outcome,
         Err(e) => {
             log(LOG_TAG, &format!("{hq_folder}: {e}"));
@@ -2857,7 +2871,11 @@ fn unpushed_history_over_cap(hq_folder: &str) -> Option<u64> {
     (bytes > resolve_mirror_size_cap()).then_some(bytes)
 }
 
-fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> {
+fn run_mirror(
+    hq_folder: &str,
+    git_dir: &Path,
+    scope_quarantine_moves_enabled: bool,
+) -> Result<MirrorOutcome, String> {
     // Re-check the latch now that the mirror lock is held. `mirror_after_sync`
     // already checked, but that check happens *before* the lock, and the push
     // path deliberately runs *without* it — so `push_with_backoff` can latch this
@@ -2878,6 +2896,23 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
     // HEAD instead would let this pass commit and push it into history, where
     // nothing short of a history rewrite could remove it again.
     run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
+
+    // The scope-shrink path preserves clean out-of-scope files under
+    // `.hq/scope-quarantine/<journalSlug>/<original path>`. `.hq` is ignored,
+    // so `git add -A` stages the source side as a deletion. When the registry
+    // gate is enabled, restore only matching source entries in the index; the
+    // worktree remains untouched and later mirror passes repeat this check.
+    if scope_quarantine_moves_enabled {
+        let restored = restore_scope_quarantine_move_index_entries(hq_folder)?;
+        if restored > 0 {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: kept {restored} scope-quarantined file moves out of the mirror index"
+                ),
+            );
+        }
+    }
 
     // Over the cap: latch the mirror off. This pass commits nothing and pushes
     // nothing, and neither `mirror_after_sync` nor this function will get past
@@ -4012,6 +4047,204 @@ fn count_staged_deletions(hq_folder: &str) -> Result<StagedDeletions, String> {
     })
 }
 
+#[derive(Debug)]
+struct StagedDeletionRecord {
+    mode: String,
+    blob: String,
+    path: String,
+}
+
+/// Restore staged source paths only when a regular-file copy exists under one
+/// scope-shrink journal directory and Git hashes that copy to the exact HEAD
+/// blob. The path-only reset changes the index, not the worktree; unrelated
+/// staged paths remain staged and a later mirror pass can repeat the check.
+fn restore_scope_quarantine_move_index_entries(hq_folder: &str) -> Result<usize, String> {
+    let roots = scope_quarantine_journal_roots(Path::new(hq_folder));
+    if roots.is_empty() {
+        return Ok(0);
+    }
+
+    let records = staged_deletion_records(hq_folder)?;
+    let mut restored_paths = Vec::new();
+    for record in records {
+        // Symlinks and submodules have different Git blob semantics. Leave
+        // them on the existing deletion path rather than guessing.
+        if !matches!(record.mode.as_str(), "100644" | "100755") {
+            continue;
+        }
+        let relative = Path::new(&record.path);
+        if !is_normal_relative_path(relative) {
+            continue;
+        }
+
+        let matching_copy_exists = roots.iter().any(|root| {
+            let Some(copy) = regular_file_below(root, relative) else {
+                return false;
+            };
+            hash_quarantined_copy(hq_folder, &record.path, &copy)
+                .is_some_and(|blob| blob == record.blob)
+        });
+        if matching_copy_exists {
+            restored_paths.push(record.path);
+        }
+    }
+
+    if restored_paths.is_empty() {
+        return Ok(0);
+    }
+
+    // This is Git's path form of reset: it copies selected entries from HEAD
+    // into the index without checking files out. `--literal-pathspecs` keeps
+    // tracked filenames such as `:(glob)*` from being interpreted as patterns.
+    let mut args = vec!["--literal-pathspecs", "reset", "-q", "HEAD", "--"];
+    args.extend(restored_paths.iter().map(String::as_str));
+    let out = git_output(hq_folder, &args, GIT_INDEX_TIMEOUT)
+        .map_err(|_| "git reset of quarantined mirror paths failed to run".to_string())?;
+    if !out.status.success() {
+        return Err(format!(
+            "git reset of {} quarantined mirror paths failed (exit {})",
+            restored_paths.len(),
+            out.status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string())
+        ));
+    }
+    Ok(restored_paths.len())
+}
+
+/// Read raw staged deletion metadata so each source path is paired with the
+/// exact old blob id from the index diff. `-z` keeps filenames containing
+/// whitespace or newlines unambiguous; non-UTF-8 names are conservatively left
+/// to the existing bulk-deletion guard.
+fn staged_deletion_records(hq_folder: &str) -> Result<Vec<StagedDeletionRecord>, String> {
+    let out = git_output(
+        hq_folder,
+        &[
+            "diff",
+            "--cached",
+            "--raw",
+            "--no-abbrev",
+            "--diff-filter=D",
+            "-M",
+            "-z",
+        ],
+        GIT_INDEX_TIMEOUT,
+    )?;
+    if !out.status.success() {
+        return Err(format!(
+            "git diff --cached --raw --diff-filter=D failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    let fields: Vec<&[u8]> = out
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty())
+        .collect();
+    if !fields.len().is_multiple_of(2) {
+        return Err("git diff --cached --raw returned an incomplete deletion record".to_string());
+    }
+
+    let mut records = Vec::new();
+    for pair in fields.chunks_exact(2) {
+        let Ok(metadata) = std::str::from_utf8(pair[0]) else {
+            continue;
+        };
+        let columns: Vec<&str> = metadata.split_ascii_whitespace().collect();
+        if columns.len() < 5 || columns[4] != "D" {
+            continue;
+        }
+        let Some(mode) = columns[0].strip_prefix(':') else {
+            continue;
+        };
+        let Ok(path) = std::str::from_utf8(pair[1]) else {
+            continue;
+        };
+        records.push(StagedDeletionRecord {
+            mode: mode.to_string(),
+            blob: columns[2].to_string(),
+            path: path.to_string(),
+        });
+    }
+    Ok(records)
+}
+
+fn scope_quarantine_journal_roots(hq_folder: &Path) -> Vec<PathBuf> {
+    let hq_metadata = fs::symlink_metadata(hq_folder.join(".hq")).ok();
+    if !hq_metadata.is_some_and(|metadata| metadata.file_type().is_dir()) {
+        return Vec::new();
+    }
+    let quarantine_root = hq_folder.join(".hq/scope-quarantine");
+    let quarantine_metadata = fs::symlink_metadata(&quarantine_root).ok();
+    if !quarantine_metadata.is_some_and(|metadata| metadata.file_type().is_dir()) {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(quarantine_root) else {
+        return Vec::new();
+    };
+    let mut roots = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry
+                .file_type()
+                .ok()
+                .filter(|kind| kind.is_dir())
+                .map(|_| entry.path())
+        })
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots
+}
+
+fn is_normal_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+/// Return an ordinary file below a journal root, rejecting every symlink in
+/// the relative path so a quarantine copy cannot resolve outside the mirror.
+fn regular_file_below(root: &Path, relative: &Path) -> Option<PathBuf> {
+    let mut candidate = root.to_path_buf();
+    let mut components = relative.components().peekable();
+    while let Some(std::path::Component::Normal(part)) = components.next() {
+        candidate.push(part);
+        let metadata = fs::symlink_metadata(&candidate).ok()?;
+        let is_last = components.peek().is_none();
+        let file_type = metadata.file_type();
+        if is_last {
+            if !file_type.is_file() {
+                return None;
+            }
+        } else if !file_type.is_dir() {
+            return None;
+        }
+    }
+    Some(candidate)
+}
+
+/// Use Git's clean filters for the original path, matching the blob id already
+/// recorded at HEAD. Any unreadable or unhashable copy stays a deletion.
+fn hash_quarantined_copy(hq_folder: &str, original_path: &str, copy: &Path) -> Option<String> {
+    let path_attr = format!("--path={original_path}");
+    let copy_path = copy.to_str()?;
+    let out = git_output(
+        hq_folder,
+        &["hash-object", &path_attr, "--", copy_path],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let hash = String::from_utf8(out.stdout).ok()?;
+    let hash = hash.trim();
+    (!hash.is_empty()).then(|| hash.to_string())
+}
+
 /// Size of the tree at HEAD — the denominator. An unborn HEAD (brand-new repo,
 /// first mirror commit) has no tree and yields 0.
 fn count_tracked_at_head(hq_folder: &str) -> Result<usize, String> {
@@ -4571,7 +4804,7 @@ mod tests {
     fn deletion_prefixes_are_depth_one_ranked_and_capped() {
         let mut records = Vec::new();
         for i in 0..5 {
-            records.extend_from_slice(format!("companies/acme-corp/notes/{i}.md\0").as_bytes());
+            records.extend_from_slice(format!("companies/indigo-corp/notes/{i}.md\0").as_bytes());
         }
         records.extend_from_slice(b"repos/private/thing/src/main.rs\0");
         records.extend_from_slice(b"repos/public/other/lib.rs\0");
@@ -4703,7 +4936,7 @@ mod tests {
         reset_refusal_report_state();
         let tmp = TempDir::new().unwrap();
         let git_dir = scratch_git_dir(&tmp, "git-dir");
-        let set = staged("set-a", 50, b"companies/acme/a.md\0");
+        let set = staged("set-a", 50, b"companies/indigo/a.md\0");
         let start = Instant::now();
         let wall = epoch();
 
@@ -4762,7 +4995,7 @@ mod tests {
         reset_refusal_report_state();
         let tmp = TempDir::new().unwrap();
         let git_dir = scratch_git_dir(&tmp, "git-dir");
-        let set = staged("set-a", 50, b"companies/acme/a.md\0");
+        let set = staged("set-a", 50, b"companies/indigo/a.md\0");
         let start = Instant::now();
         let wall = epoch();
 
@@ -4874,7 +5107,7 @@ mod tests {
                 refuse_at(
                     "/hq",
                     &git_dir,
-                    &staged(digest, count, b"companies/acme/a.md\0"),
+                    &staged(digest, count, b"companies/indigo/a.md\0"),
                     4274,
                     start + Duration::from_secs(offset),
                     wall + chrono::Duration::seconds(offset as i64),
@@ -4912,7 +5145,7 @@ mod tests {
         reset_refusal_report_state();
         let tmp = TempDir::new().unwrap();
         let git_dir = scratch_git_dir(&tmp, "git-dir");
-        let set = staged("set-a", 50, b"companies/acme/a.md\0");
+        let set = staged("set-a", 50, b"companies/indigo/a.md\0");
         let start = Instant::now();
         let wall = epoch();
 
@@ -4957,7 +5190,7 @@ mod tests {
         reset_refusal_report_state();
         let tmp = TempDir::new().unwrap();
         let git_dir = scratch_git_dir(&tmp, "git-dir");
-        let set = staged("set-a", 50, b"companies/acme/a.md\0");
+        let set = staged("set-a", 50, b"companies/indigo/a.md\0");
         let start = Instant::now();
         let wall = epoch();
 
@@ -5019,7 +5252,7 @@ mod tests {
         let _serial = serial();
         let tmp = TempDir::new().unwrap();
         let git_dir = scratch_git_dir(&tmp, "git-dir");
-        let set = staged("set-a", 50, b"companies/acme/a.md\0");
+        let set = staged("set-a", 50, b"companies/indigo/a.md\0");
         let wall = epoch();
         let path = refusal_state_path(&git_dir);
 
@@ -7052,7 +7285,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let start = Instant::now();
         let wall = epoch();
-        let records = b"companies/acme/a.md\0companies/acme/b.md\0repos/private/x/c.rs\0";
+        let records = b"companies/indigo/a.md\0companies/indigo/b.md\0repos/private/x/c.rs\0";
 
         // A stable episode: the same subtree missing on every pass.
         reset_refusal_report_state();
@@ -7157,7 +7390,7 @@ mod tests {
         let start = Instant::now();
         let wall = epoch();
         let records =
-            b"companies/acme-corp/knowledge/salaries.md\0companies/acme-corp/x.md\0secret-notes.md\0";
+            b"companies/indigo-corp/knowledge/salaries.md\0companies/indigo-corp/x.md\0secret-notes.md\0";
 
         let events = sentry::test::with_captured_events(|| {
             sustain(
@@ -7408,6 +7641,55 @@ mod tests {
         git_ok(dir, &["commit", "-q", "-m", "seed"]);
     }
 
+    /// Scope-shrink fixture: at least twenty tracked files live below one
+    /// company, while enough unaffected files remain for the bulk guard to
+    /// classify their removal as a partial deletion.
+    fn seed_scope_quarantine_repo(dir: &Path, moved_files: usize) {
+        init_repo(dir);
+        fs::write(dir.join(".gitignore"), ".hq/\n").unwrap();
+        for i in 0..moved_files {
+            let path = dir.join(format!("companies/indigo/file-{i:04}.md"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("indigo fixture {i}\n")).unwrap();
+        }
+        for i in 0..100 {
+            let path = dir.join(format!("companies/retained/file-{i:04}.md"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("retained content {i}\n")).unwrap();
+        }
+        git_ok(dir, &["add", "-A"]);
+        git_ok(dir, &["commit", "-q", "-m", "seed scope tree"]);
+    }
+
+    fn move_scope_files_to_quarantine(dir: &Path, count: usize, alter_contents: bool) {
+        let quarantine = dir.join(".hq/scope-quarantine/journal-001");
+        for i in 0..count {
+            let relative = PathBuf::from(format!("companies/indigo/file-{i:04}.md"));
+            let source = dir.join(&relative);
+            let destination = quarantine.join(&relative);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::rename(&source, &destination).unwrap();
+            if alter_contents {
+                fs::write(&destination, format!("changed content {i}\n")).unwrap();
+            }
+        }
+    }
+
+    fn staged_deletion_count_then_reset(dir: &Path) -> usize {
+        git_ok(dir, &["add", "-A"]);
+        let count = count_staged_deletions(dir.to_str().unwrap())
+            .expect("read staged deletions")
+            .count;
+        git_ok(dir, &["reset", "-q"]);
+        count
+    }
+
+    fn refusal_occurrences(dir: &Path) -> usize {
+        read_persisted_state(&git_dir_of(dir))
+            .map(|state| state.episode_occurrences)
+            .unwrap_or_default()
+    }
+
     fn delete_files(dir: &Path, range: std::ops::Range<usize>) {
         for i in range {
             fs::remove_file(dir.join(format!("file-{i:04}.md"))).unwrap();
@@ -7478,9 +7760,13 @@ mod tests {
     /// `run_mirror` takes the resolved git directory; resolve it the same way
     /// production does so the tests exercise that path too.
     fn run_mirror_at(dir: &Path) -> Result<(), String> {
+        run_mirror_at_with_quarantine_flag(dir, false)
+    }
+
+    fn run_mirror_at_with_quarantine_flag(dir: &Path, enabled: bool) -> Result<(), String> {
         let hq = dir.to_str().unwrap();
         let git_dir = resolve_git_dir(hq)?;
-        let outcome = run_mirror(hq, &git_dir)?;
+        let outcome = run_mirror(hq, &git_dir, enabled)?;
         if outcome == MirrorOutcome::Push {
             push_after_mirror(hq, &git_dir);
         }
@@ -7520,6 +7806,177 @@ mod tests {
         run_mirror_at(tmp.path()).expect("mirror ok");
         let after = rev_count(tmp.path());
         assert_eq!(before, after, "no-change mirror must not add commits");
+    }
+
+    #[test]
+    fn matching_scope_quarantine_moves_are_ignored_on_repeated_mirror_passes() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_scope_quarantine_repo(tmp.path(), 20);
+        move_scope_files_to_quarantine(tmp.path(), 20, false);
+        let before = rev_count(tmp.path());
+
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at_with_quarantine_flag(tmp.path(), true)
+                .expect("matching quarantine copies do not block a mirror pass");
+            run_mirror_at_with_quarantine_flag(tmp.path(), true)
+                .expect("the second pass repeats the quarantine check");
+        });
+
+        assert_eq!(
+            count_staged_deletions(tmp.path().to_str().unwrap())
+                .expect("read staged deletions after mirror")
+                .count,
+            0,
+            "matching quarantined paths must be absent from the staged deletion set"
+        );
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "neither pass commits the moves as deletions"
+        );
+        assert_eq!(
+            refusal_occurrences(tmp.path()),
+            0,
+            "matching quarantine moves must not open a bulk-deletion refusal episode"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !is_kind(event, "bulk-delete-refused")),
+            "matching quarantine moves must not trip the bulk-delete refusal"
+        );
+
+        // Once the preserved copies are removed, the same source absences are
+        // ordinary deletions and go through the existing guard unchanged.
+        fs::remove_dir_all(tmp.path().join(".hq/scope-quarantine")).unwrap();
+        assert_eq!(
+            staged_deletion_count_then_reset(tmp.path()),
+            20,
+            "without a quarantine copy, all twenty source paths are ordinary staged deletions"
+        );
+        let later_events = sentry::test::with_captured_events(|| {
+            run_mirror_at_with_quarantine_flag(tmp.path(), true)
+                .expect("ordinary deletions remain a refusal, not a mirror error");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "the later deletion remains uncommitted"
+        );
+        assert_eq!(
+            refusal_occurrences(tmp.path()),
+            1,
+            "removing the quarantine copy opens the existing refusal episode"
+        );
+        assert_eq!(
+            later_events
+                .iter()
+                .filter(|event| is_kind(event, "bulk-delete-refused"))
+                .count(),
+            0,
+            "the unchanged reporter still holds the first refusal pending confirmation"
+        );
+        reset_refusal_report_state();
+    }
+
+    #[test]
+    fn flag_off_keeps_quarantine_moves_on_the_existing_bulk_deletion_path() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_scope_quarantine_repo(tmp.path(), 20);
+        move_scope_files_to_quarantine(tmp.path(), 20, false);
+        assert_eq!(
+            staged_deletion_count_then_reset(tmp.path()),
+            20,
+            "the pre-change index contains all twenty source deletions"
+        );
+        let before = rev_count(tmp.path());
+
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at_with_quarantine_flag(tmp.path(), false)
+                .expect("flag-off refusal is not a mirror error");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "the current guard refuses the deletion set"
+        );
+        assert_eq!(
+            refusal_occurrences(tmp.path()),
+            1,
+            "flag-off quarantine moves still open the existing refusal episode"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| is_kind(event, "bulk-delete-refused"))
+                .count(),
+            0,
+            "a disabled or unresolved flag must preserve today's refusal"
+        );
+        reset_refusal_report_state();
+    }
+
+    #[test]
+    fn different_scope_quarantine_content_stays_a_bulk_deletion() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_scope_quarantine_repo(tmp.path(), 20);
+        move_scope_files_to_quarantine(tmp.path(), 20, true);
+        assert_eq!(
+            staged_deletion_count_then_reset(tmp.path()),
+            20,
+            "before matching, changed quarantine copies do not alter the source deletion set"
+        );
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(tmp.path().to_str().unwrap())
+                .expect("classify changed quarantine copies"),
+            0,
+            "changed quarantine content must not match a HEAD blob"
+        );
+        assert_eq!(
+            count_staged_deletions(tmp.path().to_str().unwrap())
+                .expect("changed quarantine copies remain staged deletions")
+                .count,
+            20
+        );
+        git_ok(tmp.path(), &["reset", "-q"]);
+        let before = rev_count(tmp.path());
+
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at_with_quarantine_flag(tmp.path(), true)
+                .expect("mismatched copies remain ordinary deletions");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "the mismatch remains refused"
+        );
+        assert_eq!(
+            refusal_occurrences(tmp.path()),
+            1,
+            "changed quarantine copies still open the existing refusal episode"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| is_kind(event, "bulk-delete-refused"))
+                .count(),
+            0,
+            "a quarantine path alone is insufficient without a matching Git blob"
+        );
+        reset_refusal_report_state();
     }
 
     #[test]
@@ -8161,7 +8618,7 @@ mod tests {
             Utc::now(),
         );
 
-        let outcome = run_mirror(tmp.path().to_str().unwrap(), &git_dir).expect("mirror ok");
+        let outcome = run_mirror(tmp.path().to_str().unwrap(), &git_dir, false).expect("mirror ok");
 
         assert_eq!(outcome, MirrorOutcome::NoPush);
         assert_eq!(
@@ -8177,7 +8634,7 @@ mod tests {
         // Control: without the latch the same pass does commit, so the assertions
         // above are testing the re-check and not some unrelated refusal.
         fs::remove_file(disable_path(&git_dir)).unwrap();
-        run_mirror(tmp.path().to_str().unwrap(), &git_dir).expect("mirror ok");
+        run_mirror(tmp.path().to_str().unwrap(), &git_dir, false).expect("mirror ok");
         assert_eq!(
             rev_count(tmp.path()),
             before + 1,

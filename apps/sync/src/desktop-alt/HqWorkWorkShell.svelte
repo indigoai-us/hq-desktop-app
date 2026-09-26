@@ -76,6 +76,7 @@
 
   const adapter = createSyncPlatformAdapter({
     invoke: (command, args) => invokeFn(command, args),
+    primeMirrorQuarantineGate: true,
   });
   const wakes = createChatWakeBus();
   const navigation = createEmbeddedNavigationController();

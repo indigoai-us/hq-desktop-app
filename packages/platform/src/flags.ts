@@ -77,11 +77,15 @@ import { ok, type AdapterPromise } from "./adapter.js";
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
   "agents.claude-provider": "agents.claude-provider",
+  "desktop.mirror-quarantine-move-not-deletion":
+    "desktop.mirror-quarantine-move-not-deletion",
 };
 
 export const MEETINGS_LEGACY_FLAG = "meetings";
 export const MEETINGS_REGISTRY_KEY = "desktop.meetings";
 export const CLAUDE_PROVIDER_FLAG = "agents.claude-provider";
+export const MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG =
+  "desktop.mirror-quarantine-move-not-deletion";
 
 /**
  * FlagClient revalidation cadence for the desktop/web adapters.

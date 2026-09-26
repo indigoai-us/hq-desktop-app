@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
 - The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
   line tool now uses, so Update / Restore and `hq rescue` keep running the same
   engine. It brings the sync fixes released since 6.16.53.

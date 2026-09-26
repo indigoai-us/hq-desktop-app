@@ -34,6 +34,7 @@ import {
   CLAUDE_PROVIDER_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
+  MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
@@ -50,6 +51,9 @@ export type SyncInvokeFn = (
 
 export interface SyncPlatformAdapterConfig {
   invoke: SyncInvokeFn;
+  /** Resolve the mirror rollout gate as the native shell boots, before its
+   * launch-started daemon reaches the first AllComplete mirror callback. */
+  primeMirrorQuarantineGate?: boolean;
   /**
    * Tests inject a stub that throws if called. Production REST goes through
    * invoke("hq_pro_fetch") so Cognito stays in Rust.
@@ -170,6 +174,22 @@ export function createSyncPlatformAdapter(
     } catch (err) {
       return invokeError(err);
     }
+  }
+
+  async function updateMirrorQuarantineFlag(): AdapterPromise<void> {
+    const configured = await flags.resolve(
+      MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+      () => Promise.resolve(ok(false)),
+    );
+    // This is a delivery gate, so an absent registry row or failed read must
+    // keep the pre-change mirror behavior. The Rust cache starts false too.
+    return call('set_mirror_quarantine_move_not_deletion', {
+      enabled: configured.ok && configured.value,
+    });
+  }
+
+  if (config.primeMirrorQuarantineGate) {
+    void updateMirrorQuarantineFlag();
   }
 
   async function getVersions(): AdapterPromise<VersionInfo> {
@@ -1048,11 +1068,18 @@ export function createSyncPlatformAdapter(
     },
 
     sync: {
-      startDaemon: () => call('start_daemon'),
+      startDaemon: async () => {
+        const configured = await updateMirrorQuarantineFlag();
+        if (!configured.ok) return configured;
+        return call('start_daemon');
+      },
       stopDaemon: () => call('stop_daemon'),
       daemonStatus: () => call('daemon_status'),
-      startSync: (slug) =>
-        call('start_sync', slug ? { companySlug: slug } : undefined),
+      startSync: async (slug) => {
+        const configured = await updateMirrorQuarantineFlag();
+        if (!configured.ok) return configured;
+        return call('start_sync', slug ? { companySlug: slug } : undefined);
+      },
       cancelSync: () => call('cancel_sync'),
       getSyncStatus: () => call('get_sync_status'),
       getActivityLog: () => call('get_activity_log'),
