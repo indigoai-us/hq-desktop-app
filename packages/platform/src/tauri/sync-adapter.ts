@@ -1187,6 +1187,8 @@ export function createSyncPlatformAdapter(
         return call('set_hq_cli_update_dismissed', { version });
       },
       availableChannels: () => call('available_channels'),
+      queryUpdateGate: () => call('update_gate_status'),
+      installPendingUpdate: () => call('update_install_pending'),
     },
 
     packages: {

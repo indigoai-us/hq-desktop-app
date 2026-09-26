@@ -146,6 +146,10 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   onOpenSettingsEvent: "push",
   onEmbeddedNavigation: "push",
   handleShowBotMessagesChange: "none",
+  // Update-gate sidebar card: not navigation.
+  handleUpdateInstall: "none",
+  handleUpdateDismiss: "none",
+  applyUpdateGateStatus: "none",
 };
 
 export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
