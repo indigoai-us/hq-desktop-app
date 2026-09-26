@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Windows setup now removes stale content junctions correctly and copies
+  template content when a directory link cannot be created.
+
 ## [0.10.329] — 2026-09-25
 
 - The project board is back. A new Projects page (Cmd+6, or the board icon in

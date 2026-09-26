@@ -81,6 +81,42 @@ export const SETUP_ERROR_KINDS = [
 
 export type SetupErrorKind = (typeof SETUP_ERROR_KINDS)[number];
 
+export const SYMLINK_ERROR_OPERATIONS = [
+  'create_junction',
+  'copy_file_fallback',
+  'create_symlink_parent',
+  'remove_existing_link',
+  'create_symlink',
+  'copy_directory_fallback',
+] as const;
+
+export type SymlinkErrorOperation = (typeof SYMLINK_ERROR_OPERATIONS)[number];
+
+export const SYMLINK_ERROR_IO_KINDS = [
+  'not_found',
+  'permission_denied',
+  'already_exists',
+  'invalid_input',
+  'invalid_data',
+  'timed_out',
+  'unsupported',
+  'interrupted',
+  'would_block',
+  'write_zero',
+  'broken_pipe',
+  'connection_refused',
+  'connection_reset',
+  'connection_aborted',
+  'not_connected',
+  'addr_in_use',
+  'addr_not_available',
+  'out_of_memory',
+  'unexpected_eof',
+  'other',
+] as const;
+
+export type SymlinkErrorIoKind = (typeof SYMLINK_ERROR_IO_KINDS)[number];
+
 export function normalizeSetupErrorKind(value: unknown): SetupErrorKind {
   return typeof value === 'string' && SETUP_ERROR_KINDS.includes(value as SetupErrorKind)
     ? (value as SetupErrorKind)
@@ -168,6 +204,9 @@ export interface SetupFailureTelemetryDetails {
   errorCategory: ErrorCategory;
   errorKind?: SetupErrorKind;
   failedDependency?: FailedDependency;
+  errorOperation?: SymlinkErrorOperation;
+  errorIoKind?: SymlinkErrorIoKind;
+  errorCode?: number;
 }
 
 export function setupFailureTelemetryDetails(input: {
@@ -175,11 +214,35 @@ export function setupFailureTelemetryDetails(input: {
   errorCategory?: unknown;
   errorKind?: unknown;
   failedDependency?: unknown;
+  errorOperation?: unknown;
+  errorIoKind?: unknown;
+  errorCode?: unknown;
 }): SetupFailureTelemetryDetails {
   const errorCategory = normalizeErrorCategory(input.errorCategory);
   const errorKind = input.errorKind === undefined
     ? undefined
     : normalizeSetupErrorKind(input.errorKind);
+  const errorOperation = typeof input.errorOperation === 'string'
+    && SYMLINK_ERROR_OPERATIONS.includes(input.errorOperation as SymlinkErrorOperation)
+    ? input.errorOperation as SymlinkErrorOperation
+    : undefined;
+  const errorIoKind = typeof input.errorIoKind === 'string'
+    && SYMLINK_ERROR_IO_KINDS.includes(input.errorIoKind as SymlinkErrorIoKind)
+    ? input.errorIoKind as SymlinkErrorIoKind
+    : undefined;
+  const errorCode = typeof input.errorCode === 'number'
+    && Number.isInteger(input.errorCode)
+    && input.errorCode >= 0
+    && input.errorCode <= 65_535
+    ? input.errorCode
+    : undefined;
+  const symlinkDiagnostics = input.stageId === 'content'
+    ? {
+        ...(errorOperation === undefined ? {} : { errorOperation }),
+        ...(errorIoKind === undefined ? {} : { errorIoKind }),
+        ...(errorCode === undefined ? {} : { errorCode }),
+      }
+    : {};
   return input.stageId === 'deps'
     ? {
         errorCategory,
@@ -189,6 +252,7 @@ export function setupFailureTelemetryDetails(input: {
     : {
         errorCategory,
         ...(errorKind === undefined ? {} : { errorKind }),
+        ...symlinkDiagnostics,
       };
 }
 

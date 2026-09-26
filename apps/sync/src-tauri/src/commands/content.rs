@@ -46,8 +46,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::install_stages::{
-    clear_onboarding_failure_detail, record_onboarding_failure_detail_with_kind,
-    OnboardingErrorCategory, OnboardingFailureScope,
+    clear_onboarding_failure_detail, record_onboarding_failure_detail_with_diagnostics,
+    record_onboarding_failure_detail_with_kind, OnboardingErrorCategory, OnboardingFailureScope,
 };
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
@@ -360,6 +360,20 @@ struct ContentOperationFailure {
     message: String,
     category: OnboardingErrorCategory,
     kind: ContentErrorKind,
+    diagnostics: Option<ContentFailureDiagnostics>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ContentFailureDiagnostics {
+    operation: &'static str,
+    io_kind: Option<&'static str>,
+    error_code: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingSymlinkCopy {
+    source: PathBuf,
+    destination: PathBuf,
 }
 
 impl ContentOperationFailure {
@@ -368,6 +382,7 @@ impl ContentOperationFailure {
         error: io::Error,
         is_windows: bool,
         fallback_kind: ContentErrorKind,
+        operation: &'static str,
     ) -> Self {
         let (category, classified_kind) =
             classify_content_io_error(error.kind(), error.raw_os_error(), is_windows);
@@ -380,6 +395,11 @@ impl ContentOperationFailure {
             message: format!("{context}: {error}"),
             category,
             kind,
+            diagnostics: Some(ContentFailureDiagnostics {
+                operation,
+                io_kind: Some(bounded_io_error_kind(error.kind())),
+                error_code: error.raw_os_error(),
+            }),
         }
     }
 
@@ -388,12 +408,42 @@ impl ContentOperationFailure {
             message: format!("{context}: {error}"),
             category: OnboardingErrorCategory::SpawnFailed,
             kind: ContentErrorKind::SymlinkHelperSpawnFailed,
+            diagnostics: Some(ContentFailureDiagnostics {
+                operation: "create_junction",
+                io_kind: Some(bounded_io_error_kind(error.kind())),
+                error_code: error.raw_os_error(),
+            }),
         }
     }
 
     fn with_context(mut self, context: &str) -> Self {
         self.message = format!("{context}: {}", self.message);
         self
+    }
+}
+
+fn bounded_io_error_kind(kind: io::ErrorKind) -> &'static str {
+    match kind {
+        io::ErrorKind::NotFound => "not_found",
+        io::ErrorKind::PermissionDenied => "permission_denied",
+        io::ErrorKind::AlreadyExists => "already_exists",
+        io::ErrorKind::InvalidInput => "invalid_input",
+        io::ErrorKind::InvalidData => "invalid_data",
+        io::ErrorKind::TimedOut => "timed_out",
+        io::ErrorKind::Unsupported => "unsupported",
+        io::ErrorKind::Interrupted => "interrupted",
+        io::ErrorKind::WouldBlock => "would_block",
+        io::ErrorKind::WriteZero => "write_zero",
+        io::ErrorKind::BrokenPipe => "broken_pipe",
+        io::ErrorKind::ConnectionRefused => "connection_refused",
+        io::ErrorKind::ConnectionReset => "connection_reset",
+        io::ErrorKind::ConnectionAborted => "connection_aborted",
+        io::ErrorKind::NotConnected => "not_connected",
+        io::ErrorKind::AddrInUse => "addr_in_use",
+        io::ErrorKind::AddrNotAvailable => "addr_not_available",
+        io::ErrorKind::OutOfMemory => "out_of_memory",
+        io::ErrorKind::UnexpectedEof => "unexpected_eof",
+        _ => "other",
     }
 }
 
@@ -408,6 +458,26 @@ fn record_content_failure(
         None,
         category,
         Some(kind.as_str()),
+    );
+}
+
+fn record_content_operation_failure(
+    failure_scope: Option<&OnboardingFailureScope>,
+    failure: &ContentOperationFailure,
+) {
+    let Some(diagnostics) = failure.diagnostics else {
+        record_content_failure(failure_scope, failure.category, failure.kind);
+        return;
+    };
+    record_onboarding_failure_detail_with_diagnostics(
+        "content",
+        failure_scope,
+        None,
+        failure.category,
+        Some(failure.kind.as_str()),
+        Some(diagnostics.operation),
+        diagnostics.io_kind,
+        diagnostics.error_code,
     );
 }
 
@@ -994,6 +1064,7 @@ fn create_symlink_with_failure(
                 error,
                 false,
                 ContentErrorKind::SymlinkCreationFailed,
+                "create_symlink_parent",
             )
         })?;
     }
@@ -1004,6 +1075,7 @@ fn create_symlink_with_failure(
                 error,
                 false,
                 ContentErrorKind::SymlinkCreationFailed,
+                "remove_existing_link",
             )
         })?;
     }
@@ -1013,8 +1085,17 @@ fn create_symlink_with_failure(
             error,
             false,
             ContentErrorKind::SymlinkCreationFailed,
+            "create_symlink",
         )
     })
+}
+
+#[cfg(unix)]
+fn create_symlink_for_template(
+    target: &Path,
+    link_path: &Path,
+) -> Result<Option<PendingSymlinkCopy>, ContentOperationFailure> {
+    create_symlink_with_failure(target, link_path).map(|()| None)
 }
 
 #[cfg(windows)]
@@ -1059,6 +1140,7 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), ContentOperati
             error,
             true,
             ContentErrorKind::SymlinkCreationFailed,
+            "create_junction",
         )
     })?;
 
@@ -1087,6 +1169,11 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), ContentOperati
             ),
             category: OnboardingErrorCategory::ExitNonzero,
             kind: ContentErrorKind::SymlinkHelperExitNonzero,
+            diagnostics: Some(ContentFailureDiagnostics {
+                operation: "create_junction",
+                io_kind: None,
+                error_code: out.status.code(),
+            }),
         });
     }
     Ok(())
@@ -1111,6 +1198,11 @@ fn copy_file_fallback(
             message: "symlink copy fallback target is not an existing file".to_string(),
             category: OnboardingErrorCategory::NotFound,
             kind: ContentErrorKind::MissingPath,
+            diagnostics: Some(ContentFailureDiagnostics {
+                operation: "copy_file_fallback",
+                io_kind: Some("not_found"),
+                error_code: None,
+            }),
         });
     }
     std::fs::copy(&abs_target, link_path)
@@ -1121,8 +1213,92 @@ fn copy_file_fallback(
                 error,
                 true,
                 ContentErrorKind::SymlinkCreationFailed,
+                "copy_file_fallback",
             )
         })
+}
+
+fn materialize_symlink_copy_fallback(
+    fallback: &PendingSymlinkCopy,
+    install_root: &Path,
+) -> io::Result<()> {
+    let root = fs::canonicalize(install_root)?;
+    let source = fs::canonicalize(&fallback.source)?;
+    let destination_parent = fallback
+        .destination
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing destination parent"))?;
+    let destination_parent = fs::canonicalize(destination_parent)?;
+    if !source.starts_with(&root) || !destination_parent.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "symlink copy path resolves outside the install root",
+        ));
+    }
+    let destination = destination_parent.join(
+        fallback
+            .destination
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing destination name"))?,
+    );
+    if source == destination || destination.starts_with(&source) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "symlink copy destination overlaps its source",
+        ));
+    }
+
+    if let Ok(metadata) = fs::symlink_metadata(&destination) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "symlink copy destination is not a plain directory",
+            ));
+        }
+    }
+
+    let mut queue = vec![(source, destination, std::collections::HashSet::new())];
+    while let Some((source, destination, mut ancestors)) = queue.pop() {
+        let source = fs::canonicalize(source)?;
+        if !source.starts_with(&root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "nested link target resolves outside the install root",
+            ));
+        }
+        if !ancestors.insert(source.clone()) {
+            continue;
+        }
+        fs::create_dir_all(&destination)?;
+        for entry in fs::read_dir(&source)? {
+            let entry = entry?;
+            let source_entry = entry.path();
+            let destination_entry = destination.join(entry.file_name());
+            let entry_type = entry.file_type()?;
+            if entry_type.is_dir() {
+                queue.push((source_entry, destination_entry, ancestors.clone()));
+            } else if entry_type.is_file() {
+                fs::copy(source_entry, destination_entry)?;
+            } else if entry_type.is_symlink() {
+                let resolved = fs::canonicalize(&source_entry)?;
+                if !resolved.starts_with(&root) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "nested link target resolves outside the install root",
+                    ));
+                }
+                let metadata = fs::metadata(&resolved)?;
+                if metadata.is_dir() {
+                    if !ancestors.contains(&resolved) {
+                        queue.push((resolved, destination_entry, ancestors.clone()));
+                    }
+                } else if metadata.is_file() {
+                    fs::copy(resolved, destination_entry)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Remove an entry blocking a symlink create, handling the three Windows
@@ -1140,8 +1316,12 @@ fn remove_existing_windows_entry(path: &Path, md: &std::fs::Metadata) -> std::io
     }
     let ft = md.file_type();
     if ft.is_symlink() {
-        let target_is_dir = std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false);
-        if target_is_dir {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+        // Inspect the reparse-point entry itself. `metadata()` follows a
+        // junction and fails if its target has been removed, misclassifying
+        // that directory entry as a file and causing DeleteFileW to reject it.
+        if md.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
             std::fs::remove_dir(path)
         } else {
             std::fs::remove_file(path)
@@ -1158,6 +1338,23 @@ fn create_symlink_with_failure(
     target: &Path,
     link_path: &Path,
 ) -> Result<(), ContentOperationFailure> {
+    create_windows_symlink_with_failure(target, link_path, false).map(|_| ())
+}
+
+#[cfg(windows)]
+fn create_symlink_for_template(
+    target: &Path,
+    link_path: &Path,
+) -> Result<Option<PendingSymlinkCopy>, ContentOperationFailure> {
+    create_windows_symlink_with_failure(target, link_path, true)
+}
+
+#[cfg(windows)]
+fn create_windows_symlink_with_failure(
+    target: &Path,
+    link_path: &Path,
+    defer_directory_copy: bool,
+) -> Result<Option<PendingSymlinkCopy>, ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             ContentOperationFailure::from_io(
@@ -1165,6 +1362,7 @@ fn create_symlink_with_failure(
                 error,
                 true,
                 ContentErrorKind::SymlinkCreationFailed,
+                "create_symlink_parent",
             )
         })?;
     }
@@ -1176,6 +1374,7 @@ fn create_symlink_with_failure(
                     error,
                     true,
                     ContentErrorKind::SymlinkCreationFailed,
+                    "remove_existing_link",
                 )
             })?;
     }
@@ -1198,27 +1397,40 @@ fn create_symlink_with_failure(
     };
 
     match result {
-        Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD) => {
-            // No Developer Mode / elevation: fall back to a privilege-free
-            // junction for dir targets, or a byte copy for file targets.
-            let fallback = if fallback_uses_copy(&resolved_target) {
-                copy_file_fallback(&resolved_target, link_path)
+        Ok(()) => Ok(None),
+        Err(error) => {
+            let privilege_missing = error.raw_os_error() == Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD);
+            let fallback = if target_is_dir || privilege_missing {
+                Some(create_junction(&resolved_target, link_path).map(|()| None))
+            } else if fallback_uses_copy(&resolved_target) {
+                Some(copy_file_fallback(&resolved_target, link_path).map(|()| None))
             } else {
-                create_junction(&resolved_target, link_path)
+                None
             };
-            fallback.map_err(|fallback_err| {
-                fallback_err.with_context(
-                    "HQ_SYMLINK_PRIVILEGE: symlink fallback failed without Developer Mode or administrator rights",
-                )
-            })
+
+            if let Some(fallback) = fallback {
+                match fallback {
+                    Ok(pending) => Ok(pending),
+                    Err(_fallback_error) if defer_directory_copy && resolved_target.is_dir() => {
+                        Ok(Some(PendingSymlinkCopy {
+                            source: resolved_target,
+                            destination: link_path.to_path_buf(),
+                        }))
+                    }
+                    Err(fallback_error) => {
+                        Err(fallback_error.with_context("HQ_SYMLINK_FALLBACK: fallback failed"))
+                    }
+                }
+            } else {
+                Err(ContentOperationFailure::from_io(
+                    "failed to create symlink",
+                    error,
+                    true,
+                    ContentErrorKind::SymlinkCreationFailed,
+                    "create_symlink",
+                ))
+            }
         }
-        Err(error) => Err(ContentOperationFailure::from_io(
-            "failed to create symlink",
-            error,
-            true,
-            ContentErrorKind::SymlinkCreationFailed,
-        )),
     }
 }
 
@@ -1325,6 +1537,7 @@ fn extract_tarball_with_progress(
     })?;
 
     let mut symlink_relatives: Vec<String> = Vec::new();
+    let mut pending_symlink_copies: Vec<PendingSymlinkCopy> = Vec::new();
 
     for entry in entries {
         if is_content_cancelled(cancel) {
@@ -1422,10 +1635,16 @@ fn extract_tarball_with_progress(
                     );
                     continue;
                 }
-                create_symlink_with_failure(Path::new(&link_target), &dest).map_err(|failure| {
-                    record_content_failure(failure_scope, failure.category, failure.kind);
-                    failure.message
-                })?;
+                if let Some(pending_copy) =
+                    create_symlink_for_template(Path::new(&link_target), &dest).map_err(
+                        |failure| {
+                            record_content_operation_failure(failure_scope, &failure);
+                            failure.message
+                        },
+                    )?
+                {
+                    pending_symlink_copies.push(pending_copy);
+                }
                 symlink_relatives.push(normalized);
             }
             EntryType::Regular | EntryType::Continuous => {
@@ -1489,6 +1708,20 @@ fn extract_tarball_with_progress(
                 // symlink, and '5' directory typeflags).
             }
         }
+    }
+
+    for pending_copy in &pending_symlink_copies {
+        materialize_symlink_copy_fallback(pending_copy, target_dir).map_err(|error| {
+            let failure = ContentOperationFailure::from_io(
+                "failed to copy symlink directory fallback",
+                error,
+                cfg!(windows),
+                ContentErrorKind::SymlinkCreationFailed,
+                "copy_directory_fallback",
+            );
+            record_content_operation_failure(failure_scope, &failure);
+            failure.message
+        })?;
     }
 
     if let Some(progress) = progress {
@@ -2134,6 +2367,33 @@ mod windows_junction_tests {
         assert!(meta.file_type().is_symlink());
         fs::write(link.join("probe.txt"), b"ok").expect("write through junction");
         assert!(target.join("probe.txt").exists());
+    }
+}
+
+#[cfg(test)]
+mod symlink_copy_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn deferred_directory_copy_includes_content_extracted_after_link_creation() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let source = dir.path().join("real-skills");
+        let destination = dir.path().join("linked-skills");
+        let fallback = PendingSymlinkCopy {
+            source: source.clone(),
+            destination: destination.clone(),
+        };
+
+        fs::create_dir_all(&source).expect("create junction target");
+        fs::write(source.join("after-link.md"), b"usable content")
+            .expect("extract target after symlink");
+        materialize_symlink_copy_fallback(&fallback, dir.path())
+            .expect("copy the completed directory target");
+
+        assert_eq!(
+            fs::read(destination.join("after-link.md")).expect("copied content"),
+            b"usable content"
+        );
     }
 }
 
