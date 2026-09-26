@@ -159,6 +159,8 @@
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
+  import ProjectsHome from "../projects/ProjectsHome.svelte";
+  import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -1336,9 +1338,12 @@
     | "meetings"
     | "library"
     | "shared-files"
+    | "projects"
     | "extra"
     | "dm-requests"
   >("conversation");
+  /** Company shown on the Projects page; null follows the selected channel. */
+  let projectsCompany = $state<string | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -2963,6 +2968,17 @@
         },
       },
     ];
+    if (adapter.kind !== "web") {
+      nav.push({
+        id: "command-go-projects",
+        label: "Projects",
+        detail: "Open a company's project board",
+        shortcut: shortcutLabel("view.projects"),
+        action: () => {
+          void navigate({ kind: "projects" });
+        },
+      });
+    }
     nav.push({
       id: "command-go-library",
       label: "Library",
@@ -5673,6 +5689,8 @@
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
         return { kind: "shared-files" };
+      case "projects":
+        return { kind: "projects", company: projectsCompany };
       case "extra":
         if (extraPageId) return extraDestination(extraPageId, extraPageParam);
         return { kind: "messages" };
@@ -5976,6 +5994,13 @@
         extraPageId = null;
         extraPageParam = null;
         break;
+      case "projects":
+        projectsCompany = next.company ?? null;
+        view = "projects";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
       case "dm-requests":
         dmRequestsFocusPairKey = next.pairKey ?? null;
         view = "dm-requests";
@@ -6025,9 +6050,10 @@
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
-          // Office is hidden for company channels; route any stale deep
-          // link that targeted it back to Chat.
-          companyTab = "chat";
+          // Team/Settings/Atlas/Office are not desktop tabs; a stale deep
+          // link targeting one of those is normalized back to Chat by
+          // `canonicalizeDestination` before it ever reaches here.
+          companyTab = next.companyTab ?? "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
           const messageId = next.messageId?.trim() || "";
@@ -7655,6 +7681,19 @@
       group: "Views",
       run: () => openLibrary("skills"),
     },
+    ...(adapter.kind !== "web"
+      ? [
+          {
+            id: "view.projects",
+            keys: "Mod+6",
+            label: "Projects",
+            group: "Views",
+            run: () => {
+              void navigate({ kind: "projects" });
+            },
+          } satisfies ShortcutBinding,
+        ]
+      : []),
     {
       id: "conversation.next",
       keys: "Mod+Shift+]",
@@ -7953,6 +7992,9 @@
     onopenMeetings={() => {
       void navigate({ kind: "meetings" });
     }}
+    onopenProjects={isWeb ? undefined : () => {
+      void navigate({ kind: "projects" });
+    }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
@@ -8213,7 +8255,19 @@
             onopensettings={() => openSettings("notifications")}
           />
         </div>
-        {#if view === "shared-files"}
+        {#if view === "projects"}
+          <div class="projects-host" data-testid="projects-host">
+            <ProjectsHome
+              {adapter}
+              {companies}
+              slug={projectsCompany}
+              preferredSlug={selectedCompanySlug || null}
+              onslugchange={(slug) => {
+                void navigate({ kind: "projects", company: slug });
+              }}
+            />
+          </div>
+        {:else if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
             onback={() => {
@@ -8426,7 +8480,9 @@
                   {onopenurl}
                   active={companyTab}
                   tabs={companyTabsForHost}
-                  onselect={(id) => pushConversationSurface({ companyTab: id })}
+                  onselect={(id) => {
+                    pushConversationSurface({ companyTab: id });
+                  }}
                 />
               {:else if isProjectChannel}
                 <nav
@@ -8669,6 +8725,15 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => void leaveCurrentDestination()}
             />
+          {:else if isCompanyChannel && companyTab === "projects"}
+            <div class="company-projects-stage" data-testid="company-projects-tab-host">
+              <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
+              <CompanyProjectsPage
+                {adapter}
+                slug={selectedCompanySlug}
+                companyUid={selectedRow.companyUid ?? null}
+              />
+            </div>
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"
@@ -9316,7 +9381,7 @@
   :global(html[data-ui-size="compact"]:not([data-platform="windows"]))
     .desktop-shell.has-window-controls {
     --titlebar-height: calc(48px / 0.9);
-    --titlebar-leading-inset: calc(78px / 0.9);
+    --titlebar-leading-inset: calc(96px / 0.9);
   }
 
   :global(html[data-ui-size="large"]) .desktop-shell {
@@ -9326,7 +9391,7 @@
   :global(html[data-ui-size="large"]:not([data-platform="windows"]))
     .desktop-shell.has-window-controls {
     --titlebar-height: calc(48px / 1.12);
-    --titlebar-leading-inset: calc(78px / 1.12);
+    --titlebar-leading-inset: calc(96px / 1.12);
   }
 
   .desktop-body {
@@ -9359,6 +9424,35 @@
     /* In-pane destinations (Meetings, Notifications) are not under the
        overlay traffic lights — don't inherit the window-chrome gutter. */
     --titlebar-leading-inset: 16px;
+  }
+
+  .projects-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .projects-host > :global(*) {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  /* Projects tab inside a company channel: the header stays fixed above
+     this content area, so this host owns the scroller (same pattern as
+     `.ph-body` in ProjectsHome) and the hero + board scroll away together. */
+  .company-projects-stage {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px 24px 24px;
+  }
+  .company-projects-stage :global(.company-projects) {
+    height: auto;
   }
 
   .extra-page-host {

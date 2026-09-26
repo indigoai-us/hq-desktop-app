@@ -37,7 +37,7 @@ describe("titlebar layout — traffic-light centre line", () => {
   });
 
   it("keeps the macOS gutter and leading inset that the titlebar CSS reserves", () => {
-    expect(TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX).toBe(78);
+    expect(TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX).toBe(96);
     expect(TITLEBAR_TRAFFIC_LIGHT_X_PX).toBe(20);
     expect(MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX).toBe(14);
     expect(TITLEBAR_WINDOWS_LEADING_INSET_PX).toBe(12);

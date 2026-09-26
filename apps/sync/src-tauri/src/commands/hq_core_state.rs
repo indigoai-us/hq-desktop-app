@@ -372,6 +372,9 @@ pub(crate) struct CoreUpdateRescueTelemetry {
     pub(crate) git_version: String,
     pub(crate) rsync_source: &'static str,
     pub(crate) rsync_version: String,
+    pub(crate) rsync_stderr_class: &'static str,
+    pub(crate) rsync_stderr_reason: Option<String>,
+    pub(crate) rsync_translated_path_shape: &'static str,
     pub(crate) node_source: &'static str,
     pub(crate) node_version: String,
     pub(crate) disk_free_bucket: &'static str,
@@ -391,6 +394,9 @@ impl Default for CoreUpdateRescueTelemetry {
             git_version: "unknown".to_string(),
             rsync_source: "none",
             rsync_version: "unknown".to_string(),
+            rsync_stderr_class: "not_applicable",
+            rsync_stderr_reason: None,
+            rsync_translated_path_shape: "not_applicable",
             node_source: "unknown",
             node_version: "unknown".to_string(),
             disk_free_bucket: "unknown",
@@ -461,6 +467,8 @@ impl CoreUpdateRescueTelemetry {
         } else {
             rescue_step
         };
+        let rsync_diagnostic =
+            hq_telemetry::classify_core_update_rsync_diagnostic(raw, rescue_step == "rsync");
         let first_error_line = raw.lines().find_map(|line| {
             core_update_rescue_error_class(line).map(|_| line.trim().chars().take(240).collect())
         });
@@ -472,6 +480,9 @@ impl CoreUpdateRescueTelemetry {
             git_version: core_update_tool_version(raw, "git", "git_version"),
             rsync_source: core_update_tool_source("rsync"),
             rsync_version: core_update_tool_version(raw, "rsync", "rsync_version"),
+            rsync_stderr_class: rsync_diagnostic.stderr_class,
+            rsync_stderr_reason: rsync_diagnostic.stderr_reason,
+            rsync_translated_path_shape: rsync_diagnostic.translated_path_shape,
             node_source: core_update_node_source(),
             node_version: core_update_tool_version(raw, "node", "node_version"),
             disk_free_bucket: core_update_disk_free_bucket(raw),
@@ -2170,6 +2181,20 @@ fn send_core_update_failure_report(
                     "rsync_version",
                     report.rescue_telemetry.rsync_version.clone(),
                 );
+                sentry_scope.set_tag(
+                    "rsync_stderr_class",
+                    report.rescue_telemetry.rsync_stderr_class,
+                );
+                sentry_scope.set_tag(
+                    "rsync_translated_path_shape",
+                    report.rescue_telemetry.rsync_translated_path_shape,
+                );
+                if let Some(rsync_stderr_reason) = report.rescue_telemetry.rsync_stderr_reason {
+                    sentry_scope.set_extra(
+                        "rsyncStderrReason",
+                        sentry::protocol::Value::String(rsync_stderr_reason),
+                    );
+                }
                 sentry_scope.set_tag("node_source", report.rescue_telemetry.node_source);
                 sentry_scope.set_tag("node_version", report.rescue_telemetry.node_version.clone());
                 sentry_scope.set_tag("disk_free_bucket", report.rescue_telemetry.disk_free_bucket);
@@ -6308,6 +6333,73 @@ error: clone failed";
                 RescueFailureCategory::MissingDependency,
             ),
             ["desktop-core-update-failed"]
+        );
+    }
+
+    #[test]
+    fn sentry_rsync_failure_reports_closed_diagnostics_without_changing_fingerprint() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        let raw = "rsync: [sender] link_stat \"/cygdrive/c/fixture-one/HQ/core/file\" failed: No such file or directory (2)\nrsync status 23\nrsync error: some files/attrs were not transferred (code 23)";
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
+        assert_eq!(telemetry.rescue_step, "rsync");
+        assert_eq!(telemetry.rsync_stderr_class, "source_missing");
+        assert_eq!(telemetry.rsync_translated_path_shape, "cygwin_drive");
+
+        let second_raw = raw.replace("fixture-one", "fixture-two");
+        let second_telemetry = CoreUpdateRescueTelemetry::from_raw(&second_raw, 1);
+        assert_eq!(
+            telemetry.rsync_stderr_class,
+            second_telemetry.rsync_stderr_class
+        );
+        assert_eq!(
+            telemetry.rsync_translated_path_shape,
+            second_telemetry.rsync_translated_path_shape
+        );
+        assert_eq!(
+            core_update_sentry_fingerprint(
+                "rescue_exit",
+                RescueFailureCategory::RsyncPartialTransfer
+            ),
+            ["desktop-core-update-failed"]
+        );
+
+        let report = CoreUpdateSentryFailureReport {
+            source: "automatic",
+            channel: Channel::Release,
+            exit_code: Some(23),
+            error_kind: "rescue_exit",
+            error_category: RescueFailureCategory::RsyncPartialTransfer,
+            rescue_stderr_tail: Some(hq_telemetry::redact_core_update_diagnostic_tail(raw)),
+            rescue_telemetry: telemetry,
+            npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+        };
+        let events = sentry::test::with_captured_events_options(
+            || send_core_update_failure_report(report, 0),
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["rsync_stderr_class"], "source_missing");
+        assert_eq!(
+            events[0].tags["rsync_translated_path_shape"],
+            "cygwin_drive"
+        );
+        assert!(events[0].tags.values().all(|value| {
+            !value.contains("fixture-one") && !value.contains("/cygdrive/")
+        }));
+        let reason = events[0].extra["rsyncStderrReason"].as_str().unwrap();
+        assert!(reason.contains("No such file or directory"));
+        assert!(!reason.contains("fixture-one"));
+        let rescue_reason = events[0].extra["rescueErrorReason"].as_str().unwrap();
+        assert!(rescue_reason.contains("rsync status 23"));
+        assert!(!rescue_reason.contains("fixture-one"));
+        assert_eq!(
+            events[0].fingerprint,
+            vec!["desktop-core-update-failed"]
         );
     }
 

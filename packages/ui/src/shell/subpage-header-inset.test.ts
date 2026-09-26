@@ -17,6 +17,7 @@ const BACK_HEADER_PAGES = [
   "meetings/MeetingsPage.svelte",
   "inbox/NotificationsView.svelte",
   "inbox/SharedFilesOverlay.svelte",
+  "chat/DmRequestsPanel.svelte",
 ] as const;
 
 const PAGE_BACK_TESTIDS = [
@@ -25,6 +26,7 @@ const PAGE_BACK_TESTIDS = [
   "meetings-back",
   "notifications-back",
   "shared-files-back",
+  "dm-requests-back",
 ] as const;
 
 /** In-app history Back lives in the title bar / unavailable view, not PageHeader. */
