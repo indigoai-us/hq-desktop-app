@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On Windows, setup no longer fails when an old content folder link points
+  to a folder that has since been removed. Setup removes the old link and
+  creates it again. If linking still fails, the error report now says which
+  step failed and why.
+
 ## [0.10.331] — 2026-09-26
 
 - New "Record meetings automatically" switch in Settings → Meetings. When it
@@ -19,8 +24,6 @@ The release moves it under the version it ships in.
   files, waits for HQ's own processes, and retries around short-lived scanners.
   If you have the HQ CLI open in a terminal, the app leaves it running and
   checks for the update again later.
-- Windows setup now removes stale content junctions whose targets have been
-  removed. Failed content-link operations also record bounded error details.
 
 ## [0.10.330] — 2026-09-26
 
