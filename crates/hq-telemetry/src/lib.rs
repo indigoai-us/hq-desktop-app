@@ -1403,6 +1403,13 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "windows_rename_blocked",
     "terminal_plugin_launch",
     "terminal_wait_timeout",
+    // The ~6.18.5 pin's additions (kept in lockstep with hq-desktop-core's
+    // RunnerErrorCause::as_str; the cross-crate egress test enumerates ALL).
+    "realtime_admission_timeout",
+    "realtime_drain_burst",
+    "object_lock_checksum_required",
+    "object_body_idle_timeout",
+    "sync_device_limit",
     "access_denied",
     "no_such_key",
     "no_such_bucket",
