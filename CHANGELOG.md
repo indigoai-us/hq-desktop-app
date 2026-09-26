@@ -19,11 +19,11 @@ The release moves it under the version it ships in.
   of the channel you have open.
 - A company's home channel now has a "Projects" tab next to Chat in the
   header. Clicking it swaps the message feed for that company's project board
-  right there in the channel - the header (hero, title, gear, bell, member
+  right there in the channel — the header (hero, title, gear, bell, member
   pill, and the Chat | Projects pills) stays put and nothing shifts size.
   Chat brings the feed and composer back.
 - Fixed the Library header's Back button still overlapping the green
-  traffic-light button on macOS - the shared gutter that keeps overlay
+  traffic-light button on macOS — the shared gutter that keeps overlay
   headers (Library, Settings, Meetings, Notifications, Shared Files, DM
   requests) clear of the native window buttons was only 6px wider than the
   button cluster itself, thin enough to overlap on some renders. Widened it
