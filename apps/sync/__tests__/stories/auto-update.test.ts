@@ -599,14 +599,27 @@ describe('master automatic-updates switch', () => {
     expect(appCli).toContain('report_registry_serving_lag_marker_unpersisted()');
   });
 
-  it('retries a Windows locked selected-prefix package rename once after release (HQ-DESKTOP-7V)', () => {
+  it('uses holder diagnostics and bounded backoff for Windows locked package renames (HQ-DESKTOP-7X)', () => {
     const core = normalize(cliUpdateCore);
     const appCli = normalize(cliUpdate);
     expect(core).toContain('WindowsLockedInstallTarget');
     expect(core).toContain('is_windows_locked_install_target_failure(');
     expect(core).toContain('should_retry_windows_busy_install_target(');
-    expect(appCli).toContain('should_retry_windows_busy_install_target(');
-    expect(appCli).toContain('WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG');
+    expect(core).toContain('pub enum NpmLockHolderClass');
+    expect(core).toContain('pub fn classify_restart_manager_holders(');
+    expect(core).toContain('pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES: usize = 3;');
+    expect(core).toContain('pub fn windows_busy_install_target_retry_delay(');
+    expect(appCli).toContain('read_hq_cli_package_holders(prefix).await');
+    expect(appCli).toContain('windows_busy_install_target_retry_rung(retry_number)');
+    expect(appCli).toContain('windows_busy_install_target_retry_delay(retry_number)');
+    expect(appCli).toContain('tokio::time::sleep(delay).await');
+    expect(appCli).toContain('WindowsBusyRetryOutcome::DeferredUserCli');
+    expect(appCli).toContain('deferred-user-cli');
+    expect(processRegistry).toContain('pub fn query_hq_cli_package_holders(');
+    expect(processRegistry).toContain('RmStartSession');
+    expect(processRegistry).toContain('RmRegisterResources');
+    expect(processRegistry).toContain('RmGetList');
+    expect(processRegistry).toContain('RESTART_MANAGER_PROCESS_SAMPLE_LIMIT');
     expect(core).toContain('attempted_rungs.len() < max_attempts');
   });
 

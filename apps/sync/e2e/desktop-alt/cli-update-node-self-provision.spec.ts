@@ -545,20 +545,24 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     expect(syncRs).toContain('assert_eq!(HQ_CLOUD_PACKAGE, "@indigoai-us/hq-cloud");');
   });
 
-  it('keeps the one-shot EBUSY retry distinct from managed Node repair and reports its evidence', () => {
+  it('keeps holder-aware EBUSY backoff distinct from managed Node repair and reports its evidence (HQ-DESKTOP-7X)', () => {
     const retry = cli.slice(
       cli.indexOf('// Windows EBUSY while renaming a package under the selected prefix'),
       cli.indexOf('\n    Ok(output)', cli.indexOf('// Windows EBUSY while renaming a package under the selected prefix')),
     );
     expect(retry).toContain('is_windows_locked_install_target_failure(');
     expect(retry).toContain('should_retry_windows_busy_install_target(');
-    expect(retry).toContain('WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG');
-    expect(retry).toContain('LOCKED_BINARY_RETRY_BACKOFF');
+    expect(retry).toContain('windows_busy_install_target_retry_rung(retry_number)');
+    expect(retry).toContain('windows_busy_install_target_retry_delay(retry_number)');
+    expect(retry).toContain('tokio::time::sleep(delay).await');
+    expect(retry).toContain('NpmLockHolderClass::UserTerminalHqCli');
+    expect(retry).toContain('WindowsBusyRetryOutcome::DeferredUserCli');
+    expect(retry).toContain('read_hq_cli_package_holders(prefix).await');
     expect(retry).toContain('WindowsBusyRetryOutcome::NotArmed');
     expect(retry).toContain('WindowsBusyRetryOutcome::Succeeded');
     expect(retry).toContain('WindowsBusyRetryOutcome::Failed');
     expect(retry).toContain('WindowsBusyRetryOutcome::OtherFailure');
-    const retryAttemptAt = retry.indexOf('WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG');
+    const retryAttemptAt = retry.indexOf('windows_busy_install_target_retry_rung(retry_number)');
     const finalFailureClassificationAt = retry.indexOf(
       'else if is_windows_locked_install_target_failure(',
       retryAttemptAt,
@@ -569,5 +573,14 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     expect(core).toContain('npm_lock_holder_class');
     expect(core).toContain('npm_windows_busy_retry_attempts');
     expect(core).toContain('npm_windows_busy_retry_outcome');
+    expect(core).toContain('windows_busy_install_target_retry_delay(retry_number)');
+    expect(core).toContain(
+      'if env.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli',
+    );
+    expect(processRs).toContain('pub fn query_hq_cli_package_holders(');
+    expect(processRs).toContain('RmStartSession');
+    expect(processRs).toContain('RmRegisterResources');
+    expect(processRs).toContain('RmGetList');
+    expect(processRs).toContain('pub async fn wait_for_hq_cli_package_holders(');
   });
 });
