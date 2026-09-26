@@ -5266,6 +5266,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automatic_target_retry_recorded_during_preinstall_is_rechecked_after_guard() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let home = TempDir::new().unwrap();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "c154-recheck-eligibility-after-preinstall",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let eligible_at = Instant::now();
+        assert_eq!(
+            automatic_target_eligibility_with_path(
+                candidate.channel,
+                candidate.target_version,
+                eligible_at,
+                Some(home.path()),
+            ),
+            AutomaticTargetEligibility::Eligible,
+            "the automatic target starts eligible before pre-install work",
+        );
+
+        let clock_calls = Arc::new(AtomicUsize::new(0));
+        let clock_calls_for_update = Arc::clone(&clock_calls);
+        let installs = Arc::new(AtomicUsize::new(0));
+        let installs_for_call = Arc::clone(&installs);
+        let target_for_retry = candidate;
+        let retry_path = home.path().to_path_buf();
+        let outcome = execute_native_core_auto_update_with_clock_and_preinstall(
+            candidate,
+            true,
+            false,
+            move || {
+                if clock_calls_for_update.fetch_add(1, Ordering::AcqRel) == 0 {
+                    eligible_at
+                } else {
+                    eligible_at + Duration::from_secs(1)
+                }
+            },
+            Some(home.path()),
+            move || {
+                record_automatic_target_failure_at_with_path(
+                    target_for_retry.channel,
+                    target_for_retry.target_version,
+                    eligible_at,
+                    Some(retry_path.as_path()),
+                );
+                async { AutomaticCoreUpdatePreinstall::Proceed }
+            },
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                installs_for_call.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            NativeCoreAutoUpdateOutcome::SkippedRetryInterval,
+            "a retry recorded during pre-install must suppress the stale automatic attempt",
+        );
+        assert_eq!(
+            clock_calls.load(Ordering::Acquire),
+            2,
+            "eligibility must be evaluated with a fresh clock after the update guard is acquired",
+        );
+        assert_eq!(
+            installs.load(Ordering::Acquire),
+            0,
+            "the installer must not run after eligibility becomes false",
+        );
+        let manual_guard = try_begin_core_update()
+            .expect("the eligibility skip must release the update guard");
+        drop(manual_guard);
+        reset_automatic_target_states_for_test();
+    }
+
+    #[tokio::test]
     async fn auto_updates_disabled_during_prewarm_skip_before_guard_or_install() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let home = TempDir::new().unwrap();
