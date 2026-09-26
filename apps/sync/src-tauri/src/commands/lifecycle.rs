@@ -4,8 +4,8 @@ use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 #[cfg(not(windows))]
 use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
 use hq_desktop_core::lifecycle::{
-    classify_lifecycle, hq_root_valid, menubar_flags, probe_hq_root,
-    should_backfill_welcome_setup_pending, HqRootProbe, LifecycleInputs, LifecycleState,
+    hq_root_valid, menubar_flags, probe_hq_root, should_backfill_welcome_setup_pending,
+    HqRootProbe, LifecycleInputs, LifecycleState,
 };
 use hq_desktop_core::paths::ResolvedProgramKind;
 use serde_json::{Map, Value};
@@ -75,6 +75,8 @@ pub fn set_lifecycle_state(app: &AppHandle, state: LifecycleState) {
 /// markers when needed, and cache the state for command consumers.
 pub fn setup_lifecycle(app: &AppHandle) {
     let _ = SETUP_LIFECYCLE_TIME.get_or_init(Instant::now);
+    let updater_restart =
+        std::env::args().any(|arg| arg == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
     let menubar_path = match paths::menubar_json_path() {
         Ok(path) => Some(path),
         Err(e) => {
@@ -229,7 +231,8 @@ pub fn setup_lifecycle(app: &AppHandle) {
         // When the install evidence itself could not be read, a "tools are
         // missing" reading of the same filesystem is not trustworthy either,
         // so it must not demote a set-up machine to NeedsInstall.
-        let classified = classify_lifecycle(inputs);
+        let classified =
+            hq_desktop_core::lifecycle::classify_lifecycle_for_startup(inputs, updater_restart);
         let verdict = if evidence_unreadable {
             classified
         } else {
@@ -248,7 +251,8 @@ pub fn setup_lifecycle(app: &AppHandle) {
         )
     };
     #[cfg(windows)]
-    let verdict = classify_lifecycle(inputs);
+    let verdict =
+        hq_desktop_core::lifecycle::classify_lifecycle_for_startup(inputs, updater_restart);
     #[cfg(windows)]
     let (
         tools_present,

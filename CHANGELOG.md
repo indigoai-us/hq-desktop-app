@@ -12,6 +12,9 @@ The release moves it under the version it ships in.
   members as already cleaned up instead of reporting a cleanup error. The
   rollout flag is off by default.
 
+- During an updater restart, a briefly missing HQ root no longer sends a
+  machine with completed setup into onboarding.
+
 ## [0.10.341] — 2026-09-26
 
 - When enabled, automatic Core updates wait for startup cache preparation before
@@ -19,6 +22,7 @@ The release moves it under the version it ships in.
   automatic check; manual updates keep their current behavior. The rollout flag
   defaults off.
 - Windows releases no longer fail to save the prebuilt native app, because it is now compressed and trimmed to stay under GitHub's 2 GiB file limit.
+
 
 ## [0.10.340] — 2026-09-26
 - Update holds now apply to manual installs too, and a recording that ends with an error no longer blocks updates.

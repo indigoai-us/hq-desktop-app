@@ -350,6 +350,31 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     }
 }
 
+/// Classify startup without treating a missing HQ root during an updater
+/// relaunch as proof that a previously completed setup is a fresh install.
+/// The updater can restart the app while the root probe is temporarily
+/// unsettled; `first_run_completed` is durable evidence that this machine has
+/// already completed setup. Normal launches and installs still use the regular
+/// lifecycle classifier.
+pub fn classify_lifecycle_for_startup(
+    inputs: LifecycleInputs,
+    updater_restart: bool,
+) -> LifecycleVerdict {
+    if updater_restart
+        && !inputs.hq_root_valid
+        && inputs.first_run_completed
+        && !inputs.install_in_progress
+    {
+        return LifecycleVerdict {
+            state: LifecycleState::SteadyState,
+            needs_install_backfill: false,
+            needs_first_run_backfill: false,
+        };
+    }
+
+    classify_lifecycle(inputs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +430,27 @@ mod tests {
     }
 
     #[test]
+    fn updater_restart_with_missing_root_keeps_completed_setup_out_of_onboarding() {
+        let verdict = classify_lifecycle_for_startup(
+            LifecycleInputs {
+                install_completed: true,
+                first_run_completed: true,
+                had_machine_id: true,
+                hq_root_valid: false,
+                has_auth: false,
+                consent_answered: true,
+                evidence_unreadable: false,
+                ..input()
+            },
+            true,
+        );
+
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
+        assert!(!verdict.needs_install_backfill);
+        assert!(!verdict.needs_first_run_backfill);
+    }
+
+    #[test]
     fn unreadable_evidence_does_not_bypass_an_unanswered_consent() {
         // machineId written, first run never finished: consent is still owed.
         let verdict = classify_lifecycle(LifecycleInputs {
@@ -435,15 +481,35 @@ mod tests {
     fn real_session_loss_still_reaches_the_setup_card() {
         // Nothing unreadable: the HQ folder is genuinely gone and there is no
         // auth. The install card is the correct surface.
-        let verdict = classify_lifecycle(LifecycleInputs {
-            install_completed: true,
-            first_run_completed: true,
-            had_machine_id: true,
-            hq_root_valid: false,
-            has_auth: false,
-            evidence_unreadable: false,
-            ..input()
-        });
+        let verdict = classify_lifecycle_for_startup(
+            LifecycleInputs {
+                install_completed: true,
+                first_run_completed: true,
+                had_machine_id: true,
+                hq_root_valid: false,
+                has_auth: false,
+                evidence_unreadable: false,
+                ..input()
+            },
+            false,
+        );
+
+        assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
+    }
+
+    #[test]
+    fn updater_restart_does_not_wave_an_incomplete_install_through() {
+        let verdict = classify_lifecycle_for_startup(
+            LifecycleInputs {
+                install_completed: true,
+                had_machine_id: true,
+                hq_root_valid: false,
+                has_auth: false,
+                consent_answered: false,
+                ..input()
+            },
+            true,
+        );
 
         assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
     }
