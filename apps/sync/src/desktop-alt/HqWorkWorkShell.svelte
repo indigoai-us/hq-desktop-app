@@ -35,7 +35,7 @@
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
-  import { flushSync, onMount, tick, untrack, type ComponentProps } from 'svelte';
+  import { flushSync, onDestroy, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
@@ -77,6 +77,10 @@
 
   const adapter = createSyncPlatformAdapter({
     invoke: (command, args) => invokeFn(command, args),
+    primeMirrorQuarantineGate: true,
+  });
+  onDestroy(() => {
+    void adapter.dispose?.();
   });
   const wakes = createChatWakeBus();
   const navigation = createEmbeddedNavigationController();
