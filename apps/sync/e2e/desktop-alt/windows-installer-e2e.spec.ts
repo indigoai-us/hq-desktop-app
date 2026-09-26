@@ -331,6 +331,23 @@ describe('Windows production installer E2E', () => {
     expect(installerHooks).not.toMatch(/\/IM\s+"?node\.exe/);
   });
 
+  it('replaces the bundled UI tree wholesale so upgrades and uninstall leave no stale assets', () => {
+    // The UI ships as resources under ui/ with content-hashed file names.
+    // NSIS overwrites files but never deletes the previous version's hashed
+    // assets, and the uninstaller only deletes the files of its own build, so
+    // without these removals $INSTDIR survives uninstall after any upgrade.
+    expect(windowsConf.bundle?.resources?.['../dist/']).toBe('ui/');
+    expect(installerHooks).toContain('HQ_REMOVE_BUNDLED_UI');
+    const preinstall = installerHooks.match(/!macro NSIS_HOOK_PREINSTALL[\s\S]*?!macroend/)?.[0] ?? '';
+    const preuninstall = installerHooks.match(/!macro NSIS_HOOK_PREUNINSTALL[\s\S]*?!macroend/)?.[0] ?? '';
+    expect(preinstall).toContain('!insertmacro HQ_REMOVE_BUNDLED_UI');
+    expect(preuninstall).toContain('!insertmacro HQ_REMOVE_BUNDLED_UI');
+    expect(installerHooks).toContain('RMDir /r "$INSTDIR\\ui"');
+    // Never a recursive delete of $INSTDIR itself or of an unguarded path.
+    expect(installerHooks).not.toMatch(/RMDir \/r "\$INSTDIR"/);
+    expect(installerHooks).toContain('${If} $INSTDIR != ""');
+  });
+
   it('provisions Node from HQ\'s verified per-user toolchain on Windows', () => {
     const installNodeWindows = dependencyInstaller.slice(
       dependencyInstaller.indexOf('async fn install_node_windows'),
