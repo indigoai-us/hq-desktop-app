@@ -97,7 +97,28 @@ pub(crate) struct OnboardingFailureDetail {
     pub error_category: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_io_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<u32>,
 }
+
+const SYMLINK_ERROR_OPERATIONS: &[&str] = &[
+    "create_junction",
+    "copy_file_fallback",
+    "create_symlink_parent",
+    "remove_existing_link",
+    "create_symlink",
+];
+
+const SYMLINK_ERROR_IO_KINDS: &[&str] = &[
+    "not_found", "permission_denied", "already_exists", "invalid_input", "invalid_data",
+    "timed_out", "unsupported", "interrupted", "would_block", "write_zero", "broken_pipe",
+    "connection_refused", "connection_reset", "connection_aborted", "not_connected",
+    "addr_in_use", "addr_not_available", "out_of_memory", "unexpected_eof", "other",
+];
 
 static ONBOARDING_FAILURE_DETAILS: OnceLock<
     Mutex<HashMap<OnboardingFailureDetailKey, OnboardingFailureDetail>>,
@@ -153,6 +174,28 @@ pub(crate) fn record_onboarding_failure_detail_with_kind(
     error_category: OnboardingErrorCategory,
     error_kind: Option<&str>,
 ) {
+    record_onboarding_failure_detail_with_diagnostics(
+        stage,
+        failure_scope,
+        failed_dependency,
+        error_category,
+        error_kind,
+        None,
+        None,
+        None,
+    );
+}
+
+pub(crate) fn record_onboarding_failure_detail_with_diagnostics(
+    stage: &str,
+    failure_scope: Option<&OnboardingFailureScope>,
+    failed_dependency: Option<&str>,
+    error_category: OnboardingErrorCategory,
+    error_kind: Option<&str>,
+    error_operation: Option<&str>,
+    error_io_kind: Option<&str>,
+    error_code: Option<i32>,
+) {
     let Some(failure_scope) = failure_scope else {
         return;
     };
@@ -187,12 +230,24 @@ pub(crate) fn record_onboarding_failure_detail_with_kind(
             "unknown".to_string()
         }
     });
+    let error_operation = error_operation
+        .filter(|value| SYMLINK_ERROR_OPERATIONS.contains(value))
+        .map(str::to_string);
+    let error_io_kind = error_io_kind
+        .filter(|value| SYMLINK_ERROR_IO_KINDS.contains(value))
+        .map(str::to_string);
+    let error_code = error_code
+        .filter(|value| (0..=65_535).contains(value))
+        .map(|value| value as u32);
     details.insert(
         key,
         OnboardingFailureDetail {
             failed_dependency,
             error_category: error_category.as_str().to_string(),
             error_kind,
+            error_operation,
+            error_io_kind,
+            error_code,
         },
     );
 }
@@ -1055,6 +1110,9 @@ mod tests {
                 failed_dependency: Some("unknown".to_string()),
                 error_category: "network".to_string(),
                 error_kind: None,
+                error_operation: None,
+                error_io_kind: None,
+                error_code: None,
             })
         );
         assert_eq!(
@@ -1069,6 +1127,9 @@ mod tests {
                 failed_dependency: Some("qmd".to_string()),
                 error_category: "timeout".to_string(),
                 error_kind: None,
+                error_operation: None,
+                error_io_kind: None,
+                error_code: None,
             })
         );
         assert_eq!(
@@ -1093,6 +1154,9 @@ mod tests {
                 failed_dependency: Some("path-write".to_string()),
                 error_category: "unknown".to_string(),
                 error_kind: None,
+                error_operation: None,
+                error_io_kind: None,
+                error_code: None,
             })
         );
     }
@@ -1129,6 +1193,70 @@ mod tests {
             serde_json::to_value(detail).unwrap()["errorKind"],
             "content_path_too_long"
         );
+    }
+
+    #[test]
+    fn failure_detail_keeps_only_bounded_symlink_operation_diagnostics() {
+        let scope = OnboardingFailureScope {
+            setup_run_id: "44444444-4444-4444-8444-444444444444".to_string(),
+            attempt_count: 1,
+            flow: "first_install".to_string(),
+            frontend_session_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_string(),
+        };
+        clear_onboarding_failure_detail("content", Some(&scope));
+        record_onboarding_failure_detail_with_diagnostics(
+            "content",
+            Some(&scope),
+            None,
+            OnboardingErrorCategory::Permission,
+            Some("content_symlink_creation_failed"),
+            Some("remove_existing_link"),
+            Some("not_found"),
+            Some(3),
+        );
+        let detail = take_onboarding_failure_detail(
+            "content".to_string(),
+            scope.setup_run_id,
+            scope.attempt_count,
+            scope.flow,
+            scope.frontend_session_id,
+        )
+        .expect("scoped symlink diagnostic should be retained");
+        let json = serde_json::to_value(detail).unwrap();
+        assert_eq!(json["errorOperation"], "remove_existing_link");
+        assert_eq!(json["errorIoKind"], "not_found");
+        assert_eq!(json["errorCode"], 3);
+
+        let scope = OnboardingFailureScope {
+            setup_run_id: "55555555-5555-4555-8555-555555555555".to_string(),
+            attempt_count: 1,
+            flow: "first_install".to_string(),
+            frontend_session_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".to_string(),
+        };
+        clear_onboarding_failure_detail("content", Some(&scope));
+        record_onboarding_failure_detail_with_diagnostics(
+            "content",
+            Some(&scope),
+            None,
+            OnboardingErrorCategory::Permission,
+            Some("content_symlink_creation_failed"),
+            Some("C:\\Users\\person\\HQ"),
+            Some("/Users/person/HQ"),
+            Some(-1),
+        );
+        let detail = take_onboarding_failure_detail(
+            "content".to_string(),
+            scope.setup_run_id,
+            scope.attempt_count,
+            scope.flow,
+            scope.frontend_session_id,
+        )
+        .expect("scoped failure detail should be retained");
+        let json = serde_json::to_value(detail).unwrap();
+        assert!(json.get("errorOperation").is_none());
+        assert!(json.get("errorIoKind").is_none());
+        assert!(json.get("errorCode").is_none());
+        assert!(!json.to_string().contains("person"));
     }
 
     #[test]

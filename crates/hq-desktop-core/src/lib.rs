@@ -77,6 +77,7 @@ pub mod library_local;
 pub mod lifecycle;
 pub mod logfile;
 pub mod marketplace;
+pub mod meeting_auto_record;
 pub mod meeting_ledger;
 pub mod meetings;
 pub mod message_search;
@@ -100,6 +101,7 @@ pub mod runner_diagnostic_report;
 pub mod runner_error_shape;
 pub mod runner_target;
 pub mod runtime_diagnosis;
+pub mod runtime_version;
 pub mod scope_gate;
 pub mod session_continuation;
 pub mod settings;
@@ -111,9 +113,11 @@ pub mod stdio;
 pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
+pub mod ui_hot;
 pub mod unexpected_surface;
 pub mod watcher_fault;
 pub mod win32_path;
+pub mod update_gate;
 pub mod workspaces;
 
 #[cfg(test)]

@@ -38,6 +38,8 @@ use crate::commands::config::MenubarPrefs;
 use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
+use crate::commands::update_gate::{AppFocusState, UpdateHoldsState};
+use hq_desktop_core::update_gate::{decide, DeferredEmitKey, HoldReason, should_emit_deferred, UpdateDecision, UpdateTrigger};
 use crate::util::release_channel::{
     effective_channel, fetch_update_feed_policy, resolve_channel_endpoint, should_offer_update,
     should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
@@ -266,6 +268,8 @@ const PRERELEASE_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(1_800);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 /// How often the auto-install waiter re-checks for a sync-idle gap.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Tauri event emitted when the gate defers an automatic install.
+const UPDATE_GATE_DEFERRED_EVENT: &str = "update-gate://deferred";
 /// After a package is staged, wait this long for a natural idle gap before
 /// pausing new sync cycles and installing anyway. Sync is effectively always
 /// "active" on real installs, so an unbounded deferral leaves users on the
@@ -883,7 +887,7 @@ async fn channel_aware_updater_with_mode(
     let endpoint =
         Url::parse(&resolved.url).map_err(|e| format!("invalid updater endpoint: {e}"))?;
     let policy = fetch_update_feed_policy(&resolved.url).await;
-    log_feed_policy(&policy, app.package_info().version.to_string().as_str());
+    log_feed_policy(&policy, crate::app_version::current().to_string().as_str());
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
@@ -960,6 +964,18 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
+    // Hold gate: refuse to install while any hold is active (MeetingRecording,
+    // TranscriptFinishing, UploadInFlight, CoreUpdateInProgress). Focus does not
+    // block Manual-triggered installs.
+    if let (Some(holds), Some(focus)) = (
+        app.try_state::<UpdateHoldsState>(),
+        app.try_state::<AppFocusState>(),
+    ) {
+        let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        if let UpdateDecision::Defer { reason } = gate {
+            return Err(format!("update held: {reason:?}"));
+        }
+    }
     let ticket = begin_app_check(&app)?;
     let updater = channel_aware_updater_with_mode(&app, UpdateOfferMode::Reinstall).await?;
     let authoritative = updater.provenance.absence_is_authoritative();
@@ -983,7 +999,7 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
                 &format!(
                     "reinstalling latest.json target v{} (running v{})",
                     update.version,
-                    app.package_info().version
+                    crate::app_version::current()
                 ),
             );
             #[cfg(not(target_os = "windows"))]
@@ -1187,6 +1203,8 @@ fn spawn_auto_install_waiter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let _active = AutoInstallWaiterGuard::arm(generation);
         let mut last_wait_log: Option<Instant> = None;
+        let mut last_deferred_emit: Option<DeferredEmitKey> = None;
+        let mut last_gate_log: Option<Instant> = None;
         loop {
             if AUTO_INSTALL_WAITER_GENERATION.load(Ordering::Acquire) != generation {
                 return;
@@ -1222,6 +1240,65 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                 }
                 DeferralDecision::InstallNow | DeferralDecision::PauseThenInstall => {
                     log_deferral_decision(InstallTrigger::Automatic, decision, &version, remaining);
+                    // Focus + hold gate. Sync external-signal holds into the
+                    // registry so it is the single source of truth, then
+                    // decide once and act on the outcome.
+                    if let (Some(holds), Some(focus)) = (
+                        app.try_state::<UpdateHoldsState>(),
+                        app.try_state::<AppFocusState>(),
+                    ) {
+                        // CoreUpdateInProgress: backed by CORE_UPDATE_RUNNING AtomicBool.
+                        if crate::commands::hq_core_state::is_core_update_in_progress() {
+                            holds.0.acquire(HoldReason::CoreUpdateInProgress);
+                        } else {
+                            holds.0.release(HoldReason::CoreUpdateInProgress);
+                        }
+                        // UploadInFlight: backed by the existing sync_in_progress() probe.
+                        if sync_in_progress() {
+                            holds.0.acquire(HoldReason::UploadInFlight);
+                        } else {
+                            holds.0.release(HoldReason::UploadInFlight);
+                        }
+                        let gate = decide(UpdateTrigger::Automatic, focus.app_focus(), &holds.0);
+                        if let UpdateDecision::Defer { ref reason } = gate {
+                            // Log at most once per minute.
+                            let should_log = match last_gate_log {
+                                None => true,
+                                Some(at) => at.elapsed() >= Duration::from_secs(60),
+                            };
+                            if should_log {
+                                log(
+                                    "updater",
+                                    &format!("[updater] deferred: {:?}", reason),
+                                );
+                                last_gate_log = Some(Instant::now());
+                            }
+                            // Emit only when (version, decision, reasons) changes.
+                            let status = crate::commands::update_gate::current_gate_status(
+                                &holds,
+                                &focus,
+                                Some(version.clone()),
+                                UpdateTrigger::Automatic,
+                            );
+                            let emit_key = DeferredEmitKey::new(
+                                status.pending_version.clone(),
+                                gate,
+                                status.reasons.clone(),
+                            );
+                            if should_emit_deferred(
+                                last_deferred_emit.as_ref(),
+                                &emit_key,
+                            ) {
+                                let _ = app.emit_to("desktop-alt", UPDATE_GATE_DEFERRED_EVENT, &status);
+                                last_deferred_emit = Some(emit_key);
+                            }
+                            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                            continue;
+                        }
+                        // Decision is InstallNow — clear the last-emitted key so that
+                        // any future deferral triggers a fresh emission.
+                        last_deferred_emit = None;
+                    }
                     let Some(_install_guard) =
                         UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
                     else {
@@ -1270,6 +1347,18 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
+    // Hold gate: refuse to install while any hold is active (MeetingRecording,
+    // TranscriptFinishing, UploadInFlight, CoreUpdateInProgress). Focus does not
+    // block Manual-triggered installs.
+    if let (Some(holds), Some(focus)) = (
+        app.try_state::<UpdateHoldsState>(),
+        app.try_state::<AppFocusState>(),
+    ) {
+        let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        if let UpdateDecision::Defer { reason } = gate {
+            return Err(format!("update held: {reason:?}"));
+        }
+    }
     let ticket = begin_app_check(&app)?;
 
     // Note: We must call updater.check() again here because the tauri_plugin_updater::Update
@@ -1677,10 +1766,10 @@ fn emit_shortcut_invoke(app: &AppHandle, id: &'static str) {
 }
 
 #[cfg(target_os = "macos")]
-fn up_to_date_body(app: &AppHandle) -> String {
+fn up_to_date_body(_app: &AppHandle) -> String {
     format!(
         "You\u{2019}re up to date \u{2014} v{}",
-        app.package_info().version
+        crate::app_version::current()
     )
 }
 
@@ -1881,7 +1970,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         "updater",
                                         &format!(
                                             "background check: up to date (current v{})",
-                                            handle.package_info().version
+                                            crate::app_version::current()
                                         ),
                                     );
                                     if let Err(e) =
@@ -1910,9 +1999,59 @@ pub fn setup_update_checker(app: &AppHandle) {
     });
 }
 
+/// Install the pending update when manual trigger and no holds block it.
+/// Focus does not block manual installs. Used by the Phase 2 sidebar card
+/// "Restart to update" button.
+#[tauri::command]
+pub async fn update_install_pending(app: AppHandle) -> Result<(), String> {
+    let holds = app
+        .try_state::<UpdateHoldsState>()
+        .ok_or_else(|| "update gate state not initialised".to_string())?;
+    let focus = app
+        .try_state::<AppFocusState>()
+        .ok_or_else(|| "focus state not initialised".to_string())?;
+    let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+    if let UpdateDecision::Defer { reason } = gate {
+        return Err(format!("update held: {reason:?}"));
+    }
+    install_update(app).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The "is newer" check runs against the runtime-resolved version. A
+    /// cached shell compiled at 0.10.328 but assembled as 0.10.400 must not
+    /// be offered 0.10.350 (the compile-time value would have said "newer"),
+    /// and must still be offered 0.10.401.
+    #[test]
+    fn is_newer_check_uses_the_stamped_runtime_version() {
+        use hq_desktop_core::release_channel::{should_offer_update, UpdateFeedPolicy};
+        use hq_desktop_core::runtime_version::{resolve_from, VersionSource};
+
+        let resources = std::env::temp_dir().join(format!(
+            "hq-updater-stamped-{}/Contents/Resources",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("version.json"), r#"{"version":"0.10.400"}"#).unwrap();
+        let (resolved, source) = resolve_from(Some(&resources), "0.10.328", false);
+        std::fs::remove_dir_all(resources.parent().unwrap().parent().unwrap()).ok();
+        if std::env::var_os("HQ_APP_VERSION").is_none() {
+            assert_eq!(source, VersionSource::VersionJson);
+        }
+
+        let running = crate::app_version::parse_or_compile_time(&resolved);
+        let compile_time = semver::Version::parse("0.10.328").unwrap();
+        let policy = UpdateFeedPolicy::default();
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+
+        assert!(should_offer_update(&compile_time, &v("0.10.350"), &policy));
+        assert!(!should_offer_update(&running, &v("0.10.350"), &policy));
+        assert!(!should_offer_update(&running, &v("0.10.400"), &policy));
+        assert!(should_offer_update(&running, &v("0.10.401"), &policy));
+    }
 
     /// The app-menu ids are the contract between the menu builder and its
     /// event handler — a typo in either silently turns the item into a no-op.

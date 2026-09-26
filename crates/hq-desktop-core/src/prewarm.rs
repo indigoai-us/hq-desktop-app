@@ -249,51 +249,97 @@ fn run_materialization_payload() -> Result<(), String> {
 /// ~100ms no-op. Concurrent invocations serialize only the materialization
 /// payload, preventing a shared-cache write race.
 pub fn spawn_prewarm() {
-    thread::spawn(|| {
+    drop(spawn_prewarm_with(materialize_hq_cloud_cache));
+}
+
+/// Keep the background scheduling path injectable so tests can prove the
+/// caller returns promptly without starting a real npm process.
+fn spawn_prewarm_with(
+    materialize: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
         let started = Instant::now();
-        let elapsed = started.elapsed();
-        match materialize_hq_cloud_cache() {
+        match materialize() {
             Ok(()) => {
                 eprintln!(
                     "[prewarm] {}@{} warmed in {:.1}s",
                     HQ_CLOUD_PACKAGE,
                     HQ_CLOUD_VERSION,
-                    elapsed.as_secs_f32(),
+                    started.elapsed().as_secs_f32(),
                 );
             }
             Err(err) => {
                 eprintln!(
                     "[prewarm] cache materialization failed after {:.1}s: {} — first sync will diagnose it",
-                    elapsed.as_secs_f32(),
+                    started.elapsed().as_secs_f32(),
                     err,
                 );
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Smoke test: `spawn_prewarm` must not block the caller. If the
-    /// background thread tried to `join`, this test would time out.
-    ///
-    /// We don't assert the subprocess succeeded — on CI npx may not be
-    /// on PATH, and that's exactly the failure mode `spawn_prewarm`
-    /// logs-and-drops.
+    /// Build an npx stand-in that records accidental execution without
+    /// reading a package or writing npm cache data.
+    #[cfg(unix)]
+    fn fake_npx_home() -> (tempfile::TempDir, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let marker = home.path().join("fake-npx-started");
+        let fake_npx = bin.join("npx");
+        std::fs::write(
+            &fake_npx,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_npx, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (home, marker)
+    }
+
     #[test]
-    fn test_spawn_prewarm_is_non_blocking() {
+    fn test_spawn_prewarm_is_non_blocking_without_launching_npx() {
+        let _env = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        #[cfg(unix)]
+        let (home, marker) = fake_npx_home();
+        #[cfg(unix)]
+        let _home = crate::test_support::ScopedEnv::set("HOME", home.path());
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
         let started = Instant::now();
-        spawn_prewarm();
+        let worker = spawn_prewarm_with(move || {
+            started_tx
+                .send(())
+                .map_err(|error| format!("test worker could not report start: {error}"))?;
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|error| format!("test worker was not released: {error}"))?;
+            Ok(())
+        });
         let elapsed = started.elapsed();
-        // 500ms is generous; the call should return in microseconds.
-        // If this fails, someone accidentally made spawn_prewarm await
-        // the child — which would block the Tauri setup callback.
         assert!(
             elapsed.as_millis() < 500,
-            "spawn_prewarm blocked for {:?} — must return immediately",
-            elapsed,
+            "spawn_prewarm blocked for {elapsed:?} — must return immediately",
+        );
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("background materializer did not start");
+        release_tx.send(()).expect("background worker exited early");
+        worker.join().expect("background worker panicked");
+
+        #[cfg(unix)]
+        assert!(
+            !marker.exists(),
+            "the prewarm smoke test launched npx; tests must not start a child process"
         );
     }
 

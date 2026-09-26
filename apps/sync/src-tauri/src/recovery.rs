@@ -212,14 +212,14 @@ pub async fn open_recovery_window(
     }
 
     let init = RecoveryInit {
-        version: app.package_info().version.to_string(),
+        version: crate::app_version::current().to_string(),
         pending_update: pending,
         trigger: trigger.as_str().to_string(),
     };
     let init_json = serde_json::to_string(&init).unwrap_or_else(|_| {
         format!(
             r#"{{"version":"{}","pendingUpdate":null,"trigger":"{}"}}"#,
-            app.package_info().version,
+            crate::app_version::current(),
             trigger.as_str()
         )
     });
@@ -251,7 +251,7 @@ pub async fn open_recovery_window(
     boot_log(&format!(
         "recovery window opened (trigger={}, version=v{})",
         trigger.as_str(),
-        app.package_info().version
+        crate::app_version::current()
     ));
     Ok(())
 }

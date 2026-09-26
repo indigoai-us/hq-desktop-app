@@ -156,6 +156,27 @@ describe("atomic release asset contract", () => {
     ).toThrow("Release asset contract failed");
   });
 
+  it("ignores UI hot-update assets attached after publication", () => {
+    const withUi = [
+      ...remoteAssets,
+      { id: 900, name: "ui-0.10.35-beta.2.tar.gz", size: 9, digest: `sha256:${"e".repeat(64)}`, state: "uploaded" },
+      { id: 901, name: "ui-0.10.35-beta.2.tar.gz.sig", size: 9, digest: `sha256:${"e".repeat(64)}`, state: "uploaded" },
+      { id: 902, name: "ui-manifest.json", size: 9, digest: `sha256:${"e".repeat(64)}`, state: "uploaded" },
+    ];
+    expect(
+      planRelease({
+        releases: [[release({ assets: withUi })]],
+        localAssets,
+        tag: "v0.10.35-beta.2",
+        prerelease: true,
+      }),
+    ).toEqual({ action: "already-published", releaseId: "42" });
+    // The exemption is narrow: other extra assets still fail the contract.
+    expect(() =>
+      verifyAssetSet(localAssets, [...withUi, { ...remoteAssets[0], id: 903, name: "ui-extra.bin" }]),
+    ).toThrow("Release asset contract failed");
+  });
+
   it("accepts nondeterministic byte changes on an otherwise healthy published rerun", () => {
     const rebuilt = remoteAssets.map((asset) => ({
       ...asset,
