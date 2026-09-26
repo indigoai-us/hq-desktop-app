@@ -78,6 +78,7 @@ use crate::events::{
     EVENT_SYNC_COMPANY_PROVISIONED, EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT,
     EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN,
     EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PLAN_LIMIT, EVENT_SYNC_PROGRESS,
+    EVENT_SYNC_REALTIME_MODE,
     EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
@@ -1509,6 +1510,9 @@ fn handle_sync_line<R: tauri::Runtime>(
         SyncEvent::SetupNeeded => app.emit(EVENT_SYNC_SETUP_NEEDED, ()),
         SyncEvent::AuthError(payload) => app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone()),
         SyncEvent::FanoutPlan(payload) => app.emit(EVENT_SYNC_FANOUT_PLAN, payload.clone()),
+        SyncEvent::RealtimeMode(payload) => {
+            app.emit(EVENT_SYNC_REALTIME_MODE, payload.clone())
+        }
         // Per-company / per-direction Stage-1 totals from `hq-sync-runner`
         // (≥hq-cloud@5.5.0). Forwarded to the Svelte frontend so it can
         // refine the progress denominator established by EVENT_SYNC_TOTALS

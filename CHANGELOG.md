@@ -437,6 +437,9 @@ The release moves it under the version it ships in.
 ## [0.10.340] — 2026-09-26
 - Update holds now apply to manual installs too, and a recording that ends with an error no longer blocks updates.
 - When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
+
+- When live sync updates are unavailable, the tray shows the last completed
+  sync and polling cadence. It no longer says Syncing when no files are moving.
 - Release builds no longer recompile the native app every time. The job that
   prepares the native pieces after each merge now installs its build targets
   correctly and is no longer cancelled by the next merge, so a normal release
