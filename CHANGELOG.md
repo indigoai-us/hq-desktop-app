@@ -8,6 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- New "Record meetings automatically" switch in Settings → Meetings. When it
+  is on, HQ starts recording as soon as it detects a call — Slack huddles,
+  Zoom, Google Meet, Teams and Webex — instead of waiting for you to click
+  Record. It is off by default. Calls a scheduled HQ bot is already recording
+  are not recorded twice, and you still get the "meeting detected" alert.
+
 ## [0.10.329] — 2026-09-25
 
 - The project board is back. A new Projects page (Cmd+6, or the board icon in

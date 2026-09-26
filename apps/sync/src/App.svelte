@@ -1224,6 +1224,11 @@
               await invoke('meetings_notify_detected', { payload });
             },
             resolveValidDefault,
+            autoRecordEnabled: () => invoke<boolean>('meetings_auto_record_enabled'),
+            // Same start path as a Record click (company attribution + SDK
+            // confirmation). `throwOnError` so a failed start reaches `warn`;
+            // the row still shows the error state either way.
+            startRecording: (windowId) => handleStartRecording(windowId, true),
             now: () => new Date().toISOString(),
             warn: (msg, err) => console.warn(msg, err),
           });

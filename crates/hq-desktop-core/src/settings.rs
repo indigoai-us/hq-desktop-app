@@ -72,6 +72,7 @@ mod tests {
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
+            auto_record_meetings: None,
             default_recording_company_uid: None,
             telemetry_enabled: None,
             claude_projects_dir: None,
@@ -117,6 +118,8 @@ mod tests {
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
             release_channel: prefs.release_channel,
             meeting_detect_notify: prefs.meeting_detect_notify,
+            // Auto-record is opt-in — OFF when absent from disk.
+            auto_record_meetings: Some(prefs.auto_record_meetings.unwrap_or(false)),
             default_recording_company_uid: prefs.default_recording_company_uid,
             // Telemetry is opt-out — defaults ON when absent from disk (#159).
             telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
@@ -210,6 +213,7 @@ mod tests {
             staging_channel: Some(false),
             release_channel: Some("alpha".to_string()),
             meeting_detect_notify: None,
+            auto_record_meetings: None,
             default_recording_company_uid: Some("co_xyz".to_string()),
             telemetry_enabled: Some(false),
             claude_projects_dir: Some("/Users/test/.claude-ridge/projects".to_string()),
@@ -277,6 +281,7 @@ mod tests {
             staging_channel: Some(true),
             release_channel: Some("beta".to_string()),
             meeting_detect_notify: None,
+            auto_record_meetings: None,
             default_recording_company_uid: None,
             telemetry_enabled: Some(true),
             claude_projects_dir: None,
@@ -481,6 +486,26 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(v["telemetryEnabled"], true);
         assert!(v.get("machineId").is_none());
+    }
+
+    #[test]
+    fn test_auto_record_meetings_defaults_off() {
+        // Absent on disk → resolved OFF. Auto-record must never switch itself on.
+        let result = apply_defaults(empty_prefs());
+        assert_eq!(result.auto_record_meetings, Some(false));
+    }
+
+    #[test]
+    fn test_auto_record_meetings_roundtrip_camel_case() {
+        let prefs = MenubarPrefs {
+            auto_record_meetings: Some(true),
+            ..empty_prefs()
+        };
+        let json = serde_json::to_string(&prefs).unwrap();
+        assert!(json.contains("\"autoRecordMeetings\":true"), "got: {json}");
+        let parsed: MenubarPrefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.auto_record_meetings, Some(true));
+        assert_eq!(apply_defaults(parsed).auto_record_meetings, Some(true));
     }
 
     #[test]

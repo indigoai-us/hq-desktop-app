@@ -75,6 +75,14 @@ export interface MeetingDetectedDeps {
   notify: (payload: NotifyDetectedPayload) => Promise<void>;
   /** Current valid default recording company UID (or null = Personal). */
   resolveValidDefault: () => string | null;
+  /**
+   * Whether "Record meetings automatically" is on. A thrown error is treated
+   * as **fail-closed** (no automatic recording) — never record someone
+   * without a readable opt-in.
+   */
+  autoRecordEnabled: () => Promise<boolean>;
+  /** Start recording the SDK window (same path as a Record click). */
+  startRecording: (windowId: string) => Promise<void>;
   /** ISO-8601 "now" — injected so tests are deterministic. */
   now: () => string;
   /** Optional diagnostic sink for a failed (fail-open) bot check. */
@@ -114,7 +122,9 @@ export function resolveWindowId(payload: MeetingDetectedPayload): {
  *      a bot, so skip the lookup. A failed lookup fails open.
  *   3. **Covered by a bot** → clear any stale row for this window and return
  *      without notifying. Neither surface appears.
- *   4. **Not covered** → seed the recordable row and fire the notification.
+ *   4. **Not covered** → seed the recordable row. When auto-record is on and
+ *      the detection carries an SDK window handle, start recording it.
+ *   5. Fire the notification either way, so the user is told about the call.
  */
 export async function handleMeetingDetected(
   payload: MeetingDetectedPayload,
@@ -156,6 +166,28 @@ export async function handleMeetingDetected(
     });
   }
 
+  // Auto-record needs the SDK window handle: an explicit `windowId`, or one
+  // recovered from a synthetic `recall-window:<id>` URL. The real-URL fallback
+  // from `resolveWindowId` is only a dedup key the recorder cannot address.
+  //
+  // The start is not awaited before notifying: it resolves only once the SDK
+  // confirms `recording:started` (up to ~45 s), and the detection banner must
+  // not wait on that. It is awaited at the end so failures are still logged.
+  let autoStart: Promise<void> | null = null;
+  if (windowId && (payload.windowId || isSyntheticUrl)) {
+    let autoRecord = false;
+    try {
+      autoRecord = await deps.autoRecordEnabled();
+    } catch (err) {
+      deps.warn?.('meetings_auto_record_enabled failed, not auto-recording:', err);
+    }
+    if (autoRecord) {
+      autoStart = deps.startRecording(windowId).catch((err: unknown) => {
+        deps.warn?.('auto-record start failed:', err);
+      });
+    }
+  }
+
   await deps.notify({
     meetingUrl: meetingUrl ?? null,
     // Pass through so the notification's action-button thread can route a
@@ -165,4 +197,6 @@ export async function handleMeetingDetected(
     summary: summary ?? null,
     sourceEventId: sourceEventId ?? null,
   });
+
+  if (autoStart) await autoStart;
 }
