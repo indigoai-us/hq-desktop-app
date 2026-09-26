@@ -5298,6 +5298,13 @@ pub struct NpmLockHolderDiagnostic {
 }
 
 pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES: usize = 3;
+/// New no-holder deferral is separately gated by the hq-flags registry. The
+/// manager owns registration and rollout; an absent or unreadable value is off.
+pub const WINDOWS_BUSY_INSTALL_TARGET_DEFERRAL_FLAG: &str = "desktop.cli-update-ebusy-deferral";
+/// After this many consecutive same-target deferrals, surface the existing
+/// install failure again instead of extending the quiet period.
+pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS: u8 = 3;
+const WINDOWS_BUSY_DEFERRAL_FLAG_SNAPSHOT_MAX_BYTES: usize = 16 * 1024;
 const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS: [&str; WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES] = [
     "windows-busy-install-target-backoff-1",
     "windows-busy-install-target-backoff-2",
@@ -5385,6 +5392,154 @@ pub fn should_retry_windows_busy_install_target(
     is_windows_locked_install_target_failure(exit_code, detail, prefix)
         && retries_already_run < WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES
         && attempted_rungs.len() < max_attempts
+}
+
+/// A small, per-user marker for consecutive same-target EBUSY deferrals. It
+/// contains only a published version and a bounded counter, never a path or
+/// machine identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsBusyDeferralMarker {
+    pub target_version: String,
+    pub attempts: u8,
+}
+
+impl WindowsBusyDeferralMarker {
+    pub fn attempts_for(&self, target_version: &str) -> u8 {
+        if self.target_version == target_version {
+            self.attempts.min(WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS)
+        } else {
+            0
+        }
+    }
+}
+
+/// Decode the stored marker. Corrupt state is an error so callers preserve the
+/// current failure behavior instead of resetting the counter and deferring
+/// forever. Missing/null state means this is the first attempt for a target.
+pub fn parse_windows_busy_deferral_marker(
+    value: Option<&Value>,
+) -> Result<Option<WindowsBusyDeferralMarker>, &'static str> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let Some(target_version) = value.get("target_version").and_then(Value::as_str) else {
+        return Err("missing target version");
+    };
+    let valid_version = !target_version.is_empty()
+        && target_version.len() <= 64
+        && target_version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'));
+    if !valid_version {
+        return Err("invalid target version");
+    }
+    let Some(attempts) = value
+        .get("attempts")
+        .and_then(Value::as_u64)
+        .filter(|attempts| {
+            (1..=u64::from(WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS)).contains(attempts)
+        })
+    else {
+        return Err("invalid attempt count");
+    };
+    Ok(Some(WindowsBusyDeferralMarker {
+        target_version: target_version.to_string(),
+        attempts: attempts as u8,
+    }))
+}
+
+/// Whether a response from the same `/v1/flags/resolve` service used by the
+/// desktop hq-flags client enables this key. A missing key, malformed snapshot,
+/// non-200 response, or failed request all preserve today's install behavior.
+pub fn windows_busy_deferral_flag_enabled(status: u16, body: &str) -> bool {
+    const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
+    if status != 200 || body.len() > WINDOWS_BUSY_DEFERRAL_FLAG_SNAPSHOT_MAX_BYTES {
+        return false;
+    }
+    let Ok(snapshot) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let valid_version = snapshot
+        .get("version")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version <= MAX_SAFE_JSON_INTEGER);
+    let Some(flags) = snapshot.get("flags").and_then(Value::as_object) else {
+        return false;
+    };
+    if !valid_version || !flags.values().all(Value::is_boolean) {
+        return false;
+    }
+    flags
+        .get(WINDOWS_BUSY_INSTALL_TARGET_DEFERRAL_FLAG)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsBusyDeferralDecision {
+    Deferred { attempts: u8 },
+    Exhausted { attempts: u8 },
+}
+
+/// Confirm that the installed CLI stayed on the same resolved version after a
+/// failed update. The manifest-anchored resolver is the authoritative version
+/// source on both sides; `hq --version` only proves the command still responds,
+/// since its embedded version can lag the package manifest.
+pub fn windows_busy_cli_version_unchanged(
+    before_resolved_version: Option<&str>,
+    after_resolved_version: Option<&str>,
+    command_liveness_version: Option<&str>,
+) -> bool {
+    let (Some(before), Some(after), Some(_)) = (
+        before_resolved_version,
+        after_resolved_version,
+        command_liveness_version,
+    ) else {
+        return false;
+    };
+    before == after
+}
+
+/// Defer only the proven no-holder selected-prefix rename failure after all
+/// existing retries, and only if the old CLI still answers its version probe.
+/// Every other shape continues down today's install-failure path.
+pub fn windows_busy_deferral_decision(
+    flag_enabled: bool,
+    old_cli_still_works: bool,
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    retry_attempts: Option<u8>,
+    retry_outcome: WindowsBusyRetryOutcome,
+    holder: Option<NpmLockHolderDiagnostic>,
+    marker: Option<&WindowsBusyDeferralMarker>,
+    target_version: &str,
+) -> Option<WindowsBusyDeferralDecision> {
+    let no_holder_was_confirmed = holder.is_some_and(|diagnostic| {
+        diagnostic.class == NpmLockHolderClass::None
+            && diagnostic.count == 0
+            && diagnostic.query_outcome == NpmLockHolderQueryOutcome::Complete
+    });
+    if !flag_enabled
+        || !old_cli_still_works
+        || retry_attempts != Some(WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES as u8)
+        || retry_outcome != WindowsBusyRetryOutcome::Failed
+        || !no_holder_was_confirmed
+        || !is_windows_locked_install_target_failure(exit_code, detail, prefix)
+    {
+        return None;
+    }
+
+    let attempts = marker
+        .map(|marker| marker.attempts_for(target_version))
+        .unwrap_or(0)
+        .saturating_add(1)
+        .min(WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS);
+    if attempts >= WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS {
+        Some(WindowsBusyDeferralDecision::Exhausted { attempts })
+    } else {
+        Some(WindowsBusyDeferralDecision::Deferred { attempts })
+    }
 }
 
 /// Whether a failed npm install is the EXPECTED "the machine's disk is full"
@@ -6164,7 +6319,9 @@ pub fn install_failure_report_with_environment(
     final_attempt_forced: bool,
     env: &InstallEnvironment,
 ) -> Option<String> {
-    if env.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli {
+    if env.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli
+        || env.windows_busy_deferral_outcome == WindowsBusyDeferralOutcome::Deferred
+    {
         return None;
     }
     let kind = classify_install_failure_with_environment(
@@ -6329,6 +6486,341 @@ impl WindowsBusyRetryOutcome {
                 None
             }
         }
+    }
+}
+
+/// Closed telemetry outcome for the hq-flags-gated no-holder deferral. The
+/// first two deferrals are breadcrumbs only; `Exhausted` is attached to the
+/// existing Error report on the bounded terminal attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowsBusyDeferralOutcome {
+    #[default]
+    NotApplicable,
+    Deferred,
+    Exhausted,
+}
+
+impl WindowsBusyDeferralOutcome {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not-applicable",
+            Self::Deferred => "deferred",
+            Self::Exhausted => "exhausted",
+        }
+    }
+}
+
+#[cfg(test)]
+mod windows_busy_deferral_tests {
+    use super::*;
+
+    const PREFIX: &str = r"C:\Users\me\AppData\Roaming\npm";
+    const DETAIL: &str = "npm error code EBUSY\n\
+        npm error errno -4082\n\
+        npm error syscall rename\n\
+        npm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
+    const TARGET: &str = "5.208.0";
+
+    fn confirmed_no_holder() -> NpmLockHolderDiagnostic {
+        NpmLockHolderDiagnostic {
+            class: NpmLockHolderClass::None,
+            count: 0,
+            query_outcome: NpmLockHolderQueryOutcome::Complete,
+        }
+    }
+
+    fn decide(
+        flag_enabled: bool,
+        old_cli_still_works: bool,
+        holder: NpmLockHolderDiagnostic,
+        marker: Option<&WindowsBusyDeferralMarker>,
+    ) -> Option<WindowsBusyDeferralDecision> {
+        windows_busy_deferral_decision(
+            flag_enabled,
+            old_cli_still_works,
+            Some(-4082),
+            DETAIL,
+            Some(PREFIX),
+            Some(WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES as u8),
+            WindowsBusyRetryOutcome::Failed,
+            Some(holder),
+            marker,
+            TARGET,
+        )
+    }
+
+    #[test]
+    fn registry_snapshot_controls_the_new_deferral_and_fails_closed() {
+        let enabled = serde_json::json!({
+            "version": 4,
+            "flags": {"desktop.cli-update-ebusy-deferral": true}
+        });
+        assert!(windows_busy_deferral_flag_enabled(
+            200,
+            &enabled.to_string()
+        ));
+
+        let disabled = serde_json::json!({
+            "version": 4,
+            "flags": {"desktop.cli-update-ebusy-deferral": false}
+        });
+        assert!(!windows_busy_deferral_flag_enabled(
+            200,
+            &disabled.to_string()
+        ));
+        let unregistered = serde_json::json!({"version": 4, "flags": {}});
+        assert!(!windows_busy_deferral_flag_enabled(
+            200,
+            &unregistered.to_string()
+        ));
+        assert!(!windows_busy_deferral_flag_enabled(
+            503,
+            &enabled.to_string()
+        ));
+        assert!(!windows_busy_deferral_flag_enabled(200, "not-json"));
+        assert!(!windows_busy_deferral_flag_enabled(
+            200,
+            &" ".repeat(WINDOWS_BUSY_DEFERRAL_FLAG_SNAPSHOT_MAX_BYTES + 1),
+        ));
+        assert!(!windows_busy_deferral_flag_enabled(
+            200,
+            r#"{"version":4,"flags":{"desktop.cli-update-ebusy-deferral":"true"}}"#
+        ));
+    }
+
+    #[test]
+    fn marker_parser_rejects_corruption_and_resets_for_a_new_target() {
+        let stored = serde_json::json!({"target_version": TARGET, "attempts": 2});
+        let marker = parse_windows_busy_deferral_marker(Some(&stored))
+            .unwrap()
+            .unwrap();
+        assert_eq!(marker.attempts_for(TARGET), 2);
+        assert_eq!(marker.attempts_for("5.209.0"), 0);
+        assert_eq!(parse_windows_busy_deferral_marker(None).unwrap(), None);
+        assert!(parse_windows_busy_deferral_marker(Some(&serde_json::json!({
+            "target_version": "../private",
+            "attempts": 2
+        })))
+        .is_err());
+        assert!(parse_windows_busy_deferral_marker(Some(&serde_json::json!({
+            "target_version": TARGET,
+            "attempts": 4
+        })))
+        .is_err());
+    }
+
+    #[test]
+    fn exact_no_holder_ebusy_defers_then_reports_on_the_third_attempt() {
+        assert_eq!(
+            decide(true, true, confirmed_no_holder(), None),
+            Some(WindowsBusyDeferralDecision::Deferred { attempts: 1 })
+        );
+        let prior = WindowsBusyDeferralMarker {
+            target_version: TARGET.to_string(),
+            attempts: 2,
+        };
+        assert_eq!(
+            decide(true, true, confirmed_no_holder(), Some(&prior)),
+            Some(WindowsBusyDeferralDecision::Exhausted { attempts: 3 })
+        );
+        let old_target = WindowsBusyDeferralMarker {
+            target_version: "5.207.0".to_string(),
+            attempts: 2,
+        };
+        assert_eq!(
+            decide(true, true, confirmed_no_holder(), Some(&old_target)),
+            Some(WindowsBusyDeferralDecision::Deferred { attempts: 1 })
+        );
+        assert_eq!(
+            decide(
+                true,
+                true,
+                confirmed_no_holder(),
+                Some(&WindowsBusyDeferralMarker {
+                    target_version: TARGET.to_string(),
+                    attempts: 3,
+                })
+            ),
+            Some(WindowsBusyDeferralDecision::Exhausted { attempts: 3 })
+        );
+    }
+
+    #[test]
+    fn manifest_version_mismatch_with_cli_output_does_not_block_deferral() {
+        let before_manifest_version = "5.207.0";
+        let after_manifest_version = "5.207.0";
+        let command_version = "5.206.0";
+        assert_ne!(before_manifest_version, command_version);
+
+        let old_cli_unchanged = windows_busy_cli_version_unchanged(
+            Some(before_manifest_version),
+            Some(after_manifest_version),
+            Some(command_version),
+        );
+        assert!(old_cli_unchanged);
+        assert_eq!(
+            decide(true, old_cli_unchanged, confirmed_no_holder(), None),
+            Some(WindowsBusyDeferralDecision::Deferred { attempts: 1 })
+        );
+    }
+
+    #[test]
+    fn changed_resolved_version_keeps_existing_install_failure_path() {
+        let before_resolved_version = "5.207.0";
+        let after_resolved_version = "5.208.0";
+        let command_liveness_version = "5.207.0";
+
+        let old_cli_unchanged = windows_busy_cli_version_unchanged(
+            Some(before_resolved_version),
+            Some(after_resolved_version),
+            Some(command_liveness_version),
+        );
+        assert!(!old_cli_unchanged);
+        assert_eq!(
+            decide(true, old_cli_unchanged, confirmed_no_holder(), None),
+            None
+        );
+        assert!(install_failure_report(Some(-4082), DETAIL, Some(PREFIX)).is_some());
+    }
+
+    #[test]
+    fn each_missing_version_probe_input_fails_closed() {
+        let version = "5.207.0";
+
+        assert!(!windows_busy_cli_version_unchanged(
+            None,
+            Some(version),
+            Some(version),
+        ));
+        assert!(!windows_busy_cli_version_unchanged(
+            Some(version),
+            None,
+            Some(version),
+        ));
+        assert!(!windows_busy_cli_version_unchanged(
+            Some(version),
+            Some(version),
+            None,
+        ));
+    }
+
+    #[test]
+    fn flag_off_real_holder_incomplete_query_or_unusable_cli_keeps_existing_path() {
+        let no_holder = confirmed_no_holder();
+        assert_eq!(decide(false, true, no_holder, None), None);
+        assert_eq!(decide(true, false, no_holder, None), None);
+
+        let real_holder = NpmLockHolderDiagnostic {
+            class: NpmLockHolderClass::DefenderOrIndexer,
+            count: 1,
+            query_outcome: NpmLockHolderQueryOutcome::Complete,
+        };
+        assert_eq!(decide(true, true, real_holder, None), None);
+        let incomplete_query = NpmLockHolderDiagnostic {
+            class: NpmLockHolderClass::None,
+            count: 0,
+            query_outcome: NpmLockHolderQueryOutcome::Unavailable,
+        };
+        assert_eq!(decide(true, true, incomplete_query, None), None);
+        assert!(install_failure_report(Some(-4082), DETAIL, Some(PREFIX)).is_some());
+    }
+
+    #[test]
+    fn exhausted_deferral_keeps_error_level_and_emits_bounded_count_tags() {
+        let env = InstallEnvironment {
+            windows_busy_retry_attempts: Some(WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES as u8),
+            windows_busy_retry_outcome: WindowsBusyRetryOutcome::Failed,
+            lock_holder_diagnostic: Some(confirmed_no_holder()),
+            ..InstallEnvironment::default()
+        }
+        .with_windows_busy_deferral(3, WindowsBusyDeferralOutcome::Exhausted);
+        let unchanged = InstallEnvironment {
+            windows_busy_retry_attempts: Some(WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES as u8),
+            windows_busy_retry_outcome: WindowsBusyRetryOutcome::Failed,
+            lock_holder_diagnostic: Some(confirmed_no_holder()),
+            ..InstallEnvironment::default()
+        };
+        let expected =
+            install_failure_report_with_environment(Some(-4082), DETAIL, Some(PREFIX), false, &env)
+                .unwrap();
+        assert_eq!(
+            expected,
+            install_failure_report_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                &unchanged,
+            )
+            .unwrap(),
+            "deferral telemetry must not change the existing Error message"
+        );
+        let kind = classify_install_failure_with_environment(
+            Some(-4082),
+            DETAIL,
+            Some(PREFIX),
+            false,
+            &env,
+        );
+        assert_eq!(
+            install_failure_signature_with_environment(kind, DETAIL, Some(PREFIX), &env),
+            install_failure_signature_with_environment(kind, DETAIL, Some(PREFIX), &unchanged),
+            "deferral telemetry must not change the existing fingerprint signature"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                "5.208.0",
+                &env,
+            ),
+            install_failure_episode_key_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                "5.208.0",
+                &unchanged,
+            ),
+            "deferral telemetry must not change the existing repeat-guard key"
+        );
+        let events = sentry::test::with_captured_events(|| {
+            report_install_failure_with_environment(Some(-4082), DETAIL, Some(PREFIX), false, &env);
+        });
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(event.message.as_deref(), Some(expected.as_str()));
+        assert_eq!(event.tags["npm_windows_busy_deferral_attempts"], "3");
+        assert_eq!(event.tags["npm_windows_busy_deferral_outcome"], "exhausted");
+    }
+
+    #[test]
+    fn a_deferral_is_not_reported_but_exhaustion_remains_reportable() {
+        let stderr = DETAIL;
+        let deferred = InstallEnvironment::default()
+            .with_windows_busy_deferral(1, WindowsBusyDeferralOutcome::Deferred);
+        assert!(install_failure_report_with_environment(
+            Some(-4082),
+            stderr,
+            Some(PREFIX),
+            false,
+            &deferred,
+        )
+        .is_none());
+
+        let exhausted = InstallEnvironment::default()
+            .with_windows_busy_deferral(3, WindowsBusyDeferralOutcome::Exhausted);
+        assert!(install_failure_report_with_environment(
+            Some(-4082),
+            stderr,
+            Some(PREFIX),
+            false,
+            &exhausted,
+        )
+        .is_some());
     }
 }
 
@@ -6703,6 +7195,12 @@ pub struct InstallEnvironment {
     /// Whether the bounded Windows EBUSY retry was not applicable, unarmed,
     /// successful, or still failing. Tag/diagnostic only; never a grouping key.
     pub windows_busy_retry_outcome: WindowsBusyRetryOutcome,
+    /// Consecutive same-target no-holder deferrals carried to the terminal
+    /// report. Bounded by `WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS`.
+    pub windows_busy_deferral_attempts: Option<u8>,
+    /// Closed outcome for the no-holder deferral path. Omitted from telemetry
+    /// for callers that did not enter that path.
+    pub windows_busy_deferral_outcome: WindowsBusyDeferralOutcome,
     /// Closed, path-free Restart Manager result attached only to a final EBUSY
     /// failure. Process names, paths, usernames, and PIDs stay in memory.
     pub lock_holder_diagnostic: Option<NpmLockHolderDiagnostic>,
@@ -6732,6 +7230,18 @@ pub struct InstallEnvironment {
 }
 
 impl InstallEnvironment {
+    /// Attach bounded no-holder deferral telemetry to the terminal failure.
+    pub fn with_windows_busy_deferral(
+        mut self,
+        attempts: u8,
+        outcome: WindowsBusyDeferralOutcome,
+    ) -> Self {
+        self.windows_busy_deferral_attempts =
+            Some(attempts.min(WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS));
+        self.windows_busy_deferral_outcome = outcome;
+        self
+    }
+
     /// Record that the failing `npm install` pinned this EXACT resolved CLI version
     /// (HQ-DESKTOP-5Q). The updater resolves `latest` from the registry's `/latest`
     /// endpoint and pins that string into `install_argv`, so a reported failure —
@@ -7019,6 +7529,13 @@ pub fn report_install_failure_with_environment(
             env.windows_busy_retry_outcome.tag_value(),
         ));
     }
+    if let Some(attempts) = env.windows_busy_deferral_attempts {
+        npm_diagnostics.push_str(&format!(
+            " windows_busy_deferral_attempts={} windows_busy_deferral_outcome={}",
+            attempts.min(WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS),
+            env.windows_busy_deferral_outcome.tag_value(),
+        ));
+    }
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
@@ -7126,6 +7643,18 @@ pub fn report_install_failure_with_environment(
                 scope.set_tag(
                     "npm_windows_busy_retry_outcome",
                     env.windows_busy_retry_outcome.tag_value(),
+                );
+            }
+            if let Some(attempts) = env.windows_busy_deferral_attempts {
+                scope.set_tag(
+                    "npm_windows_busy_deferral_attempts",
+                    attempts
+                        .min(WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS)
+                        .to_string(),
+                );
+                scope.set_tag(
+                    "npm_windows_busy_deferral_outcome",
+                    env.windows_busy_deferral_outcome.tag_value(),
                 );
             }
             // Which ancestor of the install scope was missing and how the mkdir
@@ -16405,6 +16934,8 @@ mod tests {
             managed_retry_outcome: ManagedRetryOutcome::NotArmed,
             windows_busy_retry_attempts: None,
             windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
+            windows_busy_deferral_attempts: None,
+            windows_busy_deferral_outcome: WindowsBusyDeferralOutcome::NotApplicable,
             lock_holder_diagnostic: None,
             missing_target_state: MissingTargetState::Unknown,
             target_version: None,

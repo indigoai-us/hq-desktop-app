@@ -12,6 +12,9 @@ The release moves it under the version it ships in.
   running the rescue. If the wait limit expires, the update moves to a later
   automatic check; manual updates keep their current behavior. The rollout flag
   defaults off.
+- When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
+  holder, HQ keeps the current CLI available and retries on later launches. It
+  reports a persistent failure after three attempts.
 
 ## [0.10.336] — 2026-09-26
 

@@ -102,31 +102,34 @@ pub use hq_desktop_core::hq_cli_update::{
     managed_retry_user_prefix_aim, non_convergent_cli_contract, non_convergent_cli_version,
     non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
     non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
-    npm_lifecycle_cause, npm_prefix_from_hq_bin, partial_install_scope_from_npm_path,
-    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version,
-    pnpm_install_argv, pnpm_store_family, read_installed_version, redact_home, redact_home_in,
-    repair_managed_shadow, report_install_failure, report_install_failure_episode,
-    report_install_failure_with_environment, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_non_convergent_marker_unpersisted,
-    report_npm_cache_setup_failure, report_registry_serving_lag_marker_unpersisted,
-    report_unreadable_version, resolved_hq_version, should_auto_install,
-    should_report_unreadable_version, should_retry_windows_busy_install_target,
-    suppress_for_dismissal, unattributed_install_stderr_origin, user_prefix_aim_decision,
-    version_from_hq_binary, version_if_hq_cli, windows_busy_install_target_retry_delay,
-    windows_busy_install_target_retry_rung, AsyncSingleFlight, DeliveredPrefixShim,
-    ExecutedCopyAim, ExecutedCopyReaim, ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment,
-    InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
-    LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
-    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
-    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, NpmLockHolderClass, NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome,
-    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
-    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind,
-    RestartManagerHolderObservation, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
-    WindowsBusyRetryOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
-    NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
-    NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
-    STDERR_ORIGIN_NON_NPM,
+    npm_lifecycle_cause, npm_prefix_from_hq_bin, parse_windows_busy_deferral_marker,
+    partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
+    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
+    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
+    report_install_failure_episode, report_install_failure_with_environment,
+    report_install_failure_with_final_attempt, report_non_convergent_install,
+    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
+    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version,
+    should_retry_windows_busy_install_target, suppress_for_dismissal,
+    unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
+    version_if_hq_cli, windows_busy_cli_version_unchanged, windows_busy_deferral_decision,
+    windows_busy_install_target_retry_delay, windows_busy_install_target_retry_rung,
+    AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
+    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
+    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
+    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
+    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmLockHolderClass,
+    NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome, NpmToolchainSource, PnpmGlobalEnv,
+    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, RestartManagerHolderObservation,
+    SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome, WindowsBusyDeferralDecision,
+    WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome, WindowsBusyRetryOutcome,
+    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
+    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, NPM_INSTALL_CHILD_ENV,
+    PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES, STDERR_ORIGIN_NON_NPM,
+    WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS, WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -1299,6 +1302,200 @@ const INSTALL_FAILURE_EPISODE_KEYS: &str = "cliInstallFailureEpisodeKeys";
 /// `latest` instead of on every check and every app restart.
 const NON_CONVERGENT_EPISODE_KEYS: &str = "cliNonConvergentEpisodeKeys";
 
+#[cfg(target_os = "windows")]
+const WINDOWS_BUSY_DEFERRAL_MARKER_KEY: &str = "cliWindowsBusyDeferral";
+
+#[cfg(target_os = "windows")]
+fn read_windows_busy_deferral_marker() -> Result<Option<WindowsBusyDeferralMarker>, &'static str> {
+    let path = paths::menubar_json_path().map_err(|_| "settings path unavailable")?;
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("settings unreadable"),
+    };
+    let value = serde_json::from_str::<Value>(&contents).map_err(|_| "settings invalid")?;
+    let settings = value.as_object().ok_or("settings invalid")?;
+    parse_windows_busy_deferral_marker(settings.get(WINDOWS_BUSY_DEFERRAL_MARKER_KEY))
+}
+
+#[cfg(target_os = "windows")]
+fn record_windows_busy_deferral_marker(target_version: &str, attempts: u8) -> Result<(), String> {
+    let marker = serde_json::json!({
+        "target_version": target_version,
+        "attempts": attempts.min(WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS),
+    });
+    paths::menubar_json_path().and_then(|path| {
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(WINDOWS_BUSY_DEFERRAL_MARKER_KEY, marker)],
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn clear_windows_busy_deferral_marker() {
+    match read_windows_busy_deferral_marker() {
+        Ok(None) => return,
+        Ok(Some(_)) | Err(_) => {}
+    }
+    let result = paths::menubar_json_path().and_then(|path| {
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(WINDOWS_BUSY_DEFERRAL_MARKER_KEY, Value::Null)],
+        )
+    });
+    if result.is_err() {
+        log(
+            "hq-cli-update",
+            "could not clear Windows EBUSY deferral marker",
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn windows_busy_deferral_flag_is_enabled() -> bool {
+    let path = hq_desktop_core::routes::path_for(hq_desktop_core::routes::FLAGS_RESOLVE, "");
+    match crate::commands::hq_pro::hq_pro_fetch(path, "GET".to_string(), None).await {
+        Ok(response) => hq_desktop_core::hq_cli_update::windows_busy_deferral_flag_enabled(
+            response.status,
+            &response.body,
+        ),
+        Err(_) => {
+            // Keep the flag read fail-closed without logging auth, URL, or transport details.
+            log(
+                "hq-cli-update",
+                "Windows EBUSY deferral flag read failed; preserving install failure behavior",
+            );
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn record_windows_busy_deferral_breadcrumb(attempts: u8, outcome: WindowsBusyDeferralOutcome) {
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("hq-cli-update".into()),
+        level: sentry::Level::Info,
+        message: Some(format!(
+            "CLI update deferred after no-holder Windows EBUSY; attempts={} outcome={}",
+            attempts.min(WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS),
+            outcome.tag_value(),
+        )),
+        ..Default::default()
+    });
+}
+
+#[cfg(target_os = "windows")]
+async fn defer_windows_busy_install_if_eligible(
+    hq: &str,
+    target_version: &str,
+    before_version: Option<&str>,
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    retry_attempts: Option<u8>,
+    retry_outcome: WindowsBusyRetryOutcome,
+    holder: Option<NpmLockHolderDiagnostic>,
+) -> Option<WindowsBusyDeferralDecision> {
+    let holder = holder.filter(|diagnostic| {
+        diagnostic.class == NpmLockHolderClass::None
+            && diagnostic.count == 0
+            && diagnostic.query_outcome == NpmLockHolderQueryOutcome::Complete
+    })?;
+    if !is_windows_locked_install_target_failure(exit_code, detail, prefix)
+        || retry_attempts != Some(WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES as u8)
+        || retry_outcome != WindowsBusyRetryOutcome::Failed
+    {
+        return None;
+    }
+
+    let before_version = before_version?;
+    if cmp_semver(before_version, target_version) != std::cmp::Ordering::Less {
+        return None;
+    }
+    if !windows_busy_deferral_flag_is_enabled().await {
+        return None;
+    }
+
+    let hq_for_version = hq.to_string();
+    let version_probes = tokio::task::spawn_blocking(move || {
+        let command_version = hq_version_string(Path::new(&hq_for_version));
+        let resolved_version = resolved_hq_version(&hq_for_version);
+        (command_version, resolved_version)
+    });
+    let (command_liveness_version, resolved_after_failure) = match tokio::time::timeout(
+        Duration::from_secs(35),
+        version_probes,
+    )
+    .await
+    {
+        Ok(Ok((Some(command_version), Some(resolved_version)))) => {
+            (command_version, resolved_version)
+        }
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+            log(
+                    "hq-cli-update",
+                    "old CLI version probe failed after Windows EBUSY; preserving install failure behavior",
+                );
+            return None;
+        }
+    };
+    let old_cli_still_works = windows_busy_cli_version_unchanged(
+        Some(before_version),
+        Some(&resolved_after_failure),
+        Some(&command_liveness_version),
+    );
+    if !old_cli_still_works {
+        log(
+            "hq-cli-update",
+            "resolved CLI version changed after Windows EBUSY; preserving install failure behavior",
+        );
+        return None;
+    }
+
+    let marker = match read_windows_busy_deferral_marker() {
+        Ok(marker) => marker,
+        Err(_) => {
+            log(
+                "hq-cli-update",
+                "Windows EBUSY deferral marker is unreadable; preserving install failure behavior",
+            );
+            return None;
+        }
+    };
+    let decision = windows_busy_deferral_decision(
+        true,
+        old_cli_still_works,
+        exit_code,
+        detail,
+        prefix,
+        retry_attempts,
+        retry_outcome,
+        Some(holder),
+        marker.as_ref(),
+        target_version,
+    )?;
+    let attempts = match decision {
+        WindowsBusyDeferralDecision::Deferred { attempts }
+        | WindowsBusyDeferralDecision::Exhausted { attempts } => attempts,
+    };
+    if record_windows_busy_deferral_marker(target_version, attempts).is_err() {
+        log(
+            "hq-cli-update",
+            "could not persist Windows EBUSY deferral count; preserving install failure behavior",
+        );
+        if matches!(decision, WindowsBusyDeferralDecision::Deferred { .. }) {
+            return None;
+        }
+    }
+    let outcome = match decision {
+        WindowsBusyDeferralDecision::Deferred { .. } => WindowsBusyDeferralOutcome::Deferred,
+        WindowsBusyDeferralDecision::Exhausted { .. } => WindowsBusyDeferralOutcome::Exhausted,
+    };
+    record_windows_busy_deferral_breadcrumb(attempts, outcome);
+    Some(decision)
+}
+
 /// Run one bounded provenance probe (`node --version`, `node -p
 /// process.versions.modules`, `npm --version`) and return its trimmed stdout, or
 /// `None` on any failure or timeout. Runs through tokio's async child with
@@ -1387,6 +1584,8 @@ async fn probe_install_environment(
         },
         windows_busy_retry_attempts: None,
         windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
+        windows_busy_deferral_attempts: None,
+        windows_busy_deferral_outcome: WindowsBusyDeferralOutcome::NotApplicable,
         lock_holder_diagnostic: None,
         // Defaults to `Unknown`; `install_hq_cli` overrides it with the mkdir
         // remedy's diagnostic (HQ-DESKTOP-5K) when that remedy ran.
@@ -2354,8 +2553,9 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         ),
     );
 
-    // Capture the pre-install execution-bound version for the decision seam.
-    // It is diagnostic only; the post-install probe remains authoritative.
+    // Capture the manifest-first resolved version for a like-for-like post-
+    // failure comparison. The CLI's embedded `--version` remains a liveness
+    // check because it can legitimately lag the package manifest.
     let before_version = {
         let hq = hq.clone();
         tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
@@ -2408,6 +2608,33 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 
     if !install_run.output.status.success() {
         let raw_detail = npm_output_detail(&install_run.output);
+        #[cfg(target_os = "windows")]
+        let windows_busy_deferral_attempts = match defer_windows_busy_install_if_eligible(
+            &hq,
+            &latest,
+            before_version.as_deref(),
+            install_run.output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.windows_busy_retry_attempts,
+            install_run.windows_busy_retry_outcome,
+            install_run.lock_holder_diagnostic,
+        )
+        .await
+        {
+            Some(WindowsBusyDeferralDecision::Deferred { .. }) => {
+                log(
+                    "hq-cli-update",
+                    "CLI update deferred after bounded Windows EBUSY retries; current CLI remains available",
+                );
+                return Ok(HqCliUpdateInfo {
+                    local: before_version,
+                    latest,
+                });
+            }
+            Some(WindowsBusyDeferralDecision::Exhausted { attempts }) => Some(attempts),
+            None => None,
+        };
         // The stderr-origin attribution and self-heal decision (HQ-DESKTOP-56) MUST key
         // on the ACTUAL stderr, never `npm_output_detail`'s stdout fallback. When stderr
         // is empty but stdout is not, `raw_detail` holds stdout bytes; classifying those
@@ -2438,6 +2665,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         install_env.windows_busy_retry_attempts = install_run.windows_busy_retry_attempts;
         install_env.windows_busy_retry_outcome = install_run.windows_busy_retry_outcome;
         install_env.lock_holder_diagnostic = install_run.lock_holder_diagnostic;
+        #[cfg(target_os = "windows")]
+        if let Some(attempts) = windows_busy_deferral_attempts {
+            install_env = install_env
+                .with_windows_busy_deferral(attempts, WindowsBusyDeferralOutcome::Exhausted);
+        }
         // Name the EXACT version install_argv pinned into base_args (HQ-DESKTOP-5Q),
         // so a reported E404 shows WHICH version npm was asked for. `base_args` was
         // built with `Some(latest)`, a pinned spec — never the `@latest` dist-tag.
@@ -2968,6 +3200,11 @@ async fn finalize_convergence(
             }
             _ => {}
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    if converged {
+        clear_windows_busy_deferral_marker();
     }
 
     log("hq-cli-update", &outcome.log_line);
