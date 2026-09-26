@@ -112,6 +112,8 @@
     updateWakeSeq?: number;
     /** Reads the running native app version (Tauri's app API in Sync). */
     refreshAppVersion?: () => Promise<string>;
+    /** Live interface version when a UI hot update is serving (else null). */
+    uiVersion?: string | null;
   }
 
   let {
@@ -126,6 +128,7 @@
     consoleBase: _consoleBase = HQ_CONSOLE_BASE,
     updateWakeSeq = 0,
     refreshAppVersion,
+    uiVersion = null,
   }: Props = $props();
 
   // When the desktop host's appearance installer is present it has already
@@ -213,6 +216,7 @@
     autoUpdate: boolean;
     meetingDetection: boolean;
     meetingPlatforms: string[];
+    autoRecordMeetings: boolean;
     defaultRecordingCompanyUid: string | null;
   };
   const DEFAULT_NATIVE_SETTINGS: NativeSettings = {
@@ -227,6 +231,8 @@
     autoUpdate: true,
     meetingDetection: true,
     meetingPlatforms: ["zoom", "meet", "teams", "slack", "webex"],
+    // Opt-in: never record a call unless the user switched this on.
+    autoRecordMeetings: false,
     defaultRecordingCompanyUid: null,
   };
   const MEETING_PLATFORMS = [
@@ -527,6 +533,7 @@
       autoUpdate: readBoolean(rec, "autoUpdate", native.autoUpdate),
       meetingDetection: readBoolean(meeting, "enabled", native.meetingDetection),
       meetingPlatforms: platforms,
+      autoRecordMeetings: readBoolean(rec, "autoRecordMeetings", native.autoRecordMeetings),
       defaultRecordingCompanyUid:
         typeof rec.defaultRecordingCompanyUid === "string" &&
         rec.defaultRecordingCompanyUid.trim()
@@ -697,6 +704,18 @@
       },
       "meetingDetection",
       previous.meetingDetection,
+    );
+  }
+
+  async function toggleAutoRecordMeetings(): Promise<void> {
+    const previous = { ...native };
+    const autoRecordMeetings = !previous.autoRecordMeetings;
+    native = { ...native, autoRecordMeetings };
+    await persistNative(
+      "auto-record-meetings",
+      { autoRecordMeetings },
+      "autoRecordMeetings",
+      previous.autoRecordMeetings,
     );
   }
 
@@ -1425,6 +1444,25 @@
     {#if canWatchMeetings}
       <div class="set-row">
         <div>
+          <div class="sn">Record meetings automatically</div>
+          <div class="sd">
+            Start recording as soon as HQ detects a call, including Slack huddles
+          </div>
+        </div>
+        <button
+          type="button"
+          class="toggle"
+          class:on={native.autoRecordMeetings}
+          role="switch"
+          aria-checked={native.autoRecordMeetings}
+          aria-label="Record meetings automatically"
+          data-testid="settings-auto-record-meetings"
+          disabled={!nativeLoaded || pending("auto-record-meetings")}
+          onclick={() => void toggleAutoRecordMeetings()}
+        ></button>
+      </div>
+      <div class="set-row">
+        <div>
           <div class="sn">Detected-meeting alerts</div>
           <div class="sd">
             Show a native alert when a meeting is detected
@@ -1579,6 +1617,9 @@
       <div>
         <div class="sn">Desktop app</div>
         <div class="sd mono-path">v{appVersion}</div>
+        {#if uiVersion && uiVersion !== appVersion}
+          <div class="sd mono-path" data-testid="settings-ui-version">Interface {uiVersion}</div>
+        {/if}
         {#if appUpdateStatus === "failed"}
           <div class="sd" data-testid="settings-app-check-failed">
             The update check didn’t finish. Check for updates again.

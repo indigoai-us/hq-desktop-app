@@ -474,7 +474,13 @@ mod tests {
 
     #[test]
     fn rejects_folder_without_markers() {
-        let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Cargo's TMPDIR can live inside the HQ checkout; walking up from a
+        // temp folder there would eventually find the checkout's own markers.
+        let temp_parent = dirs::home_dir().expect("test runner has a home directory");
+        let tmp = tempfile::tempdir_in(temp_parent).unwrap();
         let bad = tmp.path().join("not-hq");
         fs::create_dir_all(&bad).unwrap();
         assert!(resolve_hq_root_for_claude_launch(&bad).is_err());

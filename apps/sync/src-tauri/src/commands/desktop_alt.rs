@@ -895,7 +895,7 @@ pub async fn open_desktop_alt_window_inner(
     let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
-        tauri::WebviewUrl::App("desktop-alt.html".into()),
+        crate::ui_protocol::ui_url("desktop-alt.html"),
     )
     // Empty native title: the Overlay title bar would otherwise paint "HQ"
     // over the custom titlebar's sync-status text (the verdict). The window's

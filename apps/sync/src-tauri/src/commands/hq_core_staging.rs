@@ -733,6 +733,7 @@ async fn run_replace_from_staging_observed(
                         run.npx_resolution,
                     ),
                 npx_resolution: Some(run.npx_resolution),
+                pre_rescue_materialization: false,
                 // Staging updates never run the production managed-Git retry.
                 managed_git_retry:
                     crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
@@ -865,6 +866,7 @@ async fn run_replace_from_staging_inner(
             crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
             error,
         )
+        .with_pre_rescue_materialization()
         .with_npx_resolution(npx_resolution)
     })?;
 
@@ -928,14 +930,16 @@ async fn run_replace_from_staging_inner(
                         .as_ref()
                         .map(|diagnostic| {
                             format!(
-                                "{} {diagnostic}",
-                                "staging update applied but baseline persistence failed:"
+                                "{} {diagnostic} {}",
+                                "staging update applied but baseline persistence failed:",
+                                result.persistence_stamp_marker(),
                             )
                         })
                         .unwrap_or_else(|| {
                             format!(
-                                "staging update applied; baseline refresh pending for {repo}@{}",
-                                result.commit
+                                "staging update applied; baseline refresh pending for {repo}@{} {}",
+                                result.commit,
+                                result.persistence_stamp_marker(),
                             )
                         });
                     crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(

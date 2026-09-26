@@ -99,7 +99,7 @@ pub fn maybe_run(app: &AppHandle) -> bool {
 
         let result = HeadlessResult {
             schema: 1,
-            app_version: handle.package_info().version.to_string(),
+            app_version: crate::app_version::current().to_string(),
             started_at,
             finished_at: now_iso(),
             duration_secs: started.elapsed().as_secs(),

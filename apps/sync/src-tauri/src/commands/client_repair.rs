@@ -568,7 +568,7 @@ fn read_desktop_version() -> Option<String> {
     if let Some(v) = test_env("HQ_TEST_REPAIR_DESKTOP_VERSION") {
         return non_empty(v);
     }
-    repair_app_handle().map(|app| app.package_info().version.to_string())
+    repair_app_handle().map(|_app| crate::app_version::current().to_string())
 }
 
 /// Ask the platform updater whether a (signature-verified) desktop update is

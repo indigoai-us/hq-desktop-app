@@ -419,7 +419,7 @@ const TRAY_ID: &str = "hq-sync-tray";
 /// renders through the status button's `title` (not its `image`), so even if the
 /// template glyph is swallowed the user still sees a clickable "HQ".
 fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std::error::Error>> {
-    let version = app.package_info().version.to_string();
+    let version = crate::app_version::current().to_string();
     let version_item = MenuItemBuilder::with_id(MENU_VERSION, format!("HQ v{}", version))
         .enabled(false)
         .build(app)?;

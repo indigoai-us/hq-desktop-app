@@ -110,7 +110,7 @@ export function requireNonIndigoRefreshToken(env = process.env) {
 export function normalizeVersion(input) {
   const raw = String(input ?? "").trim();
   const stripped = raw.replace(/^v/i, "");
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(beta|alpha)\.(0|[1-9]\d*))?$/.test(stripped)) {
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(beta|alpha|shelltest)\.(0|[1-9]\d*))?$/.test(stripped)) {
     throw smokeError(`expected X.Y.Z or X.Y.Z-beta.N, got ${JSON.stringify(input)}`);
   }
   return stripped;

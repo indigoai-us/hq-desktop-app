@@ -8,7 +8,7 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount, type Component, type ComponentProps } from "svelte";
+  import { onDestroy, onMount, type Component, type ComponentProps } from "svelte";
   import {
     createSyncPlatformAdapter,
     resolveHostPlatform,
@@ -133,6 +133,8 @@
     updateWakeSeq?: number;
     /** Native host app-version refresh used by DesktopApp's Updates pane. */
     refreshAppVersion?: () => Promise<string>;
+    /** Live interface version when a UI hot update is serving. */
+    uiVersion?: string | null;
     /** Native package-operation stream for Library → Installed. */
     packagesEvents?: PackagesEvents | null;
     /** Native notification wake edge forwarded by a desktop host. */
@@ -216,6 +218,7 @@
     version: hostVersion,
     updateWakeSeq,
     refreshAppVersion,
+    uiVersion = null,
     packagesEvents,
     notificationWakeSeq: hostNotificationWakeSeq,
     bootTimeoutMs,
@@ -250,12 +253,20 @@
   // authenticated command bridge because a static build has no /api routes.
   const workFetch: HqProFetch = hostFetch ?? hqProFetch;
   const adapter: PlatformAdapter = runtime === "desktop"
-    ? createSyncPlatformAdapter({ invoke: nativeInvoke })
+    ? createSyncPlatformAdapter({
+        invoke: nativeInvoke,
+        // The owning Sync host already primes and refreshes this process-wide
+        // gate. Only standalone desktop WorkShell instances own this prime.
+        primeMirrorQuarantineGate: !hostOwnsNativeSession,
+      })
     : new WebPlatformAdapter({
         baseUrl: resolveHqProApiUrl(),
         fetch: workFetch,
         onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       });
+  onDestroy(() => {
+    void adapter.dispose?.();
+  });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(nativeInvoke) : null;
 
@@ -956,6 +967,7 @@
       {packagesEvents}
       {updateWakeSeq}
       {refreshAppVersion}
+      {uiVersion}
       {onactivethreadchange}
       {extraPages}
       {rowExtrasLoading}
