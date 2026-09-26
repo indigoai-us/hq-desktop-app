@@ -240,16 +240,21 @@ mod tests {
 
         for row in rows {
             let got = decide(row.trigger, row.focus, &row.holds);
-            // For Held variants, compare reason kind only since order may vary.
             match (&got, &row.expected) {
                 (
                     UpdateDecision::Defer {
-                        reason: DeferReason::Held { .. },
+                        reason: DeferReason::Held { reasons: got_reasons },
                     },
                     UpdateDecision::Defer {
-                        reason: DeferReason::Held { .. },
+                        reason: DeferReason::Held { reasons: exp_reasons },
                     },
-                ) => {} // both held — ok
+                ) => {
+                    let mut g = got_reasons.clone();
+                    let mut e = exp_reasons.clone();
+                    g.sort_by_key(|r| r.to_string());
+                    e.sort_by_key(|r| r.to_string());
+                    assert_eq!(g, e, "FAIL (held reasons): {}", row.label);
+                }
                 (a, b) => assert_eq!(a, b, "FAIL: {}", row.label),
             }
         }
