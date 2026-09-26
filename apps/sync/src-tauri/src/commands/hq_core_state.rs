@@ -4028,7 +4028,11 @@ where
     SyncCheck: FnOnce() -> bool,
 {
     if !wait_enabled {
-        return AutomaticCoreUpdatePreinstall::Proceed;
+        return if sync_in_progress_after_wait() {
+            AutomaticCoreUpdatePreinstall::DeferForSync
+        } else {
+            AutomaticCoreUpdatePreinstall::Proceed
+        };
     }
 
     match wait_for_prewarm().await {
@@ -4937,6 +4941,31 @@ mod tests {
             NativeCoreAutoUpdateOutcome::Failed(CoreUpdateErrorKind::RescueSpawn)
         );
         assert_eq!(reports.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn flag_off_still_defers_if_sync_starts_during_the_flag_read() {
+        let wait_calls = Arc::new(AtomicUsize::new(0));
+        let wait_calls_for_gate = Arc::clone(&wait_calls);
+        let sync_calls = Arc::new(AtomicUsize::new(0));
+        let sync_calls_for_check = Arc::clone(&sync_calls);
+
+        let decision = automatic_core_update_preinstall(
+            false,
+            || {
+                wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
+                async { hq_desktop_core::prewarm::PrewarmWaitOutcome::NotRunning }
+            },
+            move || {
+                sync_calls_for_check.fetch_add(1, Ordering::AcqRel);
+                true
+            },
+        )
+        .await;
+
+        assert_eq!(decision, AutomaticCoreUpdatePreinstall::DeferForSync);
+        assert_eq!(sync_calls.load(Ordering::Acquire), 1);
+        assert_eq!(wait_calls.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
