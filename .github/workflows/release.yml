@@ -7,9 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to release (vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N)."
-        required: true
+        description: "Existing tag to release (vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N). Leave empty with shelltest."
+        required: false
         type: string
+      legacy_build:
+        description: "Build macOS with the legacy single-job path instead of the prebuilt shell."
+        required: false
+        default: false
+        type: boolean
+      shelltest:
+        description: "Pipeline test: release a throwaway v0.0.0-shelltest.<run_number> prerelease from the dispatched ref, then delete it."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -40,6 +50,7 @@ jobs:
   # fail closed. Nothing depends on this job, so it cannot gate a release.
   announce-build:
     name: Announce the build in #hq-dev
+    if: ${{ inputs.shelltest != true }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -112,8 +123,41 @@ jobs:
         shell: bash
         run: node .github/scripts/hq-dm-announce.mjs --channel hq-dev --body-file announcement.txt || true
 
+  # shelltest only: create the throwaway tag at the dispatched commit. Refs
+  # created with GITHUB_TOKEN do not trigger workflows, so this tag cannot
+  # start a second release run. shelltest-cleanup deletes it again.
+  shelltest-tag:
+    name: Create throwaway shelltest tag
+    if: ${{ inputs.shelltest == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      TAG: v0.0.0-shelltest.${{ github.run_number }}
+    steps:
+      - name: Create tag at the dispatched commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `gh api` prints the 404 body on stdout, so branch on its exit code.
+          if existing="$(gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null)"; then
+            if [ "$existing" != "$GITHUB_SHA" ]; then
+              echo "::error::${TAG} already exists at ${existing}, not ${GITHUB_SHA}."
+              exit 1
+            fi
+            echo "${TAG} already exists at ${GITHUB_SHA} (rerun)."
+            exit 0
+          fi
+          gh api --method POST "repos/${REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${TAG}" -f sha="$GITHUB_SHA" >/dev/null
+          echo "Created ${TAG} at ${GITHUB_SHA}."
+
   validate:
     name: Validate release tag and version
+    needs: shelltest-tag
+    if: ${{ !cancelled() && (needs.shelltest-tag.result == 'success' || needs.shelltest-tag.result == 'skipped') }}
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.classify.outputs.tag }}
@@ -135,10 +179,18 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
+          SHELLTEST: ${{ inputs.shelltest == true }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
 
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "$SHELLTEST" = "true" ]; then
+            if [ -n "$INPUT_TAG" ]; then
+              echo "::error::shelltest creates its own throwaway tag; do not pass tag."
+              exit 1
+            fi
+            TAG="v0.0.0-shelltest.${RUN_NUMBER}"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             TAG="$INPUT_TAG"
             if [ -z "$TAG" ]; then
               echo "::error::workflow_dispatch requires an existing release tag."
@@ -152,7 +204,17 @@ jobs:
             TAG="$REF_NAME"
           fi
 
-          if [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+          # A shelltest prerelease is never latest: it is only accepted in a
+          # shelltest run, never from a pushed or dispatched tag.
+          if [ "$SHELLTEST" = "true" ]; then
+            if ! [[ "$TAG" =~ ^v0\.0\.0-shelltest\.[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid shelltest tag: $TAG"
+              exit 1
+            fi
+            CHANNEL="shelltest"
+            PRERELEASE="true"
+            MAKE_LATEST="false"
+          elif [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             CHANNEL="stable"
             PRERELEASE="false"
             MAKE_LATEST="true"
@@ -446,8 +508,9 @@ jobs:
           node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG" "${previous[@]}"
 
   macos:
-    name: Build macOS universal
+    name: Build macOS universal (legacy single job)
     needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build == true }}
     runs-on: macos-14
     timeout-minutes: 90
     defaults:
@@ -925,9 +988,1947 @@ jobs:
             --timeout-ms 30000 \
             --launch
 
-  windows:
-    name: Build Windows ${{ matrix.target }}
+  # --- Prebuilt-shell macOS pipeline (docs/RELEASE.md "Prebuilt shell") ---
+  #
+  # The compiled Tauri shell (Rust binary, tray helper, Recall sidecar) only
+  # changes when its inputs change, so it is built once per shell cache key
+  # and reused. A UI-only release downloads the cached shell, drops the freshly
+  # built UI into Contents/Resources/ui, stamps the version, and then signs,
+  # notarizes and packages exactly as the legacy `macos` job does. The legacy
+  # single-job build stays available behind the `legacy_build` dispatch input.
+  shell-key:
+    name: Compute macOS shell cache key
     needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
+    runs-on: ubuntu-latest
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      toolchain: ${{ steps.key.outputs.toolchain }}
+      target: ${{ steps.key.outputs.target }}
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Resolve today's stable toolchain once. shell-macos installs this exact
+      # version, so the key always names the compiler that built the shell.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Compute shell key
+        id: key
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$(rustc --version | awk '{print $2}')"
+          TARGET="universal-apple-darwin"
+          KEY="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$TARGET")"
+          if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-hash.mjs returned an invalid key: $KEY"
+            exit 1
+          fi
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+            echo "target=$TARGET"
+          } >> "$GITHUB_OUTPUT"
+          echo "macOS shell key $KEY (rustc $TOOLCHAIN, $TARGET)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  shell-macos:
+    name: macOS shell (restore or build)
+    needs: [validate, shell-key]
+    if: ${{ !cancelled() && needs.shell-key.result == 'success' }}
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHELL_KEY: ${{ needs.shell-key.outputs.key }}
+      # rust-toolchain.toml pins channel "stable", which would override the
+      # rustup default and select the runner's preinstalled stable (host
+      # target only). Force the exact toolchain the shell key names.
+      RUSTUP_TOOLCHAIN: ${{ needs.shell-key.outputs.toolchain }}
+    defaults:
+      run:
+        working-directory: apps/sync
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Restore shell from the Actions cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: shell-out/shell-macos.tar.gz
+          key: shell-macos-${{ needs.shell-key.outputs.key }}
+
+      # Actions caches are ref-scoped: a cache saved by one tag cannot be read
+      # by another tag. The rolling `shell-cache` prerelease is the cross-tag
+      # store. It is created prerelease and never marked latest, and its tag
+      # does not parse as a release channel, so neither the stable
+      # /releases/latest alias nor the beta feed can ever select it.
+      - name: Restore shell from the shell-cache release
+        id: release-cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-macos-${SHELL_KEY}.tar.gz"
+          if ! gh release view shell-cache -R "$REPOSITORY" >/dev/null 2>&1; then
+            gh release create shell-cache -R "$REPOSITORY" --prerelease --latest=false \
+              --title "Shell cache" \
+              --notes "Build cache for the prebuilt macOS/Windows app shell, keyed by scripts/shell-hash.mjs. Not a release; never install from here." \
+              || gh release view shell-cache -R "$REPOSITORY" >/dev/null
+          fi
+          mkdir -p shell-out
+          if gh release view shell-cache -R "$REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ASSET"; then
+            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-macos.tar.gz --clobber
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Restored $ASSET from the shell-cache release."
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            echo "$ASSET is not in the shell-cache release; building the shell."
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@master
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        with:
+          toolchain: ${{ needs.shell-key.outputs.toolchain }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Confirm the pinned toolchain is active
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(rustc --version | awk '{print $2}')"
+          if [ "$actual" != "$RUSTUP_TOOLCHAIN" ]; then
+            echo "::error::rustc is $actual, but the shell key was computed for $RUSTUP_TOOLCHAIN"
+            exit 1
+          fi
+          rustup target list --installed
+
+      - name: Put rustup-managed cargo first on PATH
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Replace any cargo shim with rustup-managed cargo
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup_cargo="$HOME/.cargo/bin/cargo"
+          if [ ! -x "$rustup_cargo" ]; then
+            echo "::error::rustup-managed cargo not found at $rustup_cargo"
+            exit 1
+          fi
+
+          echo "PATH=$PATH"
+          echo "All cargo on PATH:"
+          which -a cargo || true
+
+          replaced=0
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            if [ "$c" = "$rustup_cargo" ]; then
+              continue
+            fi
+            target="$(readlink "$c" 2>/dev/null || true)"
+            if [ "$target" = "$rustup_cargo" ]; then
+              continue
+            fi
+            echo "Replace shim: $c (was -> '${target:-<regular file>}') -> $rustup_cargo"
+            sudo rm -f "$c"
+            sudo ln -sf "$rustup_cargo" "$c"
+            replaced=$((replaced + 1))
+          done < <(which -a cargo 2>/dev/null || true)
+
+          if [ "$replaced" = 0 ]; then
+            echo "No non-rustup cargo entries on PATH."
+          fi
+
+          which cargo
+          cargo --version
+          cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
+
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        with:
+          workspaces: apps/sync/src-tauri
+          shared-key: release-macos-universal
+          save-if: false
+
+      - name: Install dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm run sidecar:install
+
+      # The commit whose sources built this shell. On a cache hit the bundle
+      # keeps the commit that originally built it, which is the commit whose
+      # native code actually runs.
+      - name: Stamp build commit identity
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # Placeholder UI only (tauri.conf.json frontendDist = shell-placeholder),
+      # no frontend build, no updater artifacts and no signing: the shell is
+      # version- and UI-agnostic. assemble-macos adds both and signs.
+      - name: Build unsigned universal shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        env:
+          HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+        run: |
+          pnpm tauri build --target universal-apple-darwin --bundles app \
+            --config '{"build":{"beforeBuildCommand":""},"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Install Sentry CLI
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify macOS debug file contract
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          APP_BINARY="$APP_BUNDLE/Contents/MacOS/hq-sync-menubar"
+          DSYM_BUNDLE="${APP_BUNDLE}.dSYM"
+          DSYM_BINARY="$DSYM_BUNDLE/Contents/Resources/DWARF/hq-sync-menubar"
+          test -f "$APP_BINARY"
+
+          # --- Bundle composition diagnostics (attributes any size regression) ---
+          echo "== macOS bundle composition =="
+          du -sk "$APP_BUNDLE"  | awk '{print "  app bundle KB:", $1}'
+          du -sk "$APP_BINARY"  | awk '{print "  app binary KB:", $1}'
+          du -sk "$APP_BUNDLE/Contents/Resources" 2>/dev/null | awk '{print "  resources KB:", $1}' || true
+          echo "  largest entries:"
+          du -sk "$APP_BUNDLE"/Contents/* "$APP_BUNDLE"/Contents/Resources/* 2>/dev/null | sort -rn | head -12 || true
+
+          # --- Produce the sidecar dSYM BEFORE stripping the app binary ---
+          # Source of truth: the packed per-arch dSYMs that split-debuginfo =
+          # "packed" emits at link time. Each is a symlink into deps/ whose
+          # inner DWARF file is named after the crate (hq_sync_menubar), so
+          # resolve it by glob rather than by the bin name. The universal app
+          # binary is a lipo of both arch slices (two debug ids), so combine the
+          # per-arch DWARF into one fat DWARF whose id set matches the binary.
+          # cargo's strip = "symbols" removes the debug map, so dsymutil on the
+          # binary can no longer recover it — the packed dSYMs are required; the
+          # dsymutil path is only a last-resort fallback for a non-stripped build.
+          declare -a DWARF_SLICES=()
+          FIRST_PACKED_DSYM=""
+          for ARCH in aarch64-apple-darwin x86_64-apple-darwin; do
+            PACKED_DSYM="src-tauri/target/${ARCH}/release/hq-sync-menubar.dSYM"
+            PACKED_DWARF="$(ls "$PACKED_DSYM"/Contents/Resources/DWARF/* 2>/dev/null | head -1 || true)"
+            if [ -n "$PACKED_DWARF" ] && [ -f "$PACKED_DWARF" ]; then
+              DWARF_SLICES+=("$PACKED_DWARF")
+              [ -z "$FIRST_PACKED_DSYM" ] && FIRST_PACKED_DSYM="$PACKED_DSYM"
+            else
+              echo "::warning::No packed dSYM for ${ARCH} at ${PACKED_DSYM}"
+            fi
+          done
+          rm -rf "$DSYM_BUNDLE"
+          if [ "${#DWARF_SLICES[@]}" -gt 0 ]; then
+            mkdir -p "$DSYM_BUNDLE/Contents/Resources/DWARF"
+            cp "$FIRST_PACKED_DSYM/Contents/Info.plist" "$DSYM_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+            lipo -create "${DWARF_SLICES[@]}" -output "$DSYM_BINARY"
+          else
+            echo "::warning::No packed per-arch dSYM found; falling back to dsymutil on the pre-strip universal binary"
+            xcrun dsymutil "$APP_BINARY" -o "$DSYM_BUNDLE"
+          fi
+          test -f "$DSYM_BINARY"
+
+          # --- Deterministically strip the shipped binary ---
+          # Belt-and-suspenders over [profile.release] strip = "symbols": ensure
+          # the shipped binary carries no debug info regardless of cargo's
+          # behavior (debug info now lives in the sidecar dSYM above). LC_UUID —
+          # the Sentry debug id — survives strip, so the app binary and the
+          # sidecar still share the same id set.
+          xcrun strip -S -x "$APP_BINARY"
+          du -sk "$APP_BINARY" | awk '{print "  app binary KB (post-strip):", $1}'
+
+          # --- Size budgets ---
+          # The 15 MB total-bundle budget was never satisfiable: the bundle
+          # legitimately carries the ~150 MB Recall SDK sidecar plus the ~80 MB
+          # universal binary. The meaningful signal for native-symbol / code
+          # bloat is the STRIPPED BINARY, so budget that tightly; keep a coarse
+          # total-bundle ceiling to catch runaway resource growth.
+          APP_BINARY_KB="$(du -sk "$APP_BINARY" | awk '{print $1}')"
+          APP_BINARY_BUDGET_KB=$((120 * 1024))
+          if [ "$APP_BINARY_KB" -ge "$APP_BINARY_BUDGET_KB" ]; then
+            echo "::error::macOS app binary exceeds 120 MB budget: ${APP_BINARY_KB} KB (native-symbol bloat? a healthy stripped universal binary is ~80 MB)"
+            exit 1
+          fi
+          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
+          BUNDLE_BUDGET_KB=$((300 * 1024))
+          if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
+            echo "::error::macOS app bundle exceeds 300 MB budget: ${BUNDLE_KB} KB"
+            exit 1
+          fi
+          echo "macOS app binary: ${APP_BINARY_KB} KB (< ${APP_BINARY_BUDGET_KB} KB); bundle: ${BUNDLE_KB} KB (< ${BUNDLE_BUDGET_KB} KB)"
+
+          APP_DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
+          DSYM_DEBUG_ID="$(sentry-cli difutil check --json "$DSYM_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
+          test -n "$APP_DEBUG_ID"
+          test "$APP_DEBUG_ID" = "$DSYM_DEBUG_ID"
+          echo "macOS app/dSYM debug id: $APP_DEBUG_ID"
+
+      - name: Upload macOS debug files to Sentry
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          DEBUG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+          APP_BINARY="$DEBUG_DIR/HQ.app/Contents/MacOS/hq-sync-menubar"
+          DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); print(",".join(ids) or "unknown")')"
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            MESSAGE="SENTRY_AUTH_TOKEN is not configured; debug id $DEBUG_ID was not uploaded and no recoverable debug file was retained."
+            echo "::warning::$MESSAGE"
+            printf '%s\n' "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 "$DEBUG_DIR"; then
+            MESSAGE="SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $DEBUG_ID was not uploaded and no recoverable debug file was retained."
+            echo "::warning::$MESSAGE"
+            printf '%s\n' "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          export DEBUG_IDS="$DEBUG_ID"
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          token = os.environ["SENTRY_AUTH_TOKEN"]
+          debug_ids = [debug_id for debug_id in os.environ["DEBUG_IDS"].split(",") if debug_id]
+          if not debug_ids:
+              raise SystemExit("debug-file upload verification has no debug ids")
+
+          for debug_id in debug_ids:
+              url = f"{endpoint}?{urllib.parse.urlencode({'debug_id': debug_id})}"
+              request = urllib.request.Request(
+                  url,
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  records = json.load(response)
+              if not any((record.get("debugId") or "").casefold() == debug_id.casefold() for record in records):
+                  raise SystemExit(f"Sentry debug-file listing is missing uploaded debug id {debug_id}")
+              print(f"Verified Sentry debug-file record for {debug_id}")
+          PY
+
+      - name: Package shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/shell-out"
+          tar -C src-tauri/target/universal-apple-darwin/release/bundle/macos -czf "$GITHUB_WORKSPACE/shell-out/shell-macos.tar.gz" HQ.app
+          ls -la "$GITHUB_WORKSPACE/shell-out"
+
+      - name: Save shell to the Actions cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: shell-out/shell-macos.tar.gz
+          key: shell-macos-${{ needs.shell-key.outputs.key }}
+
+      - name: Upload shell to the shell-cache release
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-macos-${SHELL_KEY}.tar.gz"
+          cp shell-out/shell-macos.tar.gz "$RUNNER_TEMP/$ASSET"
+          for attempt in 1 2 3 4 5; do
+            if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
+              echo "Uploaded $ASSET to the shell-cache release."
+              exit 0
+            fi
+            echo "::warning::Upload of $ASSET failed (attempt $attempt/5); retrying."
+            sleep $((attempt * 10))
+          done
+          echo "::error::Upload of $ASSET to shell-cache failed after 5 attempts."
+          exit 1
+
+      - name: Report shell source
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          RELEASE_HIT: ${{ steps.release-cache.outputs.hit }}
+        run: |
+          set -euo pipefail
+          if [ "$CACHE_HIT" = "true" ]; then SOURCE="restored from Actions cache";
+          elif [ "$RELEASE_HIT" = "true" ]; then SOURCE="restored from shell-cache release";
+          else SOURCE="built"; fi
+          echo "macOS shell $SHELL_KEY: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s shell-out/shell-macos.tar.gz
+
+      # Keep the shell-cache release bounded: the newest 6 assets for this
+      # target stay, older ones are deleted. Only this target's assets are
+      # considered, and the key this run used is never deleted. Best effort:
+      # a failed prune is logged and never fails the release.
+      - name: Prune old macos shells from the shell-cache release
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ needs.shell-key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target macos --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 macos shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
+
+      - name: Upload shell artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-macos
+          if-no-files-found: error
+          retention-days: 3
+          path: shell-out/shell-macos.tar.gz
+
+  ui:
+    name: Build UI bundle
+    needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/sync
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Apply release version stamp
+        uses: actions/download-artifact@v4
+        with:
+          name: release-version-stamp
+          path: ${{ github.workspace }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build UI
+        env:
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+        run: pnpm run build
+
+      - name: Upload UI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          if-no-files-found: error
+          retention-days: 3
+          path: apps/sync/dist
+
+  assemble-macos:
+    name: Assemble, sign and package macOS universal
+    needs: [validate, shell-key, shell-macos, ui]
+    if: ${{ !cancelled() && needs.shell-macos.result == 'success' && needs.ui.result == 'success' }}
+    runs-on: macos-14
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/sync
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Checkout release control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-control
+          sparse-checkout: |
+            scripts/macos-artifact-smoke.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      # Only the Tauri CLI (updater signing) is needed here; nothing is compiled.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download shell
+        uses: actions/download-artifact@v4
+        with:
+          name: shell-macos
+          path: ${{ runner.temp }}/shell
+
+      - name: Download UI
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ${{ runner.temp }}/ui-dist
+
+      - name: Assemble app bundle
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SHELL_KEY: ${{ needs.shell-key.outputs.key }}
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+          APP="$BUNDLE_DIR/HQ.app"
+          rm -rf "$BUNDLE_DIR"
+          mkdir -p "$BUNDLE_DIR"
+          tar -C "$BUNDLE_DIR" -xzf "$RUNNER_TEMP/shell/shell-macos.tar.gz"
+          test -x "$APP/Contents/MacOS/hq-sync-menubar"
+          test -f "$RUNNER_TEMP/ui-dist/index.html"
+
+          rm -rf "$APP/Contents/Resources/ui"
+          cp -R "$RUNNER_TEMP/ui-dist" "$APP/Contents/Resources/ui"
+          printf '%s\n' "$SHELL_KEY" > "$APP/Contents/Resources/shell-key.txt"
+          node ../../scripts/stamp-version.mjs \
+            --version "$RELEASE_VERSION" \
+            --resources-dir "$APP/Contents/Resources" \
+            --info-plist "$APP/Contents/Info.plist"
+
+          actual="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          if [ "$actual" != "$RELEASE_VERSION" ]; then
+            echo "::error::Info.plist is $actual after stamping, expected $RELEASE_VERSION"
+            exit 1
+          fi
+          echo "Assembled $RELEASE_VERSION on shell $SHELL_KEY"
+          du -sk "$APP" | awk '{print "  app bundle KB:", $1}'
+
+      - name: Import Developer ID Application certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          CERT_PATH="$RUNNER_TEMP/developer-id-application.p12"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[",]//g')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Fix Recall framework symlinks
+        shell: bash
+        run: bash scripts/fix-recall-framework-symlinks.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+
+      - name: Sign app bundle
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          if [ "${UNVERIFIED_RELEASE}" = "true" ]; then
+            echo "UNVERIFIED_RELEASE=true — ad-hoc signing (runnable on Apple Silicon; not notarized)."
+            HARDENED_RUNTIME=0 TIMESTAMP=0 HQ_SIGN_ENTITLEMENTS="" \
+              bash scripts/sign-bundle.sh "$APP" "-"
+          else
+            HARDENED_RUNTIME=1 TIMESTAMP=1 HQ_SIGN_ENTITLEMENTS="src-tauri/Entitlements.plist" \
+              bash scripts/sign-bundle.sh "$APP" "$APPLE_SIGNING_IDENTITY"
+          fi
+
+      - name: Notarize and staple app bundle
+        if: ${{ env.UNVERIFIED_RELEASE != 'true' }}
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          ZIP_PATH="$RUNNER_TEMP/HQ-notarize.zip"
+          # Notarization authenticates with an App Store Connect API key rather
+          # than an Apple ID + app-specific password, so no individual's Apple
+          # account sits in the release path. See
+          # companies/indigo/knowledge/engineering/apple-account-migration.md
+          API_KEY_PATH="$RUNNER_TEMP/asc-api-key.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$API_KEY_PATH"
+          chmod 600 "$API_KEY_PATH"
+          trap 'rm -f "$API_KEY_PATH"' EXIT
+          # notarytool needs a zip/dmg; staple the .app after the ticket is issued.
+          /usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+          SUBMIT_JSON="$(xcrun notarytool submit "$ZIP_PATH" \
+            --key "$API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait \
+            --timeout 1800 \
+            --output-format json)"
+          echo "$SUBMIT_JSON"
+          SUB_ID="$(echo "$SUBMIT_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
+          STATUS="$(echo "$SUBMIT_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')"
+          # On anything other than Accepted, dump Apple's per-file notary log
+          # (the only place that names which binary was rejected) and fail.
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization status: $STATUS — fetching notary log for $SUB_ID"
+            xcrun notarytool log "$SUB_ID" \
+              --key "$API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" || true
+            exit 1
+          fi
+          xcrun stapler staple "$APP_PATH"
+          # Apple's ticket lookup can lag the staple by a few seconds; a first-try
+          # validate then fails with "CloudKit query … failed" / Error 65 even
+          # though notarization was Accepted and the staple succeeded (v0.10.176).
+          # Retry with backoff before declaring the release broken.
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun stapler validate "$APP_PATH"; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              echo "::error::stapler validate still failing after $attempt attempts"
+              exit 65
+            fi
+            echo "stapler validate attempt $attempt failed; retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
+
+      - name: Regenerate updater archive and signature
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          ARTIFACT_DIR="src-tauri/target/release-artifacts"
+          TAR_GZ="$ARTIFACT_DIR/HQ_${VERSION}_universal.app.tar.gz"
+
+          mkdir -p "$ARTIFACT_DIR"
+          rm -f "$TAR_GZ" "$TAR_GZ.sig"
+          tar -C "$(dirname "$APP_PATH")" -czf "$TAR_GZ" "$(basename "$APP_PATH")"
+          pnpm tauri signer sign "$TAR_GZ"
+          test -f "$TAR_GZ.sig"
+
+      - name: Create, sign, notarize, and staple DMG
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          ARTIFACT_DIR="src-tauri/target/release-artifacts"
+          DMG_PATH="$ARTIFACT_DIR/HQ_${VERSION}_universal.dmg"
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          bash scripts/create-dmg.sh "$APP_PATH" "$DMG_PATH"
+          if [ "${UNVERIFIED_RELEASE}" = "true" ]; then
+            echo "UNVERIFIED_RELEASE=true — ad-hoc signing DMG, skipping notarization."
+            codesign --force --sign - "$DMG_PATH" || true
+          else
+            # App Store Connect API key auth — see the app-bundle notarize step.
+            API_KEY_PATH="$RUNNER_TEMP/asc-api-key.p8"
+            printf '%s' "$APPLE_API_PRIVATE_KEY" > "$API_KEY_PATH"
+            chmod 600 "$API_KEY_PATH"
+            trap 'rm -f "$API_KEY_PATH"' EXIT
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG_PATH"
+            xcrun notarytool submit "$DMG_PATH" \
+              --key "$API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" \
+              --wait \
+              --timeout 1800
+            xcrun stapler staple "$DMG_PATH"
+            spctl -a -t open --context context:primary-signature -v "$DMG_PATH"
+          fi
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-macos-universal
+          if-no-files-found: error
+          path: |
+            apps/sync/src-tauri/target/release-artifacts/*.dmg
+            apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz
+            apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz.sig
+
+      # Fail-closed: a missing secret or a skeleton boot must fail this job
+      # so Publish GitHub release never runs. This is the check that would
+      # have stopped v0.10.178 — every prior test ran as an Indigo user
+      # with conversations.
+      - name: Non-Indigo artifact smoke
+        # 8, not 5: the smoke now installs the real hq CLI into its sandbox
+        # HOME (up to 3 min on a slow registry) before the 30s launch.
+        timeout-minutes: 8
+        env:
+          HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO: ${{ secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO:-}" ]; then
+            echo "::error::HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO is not set. Provision a Cognito refresh token for a non-Indigo account with an empty inbox (only #setup) and add it as a repository secret. This step is fail-closed so a missing identity cannot skip the gate that would have caught v0.10.178."
+            exit 1
+          fi
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          test -d "$APP"
+          xattr -cr "$APP" || true
+          node "$GITHUB_WORKSPACE/.release-control/scripts/macos-artifact-smoke.mjs" \
+            --app "$APP" \
+            --version "$RELEASE_VERSION" \
+            --timeout-ms 30000 \
+            --launch
+
+
+  shell-windows-x64:
+    name: Windows x64 shell (restore or build)
+    needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUST_TARGET: x86_64-pc-windows-msvc
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      toolchain: ${{ steps.key.outputs.toolchain }}
+    defaults:
+      run:
+        working-directory: apps/sync
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Compute shell key
+        id: key
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$(rustc --version | awk '{print $2}')"
+          KEY="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$RUST_TARGET")"
+          if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-hash.mjs returned an invalid key: $KEY"
+            exit 1
+          fi
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
+          echo "Windows x64 shell key $KEY (rustc $TOOLCHAIN, $RUST_TARGET)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore shell from the Actions cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: shell-out/shell-windows-x64.tar
+          key: shell-windows-x64-${{ steps.key.outputs.key }}
+
+      # Cross-tag store, same rationale as shell-macos: Actions caches are
+      # ref-scoped and a cache saved by one tag cannot be read by another.
+      - name: Restore shell from the shell-cache release
+        id: release-cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHELL_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-windows-x64-${SHELL_KEY}.tar"
+          if ! gh release view shell-cache -R "$REPOSITORY" >/dev/null 2>&1; then
+            gh release create shell-cache -R "$REPOSITORY" --prerelease --latest=false \
+              --title "Shell cache" \
+              --notes "Build cache for the prebuilt macOS/Windows app shell, keyed by scripts/shell-hash.mjs. Not a release; never install from here." \
+              || gh release view shell-cache -R "$REPOSITORY" >/dev/null
+          fi
+          mkdir -p shell-out
+          if gh release view shell-cache -R "$REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ASSET"; then
+            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-windows-x64.tar --clobber
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Restored $ASSET from the shell-cache release."
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            echo "$ASSET is not in the shell-cache release; building the shell."
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm run sidecar:install
+
+      - name: Build Recall SDK sidecar (x86_64-pc-windows-msvc)
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        run: |
+          pnpm -C sidecar/recall-sdk-bridge build
+          $launcher = "src-tauri/binaries/recall-desktop-sdk-x86_64-pc-windows-msvc.exe"
+          if (-not (Test-Path $launcher)) {
+            throw "Recall sidecar launcher was not produced at $launcher"
+          }
+
+      - name: Stamp build commit identity
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # Placeholder UI, no bundling: compile only. The real UI and MSI/NSIS
+      # bundling happen in assemble-windows-x64 after this shell is restored.
+      - name: Compile unsigned Windows x64 shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        env:
+          HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+          RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
+
+      # The whole target/<triple> dir, not just the exe: assemble-windows-x64
+      # reruns `tauri build` to produce the signed MSI/NSIS bundles, and that
+      # needs cargo's own incremental build state to skip recompilation.
+      - name: Package shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/shell-out"
+          tar --force-local -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar" target/x86_64-pc-windows-msvc binaries
+          ls -la "$GITHUB_WORKSPACE/shell-out"
+
+      - name: Save shell to the Actions cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: shell-out/shell-windows-x64.tar
+          key: shell-windows-x64-${{ steps.key.outputs.key }}
+
+      - name: Upload shell to the shell-cache release
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHELL_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-windows-x64-${SHELL_KEY}.tar"
+          cp shell-out/shell-windows-x64.tar "$RUNNER_TEMP/$ASSET"
+          for attempt in 1 2 3 4 5; do
+            if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
+              echo "Uploaded $ASSET to the shell-cache release."
+              exit 0
+            fi
+            echo "::warning::Upload of $ASSET failed (attempt $attempt/5); retrying."
+            sleep $((attempt * 10))
+          done
+          echo "::error::Upload of $ASSET to shell-cache failed after 5 attempts."
+          exit 1
+
+      - name: Report shell source
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          RELEASE_HIT: ${{ steps.release-cache.outputs.hit }}
+        run: |
+          set -euo pipefail
+          if [ "$CACHE_HIT" = "true" ]; then SOURCE="restored from Actions cache";
+          elif [ "$RELEASE_HIT" = "true" ]; then SOURCE="restored from shell-cache release";
+          else SOURCE="built"; fi
+          echo "Windows x64 shell ${{ steps.key.outputs.key }}: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s shell-out/shell-windows-x64.tar
+
+      # Keep the shell-cache release bounded: the newest 6 assets for this
+      # target stay, older ones are deleted. Only this target's assets are
+      # considered, and the key this run used is never deleted. Best effort:
+      # a failed prune is logged and never fails the release.
+      - name: Prune old windows-x64 shells from the shell-cache release
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target windows-x64 --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 windows-x64 shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
+
+      - name: Upload shell artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-windows-x64
+          if-no-files-found: error
+          retention-days: 3
+          path: shell-out/shell-windows-x64.tar
+
+  shell-windows-arm64:
+    name: Windows arm64 shell (restore or build)
+    needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUST_TARGET: aarch64-pc-windows-msvc
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      toolchain: ${{ steps.key.outputs.toolchain }}
+    defaults:
+      run:
+        working-directory: apps/sync
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Compute shell key
+        id: key
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$(rustc --version | awk '{print $2}')"
+          KEY="$(node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$TOOLCHAIN" --target "$RUST_TARGET")"
+          if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-hash.mjs returned an invalid key: $KEY"
+            exit 1
+          fi
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
+          echo "Windows arm64 shell key $KEY (rustc $TOOLCHAIN, $RUST_TARGET)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore shell from the Actions cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: shell-out/shell-windows-arm64.tar
+          key: shell-windows-arm64-${{ steps.key.outputs.key }}
+
+      # Cross-tag store, same rationale as shell-macos: Actions caches are
+      # ref-scoped and a cache saved by one tag cannot be read by another.
+      - name: Restore shell from the shell-cache release
+        id: release-cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHELL_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-windows-arm64-${SHELL_KEY}.tar"
+          if ! gh release view shell-cache -R "$REPOSITORY" >/dev/null 2>&1; then
+            gh release create shell-cache -R "$REPOSITORY" --prerelease --latest=false \
+              --title "Shell cache" \
+              --notes "Build cache for the prebuilt macOS/Windows app shell, keyed by scripts/shell-hash.mjs. Not a release; never install from here." \
+              || gh release view shell-cache -R "$REPOSITORY" >/dev/null
+          fi
+          mkdir -p shell-out
+          if gh release view shell-cache -R "$REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ASSET"; then
+            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-windows-arm64.tar --clobber
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Restored $ASSET from the shell-cache release."
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            echo "$ASSET is not in the shell-cache release; building the shell."
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        run: pnpm run sidecar:install
+
+      - name: Download native ARM64 Node runtime for Recall launcher
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: pwsh
+        run: |
+          $version = node -p "process.version"
+          $archiveName = "node-${version}-win-arm64.zip"
+          $baseUrl = "https://nodejs.org/dist/$version"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $checksums = Join-Path $env:RUNNER_TEMP "SHASUMS256.txt"
+          $extract = Join-Path $env:RUNNER_TEMP "node-${version}-win-arm64"
+
+          Invoke-WebRequest "$baseUrl/$archiveName" -OutFile $archive
+          Invoke-WebRequest "$baseUrl/SHASUMS256.txt" -OutFile $checksums
+          $checksumLine = Get-Content $checksums | Where-Object { $_ -match "\s+$([regex]::Escape($archiveName))$" } | Select-Object -First 1
+          if (-not $checksumLine) {
+            throw "No Node checksum found for $archiveName"
+          }
+          $expected = ($checksumLine -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Node ARM64 checksum mismatch: expected $expected, got $actual"
+          }
+
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP -Force
+          $nodeExe = Join-Path $extract "node.exe"
+          if (-not (Test-Path $nodeExe)) {
+            throw "ARM64 node.exe was not extracted at $nodeExe"
+          }
+          "RECALL_SIDECAR_NODE_EXECUTABLE=$nodeExe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build Recall SDK sidecar (aarch64-pc-windows-msvc)
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
+        run: |
+          pnpm -C sidecar/recall-sdk-bridge build
+          $launcher = "src-tauri/binaries/recall-desktop-sdk-aarch64-pc-windows-msvc.exe"
+          if (-not (Test-Path $launcher)) {
+            throw "Recall sidecar launcher was not produced at $launcher"
+          }
+
+      - name: Stamp build commit identity
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # Placeholder UI, no bundling: compile only. The real UI and MSI/NSIS
+      # bundling happen in assemble-windows-arm64 after this shell is restored.
+      - name: Compile unsigned Windows arm64 shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        env:
+          HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+          RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
+        run: pnpm tauri build --no-bundle --target aarch64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
+
+      # The whole target/<triple> dir, not just the exe: assemble-windows-arm64
+      # reruns `tauri build` to produce the signed MSI/NSIS bundles, and that
+      # needs cargo's own incremental build state to skip recompilation.
+      - name: Package shell
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/shell-out"
+          tar --force-local -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-arm64.tar" target/aarch64-pc-windows-msvc binaries
+          ls -la "$GITHUB_WORKSPACE/shell-out"
+
+      - name: Save shell to the Actions cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: shell-out/shell-windows-arm64.tar
+          key: shell-windows-arm64-${{ steps.key.outputs.key }}
+
+      - name: Upload shell to the shell-cache release
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHELL_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          ASSET="shell-windows-arm64-${SHELL_KEY}.tar"
+          cp shell-out/shell-windows-arm64.tar "$RUNNER_TEMP/$ASSET"
+          for attempt in 1 2 3 4 5; do
+            if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
+              echo "Uploaded $ASSET to the shell-cache release."
+              exit 0
+            fi
+            echo "::warning::Upload of $ASSET failed (attempt $attempt/5); retrying."
+            sleep $((attempt * 10))
+          done
+          echo "::error::Upload of $ASSET to shell-cache failed after 5 attempts."
+          exit 1
+
+      - name: Report shell source
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          RELEASE_HIT: ${{ steps.release-cache.outputs.hit }}
+        run: |
+          set -euo pipefail
+          if [ "$CACHE_HIT" = "true" ]; then SOURCE="restored from Actions cache";
+          elif [ "$RELEASE_HIT" = "true" ]; then SOURCE="restored from shell-cache release";
+          else SOURCE="built"; fi
+          echo "Windows arm64 shell ${{ steps.key.outputs.key }}: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s shell-out/shell-windows-arm64.tar
+
+      # Keep the shell-cache release bounded: the newest 6 assets for this
+      # target stay, older ones are deleted. Only this target's assets are
+      # considered, and the key this run used is never deleted. Best effort:
+      # a failed prune is logged and never fails the release.
+      - name: Prune old windows-arm64 shells from the shell-cache release
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          if ! ASSETS="$(gh api "repos/$REPOSITORY/releases/tags/shell-cache" --jq '[.assets[] | {name, created_at, updated_at}]')"; then
+            echo "::warning::Could not list shell-cache assets; skipping prune."
+            exit 0
+          fi
+          if ! DOOMED="$(node scripts/prune-shell-cache.mjs --target windows-arm64 --keep 6 --protect "$CURRENT_KEY" <<<"$ASSETS")"; then
+            echo "::warning::prune-shell-cache.mjs failed; skipping prune."
+            exit 0
+          fi
+          if [ -z "$DOOMED" ]; then
+            echo "shell-cache holds at most 6 windows-arm64 shells; nothing to prune."
+            exit 0
+          fi
+          while IFS= read -r NAME; do
+            if gh release delete-asset shell-cache "$NAME" -R "$REPOSITORY" -y; then
+              echo "Pruned $NAME from shell-cache."
+            else
+              echo "::warning::Could not delete $NAME from shell-cache."
+            fi
+          done <<<"$DOOMED"
+
+      - name: Upload shell artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-windows-arm64
+          if-no-files-found: error
+          retention-days: 3
+          path: shell-out/shell-windows-arm64.tar
+
+  assemble-windows-x64:
+    name: Assemble, sign and package Windows x64
+    needs: [validate, shell-windows-x64, ui]
+    if: ${{ !cancelled() && needs.shell-windows-x64.result == 'success' && needs.ui.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    environment: release
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The compiled shell restored below only carries the Rust binary and
+      # the sidecar launcher .exe. tauri.conf.json also bundles the sidecar's
+      # JS (bridge.mjs, recording-tracker.mjs, node_modules) as a resource, so
+      # build.rs fails with "resource path ...node_modules doesn't exist"
+      # unless it's installed here too. Install only, never build — the
+      # sidecar's compiled launcher already came from the shell artifact, and
+      # `pnpm -C ... build` is what triggers the Node 22 Windows
+      # `spawnSync pnpm.cmd EINVAL` this job must avoid.
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
+      - name: Download shell
+        uses: actions/download-artifact@v4
+        with:
+          name: shell-windows-x64
+          path: ${{ runner.temp }}/shell
+
+      - name: Restore shell into src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --force-local -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-x64.tar"
+          test -f src-tauri/target/x86_64-pc-windows-msvc/release/hq-sync-menubar.exe
+          test -f src-tauri/binaries/recall-desktop-sdk-x86_64-pc-windows-msvc.exe
+
+      - name: Download UI
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/sync/dist
+
+      # The tag checkout still carries whatever version was committed. Overwrite
+      # the five version files with the bytes the validate job stamped from the
+      # tag, so both installers and the updater artifacts all carry it.
+      - name: Apply release version stamp
+        uses: actions/download-artifact@v4
+        with:
+          name: release-version-stamp
+          path: ${{ github.workspace }}
+
+      - name: Verify stamped version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$actual" != "$RELEASE_VERSION" ]; then
+            echo "::error::tauri.conf.json is $actual, expected $RELEASE_VERSION"
+            exit 1
+          fi
+          echo "Building version $actual"
+
+      # version.json and shell-key.txt must ship INSIDE the installers, next
+      # to the installed exe (Windows resource dir = install dir), where the
+      # runtime version resolver and the publish-time stale-shell check read
+      # them. Files merely written into target/ are not bundled, so a
+      # generated --config overlay adds them to bundle.resources (tauri merges
+      # --config files as a JSON merge patch; the ui/ mapping is repeated so
+      # the overlay stands on its own).
+      - name: Write runtime version.json and shell key
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SHELL_KEY: ${{ needs.shell-windows-x64.outputs.key }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SHELL_KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-windows-x64 did not report a valid shell key: $SHELL_KEY"
+            exit 1
+          fi
+          STAMP_DIR="src-tauri/assemble-stamp"
+          rm -rf "$STAMP_DIR"
+          mkdir -p "$STAMP_DIR"
+          node ../../scripts/stamp-version.mjs --version "$RELEASE_VERSION" --resources-dir "$STAMP_DIR"
+          printf '%s\n' "$SHELL_KEY" > "$STAMP_DIR/shell-key.txt"
+          test -s "$STAMP_DIR/version.json" && test -s "$STAMP_DIR/shell-key.txt"
+          CONFIG="$RUNNER_TEMP/tauri.windows.assemble-stamp.conf.json"
+          cat > "$CONFIG" <<'JSON'
+          {"bundle":{"resources":{"../dist/":"ui/","assemble-stamp/version.json":"version.json","assemble-stamp/shell-key.txt":"shell-key.txt"}}}
+          JSON
+          echo "TAURI_ASSEMBLE_STAMP_CONFIG=$CONFIG" >> "$GITHUB_ENV"
+
+      - name: Generate Windows MSI version overlay
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.version }}
+          EXPECTED_MSI_VERSION: ${{ needs.validate.outputs.msi_version }}
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.msi-version.conf.json"
+          node ../../scripts/windows-msi-version.mjs --version $env:APP_VERSION --output $configPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate Windows MSI version overlay"
+          }
+
+          $actual = (Get-Content $configPath -Raw | ConvertFrom-Json).bundle.windows.wix.version
+          if ($actual -ne $env:EXPECTED_MSI_VERSION) {
+            throw "Generated MSI ProductVersion $actual does not match validated $env:EXPECTED_MSI_VERSION"
+          }
+
+          "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Windows MSI ProductVersion: $actual"
+
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Stamp exe version resource
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          EXE="src-tauri/target/x86_64-pc-windows-msvc/release/hq-sync-menubar.exe"
+          # rcedit is a devDependency; node resolves it directly (its npm
+          # package has no `bin`, so `npx rcedit@2 ...` can never work — see
+          # scripts/stamp-exe-version.mjs for the full story).
+          node ../../scripts/stamp-exe-version.mjs "$EXE"
+
+      # `tauri bundle` (not `tauri build`) packages the already-built exe
+      # into msi/nsis/updater without invoking cargo at all — it only runs
+      # `beforeBundleCommand` (unset here), never `beforeBuildCommand`. This
+      # is what actually makes the assemble job a pure relink-free package
+      # step: `tauri build` was re-triggering cargo's build-script fingerprint
+      # (via the merged TAURI_CONFIG env changing) and forcing a near-full
+      # recompile of the dependency graph on every release, even with the
+      # shell restored from cache.
+      - name: Tauri bundle (x86_64-pc-windows-msvc)
+        env:
+          RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        run: pnpm tauri bundle --target x86_64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG --config $env:TAURI_ASSEMBLE_STAMP_CONFIG
+
+      - name: Install Sentry CLI
+        shell: pwsh
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify Windows debug file contract
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri\target\x86_64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
+          if (-not (Test-Path $exe)) {
+            throw "Required release executable is missing: $exe"
+          }
+          if (-not (Test-Path $pdb)) {
+            throw "Required release PDB is missing: $pdb"
+          }
+          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
+          $exeDebugIds = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $pdbDebugIds = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $exeDebugId = $exeDebugIds -join ","
+          $pdbDebugId = $pdbDebugIds -join ","
+          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
+            throw "Release executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
+          }
+          Write-Host "Windows executable/PDB debug id: $exeDebugId"
+
+      - name: Upload Windows debug files to Sentry
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          $releaseDir = "src-tauri\target\x86_64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $metadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $debugIds = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $debugId = $debugIds -join ","
+          if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
+            $message = "SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+          & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 $releaseDir
+          if ($LASTEXITCODE -ne 0) {
+            $message = "SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:SENTRY_AUTH_TOKEN"
+            Accept = "application/json"
+          }
+          $endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          try {
+            foreach ($expectedDebugId in $debugIds) {
+              $encodedDebugId = [uri]::EscapeDataString($expectedDebugId)
+              $records = @(Invoke-RestMethod -Uri "${endpoint}?debug_id=$encodedDebugId" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop)
+              $matchingRecords = @($records | Where-Object { $_.debugId -ieq $expectedDebugId })
+              if ($matchingRecords.Count -eq 0) {
+                throw "Sentry debug-file listing is missing uploaded debug id $expectedDebugId"
+              }
+              Write-Host "Verified Sentry debug-file record for $expectedDebugId"
+            }
+          }
+          catch {
+            $message = "Sentry debug-file upload verification failed after sentry-cli reported success for debug id(s) ${debugId}: $($_.Exception.Message)"
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+      - name: Azure login (OIDC)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSI (Azure Trusted Signing)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign NSIS setup (Azure Trusted Signing)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Regenerate updater signatures (post-Authenticode)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        shell: pwsh
+        run: |
+          $bundleDir = "src-tauri\target\x86_64-pc-windows-msvc\release\bundle"
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction SilentlyContinue
+          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
+          if (-not $targets) { Write-Warning "No updater .sig artifacts found to regenerate." }
+          foreach ($target in $targets) {
+            Write-Host "Re-signing updater signature for $($target.Name)"
+            & "node_modules\.bin\tauri.cmd" signer sign "$($target.FullName)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "tauri signer sign failed on $($target.Name)"
+              exit 1
+            }
+          }
+
+      - name: Stage Windows artifacts
+        shell: pwsh
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          $tag = $env:TAG
+          $version = $tag.TrimStart("v")
+          $arch = "x64"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-x86_64-pc-windows-msvc"
+          $bundleDir = "src-tauri\target\x86_64-pc-windows-msvc\release\bundle"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $nsis = Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $msi = Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction Stop | Select-Object -First 1
+
+          $nsisName = "HQ_${version}_${arch}-setup.exe"
+          $msiName = "HQ_${version}_${arch}.msi"
+          Copy-Item $nsis.FullName (Join-Path $stage $nsisName)
+          Copy-Item $msi.FullName (Join-Path $stage $msiName)
+
+          foreach ($source in @($nsis, $msi)) {
+            $sig = "$($source.FullName).sig"
+            if (-not (Test-Path $sig)) {
+              throw "Required updater signature is missing: $sig"
+            }
+            $destName = if ($source.Extension -eq ".msi") { "${msiName}.sig" } else { "${nsisName}.sig" }
+            Copy-Item $sig (Join-Path $stage $destName)
+          }
+
+          Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-windows-x86_64-pc-windows-msvc
+          if-no-files-found: error
+          path: release-artifacts-x86_64-pc-windows-msvc/
+
+  assemble-windows-arm64:
+    name: Assemble, sign and package Windows arm64
+    needs: [validate, shell-windows-arm64, ui]
+    if: ${{ !cancelled() && needs.shell-windows-arm64.result == 'success' && needs.ui.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    environment: release
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # See the matching step in assemble-windows-x64: build.rs needs the
+      # sidecar's JS resources (node_modules etc.) installed, but never built,
+      # on this runner.
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
+      - name: Download shell
+        uses: actions/download-artifact@v4
+        with:
+          name: shell-windows-arm64
+          path: ${{ runner.temp }}/shell
+
+      - name: Restore shell into src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --force-local -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-arm64.tar"
+          test -f src-tauri/target/aarch64-pc-windows-msvc/release/hq-sync-menubar.exe
+          test -f src-tauri/binaries/recall-desktop-sdk-aarch64-pc-windows-msvc.exe
+
+      - name: Download UI
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/sync/dist
+
+      # The tag checkout still carries whatever version was committed. Overwrite
+      # the five version files with the bytes the validate job stamped from the
+      # tag, so both installers and the updater artifacts all carry it.
+      - name: Apply release version stamp
+        uses: actions/download-artifact@v4
+        with:
+          name: release-version-stamp
+          path: ${{ github.workspace }}
+
+      - name: Verify stamped version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$actual" != "$RELEASE_VERSION" ]; then
+            echo "::error::tauri.conf.json is $actual, expected $RELEASE_VERSION"
+            exit 1
+          fi
+          echo "Building version $actual"
+
+      # version.json and shell-key.txt must ship INSIDE the installers, next
+      # to the installed exe (Windows resource dir = install dir), where the
+      # runtime version resolver and the publish-time stale-shell check read
+      # them. Files merely written into target/ are not bundled, so a
+      # generated --config overlay adds them to bundle.resources (tauri merges
+      # --config files as a JSON merge patch; the ui/ mapping is repeated so
+      # the overlay stands on its own).
+      - name: Write runtime version.json and shell key
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SHELL_KEY: ${{ needs.shell-windows-arm64.outputs.key }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SHELL_KEY" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::shell-windows-arm64 did not report a valid shell key: $SHELL_KEY"
+            exit 1
+          fi
+          STAMP_DIR="src-tauri/assemble-stamp"
+          rm -rf "$STAMP_DIR"
+          mkdir -p "$STAMP_DIR"
+          node ../../scripts/stamp-version.mjs --version "$RELEASE_VERSION" --resources-dir "$STAMP_DIR"
+          printf '%s\n' "$SHELL_KEY" > "$STAMP_DIR/shell-key.txt"
+          test -s "$STAMP_DIR/version.json" && test -s "$STAMP_DIR/shell-key.txt"
+          CONFIG="$RUNNER_TEMP/tauri.windows.assemble-stamp.conf.json"
+          cat > "$CONFIG" <<'JSON'
+          {"bundle":{"resources":{"../dist/":"ui/","assemble-stamp/version.json":"version.json","assemble-stamp/shell-key.txt":"shell-key.txt"}}}
+          JSON
+          echo "TAURI_ASSEMBLE_STAMP_CONFIG=$CONFIG" >> "$GITHUB_ENV"
+
+      - name: Generate Windows MSI version overlay
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.version }}
+          EXPECTED_MSI_VERSION: ${{ needs.validate.outputs.msi_version }}
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.msi-version.conf.json"
+          node ../../scripts/windows-msi-version.mjs --version $env:APP_VERSION --output $configPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate Windows MSI version overlay"
+          }
+
+          $actual = (Get-Content $configPath -Raw | ConvertFrom-Json).bundle.windows.wix.version
+          if ($actual -ne $env:EXPECTED_MSI_VERSION) {
+            throw "Generated MSI ProductVersion $actual does not match validated $env:EXPECTED_MSI_VERSION"
+          }
+
+          "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Windows MSI ProductVersion: $actual"
+
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Stamp exe version resource
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          EXE="src-tauri/target/aarch64-pc-windows-msvc/release/hq-sync-menubar.exe"
+          # rcedit is a devDependency; node resolves it directly (its npm
+          # package has no `bin`, so `npx rcedit@2 ...` can never work — see
+          # scripts/stamp-exe-version.mjs for the full story).
+          node ../../scripts/stamp-exe-version.mjs "$EXE"
+
+      # See the matching step in assemble-windows-x64: `tauri bundle` packages
+      # the already-built exe without invoking cargo, unlike `tauri build`
+      # (which was re-triggering a near-full dependency recompile here even
+      # with the shell restored from cache).
+      - name: Tauri bundle (aarch64-pc-windows-msvc)
+        env:
+          RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
+        run: pnpm tauri bundle --target aarch64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG --config $env:TAURI_ASSEMBLE_STAMP_CONFIG
+
+      - name: Install Sentry CLI
+        shell: pwsh
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify Windows debug file contract
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri\target\aarch64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
+          if (-not (Test-Path $exe)) {
+            throw "Required release executable is missing: $exe"
+          }
+          if (-not (Test-Path $pdb)) {
+            throw "Required release PDB is missing: $pdb"
+          }
+          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
+          $exeDebugIds = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $pdbDebugIds = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $exeDebugId = $exeDebugIds -join ","
+          $pdbDebugId = $pdbDebugIds -join ","
+          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
+            throw "Release executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
+          }
+          Write-Host "Windows executable/PDB debug id: $exeDebugId"
+
+      - name: Upload Windows debug files to Sentry
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          $releaseDir = "src-tauri\target\aarch64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $metadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $debugIds = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $debugId = $debugIds -join ","
+          if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
+            $message = "SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+          & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 $releaseDir
+          if ($LASTEXITCODE -ne 0) {
+            $message = "SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:SENTRY_AUTH_TOKEN"
+            Accept = "application/json"
+          }
+          $endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          try {
+            foreach ($expectedDebugId in $debugIds) {
+              $encodedDebugId = [uri]::EscapeDataString($expectedDebugId)
+              $records = @(Invoke-RestMethod -Uri "${endpoint}?debug_id=$encodedDebugId" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop)
+              $matchingRecords = @($records | Where-Object { $_.debugId -ieq $expectedDebugId })
+              if ($matchingRecords.Count -eq 0) {
+                throw "Sentry debug-file listing is missing uploaded debug id $expectedDebugId"
+              }
+              Write-Host "Verified Sentry debug-file record for $expectedDebugId"
+            }
+          }
+          catch {
+            $message = "Sentry debug-file upload verification failed after sentry-cli reported success for debug id(s) ${debugId}: $($_.Exception.Message)"
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+      - name: Azure login (OIDC)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSI (Azure Trusted Signing)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\aarch64-pc-windows-msvc\release\bundle\msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign NSIS setup (Azure Trusted Signing)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\aarch64-pc-windows-msvc\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Regenerate updater signatures (post-Authenticode)
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
+        shell: pwsh
+        run: |
+          $bundleDir = "src-tauri\target\aarch64-pc-windows-msvc\release\bundle"
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction SilentlyContinue
+          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
+          if (-not $targets) { Write-Warning "No updater .sig artifacts found to regenerate." }
+          foreach ($target in $targets) {
+            Write-Host "Re-signing updater signature for $($target.Name)"
+            & "node_modules\.bin\tauri.cmd" signer sign "$($target.FullName)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "tauri signer sign failed on $($target.Name)"
+              exit 1
+            }
+          }
+
+      - name: Stage Windows artifacts
+        shell: pwsh
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          $tag = $env:TAG
+          $version = $tag.TrimStart("v")
+          $arch = "arm64"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-aarch64-pc-windows-msvc"
+          $bundleDir = "src-tauri\target\aarch64-pc-windows-msvc\release\bundle"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $nsis = Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $msi = Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction Stop | Select-Object -First 1
+
+          $nsisName = "HQ_${version}_${arch}-setup.exe"
+          $msiName = "HQ_${version}_${arch}.msi"
+          Copy-Item $nsis.FullName (Join-Path $stage $nsisName)
+          Copy-Item $msi.FullName (Join-Path $stage $msiName)
+
+          foreach ($source in @($nsis, $msi)) {
+            $sig = "$($source.FullName).sig"
+            if (-not (Test-Path $sig)) {
+              throw "Required updater signature is missing: $sig"
+            }
+            $destName = if ($source.Extension -eq ".msi") { "${msiName}.sig" } else { "${nsisName}.sig" }
+            Copy-Item $sig (Join-Path $stage $destName)
+          }
+
+          Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-windows-aarch64-pc-windows-msvc
+          if-no-files-found: error
+          path: release-artifacts-aarch64-pc-windows-msvc/
+
+  windows:
+    name: Build Windows (legacy single job)
+    needs: validate
+    if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build == true }}
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -1275,7 +3276,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [validate, macos, windows]
+    needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]
     concurrency:
       # Serialize all tags, not only reruns of one tag. Otherwise two stable
       # builds can finish out of order and the older one can replace latest.
@@ -1284,7 +3285,7 @@ jobs:
     # A desktop release is one cross-platform product. Never publish a partial
     # release or updater manifest: macOS and the complete Windows matrix must
     # both finish successfully.
-    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.macos.result == 'success' && needs.windows.result == 'success' }}
+    if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && (needs.windows.result == 'success' || (needs.assemble-windows-x64.result == 'success' && needs.assemble-windows-arm64.result == 'success')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1307,6 +3308,7 @@ jobs:
             scripts/release-asset-contract.mjs
             scripts/release-stable-order.mjs
             scripts/macos-artifact-smoke.mjs
+            scripts/verify-shell-key.mjs
             .github/scripts/check-changelog.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -1378,13 +3380,92 @@ jobs:
           console.log(`Validated all ${expected.length} versioned release artifacts for ${version}`);
           NODE
 
-      - name: Generate latest.json
+      # The shell inside every bundle must be the one the tagged sources
+      # produce. Each assemble job writes the key of the shell it restored
+      # into its bundle as shell-key.txt (macOS: Contents/Resources; Windows:
+      # the install dir, via the MSI/NSIS resources). Recompute each target's
+      # key from this checkout with the toolchain its shell job used and
+      # compare, so a stale or mismatched cached shell can never be published.
+      - name: Verify bundled shell keys match the tagged sources
+        if: ${{ inputs.legacy_build != true }}
+        env:
+          MAC_TOOLCHAIN: ${{ needs.shell-key.outputs.toolchain }}
+          MAC_TARGET: ${{ needs.shell-key.outputs.target }}
+          WIN_X64_TOOLCHAIN: ${{ needs.shell-windows-x64.outputs.toolchain }}
+          WIN_ARM64_TOOLCHAIN: ${{ needs.shell-windows-arm64.outputs.toolchain }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MAC_TOOLCHAIN" && test -n "$MAC_TARGET" && test -n "$WIN_X64_TOOLCHAIN" && test -n "$WIN_ARM64_TOOLCHAIN"
+          sudo apt-get install -y --no-install-recommends msitools >/dev/null
+          KEYS="$RUNNER_TEMP/shell-keys"
+          rm -rf "$KEYS"
+          mkdir -p "$KEYS/macos"
+          tar -xzOf "release/HQ_${VERSION}_universal.app.tar.gz" HQ.app/Contents/Resources/shell-key.txt > "$KEYS/macos/shell-key.txt"
+          for ARCH in x64 arm64; do
+            mkdir -p "$KEYS/msi-$ARCH"
+            msiextract -C "$KEYS/msi-$ARCH" "release/HQ_${VERSION}_${ARCH}.msi" >/dev/null
+            echo "HQ_${VERSION}_${ARCH}.msi $(msiinfo export "release/HQ_${VERSION}_${ARCH}.msi" Property | grep -E '^ProductVersion' | tr '\t' '=' | tr -d '\r')" | tee -a "$GITHUB_STEP_SUMMARY"
+            find "$KEYS/msi-$ARCH" -type f -name version.json -exec cat {} \; | tee -a "$GITHUB_STEP_SUMMARY"
+            FOUND="$(find "$KEYS/msi-$ARCH" -type f -name shell-key.txt | head -n 1)"
+            if [ -n "$FOUND" ]; then cp "$FOUND" "$KEYS/windows-$ARCH.txt"; fi
+          done
+          hash() { node scripts/shell-hash.mjs --root "$GITHUB_WORKSPACE" --toolchain "$1" --target "$2"; }
+          node .release-control/scripts/verify-shell-key.mjs \
+            --check "macOS universal" "$(hash "$MAC_TOOLCHAIN" "$MAC_TARGET")" "$KEYS/macos/shell-key.txt" \
+            --check "Windows x64" "$(hash "$WIN_X64_TOOLCHAIN" x86_64-pc-windows-msvc)" "$KEYS/windows-x64.txt" \
+            --check "Windows arm64" "$(hash "$WIN_ARM64_TOOLCHAIN" aarch64-pc-windows-msvc)" "$KEYS/windows-arm64.txt" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # shelltest: publish a throwaway prerelease with the build artifacts
+      # only. No latest.json, no versionless aliases, never latest.
+      # shelltest-cleanup deletes the release and tag afterwards.
+      - name: Publish shelltest prerelease (never latest)
+        if: ${{ inputs.shelltest == true }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.validate.outputs.make_latest }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$CHANNEL" != "shelltest" ] || [ "$PRERELEASE" != "true" ] || [ "$MAKE_LATEST" != "false" ] ||
+             ! [[ "$TAG" =~ ^v0\.0\.0-shelltest\.[1-9][0-9]*$ ]]; then
+            echo "::error::Refusing to publish: shelltest run classified as channel=$CHANNEL prerelease=$PRERELEASE make_latest=$MAKE_LATEST tag=$TAG."
+            exit 1
+          fi
+          LATEST_BEFORE="$(gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name')"
+          gh release create "$TAG" -R "$REPOSITORY" --verify-tag --prerelease --latest=false \
+            --title "Shelltest ${TAG} (throwaway)" \
+            --notes "Prebuilt-shell pipeline test from run ${GITHUB_RUN_ID}. Deleted automatically at the end of the run." \
+            release/*
+          jq -e '.isPrerelease == true and .isDraft == false' \
+            <<<"$(gh release view "$TAG" -R "$REPOSITORY" --json isPrerelease,isDraft)" >/dev/null
+          LATEST_AFTER="$(gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name')"
+          if [ "$LATEST_AFTER" = "$TAG" ] || [ "$LATEST_AFTER" != "$LATEST_BEFORE" ]; then
+            echo "::error::GitHub latest moved from $LATEST_BEFORE to $LATEST_AFTER."
+            exit 1
+          fi
+          echo "Published $TAG as a prerelease; GitHub latest is still $LATEST_AFTER." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The manifest version is the stamped release version (the same value
+      # validate wrote into every bundle), and must equal the tag's version.
+      - name: Generate latest.json
+        if: ${{ inputs.shelltest != true }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
+          VERSION="$RELEASE_VERSION"
+          if [ -z "$VERSION" ] || [ "$VERSION" != "${TAG#v}" ]; then
+            echo "::error::Stamped release version '$VERSION' does not match tag $TAG."
+            exit 1
+          fi
           BASE="https://github.com/${REPOSITORY}/releases/download/${TAG}"
 
           # The preceding completeness gate guarantees one signed universal
@@ -1448,6 +3529,7 @@ jobs:
       # itself uses latest.json (which carries the versioned asset URLs); these
       # aliases are for direct human downloads. Mirrors the hq-installer pattern.
       - name: Create versionless download aliases
+        if: ${{ inputs.shelltest != true }}
         shell: bash
         env:
           TAG: ${{ needs.validate.outputs.tag }}
@@ -1464,6 +3546,7 @@ jobs:
       # authenticated paginated release results (which include drafts), then
       # mutate only a missing or hidden-draft release.
       - name: Resolve atomic release state
+        if: ${{ inputs.shelltest != true }}
         id: release-plan
         env:
           TAG: ${{ needs.validate.outputs.tag }}
@@ -1519,7 +3602,7 @@ jobs:
 
       - name: Create or reset hidden draft GitHub release
         id: draft-release
-        if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
+        if: ${{ inputs.shelltest != true && (steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft') }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           PRERELEASE: ${{ steps.release-plan.outputs.publish_prerelease }}
@@ -1597,7 +3680,7 @@ jobs:
           echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
 
       - name: Upload complete asset set to draft
-        if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
+        if: ${{ inputs.shelltest != true && (steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft') }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
@@ -1630,7 +3713,7 @@ jobs:
           done
 
       - name: Verify exact draft release asset set
-        if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
+        if: ${{ inputs.shelltest != true && (steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft') }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           PRERELEASE: ${{ steps.release-plan.outputs.publish_prerelease }}
@@ -1672,7 +3755,7 @@ jobs:
       # expensive native builds. This second check runs inside the global
       # publication lock immediately before the only public-state mutation.
       - name: Revalidate stable publication order
-        if: ${{ needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published' }}
+        if: ${{ inputs.shelltest != true && (needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published') }}
         env:
           TARGET_REPOSITORY: ${{ github.repository }}
           TARGET_TAG: ${{ needs.validate.outputs.tag }}
@@ -1689,7 +3772,7 @@ jobs:
       # Betas stay prerelease/not-latest. Latest is flipped only after the
       # tag-pinned latest.json smoke below succeeds.
       - name: Publish verified GitHub release
-        if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
+        if: ${{ inputs.shelltest != true && (steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft') }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           PRERELEASE: ${{ steps.release-plan.outputs.publish_prerelease }}
@@ -1718,7 +3801,7 @@ jobs:
           echo "Published verified release ${TAG} as prerelease=${PRERELEASE}, make_latest=false."
 
       - name: Smoke published latest.json for this tag
-        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        if: ${{ inputs.shelltest != true && (steps.release-plan.outputs.action != 'already-published') }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           VERSION: ${{ needs.validate.outputs.version }}
@@ -1739,7 +3822,7 @@ jobs:
             --make-latest false
 
       - name: Promote stable release to latest
-        if: ${{ needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published' }}
+        if: ${{ inputs.shelltest != true && (needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published') }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
@@ -1752,6 +3835,7 @@ jobs:
       # the previous runner lost the PATCH response, the resolver accepts the
       # already-public release only after its remote-only contract is healthy.
       - name: Confirm public release and channel isolation
+        if: ${{ inputs.shelltest != true }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           VERSION: ${{ needs.validate.outputs.version }}
@@ -1823,7 +3907,7 @@ jobs:
   sync-version:
     name: Sync released version to main
     needs: [validate, publish]
-    if: ${{ needs.publish.result == 'success' && needs.validate.outputs.prerelease != 'true' }}
+    if: ${{ needs.publish.result == 'success' && needs.validate.outputs.prerelease != 'true' && inputs.shelltest != true }}
     concurrency:
       # Serialize with itself so two releases finishing together cannot race
       # each other's push and burn all the retries.
@@ -1971,8 +4055,8 @@ jobs:
   # upstream (except a cancellation) so a failed build is reported, not silent.
   announce-result:
     name: Announce the outcome in #hq-dev
-    needs: [validate, macos, windows, publish]
-    if: ${{ !cancelled() }}
+    needs: [validate, macos, assemble-macos, windows, publish]
+    if: ${{ !cancelled() && inputs.shelltest != true }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -2011,3 +4095,46 @@ jobs:
             MESSAGE="v${LABEL} build FAILED — not published. Run: ${RUN_URL}"
           fi
           node .github/scripts/hq-dm-announce.mjs --channel hq-dev --body "$MESSAGE" || true
+
+  # shelltest only: delete the throwaway release and tag, whatever happened.
+  shelltest-cleanup:
+    name: Delete shelltest release and tag
+    needs: [shelltest-tag, validate, shell-key, shell-macos, ui, assemble-macos, macos, windows, publish]
+    if: ${{ always() && inputs.shelltest == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      TAG: v0.0.0-shelltest.${{ github.run_number }}
+    steps:
+      - name: Delete throwaway release and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v0\.0\.0-shelltest\.[1-9][0-9]*$ ]]; then
+            echo "::error::Refusing to delete non-shelltest tag $TAG"
+            exit 1
+          fi
+          if gh release view "$TAG" -R "$REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$TAG" -R "$REPOSITORY" --yes
+            echo "Deleted release $TAG."
+          fi
+          if gh release view "$TAG" -R "$REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$TAG release still exists after cleanup."
+            exit 1
+          fi
+          echo "$TAG release is gone."
+          # The "release tag immutability" ruleset blocks deleting refs/tags/v*
+          # for GITHUB_TOKEN. Until the ruleset excludes v0.0.0-shelltest.*,
+          # a release manager deletes the leftover tag by hand; the release
+          # itself (the only thing a client could ever see) is already gone.
+          if gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            if gh api --method DELETE "repos/${REPOSITORY}/git/refs/tags/${TAG}"; then
+              echo "Deleted tag $TAG."
+            else
+              echo "::warning::Could not delete tag $TAG (tag ruleset). Delete it with: gh api --method DELETE repos/${REPOSITORY}/git/refs/tags/${TAG}"
+              echo "Tag $TAG left behind: the tag ruleset blocks deletion by the workflow token." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi

@@ -13,6 +13,7 @@ describe("Windows MSI release version", () => {
     ["0.10.35-beta.1", "0.10.35"],
     ["0.10.35-beta.42", "0.10.35"],
     ["0.10.35-alpha.0", "0.10.35"],
+    ["0.0.0-shelltest.7", "0.0.0"],
   ])("maps strict app version %s to WiX ProductVersion %s", (appVersion, expected) => {
     expect(deriveWindowsMsiVersion(appVersion)).toBe(expected);
   });

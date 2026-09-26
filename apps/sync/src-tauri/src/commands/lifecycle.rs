@@ -544,7 +544,7 @@ pub fn report_unexpected_startup_surface(
         diagnostic_tags.ms_since_launch,
         diagnostic_tags.prior_surface,
         std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
-        env!("APP_VERSION"),
+        crate::app_version::current(),
     );
 
     if !prior_setup {
@@ -580,7 +580,7 @@ pub fn report_unexpected_startup_surface(
         probe_attempts,
         seconds_since_start,
         from_updater_restart,
-        env!("APP_VERSION"),
+        crate::app_version::current(),
     );
 
     sentry::with_scope(

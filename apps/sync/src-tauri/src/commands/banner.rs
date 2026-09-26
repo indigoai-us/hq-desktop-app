@@ -735,7 +735,7 @@ fn build_banner_window(
     WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
+        crate::ui_protocol::ui_url("index.html"),
     )
     .title("HQ Notification")
     .inner_size(BANNER_W, BANNER_H)
