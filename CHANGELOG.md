@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On Windows, the HQ CLI updater identifies the process holding its package
+  files, waits for HQ's own processes, and retries around short-lived scanners.
+  If you have the HQ CLI open in a terminal, the app leaves it running and
+  checks for the update again later.
+
 ## [0.10.330] — 2026-09-26
 
 - Releases no longer rebuild the native app when only the interface changed.
