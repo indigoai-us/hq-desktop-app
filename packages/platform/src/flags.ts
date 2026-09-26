@@ -71,7 +71,7 @@ import {
   type FlagClientOptions,
   type FlagSnapshot,
 } from "@indigoai-us/hq-flags-client";
-import { ok, type AdapterPromise } from "./adapter.js";
+import { ok, type AdapterPromise, type AdapterResult } from "./adapter.js";
 
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
@@ -108,6 +108,12 @@ export type FeatureFlagFallback = () => AdapterPromise<boolean>;
 
 export interface FeatureFlagGate {
   resolve(flag: string, fallback: FeatureFlagFallback): AdapterPromise<boolean>;
+  /** Notify when the registry client publishes a refreshed snapshot. */
+  subscribe(
+    flag: string,
+    fallback: FeatureFlagFallback,
+    onChange: (result: AdapterResult<boolean>) => void,
+  ): () => void;
 }
 
 export interface FeatureFlagGateOptions {
@@ -240,7 +246,22 @@ export function createFeatureFlagGate(
     return pending;
   }
 
-  return {
+  const gate: FeatureFlagGate = {
+    subscribe(flag, fallback, onChange) {
+      const key = registryKeyFor(flag);
+      if (!key) return () => {};
+      const flagClient = getClient();
+      let active = true;
+      const unsubscribe = flagClient.onSnapshotChange(() => {
+        void gate.resolve(flag, fallback).then((result) => {
+          if (active) onChange(result);
+        });
+      });
+      return () => {
+        active = false;
+        unsubscribe();
+      };
+    },
     async resolve(flag, fallback) {
       const key = registryKeyFor(flag);
       if (!key) return fallback();
@@ -270,4 +291,5 @@ export function createFeatureFlagGate(
       return fallback();
     },
   };
+  return gate;
 }

@@ -85,6 +85,7 @@ static MIRROR_LOCK: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct ScopeQuarantineGateState {
     snapshot: Option<bool>,
+    snapshot_revision: Option<(u64, u64)>,
     first_mirror_decision: Option<bool>,
 }
 
@@ -104,10 +105,19 @@ impl ScopeQuarantineGate {
         }
     }
 
-    fn set_snapshot(&self, enabled: bool) {
+    fn set_snapshot(&self, generation: u64, revision: u64, enabled: bool) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let incoming = (generation, revision);
+        if state
+            .snapshot_revision
+            .is_some_and(|current| incoming <= current)
+        {
+            return false;
+        }
         state.snapshot = Some(enabled);
+        state.snapshot_revision = Some(incoming);
         self.snapshot_ready.notify_all();
+        true
     }
 
     fn resolve_first_mirror(&self, timeout: Duration) -> ScopeQuarantineGateDecision {
@@ -170,8 +180,12 @@ static SCOPE_QUARANTINE_GATE: LazyLock<ScopeQuarantineGate> =
 
 /// Update the cached hq-flags value used by both manual and daemon mirrors.
 /// A missing or unreadable flag is sent as `false` by the desktop adapter.
-pub fn set_scope_quarantine_move_not_deletion_enabled(enabled: bool) {
-    SCOPE_QUARANTINE_GATE.set_snapshot(enabled);
+pub fn set_scope_quarantine_move_not_deletion_enabled(
+    generation: u64,
+    revision: u64,
+    enabled: bool,
+) {
+    SCOPE_QUARANTINE_GATE.set_snapshot(generation, revision, enabled);
 }
 
 /// Guards pushes independently from local snapshots. Only one push may run at
@@ -4183,7 +4197,7 @@ struct ScopeQuarantineHashCacheEntry {
 
 struct ScopeQuarantineFilterContext {
     config_fingerprint: String,
-    git_dir: PathBuf,
+    info_attributes_file: PathBuf,
     global_attributes_file: Option<PathBuf>,
     system_attributes_file: Option<PathBuf>,
 }
@@ -4296,10 +4310,16 @@ where
         // the existing guarded path rather than treating uncertainty as a move.
         return Ok(0);
     };
+    let Some(head_moves_after_journal) = head_moves_after_journal(hq_folder, &candidates) else {
+        // A missing or unreadable reflog cannot establish that HEAD stayed on
+        // the same history, so preserve staged deletions conservatively.
+        return Ok(0);
+    };
     let uncertain = candidates
         .iter()
-        .filter(|(_, journal_modified)| {
+        .filter(|(path, journal_modified)| {
             journal_requires_path_history(*journal_modified, head_commit_time)
+                || head_moves_after_journal.contains(path)
         })
         .collect::<Vec<_>>();
     let latest_commits = if uncertain.is_empty() {
@@ -4329,7 +4349,10 @@ where
             let last_path_commit = latest_commits.get(&path);
             let journal_is_current = journal_modified > head_commit_time
                 || last_path_commit.map_or(true, |committed_at| journal_modified > *committed_at);
-            journal_is_current.then_some(path)
+            // After checkout/reset/rebase, HEAD-only path history cannot prove
+            // that this journal is current relative to the branch that was left.
+            // Keep the deletion guarded even when the current history is older.
+            (journal_is_current && !head_moves_after_journal.contains(&path)).then_some(path)
         })
         .collect::<Vec<_>>();
 
@@ -4389,6 +4412,83 @@ fn write_pathspec_file(
     file.flush()
         .map_err(|_| "could not flush a temporary Git pathspec file".to_string())?;
     Ok(file)
+}
+
+fn head_moves_after_journal(
+    hq_folder: &str,
+    candidates: &[(String, SystemTime)],
+) -> Option<HashSet<String>> {
+    if candidates.is_empty() {
+        return Some(HashSet::new());
+    }
+
+    let reflog = git_output(
+        hq_folder,
+        &[
+            "reflog",
+            "show",
+            "--date=raw",
+            "--format=%gd%x00%gs%x00",
+            "HEAD",
+        ],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    if !reflog.status.success() {
+        return None;
+    }
+
+    let cutoffs = candidates
+        .iter()
+        .map(|(path, modified)| {
+            let seconds = modified
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            (path.as_str(), seconds)
+        })
+        .collect::<HashMap<_, _>>();
+    let fields = reflog.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let mut moved = HashSet::new();
+    for pair in fields.chunks(2) {
+        let [selector, subject] = pair else {
+            continue;
+        };
+        let Some(seconds) = reflog_selector_seconds(selector) else {
+            continue;
+        };
+        let subject = String::from_utf8_lossy(subject);
+        if !is_head_history_move(subject.trim()) {
+            continue;
+        }
+        for (path, cutoff) in &cutoffs {
+            if seconds > *cutoff {
+                moved.insert((*path).to_string());
+            }
+        }
+    }
+    Some(moved)
+}
+
+fn reflog_selector_seconds(selector: &[u8]) -> Option<u64> {
+    let selector = std::str::from_utf8(selector).ok()?.trim();
+    let date = selector.rsplit_once("@{")?.1.strip_suffix('}')?;
+    date.split_whitespace().next()?.parse().ok()
+}
+
+fn is_head_history_move(subject: &str) -> bool {
+    let subject = subject.trim().to_ascii_lowercase();
+    [
+        "reset:",
+        "checkout:",
+        "switch:",
+        "rebase",
+        "branch:",
+        "pull --rebase:",
+    ]
+    .iter()
+    .any(|prefix| subject.starts_with(prefix))
+        || subject.contains(": moving from ")
 }
 
 fn head_commit_time(hq_folder: &str) -> Option<SystemTime> {
@@ -4750,20 +4850,70 @@ fn scope_quarantine_filter_context(hq_folder: &str) -> Option<ScopeQuarantineFil
         return None;
     }
     let exec_path = PathBuf::from(String::from_utf8(exec_path.stdout).ok()?.trim());
-    let system_attributes_file = if std::env::var_os("GIT_ATTR_NOSYSTEM").is_some() {
-        None
-    } else {
-        exec_path
-            .parent()
-            .and_then(Path::parent)
-            .map(|prefix| prefix.join("etc/gitattributes"))
-    };
+    let system_attributes_file = resolve_system_attributes_file(hq_folder, &exec_path);
+    let info_attributes_file = git_path(hq_folder, "info/attributes")?;
 
     Some(ScopeQuarantineFilterContext {
         config_fingerprint: format!("{:x}", Sha256::digest(config.stdout)),
-        git_dir: resolve_git_dir(hq_folder).ok()?,
+        info_attributes_file,
         global_attributes_file,
         system_attributes_file,
+    })
+}
+
+fn resolve_system_attributes_file(hq_folder: &str, exec_path: &Path) -> Option<PathBuf> {
+    resolve_system_attributes_file_with(
+        exec_path,
+        std::env::var_os("GIT_ATTR_NOSYSTEM").is_some(),
+        || {
+            git_output(hq_folder, &["var", "GIT_ATTR_SYSTEM"], GIT_INDEX_TIMEOUT)
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| output.stdout)
+        },
+    )
+}
+
+fn resolve_system_attributes_file_with<F>(
+    exec_path: &Path,
+    system_disabled: bool,
+    git_var: F,
+) -> Option<PathBuf>
+where
+    F: FnOnce() -> Option<Vec<u8>>,
+{
+    if system_disabled {
+        return None;
+    }
+    let fallback = exec_path
+        .parent()
+        .and_then(Path::parent)
+        .map(|prefix| prefix.join("etc/gitattributes"));
+    let configured = git_var()
+        .as_deref()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    configured.or(fallback)
+}
+
+fn git_path(hq_folder: &str, path: &str) -> Option<PathBuf> {
+    let output = git_output(
+        hq_folder,
+        &["rev-parse", "--path-format=absolute", "--git-path", path],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let output = String::from_utf8(output.stdout).ok()?;
+    let resolved = PathBuf::from(output.trim());
+    Some(if resolved.is_absolute() {
+        resolved
+    } else {
+        Path::new(hq_folder).join(resolved)
     })
 }
 
@@ -4823,7 +4973,7 @@ fn scope_quarantine_path_filter_fingerprint(
     update_filter_context_file(
         &mut fingerprint,
         "repository info attributes",
-        &context.git_dir.join("info/attributes"),
+        &context.info_attributes_file,
     )?;
     if let Some(path) = &context.global_attributes_file {
         update_filter_context_file(&mut fingerprint, "global attributes", path)?;
@@ -8961,6 +9111,69 @@ mod tests {
     }
 
     #[test]
+    fn system_attributes_path_prefers_git_var_and_falls_back_when_missing() {
+        let exec_path = PathBuf::from("/git-prefix/libexec/git-core");
+        let fallback = PathBuf::from("/git-prefix/etc/gitattributes");
+        let configured = PathBuf::from("/explicit/git-system-attributes");
+        assert_eq!(
+            resolve_system_attributes_file_with(&exec_path, false, || {
+                Some(b"/explicit/git-system-attributes\n".to_vec())
+            }),
+            Some(configured),
+            "the path Git reports must win over a derived exec-path guess"
+        );
+        assert_eq!(
+            resolve_system_attributes_file_with(&exec_path, false, || Some(b"\n".to_vec())),
+            Some(fallback),
+            "empty git var output falls back to the existing path derivation"
+        );
+        assert_eq!(
+            resolve_system_attributes_file_with(&exec_path, true, || {
+                panic!("GIT_ATTR_NOSYSTEM must skip the system path lookup")
+            }),
+            None,
+            "GIT_ATTR_NOSYSTEM disables system attributes"
+        );
+    }
+
+    #[test]
+    fn linked_worktree_common_info_attributes_changes_invalidate_hash_cache() {
+        let _serial = serial();
+        let repo = TempDir::new().unwrap();
+        seed_repo(repo.path(), 1);
+        let linked = repo.path().join("linked-worktree");
+        git_ok(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                linked.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+
+        let hq_folder = linked.to_str().unwrap();
+        let context = scope_quarantine_filter_context(hq_folder)
+            .expect("resolve Git's active filter context in a linked worktree");
+        let common_info_attributes = repo.path().join(".git/info/attributes");
+        let before = scope_quarantine_path_filter_fingerprint(hq_folder, "file-0000.md", &context)
+            .expect("fingerprint filter inputs before shared attributes exist");
+
+        fs::create_dir_all(common_info_attributes.parent().unwrap()).unwrap();
+        fs::write(&common_info_attributes, "*.md text\n").unwrap();
+        let after_context = scope_quarantine_filter_context(hq_folder)
+            .expect("refresh Git's active filter context after shared attributes change");
+        let after =
+            scope_quarantine_path_filter_fingerprint(hq_folder, "file-0000.md", &after_context)
+                .expect("fingerprint changed shared attributes");
+        assert_ne!(
+            before, after,
+            "a common info/attributes edit in a linked worktree invalidates cached blobs"
+        );
+    }
+
+    #[test]
     fn different_scope_quarantine_content_stays_a_bulk_deletion() {
         let _serial = serial();
         std::env::remove_var(BULK_OVERRIDE_ENV);
@@ -9040,7 +9253,7 @@ mod tests {
             },
             "timeout preserves the historical default-off path for this first pass"
         );
-        gate.set_snapshot(true);
+        gate.set_snapshot(1, 1, true);
         assert_eq!(
             gate.resolve_first_mirror(Duration::ZERO),
             ScopeQuarantineGateDecision {
@@ -9063,7 +9276,7 @@ mod tests {
             },
             "an unresolved zero-timeout snapshot must use the default-off first-pass decision"
         );
-        gate.set_snapshot(true);
+        gate.set_snapshot(1, 1, true);
         assert_eq!(
             gate.resolve_first_mirror(Duration::ZERO),
             ScopeQuarantineGateDecision {
@@ -9072,6 +9285,87 @@ mod tests {
             },
             "the later resolved snapshot applies to subsequent passes"
         );
+    }
+
+    #[test]
+    fn late_older_mirror_flag_prime_cannot_replace_the_newer_generation() {
+        let gate = ScopeQuarantineGate::new();
+        assert!(gate.set_snapshot(2, 1, true));
+        assert!(
+            !gate.set_snapshot(1, 99, false),
+            "an older adapter generation that resolves late must be ignored"
+        );
+        assert!(
+            !gate.set_snapshot(2, 1, false),
+            "a duplicate update revision must be ignored"
+        );
+        assert!(gate.set_snapshot(2, 2, false));
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO),
+            ScopeQuarantineGateDecision {
+                enabled: false,
+                timed_out: false,
+            },
+            "a newer refresh on the current adapter remains authoritative"
+        );
+    }
+
+    #[test]
+    fn reset_after_quarantine_journal_routes_to_path_history_and_keeps_deletion_guarded() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_scope_quarantine_repo(tmp.path(), 1);
+        let source = tmp.path().join("companies/indigo/file-0000.md");
+        let copy = tmp
+            .path()
+            .join(".hq/scope-quarantine/journal-001/companies/indigo/file-0000.md");
+        let base_second = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after the Unix epoch")
+            .as_secs()
+            .saturating_sub(30);
+        git_ok_at_seconds(
+            tmp.path(),
+            &["commit", "--amend", "--no-edit", "-q"],
+            base_second,
+        );
+        move_scope_files_to_quarantine(tmp.path(), 1, false);
+        let journal_second = base_second + 2;
+        set_modified(
+            copy.parent().unwrap(),
+            UNIX_EPOCH + Duration::from_secs(journal_second),
+        );
+
+        fs::copy(&copy, &source).expect("return the copy so the next commit retains the path");
+        fs::write(tmp.path().join("unrelated.txt"), "branch moved later\n").unwrap();
+        git_ok(tmp.path(), &["add", "-A"]);
+        git_ok_at_seconds(
+            tmp.path(),
+            &["commit", "-q", "-m", "newer branch commit"],
+            journal_second + 1,
+        );
+        git_ok(tmp.path(), &["reset", "--hard", "HEAD~1"]);
+
+        fs::remove_file(&source).expect("user deliberately deletes the path after reset");
+        git_ok(tmp.path(), &["add", "-A"]);
+        let hq_folder = tmp.path().to_str().unwrap();
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("consult path history after the HEAD rewind"),
+            0,
+            "a post-journal reset must not restore a deletion from the abandoned branch"
+        );
+        assert_eq!(
+            count_staged_deletions(hq_folder)
+                .expect("read the staged deletion after the reset")
+                .count,
+            1,
+            "the deletion remains staged for the existing bulk-delete guard"
+        );
+        reset_refusal_report_state();
     }
 
     #[test]

@@ -30,8 +30,10 @@ pub fn spawn_mirror_after_sync(hq_folder: &str) {
 /// Cache the current hq-flags snapshot for mirrors launched by either sync
 /// event path. A missing registry row or failed read is sent as `false`.
 #[tauri::command]
-pub fn set_mirror_quarantine_move_not_deletion(enabled: bool) {
-    hq_desktop_core::git_mirror::set_scope_quarantine_move_not_deletion_enabled(enabled);
+pub fn set_mirror_quarantine_move_not_deletion(generation: u64, revision: u64, enabled: bool) {
+    hq_desktop_core::git_mirror::set_scope_quarantine_move_not_deletion_enabled(
+        generation, revision, enabled,
+    );
 }
 
 #[cfg(test)]
@@ -158,7 +160,7 @@ mod tests {
             "a pending flag read must not let the first mirror pass commit the scope shrink"
         );
 
-        set_mirror_quarantine_move_not_deletion(true);
+        set_mirror_quarantine_move_not_deletion(1, 1, true);
         finished_rx
             .recv_timeout(Duration::from_secs(10))
             .expect("the first pass continues when the snapshot resolves");

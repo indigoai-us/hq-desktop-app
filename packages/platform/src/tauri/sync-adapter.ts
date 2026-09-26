@@ -35,6 +35,7 @@ import {
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+  type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
@@ -54,6 +55,8 @@ export interface SyncPlatformAdapterConfig {
   /** Resolve the mirror rollout gate as the native shell boots, before its
    * launch-started daemon reaches the first AllComplete mirror callback. */
   primeMirrorQuarantineGate?: boolean;
+  /** Test seam for deterministic flag-refresh and startup-race coverage. */
+  createFlagClient?: FeatureFlagGateOptions["createClient"];
   /**
    * Tests inject a stub that throws if called. Production REST goes through
    * invoke("hq_pro_fetch") so Cognito stays in Rust.
@@ -82,6 +85,8 @@ const HOST_OWNED = unavailable(
   'host-owned',
   'The Sync host owns this surface natively; the embedded UI does not drive it.',
 );
+
+let nextMirrorQuarantineAdapterGeneration = 0;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -158,11 +163,14 @@ export function createSyncPlatformAdapter(
   void config.fetch;
   const invokeFn = config.invoke;
   const requestPolicy = config.requestPolicy ?? {};
+  const mirrorQuarantineGeneration = ++nextMirrorQuarantineAdapterGeneration;
+  let mirrorQuarantineRevision = 0;
   const flags = createFeatureFlagGate({
     // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
     endpoint: '',
     getToken: () => '',
     fetch: createHqProFlagFetch(invokeFn),
+    createClient: config.createFlagClient,
   });
 
   async function call<T>(
@@ -177,18 +185,28 @@ export function createSyncPlatformAdapter(
   }
 
   async function updateMirrorQuarantineFlag(): AdapterPromise<void> {
+    const revision = ++mirrorQuarantineRevision;
     const configured = await flags.resolve(
       MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
       () => Promise.resolve(ok(false)),
     );
-    // This is a delivery gate, so an absent registry row or failed read must
-    // keep the pre-change mirror behavior. The Rust cache starts false too.
+    // The Rust setter orders snapshots by adapter generation and per-adapter
+    // revision. A destroyed adapter's late result cannot replace its successor.
     return call('set_mirror_quarantine_move_not_deletion', {
       enabled: configured.ok && configured.value,
+      generation: mirrorQuarantineGeneration,
+      revision,
     });
   }
 
   if (config.primeMirrorQuarantineGate) {
+    flags.subscribe(
+      MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+      () => Promise.resolve(ok(false)),
+      () => {
+        void updateMirrorQuarantineFlag();
+      },
+    );
     void updateMirrorQuarantineFlag();
   }
 

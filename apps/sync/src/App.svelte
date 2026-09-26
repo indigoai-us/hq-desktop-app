@@ -1,5 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { createSyncPlatformAdapter } from '@hq/platform';
+  import { startTraySync } from './lib/traySync';
   import { emit, listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
@@ -74,6 +76,11 @@
   import { TELEMETRY_CONSENT_VERSION } from './lib/consent-version';
   import { markConsentRepromptShown } from './lib/onboarding-telemetry';
   import './styles/popover.css';
+
+  const traySyncAdapter = createSyncPlatformAdapter({
+    invoke: (command, args) => invoke(command, args),
+    primeMirrorQuarantineGate: true,
+  });
 
   interface Config {
     configured: boolean;
@@ -621,7 +628,7 @@
     syncFanoutFilesSkipped = 0;
     await invoke('set_tray_state', { state: 'syncing' });
     try {
-      await invoke('start_sync');
+      await startTraySync(traySyncAdapter);
     } catch (err) {
       const msg = String(err);
       // A sync already holds the runner singleton (the watch daemon or a prior
