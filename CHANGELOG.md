@@ -15,6 +15,10 @@ The release moves it under the version it ships in.
   lost). If an update fails to start, the app goes back to the previous
   interface by itself. Off by default for now; Settings shows which interface
   version is running.
+- When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
+  holder, HQ keeps the current CLI available and retries on later launches. It
+  reports a persistent failure after three attempts.
+
 - When the app shows sign-in or onboarding to someone who already finished
   setup, its error report now records which setup checks passed or failed.
   The report contains short fixed values only, with no file paths or account
