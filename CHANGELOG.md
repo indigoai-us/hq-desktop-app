@@ -12,7 +12,16 @@ The release moves it under the version it ships in.
   running the rescue. If the wait limit expires, the update moves to a later
   automatic check; manual updates keep their current behavior. The rollout flag
   defaults off.
+- Release builds no longer recompile the native app every time. The job that
+  prepares the native pieces after each merge now installs its build targets
+  correctly and is no longer cancelled by the next merge, so a normal release
+  assembles from the prepared pieces instead of building them from scratch.
+
+## [0.10.339] — 2026-09-26
+
 - HQ no longer restarts for an update while you are using it or while a meeting is being recorded. A card in the sidebar lets you choose when to apply pending updates.
+
+## [0.10.337] — 2026-09-26
 
 - When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
   holder, HQ keeps the current CLI available and retries on later launches. It
