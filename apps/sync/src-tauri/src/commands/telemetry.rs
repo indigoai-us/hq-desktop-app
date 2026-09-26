@@ -1022,12 +1022,12 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 ("errorOperation", Value::String(value))
                     if SYMLINK_ERROR_OPERATION_VALUES.contains(&value.as_str()) =>
                 {
-                    Some(Value::String(value))
+                    Some(Value::String(value.clone()))
                 }
                 ("errorIoKind", Value::String(value))
                     if SYMLINK_ERROR_IO_KIND_VALUES.contains(&value.as_str()) =>
                 {
-                    Some(Value::String(value))
+                    Some(Value::String(value.clone()))
                 }
                 ("errorCode", Value::Number(number)) => number
                     .as_u64()
