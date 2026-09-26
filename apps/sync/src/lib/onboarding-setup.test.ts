@@ -21,6 +21,7 @@ import {
   isStageSkipEligible,
   isTransientSetupStageFailure,
   resumeStartStageFromManifest,
+  setupFailureTelemetryDetails,
   setStageStatus,
   setupAutoRetryDelayMs,
   setupCompletionResult,
@@ -95,6 +96,42 @@ function emitContentProgress(payload: unknown): void {
   if (!handler) throw new Error('content:progress listener was not registered');
   handler({ payload });
 }
+
+describe('setup failure telemetry diagnostics', () => {
+  it('keeps bounded content diagnostics and rejects unscoped or path-shaped values', () => {
+    expect(setupFailureTelemetryDetails({
+      stageId: 'content',
+      errorCategory: 'permission',
+      errorKind: 'content_symlink_creation_failed',
+      errorOperation: 'remove_existing_link',
+      errorIoKind: 'not_found',
+      errorCode: 3,
+    })).toEqual({
+      errorCategory: 'permission',
+      errorKind: 'content_symlink_creation_failed',
+      errorOperation: 'remove_existing_link',
+      errorIoKind: 'not_found',
+      errorCode: 3,
+    });
+
+    expect(setupFailureTelemetryDetails({
+      stageId: 'content',
+      errorCategory: 'permission',
+      errorOperation: 'C:\\Users\\sample\\HQ',
+      errorIoKind: '/Users/sample/HQ',
+      errorCode: -1,
+    })).toEqual({ errorCategory: 'permission' });
+
+    expect(setupFailureTelemetryDetails({
+      stageId: 'deps',
+      errorCategory: 'unknown',
+      errorOperation: 'remove_existing_link',
+      errorIoKind: 'not_found',
+      errorCode: 3,
+      failedDependency: 'node',
+    })).toEqual({ errorCategory: 'unknown', failedDependency: 'node' });
+  });
+});
 
 describe('onboarding setup stages', () => {
   it('builds the initial stage list in order with all stages pending', () => {

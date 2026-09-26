@@ -19,6 +19,8 @@ The release moves it under the version it ships in.
   files, waits for HQ's own processes, and retries around short-lived scanners.
   If you have the HQ CLI open in a terminal, the app leaves it running and
   checks for the update again later.
+- Windows setup now removes stale content junctions whose targets have been
+  removed. Failed content-link operations also record bounded error details.
 
 ## [0.10.330] — 2026-09-26
 

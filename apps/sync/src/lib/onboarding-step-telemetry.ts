@@ -15,9 +15,13 @@ import {
   normalizeFailedStageIds,
   CONNECTOR_IMPORT_OUTCOMES,
   CONNECTOR_IMPORT_SOURCE_SETS,
+  SYMLINK_ERROR_IO_KINDS,
+  SYMLINK_ERROR_OPERATIONS,
   type ConnectorImportSourceSet,
   type ErrorCategory,
   type FailedDependency,
+  type SymlinkErrorIoKind,
+  type SymlinkErrorOperation,
   type SetupErrorKind,
   type StageId,
 } from './onboarding-setup';
@@ -61,6 +65,9 @@ export interface OnboardingStepProperties {
   errorCategory?: ErrorCategory;
   failureStage?: StageId;
   errorKind?: SetupErrorKind;
+  errorOperation?: SymlinkErrorOperation;
+  errorIoKind?: SymlinkErrorIoKind;
+  errorCode?: number;
   setupRunId?: string;
 }
 
@@ -270,6 +277,30 @@ export function desktopPropertiesForOnboardingStep(
     properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
     if (event.properties.component === 'deps') {
       properties.failedDependency = normalizeFailedDependency(event.properties.failedDependency);
+    } else if (event.properties.component === 'content') {
+      if (
+        typeof event.properties.errorOperation === 'string' &&
+        SYMLINK_ERROR_OPERATIONS.includes(
+          event.properties.errorOperation as SymlinkErrorOperation,
+        )
+      ) {
+        properties.errorOperation = event.properties.errorOperation;
+      }
+      if (
+        typeof event.properties.errorIoKind === 'string' &&
+        SYMLINK_ERROR_IO_KINDS.includes(event.properties.errorIoKind as SymlinkErrorIoKind)
+      ) {
+        properties.errorIoKind = event.properties.errorIoKind;
+      }
+      const errorCode = event.properties.errorCode;
+      if (
+        typeof errorCode === 'number' &&
+        Number.isInteger(errorCode) &&
+        errorCode >= 0 &&
+        errorCode <= 65_535
+      ) {
+        properties.errorCode = errorCode;
+      }
     }
   }
   if (event.properties.outcome === 'completed_with_failures') {
