@@ -1366,6 +1366,17 @@ fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
         | RunnerErrorCause::WindowsRenameBlocked
         | RunnerErrorCause::SessionManagerPluginLaunch
         | RunnerErrorCause::TerminalSessionTimeout
+        // … the ~6.18.5 pin's additions — realtime admission deadline and drain
+        // burst are coordinator scheduling faults, the Object Lock checksum
+        // refusal is a request-shape fault, a stalled download body is a
+        // retryable per-object stall rather than a connection errno, and the
+        // realtime device cap is an account limit; none maps unambiguously to a
+        // class, so the keyword fallback stays authoritative …
+        | RunnerErrorCause::RealtimeAdmissionTimeout
+        | RunnerErrorCause::RealtimeDrainBurst
+        | RunnerErrorCause::ObjectLockChecksumRequired
+        | RunnerErrorCause::ObjectBodyIdleTimeout
+        | RunnerErrorCause::SyncDeviceLimit
         // … AWS S3/STS names with no class analogue …
         | RunnerErrorCause::NoSuchKey
         | RunnerErrorCause::NoSuchBucket
