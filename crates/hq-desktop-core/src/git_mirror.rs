@@ -8758,8 +8758,10 @@ mod tests {
         assert!(!replacement.is_empty());
         replacement[0] ^= 0xff;
         fs::write(&copy, &replacement).expect("rewrite copy without changing its length");
-        File::open(&copy)
-            .expect("open rewritten copy")
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&copy)
+            .expect("open rewritten copy with attribute-write access")
             .set_modified(cached_modified)
             .expect("restore the cached mtime");
         let rewritten_metadata = fs::metadata(&copy).expect("read rewritten metadata");
