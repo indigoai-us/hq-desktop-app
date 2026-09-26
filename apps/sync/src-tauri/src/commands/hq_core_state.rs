@@ -6730,7 +6730,7 @@ error: clone failed";
 
         let clone_error = CoreUpdateError::new(
             CoreUpdateErrorKind::RescueSpawn,
-            "fatal: unable to access 'https://github.com/indigoai-us/hq-core/': Could not resolve host: github.com",
+            "fatal: unable to access 'https://github.com/indigoai-us/hq-core/': Failed to connect to github.com port 443: Connection refused",
         );
         let clone_report = report_for_core_update_error(&clone_error);
         assert_eq!(clone_report.error_category, RescueFailureCategory::Network);
