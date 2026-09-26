@@ -117,6 +117,7 @@ pub mod ui_hot;
 pub mod unexpected_surface;
 pub mod watcher_fault;
 pub mod win32_path;
+pub mod update_gate;
 pub mod workspaces;
 
 #[cfg(test)]

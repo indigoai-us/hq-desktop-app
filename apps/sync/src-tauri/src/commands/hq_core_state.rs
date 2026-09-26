@@ -1442,6 +1442,12 @@ pub(crate) fn try_begin_core_update() -> Result<CoreUpdateRunGuard, CoreUpdateEr
         })
 }
 
+/// Returns `true` while a core update rescue is running. Used by the
+/// update gate to hold off desktop app restarts during hq-core updates.
+pub fn is_core_update_in_progress() -> bool {
+    CORE_UPDATE_RUNNING.load(Ordering::Acquire)
+}
+
 fn channel_label(channel: Channel) -> &'static str {
     match channel {
         Channel::Release => "release",
