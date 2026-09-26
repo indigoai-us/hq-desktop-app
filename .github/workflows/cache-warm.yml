@@ -59,9 +59,14 @@ on:
 permissions:
   contents: read
 
+# Never cancel an in-progress warm: a shell build takes 20-30 minutes and
+# main merges more often than that, so cancel-in-progress threw away every
+# warm before it could store anything. GitHub keeps at most one pending run
+# per group (a newer push replaces the pending one), and each shell job
+# no-ops when its key is already on shell-cache, so queued runs stay cheap.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -391,7 +396,10 @@ jobs:
             echo "::error::shell-hash.mjs returned an invalid key: $KEY"
             exit 1
           fi
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
           # Build with exactly the toolchain the key names (rust-toolchain.toml
           # pins only "stable"), as release.yml's shell jobs do.
           echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
@@ -424,10 +432,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/pinned-rust-toolchain
         if: steps.warm.outputs.already-warm != 'true'
         with:
-          toolchain: stable
+          toolchain: ${{ steps.key.outputs.toolchain }}
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install dependencies
@@ -562,7 +570,10 @@ jobs:
             echo "::error::shell-hash.mjs returned an invalid key: $KEY"
             exit 1
           fi
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
           # Build with exactly the toolchain the key names (rust-toolchain.toml
           # pins only "stable"), as release.yml's shell jobs do.
           echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
@@ -594,6 +605,12 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: ./.github/actions/pinned-rust-toolchain
+        if: steps.warm.outputs.already-warm != 'true'
+        with:
+          toolchain: ${{ steps.key.outputs.toolchain }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Install dependencies
         if: steps.warm.outputs.already-warm != 'true'
@@ -738,7 +755,10 @@ jobs:
             echo "::error::shell-hash.mjs returned an invalid key: $KEY"
             exit 1
           fi
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=$KEY"
+            echo "toolchain=$TOOLCHAIN"
+          } >> "$GITHUB_OUTPUT"
           # Build with exactly the toolchain the key names (rust-toolchain.toml
           # pins only "stable"), as release.yml's shell jobs do.
           echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
@@ -770,6 +790,12 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: ./.github/actions/pinned-rust-toolchain
+        if: steps.warm.outputs.already-warm != 'true'
+        with:
+          toolchain: ${{ steps.key.outputs.toolchain }}
+          targets: aarch64-pc-windows-msvc
 
       - name: Install dependencies
         if: steps.warm.outputs.already-warm != 'true'

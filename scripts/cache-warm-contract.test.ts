@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(new URL("../.github/workflows/cache-warm.yml", import.meta.url), "utf8");
+const pinnedAction = readFileSync(
+  new URL("../.github/actions/pinned-rust-toolchain/action.yml", import.meta.url),
+  "utf8",
+);
 
 function jobBody(name: string): string {
   const start = workflow.indexOf(`\n  ${name}:\n`);
@@ -13,9 +17,9 @@ function jobBody(name: string): string {
 
 describe("cache-warm.yml prebuilt-shell warmers", () => {
   const jobs = [
-    { job: "warm-shell-macos", target: "macos", ext: "tar.gz" },
-    { job: "warm-shell-windows-x64", target: "windows-x64", ext: "tar" },
-    { job: "warm-shell-windows-arm64", target: "windows-arm64", ext: "tar" },
+    { job: "warm-shell-macos", target: "macos", ext: "tar.gz", triples: "aarch64-apple-darwin,x86_64-apple-darwin" },
+    { job: "warm-shell-windows-x64", target: "windows-x64", ext: "tar", triples: "x86_64-pc-windows-msvc" },
+    { job: "warm-shell-windows-arm64", target: "windows-arm64", ext: "tar", triples: "aarch64-pc-windows-msvc" },
   ];
 
   it("runs on main pushes that can change the shell key, and on dispatch", () => {
@@ -25,7 +29,36 @@ describe("cache-warm.yml prebuilt-shell warmers", () => {
     expect(workflow).toContain("workflow_dispatch:");
   });
 
-  for (const { job, target, ext } of jobs) {
+  it("lets an in-progress warm finish instead of cancelling it on the next push", () => {
+    expect(workflow).toMatch(/concurrency:\n\s+group: .*\n\s+cancel-in-progress: false/);
+    expect(workflow).not.toContain("cancel-in-progress: true");
+  });
+
+  it("pinned-rust-toolchain installs targets on the pinned toolchain and verifies them", () => {
+    expect(pinnedAction).toContain("toolchain: ${{ inputs.toolchain }}");
+    expect(pinnedAction).toContain("targets: ${{ inputs.targets }}");
+    expect(pinnedAction).toContain("rustup target list --installed");
+    expect(pinnedAction).toContain("is not installed on toolchain");
+  });
+
+  for (const { job, target, ext, triples } of jobs) {
+    it(`${job} installs its targets on the same toolchain RUSTUP_TOOLCHAIN pins`, () => {
+      const body = jobBody(job);
+      expect(body).toContain('echo "toolchain=$TOOLCHAIN"');
+      const pin = body.indexOf('echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"');
+      const install = body.indexOf("uses: ./.github/actions/pinned-rust-toolchain");
+      const build = body.indexOf("pnpm tauri build");
+      expect(pin).toBeGreaterThan(-1);
+      expect(install).toBeGreaterThan(pin);
+      expect(build).toBeGreaterThan(install);
+      const step = body.slice(install, body.indexOf("\n\n", install));
+      expect(step).toContain("toolchain: ${{ steps.key.outputs.toolchain }}");
+      expect(step).toContain(`targets: ${triples}`);
+      // A "stable"-channel install after the pin would put targets on the wrong toolchain.
+      expect(body.slice(pin)).not.toMatch(/toolchain: stable/);
+    });
+
+
     it(`${job} stores only its own target's shell, keyed like release.yml`, () => {
       const body = jobBody(job);
       const others = jobs.filter((j) => j.target !== target).map((j) => `shell-${j.target}-`);
