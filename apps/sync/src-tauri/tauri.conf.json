@@ -4,7 +4,7 @@
   "version": "0.10.329",
   "identifier": "ai.indigo.hq-sync-menubar",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "shell-placeholder",
     "devUrl": "http://localhost:1421",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"

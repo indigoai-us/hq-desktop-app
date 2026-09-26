@@ -257,10 +257,10 @@ fn endpoints() -> ContinuationEndpoints {
 /// consecutive days. The renderer reads `None` as "off", which is the screen
 /// that ships today.
 #[tauri::command]
-pub fn desktop_continuation_context(app: AppHandle) -> Option<ContinuationContext> {
+pub fn desktop_continuation_context(_app: AppHandle) -> Option<ContinuationContext> {
     Some(ContinuationContext {
         install_attempt_id: super::first_run::install_attempt_id()?,
-        app_version: app.package_info().version.to_string(),
+        app_version: crate::app_version::current().to_string(),
         api_base: endpoints().api_base,
     })
 }
@@ -771,14 +771,14 @@ fn desktop_platform() -> &'static str {
     }
 }
 
-fn desktop_receipt_base<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<serde_json::Value> {
+fn desktop_receipt_base<R: tauri::Runtime>(_app: &AppHandle<R>) -> Option<serde_json::Value> {
     let install_attempt_id = super::first_run::install_attempt_id()?;
     Some(serde_json::json!({
         "installAttemptId": install_attempt_id,
         "eventId": uuid::Uuid::new_v4().to_string(),
         "occurredAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "platform": desktop_platform(),
-        "version": app.package_info().version.to_string(),
+        "version": crate::app_version::current().to_string(),
     }))
 }
 

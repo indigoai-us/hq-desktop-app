@@ -8,6 +8,21 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Releases no longer rebuild the native app when only the interface changed.
+  The compiled app shell for macOS, Windows x64 and Windows arm64 is built
+  once per change to the native sources, cached, and reused across releases;
+  each release only builds the interface, stamps the release version into the
+  bundle (macOS Info.plist, Windows exe version and installer metadata, and a
+  `version.json` the app reads at runtime), then signs and packages. A release
+  with a warm cache takes about 8 minutes end to end instead of roughly 30.
+  Publishing fails if any bundle carries a shell that does not match the
+  tagged sources. If the new pipeline ever needs to be bypassed, dispatch the
+  release manually with `legacy_build: true` to use the old single-job build
+  on both platforms. No visible change for users.
+- The app now loads its interface from the installed bundle at runtime and
+  reports the installed release's version (update checks, tray menu,
+  telemetry, request headers) even when its shell was compiled for an earlier
+  release. No visible change for users.
 - On Windows, the HQ CLI updater identifies the process holding its package
   files, waits for HQ's own processes, and retries around short-lived scanners.
   If you have the HQ CLI open in a terminal, the app leaves it running and

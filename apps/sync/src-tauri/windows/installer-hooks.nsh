@@ -28,10 +28,24 @@
   Sleep 1000
 !macroend
 
+; The UI ships as bundle resources under $INSTDIR\ui with content-hashed file
+; names that change every release. NSIS overwrites files but never removes the
+; previous release's assets, and the generated uninstaller deletes only the
+; files of its own build, so after an upgrade the old assets would pile up in
+; ui\ and keep $INSTDIR alive after uninstall. The tree belongs entirely to the
+; bundle: clear it before every install and before uninstall.
+!macro HQ_REMOVE_BUNDLED_UI
+  ${If} $INSTDIR != ""
+    RMDir /r "$INSTDIR\ui"
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro HQ_STOP_INSTALL_DIR_PROCESSES
+  !insertmacro HQ_REMOVE_BUNDLED_UI
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro HQ_STOP_INSTALL_DIR_PROCESSES
+  !insertmacro HQ_REMOVE_BUNDLED_UI
 !macroend
