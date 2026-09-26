@@ -4060,6 +4060,57 @@ fn defer_automatic_core_update_for_sync(
     NativeCoreAutoUpdateOutcome::DeferredForSync
 }
 
+fn skip_automatic_core_update_for_ineligible_target(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    eligibility: AutomaticTargetEligibility,
+) -> Option<NativeCoreAutoUpdateOutcome> {
+    let (message, reason, outcome) = match eligibility {
+        AutomaticTargetEligibility::Eligible => return None,
+        AutomaticTargetEligibility::CompletedWithoutVersionMove => (
+            "native auto-update skipped: target already completed without a version move",
+            "already_attempted_this_session",
+            NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted,
+        ),
+        AutomaticTargetEligibility::BaselineRefreshPending => (
+            "native auto-update skipped: applied Core baseline refresh is pending",
+            BASELINE_REFRESH_PENDING_SKIP_REASON,
+            NativeCoreAutoUpdateOutcome::SkippedBaselineRefreshPending,
+        ),
+        AutomaticTargetEligibility::NoRetryAfterAppliedFailure => (
+            "native auto-update skipped: rescue applied the target but could not restore preserved files",
+            APPLIED_RESCUE_NO_RETRY_SKIP_REASON,
+            NativeCoreAutoUpdateOutcome::SkippedNoRetryAfterAppliedFailure,
+        ),
+        AutomaticTargetEligibility::ConsecutiveFailureCapReached => (
+            "native auto-update skipped: consecutive failure cap reached",
+            CONSECUTIVE_FAILURE_CAP_SKIP_REASON,
+            NativeCoreAutoUpdateOutcome::SkippedConsecutiveFailureCap,
+        ),
+        AutomaticTargetEligibility::RetryIntervalNotElapsed => (
+            "native auto-update skipped: retry interval has not elapsed",
+            RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON,
+            NativeCoreAutoUpdateOutcome::SkippedRetryInterval,
+        ),
+    };
+    log("hq-core-update", message);
+    emit_core_update_event(
+        "core_update_skipped",
+        "automatic",
+        "skipped",
+        Some(candidate.channel),
+        candidate.local_version,
+        Some(candidate.target_version),
+        true,
+        Some(candidate.is_eligible),
+        Some(candidate.version_behind),
+        Duration::ZERO,
+        None,
+        None,
+        Some(reason),
+    );
+    Some(outcome)
+}
+
 fn automatic_core_update_target_already_installed(state: &CoreState) -> bool {
     match state.channel {
         Channel::Release => get_local_version()
@@ -4341,123 +4392,16 @@ where
             // Do not gate on `state.is_eligible`: that field means Indigo
             // staging-email eligibility. Release-channel client users (the
             // majority of HQ installs) must receive automatic Core updates.
-            match automatic_target_eligibility_with_path(
+            let initial_eligibility = automatic_target_eligibility_with_path(
                 candidate.channel,
                 candidate.target_version,
                 now(),
                 injected_path,
-            ) {
-                AutomaticTargetEligibility::Eligible => {}
-                AutomaticTargetEligibility::CompletedWithoutVersionMove => {
-                    log(
-                        "hq-core-update",
-                        "native auto-update skipped: target already completed without a version move",
-                    );
-                    emit_core_update_event(
-                        "core_update_skipped",
-                        "automatic",
-                        "skipped",
-                        Some(candidate.channel),
-                        candidate.local_version,
-                        Some(candidate.target_version),
-                        true,
-                        Some(candidate.is_eligible),
-                        Some(candidate.version_behind),
-                        Duration::ZERO,
-                        None,
-                        None,
-                        Some("already_attempted_this_session"),
-                    );
-                    return NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted;
-                }
-                AutomaticTargetEligibility::BaselineRefreshPending => {
-                    log(
-                        "hq-core-update",
-                        "native auto-update skipped: applied Core baseline refresh is pending",
-                    );
-                    emit_core_update_event(
-                        "core_update_skipped",
-                        "automatic",
-                        "skipped",
-                        Some(candidate.channel),
-                        candidate.local_version,
-                        Some(candidate.target_version),
-                        true,
-                        Some(candidate.is_eligible),
-                        Some(candidate.version_behind),
-                        Duration::ZERO,
-                        None,
-                        None,
-                        Some(BASELINE_REFRESH_PENDING_SKIP_REASON),
-                    );
-                    return NativeCoreAutoUpdateOutcome::SkippedBaselineRefreshPending;
-                }
-                AutomaticTargetEligibility::NoRetryAfterAppliedFailure => {
-                    log(
-                        "hq-core-update",
-                        "native auto-update skipped: rescue applied the target but could not restore preserved files",
-                    );
-                    emit_core_update_event(
-                        "core_update_skipped",
-                        "automatic",
-                        "skipped",
-                        Some(candidate.channel),
-                        candidate.local_version,
-                        Some(candidate.target_version),
-                        true,
-                        Some(candidate.is_eligible),
-                        Some(candidate.version_behind),
-                        Duration::ZERO,
-                        None,
-                        None,
-                        Some(APPLIED_RESCUE_NO_RETRY_SKIP_REASON),
-                    );
-                    return NativeCoreAutoUpdateOutcome::SkippedNoRetryAfterAppliedFailure;
-                }
-                AutomaticTargetEligibility::ConsecutiveFailureCapReached => {
-                    log(
-                        "hq-core-update",
-                        "native auto-update skipped: consecutive failure cap reached",
-                    );
-                    emit_core_update_event(
-                        "core_update_skipped",
-                        "automatic",
-                        "skipped",
-                        Some(candidate.channel),
-                        candidate.local_version,
-                        Some(candidate.target_version),
-                        true,
-                        Some(candidate.is_eligible),
-                        Some(candidate.version_behind),
-                        Duration::ZERO,
-                        None,
-                        None,
-                        Some(CONSECUTIVE_FAILURE_CAP_SKIP_REASON),
-                    );
-                    return NativeCoreAutoUpdateOutcome::SkippedConsecutiveFailureCap;
-                }
-                AutomaticTargetEligibility::RetryIntervalNotElapsed => {
-                    log(
-                        "hq-core-update",
-                        "native auto-update skipped: retry interval has not elapsed",
-                    );
-                    emit_core_update_event(
-                        "core_update_skipped",
-                        "automatic",
-                        "skipped",
-                        Some(candidate.channel),
-                        candidate.local_version,
-                        Some(candidate.target_version),
-                        true,
-                        Some(candidate.is_eligible),
-                        Some(candidate.version_behind),
-                        Duration::ZERO,
-                        None,
-                        None,
-                        Some(RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON),
-                    );
-                    return NativeCoreAutoUpdateOutcome::SkippedRetryInterval;
-                }
+            );
+            if let Some(outcome) =
+                skip_automatic_core_update_for_ineligible_target(candidate, initial_eligibility)
+            {
+                return outcome;
             }
             match before_install().await {
                 AutomaticCoreUpdatePreinstall::DeferForPrewarm => {
@@ -4498,6 +4442,20 @@ where
                     return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
                 }
             };
+            let eligibility_after_guard = automatic_target_eligibility_with_path(
+                candidate.channel,
+                candidate.target_version,
+                now(),
+                injected_path,
+            );
+            if eligibility_after_guard != AutomaticTargetEligibility::Eligible {
+                drop(run_guard);
+                return skip_automatic_core_update_for_ineligible_target(
+                    candidate,
+                    eligibility_after_guard,
+                )
+                .expect("ineligible automatic target returns its skip outcome");
+            }
             if target_already_installed_after_guard() {
                 drop(run_guard);
                 return skip_automatic_core_update_for_installed_target(candidate);
@@ -5339,8 +5297,8 @@ mod tests {
             0,
             "the installer must not run after eligibility becomes false",
         );
-        let manual_guard = try_begin_core_update()
-            .expect("the eligibility skip must release the update guard");
+        let manual_guard =
+            try_begin_core_update().expect("the eligibility skip must release the update guard");
         drop(manual_guard);
         reset_automatic_target_states_for_test();
     }
