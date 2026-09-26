@@ -883,7 +883,7 @@ async fn channel_aware_updater_with_mode(
     let endpoint =
         Url::parse(&resolved.url).map_err(|e| format!("invalid updater endpoint: {e}"))?;
     let policy = fetch_update_feed_policy(&resolved.url).await;
-    log_feed_policy(&policy, app.package_info().version.to_string().as_str());
+    log_feed_policy(&policy, crate::app_version::current().to_string().as_str());
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
@@ -983,7 +983,7 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
                 &format!(
                     "reinstalling latest.json target v{} (running v{})",
                     update.version,
-                    app.package_info().version
+                    crate::app_version::current()
                 ),
             );
             #[cfg(not(target_os = "windows"))]
@@ -1677,10 +1677,10 @@ fn emit_shortcut_invoke(app: &AppHandle, id: &'static str) {
 }
 
 #[cfg(target_os = "macos")]
-fn up_to_date_body(app: &AppHandle) -> String {
+fn up_to_date_body(_app: &AppHandle) -> String {
     format!(
         "You\u{2019}re up to date \u{2014} v{}",
-        app.package_info().version
+        crate::app_version::current()
     )
 }
 
@@ -1881,7 +1881,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         "updater",
                                         &format!(
                                             "background check: up to date (current v{})",
-                                            handle.package_info().version
+                                            crate::app_version::current()
                                         ),
                                     );
                                     if let Err(e) =
@@ -1913,6 +1913,38 @@ pub fn setup_update_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The "is newer" check runs against the runtime-resolved version. A
+    /// cached shell compiled at 0.10.328 but assembled as 0.10.400 must not
+    /// be offered 0.10.350 (the compile-time value would have said "newer"),
+    /// and must still be offered 0.10.401.
+    #[test]
+    fn is_newer_check_uses_the_stamped_runtime_version() {
+        use hq_desktop_core::release_channel::{should_offer_update, UpdateFeedPolicy};
+        use hq_desktop_core::runtime_version::{resolve_from, VersionSource};
+
+        let resources = std::env::temp_dir().join(format!(
+            "hq-updater-stamped-{}/Contents/Resources",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("version.json"), r#"{"version":"0.10.400"}"#).unwrap();
+        let (resolved, source) = resolve_from(Some(&resources), "0.10.328", false);
+        std::fs::remove_dir_all(resources.parent().unwrap().parent().unwrap()).ok();
+        if std::env::var_os("HQ_APP_VERSION").is_none() {
+            assert_eq!(source, VersionSource::VersionJson);
+        }
+
+        let running = crate::app_version::parse_or_compile_time(&resolved);
+        let compile_time = semver::Version::parse("0.10.328").unwrap();
+        let policy = UpdateFeedPolicy::default();
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+
+        assert!(should_offer_update(&compile_time, &v("0.10.350"), &policy));
+        assert!(!should_offer_update(&running, &v("0.10.350"), &policy));
+        assert!(!should_offer_update(&running, &v("0.10.400"), &policy));
+        assert!(should_offer_update(&running, &v("0.10.401"), &policy));
+    }
 
     /// The app-menu ids are the contract between the menu builder and its
     /// event handler — a typo in either silently turns the item into a no-op.

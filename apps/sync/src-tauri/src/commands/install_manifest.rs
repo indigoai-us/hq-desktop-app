@@ -131,7 +131,7 @@ fn now_iso() -> String {
 }
 
 fn installer_version() -> String {
-    env!("APP_VERSION").to_string()
+    crate::app_version::current().to_string()
 }
 
 fn manifest_path() -> Result<PathBuf, String> {

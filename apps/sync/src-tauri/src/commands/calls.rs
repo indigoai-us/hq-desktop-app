@@ -465,7 +465,7 @@ fn build_call_window(app: &AppHandle) -> Result<(), String> {
     let builder = tauri::WebviewWindowBuilder::new(
         app,
         CALL_WINDOW_LABEL,
-        tauri::WebviewUrl::App("call.html".into()),
+        crate::ui_protocol::ui_url("call.html"),
     )
     .title("HQ Call")
     .inner_size(960.0, 640.0)

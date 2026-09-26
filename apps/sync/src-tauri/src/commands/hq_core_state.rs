@@ -44,6 +44,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use super::core_source_stamp::{
+    available_stamp_marker, local_source_stamp, persistence_stamp_tags_from_detail,
+    read_local_source_stamp, ReadableLocalSourceStamp,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Listener, Manager};
@@ -1843,7 +1847,7 @@ fn core_update_event_properties(
     properties.insert("result".to_string(), Value::String(result.to_string()));
     properties.insert(
         "desktopVersion".to_string(),
-        Value::String(env!("APP_VERSION").to_string()),
+        Value::String(crate::app_version::current().to_string()),
     );
     properties.insert(
         "autoUpdateEnabled".to_string(),
@@ -2207,7 +2211,7 @@ fn send_core_update_failure_report(
                     "attempt_number",
                     report.rescue_telemetry.attempt_number.to_string(),
                 );
-                sentry_scope.set_tag("app_version", env!("APP_VERSION"));
+                sentry_scope.set_tag("app_version", crate::app_version::current());
                 sentry_scope.set_tag("os_version", os_info::get().version().to_string());
                 sentry_scope.set_tag("suppressed_since_last", suppressed_since_last.to_string());
                 sentry_scope.set_extra(
@@ -2219,7 +2223,7 @@ fn send_core_update_failure_report(
                 );
                 sentry_scope.set_extra(
                     "coreUpdateAppVersion",
-                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                    sentry::protocol::Value::String(crate::app_version::current().to_string()),
                 );
                 sentry_scope.set_extra(
                     "managedGitRetryAttempted",
@@ -2366,7 +2370,7 @@ fn queue_core_update_failure_report(
 /// not change whether the rescue update itself succeeded. Keep its Sentry
 /// issue separate from `core_update_failed` so an operational follow-up does
 /// not look like an update failure to either people or alerting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CoreUpdateBaselinePersistenceWarningSignature {
     channel: Channel,
     error_category: RescueFailureCategory,
@@ -2377,7 +2381,7 @@ static CORE_UPDATE_BASELINE_WARNING_SIGNATURES: OnceLock<
     Mutex<HashSet<CoreUpdateBaselinePersistenceWarningSignature>>,
 > = OnceLock::new();
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CoreUpdateBaselinePersistenceDiagnosticTags {
     write_path: &'static str,
     error_kind: &'static str,
@@ -2387,31 +2391,24 @@ struct CoreUpdateBaselinePersistenceDiagnosticTags {
     permission_state: &'static str,
     disk_state: &'static str,
     concurrent_writer: &'static str,
+    stamp_state: String,
+    outcome: &'static str,
+    stamp_key: &'static str,
+    yaml_top_level_keys: String,
 }
 
 impl CoreUpdateBaselinePersistenceDiagnosticTags {
-    fn unknown() -> Self {
-        Self {
-            write_path: "unknown",
-            error_kind: "unknown",
-            directory_state: "unknown",
-            target_state: "unknown",
-            temp_state: "unknown",
-            permission_state: "unknown",
-            disk_state: "unknown",
-            concurrent_writer: "unknown",
-        }
-    }
-
     fn from_detail(detail: &str) -> Self {
-        let Some(start) = detail.rfind("[baseline_persistence_diagnostics ") else {
-            return Self::unknown();
-        };
-        let marker = detail[start..].split(']').next().unwrap_or_default();
+        let marker = detail
+            .rfind("[baseline_persistence_diagnostics ")
+            .map(|start| detail[start..].split(']').next().unwrap_or_default());
         let value = |key: &str| {
             marker
-                .split_ascii_whitespace()
-                .find_map(|field| field.strip_prefix(&format!("{key}=")))
+                .and_then(|marker| {
+                    marker
+                        .split_ascii_whitespace()
+                        .find_map(|field| field.strip_prefix(&format!("{key}=")))
+                })
                 .unwrap_or("unknown")
         };
         let bounded = |value: &str, allowed: &[&'static str]| {
@@ -2421,6 +2418,7 @@ impl CoreUpdateBaselinePersistenceDiagnosticTags {
                 .find(|item| *item == value)
                 .unwrap_or("unknown")
         };
+        let stamp_tags = persistence_stamp_tags_from_detail(detail);
 
         Self {
             write_path: bounded(
@@ -2477,6 +2475,10 @@ impl CoreUpdateBaselinePersistenceDiagnosticTags {
                     "unknown",
                 ],
             ),
+            stamp_state: stamp_tags.state,
+            outcome: stamp_tags.outcome,
+            stamp_key: stamp_tags.key,
+            yaml_top_level_keys: stamp_tags.yaml_top_level_keys,
         }
     }
 }
@@ -2561,6 +2563,16 @@ fn send_core_update_baseline_persistence_warning(
                     "persistence_concurrent_writer",
                     report.diagnostic_tags.concurrent_writer,
                 );
+                sentry_scope.set_tag(
+                    "persistence_stamp_state",
+                    &report.diagnostic_tags.stamp_state,
+                );
+                sentry_scope.set_tag("persistence_outcome", report.diagnostic_tags.outcome);
+                sentry_scope.set_tag("persistence_stamp_key", report.diagnostic_tags.stamp_key);
+                sentry_scope.set_tag(
+                    "persistence_yaml_top_level_keys",
+                    &report.diagnostic_tags.yaml_top_level_keys,
+                );
                 sentry_scope.set_extra(
                     "baselinePersistenceDetail",
                     sentry::protocol::Value::String(report.detail),
@@ -2582,7 +2594,7 @@ fn report_core_update_baseline_persistence_warning_once(
     let signature = CoreUpdateBaselinePersistenceWarningSignature {
         channel: report.channel,
         error_category: report.error_category,
-        diagnostic_tags: report.diagnostic_tags,
+        diagnostic_tags: report.diagnostic_tags.clone(),
     };
     if claim_core_update_baseline_warning_signature(signature) {
         send_core_update_baseline_persistence_warning(report);
@@ -2876,40 +2888,6 @@ async fn fetch_tree(
 
 // ─── Floor SHA reader ────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct LocalCoreYaml {
-    #[serde(default)]
-    replaced_from_source: Option<LocalSourceStamp>,
-    #[serde(default)]
-    replaced_from_staging: Option<LocalSourceStamp>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LocalSourceStamp {
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    last_sync_sha: Option<String>,
-}
-
-fn local_source_stamp(hq_folder: &std::path::Path) -> Option<(String, String)> {
-    let canonical = hq_folder.join("core").join("core.yaml");
-    let legacy = hq_folder.join("core.yaml");
-    let bytes = std::fs::read(if canonical.is_file() {
-        canonical
-    } else {
-        legacy
-    })
-    .ok()?;
-    let parsed: LocalCoreYaml = serde_yaml::from_slice(&bytes).ok()?;
-    let stamp = parsed
-        .replaced_from_source
-        .or(parsed.replaced_from_staging)?;
-    let source = stamp.source?.trim().to_string();
-    let commit = stamp.last_sync_sha?.trim().to_string();
-    (!source.is_empty() && !commit.is_empty()).then_some((source, commit))
-}
-
 /// Capture the paths known to the last successful baseline before rescue
 /// rewrites `core/core.yaml`. Rescue leaves user-only paths in locked scopes;
 /// normal runs log only their count, so the previous baseline path set is the
@@ -3018,6 +2996,24 @@ pub(crate) struct AppliedRescueBaseline {
     pub(crate) baseline_persisted: bool,
     pub(crate) refresh_pending: bool,
     pub(crate) persistence_diagnostic: Option<String>,
+    pub(crate) stamp_key: &'static str,
+}
+
+impl AppliedRescueBaseline {
+    pub(crate) fn persistence_stamp_marker(&self) -> String {
+        available_stamp_marker(self.stamp_key)
+    }
+}
+
+fn required_local_source_stamp(
+    hq_folder: &std::path::Path,
+) -> Result<ReadableLocalSourceStamp, String> {
+    read_local_source_stamp(hq_folder).map_err(|error| {
+        format!(
+            "rescue completed without a replaced_from_source.last_sync_sha stamp {}",
+            error.marker()
+        )
+    })
 }
 
 fn optional_core_tree_client(token: Option<&str>) -> Result<reqwest::Client, String> {
@@ -3047,9 +3043,30 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
     injected_path: Option<&std::path::Path>,
     remote_tree: Result<BTreeMap<String, (String, u64)>, String>,
 ) -> Result<AppliedRescueBaseline, String> {
-    let (source, commit) = local_source_stamp(hq_folder).ok_or_else(|| {
-        "rescue completed without a replaced_from_source.last_sync_sha stamp".to_string()
-    })?;
+    let stamp = required_local_source_stamp(hq_folder)?;
+    persist_applied_rescue_baseline_from_stamp_with_path(
+        hq_folder,
+        previous_baseline_paths,
+        rescue_output,
+        channel,
+        injected_path,
+        stamp,
+        remote_tree,
+    )
+}
+
+fn persist_applied_rescue_baseline_from_stamp_with_path(
+    hq_folder: &std::path::Path,
+    previous_baseline_paths: Option<&BTreeSet<String>>,
+    rescue_output: &str,
+    channel: Channel,
+    injected_path: Option<&std::path::Path>,
+    stamp: ReadableLocalSourceStamp,
+    remote_tree: Result<BTreeMap<String, (String, u64)>, String>,
+) -> Result<AppliedRescueBaseline, String> {
+    let source = stamp.source.clone();
+    let commit = stamp.commit.clone();
+    let stamp_key = stamp.key;
 
     match remote_tree {
         Ok(tree) => {
@@ -3079,6 +3096,7 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
                     baseline_persisted: false,
                     refresh_pending: true,
                     persistence_diagnostic: Some(error.to_string()),
+                    stamp_key,
                 });
             }
             let mut refresh_pending = false;
@@ -3114,6 +3132,7 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
                 baseline_persisted: true,
                 refresh_pending,
                 persistence_diagnostic: None,
+                stamp_key,
             })
         }
         Err(fetch_error) => {
@@ -3179,6 +3198,7 @@ fn persist_applied_rescue_baseline_from_tree_with_path(
                 baseline_persisted,
                 refresh_pending: true,
                 persistence_diagnostic,
+                stamp_key,
             })
         }
     }
@@ -3191,9 +3211,11 @@ fn refresh_pending_baseline_from_tree_with_path(
     injected_path: Option<&std::path::Path>,
     remote_tree: Result<BTreeMap<String, (String, u64)>, String>,
 ) -> Result<(), String> {
-    let Some((source, commit)) = local_source_stamp(hq_folder) else {
-        return Err("pending baseline refresh has no local stamp".to_string());
-    };
+    let stamp = read_local_source_stamp(hq_folder).map_err(|error| {
+        format!("pending baseline refresh has no local stamp {}", error.marker())
+    })?;
+    let source = stamp.source;
+    let commit = stamp.commit;
     if source != pending.source || commit != pending.commit {
         return Err(format!(
             "pending baseline stamp changed from {}@{} to {source}@{commit}",
@@ -3249,16 +3271,20 @@ where
     F: FnOnce(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
-    let (source, commit) = local_source_stamp(hq_folder).ok_or_else(|| {
-        "rescue completed without a replaced_from_source.last_sync_sha stamp".to_string()
-    })?;
-    let remote_tree = fetcher(source, commit, token.map(str::to_string)).await;
-    persist_applied_rescue_baseline_from_tree_with_path(
+    let stamp = required_local_source_stamp(hq_folder)?;
+    let remote_tree = fetcher(
+        stamp.source.clone(),
+        stamp.commit.clone(),
+        token.map(str::to_string),
+    )
+    .await;
+    persist_applied_rescue_baseline_from_stamp_with_path(
         hq_folder,
         previous_baseline_paths,
         rescue_output,
         channel,
         injected_path,
+        stamp,
         remote_tree,
     )
 }
@@ -4364,13 +4390,18 @@ where
     let Some(pending) = persisted_baseline_refresh_target(channel, injected_path) else {
         return false;
     };
-    let Some((source, stamped_commit)) = local_source_stamp(hq_folder) else {
-        log(
-            "hq-core-state",
-            "pending Core baseline refresh has no local stamp; keeping the scheduled installer suppressed",
-        );
-        return true;
+    let stamp = match read_local_source_stamp(hq_folder) {
+        Ok(stamp) => stamp,
+        Err(_) => {
+            log(
+                "hq-core-state",
+                "pending Core baseline refresh has no local stamp; keeping the scheduled installer suppressed",
+            );
+            return true;
+        }
     };
+    let source = stamp.source.clone();
+    let stamped_commit = stamp.commit.clone();
     if source != pending.source || stamped_commit != pending.commit {
         log(
             "hq-core-state",
@@ -4418,12 +4449,17 @@ where
                 true
             }
             Err(error) => {
+                let stamp_marker = if error.contains("[baseline_persistence_stamp ") {
+                    String::new()
+                } else {
+                    format!(" {}", stamp.marker())
+                };
                 record_core_update_baseline_persistence_failure(
                     "automatic",
                     channel,
                     "hq-core-state",
                     &format!(
-                        "Core baseline refresh failed after tree fetch for {source}@{stamped_commit}: {error}"
+                        "Core baseline refresh failed after tree fetch for {source}@{stamped_commit}: {error}{stamp_marker}"
                     ),
                 );
                 true
@@ -4435,7 +4471,8 @@ where
                 channel,
                 "hq-core-state",
                 &format!(
-                    "Core baseline refresh pending for {source}@{stamped_commit}: {error}"
+                    "Core baseline refresh pending for {source}@{stamped_commit}: {error} {}",
+                    stamp.marker()
                 ),
             );
             true
@@ -6608,6 +6645,10 @@ error: clone failed";
         assert_eq!(event.tags["persistence_permission_state"], "unknown");
         assert_eq!(event.tags["persistence_disk_state"], "unknown");
         assert_eq!(event.tags["persistence_concurrent_writer"], "unknown");
+        assert_eq!(event.tags["persistence_stamp_state"], "unknown");
+        assert_eq!(event.tags["persistence_outcome"], "stamp_unreadable");
+        assert_eq!(event.tags["persistence_stamp_key"], "none");
+        assert_eq!(event.tags["persistence_yaml_top_level_keys"], "none");
         assert_eq!(event.tags["channel"], "release");
         assert_eq!(event.tags["source"], "automatic");
         let redacted = event.extra["baselinePersistenceDetail"]
@@ -6663,6 +6704,8 @@ error: clone failed";
         assert_eq!(event.tags["persistence_permission_state"], "not_denied");
         assert_eq!(event.tags["persistence_disk_state"], "not_storage_full");
         assert_eq!(event.tags["persistence_concurrent_writer"], "no_evidence");
+        assert_eq!(event.tags["persistence_outcome"], "io_failure");
+        assert_eq!(event.tags["persistence_stamp_state"], "unknown");
         assert!(!event
             .tags
             .values()
@@ -6671,6 +6714,69 @@ error: clone failed";
             .as_str()
             .expect("warning retains a redacted diagnostic");
         assert!(!redacted.contains(temp.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn rescue_stamp_read_failure_is_reported_as_a_typed_warning() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_baseline_warning_signatures_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let error = persist_applied_rescue_baseline_from_tree_with_path(
+            temp.path(),
+            None,
+            "==> Stamped core/core.yaml: replaced_from_source.last_sync_sha=abc",
+            Channel::Release,
+            None,
+            Err("unused because the local stamp is missing".to_string()),
+        )
+        .unwrap_err();
+        let detail = format!("core update applied but baseline persistence failed: {error}");
+        let report =
+            core_update_baseline_persistence_warning_report("automatic", Channel::Release, &detail);
+        let events = sentry::test::with_captured_events_options(
+            || send_core_update_baseline_persistence_warning(report),
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+        let event = events.into_iter().next().expect("stamp warning is emitted");
+        let event = hq_telemetry::before_send(event).unwrap();
+
+        assert_eq!(event.tags["persistence_stamp_state"], "core_yaml_missing");
+        assert_eq!(event.tags["persistence_outcome"], "stamp_unreadable");
+        assert_eq!(event.tags["persistence_stamp_key"], "none");
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Desktop Core update applied but baseline persistence failed")
+        );
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(
+            event.fingerprint,
+            vec!["desktop-core-update-baseline-persistence-failed"]
+        );
+        let detail = event.extra["baselinePersistenceDetail"].as_str().unwrap();
+        assert!(detail.contains("state=core_yaml_missing"));
+        assert!(!detail.contains(temp.path().to_str().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn production_rescue_reader_reports_typed_stamp_failure_before_fetch() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = persist_applied_rescue_baseline_with_fetcher_and_path(
+            temp.path(),
+            None,
+            "",
+            Channel::Release,
+            None,
+            None,
+            |_, _, _| async { panic!("fetcher must not run when the stamp is unreadable") },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("state=core_yaml_missing"));
+        assert!(error.contains("key=none"));
     }
 
     #[test]
@@ -7000,16 +7106,6 @@ error: clone failed";
         );
     }
 
-    fn is_core_update_sentry_event(event: &sentry::protocol::Event<'static>) -> bool {
-        matches!(
-            event.message.as_deref(),
-            Some(
-                "Desktop Core update failed"
-                    | "Desktop Core update applied but baseline persistence failed"
-            )
-        )
-    }
-
     fn queue_core_update_sentry_retry_test_report() {
         queue_core_update_failure_report(
             "automatic",
@@ -7077,6 +7173,13 @@ error: clone failed";
         report: impl FnOnce(),
     ) -> Vec<sentry::protocol::Event<'static>> {
         let expected_count = expected_messages.len();
+        // Binding the client to the process hub below makes it visible to every
+        // thread. The pending-baseline-refresh tests (serialized by
+        // CORE_UPDATE_TEST_LOCK, not the Sentry lock) record a real
+        // "Desktop Core update applied but baseline persistence failed"
+        // warning through the process hub, so one running concurrently lands
+        // an extra Core update event in this transport. Hold their lock too.
+        let _update_lock = CORE_UPDATE_TEST_LOCK.blocking_lock();
         let transport = Arc::new(CountingTestTransport::default());
         let options = sentry::ClientOptions {
             dsn: Some(
@@ -7124,7 +7227,11 @@ error: clone failed";
         transport
             .take_events()
             .into_iter()
-            .filter(is_core_update_sentry_event)
+            .filter(|event| {
+                expected_messages
+                    .iter()
+                    .any(|expected| *expected == event.message.as_deref().unwrap_or_default())
+            })
             .collect()
     }
 
