@@ -8726,6 +8726,152 @@ mod tests {
     }
 
     #[test]
+    fn stale_same_size_same_mtime_cache_hit_keeps_the_quarantine_copy_as_a_move() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        seed_scope_quarantine_repo(tmp.path(), 1);
+        move_scope_files_to_quarantine(tmp.path(), 1, false);
+        git_ok(tmp.path(), &["add", "-A"]);
+
+        let hq_folder = tmp.path().to_str().unwrap();
+        let record = staged_deletion_records(hq_folder)
+            .expect("read staged source blob")
+            .into_iter()
+            .next()
+            .expect("one source deletion is staged");
+        let copy = tmp
+            .path()
+            .join(".hq/scope-quarantine/journal-001")
+            .join(&record.path);
+        let cached_metadata = fs::metadata(&copy).expect("read quarantined copy metadata");
+        let cached_size = cached_metadata.len();
+        let cached_modified = cached_metadata.modified().expect("read cached mtime");
+
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("cache the verified copy"),
+            1
+        );
+        git_ok(tmp.path(), &["add", "-A"]);
+
+        let mut replacement = fs::read(&copy).expect("read quarantined copy");
+        assert!(!replacement.is_empty());
+        replacement[0] ^= 0xff;
+        fs::write(&copy, &replacement).expect("rewrite copy without changing its length");
+        File::open(&copy)
+            .expect("open rewritten copy")
+            .set_modified(cached_modified)
+            .expect("restore the cached mtime");
+        let rewritten_metadata = fs::metadata(&copy).expect("read rewritten metadata");
+        assert_eq!(rewritten_metadata.len(), cached_size);
+        assert_eq!(
+            rewritten_metadata.modified().expect("read rewritten mtime"),
+            cached_modified
+        );
+        assert_ne!(
+            hash_quarantined_copy(hq_folder, &record.path, &copy)
+                .expect("hash changed bytes through Git"),
+            record.blob,
+            "the rewritten copy no longer hashes to the recorded blob"
+        );
+        git_ok(tmp.path(), &["add", "-A"]);
+
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("the stale metadata-keyed hit preserves the move"),
+            1,
+            "a stale cache hit must keep the source as a move"
+        );
+        assert_eq!(
+            count_staged_deletions(hq_folder)
+                .expect("count deletions after restoring the index entry")
+                .count,
+            0,
+            "a stale cache hit must not leave the source deletion staged"
+        );
+        let index_blob =
+            String::from_utf8(git(tmp.path(), &["rev-parse", &format!(":{}", record.path)]).stdout)
+                .expect("decode restored index blob");
+        assert_eq!(index_blob.trim(), record.blob);
+        assert_eq!(
+            fs::read(&copy).expect("quarantine copy remains present"),
+            replacement
+        );
+        assert!(
+            !tmp.path().join(&record.path).exists(),
+            "the out-of-scope source remains represented by its retained quarantine copy"
+        );
+    }
+
+    #[test]
+    fn quarantine_hash_cache_invalidates_equal_length_attribute_rewrites() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+
+        let company_path = ["companies", "indigo"].join("/");
+        let source_path = format!("{company_path}/file-0000.md");
+        let original_attributes = format!("{company_path}/*.md text\n");
+        let replacement_attributes = format!("{company_path}/*md -text\n");
+        assert_eq!(
+            original_attributes.len(),
+            replacement_attributes.len(),
+            "the changed rule must have the same byte length"
+        );
+        fs::write(tmp.path().join(".gitattributes"), &original_attributes).unwrap();
+        fs::write(tmp.path().join(".gitignore"), ".hq/\n").unwrap();
+        let source = tmp.path().join(&source_path);
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"line one\r\nline two\r\n").unwrap();
+        git_ok(tmp.path(), &["add", "-A"]);
+        git_ok(
+            tmp.path(),
+            &["commit", "-q", "-m", "seed equal-length attribute fixture"],
+        );
+        let head_blob = String::from_utf8(
+            git(tmp.path(), &["rev-parse", &format!("HEAD:{source_path}")]).stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        move_scope_files_to_quarantine(tmp.path(), 1, false);
+        git_ok(tmp.path(), &["add", "-A"]);
+        let hq_folder = tmp.path().to_str().unwrap();
+        let copy = tmp
+            .path()
+            .join(".hq/scope-quarantine/journal-001")
+            .join(&source_path);
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("cache the blob produced by the original attributes"),
+            1
+        );
+        git_ok(tmp.path(), &["add", "-A"]);
+
+        fs::write(tmp.path().join(".gitattributes"), &replacement_attributes).unwrap();
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_ne!(
+            hash_quarantined_copy(hq_folder, &source_path, &copy)
+                .expect("hash under the replacement attributes"),
+            head_blob,
+            "the equal-length -text rule produces a different blob for CRLF content"
+        );
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("attribute content change invalidates the cached blob"),
+            0,
+            "cache invalidation must compare attribute bytes even when file length is unchanged"
+        );
+        assert_eq!(
+            count_staged_deletions(hq_folder)
+                .expect("read staged source deletion after attribute change")
+                .count,
+            1
+        );
+    }
+
+    #[test]
     fn different_scope_quarantine_content_stays_a_bulk_deletion() {
         let _serial = serial();
         std::env::remove_var(BULK_OVERRIDE_ENV);
