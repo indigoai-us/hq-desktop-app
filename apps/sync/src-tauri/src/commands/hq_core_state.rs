@@ -213,6 +213,7 @@ pub(crate) struct CoreUpdateError {
     message: String,
     npx_resolution: Option<CoreUpdateNpxResolution>,
     managed_git_retry: ManagedGitRetryOutcome,
+    pre_rescue_materialization: bool,
 }
 
 impl CoreUpdateError {
@@ -222,6 +223,7 @@ impl CoreUpdateError {
             message: message.into(),
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            pre_rescue_materialization: false,
         }
     }
 
@@ -235,6 +237,11 @@ impl CoreUpdateError {
         managed_git_retry: ManagedGitRetryOutcome,
     ) -> Self {
         self.managed_git_retry = managed_git_retry;
+        self
+    }
+
+    pub(crate) fn with_pre_rescue_materialization(mut self) -> Self {
+        self.pre_rescue_materialization = true;
         self
     }
 
@@ -1333,6 +1340,7 @@ pub(crate) struct CoreUpdateFailureDetails<'a> {
     /// Dimensions parsed from the raw rescue output before it is redacted.
     pub(crate) rescue_telemetry: Option<&'a CoreUpdateRescueTelemetry>,
     pub(crate) rescue_failure_category: RescueFailureCategory,
+    pub(crate) pre_rescue_materialization: bool,
     pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
     pub(crate) managed_git_retry: ManagedGitRetryOutcome,
 }
@@ -1352,6 +1360,7 @@ pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdate
             detail,
             error.npx_resolution(),
         ),
+        pre_rescue_materialization: error.pre_rescue_materialization,
         npx_resolution: error.npx_resolution(),
         managed_git_retry: error.managed_git_retry(),
     }
@@ -2367,12 +2376,13 @@ fn core_update_sentry_failure_report(
             1 + u32::from(details.managed_git_retry.attempted()),
         )
     });
-    let category_step =
-        if details.rescue_telemetry.is_some() || details.rescue_stderr_tail.is_some() {
-            core_update_rescue_step_for_category(details.rescue_failure_category)
-        } else {
-            "unknown"
-        };
+    let category_step = if details.pre_rescue_materialization {
+        "npm-cache"
+    } else if details.rescue_telemetry.is_some() || details.rescue_stderr_tail.is_some() {
+        core_update_rescue_step_for_category(details.rescue_failure_category)
+    } else {
+        "unknown"
+    };
     if category_step != "unknown" {
         rescue_telemetry.rescue_step = category_step;
     }
@@ -3988,8 +3998,34 @@ enum NativeCoreAutoUpdateOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutomaticCoreUpdatePreinstall {
     Proceed,
+    SkipAutomaticUpdatesDisabled,
     DeferForPrewarm,
     DeferForSync,
+}
+
+fn skip_automatic_core_update_for_disabled_updates(
+    candidate: CoreAutoUpdateCandidate<'_>,
+) -> NativeCoreAutoUpdateOutcome {
+    log(
+        "hq-core-update",
+        "native auto-update skipped: automatic updates disabled",
+    );
+    emit_core_update_event(
+        "core_update_skipped",
+        "automatic",
+        "skipped",
+        Some(candidate.channel),
+        candidate.local_version,
+        Some(candidate.target_version),
+        false,
+        Some(candidate.is_eligible),
+        Some(candidate.version_behind),
+        Duration::ZERO,
+        None,
+        None,
+        Some("automatic_updates_disabled"),
+    );
+    NativeCoreAutoUpdateOutcome::SkippedAutomaticUpdatesDisabled
 }
 
 fn defer_automatic_core_update_for_sync(
@@ -4017,14 +4053,16 @@ fn defer_automatic_core_update_for_sync(
     NativeCoreAutoUpdateOutcome::DeferredForSync
 }
 
-async fn automatic_core_update_preinstall<Wait, WaitFuture, SyncCheck>(
+async fn automatic_core_update_preinstall<Wait, WaitFuture, AutoUpdatesEnabled, SyncCheck>(
     wait_enabled: bool,
     wait_for_prewarm: Wait,
+    auto_updates_enabled_after_wait: AutoUpdatesEnabled,
     sync_in_progress_after_wait: SyncCheck,
 ) -> AutomaticCoreUpdatePreinstall
 where
     Wait: FnOnce() -> WaitFuture,
     WaitFuture: Future<Output = hq_desktop_core::prewarm::PrewarmWaitOutcome>,
+    AutoUpdatesEnabled: FnOnce() -> bool,
     SyncCheck: FnOnce() -> bool,
 {
     if !wait_enabled {
@@ -4038,7 +4076,9 @@ where
     match wait_for_prewarm().await {
         hq_desktop_core::prewarm::PrewarmWaitOutcome::NotRunning
         | hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed => {
-            if sync_in_progress_after_wait() {
+            if !auto_updates_enabled_after_wait() {
+                AutomaticCoreUpdatePreinstall::SkipAutomaticUpdatesDisabled
+            } else if sync_in_progress_after_wait() {
                 AutomaticCoreUpdatePreinstall::DeferForSync
             } else {
                 AutomaticCoreUpdatePreinstall::Proceed
@@ -4205,26 +4245,7 @@ where
     ) {
         CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
         CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled => {
-            log(
-                "hq-core-update",
-                "native auto-update skipped: automatic updates disabled",
-            );
-            emit_core_update_event(
-                "core_update_skipped",
-                "automatic",
-                "skipped",
-                Some(candidate.channel),
-                candidate.local_version,
-                Some(candidate.target_version),
-                false,
-                Some(candidate.is_eligible),
-                Some(candidate.version_behind),
-                Duration::ZERO,
-                None,
-                None,
-                Some("automatic_updates_disabled"),
-            );
-            NativeCoreAutoUpdateOutcome::SkippedAutomaticUpdatesDisabled
+            skip_automatic_core_update_for_disabled_updates(candidate)
         }
         CoreAutoUpdateDecision::DeferForSync => defer_automatic_core_update_for_sync(candidate),
         CoreAutoUpdateDecision::Install => {
@@ -4355,6 +4376,9 @@ where
                 }
                 AutomaticCoreUpdatePreinstall::DeferForSync => {
                     return defer_automatic_core_update_for_sync(candidate);
+                }
+                AutomaticCoreUpdatePreinstall::SkipAutomaticUpdatesDisabled => {
+                    return skip_automatic_core_update_for_disabled_updates(candidate);
                 }
                 AutomaticCoreUpdatePreinstall::Proceed => {}
             }
@@ -4654,6 +4678,7 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
             let decision = automatic_core_update_preinstall(
                 wait_enabled,
                 || hq_desktop_core::prewarm::wait_for_active_prewarm(CORE_UPDATE_PREWARM_WAIT),
+                hq_desktop_core::hq_cli_update::auto_update_enabled,
                 crate::updater::sync_in_progress,
             )
             .await;
@@ -4906,6 +4931,7 @@ mod tests {
                 wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
                 coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT)
             },
+            || true,
             || false,
         )
         .await;
@@ -4956,6 +4982,7 @@ mod tests {
                 wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
                 async { hq_desktop_core::prewarm::PrewarmWaitOutcome::NotRunning }
             },
+            || true,
             move || {
                 sync_calls_for_check.fetch_add(1, Ordering::AcqRel);
                 true
@@ -5054,6 +5081,7 @@ mod tests {
             true,
             || async { hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed },
             || true,
+            || true,
         )
         .await;
         assert_eq!(decision, AutomaticCoreUpdatePreinstall::DeferForSync);
@@ -5083,6 +5111,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_updates_disabled_during_prewarm_skip_before_guard_or_install() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "c154-auto-update-disabled-during-prewarm",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let wait_calls = Arc::new(AtomicUsize::new(0));
+        let wait_calls_for_check = Arc::clone(&wait_calls);
+        let auto_update_checks = Arc::new(AtomicUsize::new(0));
+        let auto_update_checks_for_gate = Arc::clone(&auto_update_checks);
+        let installs = Arc::new(AtomicUsize::new(0));
+        let installs_for_call = Arc::clone(&installs);
+
+        let outcome = execute_native_core_auto_update_with_clock_and_preinstall(
+            candidate,
+            true,
+            false,
+            Instant::now,
+            Some(home.path()),
+            move || async move {
+                automatic_core_update_preinstall(
+                    true,
+                    move || {
+                        wait_calls_for_check.fetch_add(1, Ordering::AcqRel);
+                        async { hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed }
+                    },
+                    move || {
+                        auto_update_checks_for_gate.fetch_add(1, Ordering::AcqRel);
+                        false
+                    },
+                    || false,
+                )
+                .await
+            },
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                installs_for_call.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            NativeCoreAutoUpdateOutcome::SkippedAutomaticUpdatesDisabled
+        );
+        assert_eq!(wait_calls.load(Ordering::Acquire), 1);
+        assert_eq!(auto_update_checks.load(Ordering::Acquire), 1);
+        assert_eq!(installs.load(Ordering::Acquire), 0);
+        let manual_guard = try_begin_core_update()
+            .expect("an opt-out after prewarm must skip before taking the update guard");
+        drop(manual_guard);
+    }
+
+    #[tokio::test]
     async fn automatic_prewarm_wait_does_not_hold_the_update_guard() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let coordinator = hq_desktop_core::prewarm::PrewarmCoordinator::new();
@@ -5091,6 +5178,7 @@ mod tests {
         let mut waiting = Box::pin(automatic_core_update_preinstall(
             true,
             || coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT),
+            || true,
             || false,
         ));
         let first_poll =
@@ -5636,6 +5724,7 @@ mod tests {
                 rescue_stderr_tail: Some(stderr),
                 rescue_telemetry: None,
                 rescue_failure_category: classify_rescue_exit_failure(stderr, npx_resolution),
+                pre_rescue_materialization: false,
                 npx_resolution: Some(npx_resolution),
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             },
@@ -6455,6 +6544,7 @@ error: clone failed";
             rescue_stderr_tail: Some(stderr),
             rescue_telemetry: None,
             rescue_failure_category: RescueFailureCategory::Unknown,
+            pre_rescue_materialization: false,
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
         };
@@ -6615,6 +6705,33 @@ error: clone failed";
     }
 
     #[test]
+    fn pre_rescue_materialization_network_failure_maps_to_npm_cache_not_clone() {
+        let materialization_error = CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "HQ Sync could not prepare its npm cache (npx exited with code 1). Check your network and npm setup, then try Sync again.",
+        )
+        .with_pre_rescue_materialization();
+        let materialization_report = report_for_core_update_error(&materialization_error);
+        assert_eq!(
+            materialization_report.error_category,
+            RescueFailureCategory::Network
+        );
+        assert!(materialization_report.rescue_stderr_tail.is_some());
+        assert_eq!(
+            materialization_report.rescue_telemetry.rescue_step,
+            "npm-cache"
+        );
+
+        let clone_error = CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "fatal: unable to access 'https://github.com/indigoai-us/hq-core/': Could not resolve host: github.com",
+        );
+        let clone_report = report_for_core_update_error(&clone_error);
+        assert_eq!(clone_report.error_category, RescueFailureCategory::Network);
+        assert_eq!(clone_report.rescue_telemetry.rescue_step, "clone");
+    }
+
+    #[test]
     fn rescue_telemetry_classifies_each_supported_error_class() {
         for (raw, expected_step, expected_class) in [
             ("==> Cloning\nerror: clone failed", "clone", "clone_failed"),
@@ -6772,6 +6889,7 @@ error: clone failed";
                     rescue_stderr_tail: Some(raw),
                     rescue_telemetry: Some(&telemetry),
                     rescue_failure_category: category,
+                    pre_rescue_materialization: false,
                     npx_resolution: None,
                     managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
                 },
@@ -6795,6 +6913,7 @@ error: clone failed";
                 rescue_stderr_tail: None,
                 rescue_telemetry: Some(&telemetry),
                 rescue_failure_category: RescueFailureCategory::RsyncBroken,
+                pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             },
@@ -6829,6 +6948,7 @@ error: clone failed";
                 rescue_stderr_tail: Some(raw),
                 rescue_telemetry: Some(&telemetry),
                 rescue_failure_category: RescueFailureCategory::SnapshotRecoveryRequired,
+                pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             },
@@ -6849,6 +6969,7 @@ error: clone failed";
                 rescue_stderr_tail: Some(raw),
                 rescue_telemetry: Some(&telemetry),
                 rescue_failure_category: RescueFailureCategory::LockContention,
+                pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             },
@@ -6875,6 +6996,7 @@ error: clone failed";
                 rescue_stderr_tail: Some(raw),
                 rescue_telemetry: Some(&telemetry),
                 rescue_failure_category: RescueFailureCategory::RsyncPartialTransfer,
+                pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             },
@@ -7685,6 +7807,7 @@ error: clone failed";
             rescue_stderr_tail: None,
             rescue_telemetry: None,
             rescue_failure_category: RescueFailureCategory::Permission,
+            pre_rescue_materialization: false,
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
         }
@@ -7710,6 +7833,7 @@ error: clone failed";
                 rescue_stderr_tail: Some("error: clone failed"),
                 rescue_telemetry: None,
                 rescue_failure_category: RescueFailureCategory::MissingDependency,
+                pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::Failed,
             },
@@ -7978,6 +8102,7 @@ error: clone failed";
                 rescue_stderr_tail: Some("fatal: could not clone hq-core"),
                 rescue_telemetry: None,
                 rescue_failure_category: RescueFailureCategory::Unknown,
+                pre_rescue_materialization: false,
                 npx_resolution: Some(npx_resolution),
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             },

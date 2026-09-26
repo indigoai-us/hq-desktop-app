@@ -507,6 +507,7 @@ async fn install_hq_core_update_inner(
                 crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
                 error,
             )
+            .with_pre_rescue_materialization()
             .with_npx_resolution(npx_resolution)
         })?;
 

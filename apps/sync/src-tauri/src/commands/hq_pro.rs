@@ -192,13 +192,13 @@ where
 
 fn parse_configured_feature_flags(body: &str) -> Option<HashMap<String, bool>> {
     let response: serde_json::Value = serde_json::from_str(body).ok()?;
+    let _version = response.get("version")?.as_number()?;
     let flags = response.get("flags")?.as_object()?;
-    Some(
-        flags
-            .iter()
-            .filter_map(|(key, value)| value.as_bool().map(|enabled| (key.clone(), enabled)))
-            .collect(),
-    )
+    let mut values = HashMap::with_capacity(flags.len());
+    for (key, value) in flags {
+        values.insert(key.clone(), value.as_bool()?);
+    }
+    Some(values)
 }
 
 fn parse_feature_flag_response(status: u16, body: &str) -> Option<HashMap<String, bool>> {
@@ -310,6 +310,40 @@ mod tests {
 
         assert!(first_scope);
         assert!(!second_scope);
+    }
+
+    #[tokio::test]
+    async fn malformed_flag_snapshots_fail_closed_and_valid_snapshot_enables_rollout() {
+        let flag = "desktop.core-update-waits-for-prewarm";
+        let missing_version = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"flags":{{"{flag}":true}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert!(!missing_version);
+
+        let malformed_other_flag = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":true,"another.flag":"true"}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert!(!malformed_other_flag);
+
+        let valid = feature_flag_enabled_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert!(valid);
     }
 
     #[test]
