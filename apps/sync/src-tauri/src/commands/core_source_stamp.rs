@@ -106,7 +106,7 @@ where
             "none"
         }
     });
-    let parsed: LocalCoreYaml = serde_yaml::from_value(yaml).map_err(|_| {
+    let parsed: LocalCoreYaml = serde_yaml::from_slice(&bytes).map_err(|_| {
         stamp_error(
             "core_yaml_parse_error",
             yaml_stamp_key,
@@ -451,6 +451,23 @@ mod tests {
         assert_eq!(tags.state, "stamp_available");
         assert_eq!(tags.outcome, "refresh_pending");
         assert_eq!(tags.key, "replaced_from_staging");
+    }
+
+    #[test]
+    fn numeric_commit_sha_is_read_as_a_string() {
+        let temp = tempfile::tempdir().unwrap();
+        let commit = "0".repeat(40);
+        write_canonical_stamp(
+            temp.path(),
+            &format!(
+                "replaced_from_source:\n  source: indigoai-us/hq-core\n  last_sync_sha: {commit}\n"
+            ),
+        );
+
+        let stamp = super::read_local_source_stamp(temp.path()).unwrap();
+
+        assert_eq!(stamp.commit, commit);
+        assert_eq!(stamp.key, "replaced_from_source");
     }
 
     #[test]
