@@ -19,7 +19,7 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createChatWakeBus, type ChatWakeBus } from "../chat/chat-api.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
-import { SETUP_BOT_COPY, SETUP_BOT_INTRO, SETUP_BOT_KICKOFF } from "../chat/setup-bot.js";
+import { SETUP_BOT_COPY, SETUP_BOT_INTRO, SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 
 const SETUP_BOT_UID = "agt_setup";
@@ -202,11 +202,15 @@ describe("#welcome Run Setup creates the setup bot", () => {
 
     // Nobody pressed anything.
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    // The bot gets a friendly name from the list, and says it in its hello.
+    const input = (create.mock.calls as unknown as Array<[{ displayName: string }]>)[0]![0];
+    expect(SETUP_BOT_NAMES).toContain(input.displayName);
     expect(create).toHaveBeenCalledWith({
       name: "setup",
+      displayName: input.displayName,
       worker: "setup",
       runtime: "claude",
-      intro: SETUP_BOT_INTRO,
+      intro: setupBotIntro(input.displayName),
       // The bot starts step one by itself right after the intro.
       kickoff: SETUP_BOT_KICKOFF,
     });

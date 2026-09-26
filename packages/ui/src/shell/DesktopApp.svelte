@@ -69,7 +69,7 @@
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
-  import { messageMarksSetupDone } from "../chat/messaging/richMessageContent.js";
+  import { messageMarksSetupDone, messageOffersSlackAgent } from "../chat/messaging/richMessageContent.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -90,9 +90,13 @@
     findSetupBotContact,
     firstSignedInRuntime,
     setupFinaleDue,
+    setupFinaleOffersSlack,
+    setupSlackOfferText,
+    pickSetupBotName,
+    takenBotNames,
+    setupBotIntro,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
-    SETUP_BOT_INTRO,
     SETUP_BOT_KICKOFF,
     SETUP_BOT_MODE,
     SETUP_BOT_NAME,
@@ -2098,14 +2102,33 @@
     // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
     // one turn by itself so the bot starts step one without waiting for the
     // person to type.
-    const created = await createBotEntry({
-      name: SETUP_BOT_NAME,
-      worker: SETUP_BOT_WORKER,
-      runtime,
-      intro: SETUP_BOT_INTRO,
-      kickoff: SETUP_BOT_KICKOFF,
-      // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
-    });
+    // A friendly name no bot on the person's roster already has, so two bots
+    // in one company never share one. The roster is read again here: an
+    // unreadable one only makes a clash possible, never blocks setup.
+    let rosterContacts: unknown = null;
+    try {
+      const contacts = await adapter.messaging?.listContacts?.();
+      if (contacts?.ok) rosterContacts = contacts.value;
+    } catch (err) {
+      console.warn("[hq-desktop] could not read the roster to name the setup bot:", err);
+    }
+    const displayName = pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
+    const created = await createBotEntry(
+      {
+        name: SETUP_BOT_NAME,
+        displayName,
+        worker: SETUP_BOT_WORKER,
+        runtime,
+        intro: setupBotIntro(displayName),
+        kickoff: SETUP_BOT_KICKOFF,
+        // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
+      },
+    );
+    // The CLI already gave HQ this name; remembering it here labels the DM on
+    // this Mac even with an older hq that could not take --display-name.
+    if (created.ok && created.agentUid) {
+      botDisplayNames = rememberBotDisplayName(botDisplayNames, created.agentUid, displayName);
+    }
     if (created.ok) {
       recordWelcomeSetupRun();
       return { ok: true, existing: false };
@@ -2273,6 +2296,18 @@
   const setupFinaleDismissKey = $derived(
     selectedLocalBot ? `setup-finale-dismissed:${selectedLocalBot.agentUid}` : null,
   );
+  /** The setup bot's human name ("Pickles"), when it has one. */
+  const setupBotDisplayName = $derived(
+    selectedLocalBot ? (botDisplayNames[selectedLocalBot.agentUid] ?? null) : null,
+  );
+  /** The bot offered a Slack bot on its finish: only for a person who started their own company. */
+  const setupFinaleSlackOffer = $derived.by(() => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!setupBotDmDone || !bot || !row) return false;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupFinaleOffersSlack(timeline, bot.agentUid, messageOffersSlackAgent);
+  });
   const setupFinaleVisible = $derived.by(() => {
     if (!setupBotDmDone) return false;
     void setupFinaleDismissedAt;
@@ -8759,6 +8794,10 @@
                       onopenurl={(url) => onopenurl?.(url)}
                       ondismiss={dismissSetupFinale}
                       launchError={setupLaunchError}
+                      slackLabel={setupFinaleSlackOffer ? setupSlackOfferText(setupBotDisplayName) : null}
+                      onslack={() => void persistSend(setupSlackOfferText(setupBotDisplayName), []).catch((err) =>
+                          console.warn("[hq-desktop] could not ask the setup bot about Slack:", err),
+                        )}
                     />
                   {/if}
                   {#if inSetupChannelWithAgent}

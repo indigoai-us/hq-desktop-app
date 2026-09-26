@@ -50,6 +50,63 @@ export const SETUP_BOT_INTRO =
   "I'm checking your Mac now, which can take a minute, and I'll post my first question here as soon as I'm done.";
 
 /**
+ * The setup bot's hello with its name in it: "Hi, I'm Pickles, your setup
+ * bot, and together …". Same plan and length rules as SETUP_BOT_INTRO.
+ */
+export function setupBotIntro(displayName: string | null | undefined): string {
+  const name = displayName?.trim();
+  if (!name) return SETUP_BOT_INTRO;
+  return SETUP_BOT_INTRO.replace("Hi, I'm your setup bot", `Hi, I'm ${name}, your setup bot`);
+}
+
+/**
+ * The names a new setup bot is given, one picked at random. Short, friendly,
+ * letters only (the CLI's `--display-name` rules), and none of them a common
+ * first name, so a bot is never mistaken for a teammate.
+ */
+export const SETUP_BOT_NAMES: readonly string[] = [
+  "Pickles", "Biscuit", "Mochi", "Waffles", "Noodle", "Pip", "Bean", "Nugget", "Sprout", "Pudding",
+  "Muffin", "Dumpling", "Pretzel", "Sprinkles", "Tater", "Bubbles", "Gizmo", "Widget", "Doodle", "Toast",
+  "Churro", "Cupcake", "Marshmallow", "Peanut", "Pebble", "Button", "Clover", "Maple", "Hazel", "Juniper",
+  "Olive", "Pumpkin", "Taco", "Nacho", "Bagel", "Scone", "Crumpet", "Truffle", "Fudge", "Cocoa",
+  "Snickers", "Tofu", "Wasabi", "Ginger", "Nutmeg", "Paprika", "Cheddar", "Brie", "Gouda", "Pesto",
+  "Zippy", "Bloop", "Boop", "Wiggles", "Squiggle", "Doodlebug", "Pogo", "Yoyo", "Kazoo", "Banjo",
+  "Pixel", "Sparky", "Rocket", "Comet", "Nova", "Cosmo", "Orbit", "Moonpie", "Stardust", "Nimbus",
+  "Puddle", "Whisker", "Fuzzy", "Fluffy", "Scooter", "Skipper", "Bumble", "Hopper", "Waddles", "Nibbles",
+  "Jellybean", "Gumdrop", "Lollipop", "Taffy", "Honeybun", "Cinnamon", "Popcorn", "Meatball", "Pancake", "Tamale",
+  "Kiwi", "Mango", "Papaya", "Coconut", "Lychee", "Radish", "Turnip", "Parsnip", "Beanie", "Tidbit",
+] as const;
+
+/** Every name already used by a bot on this person's roster, lowercased. */
+export function takenBotNames(contacts: unknown, extra: Iterable<string> = []): Set<string> {
+  const taken = new Set<string>();
+  for (const row of contactRows(contacts)) {
+    const uid = trimmedField(row, "personUid", "uid", "agentUid");
+    if (!uid || !isAgentUid(uid)) continue;
+    const name = trimmedField(row, "displayName", "name");
+    if (name) taken.add(name.toLowerCase());
+  }
+  for (const name of extra) if (name.trim()) taken.add(name.trim().toLowerCase());
+  return taken;
+}
+
+/**
+ * A name for a new setup bot that no bot the person can see already uses, so
+ * two bots in one company never share one. Random among the free names; when
+ * all of them are taken, the least likely clash gets a number ("Pickles 2").
+ */
+export function pickSetupBotName(taken: ReadonlySet<string>, random: () => number = Math.random): string {
+  const free = SETUP_BOT_NAMES.filter((name) => !taken.has(name.toLowerCase()));
+  const pool = free.length > 0 ? free : SETUP_BOT_NAMES;
+  const base = pool[Math.min(pool.length - 1, Math.floor(random() * pool.length))]!;
+  if (free.length > 0) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base} ${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+/**
  * Prefix the setup template recognises (`core/workers/public/setup`, "When
  * you receive the kickoff").
  */
@@ -268,8 +325,31 @@ export const SETUP_BOT_FINALE_COPY = {
   codex: "Open in Codex",
   consoleLead: "Manage your team, billing and bots from the HQ console on the web.",
   console: "Open the HQ console",
+  slackLead: "Want to talk to your bot where your team already works? A Slack bot needs the Workforce plan.",
+  /** Button label; `{name}` is the bot's name. */
+  slack: "Put {name} in Slack",
   dismiss: "Dismiss",
 } as const;
+
+/** The finish card's Slack button label, and the message it sends the bot. */
+export function setupSlackOfferText(displayName: string | null | undefined): string {
+  return SETUP_BOT_FINALE_COPY.slack.replace("{name}", displayName?.trim() || "my setup bot");
+}
+
+/**
+ * Did the setup bot offer a Slack bot on its finish (`setupDone` with
+ * `slackAgent: true`)? The bot only sets it for someone who started their own
+ * company, never for a person who joined one. Pure.
+ */
+export function setupFinaleOffersSlack(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  offersSlack: (message: { body?: string | null; richContent?: unknown }) => boolean,
+): boolean {
+  const uid = botUid.trim();
+  if (!uid) return false;
+  return messages.some((m) => (m.fromPersonUid ?? "").trim() === uid && offersSlack(m));
+}
 
 /**
  * Should the setup finish card show under this conversation? Pure.

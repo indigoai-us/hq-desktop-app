@@ -8,6 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The setup bot now has a name, picked at random from 100 friendly ones
+  (Pickles, Mochi, Waffles…), and never one a bot you can already see uses.
+  It says its name in its first hello. If you started your own company, the
+  card at the end of setup can also offer to put the bot in Slack; clicking it
+  asks the bot to walk you through it.
+
 - On Windows, setup no longer fails when an old content folder link points
   to a folder that has since been removed. Setup removes the old link and
   creates it again. If linking still fails, the error report now says which

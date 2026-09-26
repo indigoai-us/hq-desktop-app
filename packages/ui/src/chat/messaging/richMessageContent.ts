@@ -185,6 +185,11 @@ export interface DecisionBlock {
  */
 export interface SetupDoneBlock {
   kind: "setupDone";
+  /**
+   * The finish card offers to put the bot in Slack. The bot sets it only for
+   * someone who started their own company; absent = no offer.
+   */
+  slackAgent?: boolean;
 }
 
 export type RichBlock =
@@ -476,7 +481,7 @@ function parseBlock(raw: unknown): RichBlock | null {
   const kind = typeof raw.kind === "string" ? raw.kind : "";
   switch (kind) {
     case "setupDone":
-      return { kind: "setupDone" };
+      return raw.slackAgent === true ? { kind: "setupDone", slackAgent: true } : { kind: "setupDone" };
     case "stat":
       return parseStatBlock(raw);
     case "table":
@@ -725,6 +730,12 @@ export function richContentToPlainText(model: RichContentModel): string {
 }
 
 /** True when this message carries the setup bot's "setup is finished" signal. */
+export function messageOffersSlackAgent(message: { body?: string | null; richContent?: unknown }): boolean {
+  return (
+    richContentForMessage(message).rich?.blocks.some((block) => block.kind === "setupDone" && block.slackAgent === true) ?? false
+  );
+}
+
 export function messageMarksSetupDone(message: { body?: string | null; richContent?: unknown }): boolean {
   return richContentForMessage(message).rich?.blocks.some((block) => block.kind === "setupDone") ?? false;
 }
