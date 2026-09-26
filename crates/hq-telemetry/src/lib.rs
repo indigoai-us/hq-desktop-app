@@ -106,6 +106,11 @@ pub fn classify_core_update_rsync_diagnostic(
         .map(|line| line.to_ascii_lowercase())
         .collect::<Vec<_>>()
         .join("\n");
+    let lower_reason = lines
+        .iter()
+        .map(|line| core_update_rsync_diagnostic_reason(line).to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
     let stderr_class = if (lower.contains("link_stat") || lower.contains("failed to open"))
         && (lower.contains("no such file") || lower.contains("not found"))
     {
@@ -125,6 +130,14 @@ pub fn classify_core_update_rsync_diagnostic(
         || lower.contains("enametoolong")
     {
         "path_too_long"
+    } else if lower_reason.contains("invalid argument")
+        || lower_reason.contains("invalid filename")
+        || lower_reason.contains("invalid file name")
+        || lower_reason.contains("invalid name")
+        || lower_reason.contains("illegal byte sequence")
+        || lower_reason.contains("einval")
+    {
+        "invalid_argument"
     } else if lower.contains("resource busy")
         || lower.contains("sharing violation")
         || lower.contains("used by another process")
@@ -161,6 +174,30 @@ pub fn classify_core_update_rsync_diagnostic(
         stderr_reason: Some(core_update_rsync_stderr_reason(&lines)),
         translated_path_shape: core_update_rsync_path_shape(&lines),
     }
+}
+
+fn core_update_rsync_diagnostic_reason(line: &str) -> &str {
+    let last_quote = [line.rfind('"'), line.rfind('\'')]
+        .into_iter()
+        .flatten()
+        .max();
+    if let Some((_, reason)) = line.rsplit_once("failed: ") {
+        let reason_start = line.len() - reason.len() - "failed: ".len();
+        if last_quote.is_none() || last_quote.is_some_and(|quote| quote < reason_start) {
+            return reason;
+        }
+    }
+
+    let Some((prefix, reason)) = line.rsplit_once(": ") else {
+        return line;
+    };
+    let delimiter_start = prefix.len();
+    if last_quote.is_some_and(|quote| quote > delimiter_start)
+        || (delimiter_start == "rsync".len() && reason.starts_with('['))
+    {
+        return "";
+    }
+    reason
 }
 
 fn core_update_rsync_stderr_reason(lines: &[&str]) -> String {
@@ -1633,7 +1670,15 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_stack_signature" => Some(valid_runner_stack_signature(value)),
         "rescue_step" => Some(matches!(
             value,
-            "clone" | "checkout" | "rsync" | "npm-install" | "verify" | "unknown"
+            "clone"
+                | "checkout"
+                | "rsync"
+                | "restore"
+                | "snapshot"
+                | "npm-cache"
+                | "npm-install"
+                | "verify"
+                | "unknown"
         )),
         "rescue_error_class" => Some(matches!(
             value,
@@ -1657,6 +1702,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "vanished_source"
                 | "permission_denied"
                 | "path_too_long"
+                | "invalid_argument"
                 | "file_locked"
                 | "disk_full"
                 | "io_error"
@@ -3043,11 +3089,15 @@ mod tests {
     fn core_update_diagnostic_axes_are_closed_and_path_free() {
         for (key, value) in [
             ("rescue_step", "clone"),
+            ("rescue_step", "restore"),
+            ("rescue_step", "snapshot"),
+            ("rescue_step", "npm-cache"),
             ("rescue_error_class", "clone_failed"),
             ("rescue_error_class", "rsync_failed"),
             ("rescue_error_class", "rsync_partial"),
             ("rescue_error_class", "npx_resolve_failed"),
             ("rsync_stderr_class", "source_missing"),
+            ("rsync_stderr_class", "invalid_argument"),
             ("rsync_stderr_class", "unclassified"),
             ("rsync_translated_path_shape", "cygwin_drive"),
             ("rsync_translated_path_shape", "unavailable"),
@@ -3130,6 +3180,43 @@ mod tests {
         assert_eq!(unrelated.stderr_class, "not_applicable");
         assert!(unrelated.stderr_reason.is_none());
         assert_eq!(unrelated.translated_path_shape, "not_applicable");
+    }
+
+    #[test]
+    fn core_update_rsync_invalid_argument_class_is_path_free() {
+        let diagnostic = classify_core_update_rsync_diagnostic(
+            "rsync: [sender] open \"/cygdrive/c/fixture-one/bad:name\" failed: Invalid argument (22)\nrsync error: some files/attrs were not transferred (code 23)",
+            true,
+        );
+
+        assert_eq!(diagnostic.stderr_class, "invalid_argument");
+        let reason = diagnostic.stderr_reason.as_deref().unwrap();
+        assert!(reason.contains("Invalid argument (22)"));
+        assert!(!reason.contains("fixture-one"));
+        assert!(!reason.contains("bad:name"));
+    }
+
+    #[test]
+    fn invalid_argument_words_in_paths_do_not_override_rsync_error_reason() {
+        let cases = [
+            (
+                "rsync: [sender] open \"/cygdrive/c/invalid name.txt\" failed: Input/output error (5)",
+                "io_error",
+            ),
+            (
+                "rsync: [receiver] rename \"/cygdrive/c/einval/source\" -> \"/cygdrive/c/einval/target\": Resource busy (16)",
+                "file_locked",
+            ),
+            (
+                "rsync: [sender] open \"/cygdrive/c/invalid name.txt\" failed\nrsync error: some files/attrs were not transferred (code 23)",
+                "partial_transfer",
+            ),
+        ];
+
+        for (raw, expected) in cases {
+            let diagnostic = classify_core_update_rsync_diagnostic(raw, true);
+            assert_eq!(diagnostic.stderr_class, expected, "raw={raw:?}");
+        }
     }
 
     #[test]

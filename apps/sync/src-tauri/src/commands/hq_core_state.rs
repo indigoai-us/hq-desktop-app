@@ -461,9 +461,13 @@ impl CoreUpdateRescueTelemetry {
             .find_map(core_update_rescue_error_class)
             .unwrap_or("unknown");
         let stage_markers = core_update_stage_markers(raw);
+        // The rescue script's `==>` stream includes headings as well as stage
+        // markers. Keep the breadcrumb history, but choose the last recognized
+        // stage so a trailing heading cannot erase the last useful step.
         let rescue_step = stage_markers
-            .last()
-            .and_then(|marker| marker.split('|').nth(1))
+            .iter()
+            .rev()
+            .find_map(|marker| marker.split('|').nth(1).filter(|stage| *stage != "unknown"))
             .map(core_update_rescue_step_from_marker)
             .unwrap_or("unknown");
         let rescue_step = if rescue_step == "unknown" {
@@ -677,16 +681,36 @@ fn core_update_stage_markers(raw: &str) -> Vec<String> {
 
 fn core_update_stage_token(marker: &str) -> &'static str {
     let marker = marker.to_ascii_lowercase();
-    if marker.contains("clone") || marker.contains("cloning") {
+    if marker.starts_with("preserved subpaths (backed up + restored across the overlay)") {
+        "unknown"
+    } else if marker.contains("clone") || marker.contains("cloning") {
         "clone"
     } else if marker.contains("rsync") {
         "rsync"
     } else if marker.contains("overlay") {
         "rsync"
+    } else if marker.contains("restor") || marker.contains("backed up") {
+        "restore"
+    } else if marker.contains("npm cache") || marker.contains("npm-cache") {
+        "npm-cache"
     } else if marker.contains("npm") || marker.contains("npx") {
         "npm-install"
+    } else if marker.contains("snapshot")
+        || marker.contains("baseline")
+        || marker.contains("walking wipe set")
+        || marker.contains("walk complete")
+        || marker.contains("classification summary")
+        || marker.contains("wipe set is empty")
+    {
+        "snapshot"
+    } else if marker.contains("would copy these top-level entries") {
+        "rsync"
     } else if marker.contains("verify")
         || marker.contains("source sha")
+        || marker.contains("stamped core/core.yaml")
+        || marker.contains("file count summary")
+        || marker == "classification:"
+        || marker.contains("dry run complete")
         || marker == "done"
         || marker.starts_with("done ")
     {
@@ -703,6 +727,9 @@ fn core_update_rescue_step_from_marker(stage: &str) -> &'static str {
         "clone" => "clone",
         "checkout" => "checkout",
         "rsync" => "rsync",
+        "restore" => "restore",
+        "snapshot" => "snapshot",
+        "npm-cache" => "npm-cache",
         "npm-install" => "npm-install",
         "verify" => "verify",
         _ => "unknown",
@@ -2279,8 +2306,20 @@ fn core_update_sentry_fingerprint(
 
 fn core_update_rescue_step_for_category(category: RescueFailureCategory) -> &'static str {
     match category {
+        RescueFailureCategory::SnapshotUnreadable
+        | RescueFailureCategory::SnapshotExternalSymlink
+        | RescueFailureCategory::SnapshotFailed
+        | RescueFailureCategory::SnapshotRecoveryRequired => "snapshot",
+        RescueFailureCategory::Auth
+        | RescueFailureCategory::Network
+        | RescueFailureCategory::Dns
+        | RescueFailureCategory::Tls
+        | RescueFailureCategory::OutdatedDependency
+        | RescueFailureCategory::NotFound => "clone",
+        RescueFailureCategory::LockContention => "npm-cache",
         RescueFailureCategory::RsyncBroken | RescueFailureCategory::RsyncPartialTransfer => "rsync",
         RescueFailureCategory::NpxResolveFailed => "npm-install",
+        RescueFailureCategory::PreserveRestoreFailed => "restore",
         _ => "unknown",
     }
 }
@@ -2307,11 +2346,13 @@ fn core_update_sentry_failure_report(
             1 + u32::from(details.managed_git_retry.attempted()),
         )
     });
-    if rescue_telemetry.rescue_step == "unknown" {
-        let step = core_update_rescue_step_for_category(details.rescue_failure_category);
-        if step != "unknown" {
-            rescue_telemetry.rescue_step = step;
-        }
+    let category_step = if details.rescue_telemetry.is_some() {
+        core_update_rescue_step_for_category(details.rescue_failure_category)
+    } else {
+        "unknown"
+    };
+    if category_step != "unknown" {
+        rescue_telemetry.rescue_step = category_step;
     }
     if rescue_telemetry.rescue_error_class == "unknown" {
         let error_class =
@@ -6159,13 +6200,57 @@ error: clone failed";
     }
 
     #[test]
-    fn rescue_telemetry_keeps_the_latest_unknown_stage_unknown() {
+    fn rescue_telemetry_keeps_the_latest_known_stage_after_unknown_marker() {
         let telemetry = CoreUpdateRescueTelemetry::from_raw(
             "==> Cloning source\n==> Preparing retry\nfatal: clone failed\n",
             1,
         );
 
+        assert_eq!(telemetry.rescue_step, "clone");
+    }
+
+    #[test]
+    fn preserved_subpaths_setup_heading_is_not_a_restore_stage() {
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(
+            "==> Preserved subpaths (backed up + restored across the overlay):\n",
+            1,
+        );
+
         assert_eq!(telemetry.rescue_step, "unknown");
+        assert_eq!(
+            core_update_stage_token("==> Backed up personal -> shuttle/id"),
+            "restore"
+        );
+        assert_eq!(
+            core_update_stage_token("==> Restoring preserved sub-paths ..."),
+            "restore"
+        );
+    }
+
+    #[test]
+    fn network_category_maps_to_clone_only_with_rescue_output() {
+        let mut details = core_update_sentry_test_details();
+        details.rescue_failure_category = RescueFailureCategory::Network;
+
+        let without_rescue = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            "network",
+            details,
+        );
+        assert_eq!(without_rescue.rescue_telemetry.rescue_step, "unknown");
+
+        let rescue_telemetry = CoreUpdateRescueTelemetry::from_raw("", 1);
+        details.rescue_telemetry = Some(&rescue_telemetry);
+        let with_rescue = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            "network",
+            details,
+        );
+        assert_eq!(with_rescue.rescue_telemetry.rescue_step, "clone");
     }
 
     #[test]
@@ -6350,6 +6435,101 @@ error: clone failed";
 
         assert_eq!(report.rescue_telemetry.rescue_step, "rsync");
         assert_eq!(report.rescue_telemetry.rescue_error_class, "rsync_failed");
+    }
+
+    #[test]
+    fn rescue_step_shape_a_uses_last_known_stage_and_snapshot_category() {
+        let raw = concat!(
+            "==> Cloning source @ main ...\n",
+            "==> Overlaying source onto HQ root ...\n",
+            "==> Cloning source @ main ...\n",
+            "==> Source SHA: abcdef\n",
+            "==> HQ root:    C:\\Users\\fixture\\HQ\n",
+            "==> Source:     https://github.com/indigoai-us/hq-core-staging @ main\n",
+            "==> Prior sync: abcdef from indigoai-us/hq-core-staging@main\n",
+            "==> Mode: preserve-list (default)\n",
+            "==> Preserved: personal, workspace\n",
+        );
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
+        assert_eq!(telemetry.rescue_step, "verify");
+
+        let report = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            Some(1),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(raw),
+                rescue_telemetry: Some(&telemetry),
+                rescue_failure_category: RescueFailureCategory::SnapshotRecoveryRequired,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+        assert_eq!(report.rescue_telemetry.rescue_step, "snapshot");
+    }
+
+    #[test]
+    fn rescue_step_shape_b_is_npm_cache_and_lock_contention_is_countable() {
+        let raw = "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.";
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
+        let report = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            "rescue_spawn",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(raw),
+                rescue_telemetry: Some(&telemetry),
+                rescue_failure_category: RescueFailureCategory::LockContention,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+
+        assert_eq!(report.rescue_telemetry.rescue_step, "npm-cache");
+        assert_eq!(report.error_category.label(), "lock-contention");
+    }
+
+    #[test]
+    fn rescue_step_shape_c_remains_rsync_partial_transfer() {
+        let raw = concat!(
+            "==> Overlaying source onto HQ root ...\n",
+            "rsync: [sender] link_stat \"/cygdrive/c/fixture/HQ/core/file\" failed: No such file or directory (2)\n",
+            "rsync status 23 during dry-run\n",
+        );
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
+        let report = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            Some(23),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(raw),
+                rescue_telemetry: Some(&telemetry),
+                rescue_failure_category: RescueFailureCategory::RsyncPartialTransfer,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+
+        assert_eq!(report.rescue_telemetry.rescue_step, "rsync");
+        assert_eq!(report.rescue_telemetry.rescue_error_class, "rsync_partial");
+        assert_eq!(report.error_category.label(), "rsync-partial-transfer");
+    }
+
+    #[test]
+    fn rescue_step_headers_without_a_known_stage_remain_unknown() {
+        let raw = concat!(
+            "==> HQ root:    C:\\Users\\fixture\\HQ\n",
+            "==> Source:     https://github.com/indigoai-us/hq-core-staging @ main\n",
+            "==> Prior sync: abcdef from indigoai-us/hq-core-staging@main\n",
+            "==> Mode:       preserve-list (default)\n",
+            "==> Preserved:  personal, workspace\n",
+        );
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
+
+        assert_eq!(telemetry.rescue_step, "unknown");
     }
 
     #[test]
