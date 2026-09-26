@@ -91,6 +91,8 @@
     updateWakeSeq?: number;
     /** Reads the running native app version when Updates refreshes. */
     refreshAppVersion?: () => Promise<string>;
+    /** Live interface version when a UI hot update is serving. */
+    uiVersion?: string | null;
   }
 
   let {
@@ -109,6 +111,7 @@
     consoleBase = HQ_CONSOLE_BASE,
     updateWakeSeq = 0,
     refreshAppVersion,
+    uiVersion = null,
   }: Props = $props();
 
   let externalError = $state<string | null>(null);
@@ -696,6 +699,7 @@
           onopenconsole={openConsole}
           {updateWakeSeq}
           {refreshAppVersion}
+          {uiVersion}
         />
       {/if}
     </div>
