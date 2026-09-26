@@ -1140,6 +1140,14 @@ export interface AppShellApi {
 }
 
 /** Desktop-only group (capability: canSelfUpdate). */
+/** Gate status payload from update_gate_status command. */
+export interface UpdateGateStatus {
+  pendingVersion: string | null;
+  decision: unknown;
+  reasons: string[];
+  focused: boolean;
+}
+
 export interface UpdatesApi {
   getVersions(): AdapterPromise<VersionInfo>;
   checkForUpdates(): AdapterPromise<Json>;
@@ -1159,6 +1167,10 @@ export interface UpdatesApi {
   installCliUpdate(): AdapterPromise<void>;
   dismissCliUpdate(): AdapterPromise<void>;
   availableChannels(): AdapterPromise<string[]>;
+  /** Query the focus+hold gate state (and pending version). */
+  queryUpdateGate(): AdapterPromise<UpdateGateStatus>;
+  /** Install the deferred pending update (blocked while any hold is active). */
+  installPendingUpdate(): AdapterPromise<void>;
 }
 
 /** Explicit native install intent. Registry installs use a different CLI path. */

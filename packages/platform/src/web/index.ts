@@ -1188,6 +1188,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     installCliUpdate: async () => DESKTOP_ONLY,
     dismissCliUpdate: async () => DESKTOP_ONLY,
     availableChannels: async () => DESKTOP_ONLY,
+    queryUpdateGate: async () => DESKTOP_ONLY,
+    installPendingUpdate: async () => DESKTOP_ONLY,
   };
 
   readonly packages: PlatformAdapter["packages"] = {

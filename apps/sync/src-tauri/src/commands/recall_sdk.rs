@@ -67,7 +67,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::Utc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
 use crate::commands::process::{
@@ -402,6 +402,10 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.window_id, payload.platform
                                 ),
                             );
+                            // Acquire update hold: a recording is in progress.
+                            if let Some(holds) = app_bg.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
+                                holds.0.acquire(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
+                            }
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_STARTED, &payload) {
                                 log(LOG_TAG, &format!("emit recording:started failed: {e}"));
                             }
@@ -414,6 +418,10 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.window_id, payload.platform
                                 ),
                             );
+                            // Release update hold: recording finished.
+                            if let Some(holds) = app_bg.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
+                                holds.0.release(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
+                            }
                             // Clean terminal event: drop the in-flight ledger
                             // entry so the next launch has nothing to reconcile
                             // for this window. This is the canonical clear path

@@ -549,6 +549,8 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate::default())
+        .manage(commands::update_gate::UpdateHoldsState::default())
+        .manage(commands::update_gate::AppFocusState::default())
         .manage(updater::DownloadedUpdate::default())
         .manage(crate::boot_watchdog::WatchdogRuntime::default())
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
@@ -576,6 +578,9 @@ fn main() {
         // context menu's "Quit" item (see tray.rs MENU_QUIT). This matches
         // native Cocoa NSStatusItem apps like Bartender, Rectangle, Raycast.
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                commands::update_gate::on_window_focus_changed(window.app_handle(), *focused);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Only hide the main popover window — let other windows
                 // (e.g. new-files-detail) close normally.
@@ -811,6 +816,10 @@ fn main() {
             tray::set_tray_state,
             tray::finish_replay_intro,
             updater::check_for_updates,
+            commands::update_gate::update_hold_acquire,
+            commands::update_gate::update_hold_release,
+            commands::update_gate::update_gate_status,
+            updater::update_install_pending,
             updater::reinstall_latest_release,
             crate::recovery::shell_ready,
             crate::recovery::reset_local_ui_state,
