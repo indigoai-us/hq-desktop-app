@@ -8057,6 +8057,118 @@ fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path
     candidates
 }
 
+/// Resolve package directories that can contain the installed `hq` binary.
+///
+/// Restart Manager needs files from the package directory, while the resolved
+/// command may be an npm shim, a Bun shim, a pnpm shim, or a symlink into the
+/// package itself. Keep the layout rules here beside version resolution so the
+/// holder query can inspect the same owned package without guessing from a
+/// package-manager default prefix.
+pub fn hq_cli_package_directories_from_bin(hq_bin: &Path) -> Vec<std::path::PathBuf> {
+    const PACKAGE_JSON_CANDIDATE_LIMIT: usize = 128;
+    const PACKAGE_DIRECTORY_CANDIDATE_LIMIT: usize = 16;
+
+    let mut package_json_candidates = Vec::new();
+    if let Ok(real_bin) = hq_bin.canonicalize() {
+        package_json_candidates.extend(
+            real_bin
+                .ancestors()
+                .take(PACKAGE_JSON_CANDIDATE_LIMIT)
+                .map(|ancestor| ancestor.join("package.json")),
+        );
+    }
+
+    let hq_bin_string = hq_bin.to_string_lossy();
+    if let Some(prefix) = npm_prefix_from_hq_bin(&hq_bin_string) {
+        package_json_candidates.extend(hq_cli_package_json_candidates(Path::new(&prefix), hq_bin));
+    }
+    if is_pnpm_global_shim(&hq_bin_string) {
+        if let Some(home) = pnpm_home_from_hq_bin(hq_bin) {
+            package_json_candidates.extend(pnpm_store_package_json_candidates(&home));
+        }
+    }
+    if let Some(home) = bun_home_from_hq_bin(hq_bin) {
+        package_json_candidates.push(
+            home.join("install")
+                .join("global")
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli")
+                .join("package.json"),
+        );
+    }
+
+    let mut package_directories = Vec::new();
+    for manifest in package_json_candidates
+        .into_iter()
+        .take(PACKAGE_JSON_CANDIDATE_LIMIT)
+    {
+        if version_if_hq_cli(&manifest).is_none() {
+            continue;
+        }
+        let Some(package_directory) = manifest.parent() else {
+            continue;
+        };
+        if !package_directories
+            .iter()
+            .any(|candidate| candidate == package_directory)
+        {
+            package_directories.push(package_directory.to_path_buf());
+            if package_directories.len() == PACKAGE_DIRECTORY_CANDIDATE_LIMIT {
+                break;
+            }
+        }
+    }
+    package_directories
+}
+
+#[cfg(test)]
+mod hq_cli_package_directory_tests {
+    use super::*;
+
+    fn write_hq_cli_manifest(package_directory: &Path) {
+        std::fs::create_dir_all(package_directory).unwrap();
+        std::fs::write(
+            package_directory.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.99.0"}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolves_the_selected_windows_npm_package_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-global");
+        let package = prefix.join("node_modules/@indigoai-us/hq-cli");
+        write_hq_cli_manifest(&package);
+        let shim = prefix.join("hq.cmd");
+
+        assert_eq!(hq_cli_package_directories_from_bin(&shim), vec![package]);
+    }
+
+    #[test]
+    fn resolves_pnpm_v11_package_roots_from_the_global_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("pnpm");
+        let package = home.join("global/v11/hash/node_modules/@indigoai-us/hq-cli");
+        write_hq_cli_manifest(&package);
+        let shim = home.join("bin/hq");
+
+        assert_eq!(hq_cli_package_directories_from_bin(&shim), vec![package]);
+    }
+
+    #[test]
+    fn resolves_bun_package_root_from_the_global_install_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".bun");
+        let package = home.join("install/global/node_modules/@indigoai-us/hq-cli");
+        write_hq_cli_manifest(&package);
+        let shim = home.join("bin/hq");
+
+        assert_eq!(hq_cli_package_directories_from_bin(&shim), vec![package]);
+    }
+}
+
 /// The hq-cli version the installer actually wrote into `prefix`, read straight
 /// from the package.json manifest with no subprocess. This is the delivery
 /// evidence that separates a genuine shadowing defect (the installer DID deliver

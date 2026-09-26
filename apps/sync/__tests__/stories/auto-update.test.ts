@@ -607,6 +607,7 @@ describe('master automatic-updates switch', () => {
     expect(core).toContain('should_retry_windows_busy_install_target(');
     expect(core).toContain('pub enum NpmLockHolderClass');
     expect(core).toContain('pub fn classify_restart_manager_holders(');
+    expect(core).toContain('pub fn hq_cli_package_directories_from_bin(');
     expect(core).toContain('pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES: usize = 3;');
     expect(core).toContain('pub fn windows_busy_install_target_retry_delay(');
     expect(appCli).toContain('read_hq_cli_package_holders(prefix).await');
@@ -619,6 +620,9 @@ describe('master automatic-updates switch', () => {
     expect(processRegistry).toContain('RmStartSession');
     expect(processRegistry).toContain('RmRegisterResources');
     expect(processRegistry).toContain('RmGetList');
+    expect(processRegistry).toContain('pub fn query_hq_cli_package_roots(');
+    expect(processRegistry).toContain('prioritize_hq_cli_package_files');
+    expect(processRegistry).toContain('RESTART_MANAGER_FILE_SAMPLE_LIMIT: usize = 256');
     expect(processRegistry).toContain('RESTART_MANAGER_PROCESS_SAMPLE_LIMIT');
     expect(core).toContain('attempted_rungs.len() < max_attempts');
   });

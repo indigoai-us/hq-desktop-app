@@ -503,6 +503,10 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
 
   it('quiesces app-owned processes for each executor and holds admission through retries', () => {
     const installFlow = cli.slice(cli.indexOf('async fn install_hq_cli_update_once('));
+    const holderRootsAt = installFlow.indexOf('hq_cli_package_directories_from_bin(');
+    const executorSelectionAt = installFlow.indexOf(
+      'let executor = match install_executor_for_hq_bin(',
+    );
     const pnpmAt = installFlow.indexOf('install_hq_cli_update_via_pnpm(&app');
     const pnpmQuiesceAt = installFlow.indexOf('wait_for_cli_install_quiescence(');
     const npmQuiesceAt = installFlow.indexOf(
@@ -512,6 +516,8 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     const npmInstallAt = installFlow.indexOf('run_npm_install_with_retries(&npm');
     const managedRetryAt = installFlow.indexOf('match managed_toolchain_retry(');
 
+    expect(holderRootsAt).toBeGreaterThanOrEqual(0);
+    expect(holderRootsAt).toBeLessThan(executorSelectionAt);
     expect(pnpmQuiesceAt).toBeGreaterThanOrEqual(0);
     expect(pnpmAt).toBeGreaterThan(pnpmQuiesceAt);
     expect(npmQuiesceAt).toBeGreaterThan(pnpmAt);
@@ -581,6 +587,8 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     expect(processRs).toContain('RmStartSession');
     expect(processRs).toContain('RmRegisterResources');
     expect(processRs).toContain('RmGetList');
+    expect(processRs).toContain('process_start_time: Option<u64>');
+    expect(processRs).toContain('registered_process_has_current_identity');
     expect(processRs).toContain('pub async fn wait_for_hq_cli_package_holders(');
   });
 });

@@ -89,30 +89,30 @@ pub use hq_desktop_core::hq_cli_update::{
     cli_below_floor_of, cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
     delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for,
     executed_copy_reaim_gate, executed_copy_reaim_outcome, get_local_version,
-    get_local_version_diagnostics, hq_cli_version_under_pnpm_root, hq_version_string, install_argv,
-    install_converged, install_executor_for_first_install, install_executor_for_hq_bin,
-    install_failure_detail, install_failure_detail_with_environment,
-    install_failure_detail_with_final_attempt, install_failure_report,
-    installed_hq_cli_version_in_bun_global, installed_hq_cli_version_in_pnpm_store,
-    installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_missing_global_install_target,
-    is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
-    is_windows_locked_binary_failure, is_windows_locked_install_target_failure, launch_cli_check,
-    launch_cli_check_with_floor, legacy_marker_needs_recovery, managed_retry_start_decision,
-    managed_retry_user_copy_detail, managed_retry_user_prefix_aim, non_convergent_cli_contract,
-    non_convergent_cli_version, non_convergent_detail, non_convergent_episode_blocked,
-    non_convergent_episode_key, non_convergent_episode_record, non_convergent_episode_reported,
-    npm_install_attempt_summary, npm_lifecycle_cause, npm_prefix_from_hq_bin,
-    partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
-    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
-    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
-    report_install_failure_episode, report_install_failure_with_environment,
-    report_install_failure_with_final_attempt, report_non_convergent_install,
-    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version,
-    should_retry_windows_busy_install_target, suppress_for_dismissal,
-    unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, windows_busy_install_target_retry_delay,
+    get_local_version_diagnostics, hq_cli_package_directories_from_bin,
+    hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
+    install_executor_for_first_install, install_executor_for_hq_bin, install_failure_detail,
+    install_failure_detail_with_environment, install_failure_detail_with_final_attempt,
+    install_failure_report, installed_hq_cli_version_in_bun_global,
+    installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
+    is_cli_update_dismissed, is_missing_global_install_target, is_npm_bin_collision,
+    is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
+    is_windows_locked_install_target_failure, launch_cli_check, launch_cli_check_with_floor,
+    legacy_marker_needs_recovery, managed_retry_start_decision, managed_retry_user_copy_detail,
+    managed_retry_user_prefix_aim, non_convergent_cli_contract, non_convergent_cli_version,
+    non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
+    non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
+    npm_lifecycle_cause, npm_prefix_from_hq_bin, partial_install_scope_from_npm_path,
+    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version,
+    pnpm_install_argv, pnpm_store_family, read_installed_version, redact_home, redact_home_in,
+    repair_managed_shadow, report_install_failure, report_install_failure_episode,
+    report_install_failure_with_environment, report_install_failure_with_final_attempt,
+    report_non_convergent_install, report_non_convergent_marker_unpersisted,
+    report_npm_cache_setup_failure, report_registry_serving_lag_marker_unpersisted,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    should_report_unreadable_version, should_retry_windows_busy_install_target,
+    suppress_for_dismissal, unattributed_install_stderr_origin, user_prefix_aim_decision,
+    version_from_hq_binary, version_if_hq_cli, windows_busy_install_target_retry_delay,
     windows_busy_install_target_retry_rung, AsyncSingleFlight, DeliveredPrefixShim,
     ExecutedCopyAim, ExecutedCopyReaim, ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment,
     InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
@@ -635,6 +635,35 @@ async fn read_hq_cli_package_holders(prefix: Option<&str>) -> RestartManagerHold
             log(
                 "hq-cli-update",
                 "Restart Manager holder query worker failed; holder class is unavailable",
+            );
+            RestartManagerHolderObservation::from_results(
+                &[],
+                NpmLockHolderQueryOutcome::Unavailable,
+            )
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn read_hq_cli_package_holder_roots(
+    package_roots: Vec<PathBuf>,
+) -> RestartManagerHolderObservation {
+    if package_roots.is_empty() {
+        return RestartManagerHolderObservation::from_results(
+            &[],
+            NpmLockHolderQueryOutcome::NoFilesSampled,
+        );
+    }
+    match tauri::async_runtime::spawn_blocking(move || {
+        crate::commands::process::query_hq_cli_package_roots(&package_roots)
+    })
+    .await
+    {
+        Ok(observation) => observation,
+        Err(_) => {
+            log(
+                "hq-cli-update",
+                "Restart Manager package-root query worker failed; holder class is unavailable",
             );
             RestartManagerHolderObservation::from_results(
                 &[],
@@ -2133,6 +2162,34 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     let path = paths::child_path();
     let hq_resolved = paths::resolve_bin_with_kind("hq");
     let hq = hq_resolved.path.clone();
+    #[cfg(target_os = "windows")]
+    let package_roots = hq_cli_package_directories_from_bin(Path::new(&hq));
+    #[cfg(target_os = "windows")]
+    if !package_roots.is_empty() {
+        let observation = read_hq_cli_package_holder_roots(package_roots.clone()).await;
+        if observation.class == NpmLockHolderClass::UserTerminalHqCli {
+            record_deferred_user_cli_breadcrumb(observation.diagnostic(), 0);
+            log(
+                "hq-cli-update",
+                "CLI update deferred before choosing a package manager because a terminal-started HQ CLI holds the package",
+            );
+            let latest = fetch_latest().await?;
+            let hq_for_version = hq.clone();
+            let local =
+                tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq_for_version))
+                    .await
+                    .ok()
+                    .flatten();
+            return Ok(HqCliUpdateInfo { local, latest });
+        }
+        if !observation.owned_processes().is_empty() {
+            crate::commands::process::wait_for_hq_cli_package_holders(
+                &observation,
+                CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
+            )
+            .await?;
+        }
+    }
     let mut first_install = false;
     let executor = match install_executor_for_hq_bin(Path::new(&hq)) {
         Some(executor) => executor,
@@ -2166,6 +2223,32 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
         )
         .await?;
+        #[cfg(target_os = "windows")]
+        {
+            let observation = read_hq_cli_package_holder_roots(package_roots.clone()).await;
+            if observation.class == NpmLockHolderClass::UserTerminalHqCli {
+                record_deferred_user_cli_breadcrumb(observation.diagnostic(), 0);
+                log(
+                    "hq-cli-update",
+                    "CLI update deferred before package-manager install because a terminal-started HQ CLI holds the package",
+                );
+                let hq_for_version = hq.clone();
+                let local = tauri::async_runtime::spawn_blocking(move || {
+                    resolved_hq_version(&hq_for_version)
+                })
+                .await
+                .ok()
+                .flatten();
+                return Ok(HqCliUpdateInfo { local, latest });
+            }
+            if !observation.owned_processes().is_empty() {
+                crate::commands::process::wait_for_hq_cli_package_holders(
+                    &observation,
+                    CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
+                )
+                .await?;
+            }
+        }
         return match executor {
             InstallExecutor::Pnpm => {
                 install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await

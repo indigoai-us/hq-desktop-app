@@ -178,6 +178,8 @@ struct ProcessEntry {
     /// proof once a stale cleanup or escalation is scheduled.
     generation: u64,
     pid: Option<u32>,
+    #[cfg(target_os = "windows")]
+    process_start_time: Option<u64>,
     cancelled: bool,
     /// Published before Unix reaping makes `pid` / its process group reusable.
     /// Every registry-driven Unix signal checks this while holding the same
@@ -192,6 +194,8 @@ impl ProcessEntry {
         Self {
             generation,
             pid: None,
+            #[cfg(target_os = "windows")]
+            process_start_time: None,
             cancelled: false,
             signal_authority_revoked: false,
             #[cfg(target_os = "windows")]
@@ -654,15 +658,25 @@ fn register_process_gen_with_containment(
     pid: u32,
     containment: &mut ChildContainment,
 ) -> u64 {
+    #[cfg(target_os = "windows")]
+    let process_start_time = windows_process_creation_time(pid);
     let mut reg = process_registry().lock().unwrap();
     if let Some(entry) = reg.active.get_mut(handle) {
         entry.pid = Some(pid);
+        #[cfg(target_os = "windows")]
+        {
+            entry.process_start_time = process_start_time;
+        }
         containment.attach_to_entry(entry);
         entry.generation
     } else {
         let generation = next_process_generation();
         let mut entry = ProcessEntry::new(generation);
         entry.pid = Some(pid);
+        #[cfg(target_os = "windows")]
+        {
+            entry.process_start_time = process_start_time;
+        }
         containment.attach_to_entry(&mut entry);
         reg.active.insert(handle.to_string(), entry);
         generation
@@ -695,6 +709,8 @@ fn register_process_for_generation_with_containment(
     pid: u32,
     containment: &mut ChildContainment,
 ) -> ProcessAttachOutcome {
+    #[cfg(target_os = "windows")]
+    let process_start_time = windows_process_creation_time(pid);
     let mut registry = process_registry().lock().unwrap();
     let Some(entry) = registry
         .active
@@ -707,6 +723,10 @@ fn register_process_for_generation_with_containment(
         return ProcessAttachOutcome::RefusedStale;
     }
     entry.pid = Some(pid);
+    #[cfg(target_os = "windows")]
+    {
+        entry.process_start_time = process_start_time;
+    }
     if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
         // This generation registered before the updater closed the spawn gate
         // but did not attach its child until afterwards. Refuse that late
@@ -2135,11 +2155,15 @@ fn windows_process_snapshot() -> Vec<ProcessTreeRow> {
 }
 
 #[cfg(target_os = "windows")]
-const RESTART_MANAGER_FILE_SAMPLE_LIMIT: usize = 64;
+const RESTART_MANAGER_FILE_SAMPLE_LIMIT: usize = 256;
 #[cfg(target_os = "windows")]
-const RESTART_MANAGER_DIRECTORY_SAMPLE_LIMIT: usize = 64;
+const RESTART_MANAGER_DIRECTORY_SAMPLE_LIMIT: usize = 128;
 #[cfg(target_os = "windows")]
 const RESTART_MANAGER_DIRECTORY_ENTRY_LIMIT: usize = 128;
+#[cfg(target_os = "windows")]
+const RESTART_MANAGER_DIRECTORY_ENTRY_SCAN_LIMIT: usize = 512;
+#[cfg(target_os = "windows")]
+const RESTART_MANAGER_PACKAGE_ROOT_LIMIT: usize = 8;
 #[cfg(target_os = "windows")]
 const RESTART_MANAGER_PROCESS_SAMPLE_LIMIT: usize = 256;
 
@@ -2155,46 +2179,137 @@ impl Drop for RestartManagerSession {
     }
 }
 
-/// Return a bounded breadth-first sample of regular files under the selected
-/// global `@indigoai-us/hq-cli` package. Symlinks are not followed; every
-/// resource given to Restart Manager is therefore inside the selected prefix.
+/// Return a bounded breadth-first sample of regular files under one installed
+/// `@indigoai-us/hq-cli` package. Directories are visited before ordinary files,
+/// and native modules are preferred in the final sample because Windows keeps
+/// loaded `.node` files mapped while a CLI process is running. Symlinks are not
+/// followed.
 #[cfg(target_os = "windows")]
-fn hq_cli_package_file_sample(prefix: &str) -> Vec<std::path::PathBuf> {
-    let package_root = std::path::Path::new(prefix)
-        .join("node_modules")
-        .join("@indigoai-us")
-        .join("hq-cli");
-    let mut directories = vec![package_root];
-    let mut files = Vec::with_capacity(RESTART_MANAGER_FILE_SAMPLE_LIMIT);
+fn hq_cli_package_file_sample(package_root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut directories = vec![package_root.to_path_buf()];
+    let mut files = Vec::new();
     let mut cursor = 0;
 
-    while cursor < directories.len()
-        && directories.len() <= RESTART_MANAGER_DIRECTORY_SAMPLE_LIMIT
-        && files.len() < RESTART_MANAGER_FILE_SAMPLE_LIMIT
-    {
+    while cursor < directories.len() && cursor < RESTART_MANAGER_DIRECTORY_SAMPLE_LIMIT {
         let directory = directories[cursor].clone();
         cursor += 1;
         let Ok(entries) = std::fs::read_dir(directory) else {
             continue;
         };
-        for entry in entries
-            .take(RESTART_MANAGER_DIRECTORY_ENTRY_LIMIT)
+        let mut entries = entries
+            .take(RESTART_MANAGER_DIRECTORY_ENTRY_SCAN_LIMIT)
             .flatten()
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| {
+            let path = entry.path();
+            let priority = match entry.file_type() {
+                Ok(file_type) if file_type.is_dir() => 0,
+                Ok(file_type) if file_type.is_file() => 1 + hq_cli_package_file_priority(&path),
+                _ => u8::MAX,
+            };
+            (priority, entry.file_name())
+        });
+        for entry in entries
+            .into_iter()
+            .take(RESTART_MANAGER_DIRECTORY_ENTRY_LIMIT)
         {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             if file_type.is_dir() && directories.len() < RESTART_MANAGER_DIRECTORY_SAMPLE_LIMIT {
                 directories.push(entry.path());
-            } else if file_type.is_file() && files.len() < RESTART_MANAGER_FILE_SAMPLE_LIMIT {
+            } else if file_type.is_file() {
                 files.push(entry.path());
-            }
-            if files.len() == RESTART_MANAGER_FILE_SAMPLE_LIMIT {
-                break;
             }
         }
     }
+    prioritize_hq_cli_package_files(&mut files);
     files
+}
+
+#[cfg(target_os = "windows")]
+fn hq_cli_package_file_priority(path: &std::path::Path) -> u8 {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "node" => 0,
+        "dll" | "exe" => 1,
+        "js" | "cjs" | "mjs" => 2,
+        "json" => 3,
+        _ => 4,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn prioritize_hq_cli_package_files(files: &mut Vec<std::path::PathBuf>) {
+    files.sort_by(|left, right| {
+        hq_cli_package_file_priority(left)
+            .cmp(&hq_cli_package_file_priority(right))
+            .then_with(|| left.cmp(right))
+    });
+    files.dedup();
+    files.truncate(RESTART_MANAGER_FILE_SAMPLE_LIMIT);
+}
+
+#[cfg(target_os = "windows")]
+fn hq_cli_package_files_for_roots(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for root in roots.iter().take(RESTART_MANAGER_PACKAGE_ROOT_LIMIT) {
+        files.extend(hq_cli_package_file_sample(root));
+    }
+    prioritize_hq_cli_package_files(&mut files);
+    files
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod restart_manager_file_sample_tests {
+    use super::*;
+
+    #[test]
+    fn visits_nested_native_module_after_shallow_files_fill_the_old_sample() {
+        let package_root =
+            std::env::temp_dir().join(format!("hq-cli-holder-sample-{}", Uuid::new_v4().simple()));
+        let native_module =
+            package_root.join("node_modules/node-llama-cpp/build/Release/llama.node");
+        std::fs::create_dir_all(native_module.parent().unwrap()).unwrap();
+        std::fs::write(&native_module, b"native module fixture").unwrap();
+        for index in 0..300 {
+            std::fs::write(
+                package_root.join(format!("shallow-{index:03}.js")),
+                b"fixture",
+            )
+            .unwrap();
+        }
+
+        let sample = hq_cli_package_file_sample(&package_root);
+        let _ = std::fs::remove_dir_all(&package_root);
+
+        assert!(
+            sample.contains(&native_module),
+            "the bounded Restart Manager sample must reach the nested native module"
+        );
+    }
+
+    #[test]
+    fn bounded_file_sample_prioritizes_native_modules_over_shallow_javascript() {
+        let mut files = (0..300)
+            .map(|index| std::path::PathBuf::from(format!("package/file-{index:03}.js")))
+            .collect::<Vec<_>>();
+        let native_module = std::path::PathBuf::from(
+            "package/node_modules/node-llama-cpp/build/Release/llama.node",
+        );
+        files.push(native_module.clone());
+
+        prioritize_hq_cli_package_files(&mut files);
+
+        assert_eq!(files.len(), RESTART_MANAGER_FILE_SAMPLE_LIMIT);
+        assert_eq!(files.first(), Some(&native_module));
+        assert!(files.contains(&native_module));
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2267,7 +2382,10 @@ fn app_owned_kind_for_holder(
     }
     let protected = windows_protected_pids(rows);
     for process in registered_processes_including_retired() {
-        let is_root = process.pid == pid;
+        if !registered_process_has_current_identity(&process, rows) {
+            continue;
+        }
+        let is_root = process.pid == pid && process.process_start_time == Some(process_start_time);
         let is_descendant =
             !is_root && descendants_in_snapshot(process.pid, rows, &protected).contains(&pid);
         if !is_root && !is_descendant {
@@ -2289,6 +2407,19 @@ fn app_owned_kind_for_holder(
 }
 
 #[cfg(target_os = "windows")]
+fn registered_process_has_current_identity(
+    process: &RegisteredProcess,
+    rows: &[ProcessTreeRow],
+) -> bool {
+    process
+        .process_start_time
+        .is_some_and(|registered_start_time| {
+            rows.iter()
+                .any(|row| row.pid == process.pid && row.created == Some(registered_start_time))
+        })
+}
+
+#[cfg(target_os = "windows")]
 fn has_terminal_ancestor(pid: u32, rows: &[ProcessTreeRow]) -> bool {
     ancestors_in_snapshot(pid, rows)
         .into_iter()
@@ -2305,12 +2436,23 @@ fn has_terminal_ancestor(pid: u32, rows: &[ProcessTreeRow]) -> bool {
 pub fn query_hq_cli_package_holders(
     prefix: &str,
 ) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
+    let package_root = std::path::Path::new(prefix)
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cli");
+    query_hq_cli_package_roots(&[package_root])
+}
+
+#[cfg(target_os = "windows")]
+pub fn query_hq_cli_package_roots(
+    package_roots: &[std::path::PathBuf],
+) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
     use hq_desktop_core::hq_cli_update::{
         NpmLockHolderQueryOutcome, RestartManagerHolderObservation, RestartManagerProcessResult,
     };
     use windows::Win32::System::RestartManager::CCH_RM_SESSION_KEY;
 
-    let files = hq_cli_package_file_sample(prefix);
+    let files = hq_cli_package_files_for_roots(package_roots);
     if files.is_empty() {
         return RestartManagerHolderObservation::from_results(
             &[],
@@ -2443,6 +2585,16 @@ pub fn query_hq_cli_package_holders(
 #[cfg(not(target_os = "windows"))]
 pub fn query_hq_cli_package_holders(
     _prefix: &str,
+) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
+    hq_desktop_core::hq_cli_update::RestartManagerHolderObservation::from_results(
+        &[],
+        hq_desktop_core::hq_cli_update::NpmLockHolderQueryOutcome::Unavailable,
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn query_hq_cli_package_roots(
+    _package_roots: &[std::path::PathBuf],
 ) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
     hq_desktop_core::hq_cli_update::RestartManagerHolderObservation::from_results(
         &[],
@@ -4062,6 +4214,8 @@ struct RegisteredProcess {
     pid: u32,
     generation: u64,
     #[cfg(target_os = "windows")]
+    process_start_time: Option<u64>,
+    #[cfg(target_os = "windows")]
     job_attached: bool,
 }
 
@@ -4089,6 +4243,8 @@ fn registered_processes() -> Vec<RegisteredProcess> {
                 pid,
                 generation: entry.generation,
                 #[cfg(target_os = "windows")]
+                process_start_time: entry.process_start_time,
+                #[cfg(target_os = "windows")]
                 job_attached: entry.job_handle.is_some(),
             })
         })
@@ -4106,6 +4262,8 @@ fn registered_processes_including_retired() -> Vec<RegisteredProcess> {
                 pid,
                 generation: entry.generation,
                 #[cfg(target_os = "windows")]
+                process_start_time: entry.process_start_time,
+                #[cfg(target_os = "windows")]
                 job_attached: entry.job_handle.is_some(),
             })
         })
@@ -4115,6 +4273,8 @@ fn registered_processes_including_retired() -> Vec<RegisteredProcess> {
             handle: retired.handle.clone(),
             pid,
             generation: retired.entry.generation,
+            #[cfg(target_os = "windows")]
+            process_start_time: retired.entry.process_start_time,
             #[cfg(target_os = "windows")]
             job_attached: retired.entry.job_handle.is_some(),
         })
@@ -4136,6 +4296,8 @@ fn registered_process_for(handle: &str, pid: u32) -> Option<RegisteredProcess> {
             handle: handle.to_string(),
             pid,
             generation: entry.generation,
+            #[cfg(target_os = "windows")]
+            process_start_time: entry.process_start_time,
             #[cfg(target_os = "windows")]
             job_attached: entry.job_handle.is_some(),
         })
@@ -4359,18 +4521,59 @@ mod update_quiescence_tests {
             handle: "contained".to_string(),
             pid: 10,
             generation: 1,
+            process_start_time: Some(100),
             job_attached: true,
         };
         let fallback = RegisteredProcess {
             handle: "fallback".to_string(),
             pid: 11,
             generation: 2,
+            process_start_time: Some(200),
             job_attached: false,
         };
 
         assert!(require_update_job_containment(&[]).is_ok());
         assert!(require_update_job_containment(&[contained.clone()]).is_ok());
         assert!(require_update_job_containment(&[contained, fallback]).is_err());
+    }
+
+    #[test]
+    fn app_owned_holder_matching_requires_registered_process_creation_time() {
+        let registered = RegisteredProcess {
+            handle: "hq-mcp-child".to_string(),
+            pid: 42,
+            generation: 7,
+            process_start_time: Some(100),
+            job_attached: true,
+        };
+        let current = [ProcessTreeRow {
+            pid: 42,
+            parent_pid: 1,
+            created: Some(100),
+        }];
+        let recycled_pid = [ProcessTreeRow {
+            pid: 42,
+            parent_pid: 1,
+            created: Some(200),
+        }];
+        let unknown_start_time = [ProcessTreeRow {
+            pid: 42,
+            parent_pid: 1,
+            created: None,
+        }];
+
+        assert!(registered_process_has_current_identity(
+            &registered,
+            &current
+        ));
+        assert!(!registered_process_has_current_identity(
+            &registered,
+            &recycled_pid
+        ));
+        assert!(!registered_process_has_current_identity(
+            &registered,
+            &unknown_start_time
+        ));
     }
 
     #[test]
