@@ -8,6 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When the app shows sign-in or onboarding to someone who already finished
+  setup, its error report now records which setup checks passed or failed.
+  The report contains short fixed values only, with no file paths or account
+  details. This helps us find why some people are sent back to onboarding
+  after an update.
+
 ## [0.10.334] — 2026-09-26
 
 - The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
