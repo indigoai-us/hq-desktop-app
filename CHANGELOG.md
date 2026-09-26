@@ -9,6 +9,13 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
+- When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
+- Release builds no longer recompile the native app every time. The job that
+  prepares the native pieces after each merge now installs its build targets
+  correctly and is no longer cancelled by the next merge, so a normal release
+  assembles from the prepared pieces instead of building them from scratch.
+- Core tests no longer start `npx` in the background or leave npm cache files
+  in temporary home folders.
 
 ## [0.10.339] — 2026-09-26
 
