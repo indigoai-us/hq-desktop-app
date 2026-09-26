@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.331] — 2026-09-26
+
 - On Windows, the HQ CLI updater identifies the process holding its package
   files, waits for HQ's own processes, and retries around short-lived scanners.
   If you have the HQ CLI open in a terminal, the app leaves it running and
