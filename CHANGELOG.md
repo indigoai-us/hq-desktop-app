@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.341] — 2026-09-26
+
 - When enabled, automatic Core updates wait for startup cache preparation before
   running the rescue. If the wait limit expires, the update moves to a later
   automatic check; manual updates keep their current behavior. The rollout flag
