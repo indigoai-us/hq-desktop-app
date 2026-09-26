@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.334] — 2026-09-26
+
 - The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
   line tool now uses, so Update / Restore and `hq rescue` keep running the same
   engine. It brings the sync fixes released since 6.16.53.
