@@ -15,6 +15,7 @@ describe("parseAssetName", () => {
   it("recognises all three targets and ignores anything else", () => {
     expect(parseAssetName(`shell-macos-${key(1)}.tar.gz`)).toEqual({ target: "macos", key: key(1) });
     expect(parseAssetName(`shell-windows-arm64-${key(2)}.tar`)).toEqual({ target: "windows-arm64", key: key(2) });
+    expect(parseAssetName(`shell-windows-x64-${key(3)}.tar.zst`)).toEqual({ target: "windows-x64", key: key(3) });
     expect(parseAssetName("notes.txt")).toBeNull();
     expect(parseAssetName(`shell-macos-${key(1)}.zip`)).toBeNull();
   });

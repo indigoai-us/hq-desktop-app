@@ -12,6 +12,7 @@ The release moves it under the version it ships in.
   running the rescue. If the wait limit expires, the update moves to a later
   automatic check; manual updates keep their current behavior. The rollout flag
   defaults off.
+- Windows releases no longer fail to save the prebuilt native app, because it is now compressed and trimmed to stay under GitHub's 2 GiB file limit.
 
 ## [0.10.340] — 2026-09-26
 - Update holds now apply to manual installs too, and a recording that ends with an error no longer blocks updates.

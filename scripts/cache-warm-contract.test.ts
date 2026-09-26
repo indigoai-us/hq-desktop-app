@@ -18,8 +18,8 @@ function jobBody(name: string): string {
 describe("cache-warm.yml prebuilt-shell warmers", () => {
   const jobs = [
     { job: "warm-shell-macos", target: "macos", ext: "tar.gz", triples: "aarch64-apple-darwin,x86_64-apple-darwin" },
-    { job: "warm-shell-windows-x64", target: "windows-x64", ext: "tar", triples: "x86_64-pc-windows-msvc" },
-    { job: "warm-shell-windows-arm64", target: "windows-arm64", ext: "tar", triples: "aarch64-pc-windows-msvc" },
+    { job: "warm-shell-windows-x64", target: "windows-x64", ext: "tar.zst", triples: "x86_64-pc-windows-msvc" },
+    { job: "warm-shell-windows-arm64", target: "windows-arm64", ext: "tar.zst", triples: "aarch64-pc-windows-msvc" },
   ];
 
   it("runs on main pushes that can change the shell key, and on dispatch", () => {
@@ -82,7 +82,21 @@ describe("cache-warm.yml prebuilt-shell warmers", () => {
       expect(body).toContain('echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"');
       expect(body).toContain("HQ_BUILD_COMMIT=");
       expect(body).toContain(`node scripts/prune-shell-cache.mjs --target ${target} --keep 6`);
-      if (ext === "tar") expect(body).toContain("tar --force-local -C src-tauri -cf");
+      if (ext === "tar.zst") {
+        expect(body).toContain("tar --force-local -C src-tauri \\\n");
+        expect(body).toContain(`| zstd -T0 -9 -q -f -o "$GITHUB_WORKSPACE/shell-out/shell-${target}.tar.zst"`);
+        for (const dir of ["deps", "build", "incremental", ".fingerprint", "recall-sdk-bridge"]) {
+          expect(body).toMatch(new RegExp(`--exclude=target/[a-z0-9_-]+/release/${dir.replace(".", "\\.")} `));
+        }
+      }
+    });
+
+    it(`${job} refuses to upload an archive over the size cap`, () => {
+      const body = jobBody(job);
+      const upload = body.slice(body.indexOf("- name: Upload shell to the shell-cache release"));
+      const check = upload.indexOf(`node scripts/shell-archive.mjs check-size shell-out/shell-${target}.${ext}`);
+      expect(check).toBeGreaterThan(-1);
+      expect(check).toBeLessThan(upload.indexOf("gh release upload"));
     });
   }
 });
