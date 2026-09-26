@@ -20,6 +20,7 @@ pub mod compat;
 pub mod config;
 pub mod conflicts;
 pub mod content;
+pub(crate) mod core_source_stamp;
 pub mod daemon;
 pub mod desktop_alt;
 pub mod desktop_auth;
