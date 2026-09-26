@@ -60,6 +60,9 @@
   import { emitDesktopTelemetry } from './lib/desktop-telemetry';
   import {
     handleMeetingDetected,
+    replayRetainedDetections,
+    startIsNoOp,
+    type MeetingDetectedDeps,
     type MeetingDetectedPayload,
   } from './lib/meetingDetection';
   import Onboarding from './components/Onboarding.svelte';
@@ -276,6 +279,11 @@
   }
 
   async function handleStartRecording(windowId: string, throwOnError = false) {
+    // Already recording (e.g. auto-record started it and the user then clicked
+    // Record on the alert): the recorder would return the existing id without
+    // a new `recording:started`, so an acknowledged start would time out and
+    // flip the live row to an error. Nothing to do.
+    if (startIsNoOp(activeMeetings.find((m) => m.windowId === windowId)?.state)) return;
     updateActiveMeeting(windowId, { state: 'starting', error: undefined });
     // Resolve the company at START time, not just whatever was frozen on
     // the row at detection. The detection may have fired before the
@@ -1207,31 +1215,63 @@
     // a recordable MeetingsWindow row NOR a macOS notification — the bot is handling
     // it. Everything else (no bot, synthetic/URL-less detection, or a failed
     // bot check) surfaces both.
+    const meetingDetectedDeps: MeetingDetectedDeps = {
+      checkActiveBot: async (meetingUrl, eventId) => {
+        const bot = await invoke<{ botId: string } | null>(
+          'meetings_check_bot_for_url',
+          { meetingUrl, eventId },
+        );
+        return !!bot;
+      },
+      upsertRow: (seed) => upsertActiveMeeting(seed),
+      removeRow: (windowId) => removeActiveMeeting(windowId),
+      notify: async (payload) => {
+        await invoke('meetings_notify_detected', { payload });
+      },
+      resolveValidDefault,
+      autoRecordEnabled: () => invoke<boolean>('meetings_auto_record_enabled'),
+      // Same start path as a Record click (company attribution + SDK
+      // confirmation). Re-read the recording company first: it is otherwise
+      // loaded once at mount, and an automatic start has no user in the loop
+      // to notice a stale attribution. `throwOnError` so a failed start
+      // reaches `warn`; the row still shows the error state either way.
+      startRecording: async (windowId) => {
+        await loadRecordingCompanyContext();
+        await handleStartRecording(windowId, true);
+      },
+      // `meeting:closed` removes the row, so a missing row means the call
+      // ended while the bot check or alert was in flight.
+      isStillActive: (windowId) => activeMeetings.some((m) => m.windowId === windowId),
+      now: () => new Date().toISOString(),
+      warn: (msg, err) => console.warn(msg, err),
+    };
     unlisteners.push(
       await listen<MeetingDetectedPayload>('meeting:detected', async (event) => {
         try {
-          await handleMeetingDetected(event.payload, {
-            checkActiveBot: async (meetingUrl, eventId) => {
-              const bot = await invoke<{ botId: string } | null>(
-                'meetings_check_bot_for_url',
-                { meetingUrl, eventId },
-              );
-              return !!bot;
-            },
-            upsertRow: (seed) => upsertActiveMeeting(seed),
-            removeRow: (windowId) => removeActiveMeeting(windowId),
-            notify: async (payload) => {
-              await invoke('meetings_notify_detected', { payload });
-            },
-            resolveValidDefault,
-            now: () => new Date().toISOString(),
-            warn: (msg, err) => console.warn(msg, err),
-          });
+          await handleMeetingDetected(event.payload, meetingDetectedDeps);
         } catch (err) {
           console.error('meeting:detected handler error:', err);
         }
       }),
     );
+    // The sidecar starts independently of this listener, so a call that was
+    // already open at launch can be detected before the listener exists. The
+    // backend retains those detections; run them through the same decision
+    // (bot check, alert, auto-record) now that the listener is installed.
+    // Calls already recording are skipped so a reload mid-recording doesn't
+    // reset their rows or dispatch a second start.
+    void Promise.all([
+      invoke<MeetingDetectedPayload[]>('meetings_list_active_detections'),
+      invoke<{ windowId?: string }[]>('meetings_list_active_recordings'),
+    ])
+      .then(([retained, recording]) =>
+        replayRetainedDetections(
+          retained ?? [],
+          new Set((recording ?? []).flatMap((r) => (r.windowId ? [r.windowId] : []))),
+          meetingDetectedDeps,
+        ),
+      )
+      .catch((err) => console.warn('retained meeting replay skipped:', err));
 
     // Recording lifecycle — flip the active-meeting row state machine as
     // the bridge confirms each transition. The Tauri commands above

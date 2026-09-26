@@ -63,6 +63,7 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             staging_channel: Some(true),
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
+            auto_record_meetings: Some(false),
             default_recording_company_uid: None,
             // Legacy `MenubarPrefs.telemetryEnabled` default for the classic
             // settings shape. NOTE: this is NOT the consent source of truth — the
@@ -173,6 +174,9 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // surfaces this as the "Personal" option (same shape as the
         // URL-invite picker in MeetingsWindow).
         default_recording_company_uid: prefs.default_recording_company_uid,
+        // Auto-record is opt-in — OFF when absent on disk. The live gate is
+        // `meeting_auto_record::auto_record_enabled`, read fresh per detection.
+        auto_record_meetings: Some(prefs.auto_record_meetings.unwrap_or(false)),
         // Telemetry defaults ON (opt-out). Re-read untyped from menubar.json by
         // the collector each sync, so the toggle takes effect without restart.
         telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),

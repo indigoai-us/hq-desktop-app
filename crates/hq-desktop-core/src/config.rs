@@ -229,6 +229,11 @@ pub struct MenubarPrefs {
     /// configured; `get_settings` supplies defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meeting_detect_notify: Option<MeetingDetectNotifyPrefs>,
+    /// "Record meetings automatically" (default OFF). Read untyped on every
+    /// detection by `meeting_auto_record::auto_record_enabled`; typed here only
+    /// so the Settings round-trip through get/save_settings preserves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_record_meetings: Option<bool>,
     /// Default company UID for SDK-local recordings (US-010). The popover
     /// active-meetings row presets its company dropdown to this value
     /// when a meeting is detected; the user can override per-recording.

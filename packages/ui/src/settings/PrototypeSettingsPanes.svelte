@@ -213,6 +213,7 @@
     autoUpdate: boolean;
     meetingDetection: boolean;
     meetingPlatforms: string[];
+    autoRecordMeetings: boolean;
     defaultRecordingCompanyUid: string | null;
   };
   const DEFAULT_NATIVE_SETTINGS: NativeSettings = {
@@ -227,6 +228,8 @@
     autoUpdate: true,
     meetingDetection: true,
     meetingPlatforms: ["zoom", "meet", "teams", "slack", "webex"],
+    // Opt-in: never record a call unless the user switched this on.
+    autoRecordMeetings: false,
     defaultRecordingCompanyUid: null,
   };
   const MEETING_PLATFORMS = [
@@ -527,6 +530,7 @@
       autoUpdate: readBoolean(rec, "autoUpdate", native.autoUpdate),
       meetingDetection: readBoolean(meeting, "enabled", native.meetingDetection),
       meetingPlatforms: platforms,
+      autoRecordMeetings: readBoolean(rec, "autoRecordMeetings", native.autoRecordMeetings),
       defaultRecordingCompanyUid:
         typeof rec.defaultRecordingCompanyUid === "string" &&
         rec.defaultRecordingCompanyUid.trim()
@@ -697,6 +701,18 @@
       },
       "meetingDetection",
       previous.meetingDetection,
+    );
+  }
+
+  async function toggleAutoRecordMeetings(): Promise<void> {
+    const previous = { ...native };
+    const autoRecordMeetings = !previous.autoRecordMeetings;
+    native = { ...native, autoRecordMeetings };
+    await persistNative(
+      "auto-record-meetings",
+      { autoRecordMeetings },
+      "autoRecordMeetings",
+      previous.autoRecordMeetings,
     );
   }
 
@@ -1423,6 +1439,25 @@
       </div>
     {/if}
     {#if canWatchMeetings}
+      <div class="set-row">
+        <div>
+          <div class="sn">Record meetings automatically</div>
+          <div class="sd">
+            Start recording as soon as HQ detects a call, including Slack huddles
+          </div>
+        </div>
+        <button
+          type="button"
+          class="toggle"
+          class:on={native.autoRecordMeetings}
+          role="switch"
+          aria-checked={native.autoRecordMeetings}
+          aria-label="Record meetings automatically"
+          data-testid="settings-auto-record-meetings"
+          disabled={!nativeLoaded || pending("auto-record-meetings")}
+          onclick={() => void toggleAutoRecordMeetings()}
+        ></button>
+      </div>
       <div class="set-row">
         <div>
           <div class="sn">Detected-meeting alerts</div>

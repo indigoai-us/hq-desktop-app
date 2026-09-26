@@ -948,6 +948,7 @@ fn main() {
             commands::meetings::open_meetings_window,
             commands::meetings::meetings_check_bot_for_url,
             commands::meetings::meetings_notify_detected,
+            commands::meetings::meetings_auto_record_enabled,
             commands::meetings::meetings_clear_prompt_badge,
             commands::permissions::permissions_open_settings,
             commands::permissions::call_media_permissions,
