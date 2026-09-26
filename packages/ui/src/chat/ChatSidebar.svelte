@@ -376,6 +376,8 @@
     rowExtras?: RowExtrasResolver | null;
     /** US-006: when true, contacts whose last message is agent-only show their preview. */
     showBotMessages?: boolean;
+    /** Optional content rendered above the account footer (e.g. UpdateAvailableCard). */
+    bottomContent?: Snippet;
     /** Fires when the user clicks the bot-message toggle in the sidebar header. */
     onshowbotmessageschange?: (value: boolean) => void;
   }
@@ -436,6 +438,7 @@
     rowExtrasError = false,
     rowExtras = null,
     showBotMessages = false,
+    bottomContent,
     onshowbotmessageschange,
   }: Props = $props();
   // Host still reports load failures; the sidebar no longer paints them.
@@ -3259,6 +3262,8 @@
     {/if}
     {/if}
   </div>
+
+  {@render bottomContent?.()}
 
   <div class="chat-footer" bind:this={footerEl}>
     <button

@@ -28,7 +28,8 @@
     failure,
     startJitteredPoll,
     type PlatformAdapter,
-  } from "@hq/platform";
+    type UpdateGateStatus,
+} from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -171,6 +172,7 @@
   import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
   import SessionExpiredBanner from "./SessionExpiredBanner.svelte";
   import NotificationActionRecovery from "./NotificationActionRecovery.svelte";
+  import UpdateAvailableCard from "./UpdateAvailableCard.svelte";
   import {
     cacheLogoAssets,
     readBrandCache,
@@ -981,6 +983,107 @@
       unlisten?.();
     };
   });
+
+  // ── Update gate card ────────────────────────────────────────────────────────
+
+  const UPDATE_GATE_EVENT = "update-gate://deferred";
+  const DISMISSED_KEY = "hq.update.dismissedVersion";
+
+  let updatePendingVersion = $state<string | null>(null);
+  let updateHoldReasons = $state<string[]>([]);
+  let updateInstalling = $state(false);
+  let updateInstallError = $state<string | null>(null);
+
+  function dismissedVersion(): string | null {
+    try { return localStorage.getItem(DISMISSED_KEY); } catch { return null; }
+  }
+
+  function isDismissed(v: string): boolean {
+    return dismissedVersion() === v;
+  }
+
+  function applyUpdateGateStatus(status: UpdateGateStatus): void {
+    const v = status.pendingVersion;
+    if (!v) return;
+    if (isDismissed(v)) return;
+    const isNew = v !== updatePendingVersion;
+    updateHoldReasons = status.reasons ?? [];
+    if (isNew) {
+      // Version changed: update and allow aria-live to announce.
+      updatePendingVersion = v;
+      updateInstallError = null;
+    }
+    // Same version: silently refresh reasons only (no re-render of the card,
+    // no re-announcement). Conductor note: deferred fires every poll interval.
+  }
+
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    void host
+      .listen(UPDATE_GATE_EVENT, (event) => {
+        const payload = event?.payload as UpdateGateStatus | null;
+        if (payload) applyUpdateGateStatus(payload);
+      })
+      .then(
+        (un) => {
+          if (disposed) un();
+          else unlisten = un;
+        },
+        (err) => {
+          console.error("update-gate: subscribe failed:", err);
+        },
+      );
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
+
+  async function queryUpdateGate(): Promise<void> {
+    if (!adapter.isAvailable("canSelfUpdate")) return;
+    try {
+      const res = await adapter.updates.queryUpdateGate();
+      if (res.ok) applyUpdateGateStatus(res.value);
+    } catch {
+      // best-effort
+    }
+  }
+
+  // Query on mount; re-query every 30 s.
+  $effect(() => {
+    void queryUpdateGate();
+    const id = setInterval(() => void queryUpdateGate(), 30_000);
+    return () => clearInterval(id);
+  });
+
+  async function handleUpdateInstall(): Promise<void> {
+    if (updateInstalling) return;
+    updateInstalling = true;
+    updateInstallError = null;
+    try {
+      const res = await adapter.updates.installPendingUpdate();
+      if (!res.ok) {
+        updateInstallError = res.message ?? res.reason ?? "Could not restart.";
+        updateInstalling = false;
+      }
+    } catch (err) {
+      updateInstallError = err instanceof Error ? err.message : "Could not restart.";
+      updateInstalling = false;
+    }
+  }
+
+  function handleUpdateDismiss(): void {
+    if (!updatePendingVersion) return;
+    try { localStorage.setItem(DISMISSED_KEY, updatePendingVersion); } catch {}
+    updatePendingVersion = null;
+    updateHoldReasons = [];
+    updateInstallError = null;
+  }
 
   /**
    * White-label brand for the title bar (PL-04). Resolved from the same
@@ -8237,7 +8340,20 @@
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
           {showBotMessages}
           onshowbotmessageschange={handleShowBotMessagesChange}
-        />
+        >
+          {#snippet bottomContent()}
+            {#if updatePendingVersion}
+              <UpdateAvailableCard
+                version={updatePendingVersion}
+                reasons={updateHoldReasons}
+                installing={updateInstalling}
+                installError={updateInstallError}
+                oninstall={() => void handleUpdateInstall()}
+                ondismiss={handleUpdateDismiss}
+              />
+            {/if}
+          {/snippet}
+        </ChatSidebar>
         {/key}
         {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
