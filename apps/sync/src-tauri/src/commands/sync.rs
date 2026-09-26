@@ -1511,7 +1511,7 @@ fn handle_sync_line<R: tauri::Runtime>(
         SyncEvent::AuthError(payload) => app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone()),
         SyncEvent::FanoutPlan(payload) => app.emit(EVENT_SYNC_FANOUT_PLAN, payload.clone()),
         SyncEvent::RealtimeMode(payload) => {
-            app.emit(EVENT_SYNC_REALTIME_MODE, payload.clone())
+            app.emit_to("main", EVENT_SYNC_REALTIME_MODE, payload.clone())
         }
         // Per-company / per-direction Stage-1 totals from `hq-sync-runner`
         // (≥hq-cloud@5.5.0). Forwarded to the Svelte frontend so it can
