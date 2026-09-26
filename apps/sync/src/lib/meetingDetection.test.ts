@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   handleMeetingDetected,
+  replayRetainedDetections,
   resolveWindowId,
+  startIsNoOp,
   type MeetingDetectedDeps,
   type DetectedMeetingSeed,
   type NotifyDetectedPayload,
@@ -50,6 +52,7 @@ function makeDeps(overrides: Partial<MeetingDetectedDeps> = {}): {
     startRecording: async (windowId) => {
       calls.autoStarts.push(windowId);
     },
+    isStillActive: () => true,
     now: () => '2026-05-28T00:00:00.000Z',
     warn: () => {},
     ...overrides,
@@ -192,12 +195,17 @@ describe('handleMeetingDetected — auto-record', () => {
     },
   );
 
-  it('seeds the row before starting the recording', async () => {
+  it('seeds the row, then sends the alert, then starts the recording', async () => {
+    // The alert must be claimed before the start: `start_recording` marks the
+    // meeting Recorded in the notify ledger, which would suppress the alert.
     const order: string[] = [];
     const { deps } = makeDeps({
       autoRecordEnabled: async () => true,
       upsertRow: () => {
         order.push('upsert');
+      },
+      notify: async () => {
+        order.push('notify');
       },
       startRecording: async () => {
         order.push('start');
@@ -209,7 +217,78 @@ describe('handleMeetingDetected — auto-record', () => {
       deps,
     );
 
-    expect(order).toEqual(['upsert', 'start']);
+    expect(order).toEqual(['upsert', 'notify', 'start']);
+  });
+
+  it('still auto-records when sending the alert fails', async () => {
+    const warnings: unknown[] = [];
+    const { deps, calls } = makeDeps({
+      autoRecordEnabled: async () => true,
+      notify: async () => {
+        throw new Error('banner failed');
+      },
+      warn: (_msg, err) => warnings.push(err),
+    });
+
+    await handleMeetingDetected(
+      { meetingUrl: 'recall-window:win-n', windowId: 'win-n', platform: 'zoom' },
+      deps,
+    );
+
+    expect(calls.autoStarts).toEqual(['win-n']);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('does not auto-record when the bot check fails, but still prompts', async () => {
+    // Fail-open is right for the prompt, not for recording: a scheduled bot
+    // may already be recording the call.
+    const { deps, calls } = makeDeps({
+      autoRecordEnabled: async () => true,
+      checkActiveBot: async () => {
+        throw new Error('network down');
+      },
+    });
+
+    await handleMeetingDetected(
+      { meetingUrl: 'https://zoom.us/j/123', windowId: 'win-g', platform: 'zoom' },
+      deps,
+    );
+
+    expect(calls.autoStarts).toHaveLength(0);
+    expect(calls.upsert).toHaveLength(1);
+    expect(calls.notify).toHaveLength(1);
+  });
+
+  it('does not auto-record a meeting that closed while the checks ran', async () => {
+    const { deps, calls } = makeDeps({
+      autoRecordEnabled: async () => true,
+      isStillActive: () => false,
+    });
+
+    await handleMeetingDetected(
+      { meetingUrl: 'https://zoom.us/j/123', windowId: 'win-h', platform: 'zoom' },
+      deps,
+    );
+
+    expect(calls.autoStarts).toHaveLength(0);
+  });
+
+  it('re-checks that the meeting is still open after the alert, right before starting', async () => {
+    let open = true;
+    const { deps, calls } = makeDeps({
+      autoRecordEnabled: async () => true,
+      notify: async () => {
+        open = false; // meeting:closed landed while the alert was sent
+      },
+      isStillActive: () => open,
+    });
+
+    await handleMeetingDetected(
+      { meetingUrl: 'recall-window:win-i', windowId: 'win-i', platform: 'slack' },
+      deps,
+    );
+
+    expect(calls.autoStarts).toHaveLength(0);
   });
 
   it('starts recording a URL-carrying meeting that no bot covers', async () => {
@@ -293,6 +372,82 @@ describe('handleMeetingDetected — auto-record', () => {
     expect(calls.notify).toHaveLength(1);
     expect(warnings).toHaveLength(1);
   });
+});
+
+describe('replayRetainedDetections', () => {
+  it('runs every retained detection through the detection handler', async () => {
+    const { deps, calls } = makeDeps({ autoRecordEnabled: async () => true });
+
+    await replayRetainedDetections(
+      [
+        { meetingUrl: 'recall-window:r1', windowId: 'r1', platform: 'slack' },
+        { meetingUrl: 'https://zoom.us/j/9', windowId: 'r2', platform: 'zoom' },
+      ],
+      new Set(),
+      deps,
+    );
+
+    expect(calls.upsert.map((s) => s.windowId)).toEqual(['r1', 'r2']);
+    expect(calls.autoStarts).toEqual(['r1', 'r2']);
+  });
+
+  it('skips retained detections that are already recording', async () => {
+    // A webview reload mid-recording must not re-seed the row as `detected`
+    // or dispatch a second start the recorder never confirms.
+    const { deps, calls } = makeDeps({ autoRecordEnabled: async () => true });
+
+    await replayRetainedDetections(
+      [
+        { meetingUrl: 'recall-window:live', windowId: 'live', platform: 'zoom' },
+        { meetingUrl: 'recall-window:new', windowId: 'new', platform: 'zoom' },
+      ],
+      new Set(['live']),
+      deps,
+    );
+
+    expect(calls.upsert.map((s) => s.windowId)).toEqual(['new']);
+    expect(calls.autoStarts).toEqual(['new']);
+  });
+
+  it('keeps going when one detection fails', async () => {
+    const warnings: unknown[] = [];
+    const { deps, calls } = makeDeps({
+      autoRecordEnabled: async () => true,
+      upsertRow: (seed) => {
+        if (seed.windowId === 'bad') throw new Error('boom');
+        calls.upsert.push(seed);
+      },
+      warn: (_msg, err) => warnings.push(err),
+    });
+
+    await replayRetainedDetections(
+      [
+        { meetingUrl: 'recall-window:bad', windowId: 'bad', platform: 'zoom' },
+        { meetingUrl: 'recall-window:good', windowId: 'good', platform: 'zoom' },
+      ],
+      new Set(),
+      deps,
+    );
+
+    expect(calls.autoStarts).toEqual(['good']);
+    expect(warnings).toHaveLength(1);
+  });
+});
+
+describe('startIsNoOp', () => {
+  it('treats a Record click on an already-recording meeting as a no-op', () => {
+    // After auto-record starts, the alert still offers Record. A second start
+    // never gets a new `recording:started`, so it would time out after 45 s
+    // and flip the live recording row to an error.
+    expect(startIsNoOp('recording')).toBe(true);
+  });
+
+  it.each(['detected', 'starting', 'stopping', 'error', undefined])(
+    'lets a start proceed from %s',
+    (state) => {
+      expect(startIsNoOp(state)).toBe(false);
+    },
+  );
 });
 
 describe('resolveWindowId', () => {
