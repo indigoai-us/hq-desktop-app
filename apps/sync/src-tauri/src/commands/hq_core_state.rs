@@ -6194,13 +6194,13 @@ error: clone failed";
     }
 
     #[test]
-    fn rescue_telemetry_keeps_the_latest_unknown_stage_unknown() {
+    fn rescue_telemetry_keeps_the_latest_known_stage_after_unknown_marker() {
         let telemetry = CoreUpdateRescueTelemetry::from_raw(
             "==> Cloning source\n==> Preparing retry\nfatal: clone failed\n",
             1,
         );
 
-        assert_eq!(telemetry.rescue_step, "unknown");
+        assert_eq!(telemetry.rescue_step, "clone");
     }
 
     #[test]
