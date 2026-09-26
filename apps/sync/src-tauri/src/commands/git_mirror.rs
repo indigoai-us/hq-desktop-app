@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+pub use hq_desktop_core::git_mirror::reap_stale_index_lock_on_launch;
+
 /// Reuse the native startup watchdog bound while waiting for the frontend's
 /// asynchronous hq-flags snapshot before the first mirror pass.
 const MIRROR_FLAG_SNAPSHOT_TIMEOUT: Duration = crate::boot_watchdog::DEFAULT_WATCHDOG_TIMEOUT;
