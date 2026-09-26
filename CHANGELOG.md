@@ -10,6 +10,10 @@ The release moves it under the version it ships in.
 
 - When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
 
+- When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
+  holder, HQ keeps the current CLI available and retries on later launches. It
+  reports a persistent failure after three attempts.
+
 ## [0.10.336] — 2026-09-26
 
 - Interface fixes can now reach installed apps within a couple of minutes,
