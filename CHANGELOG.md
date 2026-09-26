@@ -8,6 +8,14 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Interface fixes can now reach installed apps within a couple of minutes,
+  without a new installer or a restart. The app downloads a signed interface
+  update, checks it was built for this exact version of the app, and offers
+  "Interface updated — reload" (or reloads on its own when nothing would be
+  lost). If an update fails to start, the app goes back to the previous
+  interface by itself. Off by default for now; Settings shows which interface
+  version is running.
+
 ## [0.10.330] — 2026-09-26
 
 - Releases no longer rebuild the native app when only the interface changed.
