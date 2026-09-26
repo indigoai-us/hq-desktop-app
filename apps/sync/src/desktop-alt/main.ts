@@ -13,6 +13,8 @@ import { installDesktopZoom } from '../lib/desktopZoom';
 import { installAppearancePreferences } from '../lib/appearancePreferences';
 import { bootDesktopAltWindow } from './boot';
 import { dismissBootLoader } from './boot-loader';
+import { installUiHotUpdates, reportUiBootFailure, signalUiBoot } from '../lib/ui-hot';
+import { listen } from '@tauri-apps/api/event';
 
 const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
@@ -46,10 +48,15 @@ const app = bootDesktopAltWindow({
       target,
       props: { component: HqWorkWorkShell, windowLabel },
     });
+    // UI hot updates: confirm this interface booted, then watch for
+    // background-applied bundles ("Interface updated — reload").
+    signalUiBoot(invoke);
+    void installUiHotUpdates(invoke, listen);
   },
 }).catch((error) => {
   // Never leave the user behind a shimmer over a broken window.
   dismissBootLoader();
+  reportUiBootFailure(invoke, error instanceof Error ? error.message : String(error));
   throw error;
 });
 

@@ -10,6 +10,15 @@ The release moves it under the version it ships in.
 
 - When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
 
+## [0.10.336] — 2026-09-26
+
+- Interface fixes can now reach installed apps within a couple of minutes,
+  without a new installer or a restart. The app downloads a signed interface
+  update, checks it was built for this exact version of the app, and offers
+  "Interface updated — reload" (or reloads on its own when nothing would be
+  lost). If an update fails to start, the app goes back to the previous
+  interface by itself. Off by default for now; Settings shows which interface
+  version is running.
 - When the app shows sign-in or onboarding to someone who already finished
   setup, its error report now records which setup checks passed or failed.
   The report contains short fixed values only, with no file paths or account

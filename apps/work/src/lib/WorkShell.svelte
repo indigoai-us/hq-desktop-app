@@ -133,6 +133,8 @@
     updateWakeSeq?: number;
     /** Native host app-version refresh used by DesktopApp's Updates pane. */
     refreshAppVersion?: () => Promise<string>;
+    /** Live interface version when a UI hot update is serving. */
+    uiVersion?: string | null;
     /** Native package-operation stream for Library → Installed. */
     packagesEvents?: PackagesEvents | null;
     /** Native notification wake edge forwarded by a desktop host. */
@@ -216,6 +218,7 @@
     version: hostVersion,
     updateWakeSeq,
     refreshAppVersion,
+    uiVersion = null,
     packagesEvents,
     notificationWakeSeq: hostNotificationWakeSeq,
     bootTimeoutMs,
@@ -959,6 +962,7 @@
       {packagesEvents}
       {updateWakeSeq}
       {refreshAppVersion}
+      {uiVersion}
       {onactivethreadchange}
       {extraPages}
       {rowExtrasLoading}

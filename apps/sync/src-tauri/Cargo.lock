@@ -2902,10 +2902,12 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs",
+ "flate2",
  "fs2",
  "futures-util",
  "ignore",
  "libc",
+ "minisign-verify",
  "reqwest 0.12.28",
  "rustix",
  "semver",
@@ -2915,6 +2917,7 @@ dependencies = [
  "serde_yaml",
  "sha1 0.10.6",
  "sha2 0.10.9",
+ "tar",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -2943,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.334"
+version = "0.10.336"
 dependencies = [
  "aws-config",
  "aws-credential-types",

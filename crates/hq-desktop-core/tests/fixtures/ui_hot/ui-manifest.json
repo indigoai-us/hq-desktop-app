@@ -1,0 +1,10 @@
+{
+  "uiVersion": "0.10.330+ui.20260926T000000Z.fixture",
+  "shellKeys": [
+    "fixture-shell-key"
+  ],
+  "createdAt": "2026-09-26T00:00:00Z",
+  "sha256": "1bdc0a2689b94b7ecd5976f50b4857543d797bc2bb4a88b7410902e8a759b05e",
+  "archive": "ui-0.10.330_ui.20260926T000000Z.fixture.tar.gz",
+  "size": 584
+}

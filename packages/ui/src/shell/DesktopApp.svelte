@@ -721,6 +721,8 @@
     updateWakeSeq?: number;
     /** Read the current native app version during an Updates refresh. */
     refreshAppVersion?: () => Promise<string>;
+    /** Live interface version when a UI hot update is serving. */
+    uiVersion?: string | null;
     /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
     notificationWakeSeq?: number;
     /** Host owns native active-thread registration for realtime reply wakes. */
@@ -855,6 +857,7 @@
     packagesEvents = null,
     updateWakeSeq = 0,
     refreshAppVersion,
+    uiVersion = null,
     notificationWakeSeq = 0,
     onactivethreadchange,
     hydrateLiveMessages = false,
@@ -8159,6 +8162,7 @@
         consoleBase={HQ_CONSOLE_BASE}
         {updateWakeSeq}
         {refreshAppVersion}
+        {uiVersion}
       />
     </div>
   {:else}

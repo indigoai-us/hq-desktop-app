@@ -112,6 +112,8 @@
     updateWakeSeq?: number;
     /** Reads the running native app version (Tauri's app API in Sync). */
     refreshAppVersion?: () => Promise<string>;
+    /** Live interface version when a UI hot update is serving (else null). */
+    uiVersion?: string | null;
   }
 
   let {
@@ -126,6 +128,7 @@
     consoleBase: _consoleBase = HQ_CONSOLE_BASE,
     updateWakeSeq = 0,
     refreshAppVersion,
+    uiVersion = null,
   }: Props = $props();
 
   // When the desktop host's appearance installer is present it has already
@@ -1614,6 +1617,9 @@
       <div>
         <div class="sn">Desktop app</div>
         <div class="sd mono-path">v{appVersion}</div>
+        {#if uiVersion && uiVersion !== appVersion}
+          <div class="sd mono-path" data-testid="settings-ui-version">Interface {uiVersion}</div>
+        {/if}
         {#if appUpdateStatus === "failed"}
           <div class="sd" data-testid="settings-app-check-failed">
             The update check didn’t finish. Check for updates again.

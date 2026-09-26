@@ -54,6 +54,7 @@ mod intro_window;
 mod recovery;
 mod titlebar_layout;
 mod tray;
+mod ui_hot_update;
 mod ui_protocol;
 mod tray_helper;
 mod updater;
@@ -639,6 +640,13 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            ui_hot_update::get_ui_hot_status,
+            ui_hot_update::ui_hot_boot_ok,
+            ui_hot_update::ui_hot_boot_failed,
+            ui_hot_update::ui_hot_reload,
+            ui_hot_update::ui_hot_call_active,
+            ui_hot_update::ui_hot_check_now,
+            ui_hot_update::set_ui_hot_updates,
             commands::meet_transcript_projection::meet_transcript_project,
             commands::meet_transcript_projection::meet_personal_transcript_project,
             commands::meet_transcript_outbox::meet_transcript_outbox_enqueue,
@@ -1071,6 +1079,9 @@ fn main() {
             if commands::headless_install::maybe_run(app.handle()) {
                 return Ok(());
             }
+            ui_hot_update::init(app.handle());
+            ui_hot_update::on_startup(app.handle());
+            ui_hot_update::setup_checker(app.handle());
             commands::watcher_exit_lifecycle::initialize_watcher_exit_lifecycle();
             #[cfg(target_os = "macos")]
             commands::watcher_exit_lifecycle::initialize_macos_power_observer();
