@@ -7026,7 +7026,7 @@ error: clone failed";
             3,
             "automatic lock-contention must report each time while manual reports retain the existing cooldown"
         );
-        for event in events {
+        for event in &events {
             assert_eq!(event.tags["errorCategory"], "lock-contention");
             assert_eq!(event.tags["rescue_step"], "npm-cache");
         }
