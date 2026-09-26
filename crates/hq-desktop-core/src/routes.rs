@@ -20,6 +20,9 @@ pub const BOARD: &str = "GET /companies/{companyUid}/board";
 /// `POST /v1/companies/{companyUid}/home-channel`
 pub const HOME_CHANNEL: &str = "POST /v1/companies/{companyUid}/home-channel";
 
+/// `GET /v1/flags/resolve`
+pub const FLAGS_RESOLVE: &str = "GET /v1/flags/resolve";
+
 /// `GET /companies/{companyUid}/crm-projection`
 pub const CRM_PROJECTION: &str = "GET /companies/{companyUid}/crm-projection";
 
@@ -47,6 +50,7 @@ mod tests {
             path_for(HOME_CHANNEL, "cmp_01ABC"),
             "/v1/companies/cmp_01ABC/home-channel"
         );
+        assert_eq!(path_for(FLAGS_RESOLVE, ""), "/v1/flags/resolve");
         assert_eq!(path_for(BOARD, "cmp_01ABC"), "/companies/cmp_01ABC/board");
         assert_eq!(path_for(SECRETS, "cmp_01ABC"), "/secrets/cmp_01ABC");
     }

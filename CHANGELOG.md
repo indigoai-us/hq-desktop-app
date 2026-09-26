@@ -8,6 +8,84 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
+- Release builds no longer recompile the native app every time. The job that
+  prepares the native pieces after each merge now installs its build targets
+  correctly and is no longer cancelled by the next merge, so a normal release
+  assembles from the prepared pieces instead of building them from scratch.
+- Core tests no longer start `npx` in the background or leave npm cache files
+  in temporary home folders.
+
+## [0.10.339] — 2026-09-26
+
+- HQ no longer restarts for an update while you are using it or while a meeting is being recorded. A card in the sidebar lets you choose when to apply pending updates.
+
+## [0.10.337] — 2026-09-26
+
+- When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
+  holder, HQ keeps the current CLI available and retries on later launches. It
+  reports a persistent failure after three attempts.
+
+## [0.10.336] — 2026-09-26
+
+- Interface fixes can now reach installed apps within a couple of minutes,
+  without a new installer or a restart. The app downloads a signed interface
+  update, checks it was built for this exact version of the app, and offers
+  "Interface updated — reload" (or reloads on its own when nothing would be
+  lost). If an update fails to start, the app goes back to the previous
+  interface by itself. Off by default for now; Settings shows which interface
+  version is running.
+- When the app shows sign-in or onboarding to someone who already finished
+  setup, its error report now records which setup checks passed or failed.
+  The report contains short fixed values only, with no file paths or account
+  details. This helps us find why some people are sent back to onboarding
+  after an update.
+
+## [0.10.334] — 2026-09-26
+
+- The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
+  line tool now uses, so Update / Restore and `hq rescue` keep running the same
+  engine. It brings the sync fixes released since 6.16.53.
+
+## [0.10.333] — 2026-09-26
+
+- On Windows, setup no longer fails when an old content folder link points
+  to a folder that has since been removed. Setup removes the old link and
+  creates it again. If linking still fails, the error report now says which
+  step failed and why.
+
+## [0.10.331] — 2026-09-26
+
+- New "Record meetings automatically" switch in Settings → Meetings. When it
+  is on, HQ starts recording as soon as it detects a call — Slack huddles,
+  Zoom, Google Meet, Teams and Webex — instead of waiting for you to click
+  Record. It is off by default. Calls a scheduled HQ bot is already recording
+  are not recorded twice, and you still get the "meeting detected" alert.
+- On Windows, the HQ CLI updater identifies the process holding its package
+  files, waits for HQ's own processes, and retries around short-lived scanners.
+  If you have the HQ CLI open in a terminal, the app leaves it running and
+  checks for the update again later.
+
+## [0.10.330] — 2026-09-26
+
+- Releases no longer rebuild the native app when only the interface changed.
+  The compiled app shell for macOS, Windows x64 and Windows arm64 is built
+  once per change to the native sources, cached, and reused across releases;
+  each release only builds the interface, stamps the release version into the
+  bundle (macOS Info.plist, Windows exe version and installer metadata, and a
+  `version.json` the app reads at runtime), then signs and packages. A release
+  with a warm cache takes about 8 minutes end to end instead of roughly 30.
+  Publishing fails if any bundle carries a shell that does not match the
+  tagged sources. If the new pipeline ever needs to be bypassed, dispatch the
+  release manually with `legacy_build: true` to use the old single-job build
+  on both platforms. No visible change for users.
+- The app now loads its interface from the installed bundle at runtime and
+  reports the installed release's version (update checks, tray menu,
+  telemetry, request headers) even when its shell was compiled for an earlier
+  release. No visible change for users.
+
+## [0.10.329] — 2026-09-25
+
 - The project board is back. A new Projects page (Cmd+6, or the board icon in
   the title bar) shows one company's projects at a time as a board or a list.
   Opening a project shows its tasks by status, with task details, files and
@@ -25,6 +103,8 @@ The release moves it under the version it ships in.
   button cluster itself, thin enough to overlap on some renders. Widened it
   to a safer margin everywhere it's used, and added a test covering the DM
   requests panel, which had the shared inset already but wasn't checked here.
+- Failed Windows Core updates now include a bounded rsync error class and
+  translated path shape in diagnostics, without adding local paths.
 
 ## [0.10.328] — 2026-09-25
 

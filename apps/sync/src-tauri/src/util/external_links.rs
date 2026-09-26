@@ -13,7 +13,7 @@ fn is_loopback_host(host: &str) -> bool {
 /// In-webview navigation that must keep loading (app protocol + local dev).
 pub fn is_app_navigation(url: &Url) -> bool {
     match url.scheme() {
-        "tauri" | "asset" | "ipc" | "blob" | "data" | "about" | "hq-recovery" => true,
+        "tauri" | "asset" | "ipc" | "blob" | "data" | "about" | "hq-recovery" | "hq-ui" => true,
         "http" | "https" => url.host_str().is_some_and(is_loopback_host),
         _ => false,
     }
@@ -84,6 +84,8 @@ mod tests {
         assert!(is_app_navigation(&parse(
             "http://hq-recovery.localhost/index.html"
         )));
+        assert!(is_app_navigation(&parse("hq-ui://localhost/index.html")));
+        assert!(is_app_navigation(&parse("http://hq-ui.localhost/index.html")));
         assert!(is_app_navigation(&parse("about:blank")));
         assert!(!is_app_navigation(&parse("https://example.com/docs")));
         assert!(!is_app_navigation(&parse("mailto:ada@example.com")));

@@ -688,6 +688,9 @@ describe('first-run browser session continuation', () => {
           return {
             errorCategory: 'spawn-failed',
             errorKind: 'content_symlink_helper_spawn_failed',
+            errorOperation: 'create_junction',
+            errorIoKind: 'other',
+            errorCode: 1,
           };
         case 'emit_desktop_operational_telemetry':
           return undefined;
@@ -718,7 +721,18 @@ describe('first-run browser session continuation', () => {
       failureStage: 'content',
       errorCategory: 'spawn-failed',
       errorKind: 'content_symlink_helper_spawn_failed',
+      errorOperation: 'create_junction',
+      errorIoKind: 'other',
+      errorCode: 1,
     });
+
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
   });
 
   it('records an OAuth failure with the continuation error kind', async () => {

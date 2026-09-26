@@ -75,6 +75,21 @@ export interface MeetingDetectedDeps {
   notify: (payload: NotifyDetectedPayload) => Promise<void>;
   /** Current valid default recording company UID (or null = Personal). */
   resolveValidDefault: () => string | null;
+  /**
+   * Whether "Record meetings automatically" is on. A thrown error is treated
+   * as **fail-closed** (no automatic recording) — never record someone
+   * without a readable opt-in.
+   */
+  autoRecordEnabled: () => Promise<boolean>;
+  /** Start recording the SDK window (same path as a Record click). */
+  startRecording: (windowId: string) => Promise<void>;
+  /**
+   * Whether the detection for this window is still open. Checked right before
+   * an automatic start: `meeting:closed` can land while the bot check or the
+   * alert is in flight, and starting a closed window mints an upload token
+   * and a ledger entry for a recording that can never run.
+   */
+  isStillActive: (windowId: string) => boolean;
   /** ISO-8601 "now" — injected so tests are deterministic. */
   now: () => string;
   /** Optional diagnostic sink for a failed (fail-open) bot check. */
@@ -111,10 +126,15 @@ export function resolveWindowId(payload: MeetingDetectedPayload): {
  *   1. Resolve the window id.
  *   2. If the URL is real (not synthetic), ask hq-pro whether an active bot
  *      already covers it. Synthetic `recall-window:<id>` URLs can never have
- *      a bot, so skip the lookup. A failed lookup fails open.
+ *      a bot, so skip the lookup. A failed lookup fails open for the row and
+ *      alert, but blocks auto-record (a bot may already be recording).
  *   3. **Covered by a bot** → clear any stale row for this window and return
  *      without notifying. Neither surface appears.
  *   4. **Not covered** → seed the recordable row and fire the notification.
+ *   5. When auto-record is on, the bot check succeeded, the detection carries
+ *      an SDK window handle, and the meeting is still open, start recording.
+ *      The alert goes first: `start_recording` marks the meeting Recorded in
+ *      the notify ledger, which would otherwise suppress this alert.
  */
 export async function handleMeetingDetected(
   payload: MeetingDetectedPayload,
@@ -124,10 +144,12 @@ export async function handleMeetingDetected(
   const { windowId, isSyntheticUrl } = resolveWindowId(payload);
 
   let hasActiveBot = false;
+  let botCheckFailed = false;
   if (meetingUrl && !isSyntheticUrl) {
     try {
       hasActiveBot = await deps.checkActiveBot(meetingUrl, sourceEventId ?? null);
     } catch (botErr) {
+      botCheckFailed = true;
       deps.warn?.('meetings_check_bot_for_url failed, continuing to notify:', botErr);
     }
   }
@@ -156,7 +178,7 @@ export async function handleMeetingDetected(
     });
   }
 
-  await deps.notify({
+  const notifyPayload: NotifyDetectedPayload = {
     meetingUrl: meetingUrl ?? null,
     // Pass through so the notification's action-button thread can route a
     // Record click back to start_recording.
@@ -164,5 +186,73 @@ export async function handleMeetingDetected(
     platform: platform ?? null,
     summary: summary ?? null,
     sourceEventId: sourceEventId ?? null,
-  });
+  };
+
+  // Auto-record needs the SDK window handle: an explicit `windowId`, or one
+  // recovered from a synthetic `recall-window:<id>` URL. The real-URL fallback
+  // from `resolveWindowId` is only a dedup key the recorder cannot address.
+  const autoRecordable =
+    !!windowId && !botCheckFailed && (!!payload.windowId || isSyntheticUrl);
+  if (!autoRecordable) {
+    await deps.notify(notifyPayload);
+    return;
+  }
+
+  let autoRecord = false;
+  try {
+    autoRecord = await deps.autoRecordEnabled();
+  } catch (err) {
+    deps.warn?.('meetings_auto_record_enabled failed, not auto-recording:', err);
+  }
+  if (!autoRecord) {
+    await deps.notify(notifyPayload);
+    return;
+  }
+
+  // Auto-recording: a failed alert must not cancel the recording.
+  try {
+    await deps.notify(notifyPayload);
+  } catch (err) {
+    deps.warn?.('meeting alert failed, auto-recording anyway:', err);
+  }
+  if (!deps.isStillActive(windowId)) return;
+  try {
+    await deps.startRecording(windowId);
+  } catch (err) {
+    deps.warn?.('auto-record start failed:', err);
+  }
+}
+
+/**
+ * Run detections the backend retained before this window's listener was
+ * installed (the SDK can detect an already-open call before the webview
+ * mounts) through the same decision as a live `meeting:detected`. The notify
+ * ledger dedups any alert that already fired. Windows in `recordingWindowIds`
+ * are already recording and are skipped: re-seeding them would reset the row
+ * to `detected` and dispatch a start the recorder never confirms. One failure
+ * never stops the rest.
+ */
+export async function replayRetainedDetections(
+  detections: MeetingDetectedPayload[],
+  recordingWindowIds: ReadonlySet<string>,
+  deps: MeetingDetectedDeps,
+): Promise<void> {
+  for (const detection of detections) {
+    if (recordingWindowIds.has(resolveWindowId(detection).windowId)) continue;
+    try {
+      await handleMeetingDetected(detection, deps);
+    } catch (err) {
+      deps.warn?.('retained meeting detection failed:', err);
+    }
+  }
+}
+
+/**
+ * A Record click (or automatic start) on a meeting that is already recording
+ * must do nothing. The recorder answers with the existing recording id and
+ * never emits another `recording:started`, so a new acknowledged start would
+ * time out and flip the live recording row to an error.
+ */
+export function startIsNoOp(state: string | undefined): boolean {
+  return state === 'recording';
 }

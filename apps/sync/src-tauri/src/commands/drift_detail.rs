@@ -73,7 +73,7 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
     let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
+        crate::ui_protocol::ui_url("index.html"),
     )
     .title("Core Drift")
     .inner_size(560.0, 480.0)

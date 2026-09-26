@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const APP_VERSION_PATTERN =
-  /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:beta|alpha)\.(0|[1-9][0-9]*))?$/;
+  /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:beta|alpha|shelltest)\.(0|[1-9][0-9]*))?$/;
 
 const WIX_LIMITS = [
   ["major", 255n],
