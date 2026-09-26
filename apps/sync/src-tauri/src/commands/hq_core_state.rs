@@ -2367,7 +2367,12 @@ fn core_update_sentry_failure_report(
             1 + u32::from(details.managed_git_retry.attempted()),
         )
     });
-    let category_step = core_update_rescue_step_for_category(details.rescue_failure_category);
+    let category_step =
+        if details.rescue_telemetry.is_some() || details.rescue_stderr_tail.is_some() {
+            core_update_rescue_step_for_category(details.rescue_failure_category)
+        } else {
+            "unknown"
+        };
     if category_step != "unknown" {
         rescue_telemetry.rescue_step = category_step;
     }
@@ -7002,18 +7007,9 @@ error: clone failed";
         let events = sentry::test::with_captured_events_options(
             || {
                 report_core_update_failure_at(report("automatic"), start);
-                report_core_update_failure_at(
-                    report("automatic"),
-                    start + Duration::from_secs(1),
-                );
-                report_core_update_failure_at(
-                    report("manual"),
-                    start + Duration::from_secs(2),
-                );
-                report_core_update_failure_at(
-                    report("manual"),
-                    start + Duration::from_secs(3),
-                );
+                report_core_update_failure_at(report("automatic"), start + Duration::from_secs(1));
+                report_core_update_failure_at(report("manual"), start + Duration::from_secs(2));
+                report_core_update_failure_at(report("manual"), start + Duration::from_secs(3));
             },
             sentry::ClientOptions {
                 before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
