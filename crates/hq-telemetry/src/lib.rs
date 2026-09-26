@@ -125,6 +125,14 @@ pub fn classify_core_update_rsync_diagnostic(
         || lower.contains("enametoolong")
     {
         "path_too_long"
+    } else if lower.contains("invalid argument")
+        || lower.contains("invalid filename")
+        || lower.contains("invalid file name")
+        || lower.contains("invalid name")
+        || lower.contains("illegal byte sequence")
+        || lower.contains("einval")
+    {
+        "invalid_argument"
     } else if lower.contains("resource busy")
         || lower.contains("sharing violation")
         || lower.contains("used by another process")
@@ -1626,7 +1634,15 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_stack_signature" => Some(valid_runner_stack_signature(value)),
         "rescue_step" => Some(matches!(
             value,
-            "clone" | "checkout" | "rsync" | "npm-install" | "verify" | "unknown"
+            "clone"
+                | "checkout"
+                | "rsync"
+                | "restore"
+                | "snapshot"
+                | "npm-cache"
+                | "npm-install"
+                | "verify"
+                | "unknown"
         )),
         "rescue_error_class" => Some(matches!(
             value,
@@ -1650,6 +1666,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "vanished_source"
                 | "permission_denied"
                 | "path_too_long"
+                | "invalid_argument"
                 | "file_locked"
                 | "disk_full"
                 | "io_error"
@@ -3036,11 +3053,15 @@ mod tests {
     fn core_update_diagnostic_axes_are_closed_and_path_free() {
         for (key, value) in [
             ("rescue_step", "clone"),
+            ("rescue_step", "restore"),
+            ("rescue_step", "snapshot"),
+            ("rescue_step", "npm-cache"),
             ("rescue_error_class", "clone_failed"),
             ("rescue_error_class", "rsync_failed"),
             ("rescue_error_class", "rsync_partial"),
             ("rescue_error_class", "npx_resolve_failed"),
             ("rsync_stderr_class", "source_missing"),
+            ("rsync_stderr_class", "invalid_argument"),
             ("rsync_stderr_class", "unclassified"),
             ("rsync_translated_path_shape", "cygwin_drive"),
             ("rsync_translated_path_shape", "unavailable"),
@@ -3123,6 +3144,20 @@ mod tests {
         assert_eq!(unrelated.stderr_class, "not_applicable");
         assert!(unrelated.stderr_reason.is_none());
         assert_eq!(unrelated.translated_path_shape, "not_applicable");
+    }
+
+    #[test]
+    fn core_update_rsync_invalid_argument_class_is_path_free() {
+        let diagnostic = classify_core_update_rsync_diagnostic(
+            "rsync: [sender] open \"/cygdrive/c/fixture-one/bad:name\" failed: Invalid argument (22)\nrsync error: some files/attrs were not transferred (code 23)",
+            true,
+        );
+
+        assert_eq!(diagnostic.stderr_class, "invalid_argument");
+        let reason = diagnostic.stderr_reason.as_deref().unwrap();
+        assert!(reason.contains("Invalid argument (22)"));
+        assert!(!reason.contains("fixture-one"));
+        assert!(!reason.contains("bad:name"));
     }
 
     #[test]
