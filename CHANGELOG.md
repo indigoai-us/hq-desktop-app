@@ -13,6 +13,14 @@ The release moves it under the version it ships in.
   the host to re-read its company roster as soon as a channel names a company
   the roster is missing, and the unavailable page re-opens the channel once
   the company shows up.
+
+- When enabled, automatic Core updates wait for startup cache preparation before
+  running the rescue. If the wait limit expires, the update moves to a later
+  automatic check; manual updates keep their current behavior. The rollout flag
+  defaults off.
+
+## [0.10.340] — 2026-09-26
+- Update holds now apply to manual installs too, and a recording that ends with an error no longer blocks updates.
 - When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
 - Release builds no longer recompile the native app every time. The job that
   prepares the native pieces after each merge now installs its build targets
