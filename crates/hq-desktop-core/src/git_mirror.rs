@@ -57,7 +57,7 @@
 //! below make the existing behaviour safe; whether the push itself should
 //! exist is an owner decision tracked separately.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -4152,18 +4152,78 @@ struct StagedDeletionRecord {
     path: String,
 }
 
+const SCOPE_QUARANTINE_HASH_CACHE_FILE: &str = "scope-quarantine-hash-cache.json";
+const SCOPE_QUARANTINE_HASH_CACHE_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScopeQuarantineHashCache {
+    version: u32,
+    entries: BTreeMap<String, ScopeQuarantineHashCacheEntry>,
+}
+
+impl Default for ScopeQuarantineHashCache {
+    fn default() -> Self {
+        Self {
+            version: SCOPE_QUARANTINE_HASH_CACHE_VERSION,
+            entries: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ScopeQuarantineHashCacheEntry {
+    source_path: String,
+    copy_path: String,
+    size: u64,
+    modified_secs: u64,
+    modified_nanos: u32,
+    clean_filter_context: String,
+    blob: String,
+}
+
+struct ScopeQuarantineFilterContext {
+    config_fingerprint: String,
+    git_dir: PathBuf,
+    global_attributes_file: Option<PathBuf>,
+    system_attributes_file: Option<PathBuf>,
+}
+
 /// Restore staged source paths only when a regular-file copy exists under a
 /// scope-shrink journal and its lifecycle is newer than the last HEAD commit
 /// containing that path. A file that returned to scope and was committed has a
 /// newer path commit than its old quarantine directory, so a later deliberate
 /// deletion remains staged for the existing bulk-delete guard.
 fn restore_scope_quarantine_move_index_entries(hq_folder: &str) -> Result<usize, String> {
+    restore_scope_quarantine_move_index_entries_with_hasher(hq_folder, hash_quarantined_copy)
+}
+
+fn restore_scope_quarantine_move_index_entries_with_hasher<H>(
+    hq_folder: &str,
+    mut hash_copy: H,
+) -> Result<usize, String>
+where
+    H: FnMut(&str, &str, &Path) -> Option<String>,
+{
     let roots = scope_quarantine_journal_roots(Path::new(hq_folder));
     if roots.is_empty() {
         return Ok(0);
     }
 
     let records = staged_deletion_records(hq_folder)?;
+    if records.is_empty() {
+        return Ok(0);
+    }
+
+    let filter_context = scope_quarantine_filter_context(hq_folder);
+    if filter_context.is_none() {
+        log(
+            LOG_TAG,
+            "quarantine hash cache context unavailable; verifying copies with Git on every pass",
+        );
+    }
+    let mut cache = read_scope_quarantine_hash_cache(hq_folder);
+    let mut cache_changed = false;
+    let mut seen_cache_keys = HashSet::new();
     let mut candidates = Vec::new();
     for record in records {
         // Symlinks and submodules have different Git blob semantics. Leave
@@ -4185,8 +4245,17 @@ fn restore_scope_quarantine_move_index_entries(hq_folder: &str) -> Result<usize,
             let Some(copy) = regular_file_below(root, relative) else {
                 continue;
             };
-            if !hash_quarantined_copy(hq_folder, &record.path, &copy)
-                .is_some_and(|blob| blob == record.blob)
+            if !hash_quarantined_copy_cached(
+                hq_folder,
+                &record.path,
+                &copy,
+                filter_context.as_ref(),
+                &mut cache,
+                &mut cache_changed,
+                &mut seen_cache_keys,
+                &mut hash_copy,
+            )
+            .is_some_and(|blob| blob == record.blob)
             {
                 continue;
             }
@@ -4203,6 +4272,15 @@ fn restore_scope_quarantine_move_index_entries(hq_folder: &str) -> Result<usize,
         }
         if let Some((_, journal_modified)) = freshest_matching_move {
             candidates.push((record.path, journal_modified));
+        }
+    }
+
+    if filter_context.is_some() {
+        let before = cache.entries.len();
+        cache.entries.retain(|key, _| seen_cache_keys.contains(key));
+        cache_changed |= cache.entries.len() != before;
+        if cache_changed {
+            write_scope_quarantine_hash_cache(hq_folder, &cache);
         }
     }
 
@@ -4512,6 +4590,295 @@ fn regular_file_below(root: &Path, relative: &Path) -> Option<PathBuf> {
         }
     }
     Some(candidate)
+}
+
+/// Reuse an exact Git blob id while the quarantined copy and the attributes
+/// that govern its clean conversion are unchanged. On a cache miss, the supplied
+/// hasher still runs Git with --path=<original>, preserving clean filters and eol.
+fn hash_quarantined_copy_cached<H>(
+    hq_folder: &str,
+    original_path: &str,
+    copy: &Path,
+    filter_context: Option<&ScopeQuarantineFilterContext>,
+    cache: &mut ScopeQuarantineHashCache,
+    cache_changed: &mut bool,
+    seen_cache_keys: &mut HashSet<String>,
+    hash_copy: &mut H,
+) -> Option<String>
+where
+    H: FnMut(&str, &str, &Path) -> Option<String>,
+{
+    let signature = filter_context.and_then(|context| {
+        scope_quarantine_hash_signature(hq_folder, original_path, copy, context)
+    });
+    if let Some(signature) = &signature {
+        seen_cache_keys.insert(signature.key.clone());
+        if let Some(entry) = cache.entries.get(&signature.key) {
+            let mut expected = signature.entry.clone();
+            expected.blob = entry.blob.clone();
+            if entry == &expected {
+                return Some(entry.blob.clone());
+            }
+        }
+    }
+
+    let blob = hash_copy(hq_folder, original_path, copy);
+    if let Some(signature) = signature {
+        if let Some(blob) = &blob {
+            let mut entry = signature.entry;
+            entry.blob = blob.clone();
+            if cache.entries.get(&signature.key) != Some(&entry) {
+                cache.entries.insert(signature.key, entry);
+                *cache_changed = true;
+            }
+        } else if cache.entries.remove(&signature.key).is_some() {
+            *cache_changed = true;
+        }
+    }
+    blob
+}
+
+struct ScopeQuarantineHashSignature {
+    key: String,
+    entry: ScopeQuarantineHashCacheEntry,
+}
+
+fn scope_quarantine_hash_signature(
+    hq_folder: &str,
+    original_path: &str,
+    copy: &Path,
+    context: &ScopeQuarantineFilterContext,
+) -> Option<ScopeQuarantineHashSignature> {
+    let root = Path::new(hq_folder);
+    let relative_copy = copy.strip_prefix(root).ok()?.to_str()?;
+    let metadata = fs::metadata(copy).ok()?;
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    let clean_filter_context =
+        scope_quarantine_path_filter_fingerprint(hq_folder, original_path, context)?;
+
+    let mut key_hash = Sha256::new();
+    key_hash.update((original_path.len() as u64).to_be_bytes());
+    key_hash.update(original_path.as_bytes());
+    key_hash.update((relative_copy.len() as u64).to_be_bytes());
+    key_hash.update(relative_copy.as_bytes());
+
+    Some(ScopeQuarantineHashSignature {
+        key: format!("{:x}", key_hash.finalize()),
+        entry: ScopeQuarantineHashCacheEntry {
+            source_path: original_path.to_string(),
+            copy_path: relative_copy.to_string(),
+            size: metadata.len(),
+            modified_secs: modified.as_secs(),
+            modified_nanos: modified.subsec_nanos(),
+            clean_filter_context,
+            blob: String::new(),
+        },
+    })
+}
+
+/// Include every path-specific and configured Git clean-conversion input. A
+/// change to .gitattributes, the global/system attributes file, filter config,
+/// or eol settings invalidates cached blob ids without hashing file contents.
+fn scope_quarantine_filter_context(hq_folder: &str) -> Option<ScopeQuarantineFilterContext> {
+    const FILTER_CONFIG_PATTERN: &str = r"^(filter\..*\.(clean|process|required)|core\.(autocrlf|eol|safecrlf|attributesfile|checkroundtripencoding))$";
+
+    let config = git_output(
+        hq_folder,
+        &[
+            "config",
+            "--null",
+            "--show-origin",
+            "--get-regexp",
+            FILTER_CONFIG_PATTERN,
+        ],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    if !config.status.success() && config.status.code() != Some(1) {
+        return None;
+    }
+
+    let global_attributes = git_output(
+        hq_folder,
+        &["config", "--null", "--path", "--get", "core.attributesFile"],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    let global_attributes_file = if global_attributes.status.success() {
+        let bytes = global_attributes
+            .stdout
+            .strip_suffix(&[0])
+            .unwrap_or(&global_attributes.stdout);
+        Some(PathBuf::from(String::from_utf8(bytes.to_vec()).ok()?))
+    } else if global_attributes.status.code() == Some(1) {
+        default_global_attributes_file()
+    } else {
+        return None;
+    };
+
+    let exec_path = git_output(hq_folder, &["--exec-path"], GIT_INDEX_TIMEOUT).ok()?;
+    if !exec_path.status.success() {
+        return None;
+    }
+    let exec_path = PathBuf::from(String::from_utf8(exec_path.stdout).ok()?.trim());
+    let system_attributes_file = if std::env::var_os("GIT_ATTR_NOSYSTEM").is_some() {
+        None
+    } else {
+        exec_path
+            .parent()
+            .and_then(Path::parent)
+            .map(|prefix| prefix.join("etc/gitattributes"))
+    };
+
+    Some(ScopeQuarantineFilterContext {
+        config_fingerprint: format!("{:x}", Sha256::digest(config.stdout)),
+        git_dir: resolve_git_dir(hq_folder).ok()?,
+        global_attributes_file,
+        system_attributes_file,
+    })
+}
+
+fn default_global_attributes_file() -> Option<PathBuf> {
+    let config_root = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|home| PathBuf::from(home).join(".config"))
+        })?;
+    Some(config_root.join("git/attributes"))
+}
+
+fn scope_quarantine_path_filter_fingerprint(
+    hq_folder: &str,
+    original_path: &str,
+    context: &ScopeQuarantineFilterContext,
+) -> Option<String> {
+    let relative = Path::new(original_path);
+    let components = relative.components().collect::<Vec<_>>();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+
+    let mut fingerprint = Sha256::new();
+    fingerprint.update(context.config_fingerprint.as_bytes());
+    fingerprint.update(
+        std::env::var_os("GIT_ATTR_NOSYSTEM")
+            .unwrap_or_default()
+            .to_string_lossy()
+            .as_bytes(),
+    );
+
+    let mut directory = PathBuf::from(hq_folder);
+    update_filter_context_file(
+        &mut fingerprint,
+        "root attributes",
+        &directory.join(".gitattributes"),
+    )?;
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        let std::path::Component::Normal(part) = component else {
+            return None;
+        };
+        directory.push(part);
+        update_filter_context_file(
+            &mut fingerprint,
+            "nested attributes",
+            &directory.join(".gitattributes"),
+        )?;
+    }
+
+    update_filter_context_file(
+        &mut fingerprint,
+        "repository info attributes",
+        &context.git_dir.join("info/attributes"),
+    )?;
+    if let Some(path) = &context.global_attributes_file {
+        update_filter_context_file(&mut fingerprint, "global attributes", path)?;
+    }
+    if let Some(path) = &context.system_attributes_file {
+        update_filter_context_file(&mut fingerprint, "system attributes", path)?;
+    }
+    Some(format!("{:x}", fingerprint.finalize()))
+}
+
+/// Hash attribute-file bytes in memory only. Missing files are fingerprinted as
+/// absent; unreadable files disable the cache so Git performs its normal check.
+fn update_filter_context_file(fingerprint: &mut Sha256, label: &str, path: &Path) -> Option<()> {
+    fingerprint.update((label.len() as u64).to_be_bytes());
+    fingerprint.update(label.as_bytes());
+    match fs::read(path) {
+        Ok(bytes) => {
+            fingerprint.update([1]);
+            fingerprint.update((bytes.len() as u64).to_be_bytes());
+            fingerprint.update(bytes);
+            Some(())
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            fingerprint.update([0]);
+            Some(())
+        }
+        Err(_) => None,
+    }
+}
+
+fn read_scope_quarantine_hash_cache(hq_folder: &str) -> ScopeQuarantineHashCache {
+    let path = Path::new(hq_folder)
+        .join(".hq")
+        .join(SCOPE_QUARANTINE_HASH_CACHE_FILE);
+    match fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice::<ScopeQuarantineHashCache>(&bytes) {
+            Ok(cache) if cache.version == SCOPE_QUARANTINE_HASH_CACHE_VERSION => cache,
+            _ => {
+                log(
+                    LOG_TAG,
+                    "quarantine hash cache is invalid; rebuilding it with Git",
+                );
+                ScopeQuarantineHashCache::default()
+            }
+        },
+        Err(error) if error.kind() == ErrorKind::NotFound => ScopeQuarantineHashCache::default(),
+        Err(_) => {
+            log(
+                LOG_TAG,
+                "quarantine hash cache could not be read; rebuilding it with Git",
+            );
+            ScopeQuarantineHashCache::default()
+        }
+    }
+}
+
+/// The mirror lock serializes cache writers across this process and the
+/// cross-process lock is held by the caller. Cache loss is safe: it only makes
+/// the next pass recompute blob ids with Git.
+fn write_scope_quarantine_hash_cache(hq_folder: &str, cache: &ScopeQuarantineHashCache) {
+    let directory = Path::new(hq_folder).join(".hq");
+    let path = directory.join(SCOPE_QUARANTINE_HASH_CACHE_FILE);
+    let temp = directory.join(format!("{SCOPE_QUARANTINE_HASH_CACHE_FILE}.tmp"));
+    let encoded = match serde_json::to_vec(cache) {
+        Ok(encoded) => encoded,
+        Err(_) => {
+            log(LOG_TAG, "quarantine hash cache could not be encoded");
+            return;
+        }
+    };
+    if fs::write(&temp, encoded).is_err() {
+        log(LOG_TAG, "quarantine hash cache could not be staged");
+        return;
+    }
+    #[cfg(windows)]
+    if path.exists() && fs::remove_file(&path).is_err() {
+        log(LOG_TAG, "old quarantine hash cache could not be replaced");
+        let _ = fs::remove_file(temp);
+        return;
+    }
+    if fs::rename(&temp, &path).is_err() {
+        log(LOG_TAG, "quarantine hash cache could not be published");
+        let _ = fs::remove_file(temp);
+    }
 }
 
 /// Use Git's clean filters for the original path, matching the blob id already
@@ -8172,6 +8539,50 @@ mod tests {
     }
 
     #[test]
+    fn repeated_quarantine_passes_bound_git_processes_for_2000_files() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        seed_scope_quarantine_repo(tmp.path(), 2_000);
+        move_scope_files_to_quarantine(tmp.path(), 2_000, false);
+        git_ok(tmp.path(), &["add", "-A"]);
+
+        let hq_folder = tmp.path().to_str().unwrap();
+        let expected_blobs = staged_deletion_records(hq_folder)
+            .expect("read seed blob ids")
+            .into_iter()
+            .map(|record| (record.path, record.blob))
+            .collect::<HashMap<_, _>>();
+        let hasher_calls = std::sync::atomic::AtomicUsize::new(0);
+        let mut fixture_hasher = |_: &str, original: &str, _: &Path| {
+            hasher_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            expected_blobs.get(original).cloned()
+        };
+
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries_with_hasher(hq_folder, &mut fixture_hasher)
+                .expect("the first pass verifies and restores quarantine copies"),
+            2_000
+        );
+        assert_eq!(
+            hasher_calls.swap(0, std::sync::atomic::Ordering::Relaxed),
+            2_000,
+            "the first pass checks every uncached copy"
+        );
+
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries_with_hasher(hq_folder, &mut fixture_hasher)
+                .expect("the second pass reuses unchanged verified copies"),
+            2_000
+        );
+        let second_pass_hashes = hasher_calls.swap(0, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            second_pass_hashes <= 8,
+            "second pass would spawn {second_pass_hashes} per-copy Git hash processes; expected at most 8"
+        );
+    }
+
+    #[test]
     fn flag_off_keeps_quarantine_moves_on_the_existing_bulk_deletion_path() {
         let _serial = serial();
         std::env::remove_var(BULK_OVERRIDE_ENV);
@@ -8210,6 +8621,108 @@ mod tests {
             "a disabled or unresolved flag must preserve today's refusal"
         );
         reset_refusal_report_state();
+    }
+
+    #[test]
+    fn quarantine_hash_cache_keeps_path_clean_filters_and_invalidates_attribute_changes() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+
+        let company_path = ["companies", "indigo"].join("/");
+        let source_path = format!("{company_path}/file-0000.md");
+        fs::write(
+            tmp.path().join(".gitattributes"),
+            format!("{company_path}/*.md text eol=lf\n"),
+        )
+        .unwrap();
+        fs::write(tmp.path().join(".gitignore"), ".hq/\n").unwrap();
+        let source = tmp.path().join(&source_path);
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"line one\r\nline two\r\n").unwrap();
+        let changed_source = tmp.path().join(format!("{company_path}/file-0001.md"));
+        fs::write(&changed_source, b"second file\r\n").unwrap();
+        git_ok(tmp.path(), &["add", "-A"]);
+        git_ok(
+            tmp.path(),
+            &["commit", "-q", "-m", "seed clean-filter fixture"],
+        );
+        let head_blob = String::from_utf8(
+            git(tmp.path(), &["rev-parse", &format!("HEAD:{source_path}")]).stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        move_scope_files_to_quarantine(tmp.path(), 2, false);
+        git_ok(tmp.path(), &["add", "-A"]);
+        let hq_folder = tmp.path().to_str().unwrap();
+        let copy = tmp
+            .path()
+            .join(".hq/scope-quarantine/journal-001")
+            .join(&source_path);
+        assert_eq!(
+            hash_quarantined_copy(hq_folder, &source_path, &copy)
+                .expect("Git hashes the copy with the original path attributes"),
+            head_blob,
+            "the cache miss uses the same clean-filtered blob id recorded at HEAD"
+        );
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("first clean-filtered pass restores both moves"),
+            2
+        );
+
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("unchanged clean-filtered copies use their cached blobs"),
+            2
+        );
+
+        let changed_copy = tmp
+            .path()
+            .join(".hq/scope-quarantine/journal-001")
+            .join(format!("{company_path}/file-0001.md"));
+        fs::write(&changed_copy, b"changed copy with a new size\r\n").unwrap();
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("changed copy metadata forces a fresh Git hash"),
+            1,
+            "the unchanged copy restores while the changed copy stays a deletion"
+        );
+        assert_eq!(
+            count_staged_deletions(hq_folder)
+                .expect("read deletion for the changed copy")
+                .count,
+            1
+        );
+
+        fs::write(
+            tmp.path().join(".gitattributes"),
+            format!("{company_path}/*.md -text\n"),
+        )
+        .unwrap();
+        git_ok(tmp.path(), &["add", "-A"]);
+        assert_ne!(
+            hash_quarantined_copy(hq_folder, &source_path, &copy)
+                .expect("changed attributes are evaluated by Git"),
+            head_blob,
+            "the new no-conversion rule produces a different blob for CRLF content"
+        );
+        assert_eq!(
+            restore_scope_quarantine_move_index_entries(hq_folder)
+                .expect("attribute changes invalidate the cached conversion result"),
+            0,
+            "a stale cached blob must not restore a deletion after clean attributes change"
+        );
+        assert_eq!(
+            count_staged_deletions(hq_folder)
+                .expect("read source deletions after the attribute change")
+                .count,
+            2
+        );
     }
 
     #[test]
@@ -8302,6 +8815,28 @@ mod tests {
             "a late snapshot is used by subsequent mirror passes"
         );
         waiter.join().expect("flag wait completes");
+    }
+
+    #[test]
+    fn zero_timeout_without_a_snapshot_keeps_the_first_pass_flag_off() {
+        let gate = ScopeQuarantineGate::new();
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO),
+            ScopeQuarantineGateDecision {
+                enabled: false,
+                timed_out: true,
+            },
+            "an unresolved zero-timeout snapshot must use the default-off first-pass decision"
+        );
+        gate.set_snapshot(true);
+        assert_eq!(
+            gate.resolve_first_mirror(Duration::ZERO),
+            ScopeQuarantineGateDecision {
+                enabled: true,
+                timed_out: false,
+            },
+            "the later resolved snapshot applies to subsequent passes"
+        );
     }
 
     #[test]
