@@ -113,23 +113,23 @@ pub use hq_desktop_core::hq_cli_update::{
     should_auto_install, should_report_unreadable_version,
     should_retry_windows_busy_install_target, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, windows_busy_deferral_decision, windows_busy_install_target_retry_delay,
-    windows_busy_install_target_retry_rung, AsyncSingleFlight, DeliveredPrefixShim,
-    ExecutedCopyAim, ExecutedCopyReaim, ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment,
-    InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
-    LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
-    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
-    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, NpmLockHolderClass, NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome,
-    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
-    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind,
-    RestartManagerHolderObservation, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
-    WindowsBusyDeferralDecision, WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome,
-    WindowsBusyRetryOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
-    NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
-    NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
-    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS,
-    WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
+    version_if_hq_cli, windows_busy_cli_version_unchanged, windows_busy_deferral_decision,
+    windows_busy_install_target_retry_delay, windows_busy_install_target_retry_rung,
+    AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
+    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
+    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
+    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
+    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmLockHolderClass,
+    NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome, NpmToolchainSource, PnpmGlobalEnv,
+    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, RestartManagerHolderObservation,
+    SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome, WindowsBusyDeferralDecision,
+    WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome, WindowsBusyRetryOutcome,
+    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
+    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, NPM_INSTALL_CHILD_ENV,
+    PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES, STDERR_ORIGIN_NON_NPM,
+    WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS, WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -1418,21 +1418,40 @@ async fn defer_windows_busy_install_if_eligible(
     }
 
     let hq_for_version = hq.to_string();
-    let version_probe =
-        tokio::task::spawn_blocking(move || hq_version_string(Path::new(&hq_for_version)));
-    let installed_after_failure = match tokio::time::timeout(Duration::from_secs(35), version_probe)
-        .await
+    let version_probes = tokio::task::spawn_blocking(move || {
+        let command_version = hq_version_string(Path::new(&hq_for_version));
+        let resolved_version = resolved_hq_version(&hq_for_version);
+        (command_version, resolved_version)
+    });
+    let (command_liveness_version, resolved_after_failure) = match tokio::time::timeout(
+        Duration::from_secs(35),
+        version_probes,
+    )
+    .await
     {
-        Ok(Ok(Some(version))) => version,
-        Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
+        Ok(Ok((Some(command_version), Some(resolved_version)))) => {
+            (command_version, resolved_version)
+        }
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
             log(
-                "hq-cli-update",
-                "old CLI version probe failed after Windows EBUSY; preserving install failure behavior",
-            );
+                    "hq-cli-update",
+                    "old CLI version probe failed after Windows EBUSY; preserving install failure behavior",
+                );
             return None;
         }
     };
-    let old_cli_still_works = installed_after_failure == before_version;
+    let old_cli_still_works = windows_busy_cli_version_unchanged(
+        Some(before_version),
+        Some(&resolved_after_failure),
+        Some(&command_liveness_version),
+    );
+    if !old_cli_still_works {
+        log(
+            "hq-cli-update",
+            "resolved CLI version changed after Windows EBUSY; preserving install failure behavior",
+        );
+        return None;
+    }
 
     let marker = match read_windows_busy_deferral_marker() {
         Ok(marker) => marker,
@@ -2534,8 +2553,9 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         ),
     );
 
-    // Capture the pre-install execution-bound version for the decision seam.
-    // It is diagnostic only; the post-install probe remains authoritative.
+    // Capture the manifest-first resolved version for a like-for-like post-
+    // failure comparison. The CLI's embedded `--version` remains a liveness
+    // check because it can legitimately lag the package manifest.
     let before_version = {
         let hq = hq.clone();
         tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))

@@ -5481,6 +5481,25 @@ pub enum WindowsBusyDeferralDecision {
     Exhausted { attempts: u8 },
 }
 
+/// Confirm that the installed CLI stayed on the same resolved version after a
+/// failed update. The manifest-anchored resolver is the authoritative version
+/// source on both sides; `hq --version` only proves the command still responds,
+/// since its embedded version can lag the package manifest.
+pub fn windows_busy_cli_version_unchanged(
+    before_resolved_version: Option<&str>,
+    after_resolved_version: Option<&str>,
+    command_liveness_version: Option<&str>,
+) -> bool {
+    let (Some(before), Some(after), Some(_)) = (
+        before_resolved_version,
+        after_resolved_version,
+        command_liveness_version,
+    ) else {
+        return false;
+    };
+    before == after
+}
+
 /// Defer only the proven no-holder selected-prefix rename failure after all
 /// existing retries, and only if the old CLI still answers its version probe.
 /// Every other shape continues down today's install-failure path.
@@ -6623,6 +6642,25 @@ mod windows_busy_deferral_tests {
                 })
             ),
             Some(WindowsBusyDeferralDecision::Exhausted { attempts: 3 })
+        );
+    }
+
+    #[test]
+    fn manifest_version_mismatch_with_cli_output_does_not_block_deferral() {
+        let before_manifest_version = "5.207.0";
+        let after_manifest_version = "5.207.0";
+        let command_version = "5.206.0";
+        assert_ne!(before_manifest_version, command_version);
+
+        let old_cli_unchanged = windows_busy_cli_version_unchanged(
+            Some(before_manifest_version),
+            Some(after_manifest_version),
+            Some(command_version),
+        );
+        assert!(old_cli_unchanged);
+        assert_eq!(
+            decide(true, old_cli_unchanged, confirmed_no_holder(), None),
+            Some(WindowsBusyDeferralDecision::Deferred { attempts: 1 })
         );
     }
 
