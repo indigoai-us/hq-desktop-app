@@ -1,0 +1,44 @@
+name: Pinned Rust toolchain
+description: >
+  Install the exact rustc version a prebuilt-shell key names, with the
+  cross-compile targets on that same toolchain, then fail fast if rustc or a
+  target is missing. The shell jobs export RUSTUP_TOOLCHAIN=<version>; rustup
+  treats "1.x.y" and "stable" as different toolchains, so targets installed
+  on "stable" are invisible to a build pinned to "1.x.y".
+inputs:
+  toolchain:
+    description: Exact rustc version (e.g. 1.90.0), as computed for the shell key.
+    required: true
+  targets:
+    description: Comma-separated Rust target triples to install on that toolchain.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        targets: ${{ inputs.targets }}
+
+    - name: Confirm the pinned toolchain and targets are active
+      shell: bash
+      env:
+        WANT_TOOLCHAIN: ${{ inputs.toolchain }}
+        WANT_TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        actual="$(rustc --version | awk '{print $2}')"
+        if [ "$actual" != "$WANT_TOOLCHAIN" ]; then
+          echo "::error::rustc is $actual, but the shell key was computed for $WANT_TOOLCHAIN"
+          exit 1
+        fi
+        installed="$(rustup target list --installed)"
+        echo "$installed"
+        IFS=',' read -ra wanted <<<"$WANT_TARGETS"
+        for t in "${wanted[@]}"; do
+          t="$(echo "$t" | xargs)"
+          if ! grep -Fxq "$t" <<<"$installed"; then
+            echo "::error::Target $t is not installed on toolchain $actual"
+            exit 1
+          fi
+        done
