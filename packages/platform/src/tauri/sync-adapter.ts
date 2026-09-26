@@ -34,6 +34,8 @@ import {
   CLAUDE_PROVIDER_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
+  MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+  type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
@@ -50,6 +52,11 @@ export type SyncInvokeFn = (
 
 export interface SyncPlatformAdapterConfig {
   invoke: SyncInvokeFn;
+  /** Resolve the mirror rollout gate as the native shell boots, before its
+   * launch-started daemon reaches the first AllComplete mirror callback. */
+  primeMirrorQuarantineGate?: boolean;
+  /** Test seam for deterministic flag-refresh and startup-race coverage. */
+  createFlagClient?: FeatureFlagGateOptions["createClient"];
   /**
    * Tests inject a stub that throws if called. Production REST goes through
    * invoke("hq_pro_fetch") so Cognito stays in Rust.
@@ -78,6 +85,8 @@ const HOST_OWNED = unavailable(
   'host-owned',
   'The Sync host owns this surface natively; the embedded UI does not drive it.',
 );
+
+let nextMirrorQuarantineAdapterGeneration = 0;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -154,11 +163,14 @@ export function createSyncPlatformAdapter(
   void config.fetch;
   const invokeFn = config.invoke;
   const requestPolicy = config.requestPolicy ?? {};
+  const mirrorQuarantineGeneration = ++nextMirrorQuarantineAdapterGeneration;
+  let mirrorQuarantineRevision = 0;
   const flags = createFeatureFlagGate({
     // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
     endpoint: '',
     getToken: () => '',
     fetch: createHqProFlagFetch(invokeFn),
+    createClient: config.createFlagClient,
   });
 
   async function call<T>(
@@ -170,6 +182,32 @@ export function createSyncPlatformAdapter(
     } catch (err) {
       return invokeError(err);
     }
+  }
+
+  async function updateMirrorQuarantineFlag(): AdapterPromise<void> {
+    const revision = ++mirrorQuarantineRevision;
+    const configured = await flags.resolve(
+      MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+      () => Promise.resolve(ok(false)),
+    );
+    // The Rust setter orders snapshots by adapter generation and per-adapter
+    // revision. A destroyed adapter's late result cannot replace its successor.
+    return call('set_mirror_quarantine_move_not_deletion', {
+      enabled: configured.ok && configured.value,
+      generation: mirrorQuarantineGeneration,
+      revision,
+    });
+  }
+
+  if (config.primeMirrorQuarantineGate) {
+    flags.subscribe(
+      MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+      () => Promise.resolve(ok(false)),
+      () => {
+        void updateMirrorQuarantineFlag();
+      },
+    );
+    void updateMirrorQuarantineFlag();
   }
 
   async function getVersions(): AdapterPromise<VersionInfo> {
@@ -1048,11 +1086,18 @@ export function createSyncPlatformAdapter(
     },
 
     sync: {
-      startDaemon: () => call('start_daemon'),
+      startDaemon: async () => {
+        const configured = await updateMirrorQuarantineFlag();
+        if (!configured.ok) return configured;
+        return call('start_daemon');
+      },
       stopDaemon: () => call('stop_daemon'),
       daemonStatus: () => call('daemon_status'),
-      startSync: (slug) =>
-        call('start_sync', slug ? { companySlug: slug } : undefined),
+      startSync: async (slug) => {
+        const configured = await updateMirrorQuarantineFlag();
+        if (!configured.ok) return configured;
+        return call('start_sync', slug ? { companySlug: slug } : undefined);
+      },
       cancelSync: () => call('cancel_sync'),
       getSyncStatus: () => call('get_sync_status'),
       getActivityLog: () => call('get_activity_log'),

@@ -71,17 +71,21 @@ import {
   type FlagClientOptions,
   type FlagSnapshot,
 } from "@indigoai-us/hq-flags-client";
-import { ok, type AdapterPromise } from "./adapter.js";
+import { ok, type AdapterPromise, type AdapterResult } from "./adapter.js";
 
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
   "agents.claude-provider": "agents.claude-provider",
+  "desktop.mirror-quarantine-move-not-deletion":
+    "desktop.mirror-quarantine-move-not-deletion",
 };
 
 export const MEETINGS_LEGACY_FLAG = "meetings";
 export const MEETINGS_REGISTRY_KEY = "desktop.meetings";
 export const CLAUDE_PROVIDER_FLAG = "agents.claude-provider";
+export const MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG =
+  "desktop.mirror-quarantine-move-not-deletion";
 
 /**
  * FlagClient revalidation cadence for the desktop/web adapters.
@@ -104,6 +108,12 @@ export type FeatureFlagFallback = () => AdapterPromise<boolean>;
 
 export interface FeatureFlagGate {
   resolve(flag: string, fallback: FeatureFlagFallback): AdapterPromise<boolean>;
+  /** Notify when the registry client publishes a refreshed snapshot. */
+  subscribe(
+    flag: string,
+    fallback: FeatureFlagFallback,
+    onChange: (result: AdapterResult<boolean>) => void,
+  ): () => void;
 }
 
 export interface FeatureFlagGateOptions {
@@ -236,7 +246,22 @@ export function createFeatureFlagGate(
     return pending;
   }
 
-  return {
+  const gate: FeatureFlagGate = {
+    subscribe(flag, fallback, onChange) {
+      const key = registryKeyFor(flag);
+      if (!key) return () => {};
+      const flagClient = getClient();
+      let active = true;
+      const unsubscribe = flagClient.onSnapshotChange(() => {
+        void gate.resolve(flag, fallback).then((result) => {
+          if (active) onChange(result);
+        });
+      });
+      return () => {
+        active = false;
+        unsubscribe();
+      };
+    },
     async resolve(flag, fallback) {
       const key = registryKeyFor(flag);
       if (!key) return fallback();
@@ -266,4 +291,5 @@ export function createFeatureFlagGate(
       return fallback();
     },
   };
+  return gate;
 }

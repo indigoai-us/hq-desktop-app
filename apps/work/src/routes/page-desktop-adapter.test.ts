@@ -58,8 +58,8 @@ describe("HQ Work desktop platform adapter", () => {
     );
 
     expect(page).toContain("createSyncPlatformAdapter,");
-    expect(page).toContain(
-      '? createSyncPlatformAdapter({ invoke: nativeInvoke })',
+    expect(page).toMatch(
+      /\?\s*createSyncPlatformAdapter\(\{[\s\S]*?primeMirrorQuarantineGate: !hostOwnsNativeSession,/,
     );
     expect(page).toMatch(/const nativeInvoke = hostInvoke \?\? tauriInvoke;/);
     expect(page).toContain(

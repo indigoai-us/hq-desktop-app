@@ -253,7 +253,12 @@
   // authenticated command bridge because a static build has no /api routes.
   const workFetch: HqProFetch = hostFetch ?? hqProFetch;
   const adapter: PlatformAdapter = runtime === "desktop"
-    ? createSyncPlatformAdapter({ invoke: nativeInvoke })
+    ? createSyncPlatformAdapter({
+        invoke: nativeInvoke,
+        // The owning Sync host already primes and refreshes this process-wide
+        // gate. Only standalone desktop WorkShell instances own this prime.
+        primeMirrorQuarantineGate: !hostOwnsNativeSession,
+      })
     : new WebPlatformAdapter({
         baseUrl: resolveHqProApiUrl(),
         fetch: workFetch,
