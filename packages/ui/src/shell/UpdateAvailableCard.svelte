@@ -77,7 +77,6 @@
       data-testid="update-install"
       disabled={buttonDisabled}
       aria-disabled={buttonDisabled}
-      aria-description={tooltipText ?? undefined}
       title={tooltipText ?? undefined}
       onclick={() => void oninstall?.()}
     >

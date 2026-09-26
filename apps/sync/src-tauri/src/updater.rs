@@ -1289,7 +1289,7 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                                 last_deferred_emit.as_ref(),
                                 &emit_key,
                             ) {
-                                let _ = app.emit(UPDATE_GATE_DEFERRED_EVENT, &status);
+                                let _ = app.emit_to("desktop-alt", UPDATE_GATE_DEFERRED_EVENT, &status);
                                 last_deferred_emit = Some(emit_key);
                             }
                             tokio::time::sleep(IDLE_POLL_INTERVAL).await;

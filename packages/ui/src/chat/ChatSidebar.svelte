@@ -19,6 +19,7 @@
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
   import { onMount, untrack } from "svelte";
+  import type { Snippet } from "svelte";
   import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import {
     COMPOSER_DRAFT_CHANGED_EVENT,
