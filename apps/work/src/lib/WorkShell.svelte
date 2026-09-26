@@ -936,6 +936,7 @@
       onsignin={startReauth}
       {rosterStatus}
       onretryroster={retryRoster}
+      onrefreshroster={() => rosterRefresher.refresh()}
       {self}
       tenantAccountId={effectiveTenantAccountId}
       tenantGeneration={effectiveTenantGeneration}
