@@ -52,11 +52,22 @@ export async function readLocalReleaseAssets(directory) {
   return assets;
 }
 
+// UI hot-update assets (ui-<version>.tar.gz, its .sig, ui-manifest.json) are
+// attached by the release workflow's `ui-bundle` job AFTER publication, so
+// they are outside the 15-asset product contract. A rerun that finds them on
+// the release is still an exact, healthy release.
+export const UI_BUNDLE_ASSET = /^(ui-[0-9][0-9A-Za-z._-]*\.tar\.gz(\.sig)?|ui-manifest\.json)$/;
+
+export function isUiBundleAsset(name) {
+  return UI_BUNDLE_ASSET.test(String(name));
+}
+
 export function verifyAssetSet(
   localAssets,
-  remoteAssets,
+  allRemoteAssets,
   { matchBytes = true } = {},
 ) {
+  const remoteAssets = allRemoteAssets.filter(({ name }) => !isUiBundleAsset(name));
   if (localAssets.length !== EXPECTED_ASSET_COUNT) {
     throw contractError(
       `expected ${EXPECTED_ASSET_COUNT} local assets, found ${localAssets.length}`,

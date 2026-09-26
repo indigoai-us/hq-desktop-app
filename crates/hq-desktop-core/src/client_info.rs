@@ -52,6 +52,23 @@ pub fn set_client_version(v: &str) {
     let _ = CLIENT_VERSION_CELL.set(v.to_string());
 }
 
+/// Live UI version (a UI hot update can change it without a restart), sent
+/// as `x-hq-ui-version` so support can tell which interface is running.
+static UI_VERSION_CELL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Register the live UI version. Unlike the app version this can change at
+/// runtime, so later calls replace the value.
+pub fn set_ui_version(v: &str) {
+    if let Ok(mut guard) = UI_VERSION_CELL.write() {
+        *guard = Some(v.to_string());
+    }
+}
+
+/// The live UI version set via [`set_ui_version`], if any.
+pub fn ui_version() -> Option<String> {
+    UI_VERSION_CELL.read().ok().and_then(|g| g.clone())
+}
+
 /// The user-facing client version set via [`set_client_version`]; `"0.0.0"` until
 /// the binary registers it at startup.
 pub fn client_version() -> &'static str {
@@ -110,6 +127,11 @@ pub fn client_headers_for(version: &str) -> HeaderMap {
     }
     if let Ok(v) = HeaderValue::from_str(version) {
         headers.insert("x-hq-client-version", v);
+    }
+    if let Some(ui) = ui_version() {
+        if let Ok(v) = HeaderValue::from_str(&ui) {
+            headers.insert("x-hq-ui-version", v);
+        }
     }
     headers
 }

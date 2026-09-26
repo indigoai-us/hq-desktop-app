@@ -8,6 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Interface fixes can now reach installed apps within a couple of minutes,
+  without a new installer or a restart. The app downloads a signed interface
+  update, checks it was built for this exact version of the app, and offers
+  "Interface updated — reload" (or reloads on its own when nothing would be
+  lost). If an update fails to start, the app goes back to the previous
+  interface by itself. Off by default for now; Settings shows which interface
+  version is running.
 - When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
   holder, HQ keeps the current CLI available and retries on later launches. It
   reports a persistent failure after three attempts.

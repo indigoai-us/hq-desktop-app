@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import type { Component } from 'svelte';
   import type { InstallManifest } from '../lib/onboarding-setup';
+  import { reportUiBootFailure } from '../lib/ui-hot';
 
   interface Props {
     component: Component<any>;
@@ -86,6 +87,8 @@
   function handleBoundaryError(error: unknown, reset: () => void): void {
     void reset;
     boundaryError = error;
+    // A fatal error during boot rolls back a UI hot bundle (no-op otherwise).
+    reportUiBootFailure(invoke, errorMessage(error));
     const code = svelteErrorCode(error);
     // Log the code and the stack as separate arguments — the webview console
     // collapses a bare Error to its message, which in a production build is
