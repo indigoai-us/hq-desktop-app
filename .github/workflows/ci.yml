@@ -256,6 +256,72 @@ jobs:
           echo "A frontend job did not succeed; failing the required check rather than reporting it satisfied." >&2
           exit 1
 
+  # v0.10.327 shipped a home-channel URL missing "/v1" and nothing caught it:
+  # the app's URL builders and hq-pro's API Gateway route registrations lived
+  # in different repos with no automated cross-check. This job runs
+  # scripts/route-contract-check.mjs, which fetches the live route registries
+  # from hq-pro and hq-pro-agents `main` and fails the build if any of the
+  # app's registered routes (crates/hq-desktop-core/src/routes.rs,
+  # packages/platform/src/web/index.ts `WEB_PATHS.company*`) has no matching
+  # server registration.
+  #
+  # NAME IS LOAD-BEARING once added to the main ruleset required checks (see
+  # the `frontend` job above for why: add "Route contract (hq-pro routes)"
+  # to the ruleset first, or this job reporting red never blocks a merge).
+  route-contract-check:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Route contract (hq-pro routes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # hq-pro and hq-pro-agents are private sibling repos; the default
+      # GITHUB_TOKEN only has access to this repo. hq-audit-bot's GitHub App
+      # installation is already granted read access across the org's repos
+      # for the same reason release.yml's cross-repo sync step uses it.
+      - name: Mint hq-audit-bot installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: indigoai-us
+          repositories: |
+            hq-pro
+            hq-pro-agents
+
+      # Fails closed: a missing/misconfigured App credential must not
+      # silently turn a required gate into a no-op pass.
+      - name: Checkout hq-pro
+        uses: actions/checkout@v4
+        with:
+          repository: indigoai-us/hq-pro
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          path: .route-contract/hq-pro
+          sparse-checkout: |
+            infra
+
+      - name: Checkout hq-pro-agents
+        uses: actions/checkout@v4
+        with:
+          repository: indigoai-us/hq-pro-agents
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          path: .route-contract/hq-pro-agents
+          sparse-checkout: |
+            infra
+
+      - name: Route contract check
+        run: |
+          node scripts/route-contract-check.mjs \
+            --app-root . \
+            --hq-pro .route-contract/hq-pro \
+            --hq-pro-agents .route-contract/hq-pro-agents
+
   workspace-packages:
     name: Workspace packages (vitest)
     runs-on: ubuntu-latest

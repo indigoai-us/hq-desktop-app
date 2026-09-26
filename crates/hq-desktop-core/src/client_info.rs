@@ -40,15 +40,33 @@ pub const CLIENT_NAME: &str = "hq-desktop-app";
 /// invariant "the app is not the runner" is test-enforced in one place.
 pub const SYNC_RUNNER_CLIENT_NAME: &str = "hq-sync";
 
-// The user-facing version is injected at startup by the binary (which reads it
-// from `env!("APP_VERSION")`, emitted by its build.rs from package.json), so this
-// module carries no build-env coupling and can live in a shared crate.
+// The user-facing version is injected at startup by the binary, which resolves
+// it at runtime (stamped Info.plist / Resources/version.json, compile-time
+// `APP_VERSION` only as a fallback; see `runtime_version`), so this module
+// carries no build-env coupling and can live in a shared crate.
 static CLIENT_VERSION_CELL: OnceLock<String> = OnceLock::new();
 
-/// Register the user-facing client version. Call once at startup with
-/// `env!("APP_VERSION")`. Idempotent; later calls are ignored.
+/// Register the user-facing client version. Call once at startup with the
+/// runtime-resolved app version. Idempotent; later calls are ignored.
 pub fn set_client_version(v: &str) {
     let _ = CLIENT_VERSION_CELL.set(v.to_string());
+}
+
+/// Live UI version (a UI hot update can change it without a restart), sent
+/// as `x-hq-ui-version` so support can tell which interface is running.
+static UI_VERSION_CELL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Register the live UI version. Unlike the app version this can change at
+/// runtime, so later calls replace the value.
+pub fn set_ui_version(v: &str) {
+    if let Ok(mut guard) = UI_VERSION_CELL.write() {
+        *guard = Some(v.to_string());
+    }
+}
+
+/// The live UI version set via [`set_ui_version`], if any.
+pub fn ui_version() -> Option<String> {
+    UI_VERSION_CELL.read().ok().and_then(|g| g.clone())
 }
 
 /// The user-facing client version set via [`set_client_version`]; `"0.0.0"` until
@@ -93,16 +111,27 @@ pub const HYDRATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 /// let Ok(...)` defensively — silently dropping a header is safer than
 /// panicking inside a Tauri command handler.
 pub fn client_headers() -> HeaderMap {
+    client_headers_for(client_version())
+}
+
+/// [`client_headers`] for an explicit version (the registered one is the
+/// runtime-resolved app version; see `runtime_version`).
+pub fn client_headers_for(version: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    let user_agent = format!("{}/{}", CLIENT_NAME, client_version());
+    let user_agent = format!("{}/{}", CLIENT_NAME, version);
     if let Ok(v) = HeaderValue::from_str(&user_agent) {
         headers.insert(reqwest::header::USER_AGENT, v);
     }
     if let Ok(v) = HeaderValue::from_str(CLIENT_NAME) {
         headers.insert("x-hq-client-name", v);
     }
-    if let Ok(v) = HeaderValue::from_str(client_version()) {
+    if let Ok(v) = HeaderValue::from_str(version) {
         headers.insert("x-hq-client-version", v);
+    }
+    if let Some(ui) = ui_version() {
+        if let Ok(v) = HeaderValue::from_str(&ui) {
+            headers.insert("x-hq-ui-version", v);
+        }
     }
     headers
 }
@@ -117,6 +146,15 @@ pub fn client_headers() -> HeaderMap {
 /// wraps its call in `tokio::time::timeout(2s)` for a tighter budget; that
 /// wrapper becomes redundant once the client itself has a default, but it
 /// stays as defense-in-depth for the bot-invite hot path.
+///
+/// With the `gzip`/`brotli` reqwest features enabled (Cargo.toml), this
+/// client automatically sends `Accept-Encoding: gzip, br` and transparently
+/// decodes a compressed response body — callers never see `Content-Encoding`
+/// or compressed bytes. `.bytes()`/`.json()` yield the decoded payload; a raw
+/// `content_length()` read still reflects the on-wire (possibly compressed)
+/// size, which is why size-bounded downloads elsewhere in this workspace
+/// (`vault_s3.rs`, `hq_work.rs::http_get_bytes`) build their own client with
+/// `.no_gzip().no_brotli()` instead of using this helper.
 pub fn build_client() -> Client {
     Client::builder()
         .default_headers(client_headers())
@@ -183,6 +221,33 @@ mod tests {
         );
     }
 
+    /// The attribution headers carry the version stamped into the bundle at
+    /// assemble time, not the shell's compile-time version: a cached shell
+    /// compiled at 0.10.328 and assembled as 0.10.400 must report 0.10.400.
+    #[test]
+    fn client_headers_carry_the_stamped_runtime_version() {
+        let _guard = crate::runtime_version::TEST_ENV_LOCK.lock().unwrap();
+        let resources = std::env::temp_dir().join(format!(
+            "hq-client-info-stamped-{}/Contents/Resources",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("version.json"), r#"{"version":"0.10.400"}"#).unwrap();
+        let (resolved, _) =
+            crate::runtime_version::resolve_from(Some(&resources), "0.10.328", false);
+        std::fs::remove_dir_all(resources.parent().unwrap().parent().unwrap()).ok();
+
+        let headers = client_headers_for(&resolved);
+        assert_eq!(
+            headers.get("x-hq-client-version").and_then(|v| v.to_str().ok()),
+            Some("0.10.400"),
+        );
+        assert_eq!(
+            headers.get(reqwest::header::USER_AGENT).and_then(|v| v.to_str().ok()),
+            Some("hq-desktop-app/0.10.400"),
+        );
+    }
+
     /// Regression test for the 2026-04 hq-pro KMS-IAM 500 outage:
     /// `/v1/calendar/events` returned 500 for hours and the MeetingsWindow
     /// refresh path sat on a pending future because `build_client()` had
@@ -216,6 +281,50 @@ mod tests {
             elapsed < Duration::from_secs(20),
             "build_client() did not time out (elapsed {elapsed:?}) — \
              a timeout regression has shipped",
+        );
+    }
+
+    /// `build_client()` must negotiate compression: send `Accept-Encoding`
+    /// naming gzip, and transparently decode a gzip-encoded response body so
+    /// callers see the original bytes, not the compressed wire payload.
+    /// Regression test for enabling the `gzip`/`brotli` reqwest features.
+    #[tokio::test]
+    async fn build_client_sends_accept_encoding_and_decodes_gzip_body() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        use wiremock::matchers::{header_regex, method, path};
+
+        let original = br#"{"channels":[{"channelId":"chn_1","name":"general"}]}"#;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/notify/channels"))
+            .and(header_regex("accept-encoding", "gzip"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-encoding", "gzip")
+                    .insert_header("content-type", "application/json")
+                    .set_body_bytes(compressed),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_client();
+        let resp = client
+            .get(format!("{}/v1/notify/channels", server.uri()))
+            .send()
+            .await
+            .expect("request should succeed");
+        assert!(resp.status().is_success());
+        let body = resp.text().await.expect("body should decode");
+        assert_eq!(
+            body,
+            String::from_utf8(original.to_vec()).unwrap(),
+            "build_client() did not transparently decode the gzip response body",
         );
     }
 }

@@ -56,17 +56,29 @@ export function resolveConversationRow(
 
 /**
  * Prefer a hydrated rail title. Never return a raw participant uid for a
- * DM/group; channels keep the stub title (often the channel id) unchanged.
+ * DM/group; channels keep the stub title (often the channel id) unchanged,
+ * unless `homeCompanySlug` is given — a channel opened by id before its row
+ * loaded (deep link, notification, Companies-row click) starts life as a
+ * stub titled with the raw `chn_…` id, and when it's known to be some
+ * company's home channel the slug reads far better than the id until the
+ * real row (or a metadata fetch) hydrates it.
  */
 export function resolveConversationTitle(
   row: ConversationRow | null,
   railRows: readonly ConversationRow[],
+  homeCompanySlug?: string | null,
 ): string {
   if (!row) return "";
   const railTitle = trimOrEmpty(resolveConversationRow(row, railRows)?.title);
   if (railTitle && !isRawParticipantUid(railTitle)) return railTitle;
   const own = trimOrEmpty(row.title);
-  if (row.kind === "channel") return own || row.title;
+  if (row.kind === "channel") {
+    if (own === (row.channelId ?? "").trim()) {
+      const fallback = trimOrEmpty(homeCompanySlug);
+      if (fallback) return fallback;
+    }
+    return own || row.title;
+  }
   if (own && !isRawParticipantUid(own)) return own;
   if (row.kind === "dm") return DIRECT_MESSAGE_PLACEHOLDER;
   if (row.kind === "group") return GROUP_MESSAGE_PLACEHOLDER;

@@ -3,6 +3,9 @@
   "identifier": "ai.indigo.hq-sync-win",
   "bundle": {
     "targets": ["msi", "nsis"],
+    "resources": {
+      "../dist/": "ui/"
+    },
     "windows": {
       "allowDowngrades": false,
       "webviewInstallMode": {

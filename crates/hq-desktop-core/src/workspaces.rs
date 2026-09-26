@@ -82,6 +82,11 @@ pub struct Workspace {
     /// Tenant brand record when entitled; rides the membership payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brand: Option<CompanyBrand>,
+    /// The company's single home-channel id (`chn_*`), from the membership
+    /// enrichment. Clients open it directly — no client-side resolution.
+    /// `None` for the personal workspace and while the backend rolls out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_channel_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,6 +100,9 @@ pub struct WorkspacesResult {
     /// `companies/manifest.yaml` we couldn't read — UI surfaces a soft
     /// notice and falls back to folder enumeration.
     pub manifest_error: Option<String>,
+    /// True when email-keyed invites were skipped because Cognito marks the
+    /// signed-in email as unverified.
+    pub email_verification_required: bool,
 }
 
 // ── Internal: local company discovery ─────────────────────────────────────────

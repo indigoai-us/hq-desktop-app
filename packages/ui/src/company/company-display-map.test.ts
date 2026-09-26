@@ -28,6 +28,44 @@ describe("workspacesFromMembershipRows", () => {
     });
   });
 
+  it("carries homeChannelId through for a real list_syncable_workspaces row (companies click regression)", () => {
+    // Previously dropped entirely, which left `Workspace.homeChannelId`
+    // undefined for every real (Tauri) company row and forced the sidebar's
+    // "Companies" section to render every row disabled, regardless of what
+    // the roster actually knew server-side.
+    const out = workspacesFromMembershipRows({
+      workspaces: [
+        {
+          slug: "indigo",
+          displayName: "Indigo",
+          kind: "company",
+          state: "synced",
+          cloudUid: "cmp_indigo",
+          membershipStatus: "active",
+          role: "member",
+          homeChannelId: "chn_home_indigo",
+        },
+      ],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].homeChannelId).toBe("chn_home_indigo");
+  });
+
+  it("carries homeChannelId through for a bare membership row too", () => {
+    const out = workspacesFromMembershipRows([
+      {
+        companyUid: "cmp_indigo",
+        companySlug: "indigo",
+        companyName: "Indigo",
+        status: "active",
+        role: "owner",
+        homeChannelId: "chn_home_indigo",
+      },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].homeChannelId).toBe("chn_home_indigo");
+  });
+
   it("keeps a real personal workspace row as kind=personal (the reported bug)", () => {
     // `list_syncable_workspaces` puts the personal vault first, labelled with
     // the person's own name. Flattened to an active company it became the

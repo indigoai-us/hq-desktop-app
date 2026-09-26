@@ -450,7 +450,7 @@ describe("refreshSession", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Shared token file — short-lived sync handoff only; never keychain fallback
+// Shared token file — sync handoff and keychain fallback
 // ---------------------------------------------------------------------------
 
 describe("shared token file", () => {
@@ -502,50 +502,168 @@ describe("shared token file", () => {
     expect(fakeFs.has(tokenFilePath)).toBe(true);
   });
 
-  it("loadTokens does not use the shared token file as a keychain fallback", async () => {
-    // No keychain data — keychain_get will throw "not found".
-    // Seed the old full-token schema directly; it must not restore a session.
-    const fileTokens = {
+  // REGRESSION: installer wipes a valid desktop-only token file.
+  // Previously loadTokens() deleted ~/.hq/cognito-tokens.json whenever the
+  // keychain entry was missing, invalid, or read-errored (e.g. errSecAuthFailed
+  // after re-signing). The desktop app and CLI only refresh the file, so
+  // running the installer again erased a valid sign-in.
+
+  it("loadTokens uses the shared file when the keychain entry is missing", async () => {
+    // No keychain data — keychain_get throws "not found".
+    // File holds a valid token set written by the desktop app.
+    const fileTokens = makeTokens({
       accessToken: "file-acc",
       idToken: makeIdToken("sub-file", "file@example.com"),
       refreshToken: "file-ref",
-      expiresAt: Date.now() + 3600_000,
-      tokenType: "Bearer",
-    };
+    });
     fakeFs.set(tokenFilePath, JSON.stringify(fileTokens));
 
     const user = await getCurrentUser();
 
-    expect(user).toBeNull();
-    expect(fakeFs.has(tokenFilePath)).toBe(false);
+    // File tokens must be used — user is signed in, not null.
+    expect(user).not.toBeNull();
+    expect(user!.email).toBe("file@example.com");
+    // File must NOT be deleted.
+    expect(fakeFs.has(tokenFilePath)).toBe(true);
   });
 
-  it("loadTokens returns null when both keychain and file are unavailable", async () => {
-    // No keychain, no file
-    const user = await getCurrentUser();
-    expect(user).toBeNull();
-  });
+  it("loadTokens uses the shared file when the keychain payload is invalid", async () => {
+    // Keychain holds a malformed blob (e.g. partial write during a crash).
+    fakeKeychain.set("tokens", JSON.stringify({ badField: true }));
 
-  it("loadTokens prefers keychain over file", async () => {
-    const keychainTokens = makeTokens({
-      accessToken: "kc-acc",
-      idToken: makeIdToken("sub-kc", "kc@example.com"),
+    const fileTokens = makeTokens({
+      accessToken: "file-acc-invalid-kc",
+      idToken: makeIdToken("sub-file-invalid", "file-invalid@example.com"),
+      refreshToken: "file-ref-invalid",
     });
-    await seedKeychain(keychainTokens);
-
-    const fileTokens = {
-      accessToken: "file-acc",
-      idToken: makeIdToken("sub-file", "file@example.com"),
-      refreshToken: "file-ref",
-      expiresAt: Date.now() + 3600_000,
-      tokenType: "Bearer",
-    };
     fakeFs.set(tokenFilePath, JSON.stringify(fileTokens));
 
     const user = await getCurrentUser();
 
     expect(user).not.toBeNull();
-    expect(user!.email).toBe("kc@example.com");
+    expect(user!.email).toBe("file-invalid@example.com");
+    expect(fakeFs.has(tokenFilePath)).toBe(true);
+  });
+
+  it("loadTokens uses the shared file on errSecAuthFailed-style keychain errors", async () => {
+    // Simulate errSecAuthFailed (-25293): keychain_get throws an error that
+    // does not match isMissingKeychainEntry (i.e. not "not found").
+    vi.mocked(invoke).mockImplementation(
+      async (command: string, args?: unknown) => {
+        const invokeArgs = args as Record<string, string> | undefined;
+        switch (command) {
+          case "keychain_get":
+            throw new Error("errSecAuthFailed: The user name or passphrase you entered is not correct.");
+          case "keychain_set":
+            fakeKeychain.set(invokeArgs!.account, invokeArgs!.secret);
+            return null;
+          case "keychain_delete":
+            fakeKeychain.delete(invokeArgs!.account);
+            return null;
+          case "home_dir":
+            return FAKE_HOME;
+          default:
+            throw new Error(`Unknown command: ${command}`);
+        }
+      },
+    );
+
+    const fileTokens = makeTokens({
+      accessToken: "file-acc-auth-failed",
+      idToken: makeIdToken("sub-auth-failed", "auth-failed@example.com"),
+      refreshToken: "file-ref-auth-failed",
+    });
+    fakeFs.set(tokenFilePath, JSON.stringify(fileTokens));
+
+    const user = await getCurrentUser();
+
+    expect(user).not.toBeNull();
+    expect(user!.email).toBe("auth-failed@example.com");
+    // File must survive the keychain error.
+    expect(fakeFs.has(tokenFilePath)).toBe(true);
+  });
+
+  it("loadTokens returns null when both keychain and file are unavailable", async () => {
+    // No keychain entry, no file.
+    const user = await getCurrentUser();
+    expect(user).toBeNull();
+    // File is absent — nothing to delete or preserve.
+    expect(fakeFs.has(tokenFilePath)).toBe(false);
+  });
+
+  it("shared file is not deleted when keychain fails and file is also absent", async () => {
+    // No keychain, no file — subsequent call must not create or delete anything.
+    const user = await getCurrentUser();
+    expect(user).toBeNull();
+    expect([...fakeFs.keys()].filter((k) => k.includes("cognito-tokens"))).toHaveLength(0);
+  });
+
+  it("loadTokens prefers the token with the later expiresAt when both sources are valid", async () => {
+    // Keychain has an older token; file has a fresher one (written by the CLI refresh).
+    const now = Date.now();
+    const keychainTokens = makeTokens({
+      accessToken: "kc-acc-stale",
+      idToken: makeIdToken("sub-kc-stale", "kc-stale@example.com"),
+      expiresAt: now + 1_000,
+    });
+    const fileTokens = makeTokens({
+      accessToken: "file-acc-fresh",
+      idToken: makeIdToken("sub-file-fresh", "file-fresh@example.com"),
+      refreshToken: "file-ref-fresh",
+      expiresAt: now + 3_600_000,
+    });
+    await seedKeychain(keychainTokens);
+    fakeFs.set(tokenFilePath, JSON.stringify(fileTokens));
+
+    const user = await getCurrentUser();
+
+    // File token is newer — it must win.
+    expect(user).not.toBeNull();
+    expect(user!.email).toBe("file-fresh@example.com");
+  });
+
+  it("loadTokens prefers keychain when keychain expiresAt is later than file", async () => {
+    const now = Date.now();
+    const keychainTokens = makeTokens({
+      accessToken: "kc-acc-fresh",
+      idToken: makeIdToken("sub-kc-fresh", "kc-fresh@example.com"),
+      expiresAt: now + 3_600_000,
+    });
+    const fileTokens = makeTokens({
+      accessToken: "file-acc-stale",
+      idToken: makeIdToken("sub-file-stale", "file-stale@example.com"),
+      refreshToken: "file-ref-stale",
+      expiresAt: now + 1_000,
+    });
+    await seedKeychain(keychainTokens);
+    fakeFs.set(tokenFilePath, JSON.stringify(fileTokens));
+
+    const user = await getCurrentUser();
+
+    expect(user).not.toBeNull();
+    expect(user!.email).toBe("kc-fresh@example.com");
+  });
+
+  it("file is deleted only on explicit signOut, not on keychain read failure", async () => {
+    // Regression guard: file must survive any keychain failure; only signOut()
+    // via clearTokens() may delete it.
+    const fileTokens = makeTokens({
+      accessToken: "file-acc-persist",
+      idToken: makeIdToken("sub-persist", "persist@example.com"),
+      refreshToken: "file-ref-persist",
+    });
+    fakeFs.set(tokenFilePath, JSON.stringify(fileTokens));
+
+    // First load — keychain missing, file used.
+    const user = await getCurrentUser();
+    expect(user).not.toBeNull();
+    expect(fakeFs.has(tokenFilePath)).toBe(true);
+
+    // Now sign out — this is the only action that must delete the file.
+    __resetCacheForTests();
+    mockSendImpl = async () => ({});
+    await signOut();
+    expect(fakeFs.has(tokenFilePath)).toBe(false);
   });
 
   it("signOut deletes the shared token file", async () => {

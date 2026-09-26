@@ -8,7 +8,7 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount, type Component, type ComponentProps } from "svelte";
+  import { onDestroy, onMount, type Component, type ComponentProps } from "svelte";
   import {
     createSyncPlatformAdapter,
     resolveHostPlatform,
@@ -133,6 +133,8 @@
     updateWakeSeq?: number;
     /** Native host app-version refresh used by DesktopApp's Updates pane. */
     refreshAppVersion?: () => Promise<string>;
+    /** Live interface version when a UI hot update is serving. */
+    uiVersion?: string | null;
     /** Native package-operation stream for Library → Installed. */
     packagesEvents?: PackagesEvents | null;
     /** Native notification wake edge forwarded by a desktop host. */
@@ -216,6 +218,7 @@
     version: hostVersion,
     updateWakeSeq,
     refreshAppVersion,
+    uiVersion = null,
     packagesEvents,
     notificationWakeSeq: hostNotificationWakeSeq,
     bootTimeoutMs,
@@ -250,12 +253,20 @@
   // authenticated command bridge because a static build has no /api routes.
   const workFetch: HqProFetch = hostFetch ?? hqProFetch;
   const adapter: PlatformAdapter = runtime === "desktop"
-    ? createSyncPlatformAdapter({ invoke: nativeInvoke })
+    ? createSyncPlatformAdapter({
+        invoke: nativeInvoke,
+        // The owning Sync host already primes and refreshes this process-wide
+        // gate. Only standalone desktop WorkShell instances own this prime.
+        primeMirrorQuarantineGate: !hostOwnsNativeSession,
+      })
     : new WebPlatformAdapter({
         baseUrl: resolveHqProApiUrl(),
         fetch: workFetch,
         onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       });
+  onDestroy(() => {
+    void adapter.dispose?.();
+  });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(nativeInvoke) : null;
 
@@ -571,6 +582,25 @@
   function retryRoster(): void {
     rosterRefresher.cancel();
     rosterStatus = "loading";
+    void rosterRefresher.refresh();
+  }
+
+  /**
+   * `ensureCompanyHomeChannel` resolved a home channel for a roster row that
+   * didn't have one yet (US "Amass has no homeChannelId until restart" heal).
+   * The shell already applies the id to its own patched copy immediately
+   * (`DesktopApp.effectiveCompanies`) for correct chrome this session; patch
+   * this roster too so a re-render from `companies` (e.g. after a sort) still
+   * carries it, then refresh from the server in the background so the
+   * persisted value matches instead of drifting until the next full reload.
+   */
+  function handleHomeChannelResolved(companyUid: string, homeChannelId: string): void {
+    const uid = companyUid.trim();
+    const id = homeChannelId.trim();
+    if (!uid || !id) return;
+    companies = companies.map((c) =>
+      !c.homeChannelId && (c.cloudUid ?? "").trim() === uid ? { ...c, homeChannelId: id } : c,
+    );
     void rosterRefresher.refresh();
   }
 
@@ -912,6 +942,7 @@
       onopenurl={hostOpenUrl ?? openUrl}
       {wakes}
       {companies}
+      onhomechannelresolved={handleHomeChannelResolved}
       {syncEvents}
       onsignin={startReauth}
       {rosterStatus}
@@ -936,6 +967,7 @@
       {packagesEvents}
       {updateWakeSeq}
       {refreshAppVersion}
+      {uiVersion}
       {onactivethreadchange}
       {extraPages}
       {rowExtrasLoading}

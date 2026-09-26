@@ -595,12 +595,12 @@ function newerIso(
 export interface NormalizeOptions {
   pinnedIds?: ReadonlySet<string> | readonly string[];
   /**
-   * companyUid → slug, used only as the desktop fallback for resolving
-   * `isCompanyHome` on channels the server hasn't yet tagged (see
-   * `isCompanyHomeChannel()` in channels.ts). Absent/empty is safe — rows
+   * companyUid → homeChannelId, from the roster (`Workspace.homeChannelId`).
+   * Used to resolve `isCompanyHome` by channel id — see
+   * `isCompanyHomeChannel()` in channels.ts. Absent/empty is safe — rows
    * simply carry whatever `channel.isCompanyHome` the server sent (or none).
    */
-  companySlugByUid?: ReadonlyMap<string, string> | Record<string, string>;
+  homeChannelIdByUid?: ReadonlyMap<string, string> | Record<string, string>;
   /** Local DM activity dots (personUid set). Absent-safe. */
   dmDots?: ReadonlySet<string> | readonly string[];
   /** Recently opened pair threads — stay conversations after mark-read. */
@@ -648,15 +648,15 @@ export function normalizeChannel(
     parseActivityMs(channel.lastMessageAt),
   );
   const unread = Math.max(0, channel.unread ?? 0);
-  const companySlug = channel.companyUid
-    ? options.companySlugByUid instanceof Map
-      ? options.companySlugByUid.get(channel.companyUid)
-      : (options.companySlugByUid as Record<string, string> | undefined)?.[
+  const homeChannelId = channel.companyUid
+    ? options.homeChannelIdByUid instanceof Map
+      ? options.homeChannelIdByUid.get(channel.companyUid)
+      : (options.homeChannelIdByUid as Record<string, string> | undefined)?.[
           channel.companyUid
         ]
     : undefined;
   const isCompanyHome =
-    channel.scope === "company" ? isCompanyHomeChannel(channel, companySlug) : false;
+    channel.scope === "company" ? isCompanyHomeChannel(channel, homeChannelId) : false;
 
   return {
     id,
@@ -1659,12 +1659,16 @@ export function findCompanyHomeRow(
 export interface CompanySectionRow {
   companyUid: string;
   label: string;
+  /** Company slug, for log lines (`[companies] open company=<slug> …`). */
+  slug?: string | null;
   iconUrl?: string | null;
-  /** The company's home-channel row, when one exists yet. Absent when the
-   * company has no home channel (new/legacy company still provisioning) —
-   * the section shows it disabled with a reason rather than hiding it, so a
-   * newly-joined company never silently disappears. */
-  homeRow: ConversationRow | null;
+  /** The company's home-channel id, straight from the roster
+   * (`Workspace.homeChannelId`) — clients open it directly by id, no
+   * client-side row lookup. `null` when the company has no home channel yet
+   * (new/legacy company still provisioning); the section shows it disabled
+   * with a reason rather than hiding it, so a newly-joined company never
+   * silently disappears. */
+  homeChannelId: string | null;
 }
 
 /** Default number of companies the "Companies" section shows when the user
@@ -1776,18 +1780,19 @@ export function migratePinnedCompanySelection(
  * - `pinnedCompanyUids` absent/empty (`null` or `[]`, no true pins yet) →
  *   show the `limit` most active companies, ranked by
  *   `rankCompaniesByActivity`.
- * - A company with no resolvable home-channel row is still included (with
- *   `homeRow: null`) so the section can render it disabled with a reason,
- *   per the brief's "hide or show disabled" choice — this implementation
- *   shows disabled so the user isn't left wondering where a company went (the
- *   caller is expected to resolve it on demand, see `findCompanyHomeRow`
- *   callers / on-demand channel fetch in ChatSidebar.svelte).
+ * - A company with no `homeChannelId` yet is still included (with
+ *   `homeChannelId: null`) so the section can render it disabled with a
+ *   reason, per the brief's "hide or show disabled" choice — this
+ *   implementation shows disabled so the user isn't left wondering where a
+ *   company went.
  */
 export function resolveCompanySectionRows(
   companies: ReadonlyArray<{
     companyUid: string;
     label: string;
+    slug?: string | null;
     iconUrl?: string | null;
+    homeChannelId?: string | null;
   }>,
   rows: ReadonlyArray<ConversationRow>,
   pinnedCompanyUids: readonly string[] | null,
@@ -1804,28 +1809,10 @@ export function resolveCompanySectionRows(
   return chosen.map((c) => ({
     companyUid: c.companyUid,
     label: c.label,
+    slug: c.slug ?? null,
     iconUrl: c.iconUrl ?? null,
-    homeRow: findCompanyHomeRow(rows, c.companyUid),
+    homeChannelId: (c.homeChannelId ?? "").trim() || null,
   }));
-}
-
-/**
- * Merge on-demand-resolved channels (fetched for one company whose home
- * channel was missing from the directory feed, via the SAME `listChannels`
- * lane the owner-only "company projects" view already uses — see
- * `ChatSidebar.svelte`'s `companyProjectsSeq` effect) into the sidebar's
- * known channel list. Resolved rows are authoritative for their id (a fresh
- * fetch beats a stale/absent directory entry); anything already known and not
- * re-fetched is left untouched.
- */
-export function mergeResolvedCompanyChannels(
-  existing: ReadonlyArray<Channel>,
-  resolved: ReadonlyArray<Channel>,
-): Channel[] {
-  if (resolved.length === 0) return existing.slice();
-  const byId = new Map(existing.map((c) => [c.channelId, c]));
-  for (const channel of resolved) byId.set(channel.channelId, channel);
-  return [...byId.values()];
 }
 
 /**

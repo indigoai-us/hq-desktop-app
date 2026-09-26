@@ -262,6 +262,7 @@ mod tests {
             invited_at: None,
             branding_enabled: false,
             brand: None,
+            home_channel_id: None,
         }
     }
 

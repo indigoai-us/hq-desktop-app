@@ -34,6 +34,8 @@ import {
   CLAUDE_PROVIDER_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
+  MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+  type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
@@ -50,6 +52,11 @@ export type SyncInvokeFn = (
 
 export interface SyncPlatformAdapterConfig {
   invoke: SyncInvokeFn;
+  /** Resolve the mirror rollout gate as the native shell boots, before its
+   * launch-started daemon reaches the first AllComplete mirror callback. */
+  primeMirrorQuarantineGate?: boolean;
+  /** Test seam for deterministic flag-refresh and startup-race coverage. */
+  createFlagClient?: FeatureFlagGateOptions["createClient"];
   /**
    * Tests inject a stub that throws if called. Production REST goes through
    * invoke("hq_pro_fetch") so Cognito stays in Rust.
@@ -154,11 +161,18 @@ export function createSyncPlatformAdapter(
   void config.fetch;
   const invokeFn = config.invoke;
   const requestPolicy = config.requestPolicy ?? {};
+  let mirrorQuarantineRevision = 0;
+  let mirrorQuarantineGenerationPromise: AdapterPromise<number> | null = null;
+  let mirrorQuarantineDisposed = false;
+  let mirrorQuarantineDisposePromise: Promise<void> | null = null;
+  let mirrorQuarantineWindowLifecycleInstalled = false;
+  let unsubscribeMirrorQuarantineFlag: (() => void) | null = null;
   const flags = createFeatureFlagGate({
     // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
     endpoint: '',
     getToken: () => '',
     fetch: createHqProFlagFetch(invokeFn),
+    createClient: config.createFlagClient,
   });
 
   async function call<T>(
@@ -170,6 +184,89 @@ export function createSyncPlatformAdapter(
     } catch (err) {
       return invokeError(err);
     }
+  }
+
+  function mirrorQuarantineGenerationResult(): AdapterPromise<number> {
+    if (!mirrorQuarantineGenerationPromise) {
+      if (typeof window !== 'undefined' && !mirrorQuarantineWindowLifecycleInstalled) {
+        window.addEventListener('beforeunload', onMirrorQuarantineWindowEnd);
+        window.addEventListener('pagehide', onMirrorQuarantineWindowEnd);
+        mirrorQuarantineWindowLifecycleInstalled = true;
+      }
+      mirrorQuarantineGenerationPromise = call<number>(
+        'register_mirror_quarantine_move_not_deletion_generation',
+      );
+    }
+    return mirrorQuarantineGenerationPromise;
+  }
+
+  function disposeMirrorQuarantineGate(): Promise<void> {
+    if (mirrorQuarantineDisposePromise) return mirrorQuarantineDisposePromise;
+    mirrorQuarantineDisposed = true;
+    unsubscribeMirrorQuarantineFlag?.();
+    unsubscribeMirrorQuarantineFlag = null;
+    if (typeof window !== 'undefined' && mirrorQuarantineWindowLifecycleInstalled) {
+      window.removeEventListener('beforeunload', onMirrorQuarantineWindowEnd);
+      window.removeEventListener('pagehide', onMirrorQuarantineWindowEnd);
+      mirrorQuarantineWindowLifecycleInstalled = false;
+    }
+    mirrorQuarantineDisposePromise = (async () => {
+      if (!mirrorQuarantineGenerationPromise) return;
+      const generation = await mirrorQuarantineGenerationPromise;
+      if (!generation.ok) {
+        console.warn(
+          'Could not unregister mirror quarantine generation',
+          generation.message,
+        );
+        return;
+      }
+      const unregistered = await call<void>(
+        'unregister_mirror_quarantine_move_not_deletion_generation',
+        { generation: generation.value },
+      );
+      if (!unregistered.ok) {
+        console.warn(
+          'Could not unregister mirror quarantine generation',
+          unregistered.message,
+        );
+      }
+    })();
+    return mirrorQuarantineDisposePromise;
+  }
+
+  function onMirrorQuarantineWindowEnd(): void {
+    void disposeMirrorQuarantineGate();
+  }
+
+  async function updateMirrorQuarantineFlag(): AdapterPromise<void> {
+    if (mirrorQuarantineDisposed) return ok(undefined);
+    const revision = ++mirrorQuarantineRevision;
+    const configured = await flags.resolve(
+      MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+      () => Promise.resolve(ok(false)),
+    );
+    if (mirrorQuarantineDisposed) return ok(undefined);
+    const generation = await mirrorQuarantineGenerationResult();
+    if (!generation.ok) return generation;
+    if (mirrorQuarantineDisposed) return ok(undefined);
+    // Revisions order refreshes within the Rust-issued identity for this live
+    // webview. Rust combines all live webview snapshots with logical AND.
+    return call('set_mirror_quarantine_move_not_deletion', {
+      enabled: configured.ok && configured.value,
+      generation: generation.value,
+      revision,
+    });
+  }
+
+  if (config.primeMirrorQuarantineGate) {
+    unsubscribeMirrorQuarantineFlag = flags.subscribe(
+      MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+      () => Promise.resolve(ok(false)),
+      () => {
+        void updateMirrorQuarantineFlag();
+      },
+    );
+    void updateMirrorQuarantineFlag();
   }
 
   async function getVersions(): AdapterPromise<VersionInfo> {
@@ -328,6 +425,7 @@ export function createSyncPlatformAdapter(
     kind: 'desktop',
     capabilities: TAURI_CAPABILITIES,
     calls,
+    dispose: disposeMirrorQuarantineGate,
     isAvailable: (cap: Capability): boolean => TAURI_CAPABILITIES[cap],
 
     identity: {
@@ -922,6 +1020,12 @@ export function createSyncPlatformAdapter(
       getSummary: (slug) => call('get_company_summary', { slug }),
       getBoard: (slug) => call('get_company_board', { slug }),
       getActivity: (slug) => call('get_company_activity', { slug }),
+      ensureHomeChannel: async (companyUid) => {
+        const res = await call<string>('ensure_company_home_channel', {
+          companyUid,
+        });
+        return res.ok ? ok({ homeChannelId: res.value }) : res;
+      },
     },
 
     projects: {
@@ -1042,11 +1146,18 @@ export function createSyncPlatformAdapter(
     },
 
     sync: {
-      startDaemon: () => call('start_daemon'),
+      startDaemon: async () => {
+        const configured = await updateMirrorQuarantineFlag();
+        if (!configured.ok) return configured;
+        return call('start_daemon');
+      },
       stopDaemon: () => call('stop_daemon'),
       daemonStatus: () => call('daemon_status'),
-      startSync: (slug) =>
-        call('start_sync', slug ? { companySlug: slug } : undefined),
+      startSync: async (slug) => {
+        const configured = await updateMirrorQuarantineFlag();
+        if (!configured.ok) return configured;
+        return call('start_sync', slug ? { companySlug: slug } : undefined);
+      },
       cancelSync: () => call('cancel_sync'),
       getSyncStatus: () => call('get_sync_status'),
       getActivityLog: () => call('get_activity_log'),
@@ -1125,6 +1236,7 @@ export function createSyncPlatformAdapter(
         call('notification_request_permission'),
       openNotificationSettings: () => call('notification_open_settings'),
       showOsNotification: async () => HOST_OWNED,
+      logToFile: (tag, message) => call('frontend_log', { tag, message }),
     },
 
     updates: {
@@ -1153,6 +1265,8 @@ export function createSyncPlatformAdapter(
         return call('set_hq_cli_update_dismissed', { version });
       },
       availableChannels: () => call('available_channels'),
+      queryUpdateGate: () => call('update_gate_status'),
+      installPendingUpdate: () => call('update_install_pending'),
     },
 
     packages: {

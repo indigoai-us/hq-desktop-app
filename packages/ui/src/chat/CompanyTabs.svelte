@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * Company channel header: optional in-app tabs (Office) plus a gear that
-   * opens the company in the HQ console. Team and Settings are not desktop
+   * Company channel header: the Chat | Projects tabs plus a gear that opens
+   * the company in the HQ console. Team, Settings, and Atlas are not desktop
    * tabs.
    */
   import { companyConsoleUrl } from "../common/hq-console.js";
@@ -11,7 +11,6 @@
   } from "./tabs/tab-model.js";
 
   const HIDDEN_TABS = new Set<CompanyChannelTabId>([
-    "chat",
     "team",
     "settings",
     "atlas",
@@ -80,7 +79,7 @@
   >
     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
       <path
-        d="M6.4 1.75h3.2l.45 1.55a4.7 4.7 0 0 1 1.15.66l1.55-.45 1.6 2.77-1.1 1.15c.08.4.12.8.12 1.22s-.04.82-.12 1.22l1.1 1.15-1.6 2.77-1.55-.45a4.7 4.7 0 0 1-1.15.66L9.6 14.25H6.4l-.45-1.55a4.7 4.7 0 0 1-1.15-.66l-1.55.45-1.6-2.77 1.1-1.15A5.3 5.3 0 0 1 2.63 8c0-.42.04-.82.12 1.22l-1.1-1.15 1.6-2.77 1.55.45c.35-.27.74-.5 1.15-.66L6.4 1.75Z"
+        d="M6.4 1.75h3.2l.45 1.55a4.7 4.7 0 0 1 1.15.66l1.55-.45 1.6 2.77-1.1 1.15c.08.4.12.8.12 1.22s-.04.82-.12 1.22l1.1 1.15-1.6 2.77-1.55-.45a4.7 4.7 0 0 1-1.15.66L9.6 14.25H6.4l-.45-1.55a4.7 4.7 0 0 1-1.15-.66l-1.55.45-1.6-2.77 1.1-1.15A5.3 5.3 0 0 1 2.63 8c0-.42.04-.82.12-1.22l-1.1-1.15 1.6-2.77 1.55.45c.35-.27.74-.5 1.15-.66L6.4 1.75Z"
         stroke="currentColor"
         stroke-width="1.2"
         stroke-linejoin="round"

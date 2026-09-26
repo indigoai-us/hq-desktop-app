@@ -138,8 +138,14 @@ function sidebarApi(): ChatSidebarApi {
     listChannels: async () => ({ channels: [] }),
     markDmThreadRead: async () => {},
     markChannelRead: async () => {},
+    sendChannelMessage: async () => {},
+    sendDm: async () => {},
     searchMessages: async () => ({ results: [] }),
-  } as unknown as ChatSidebarApi;
+    logToFile: async () => {},
+    ensureCompanyHomeChannel: async (companyUid: string) => ({
+      homeChannelId: `chn_home_${companyUid}`,
+    }),
+  };
 }
 
 function adapter(): PlatformAdapter {

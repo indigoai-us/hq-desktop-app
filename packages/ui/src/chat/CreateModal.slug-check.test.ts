@@ -36,6 +36,8 @@ function stubApi(): ChatSidebarApi {
     createChannel: async () => {
       throw new Error("not used");
     },
+    logToFile: async () => {},
+    ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
   } as unknown as ChatSidebarApi;
 }
 

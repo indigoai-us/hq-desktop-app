@@ -360,7 +360,7 @@ pub async fn open_meeting_permissions_window(app: tauri::AppHandle) -> Result<()
 
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut builder =
-        tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::App("index.html".into()))
+        tauri::WebviewWindowBuilder::new(&app, LABEL, crate::ui_protocol::ui_url("index.html"))
             .title("Meeting Permissions")
             // Sized so all four permission rows + footer fit without the inner
             // scrollbar appearing (`.perm-list` overflow:auto). Width gives the

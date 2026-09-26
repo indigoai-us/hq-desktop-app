@@ -70,7 +70,10 @@ describe('macOS custom-protocol frontend asset cache', () => {
     );
     expect(eviction).toBeGreaterThanOrEqual(0);
     expect(main).toMatch(
-      /webview_asset_cache::evict_frontend_asset_cache_once\(\s*app\.handle\(\),\s*env!\("APP_VERSION"\),\s*move \|\|/,
+      // Keyed on the runtime (stamped) version: with a prebuilt shell a
+      // UI-only release keeps the same binary, so the compile-time
+      // APP_VERSION would never change and the stale cache would survive.
+      /webview_asset_cache::evict_frontend_asset_cache_once\(\s*app\.handle\(\),\s*app_version::current\(\),\s*move \|\|/,
     );
   });
 

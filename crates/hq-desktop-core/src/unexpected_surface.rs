@@ -1,3 +1,7 @@
+use crate::cognito::StoredTokenPresence;
+use crate::lifecycle::{HqRootProbe, LifecycleInputs};
+use crate::paths::ResolvedProgramKind;
+
 /// Returns true when the machine shows evidence it was already set up and
 /// signed in, making a sign-in or onboarding surface unexpected.
 pub fn prior_setup_detected(
@@ -30,6 +34,202 @@ pub struct UnexpectedSurfacePayload {
     pub seconds_since_start: u64,
     pub from_updater_restart: bool,
     pub app_version: &'static str,
+}
+
+/// Normalize token-store observations before they become Sentry tag values.
+/// The renderer reports only this bounded set; unknown inputs stay unknown.
+pub fn token_presence_tag(presence: &str) -> &'static str {
+    match presence {
+        "present" => "present",
+        "absent" => "absent",
+        _ => "unknown",
+    }
+}
+
+/// Preserve the backend's tri-state token-store read result in diagnostics.
+pub fn stored_token_presence_label(presence: StoredTokenPresence) -> &'static str {
+    match presence {
+        StoredTokenPresence::Present => "present",
+        StoredTokenPresence::Absent => "absent",
+        StoredTokenPresence::Unreadable => "unknown",
+    }
+}
+
+/// Summarize the auth verdict and token-store observation with bounded labels.
+pub fn session_restore_state_tag(authenticated: bool, token_presence: &str) -> &'static str {
+    match (authenticated, token_presence_tag(token_presence)) {
+        (true, "present") => "authenticated_with_token",
+        (true, "absent") => "authenticated_without_token",
+        (true, _) => "authenticated_token_unknown",
+        (false, "present") => "unauthenticated_with_token",
+        (false, "absent") => "signed_out",
+        (false, _) => "unauthenticated_token_unknown",
+    }
+}
+
+/// Bucket elapsed launch time so the tag has a fixed, low-cardinality value set.
+pub fn ms_since_launch_tag(elapsed_ms: Option<u128>) -> &'static str {
+    match elapsed_ms {
+        Some(0..=999) => "0-999ms",
+        Some(1_000..=4_999) => "1000-4999ms",
+        Some(5_000..=29_999) => "5000-29999ms",
+        Some(30_000..=119_999) => "30000-119999ms",
+        Some(120_000..) => "120000ms+",
+        None => "unknown",
+    }
+}
+
+/// Restrict prior-surface tags to the UI's known startup destinations.
+pub fn prior_surface_tag(surface: &str) -> &'static str {
+    match surface {
+        "loading" => "loading",
+        "onboarding" => "onboarding",
+        "signed-in" => "signed-in",
+        "sign-in" => "sign-in",
+        _ => "unknown",
+    }
+}
+
+/// Cognito startup restores from ~/.hq/cognito-tokens.json, not macOS Keychain.
+pub const KEYCHAIN_STATUS_TAG: &str = "not_used_token_file";
+
+/// Startup-only observations needed to explain the lifecycle verdict without
+/// attaching filesystem paths or other user data to the Sentry event.
+#[derive(Debug, Clone, Copy)]
+pub struct StartupLifecycleInputs {
+    pub inputs: LifecycleInputs,
+    pub hq_root_probe: Option<HqRootProbe>,
+    pub hq_program_kind: Option<ResolvedProgramKind>,
+    pub node_program_kind: Option<ResolvedProgramKind>,
+    pub require_local_toolchain_demoted: bool,
+}
+
+fn bool_tag(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+fn hq_root_invalid_reason_tag(probe: Option<HqRootProbe>) -> &'static str {
+    match probe {
+        Some(HqRootProbe::Valid) => "none",
+        Some(HqRootProbe::Missing) => "missing",
+        Some(HqRootProbe::Unreadable) => "unreadable",
+        None => "unobserved",
+    }
+}
+
+fn program_resolved_tag(kind: Option<ResolvedProgramKind>) -> &'static str {
+    match kind {
+        Some(ResolvedProgramKind::NotResolved) => "false",
+        Some(_) => "true",
+        None => "not_observed",
+    }
+}
+
+fn program_kind_tag(kind: Option<ResolvedProgramKind>) -> &'static str {
+    match kind {
+        Some(ResolvedProgramKind::Exe) => "exe",
+        Some(ResolvedProgramKind::CmdOrBat) => "cmd_or_bat",
+        Some(ResolvedProgramKind::Extensionless) => "extensionless",
+        Some(ResolvedProgramKind::OtherExtension) => "other_extension",
+        Some(ResolvedProgramKind::NotResolved) => "not_resolved",
+        None => "not_observed",
+    }
+}
+
+/// The low-cardinality Sentry tags for an unexpected startup surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupDiagnosticTags {
+    pub session_restore_state: &'static str,
+    pub token_present: &'static str,
+    pub keychain_status: &'static str,
+    pub ms_since_launch: &'static str,
+    pub prior_surface: &'static str,
+    pub install_completed: &'static str,
+    pub first_run_completed: &'static str,
+    pub had_machine_id: &'static str,
+    pub config_valid: &'static str,
+    pub hq_root_valid: &'static str,
+    pub hq_root_invalid_reason: &'static str,
+    pub has_auth: &'static str,
+    pub install_in_progress: &'static str,
+    pub consent_answered: &'static str,
+    pub evidence_unreadable: &'static str,
+    pub hq_resolved: &'static str,
+    pub hq_resolved_program_kind: &'static str,
+    pub node_resolved: &'static str,
+    pub node_resolved_program_kind: &'static str,
+    pub require_local_toolchain_demoted: &'static str,
+}
+
+impl StartupDiagnosticTags {
+    /// Keep the Sentry keys and values together so tests cover the reporter contract.
+    pub fn as_pairs(self) -> [(&'static str, &'static str); 20] {
+        [
+            ("session_restore_state", self.session_restore_state),
+            ("token_present", self.token_present),
+            ("keychain_status", self.keychain_status),
+            ("ms_since_launch", self.ms_since_launch),
+            ("prior_surface", self.prior_surface),
+            ("install_completed", self.install_completed),
+            ("first_run_completed", self.first_run_completed),
+            ("had_machine_id", self.had_machine_id),
+            ("config_valid", self.config_valid),
+            ("hq_root_valid", self.hq_root_valid),
+            ("hq_root_invalid_reason", self.hq_root_invalid_reason),
+            ("has_auth", self.has_auth),
+            ("install_in_progress", self.install_in_progress),
+            ("consent_answered", self.consent_answered),
+            ("evidence_unreadable", self.evidence_unreadable),
+            ("hq_resolved", self.hq_resolved),
+            ("hq_resolved_program_kind", self.hq_resolved_program_kind),
+            ("node_resolved", self.node_resolved),
+            (
+                "node_resolved_program_kind",
+                self.node_resolved_program_kind,
+            ),
+            (
+                "require_local_toolchain_demoted",
+                self.require_local_toolchain_demoted,
+            ),
+        ]
+    }
+}
+
+/// Build a bounded diagnostic snapshot for the unexpected-surface reporter.
+pub fn startup_diagnostic_tags(
+    authenticated: bool,
+    token_presence: &str,
+    elapsed_ms: Option<u128>,
+    prior_surface: &str,
+    lifecycle: StartupLifecycleInputs,
+) -> StartupDiagnosticTags {
+    let inputs = lifecycle.inputs;
+    StartupDiagnosticTags {
+        session_restore_state: session_restore_state_tag(authenticated, token_presence),
+        token_present: token_presence_tag(token_presence),
+        keychain_status: KEYCHAIN_STATUS_TAG,
+        ms_since_launch: ms_since_launch_tag(elapsed_ms),
+        prior_surface: prior_surface_tag(prior_surface),
+        install_completed: bool_tag(inputs.install_completed),
+        first_run_completed: bool_tag(inputs.first_run_completed),
+        had_machine_id: bool_tag(inputs.had_machine_id),
+        config_valid: bool_tag(inputs.config_valid),
+        hq_root_valid: bool_tag(inputs.hq_root_valid),
+        hq_root_invalid_reason: hq_root_invalid_reason_tag(lifecycle.hq_root_probe),
+        has_auth: bool_tag(inputs.has_auth),
+        install_in_progress: bool_tag(inputs.install_in_progress),
+        consent_answered: bool_tag(inputs.consent_answered),
+        evidence_unreadable: bool_tag(inputs.evidence_unreadable),
+        hq_resolved: program_resolved_tag(lifecycle.hq_program_kind),
+        hq_resolved_program_kind: program_kind_tag(lifecycle.hq_program_kind),
+        node_resolved: program_resolved_tag(lifecycle.node_program_kind),
+        node_resolved_program_kind: program_kind_tag(lifecycle.node_program_kind),
+        require_local_toolchain_demoted: bool_tag(lifecycle.require_local_toolchain_demoted),
+    }
 }
 
 /// Replace the home directory in a path string with `~` so usernames are
@@ -187,5 +387,141 @@ mod tests {
             p.first_run_completed,
             p.token_file_exists,
         ));
+    }
+
+    #[test]
+    fn unreadable_token_store_stays_unknown_in_startup_diagnostics() {
+        assert_eq!(
+            stored_token_presence_label(StoredTokenPresence::Present),
+            "present"
+        );
+        assert_eq!(
+            stored_token_presence_label(StoredTokenPresence::Absent),
+            "absent"
+        );
+        assert_eq!(
+            stored_token_presence_label(StoredTokenPresence::Unreadable),
+            "unknown"
+        );
+        assert_eq!(
+            session_restore_state_tag(
+                false,
+                stored_token_presence_label(StoredTokenPresence::Unreadable),
+            ),
+            "unauthenticated_token_unknown"
+        );
+    }
+
+    #[test]
+    fn startup_diagnostic_tags_are_bounded_and_explain_restore_state() {
+        let tags = startup_diagnostic_tags(
+            false,
+            "present",
+            Some(5_000),
+            "loading",
+            StartupLifecycleInputs {
+                inputs: LifecycleInputs {
+                    install_completed: true,
+                    first_run_completed: true,
+                    had_machine_id: true,
+                    config_valid: false,
+                    hq_root_valid: true,
+                    has_auth: true,
+                    install_in_progress: false,
+                    consent_answered: true,
+                    evidence_unreadable: false,
+                },
+                hq_root_probe: Some(HqRootProbe::Valid),
+                hq_program_kind: Some(ResolvedProgramKind::Exe),
+                node_program_kind: Some(ResolvedProgramKind::Exe),
+                require_local_toolchain_demoted: false,
+            },
+        );
+        assert!(
+            tags.as_pairs()
+                .iter()
+                .any(|(key, _)| *key == "hq_root_valid"),
+            "the existing unexpected-surface event must tag the lifecycle classifier inputs"
+        );
+        assert_eq!(
+            tags.as_pairs(),
+            [
+                ("session_restore_state", "unauthenticated_with_token"),
+                ("token_present", "present"),
+                ("keychain_status", "not_used_token_file"),
+                ("ms_since_launch", "5000-29999ms"),
+                ("prior_surface", "loading"),
+                ("install_completed", "true"),
+                ("first_run_completed", "true"),
+                ("had_machine_id", "true"),
+                ("config_valid", "false"),
+                ("hq_root_valid", "true"),
+                ("hq_root_invalid_reason", "none"),
+                ("has_auth", "true"),
+                ("install_in_progress", "false"),
+                ("consent_answered", "true"),
+                ("evidence_unreadable", "false"),
+                ("hq_resolved", "true"),
+                ("hq_resolved_program_kind", "exe"),
+                ("node_resolved", "true"),
+                ("node_resolved_program_kind", "exe"),
+                ("require_local_toolchain_demoted", "false"),
+            ]
+        );
+        assert_eq!(token_presence_tag("permission-denied"), "unknown");
+        assert_eq!(session_restore_state_tag(false, "absent"), "signed_out");
+        assert_eq!(
+            session_restore_state_tag(true, "unknown"),
+            "authenticated_token_unknown"
+        );
+        assert_eq!(ms_since_launch_tag(Some(0)), "0-999ms");
+        assert_eq!(ms_since_launch_tag(Some(999)), "0-999ms");
+        assert_eq!(ms_since_launch_tag(Some(1_000)), "1000-4999ms");
+        assert_eq!(ms_since_launch_tag(Some(4_999)), "1000-4999ms");
+        assert_eq!(ms_since_launch_tag(Some(5_000)), "5000-29999ms");
+        assert_eq!(ms_since_launch_tag(Some(29_999)), "5000-29999ms");
+        assert_eq!(ms_since_launch_tag(Some(30_000)), "30000-119999ms");
+        assert_eq!(ms_since_launch_tag(Some(119_999)), "30000-119999ms");
+        assert_eq!(ms_since_launch_tag(Some(120_000)), "120000ms+");
+        assert_eq!(ms_since_launch_tag(None), "unknown");
+        assert_eq!(prior_surface_tag("loading"), "loading");
+        assert_eq!(prior_surface_tag("onboarding"), "onboarding");
+        assert_eq!(prior_surface_tag("arbitrary-user-data"), "unknown");
+        assert_eq!(KEYCHAIN_STATUS_TAG, "not_used_token_file");
+    }
+
+    #[test]
+    fn lifecycle_tags_report_missing_tools_and_unobserved_platforms_truthfully() {
+        let tags = startup_diagnostic_tags(
+            true,
+            "present",
+            Some(1),
+            "loading",
+            StartupLifecycleInputs {
+                inputs: LifecycleInputs {
+                    install_completed: true,
+                    first_run_completed: true,
+                    had_machine_id: true,
+                    config_valid: true,
+                    hq_root_valid: false,
+                    has_auth: true,
+                    install_in_progress: false,
+                    consent_answered: true,
+                    evidence_unreadable: false,
+                },
+                hq_root_probe: Some(HqRootProbe::Missing),
+                hq_program_kind: Some(ResolvedProgramKind::NotResolved),
+                node_program_kind: None,
+                require_local_toolchain_demoted: true,
+            },
+        );
+
+        let pairs = tags.as_pairs();
+        assert!(pairs.contains(&("hq_root_invalid_reason", "missing")));
+        assert!(pairs.contains(&("hq_resolved", "false")));
+        assert!(pairs.contains(&("hq_resolved_program_kind", "not_resolved")));
+        assert!(pairs.contains(&("node_resolved", "not_observed")));
+        assert!(pairs.contains(&("node_resolved_program_kind", "not_observed")));
+        assert!(pairs.contains(&("require_local_toolchain_demoted", "true")));
     }
 }

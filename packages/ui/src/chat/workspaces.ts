@@ -48,6 +48,13 @@ export interface Workspace {
    * logos only. Absent → surfaces draw the building glyph.
    */
   iconUrl?: string | null;
+  /**
+   * The company's single home-channel id (`chn_*`), set by hq-pro at company
+   * genesis. Clients open it directly — no client-side resolution by name or
+   * scope. `null`/absent for the personal workspace and while the backend
+   * rolls this field out.
+   */
+  homeChannelId?: string | null;
 }
 
 export function isWorkspaceSyncEnabled(
@@ -66,6 +73,8 @@ export interface WorkspacesResult {
   // companies/manifest.yaml we couldn't read; UI shows a soft notice and
   // workspaces fall back to folder enumeration.
   manifestError: string | null;
+  /** True when pending invites were skipped until the caller verifies email. */
+  emailVerificationRequired?: boolean;
 }
 
 /**

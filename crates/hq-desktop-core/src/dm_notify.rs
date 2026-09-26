@@ -251,7 +251,6 @@ pub const MENTION_FRESH_MAX_AGE: Duration = Duration::minutes(15);
 /// message if it is within this age.
 pub const MENTION_CURSOR_MISSING_MAX_AGE: Duration = Duration::minutes(10);
 
-#[derive(Default)]
 pub struct MentionWatchInner {
     pub initialized: bool,
     /// channelId → newest event_id already considered this session.
@@ -263,6 +262,23 @@ pub struct MentionWatchInner {
     pub pending_fetches: Vec<(String, String)>,
     /// True while a spawned detect task owns a fetch batch.
     pub detect_in_flight: bool,
+    /// Instant mention watching began for this session. First-fetch
+    /// candidates must have `createdAt` at or after this instant so
+    /// backlog from before the app started is never notified.
+    pub watch_started_at: DateTime<Utc>,
+}
+
+impl Default for MentionWatchInner {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            last_event_by_channel: HashMap::new(),
+            seen_message_ids: Vec::new(),
+            pending_fetches: Vec::new(),
+            detect_in_flight: false,
+            watch_started_at: Utc::now(),
+        }
+    }
 }
 
 impl MentionWatchInner {
@@ -438,7 +454,9 @@ pub fn filter_mentions_by_age<'a>(
 /// Advance the per-channel last-seen cursor.
 ///
 /// * No cursor (first fetch / after `reset_for_session`): seed at newest,
-///   deliver nothing. Unread delta is never used to pick "new" rows.
+///   and return rows whose `createdAt` is at or after `watch_started_at`.
+///   Unread delta is never used to pick "new" rows. Backlog from before
+///   mention watching began is never a candidate.
 /// * Cursor present in the page: messages strictly newer than that id.
 /// * Cursor missing from the page: advance to newest and deliver nothing,
 ///   except the newest row when its `createdAt` is within 10 minutes of `now`.
@@ -446,13 +464,17 @@ pub fn advance_mention_cursor<'a>(
     messages_newest_first: &'a [ChannelMessage],
     last_seen_event_id: Option<&str>,
     now: DateTime<Utc>,
+    watch_started_at: DateTime<Utc>,
 ) -> (Option<String>, Vec<&'a ChannelMessage>) {
     let newest = newest_event_id(messages_newest_first);
     let Some(seen) = last_seen_event_id
         .map(str::trim)
         .filter(|id| !id.is_empty())
     else {
-        return (newest, Vec::new());
+        return (
+            newest,
+            messages_at_or_after_watch_start(messages_newest_first, watch_started_at),
+        );
     };
     if cursor_in_page(messages_newest_first, seen) {
         return (
@@ -474,17 +496,33 @@ pub fn advance_mention_cursor<'a>(
     )
 }
 
+/// Rows whose `createdAt` is at or after `watch_started_at`. Unparseable
+/// timestamps are excluded.
+fn messages_at_or_after_watch_start<'a>(
+    messages_newest_first: &'a [ChannelMessage],
+    watch_started_at: DateTime<Utc>,
+) -> Vec<&'a ChannelMessage> {
+    messages_newest_first
+        .iter()
+        .filter(|message| {
+            parse_message_created_at_logged(&message.created_at, &message.event_id)
+                .is_some_and(|ts| ts >= watch_started_at)
+        })
+        .collect()
+}
+
 /// Fetch failure / timeout leaves the saved cursor untouched.
 pub fn mention_cursor_after_fetch<'a>(
     current: Option<&str>,
     fetch_succeeded: bool,
     messages_newest_first: &'a [ChannelMessage],
     now: DateTime<Utc>,
+    watch_started_at: DateTime<Utc>,
 ) -> (Option<String>, Vec<&'a ChannelMessage>) {
     if !fetch_succeeded {
         return (current.map(str::to_string), Vec::new());
     }
-    advance_mention_cursor(messages_newest_first, current, now)
+    advance_mention_cursor(messages_newest_first, current, now, watch_started_at)
 }
 
 pub fn enqueue_mention_fetches(pending: &mut Vec<(String, String)>, incoming: &[(String, String)]) {
@@ -2332,12 +2370,18 @@ mod tests {
         assert!(!is_mention_of_me(&as_sub, ME, MY_SUB));
     }
 
+    fn event_ids<'a>(messages: &'a [&ChannelMessage]) -> Vec<&'a str> {
+        messages.iter().map(|m| m.event_id.as_str()).collect()
+    }
+
     #[test]
     fn mention_cursor_first_poll_seeds_newest_without_replay() {
         let older = mk_channel_msg(&live_mention_json("evt_old", "prs_ada"));
         let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
         let page = vec![newest, older];
-        let (cursor, consider) = advance_mention_cursor(&page, None, poll_now());
+        // Watch started after these rows: backlog must not notify.
+        let watch_start = poll_now() + Duration::seconds(1);
+        let (cursor, consider) = advance_mention_cursor(&page, None, poll_now(), watch_start);
         assert_eq!(cursor.as_deref(), Some("evt_new"));
         assert!(consider.is_empty());
         assert_eq!(seed_mention_cursor(&page).as_deref(), Some("evt_new"));
@@ -2349,15 +2393,10 @@ mod tests {
         let mid = mk_channel_msg(&live_mention_json("evt_mid", "prs_ada"));
         let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
         let page = vec![newest, mid, oldest];
-        let (cursor, consider) = advance_mention_cursor(&page, Some("evt_old"), poll_now());
+        let (cursor, consider) =
+            advance_mention_cursor(&page, Some("evt_old"), poll_now(), poll_now());
         assert_eq!(cursor.as_deref(), Some("evt_new"));
-        assert_eq!(
-            consider
-                .iter()
-                .map(|m| m.event_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["evt_new", "evt_mid"]
-        );
+        assert_eq!(event_ids(&consider), vec!["evt_new", "evt_mid"]);
     }
 
     #[test]
@@ -2373,7 +2412,8 @@ mod tests {
             "2026-09-23T10:01:00Z",
         ));
         let page = vec![newest, older];
-        let (cursor, consider) = advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now());
+        let (cursor, consider) =
+            advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now(), poll_now());
         assert_eq!(cursor.as_deref(), Some("evt_new"));
         assert!(consider.is_empty());
     }
@@ -2391,30 +2431,55 @@ mod tests {
             "2026-09-23T11:50:00Z",
         ));
         let page = vec![newest, older];
-        let (cursor, consider) = advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now());
+        let (cursor, consider) =
+            advance_mention_cursor(&page, Some("evt_not_in_page"), poll_now(), poll_now());
         assert_eq!(cursor.as_deref(), Some("evt_new"));
-        assert_eq!(
-            consider
-                .iter()
-                .map(|m| m.event_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["evt_new"]
-        );
+        assert_eq!(event_ids(&consider), vec!["evt_new"]);
     }
 
     #[test]
-    fn mention_first_fetch_seeds_silently_ignoring_unread_delta() {
-        let older = mk_channel_msg(&live_mention_json("evt_old", "prs_ada"));
-        let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
-        let page = vec![newest, older];
-        let (cursor, consider) = advance_mention_cursor(&page, None, poll_now());
+    fn mention_first_fetch_delivers_mention_created_after_watch_start() {
+        let watch_start = poll_now() - Duration::minutes(2);
+        let older = mk_channel_msg(&live_mention_json_at(
+            "evt_old",
+            "prs_ada",
+            "2026-09-23T11:50:00Z",
+        ));
+        let at_start = mk_channel_msg(&live_mention_json_at(
+            "evt_at_start",
+            "prs_ada",
+            "2026-09-23T11:58:00Z",
+        ));
+        let newest = mk_channel_msg(&live_mention_json_at(
+            "evt_new",
+            "prs_ada",
+            "2026-09-23T12:00:00Z",
+        ));
+        let page = vec![newest, at_start, older];
+        let (cursor, consider) = advance_mention_cursor(&page, None, poll_now(), watch_start);
+        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        assert_eq!(event_ids(&consider), vec!["evt_new", "evt_at_start"]);
+    }
+
+    #[test]
+    fn mention_first_fetch_skips_mention_created_before_watch_start() {
+        let watch_start = poll_now();
+        let newest = mk_channel_msg(&live_mention_json_at(
+            "evt_new",
+            "prs_ada",
+            "2026-09-23T11:59:00Z",
+        ));
+        let page = vec![newest];
+        let (cursor, consider) = advance_mention_cursor(&page, None, poll_now(), watch_start);
         assert_eq!(cursor.as_deref(), Some("evt_new"));
         assert!(consider.is_empty());
     }
 
     #[test]
-    fn mention_reset_for_session_then_growth_seeds_silently() {
+    fn mention_reset_for_session_moves_watch_start_forward() {
         let mut watch = MentionWatchInner::default();
+        let early = poll_now() - Duration::hours(1);
+        watch.watch_started_at = early;
         watch
             .last_event_by_channel
             .insert("chn_eng".into(), "evt_old".into());
@@ -2422,16 +2487,26 @@ mod tests {
         watch.reset_for_session();
         assert!(watch.last_event_by_channel.is_empty());
         assert!(watch.pending_fetches.is_empty());
+        assert!(watch.watch_started_at > early);
 
-        let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
-        let page = vec![newest];
         let last_seen = watch
             .last_event_by_channel
             .get("chn_eng")
             .map(String::as_str);
-        let (cursor, consider) = advance_mention_cursor(&page, last_seen, poll_now());
-        assert_eq!(cursor.as_deref(), Some("evt_new"));
+        let before_ts = (watch.watch_started_at - Duration::seconds(1)).to_rfc3339();
+        let before = mk_channel_msg(&live_mention_json_at("evt_before", "prs_ada", &before_ts));
+        let page = vec![before];
+        let (cursor, consider) =
+            advance_mention_cursor(&page, last_seen, poll_now(), watch.watch_started_at);
+        assert_eq!(cursor.as_deref(), Some("evt_before"));
         assert!(consider.is_empty());
+
+        let after_ts = (watch.watch_started_at + Duration::seconds(1)).to_rfc3339();
+        let after = mk_channel_msg(&live_mention_json_at("evt_after", "prs_ada", &after_ts));
+        let page = vec![after];
+        let (_, consider) =
+            advance_mention_cursor(&page, last_seen, poll_now(), watch.watch_started_at);
+        assert_eq!(event_ids(&consider), vec!["evt_after"]);
     }
 
     #[test]
@@ -2452,7 +2527,8 @@ mod tests {
             "2026-09-23T11:50:00Z",
         ));
         let page = vec![fresh, stale, oldest];
-        let (_, consider) = advance_mention_cursor(&page, Some("evt_oldest"), poll_now());
+        let (_, consider) =
+            advance_mention_cursor(&page, Some("evt_oldest"), poll_now(), poll_now());
         assert_eq!(
             consider
                 .iter()
@@ -2510,11 +2586,13 @@ mod tests {
         let current = Some("evt_old");
         let newest = mk_channel_msg(&live_mention_json("evt_new", "prs_ada"));
         let page = vec![newest];
-        let (cursor, consider) = mention_cursor_after_fetch(current, false, &page, poll_now());
+        let (cursor, consider) =
+            mention_cursor_after_fetch(current, false, &page, poll_now(), poll_now());
         assert_eq!(cursor.as_deref(), Some("evt_old"));
         assert!(consider.is_empty());
 
-        let (ok_cursor, ok_consider) = mention_cursor_after_fetch(current, true, &page, poll_now());
+        let (ok_cursor, ok_consider) =
+            mention_cursor_after_fetch(current, true, &page, poll_now(), poll_now());
         assert_eq!(ok_cursor.as_deref(), Some("evt_new"));
         assert_eq!(
             ok_consider

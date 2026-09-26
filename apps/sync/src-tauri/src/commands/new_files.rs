@@ -56,7 +56,7 @@ pub async fn open_new_files_detail(app: AppHandle, files: Vec<NewFileEntry>) -> 
     let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
+        crate::ui_protocol::ui_url("index.html"),
     )
     .title("New Files")
     .inner_size(500.0, 400.0)

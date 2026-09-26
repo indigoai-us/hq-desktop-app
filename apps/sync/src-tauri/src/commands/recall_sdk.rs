@@ -63,11 +63,11 @@
 //! setup) ignores the return value; an `Err` from setup would abort the
 //! Tauri runtime and take the whole menubar app down.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::Utc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
 use crate::commands::process::{
@@ -333,10 +333,13 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
 
     let app_bg = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        // Track active recording IDs so duplicate RecordingStarted events don't
+        // double-count and so holds are released on RecordingError / process exit.
+        let mut active_recording_ids: HashSet<String> = HashSet::new();
         let result = run_process_with_stdin_impl(
             SDK_HANDLE,
             &spawn_args,
-            |event| match event {
+            move |event| match event {
                 ProcessEvent::Stdout(line) => {
                     log("recall-sdk.stdout", &line);
                     match parse_sdk_line(&line) {
@@ -402,6 +405,14 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.window_id, payload.platform
                                 ),
                             );
+                            // Acquire update hold only on the first sight of this
+                            // window_id so a duplicate RecordingStarted (SDK reconnect
+                            // or retried event) does not inflate the refcount.
+                            if active_recording_ids.insert(payload.window_id.clone()) {
+                                if let Some(holds) = app_bg.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
+                                    holds.0.acquire(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
+                                }
+                            }
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_STARTED, &payload) {
                                 log(LOG_TAG, &format!("emit recording:started failed: {e}"));
                             }
@@ -414,6 +425,12 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.window_id, payload.platform
                                 ),
                             );
+                            // Release update hold only if we were tracking this ID.
+                            if active_recording_ids.remove(&payload.window_id) {
+                                if let Some(holds) = app_bg.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
+                                    holds.0.release(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
+                                }
+                            }
                             // Clean terminal event: drop the in-flight ledger
                             // entry so the next launch has nothing to reconcile
                             // for this window. This is the canonical clear path
@@ -459,6 +476,22 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.cmd, payload.window_id, payload.message
                                 ),
                             );
+                            // Terminal error: release the update hold and clear the
+                            // reconciliation ledger so neither leaks past this event.
+                            if active_recording_ids.remove(&payload.window_id) {
+                                if let Some(holds) = app_bg.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
+                                    holds.0.release(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
+                                }
+                            }
+                            if let Err(e) = recordings_ledger::record_ended(&payload.window_id) {
+                                log(
+                                    LOG_TAG,
+                                    &format!(
+                                        "recording:error — failed to clear ledger entry for windowId={}: {e}",
+                                        payload.window_id
+                                    ),
+                                );
+                            }
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_ERROR, &payload) {
                                 log(LOG_TAG, &format!("emit recording:error failed: {e}"));
                             }
@@ -505,6 +538,19 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                     // genuinely in-flight recording is recovered by the launch
                     // reconcile instead. `success` covers a clean exit(0); the
                     // cancelled flag covers a SIGTERM'd one (non-zero/​signalled).
+                    // Drain any recording IDs that never received a terminal
+                    // event (RecordingEnded / RecordingError) before the process
+                    // died, releasing one hold per tracked ID so updates are not
+                    // blocked indefinitely after an unexpected exit.
+                    for window_id in active_recording_ids.drain() {
+                        if let Some(holds) = app_bg.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
+                            holds.0.release(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
+                            log(
+                                LOG_TAG,
+                                &format!("SDK exit: released MeetingRecording hold for windowId={window_id}"),
+                            );
+                        }
+                    }
                     let cancelled = crate::commands::process::is_cancelled(SDK_HANDLE);
                     if success || cancelled {
                         log(
@@ -1073,5 +1119,79 @@ mod start_claim_tests {
         // Releasing (any return path drops the guard) lets a later start in.
         drop(first);
         assert!(StartClaim::take("claim-win-1").is_some());
+    }
+}
+
+#[cfg(test)]
+mod recording_hold_tests {
+    use std::collections::HashSet;
+    use hq_desktop_core::update_gate::{AppFocus, HoldReason, UpdateDecision, UpdateHolds, UpdateTrigger, decide};
+
+    fn sim_recording_started(ids: &mut HashSet<String>, holds: &UpdateHolds, window_id: &str) {
+        if ids.insert(window_id.to_string()) {
+            holds.acquire(HoldReason::MeetingRecording);
+        }
+    }
+
+    fn sim_recording_ended(ids: &mut HashSet<String>, holds: &UpdateHolds, window_id: &str) {
+        if ids.remove(window_id) {
+            holds.release(HoldReason::MeetingRecording);
+        }
+    }
+
+    fn sim_recording_error(ids: &mut HashSet<String>, holds: &UpdateHolds, window_id: &str) {
+        if ids.remove(window_id) {
+            holds.release(HoldReason::MeetingRecording);
+        }
+    }
+
+    fn sim_channel_close(ids: &mut HashSet<String>, holds: &UpdateHolds) {
+        for _ in ids.drain() {
+            holds.release(HoldReason::MeetingRecording);
+        }
+    }
+
+    #[test]
+    fn duplicate_recording_started_does_not_double_count() {
+        let mut ids = HashSet::new();
+        let holds = UpdateHolds::new();
+        sim_recording_started(&mut ids, &holds, "win-1");
+        sim_recording_started(&mut ids, &holds, "win-1");
+        assert_eq!(ids.len(), 1);
+        assert_eq!(holds.active().len(), 1);
+        sim_recording_ended(&mut ids, &holds, "win-1");
+        assert_eq!(holds.active().len(), 0);
+    }
+
+    #[test]
+    fn recording_error_releases_hold() {
+        let mut ids = HashSet::new();
+        let holds = UpdateHolds::new();
+        sim_recording_started(&mut ids, &holds, "win-1");
+        assert_eq!(holds.active().len(), 1);
+        sim_recording_error(&mut ids, &holds, "win-1");
+        assert_eq!(holds.active().len(), 0, "RecordingError must release the hold");
+        let d = decide(UpdateTrigger::Manual, AppFocus::Unfocused, &holds);
+        assert_eq!(d, UpdateDecision::InstallNow);
+    }
+
+    #[test]
+    fn channel_close_drains_remaining_holds() {
+        let mut ids = HashSet::new();
+        let holds = UpdateHolds::new();
+        sim_recording_started(&mut ids, &holds, "win-1");
+        sim_recording_started(&mut ids, &holds, "win-2");
+        assert_eq!(holds.active().len(), 1);
+        sim_channel_close(&mut ids, &holds);
+        assert!(ids.is_empty(), "drain must empty the tracking set");
+        assert_eq!(holds.active().len(), 0, "channel close must release all recording holds");
+    }
+
+    #[test]
+    fn recording_ended_for_unknown_id_is_noop() {
+        let mut ids = HashSet::new();
+        let holds = UpdateHolds::new();
+        sim_recording_ended(&mut ids, &holds, "win-unknown");
+        assert_eq!(holds.active().len(), 0);
     }
 }

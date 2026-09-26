@@ -838,6 +838,40 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "setupRunId",
     "npxResolved",
     "npxResolution",
+    "errorOperation",
+    "errorIoKind",
+    "errorCode",
+];
+
+const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
+    "create_junction",
+    "copy_file_fallback",
+    "create_symlink_parent",
+    "remove_existing_link",
+    "create_symlink",
+];
+
+const SYMLINK_ERROR_IO_KIND_VALUES: &[&str] = &[
+    "not_found",
+    "permission_denied",
+    "already_exists",
+    "invalid_input",
+    "invalid_data",
+    "timed_out",
+    "unsupported",
+    "interrupted",
+    "would_block",
+    "write_zero",
+    "broken_pipe",
+    "connection_refused",
+    "connection_reset",
+    "connection_aborted",
+    "not_connected",
+    "addr_in_use",
+    "addr_not_available",
+    "out_of_memory",
+    "unexpected_eof",
+    "other",
 ];
 
 const FAILED_DEPENDENCY_VALUES: &[&str] = &[
@@ -984,6 +1018,20 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 ("npxResolution", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, NPX_RESOLUTION_VALUES),
                 )),
+                ("errorOperation", Value::String(value))
+                    if SYMLINK_ERROR_OPERATION_VALUES.contains(&value.as_str()) =>
+                {
+                    Some(Value::String(value.clone()))
+                }
+                ("errorIoKind", Value::String(value))
+                    if SYMLINK_ERROR_IO_KIND_VALUES.contains(&value.as_str()) =>
+                {
+                    Some(Value::String(value.clone()))
+                }
+                ("errorCode", Value::Number(number)) => number
+                    .as_u64()
+                    .filter(|code| *code <= 65_535)
+                    .map(|_| Value::Number(number.clone())),
                 ("detectedSourceSet", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
                 )),
@@ -1019,7 +1067,24 @@ fn build_desktop_telemetry_event(
     occurred_at: Option<String>,
     consent_basis: &str,
 ) -> RawTelemetryEvent {
+    let is_content_setup_failure = event_name == "desktop_onboarding_step"
+        && properties
+            .as_ref()
+            .and_then(Value::as_object)
+            .map(|input| {
+                input.get("step").and_then(Value::as_str) == Some("setup")
+                    && input.get("action").and_then(Value::as_str) == Some("failed")
+                    && input.get("component").and_then(Value::as_str) == Some("content")
+            })
+            .unwrap_or(false);
     let mut properties = sanitize_desktop_properties(properties);
+    if !is_content_setup_failure {
+        if let Some(properties) = properties.as_object_mut() {
+            properties.remove("errorOperation");
+            properties.remove("errorIoKind");
+            properties.remove("errorCode");
+        }
+    }
     if event_name == "desktop_onboarding_step"
         && properties["step"].as_str() == Some("connector-import")
         && properties.get("outcome").is_some()
@@ -1034,7 +1099,7 @@ fn build_desktop_telemetry_event(
         event_name.as_str(),
         "desktop_onboarding_step" | "desktop_setup_completed"
     ) {
-        properties["appVersion"] = Value::String(env!("APP_VERSION").to_string());
+        properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
     RawTelemetryEvent {
         event_name,
@@ -1204,7 +1269,7 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         session_id: None,
         properties: json!({
             "platform": crate::commands::version_gate::platform_tag(),
-            "appVersion": env!("APP_VERSION"),
+            "appVersion": crate::app_version::current(),
         }),
     }
 }
@@ -1334,7 +1399,7 @@ fn build_version_heartbeat_batch(
 }
 
 fn heartbeat_app_version() -> String {
-    env!("APP_VERSION").to_string()
+    crate::app_version::current().to_string()
 }
 
 #[cfg(test)]
@@ -1932,7 +1997,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     file_paths.dedup();
 
     let machine_id = read_machine_id();
-    let installer_version = env!("CARGO_PKG_VERSION").to_string();
+    let installer_version = crate::app_version::current().to_string();
     // Resolved once per collection run — a login-shell probe, not worth
     // repeating per batch. None (CLI absent/unresolvable) omits the field.
     let cli_version = crate::commands::hq_cli_update::get_hq_cli_version().await;
@@ -2422,6 +2487,82 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn setup_symlink_failure_diagnostics_survive_only_as_bounded_values() {
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "step": "setup",
+            "errorOperation": "remove_existing_link",
+            "errorIoKind": "permission_denied",
+            "errorCode": 5,
+            "path": "C:\\Users\\person\\HQ"
+        })));
+
+        assert_eq!(sanitized["errorOperation"], "remove_existing_link");
+        assert_eq!(sanitized["errorIoKind"], "permission_denied");
+        assert_eq!(sanitized["errorCode"], 5);
+        assert!(sanitized.get("path").is_none());
+
+        let unsafe_values = sanitize_desktop_properties(Some(json!({
+            "errorOperation": "C:\\Users\\person\\HQ",
+            "errorIoKind": "/Users/person/HQ",
+            "errorCode": 65_536
+        })));
+        assert!(unsafe_values.get("errorOperation").is_none());
+        assert!(unsafe_values.get("errorIoKind").is_none());
+        assert!(unsafe_values.get("errorCode").is_none());
+    }
+
+    #[test]
+    fn symlink_diagnostics_are_only_emitted_for_failed_content_setup_steps() {
+        let failed_content = json!({
+            "step": "setup",
+            "action": "failed",
+            "component": "content",
+            "errorOperation": "remove_existing_link",
+            "errorIoKind": "permission_denied",
+            "errorCode": 5
+        });
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(failed_content.clone()),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.properties["errorOperation"], "remove_existing_link");
+        assert_eq!(event.properties["errorIoKind"], "permission_denied");
+        assert_eq!(event.properties["errorCode"], 5);
+
+        let succeeded = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "setup",
+                "action": "completed",
+                "component": "content",
+                "errorOperation": "remove_existing_link",
+                "errorIoKind": "permission_denied",
+                "errorCode": 5
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(succeeded.properties.get("errorOperation").is_none());
+        assert!(succeeded.properties.get("errorIoKind").is_none());
+        assert!(succeeded.properties.get("errorCode").is_none());
+
+        let other_event = build_desktop_telemetry_event(
+            "desktop_setup_completed".to_string(),
+            Some(failed_content),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(other_event.properties.get("errorOperation").is_none());
+        assert!(other_event.properties.get("errorIoKind").is_none());
+        assert!(other_event.properties.get("errorCode").is_none());
+    }
+
+    #[test]
     fn core_update_failure_drops_raw_rescue_diagnostics_from_telemetry() {
         let event = build_desktop_telemetry_event(
             "core_update_failed".to_string(),
@@ -2516,6 +2657,9 @@ mod codex_telemetry_tests {
                 "setupRunId",
                 "npxResolved",
                 "npxResolution",
+                "errorOperation",
+                "errorIoKind",
+                "errorCode",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -2575,7 +2719,7 @@ mod codex_telemetry_tests {
             "no-consent",
         );
 
-        assert_eq!(event.properties["appVersion"], env!("APP_VERSION"));
+        assert_eq!(event.properties["appVersion"], crate::app_version::current());
         assert_eq!(event.properties["step"], "connector-import");
 
         let completed = build_desktop_telemetry_event(
@@ -2585,7 +2729,7 @@ mod codex_telemetry_tests {
             None,
             "no-consent",
         );
-        assert_eq!(completed.properties["appVersion"], env!("APP_VERSION"));
+        assert_eq!(completed.properties["appVersion"], crate::app_version::current());
     }
 
     #[test]
@@ -3166,7 +3310,7 @@ mod codex_telemetry_tests {
         );
         assert_eq!(first.occurred_at, retry.occurred_at);
         assert_eq!(first.idempotency_key, retry.idempotency_key);
-        assert_eq!(first.properties["appVersion"], env!("APP_VERSION"));
+        assert_eq!(first.properties["appVersion"], crate::app_version::current());
         let platform = first.properties["platform"].as_str().unwrap();
         assert!(
             crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
@@ -3182,7 +3326,7 @@ mod codex_telemetry_tests {
             serialized["idempotencyKey"],
             "hq-desktop-app:daily-active:2026-07-15"
         );
-        assert_eq!(serialized["properties"]["appVersion"], env!("APP_VERSION"));
+        assert_eq!(serialized["properties"]["appVersion"], crate::app_version::current());
         assert_eq!(serialized["properties"]["platform"], platform);
         for unexpected_key in ["machineId", "appVersion", "companyUid", "personUid"] {
             assert!(serialized.get(unexpected_key).is_none());
@@ -3442,7 +3586,7 @@ mod codex_telemetry_tests {
         assert_eq!(posts.len(), 1);
         let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
         assert_eq!(body["machineId"], "mid-heartbeat-consent");
-        assert_eq!(body["installerVersion"], env!("APP_VERSION"));
+        assert_eq!(body["installerVersion"], crate::app_version::current());
         assert_eq!(body["events"], json!([]));
         let client_name = posts[0]
             .headers

@@ -225,7 +225,8 @@ describe("CompanyTabs", () => {
         onopenurl: (url: string) => opened.push(url),
       },
     });
-    expect(host.querySelector('[data-testid="company-channel-tabs"]')).toBeNull();
+    expect(host.querySelector('[data-testid="company-channel-tabs"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="company-tab-projects"]')).not.toBeNull();
     const gear = host.querySelector<HTMLButtonElement>(
       '[data-testid="company-console-gear"]',
     );

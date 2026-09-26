@@ -188,6 +188,12 @@ pub struct MembershipInfo {
     /// true. Rides the existing membership payload — no new endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brand: Option<CompanyBrand>,
+    /// The company's single main channel id (`chn_*`), set by hq-pro at
+    /// company genesis. Every company has exactly one home channel; clients
+    /// open it directly by id — never resolved client-side. Absent on legacy
+    /// responses while the server rolls this field out.
+    #[serde(default)]
+    pub home_channel_id: Option<String>,
 }
 
 impl MembershipInfo {
@@ -328,7 +334,7 @@ pub struct TelemetryOptInResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UsageBatch {
     pub machine_id: String,
-    /// The DESKTOP APP version (CARGO_PKG_VERSION) — legacy field name kept
+    /// The DESKTOP APP version (runtime-resolved, see `app_version`) — legacy field name kept
     /// for wire compatibility; the server reads it as appVersion.
     pub installer_version: String,
     /// Installed hq CLI version, when resolvable. Feeds the staff version

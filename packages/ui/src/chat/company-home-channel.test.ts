@@ -7,7 +7,6 @@ import {
   companyActivityScore,
   findCompanyHomeRow,
   loadPinnedCompanies,
-  mergeResolvedCompanyChannels,
   migratePinnedCompanySelection,
   normalizeChannel,
   rankCompaniesByActivity,
@@ -51,80 +50,67 @@ function channel(over: Partial<Channel> = {}): Channel {
 }
 
 describe("isCompanyHomeChannel", () => {
-  it("uses the explicit isCompanyHome field when the server sends it, even if name/scope disagree", () => {
+  it("is true when EITHER the explicit isCompanyHome flag is set OR the channel id matches homeChannelId", () => {
+    // Flag true, id doesn't match — still home (flag wins).
     expect(
-      isCompanyHomeChannel({ scope: "company", name: "random-team", isCompanyHome: true }, "acme"),
+      isCompanyHomeChannel({ channelId: "chn_random", isCompanyHome: true }, "chn_home"),
     ).toBe(true);
+    // Flag explicitly false, but the id DOES match homeChannelId — still
+    // home: the predicate is an OR, the id is authoritative either way.
     expect(
-      isCompanyHomeChannel({ scope: "company", name: "acme", isCompanyHome: false }, "acme"),
+      isCompanyHomeChannel({ channelId: "chn_home", isCompanyHome: false }, "chn_home"),
+    ).toBe(true);
+    // Neither signal fires.
+    expect(
+      isCompanyHomeChannel({ channelId: "chn_other", isCompanyHome: false }, "chn_home"),
     ).toBe(false);
   });
 
-  it("falls back to scope+name match when isCompanyHome is absent", () => {
-    expect(isCompanyHomeChannel({ scope: "company", name: "acme" }, "acme")).toBe(true);
-    expect(isCompanyHomeChannel({ scope: "company", name: "random-team" }, "acme")).toBe(false);
+  it("matches by channel id when isCompanyHome is absent", () => {
+    expect(isCompanyHomeChannel({ channelId: "chn_home" }, "chn_home")).toBe(true);
+    expect(isCompanyHomeChannel({ channelId: "chn_random" }, "chn_home")).toBe(false);
   });
 
-  it("never treats a non-company-scope channel as home, regardless of name", () => {
-    expect(isCompanyHomeChannel({ scope: "project", name: "acme" }, "acme")).toBe(false);
-    expect(isCompanyHomeChannel({ scope: "personal", name: "acme" }, "acme")).toBe(false);
+  it("is false when the company's homeChannelId is unknown", () => {
+    expect(isCompanyHomeChannel({ channelId: "chn_home" }, null)).toBe(false);
+    expect(isCompanyHomeChannel({ channelId: "chn_home" }, undefined)).toBe(false);
+    expect(isCompanyHomeChannel({ channelId: "chn_home" }, "")).toBe(false);
   });
 
-  it("is false when the company slug is unknown", () => {
-    expect(isCompanyHomeChannel({ scope: "company", name: "acme" }, null)).toBe(false);
-    expect(isCompanyHomeChannel({ scope: "company", name: "acme" }, undefined)).toBe(false);
-  });
-
-  /**
-   * Regression test for the reported bug: EVERY company (including one with a
-   * real, definitely-existing home channel like #indigo) showed "no home
-   * channel yet". Root cause: the wire `name` field on a directory row is the
-   * RAW channel name, which for a company-genesis channel carries a leading
-   * "#" (e.g. "#indigo") — only display helpers like `channelDisplayName`
-   * strip it. The old fallback compared `channel.name === companySlug`
-   * literally, so "#indigo" was never equal to "indigo" and the fallback
-   * match failed for every single company, always. This must now match.
-   */
-  it("regression: matches a '#slug' raw wire name against the bare company slug", () => {
-    expect(isCompanyHomeChannel({ scope: "company", name: "#indigo" }, "indigo")).toBe(
-      true,
-    );
-    expect(
-      isCompanyHomeChannel({ scope: "company", name: "#Indigo" }, "indigo"),
-    ).toBe(true);
-    expect(
-      isCompanyHomeChannel({ scope: "company", name: "#indigo" }, "acme"),
-    ).toBe(false);
+  it("never does name/slug matching — only the id or the explicit flag decide", () => {
+    // A channel literally named after the company slug is NOT the home
+    // channel unless its id matches homeChannelId (or the server flagged it).
+    expect(isCompanyHomeChannel({ channelId: "chn_other" }, "chn_home")).toBe(false);
   });
 });
 
 describe("normalizeChannel — isCompanyHome resolution", () => {
   it("carries an explicit server isCompanyHome flag through to the row", () => {
-    const row = normalizeChannel(channel({ name: "random-team", isCompanyHome: true }));
+    const row = normalizeChannel(channel({ isCompanyHome: true }));
     expect(row.isCompanyHome).toBe(true);
   });
 
-  it("resolves the fallback via companySlugByUid when the server omits the field", () => {
+  it("resolves isCompanyHome via homeChannelIdByUid when the server omits the field", () => {
     const home = normalizeChannel(
-      channel({ name: "acme" }),
-      { companySlugByUid: new Map([["cmp_acme", "acme"]]) },
+      channel({ channelId: "chn_home" }),
+      { homeChannelIdByUid: new Map([["cmp_acme", "chn_home"]]) },
     );
     expect(home.isCompanyHome).toBe(true);
 
     const team = normalizeChannel(
-      channel({ name: "random-team" }),
-      { companySlugByUid: new Map([["cmp_acme", "acme"]]) },
+      channel({ channelId: "chn_team" }),
+      { homeChannelIdByUid: new Map([["cmp_acme", "chn_home"]]) },
     );
     expect(team.isCompanyHome).toBe(false);
   });
 
-  it("with multiple scope='company' channels in one company, only the slug-matching one resolves as home", () => {
-    const slugMap = new Map([["cmp_acme", "acme"]]);
+  it("with multiple scope='company' channels in one company, only the id-matching one resolves as home", () => {
+    const homeMap = new Map([["cmp_acme", "chn_home"]]);
     const rows = [
-      channel({ channelId: "chn_home", name: "acme" }),
+      channel({ channelId: "chn_home" }),
       channel({ channelId: "chn_team1", name: "marketing" }),
       channel({ channelId: "chn_team2", name: "eng" }),
-    ].map((c) => normalizeChannel(c, { companySlugByUid: slugMap }));
+    ].map((c) => normalizeChannel(c, { homeChannelIdByUid: homeMap }));
     const homes = rows.filter((r) => r.isCompanyHome);
     expect(homes).toHaveLength(1);
     expect(homes[0]?.channelId).toBe("chn_home");
@@ -237,10 +223,10 @@ describe("companyActivityScore / rankCompaniesByActivity", () => {
 
 describe("resolveCompanySectionRows", () => {
   const companies = [
-    { companyUid: "cmp_acme", label: "Acme" },
-    { companyUid: "cmp_beta", label: "Beta" },
-    { companyUid: "cmp_gamma", label: "Gamma" },
-    { companyUid: "cmp_delta", label: "Delta" },
+    { companyUid: "cmp_acme", label: "Acme", homeChannelId: "acme" },
+    { companyUid: "cmp_beta", label: "Beta", homeChannelId: "beta" },
+    { companyUid: "cmp_gamma", label: "Gamma", homeChannelId: "gamma" },
+    { companyUid: "cmp_delta", label: "Delta", homeChannelId: "delta" },
   ];
 
   it("no pins: shows the top-3 most active companies, ranked", () => {
@@ -295,24 +281,28 @@ describe("resolveCompanySectionRows", () => {
     expect(sections.map((r) => r.companyUid)).toEqual(["cmp_gamma"]);
   });
 
-  it("a company without a home channel yet is included with homeRow: null (shown disabled, not hidden)", () => {
-    const rows = [homeRow("cmp_acme", "acme")];
+  it("a company with no homeChannelId yet is included with homeChannelId: null (shown disabled, not hidden)", () => {
+    const rows: ConversationRow[] = [];
     const sections = resolveCompanySectionRows(
-      [companies[0]!, companies[1]!],
+      [
+        { companyUid: "cmp_acme", label: "Acme", homeChannelId: "acme" },
+        { companyUid: "cmp_beta", label: "Beta", homeChannelId: null },
+      ],
       rows,
       ["cmp_acme", "cmp_beta"],
     );
     const beta = sections.find((r) => r.companyUid === "cmp_beta");
     expect(beta).toBeDefined();
-    expect(beta?.homeRow).toBeNull();
+    expect(beta?.homeChannelId).toBeNull();
   });
 
-  it("ignores non-home company-scope rows when picking the home channel", () => {
-    const rows = [teamRow("cmp_acme", "team"), homeRow("cmp_acme", "acme")];
-    const sections = resolveCompanySectionRows([companies[0]!], rows, [
-      "cmp_acme",
-    ]);
-    expect(sections[0]?.homeRow?.channelId).toBe("acme");
+  it("carries the roster's homeChannelId straight through — no row lookup needed", () => {
+    const sections = resolveCompanySectionRows(
+      [{ companyUid: "cmp_acme", label: "Acme", homeChannelId: "acme" }],
+      [],
+      ["cmp_acme"],
+    );
+    expect(sections[0]?.homeChannelId).toBe("acme");
   });
 
   it("respects a custom limit for the default top-N view", () => {
@@ -364,46 +354,21 @@ describe("migratePinnedCompanySelection", () => {
   });
 });
 
-describe("mergeResolvedCompanyChannels (on-demand home-channel resolution)", () => {
-  function ch(channelId: string, over: Partial<Channel> = {}): Channel {
-    return { channelId, name: channelId, scope: "company", ...over };
-  }
-
-  it("adds a resolved channel that was not previously known", () => {
-    const merged = mergeResolvedCompanyChannels([ch("chn_a")], [ch("chn_b")]);
-    expect(merged.map((c) => c.channelId).sort()).toEqual(["chn_a", "chn_b"]);
-  });
-
-  it("a fresh resolved fetch overrides a stale existing entry for the same channel id", () => {
-    const merged = mergeResolvedCompanyChannels(
-      [ch("chn_a", { name: "stale" })],
-      [ch("chn_a", { name: "#indigo" })],
-    );
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.name).toBe("#indigo");
-  });
-
-  it("an empty resolved list leaves existing channels untouched", () => {
-    const existing = [ch("chn_a")];
-    expect(mergeResolvedCompanyChannels(existing, [])).toEqual(existing);
-  });
-});
-
-describe("findCompanyHomeRow + on-demand resolution scenario coverage", () => {
+describe("findCompanyHomeRow", () => {
   it("field present: server-tagged isCompanyHome resolves directly", () => {
     const rows = [homeRow("cmp_acme", "acme")];
     expect(findCompanyHomeRow(rows, "cmp_acme")?.channelId).toBe("acme");
   });
 
-  it("fallback match: normalizeChannel resolves isCompanyHome via the '#slug' fallback", () => {
-    const row = normalizeChannel(channel({ name: "#acme" }), {
-      companySlugByUid: new Map([["cmp_acme", "acme"]]),
+  it("id match: normalizeChannel resolves isCompanyHome via homeChannelIdByUid", () => {
+    const row = normalizeChannel(channel({ channelId: "chn_home" }), {
+      homeChannelIdByUid: new Map([["cmp_acme", "chn_home"]]),
     });
     expect(row.isCompanyHome).toBe(true);
-    expect(findCompanyHomeRow([row], "cmp_acme")?.channelId).toBe("chn_1");
+    expect(findCompanyHomeRow([row], "cmp_acme")?.channelId).toBe("chn_home");
   });
 
-  it("fallback miss: no row matches, home channel must be resolved on demand (caller's job)", () => {
+  it("no match: no row is the home channel", () => {
     const rows = [teamRow("cmp_acme", "random-team")];
     expect(findCompanyHomeRow(rows, "cmp_acme")).toBeNull();
   });
@@ -499,7 +464,9 @@ describe("applyDirectoryRows / applyDirectoryFeed — home-channel refresh stabi
     const first = applyDirectoryRows([directoryRow()], []);
     const second = applyDirectoryRows([], first); // total miss, non-empty seed not involved
     const rows = second.map((c) =>
-      normalizeChannel(c, { companySlugByUid: new Map([["cmp_acme", "acme"]]) }),
+      normalizeChannel(c, {
+        homeChannelIdByUid: new Map([["cmp_acme", "chn_home_acme"]]),
+      }),
     );
     expect(findCompanyHomeRow(rows, "cmp_acme")?.channelId).toBe("chn_home_acme");
   });

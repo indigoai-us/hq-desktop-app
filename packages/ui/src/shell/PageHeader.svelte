@@ -111,7 +111,7 @@
   }
 
   .page-header.window {
-    padding: 0 16px 0 var(--titlebar-leading-inset, 78px);
+    padding: 0 16px 0 var(--titlebar-leading-inset, 96px);
   }
 
   .page-header.embedded {
