@@ -39,7 +39,7 @@ use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
 use crate::commands::update_gate::{AppFocusState, UpdateHoldsState};
-use hq_desktop_core::update_gate::{decide, UpdateDecision, UpdateTrigger};
+use hq_desktop_core::update_gate::{decide, DeferredEmitKey, HoldReason, should_emit_deferred, UpdateDecision, UpdateTrigger};
 use crate::util::release_channel::{
     effective_channel, fetch_update_feed_policy, resolve_channel_endpoint, should_offer_update,
     should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
@@ -964,6 +964,18 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
+    // Hold gate: refuse to install while any hold is active (MeetingRecording,
+    // TranscriptFinishing, UploadInFlight, CoreUpdateInProgress). Focus does not
+    // block Manual-triggered installs.
+    if let (Some(holds), Some(focus)) = (
+        app.try_state::<UpdateHoldsState>(),
+        app.try_state::<AppFocusState>(),
+    ) {
+        let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        if let UpdateDecision::Defer { reason } = gate {
+            return Err(format!("update held: {reason:?}"));
+        }
+    }
     let ticket = begin_app_check(&app)?;
     let updater = channel_aware_updater_with_mode(&app, UpdateOfferMode::Reinstall).await?;
     let authoritative = updater.provenance.absence_is_authoritative();
@@ -1191,6 +1203,8 @@ fn spawn_auto_install_waiter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let _active = AutoInstallWaiterGuard::arm(generation);
         let mut last_wait_log: Option<Instant> = None;
+        let mut last_deferred_emit: Option<DeferredEmitKey> = None;
+        let mut last_gate_log: Option<Instant> = None;
         loop {
             if AUTO_INSTALL_WAITER_GENERATION.load(Ordering::Acquire) != generation {
                 return;
@@ -1226,33 +1240,64 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                 }
                 DeferralDecision::InstallNow | DeferralDecision::PauseThenInstall => {
                     log_deferral_decision(InstallTrigger::Automatic, decision, &version, remaining);
-                    // Focus + hold gate: defer if app is focused, a hold is active,
-                    // or an HQ core update is running.
-                    if crate::commands::hq_core_state::is_core_update_in_progress() {
-                        log("updater", "[updater] deferred: CoreUpdateInProgress");
-                        tokio::time::sleep(IDLE_POLL_INTERVAL).await;
-                        continue;
-                    }
+                    // Focus + hold gate. Sync external-signal holds into the
+                    // registry so it is the single source of truth, then
+                    // decide once and act on the outcome.
                     if let (Some(holds), Some(focus)) = (
                         app.try_state::<UpdateHoldsState>(),
                         app.try_state::<AppFocusState>(),
                     ) {
+                        // CoreUpdateInProgress: backed by CORE_UPDATE_RUNNING AtomicBool.
+                        if crate::commands::hq_core_state::is_core_update_in_progress() {
+                            holds.0.acquire(HoldReason::CoreUpdateInProgress);
+                        } else {
+                            holds.0.release(HoldReason::CoreUpdateInProgress);
+                        }
+                        // UploadInFlight: backed by the existing sync_in_progress() probe.
+                        if sync_in_progress() {
+                            holds.0.acquire(HoldReason::UploadInFlight);
+                        } else {
+                            holds.0.release(HoldReason::UploadInFlight);
+                        }
                         let gate = decide(UpdateTrigger::Automatic, focus.app_focus(), &holds.0);
-                        if let UpdateDecision::Defer { reason } = gate {
-                            log(
-                                "updater",
-                                &format!("[updater] deferred: {:?}", reason),
-                            );
+                        if let UpdateDecision::Defer { ref reason } = gate {
+                            // Log at most once per minute.
+                            let should_log = match last_gate_log {
+                                None => true,
+                                Some(at) => at.elapsed() >= Duration::from_secs(60),
+                            };
+                            if should_log {
+                                log(
+                                    "updater",
+                                    &format!("[updater] deferred: {:?}", reason),
+                                );
+                                last_gate_log = Some(Instant::now());
+                            }
+                            // Emit only when (version, decision, reasons) changes.
                             let status = crate::commands::update_gate::current_gate_status(
                                 &holds,
                                 &focus,
                                 Some(version.clone()),
                                 UpdateTrigger::Automatic,
                             );
-                            let _ = app.emit(UPDATE_GATE_DEFERRED_EVENT, &status);
+                            let emit_key = DeferredEmitKey::new(
+                                status.pending_version.clone(),
+                                gate,
+                                status.reasons.clone(),
+                            );
+                            if should_emit_deferred(
+                                last_deferred_emit.as_ref(),
+                                &emit_key,
+                            ) {
+                                let _ = app.emit(UPDATE_GATE_DEFERRED_EVENT, &status);
+                                last_deferred_emit = Some(emit_key);
+                            }
                             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
                             continue;
                         }
+                        // Decision is InstallNow — clear the last-emitted key so that
+                        // any future deferral triggers a fresh emission.
+                        last_deferred_emit = None;
                     }
                     let Some(_install_guard) =
                         UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
@@ -1302,6 +1347,18 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
+    // Hold gate: refuse to install while any hold is active (MeetingRecording,
+    // TranscriptFinishing, UploadInFlight, CoreUpdateInProgress). Focus does not
+    // block Manual-triggered installs.
+    if let (Some(holds), Some(focus)) = (
+        app.try_state::<UpdateHoldsState>(),
+        app.try_state::<AppFocusState>(),
+    ) {
+        let gate = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        if let UpdateDecision::Defer { reason } = gate {
+            return Err(format!("update held: {reason:?}"));
+        }
+    }
     let ticket = begin_app_check(&app)?;
 
     // Note: We must call updater.check() again here because the tauri_plugin_updater::Update

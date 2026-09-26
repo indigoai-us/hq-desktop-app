@@ -285,3 +285,130 @@ mod tests {
         assert!(active.contains(&HoldReason::TranscriptFinishing));
     }
 }
+
+// ── Transition-only emission helper ───────────────────────────────────────────
+
+/// Snapshot of the three gate outputs used by the waiter loop to suppress
+/// redundant `update-gate://deferred` emissions. The loop tracks the last
+/// emitted key and calls `should_emit_deferred` before every potential emit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredEmitKey {
+    pub pending_version: Option<String>,
+    pub decision: UpdateDecision,
+    /// Sorted for stable equality regardless of registry iteration order.
+    pub reasons: Vec<HoldReason>,
+}
+
+impl DeferredEmitKey {
+    /// Build a key. `reasons` and the reasons inside any `Held` defer are
+    /// sorted for stable equality regardless of registry iteration order.
+    pub fn new(
+        pending_version: Option<String>,
+        decision: UpdateDecision,
+        mut reasons: Vec<HoldReason>,
+    ) -> Self {
+        reasons.sort_by_key(|r| r.to_string());
+        let decision = match decision {
+            UpdateDecision::Defer {
+                reason: DeferReason::Held { reasons: held_reasons },
+            } => {
+                let mut dr = held_reasons;
+                dr.sort_by_key(|r| r.to_string());
+                UpdateDecision::Defer {
+                    reason: DeferReason::Held { reasons: dr },
+                }
+            }
+            other => other,
+        };
+        Self {
+            pending_version,
+            decision,
+            reasons,
+        }
+    }
+}
+
+/// Returns `true` when the waiter loop should emit `update-gate://deferred`.
+/// Emitting is suppressed when the key is identical to the last-emitted value.
+pub fn should_emit_deferred(last: Option<&DeferredEmitKey>, current: &DeferredEmitKey) -> bool {
+    match last {
+        None => true,
+        Some(prev) => prev != current,
+    }
+}
+
+#[cfg(test)]
+mod emit_tests {
+    use super::*;
+
+    fn focused_key(ver: Option<&str>) -> DeferredEmitKey {
+        DeferredEmitKey::new(
+            ver.map(str::to_owned),
+            UpdateDecision::Defer {
+                reason: DeferReason::Focused,
+            },
+            vec![],
+        )
+    }
+
+    fn held_key(ver: Option<&str>, reasons: Vec<HoldReason>) -> DeferredEmitKey {
+        DeferredEmitKey::new(
+            ver.map(str::to_owned),
+            UpdateDecision::Defer {
+                reason: DeferReason::Held {
+                    reasons: reasons.clone(),
+                },
+            },
+            reasons,
+        )
+    }
+
+    #[test]
+    fn first_emission_always_fires() {
+        let key = focused_key(Some("1.2.3"));
+        assert!(should_emit_deferred(None, &key));
+    }
+
+    #[test]
+    fn identical_key_suppresses_emission() {
+        let key = focused_key(Some("1.2.3"));
+        assert!(!should_emit_deferred(Some(&key.clone()), &key));
+    }
+
+    #[test]
+    fn version_change_triggers_emission() {
+        let old = focused_key(Some("1.2.3"));
+        let new = focused_key(Some("1.2.4"));
+        assert!(should_emit_deferred(Some(&old), &new));
+    }
+
+    #[test]
+    fn reason_change_triggers_emission() {
+        let old = focused_key(Some("1.2.3"));
+        let new = held_key(Some("1.2.3"), vec![HoldReason::MeetingRecording]);
+        assert!(should_emit_deferred(Some(&old), &new));
+    }
+
+    #[test]
+    fn hold_reason_order_does_not_affect_equality() {
+        let a = held_key(
+            Some("1.2.3"),
+            vec![HoldReason::MeetingRecording, HoldReason::TranscriptFinishing],
+        );
+        let b = held_key(
+            Some("1.2.3"),
+            vec![HoldReason::TranscriptFinishing, HoldReason::MeetingRecording],
+        );
+        assert!(!should_emit_deferred(Some(&a), &b));
+    }
+
+    #[test]
+    fn hold_reason_added_triggers_emission() {
+        let old = held_key(Some("1.2.3"), vec![HoldReason::MeetingRecording]);
+        let new = held_key(
+            Some("1.2.3"),
+            vec![HoldReason::MeetingRecording, HoldReason::TranscriptFinishing],
+        );
+        assert!(should_emit_deferred(Some(&old), &new));
+    }
+}
