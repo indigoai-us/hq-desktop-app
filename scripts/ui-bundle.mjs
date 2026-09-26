@@ -18,6 +18,13 @@
 //        --shell-key K [--shell-key K2 ...] [--min-app-version V] --out DIR
 //   node scripts/ui-bundle.mjs pointer --manifest DIR/ui-manifest.json \
 //        --sig DIR/ui-V.tar.gz.sig --url https://... --channel beta --out FILE
+//   node scripts/ui-bundle.mjs select-base --releases releases.json --channel beta
+//        (releases.json = `gh api repos/O/R/releases`; prints the tag whose
+//        shell the ui-only bundle targets)
+//   node scripts/ui-bundle.mjs keys --manifest ui-manifest.json [--extra k1,k2]
+//        (prints the shell keys, one per line)
+//   node scripts/ui-bundle.mjs prune-plan --assets assets.json --keep 10
+//        (prints ui-updates archive asset names older than the newest N)
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -103,6 +110,54 @@ export function buildPointer({ manifest, signature, url, channel }) {
   return pointer;
 }
 
+const RELEASE_TAG = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
+
+/**
+ * The release a ui-only bundle is built on top of. `stable` follows the
+ * newest published non-prerelease; `beta` the newest published release of
+ * either kind. Drafts and the non-version tags (shell-cache, ui-updates) are
+ * never chosen.
+ */
+export function selectBaseRelease(releases, channel) {
+  if (!CHANNELS.includes(channel)) throw new Error(`ui-bundle: channel must be one of ${CHANNELS.join(", ")}`);
+  const candidates = releases
+    .flat()
+    .filter((r) => r && !r.draft && RELEASE_TAG.test(r.tag_name ?? ""))
+    .filter((r) => channel === "beta" || !r.prerelease)
+    .sort((a, b) => String(b.published_at ?? "").localeCompare(String(a.published_at ?? "")));
+  const base = candidates[0];
+  if (!base) throw new Error(`ui-bundle: no published release for channel ${channel}`);
+  return { tag: base.tag_name, version: base.tag_name.match(RELEASE_TAG)[1] };
+}
+
+/** Shell keys from a release's ui-manifest.json, plus explicit extras. */
+export function shellKeysFor(manifest, extra = []) {
+  const keys = [...(manifest?.shellKeys ?? []), ...extra]
+    .map((k) => String(k).trim())
+    .filter(Boolean);
+  for (const k of keys) {
+    if (!/^[0-9a-f]{64}$/.test(k)) throw new Error(`ui-bundle: "${k}" is not a shell key`);
+  }
+  const unique = [...new Set(keys)];
+  if (unique.length === 0) throw new Error("ui-bundle: no shell keys (base release has no ui-manifest.json and no --extra keys)");
+  return unique;
+}
+
+const ARCHIVE_ASSET = /^ui-.+\.tar\.gz$/;
+
+/**
+ * ui-updates archive (+ .sig) assets to delete: everything but the newest
+ * `keep` archives and anything a pointer still references.
+ */
+export function prunePlan(assets, keep, referenced = []) {
+  const archives = assets
+    .filter((a) => ARCHIVE_ASSET.test(a.name))
+    .sort((a, b) => String(b.created_at ?? b.createdAt ?? "").localeCompare(String(a.created_at ?? a.createdAt ?? "")));
+  const doomed = archives.slice(keep).map((a) => a.name).filter((n) => !referenced.includes(n));
+  const names = new Set(assets.map((a) => a.name));
+  return doomed.flatMap((n) => (names.has(`${n}.sig`) ? [n, `${n}.sig`] : [n]));
+}
+
 function parseArgs(argv) {
   const [command, ...rest] = argv;
   const opts = { shellKeys: [] };
@@ -130,8 +185,20 @@ function main(argv) {
     const pointer = buildPointer({ manifest, signature: readFileSync(opts.sig, "utf8"), url: opts.url, channel: opts.channel });
     writeFileSync(opts.out, `${JSON.stringify(pointer, null, 2)}\n`);
     process.stdout.write(`${opts.out}\n`);
+  } else if (command === "select-base") {
+    const base = selectBaseRelease(JSON.parse(readFileSync(opts.releases, "utf8")), opts.channel);
+    process.stdout.write(`${base.tag} ${base.version}\n`);
+  } else if (command === "keys") {
+    const manifest = opts.manifest && existsSync(opts.manifest) ? JSON.parse(readFileSync(opts.manifest, "utf8")) : null;
+    const extra = (opts.extra ?? "").split(/[\s,]+/).filter(Boolean);
+    process.stdout.write(`${shellKeysFor(manifest, extra).join("\n")}\n`);
+  } else if (command === "prune-plan") {
+    const assets = JSON.parse(readFileSync(opts.assets, "utf8"));
+    const referenced = (opts.referenced ?? "").split(/[\s,]+/).filter(Boolean);
+    const plan = prunePlan(assets, Number(opts.keep ?? 10), referenced);
+    if (plan.length) process.stdout.write(`${plan.join("\n")}\n`);
   } else {
-    throw new Error(`ui-bundle: unknown command "${command}" (version | pack | pointer)`);
+    throw new Error(`ui-bundle: unknown command "${command}" (version | pack | pointer | select-base | keys | prune-plan)`);
   }
 }
 
