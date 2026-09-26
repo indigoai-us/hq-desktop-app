@@ -112,18 +112,21 @@ pub use hq_desktop_core::hq_cli_update::{
     should_auto_install, should_report_unreadable_version,
     should_retry_windows_busy_install_target, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
-    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
-    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
-    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
-    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmToolchainSource,
-    PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
-    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, SettingsPathTelemetry,
-    UserPrefixAim, VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
+    version_if_hq_cli, windows_busy_install_target_retry_delay,
+    windows_busy_install_target_retry_rung, AsyncSingleFlight, DeliveredPrefixShim,
+    ExecutedCopyAim, ExecutedCopyReaim, ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment,
+    InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
+    LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
+    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
+    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
+    NpmLatest, NpmLockHolderClass, NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome,
+    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
+    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind,
+    RestartManagerHolderObservation, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
+    WindowsBusyRetryOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
     NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
     NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
-    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG, WindowsBusyRetryOutcome,
+    STDERR_ORIGIN_NON_NPM,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -611,6 +614,48 @@ struct NpmInstallRun {
     /// EBUSY/rename shape. The value is emitted only as bounded Sentry tags.
     windows_busy_retry_attempts: Option<u8>,
     windows_busy_retry_outcome: WindowsBusyRetryOutcome,
+    lock_holder_diagnostic: Option<NpmLockHolderDiagnostic>,
+}
+
+async fn read_hq_cli_package_holders(prefix: Option<&str>) -> RestartManagerHolderObservation {
+    let Some(prefix) = prefix else {
+        return RestartManagerHolderObservation::from_results(
+            &[],
+            NpmLockHolderQueryOutcome::Unavailable,
+        );
+    };
+    let prefix = prefix.to_string();
+    match tauri::async_runtime::spawn_blocking(move || {
+        crate::commands::process::query_hq_cli_package_holders(&prefix)
+    })
+    .await
+    {
+        Ok(observation) => observation,
+        Err(_) => {
+            log(
+                "hq-cli-update",
+                "Restart Manager holder query worker failed; holder class is unavailable",
+            );
+            RestartManagerHolderObservation::from_results(
+                &[],
+                NpmLockHolderQueryOutcome::Unavailable,
+            )
+        }
+    }
+}
+
+fn record_deferred_user_cli_breadcrumb(diagnostic: NpmLockHolderDiagnostic, attempts: u8) {
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("hq-cli-update".into()),
+        level: sentry::Level::Info,
+        message: Some(format!(
+            "CLI update deferred; holder_class={} holder_count={} retry_attempts={} outcome=deferred-user-cli",
+            diagnostic.class.tag_value(),
+            diagnostic.count,
+            attempts,
+        )),
+        ..Default::default()
+    });
 }
 
 async fn run_recorded_npm_install_attempt(
@@ -705,6 +750,7 @@ async fn run_npm_install_local_recovery_ladder(
     missing_target_state: &mut MissingTargetState,
     windows_busy_retry_attempts: &mut Option<u8>,
     windows_busy_retry_outcome: &mut WindowsBusyRetryOutcome,
+    lock_holder_diagnostic: &mut Option<NpmLockHolderDiagnostic>,
 ) -> Result<std::process::Output, String> {
     // EEXIST bin collision: an existing `<prefix>/bin/hq` npm didn't create
     // blocks the bin-link, so npm bails rather than clobber it. Retry ONCE with
@@ -961,55 +1007,122 @@ async fn run_npm_install_local_recovery_ladder(
     }
 
     // Windows EBUSY while renaming a package under the selected prefix means a
-    // process still holds that install target open. Give the lock time to release
-    // and retry the plain install once. Never terminate or signal the holder.
+    // process still holds that install target open. Query Restart Manager on
+    // every EBUSY, wait for any app-owned holder by its exact process identity,
+    // and use three bounded backoff retries for external transient holders.
+    // Never terminate or signal the holder.
     if !output.status.success() {
-        let detail = npm_output_detail(&output);
-        let attempted_rungs: Vec<_> = ledger.iter().map(|attempt| attempt.rung).collect();
-        let is_locked_target = is_windows_locked_install_target_failure(
-            output.status.code(),
-            &detail,
-            prefix,
-        );
-        if is_locked_target && should_retry_windows_busy_install_target(
-            output.status.code(),
-            &detail,
-            prefix,
-            &attempted_rungs,
-            MAX_NPM_INSTALL_ATTEMPTS,
-        ) {
-            *windows_busy_retry_attempts = Some(1);
-            *windows_busy_retry_outcome = WindowsBusyRetryOutcome::Failed;
+        let mut retries_started = 0usize;
+        loop {
+            let detail = npm_output_detail(&output);
+            let is_locked_target =
+                is_windows_locked_install_target_failure(output.status.code(), &detail, prefix);
+            if !is_locked_target {
+                break;
+            }
+
+            let observation = read_hq_cli_package_holders(prefix).await;
+            *lock_holder_diagnostic = Some(observation.diagnostic());
+            if observation.class == NpmLockHolderClass::UserTerminalHqCli {
+                *windows_busy_retry_attempts = Some(retries_started as u8);
+                *windows_busy_retry_outcome = WindowsBusyRetryOutcome::DeferredUserCli;
+                log(
+                    "hq-cli-update",
+                    "install deferred because a terminal-started HQ CLI holds the selected package",
+                );
+                break;
+            }
+
+            if !observation.owned_processes().is_empty() {
+                if let Err(_) = crate::commands::process::wait_for_hq_cli_package_holders(
+                    &observation,
+                    CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
+                )
+                .await
+                {
+                    *windows_busy_retry_attempts = Some(retries_started as u8);
+                    *windows_busy_retry_outcome = if retries_started > 0 {
+                        WindowsBusyRetryOutcome::Failed
+                    } else {
+                        WindowsBusyRetryOutcome::NotArmed
+                    };
+                    log(
+                        "hq-cli-update",
+                        "install retry deferred because an app-owned package holder did not exit in time",
+                    );
+                    break;
+                }
+            }
+
+            let attempted_rungs: Vec<_> = ledger.iter().map(|attempt| attempt.rung).collect();
+            let retry_number = retries_started + 1;
+            let Some(rung) = windows_busy_install_target_retry_rung(retry_number) else {
+                *windows_busy_retry_attempts = Some(retries_started as u8);
+                *windows_busy_retry_outcome = if retries_started > 0 {
+                    WindowsBusyRetryOutcome::Failed
+                } else {
+                    WindowsBusyRetryOutcome::NotArmed
+                };
+                break;
+            };
+            if !should_retry_windows_busy_install_target(
+                output.status.code(),
+                &detail,
+                prefix,
+                &attempted_rungs,
+                MAX_NPM_INSTALL_ATTEMPTS,
+            ) {
+                *windows_busy_retry_attempts = Some(retries_started as u8);
+                *windows_busy_retry_outcome = if retries_started > 0 {
+                    WindowsBusyRetryOutcome::Failed
+                } else {
+                    WindowsBusyRetryOutcome::NotArmed
+                };
+                break;
+            }
+            let Some(delay) = windows_busy_install_target_retry_delay(retry_number) else {
+                *windows_busy_retry_attempts = Some(retries_started as u8);
+                *windows_busy_retry_outcome = if retries_started > 0 {
+                    WindowsBusyRetryOutcome::Failed
+                } else {
+                    WindowsBusyRetryOutcome::NotArmed
+                };
+                break;
+            };
+
             log(
                 "hq-cli-update",
-                "install hit Windows EBUSY rename on the selected prefix; retrying once after backoff",
+                &format!(
+                    "install hit Windows EBUSY rename on the selected prefix; starting bounded retry {retry_number}"
+                ),
             );
-            tokio::time::sleep(LOCKED_BINARY_RETRY_BACKOFF).await;
+            tokio::time::sleep(delay).await;
+            retries_started = retry_number;
+            *windows_busy_retry_attempts = Some(retries_started as u8);
+            *windows_busy_retry_outcome = WindowsBusyRetryOutcome::Failed;
             output = run_recorded_npm_install_attempt(
                 npm,
                 path,
                 npm_cache,
                 prefix,
-                base_args,
-                WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG,
+                base_args.clone(),
+                rung,
                 false,
                 ledger,
             )
             .await?;
-            *windows_busy_retry_outcome = if output.status.success() {
-                WindowsBusyRetryOutcome::Succeeded
-            } else if is_windows_locked_install_target_failure(
+            if output.status.success() {
+                *windows_busy_retry_outcome = WindowsBusyRetryOutcome::Succeeded;
+                break;
+            }
+            if !is_windows_locked_install_target_failure(
                 output.status.code(),
                 &npm_output_detail(&output),
                 prefix,
             ) {
-                WindowsBusyRetryOutcome::Failed
-            } else {
-                WindowsBusyRetryOutcome::OtherFailure
-            };
-        } else if is_locked_target {
-            *windows_busy_retry_attempts = Some(0);
-            *windows_busy_retry_outcome = WindowsBusyRetryOutcome::NotArmed;
+                *windows_busy_retry_outcome = WindowsBusyRetryOutcome::OtherFailure;
+                break;
+            }
         }
     }
 
@@ -1027,6 +1140,7 @@ async fn run_npm_install_with_retries(
     let mut missing_target_state = MissingTargetState::Unknown;
     let mut windows_busy_retry_attempts = None;
     let mut windows_busy_retry_outcome = WindowsBusyRetryOutcome::NotApplicable;
+    let mut lock_holder_diagnostic = None;
     let mut output = run_recorded_npm_install_attempt(
         npm,
         path,
@@ -1111,6 +1225,7 @@ async fn run_npm_install_with_retries(
             &mut missing_target_state,
             &mut windows_busy_retry_attempts,
             &mut windows_busy_retry_outcome,
+            &mut lock_holder_diagnostic,
         )
         .await?;
         local_recovery_due = false;
@@ -1134,6 +1249,7 @@ async fn run_npm_install_with_retries(
         missing_target_state,
         windows_busy_retry_attempts,
         windows_busy_retry_outcome,
+        lock_holder_diagnostic,
     })
 }
 
@@ -1242,6 +1358,7 @@ async fn probe_install_environment(
         },
         windows_busy_retry_attempts: None,
         windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
+        lock_holder_diagnostic: None,
         // Defaults to `Unknown`; `install_hq_cli` overrides it with the mkdir
         // remedy's diagnostic (HQ-DESKTOP-5K) when that remedy ran.
         missing_target_state: MissingTargetState::Unknown,
@@ -2169,8 +2286,42 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
     )
     .await?;
+    let initial_holder_observation = read_hq_cli_package_holders(prefix.as_deref()).await;
+    if initial_holder_observation.class == NpmLockHolderClass::UserTerminalHqCli {
+        record_deferred_user_cli_breadcrumb(initial_holder_observation.diagnostic(), 0);
+        log(
+            "hq-cli-update",
+            "CLI update deferred before install because a terminal-started HQ CLI holds the selected package",
+        );
+        return Ok(HqCliUpdateInfo {
+            local: before_version,
+            latest,
+        });
+    }
+    if !initial_holder_observation.owned_processes().is_empty() {
+        crate::commands::process::wait_for_hq_cli_package_holders(
+            &initial_holder_observation,
+            CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
+        )
+        .await?;
+    }
     let install_run =
         run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
+
+    if install_run.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli {
+        record_deferred_user_cli_breadcrumb(
+            install_run.lock_holder_diagnostic.unwrap_or_default(),
+            install_run.windows_busy_retry_attempts.unwrap_or_default(),
+        );
+        log(
+            "hq-cli-update",
+            "CLI update deferred after EBUSY because a terminal-started HQ CLI holds the selected package",
+        );
+        return Ok(HqCliUpdateInfo {
+            local: before_version,
+            latest,
+        });
+    }
 
     if !install_run.output.status.success() {
         let raw_detail = npm_output_detail(&install_run.output);
@@ -2203,6 +2354,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         install_env.missing_target_state = install_run.missing_target_state;
         install_env.windows_busy_retry_attempts = install_run.windows_busy_retry_attempts;
         install_env.windows_busy_retry_outcome = install_run.windows_busy_retry_outcome;
+        install_env.lock_holder_diagnostic = install_run.lock_holder_diagnostic;
         // Name the EXACT version install_argv pinned into base_args (HQ-DESKTOP-5Q),
         // so a reported E404 shows WHICH version npm was asked for. `base_args` was
         // built with `Some(latest)`, a pinned spec — never the `@latest` dist-tag.
@@ -2279,6 +2431,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 // convergence path already ran inside the finalize step. Emit NO
                 // install-failure event; the self-heal worked.
                 ManagedRetryAttempt::Converged(info) => return Ok(info),
+                ManagedRetryAttempt::DeferredUserCli(info) => return Ok(info),
                 // The retry ran but did not converge (npm failed under the managed
                 // toolchain, or exited 0 into an unreachable prefix). It already
                 // reported exactly once — with managed provenance for a failure,
@@ -3575,6 +3728,9 @@ enum ManagedRetryAttempt {
     /// managed-prefix resolution + a live executable probe); NO Sentry event was
     /// emitted — the self-heal worked.
     Converged(HqCliUpdateInfo),
+    /// A terminal-started CLI acquired the package during a managed retry. The
+    /// retry is deferred quietly and will run at the next scheduled check.
+    DeferredUserCli(HqCliUpdateInfo),
     /// The retry RAN under HQ's managed toolchain but did not converge; it already
     /// reported exactly once (managed-provenance failure, or non-convergence), with
     /// provenance-aware wording that never re-blames the user's runtime. The caller
@@ -3726,6 +3882,17 @@ async fn managed_toolchain_retry(
         }
     };
 
+    if retry_run.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli {
+        record_deferred_user_cli_breadcrumb(
+            retry_run.lock_holder_diagnostic.unwrap_or_default(),
+            retry_run.windows_busy_retry_attempts.unwrap_or_default(),
+        );
+        return ManagedRetryAttempt::DeferredUserCli(HqCliUpdateInfo {
+            local: before_version.map(str::to_owned),
+            latest: latest.to_string(),
+        });
+    }
+
     if retry_run.output.status.success() {
         // Judge convergence with ABI/runtime evidence, not version alone: the
         // installed binary must resolve INSIDE the prefix this retry targeted AND
@@ -3787,6 +3954,7 @@ async fn managed_toolchain_retry(
     install_env.missing_target_state = retry_run.missing_target_state;
     install_env.windows_busy_retry_attempts = retry_run.windows_busy_retry_attempts;
     install_env.windows_busy_retry_outcome = retry_run.windows_busy_retry_outcome;
+    install_env.lock_holder_diagnostic = retry_run.lock_holder_diagnostic;
     // Carry the same pinned-version attribution onto the managed-provenance event
     // (HQ-DESKTOP-5Q): the retry installs the SAME resolved `latest`, pinned. Tag
     // only, never a grouping component.
@@ -4012,7 +4180,13 @@ async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
                 if should_auto_install(&info.latest, non_convergent_cli_version().as_deref()) {
                     log("hq-cli-update", "auto-update enabled — installing");
                     match install_hq_cli_update(handle.clone()).await {
-                        Ok(_) => log("hq-cli-update", "auto-update succeeded"),
+                        Ok(info) if info.local.as_deref() == Some(info.latest.as_str()) => {
+                            log("hq-cli-update", "auto-update succeeded")
+                        }
+                        Ok(_) => log(
+                            "hq-cli-update",
+                            "auto-update did not converge; the scheduled check will retry",
+                        ),
                         Err(e) => log(
                             "hq-cli-update",
                             &format!("auto-update failed, banner remains: {e}"),

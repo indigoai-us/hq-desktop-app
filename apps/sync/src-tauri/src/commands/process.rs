@@ -34,11 +34,15 @@ use uuid::Uuid;
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 64;
 
 #[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, PWSTR};
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WIN32_ERROR};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, HANDLE, WIN32_ERROR,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -48,6 +52,10 @@ use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::RestartManager::{
+    RmEndSession, RmGetList, RmRegisterResources, RmStartSession, RM_PROCESS_INFO,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{
@@ -600,10 +608,8 @@ pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
     if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
         return None;
     }
-    if !sync_cycle_registration_allowed(
-        handle,
-        SYNC_CYCLE_PAUSE_REQUESTED.load(Ordering::Acquire),
-    ) {
+    if !sync_cycle_registration_allowed(handle, SYNC_CYCLE_PAUSE_REQUESTED.load(Ordering::Acquire))
+    {
         return None;
     }
     match reg.active.entry(handle.to_string()) {
@@ -2126,6 +2132,384 @@ fn windows_process_snapshot() -> Vec<ProcessTreeRow> {
         let _ = CloseHandle(snapshot);
     }
     rows
+}
+
+#[cfg(target_os = "windows")]
+const RESTART_MANAGER_FILE_SAMPLE_LIMIT: usize = 64;
+#[cfg(target_os = "windows")]
+const RESTART_MANAGER_DIRECTORY_SAMPLE_LIMIT: usize = 64;
+#[cfg(target_os = "windows")]
+const RESTART_MANAGER_DIRECTORY_ENTRY_LIMIT: usize = 128;
+#[cfg(target_os = "windows")]
+const RESTART_MANAGER_PROCESS_SAMPLE_LIMIT: usize = 256;
+
+#[cfg(target_os = "windows")]
+struct RestartManagerSession(u32);
+
+#[cfg(target_os = "windows")]
+impl Drop for RestartManagerSession {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = RmEndSession(self.0);
+        }
+    }
+}
+
+/// Return a bounded breadth-first sample of regular files under the selected
+/// global `@indigoai-us/hq-cli` package. Symlinks are not followed; every
+/// resource given to Restart Manager is therefore inside the selected prefix.
+#[cfg(target_os = "windows")]
+fn hq_cli_package_file_sample(prefix: &str) -> Vec<std::path::PathBuf> {
+    let package_root = std::path::Path::new(prefix)
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cli");
+    let mut directories = vec![package_root];
+    let mut files = Vec::with_capacity(RESTART_MANAGER_FILE_SAMPLE_LIMIT);
+    let mut cursor = 0;
+
+    while cursor < directories.len()
+        && directories.len() <= RESTART_MANAGER_DIRECTORY_SAMPLE_LIMIT
+        && files.len() < RESTART_MANAGER_FILE_SAMPLE_LIMIT
+    {
+        let directory = directories[cursor].clone();
+        cursor += 1;
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries
+            .take(RESTART_MANAGER_DIRECTORY_ENTRY_LIMIT)
+            .flatten()
+        {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() && directories.len() < RESTART_MANAGER_DIRECTORY_SAMPLE_LIMIT {
+                directories.push(entry.path());
+            } else if file_type.is_file() && files.len() < RESTART_MANAGER_FILE_SAMPLE_LIMIT {
+                files.push(entry.path());
+            }
+            if files.len() == RESTART_MANAGER_FILE_SAMPLE_LIMIT {
+                break;
+            }
+        }
+    }
+    files
+}
+
+#[cfg(target_os = "windows")]
+fn restart_manager_utf16_string(buffer: &[u16]) -> String {
+    let end = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..end])
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_process_image_basename(pid: u32) -> Option<String> {
+    use windows::Win32::System::Threading::{QueryFullProcessImageNameW, PROCESS_NAME_WIN32};
+
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 1024];
+        let mut length = buffer.len() as u32;
+        let result = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut length,
+        );
+        let _ = CloseHandle(process);
+        result.ok()?;
+        let full_path =
+            restart_manager_utf16_string(&buffer[..(length as usize).min(buffer.len())]);
+        std::path::Path::new(&full_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_terminal_shell_image(image: &str) -> bool {
+    matches!(
+        image.trim().to_ascii_lowercase().as_str(),
+        "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "bash.exe"
+            | "sh.exe"
+            | "mintty.exe"
+            | "conemuc.exe"
+            | "conemu64.exe"
+            | "windowsterminal.exe"
+            | "wt.exe"
+            | "conhost.exe"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn app_owned_kind_for_holder(
+    pid: u32,
+    process_start_time: u64,
+    rows: &[ProcessTreeRow],
+) -> Option<hq_desktop_core::hq_cli_update::AppOwnedProcessKind> {
+    use hq_desktop_core::hq_cli_update::AppOwnedProcessKind;
+
+    if rows
+        .iter()
+        .find(|row| row.pid == pid)
+        .and_then(|row| row.created)
+        != Some(process_start_time)
+    {
+        return None;
+    }
+    let protected = windows_protected_pids(rows);
+    for process in registered_processes_including_retired() {
+        let is_root = process.pid == pid;
+        let is_descendant =
+            !is_root && descendants_in_snapshot(process.pid, rows, &protected).contains(&pid);
+        if !is_root && !is_descendant {
+            continue;
+        }
+        let handle = process.handle.to_ascii_lowercase();
+        return Some(if handle == SYNC_PROCESS_HANDLE {
+            AppOwnedProcessKind::HqSyncRunner
+        } else if handle == SYNC_DAEMON_PROCESS_HANDLE
+            || handle.contains("mcp")
+            || handle.contains("watch")
+        {
+            AppOwnedProcessKind::McpOrWatcherChild
+        } else {
+            AppOwnedProcessKind::Other
+        });
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn has_terminal_ancestor(pid: u32, rows: &[ProcessTreeRow]) -> bool {
+    ancestors_in_snapshot(pid, rows)
+        .into_iter()
+        .filter(|ancestor| *ancestor != pid)
+        .filter_map(resolve_process_image_basename)
+        .any(|image| is_terminal_shell_image(&image))
+}
+
+/// Query Restart Manager for processes holding files sampled from the selected
+/// CLI package. Raw app/service names and executable names are used only in
+/// process memory for classification; this function logs and returns only
+/// closed, path-free values.
+#[cfg(target_os = "windows")]
+pub fn query_hq_cli_package_holders(
+    prefix: &str,
+) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
+    use hq_desktop_core::hq_cli_update::{
+        NpmLockHolderQueryOutcome, RestartManagerHolderObservation, RestartManagerProcessResult,
+    };
+    use windows::Win32::System::RestartManager::CCH_RM_SESSION_KEY;
+
+    let files = hq_cli_package_file_sample(prefix);
+    if files.is_empty() {
+        return RestartManagerHolderObservation::from_results(
+            &[],
+            NpmLockHolderQueryOutcome::NoFilesSampled,
+        );
+    }
+
+    let wide_files = files
+        .iter()
+        .map(|path| {
+            path.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let file_resources = wide_files
+        .iter()
+        .map(|path| PCWSTR(path.as_ptr()))
+        .collect::<Vec<_>>();
+    let mut session_key = Uuid::new_v4()
+        .simple()
+        .to_string()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    session_key.resize(CCH_RM_SESSION_KEY as usize + 1, 0);
+    let mut session_handle = 0u32;
+    let start_status =
+        unsafe { RmStartSession(&mut session_handle, 0, PWSTR(session_key.as_mut_ptr())) };
+    if start_status.0 != 0 {
+        return RestartManagerHolderObservation::from_results(
+            &[],
+            NpmLockHolderQueryOutcome::Unavailable,
+        );
+    }
+    let session = RestartManagerSession(session_handle);
+    let register_status =
+        unsafe { RmRegisterResources(session.0, Some(&file_resources), None, None) };
+    if register_status.0 != 0 {
+        return RestartManagerHolderObservation::from_results(
+            &[],
+            NpmLockHolderQueryOutcome::Unavailable,
+        );
+    }
+
+    let mut required = 0u32;
+    let mut returned = 0u32;
+    let mut reboot_reasons = 0u32;
+    let list_status = unsafe {
+        RmGetList(
+            session.0,
+            &mut required,
+            &mut returned,
+            None,
+            &mut reboot_reasons,
+        )
+    };
+    if list_status.0 == 0 && required == 0 {
+        return RestartManagerHolderObservation::from_results(
+            &[],
+            NpmLockHolderQueryOutcome::Complete,
+        );
+    }
+    if list_status != ERROR_MORE_DATA {
+        return RestartManagerHolderObservation::from_results(
+            &[],
+            NpmLockHolderQueryOutcome::Unavailable,
+        );
+    }
+
+    let capacity = (required as usize).min(RESTART_MANAGER_PROCESS_SAMPLE_LIMIT);
+    let mut process_info = vec![RM_PROCESS_INFO::default(); capacity];
+    let mut returned = capacity as u32;
+    let list_status = unsafe {
+        RmGetList(
+            session.0,
+            &mut required,
+            &mut returned,
+            Some(process_info.as_mut_ptr()),
+            &mut reboot_reasons,
+        )
+    };
+    let truncated = list_status == ERROR_MORE_DATA || required as usize > capacity;
+    if list_status.0 != 0 && !truncated {
+        return RestartManagerHolderObservation::from_results(
+            &[],
+            NpmLockHolderQueryOutcome::Unavailable,
+        );
+    }
+
+    process_info.truncate((returned as usize).min(process_info.len()));
+    let rows = windows_process_snapshot();
+    let results = process_info
+        .iter()
+        .map(|info| {
+            let pid = info.Process.dwProcessId;
+            let start = info.Process.ProcessStartTime;
+            let process_start_time =
+                (u64::from(start.dwHighDateTime) << 32) | u64::from(start.dwLowDateTime);
+            RestartManagerProcessResult {
+                process_id: pid,
+                process_start_time,
+                application_name: restart_manager_utf16_string(&info.strAppName),
+                service_short_name: restart_manager_utf16_string(&info.strServiceShortName),
+                image_name: rows
+                    .iter()
+                    .find(|row| row.pid == pid && row.created == Some(process_start_time))
+                    .and_then(|_| resolve_process_image_basename(pid)),
+                has_terminal_ancestor: rows
+                    .iter()
+                    .any(|row| row.pid == pid && row.created == Some(process_start_time))
+                    && has_terminal_ancestor(pid, &rows),
+                app_child_kind: app_owned_kind_for_holder(pid, process_start_time, &rows),
+            }
+        })
+        .collect::<Vec<_>>();
+    let reported_count = Some(required);
+    RestartManagerHolderObservation::from_results_with_count(
+        &results,
+        if truncated {
+            NpmLockHolderQueryOutcome::Truncated
+        } else {
+            NpmLockHolderQueryOutcome::Complete
+        },
+        reported_count,
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn query_hq_cli_package_holders(
+    _prefix: &str,
+) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
+    hq_desktop_core::hq_cli_update::RestartManagerHolderObservation::from_results(
+        &[],
+        hq_desktop_core::hq_cli_update::NpmLockHolderQueryOutcome::Unavailable,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_start_time(pid: u32) -> Result<Option<u64>, String> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::GetProcessTimes;
+
+    let process = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+        Ok(process) => process,
+        Err(error) if windows_process_open_error_means_exited(&error) => return Ok(None),
+        Err(_) => return Err("cannot verify a Restart Manager holder identity".to_string()),
+    };
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let result =
+        unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) };
+    let _ = unsafe { CloseHandle(process) };
+    result.map_err(|_| "cannot verify a Restart Manager holder identity".to_string())?;
+    Ok(Some(
+        (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime),
+    ))
+}
+
+/// Wait only for app-owned process identities Restart Manager tied to this
+/// package. Matching creation times prevent a recycled PID from extending the
+/// wait for an unrelated process. This is observation-only: holder processes
+/// are never terminated.
+#[cfg(target_os = "windows")]
+pub async fn wait_for_hq_cli_package_holders(
+    observation: &hq_desktop_core::hq_cli_update::RestartManagerHolderObservation,
+    timeout: Duration,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    loop {
+        let mut live_holder = false;
+        for holder in observation.owned_processes() {
+            if let Some(start_time) = windows_process_start_time(holder.process_id)? {
+                if start_time == holder.process_start_time && windows_pid_alive(holder.process_id)?
+                {
+                    live_holder = true;
+                    break;
+                }
+            }
+        }
+        if !live_holder {
+            return Ok(());
+        }
+        if started.elapsed() >= timeout {
+            return Err(crate::updater::UPDATE_DEFERRED_DURING_PROCESS_EXIT.to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub async fn wait_for_hq_cli_package_holders(
+    _observation: &hq_desktop_core::hq_cli_update::RestartManagerHolderObservation,
+    _timeout: Duration,
+) -> Result<(), String> {
+    Ok(())
 }
 
 /// Pids the pid-tree fallback must never touch: this process and its
@@ -3992,7 +4376,9 @@ mod update_quiescence_tests {
     #[test]
     fn cli_install_waits_for_opaque_app_children_but_not_known_other_runtimes() {
         assert!(process_could_hold_hq_cli_install_target("app-owned-child"));
-        assert!(!process_could_hold_hq_cli_install_target(SYNC_PROCESS_HANDLE));
+        assert!(!process_could_hold_hq_cli_install_target(
+            SYNC_PROCESS_HANDLE
+        ));
         assert!(!process_could_hold_hq_cli_install_target(
             SYNC_DAEMON_PROCESS_HANDLE
         ));

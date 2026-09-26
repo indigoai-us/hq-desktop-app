@@ -5038,6 +5038,288 @@ const WINDOWS_ABORT_EXIT: i32 = -1_073_740_791; // 0xC0000409
 const WINDOWS_EPERM_EXIT: i32 = -4048;
 const WINDOWS_EBUSY_EXIT: i32 = -4082;
 
+/// Closed classification written for Restart Manager results. Values are
+/// intentionally short labels: raw process names, file paths, usernames, and
+/// process IDs never cross the Sentry boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NpmLockHolderClass {
+    None,
+    HqSyncRunner,
+    McpOrWatcherChild,
+    UserTerminalHqCli,
+    DefenderOrIndexer,
+    Other,
+    #[default]
+    Unknown,
+}
+
+impl NpmLockHolderClass {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::HqSyncRunner => "hq-sync-runner",
+            Self::McpOrWatcherChild => "mcp-or-watcher-child",
+            Self::UserTerminalHqCli => "user-terminal-hq-cli",
+            Self::DefenderOrIndexer => "defender-or-indexer",
+            Self::Other => "other",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Restart Manager names plus local-only process context. `image_name` must be
+/// a basename; none of these fields are copied to logs, Sentry tags, or extras.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RestartManagerProcessResult {
+    pub process_id: u32,
+    pub process_start_time: u64,
+    pub application_name: String,
+    pub service_short_name: String,
+    pub image_name: Option<String>,
+    pub has_terminal_ancestor: bool,
+    pub app_child_kind: Option<AppOwnedProcessKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppOwnedProcessKind {
+    HqSyncRunner,
+    McpOrWatcherChild,
+    Other,
+}
+
+/// A process identity retained only in memory so a PID reuse cannot cause the
+/// updater to wait on an unrelated process. These values are never serialized.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RestartManagerProcessIdentity {
+    pub process_id: u32,
+    pub process_start_time: u64,
+}
+
+pub struct RestartManagerHolderClassification {
+    pub class: NpmLockHolderClass,
+    pub count: u16,
+    owned_processes: Vec<RestartManagerProcessIdentity>,
+}
+
+impl RestartManagerHolderClassification {
+    pub fn owned_processes(&self) -> &[RestartManagerProcessIdentity] {
+        &self.owned_processes
+    }
+
+    pub fn includes_owned_process(&self, process_id: u32, process_start_time: u64) -> bool {
+        self.owned_processes.iter().any(|identity| {
+            identity.process_id == process_id && identity.process_start_time == process_start_time
+        })
+    }
+}
+
+fn is_scanner_process_name(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "mpsvc"
+            | "windefend"
+            | "wdnissvc"
+            | "wsearch"
+            | "mpcmdrun.exe"
+            | "msmpeng.exe"
+            | "nissrv.exe"
+            | "searchfilterhost.exe"
+            | "searchindexer.exe"
+            | "searchprotocolhost.exe"
+            | "windows search"
+            | "microsoft windows search filter host"
+            | "antimalware service executable"
+            | "windows defender"
+    )
+}
+
+fn is_terminal_hq_cli_process(image_name: Option<&str>, has_terminal_ancestor: bool) -> bool {
+    has_terminal_ancestor
+        && image_name.is_some_and(|image| {
+            matches!(
+                image.trim().to_ascii_lowercase().as_str(),
+                "node.exe" | "hq.exe" | "hq-cli.exe"
+            )
+        })
+}
+
+fn restart_manager_result_class(result: &RestartManagerProcessResult) -> NpmLockHolderClass {
+    if let Some(kind) = result.app_child_kind {
+        return match kind {
+            AppOwnedProcessKind::HqSyncRunner => NpmLockHolderClass::HqSyncRunner,
+            AppOwnedProcessKind::McpOrWatcherChild => NpmLockHolderClass::McpOrWatcherChild,
+            AppOwnedProcessKind::Other => NpmLockHolderClass::Other,
+        };
+    }
+    if is_terminal_hq_cli_process(result.image_name.as_deref(), result.has_terminal_ancestor) {
+        return NpmLockHolderClass::UserTerminalHqCli;
+    }
+    if result
+        .image_name
+        .as_deref()
+        .is_some_and(is_scanner_process_name)
+        || is_scanner_process_name(&result.application_name)
+        || is_scanner_process_name(&result.service_short_name)
+    {
+        return NpmLockHolderClass::DefenderOrIndexer;
+    }
+    NpmLockHolderClass::Other
+}
+
+/// Pure aggregation/classification over Restart Manager's process results and
+/// local process-tree facts. If results contain multiple kinds, a terminal
+/// hq-cli holder wins so an update is deferred without disturbing that session.
+pub fn classify_restart_manager_holders(
+    results: &[RestartManagerProcessResult],
+) -> RestartManagerHolderClassification {
+    let mut identities = Vec::new();
+    let mut owned_processes = Vec::new();
+    let mut selected = NpmLockHolderClass::None;
+    for result in results {
+        if result.process_id == 0 {
+            continue;
+        }
+        let identity = RestartManagerProcessIdentity {
+            process_id: result.process_id,
+            process_start_time: result.process_start_time,
+        };
+        if identities.contains(&identity) {
+            continue;
+        }
+        identities.push(identity);
+        if result.app_child_kind.is_some() {
+            owned_processes.push(identity);
+        }
+        let class = restart_manager_result_class(result);
+        let priority = |value| match value {
+            NpmLockHolderClass::UserTerminalHqCli => 6,
+            NpmLockHolderClass::HqSyncRunner => 5,
+            NpmLockHolderClass::McpOrWatcherChild => 4,
+            NpmLockHolderClass::DefenderOrIndexer => 3,
+            NpmLockHolderClass::Other => 2,
+            NpmLockHolderClass::Unknown => 1,
+            NpmLockHolderClass::None => 0,
+        };
+        if priority(class) > priority(selected) {
+            selected = class;
+        }
+    }
+    RestartManagerHolderClassification {
+        class: selected,
+        count: identities.len().min(u16::MAX as usize) as u16,
+        owned_processes,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NpmLockHolderQueryOutcome {
+    Complete,
+    NoFilesSampled,
+    Truncated,
+    #[default]
+    Unavailable,
+}
+
+impl NpmLockHolderQueryOutcome {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::NoFilesSampled => "no-files-sampled",
+            Self::Truncated => "truncated",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+pub struct RestartManagerHolderObservation {
+    pub class: NpmLockHolderClass,
+    pub count: u16,
+    pub query_outcome: NpmLockHolderQueryOutcome,
+    owned_processes: Vec<RestartManagerProcessIdentity>,
+}
+
+impl RestartManagerHolderObservation {
+    pub fn from_results(
+        results: &[RestartManagerProcessResult],
+        query_outcome: NpmLockHolderQueryOutcome,
+    ) -> Self {
+        Self::from_results_with_count(results, query_outcome, None)
+    }
+
+    /// Build the telemetry-safe view while preserving Restart Manager's full
+    /// count when its bounded process sample was truncated.
+    pub fn from_results_with_count(
+        results: &[RestartManagerProcessResult],
+        query_outcome: NpmLockHolderQueryOutcome,
+        reported_count: Option<u32>,
+    ) -> Self {
+        let classification = classify_restart_manager_holders(results);
+        let class = if query_outcome == NpmLockHolderQueryOutcome::Complete {
+            classification.class
+        } else {
+            NpmLockHolderClass::Unknown
+        };
+        Self {
+            class,
+            count: reported_count
+                .map(|count| count.min(u16::MAX as u32) as u16)
+                .unwrap_or(classification.count),
+            query_outcome,
+            owned_processes: classification.owned_processes,
+        }
+    }
+
+    pub fn diagnostic(&self) -> NpmLockHolderDiagnostic {
+        NpmLockHolderDiagnostic {
+            class: self.class,
+            count: self.count,
+            query_outcome: self.query_outcome,
+        }
+    }
+
+    pub fn owned_processes(&self) -> &[RestartManagerProcessIdentity] {
+        &self.owned_processes
+    }
+
+    pub fn includes_owned_process(&self, process_id: u32, process_start_time: u64) -> bool {
+        self.owned_processes.iter().any(|identity| {
+            identity.process_id == process_id && identity.process_start_time == process_start_time
+        })
+    }
+}
+
+/// Telemetry-safe holder summary. This type deliberately has no PID or name
+/// fields; only its closed values may cross the reporting boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NpmLockHolderDiagnostic {
+    pub class: NpmLockHolderClass,
+    pub count: u16,
+    pub query_outcome: NpmLockHolderQueryOutcome,
+}
+
+pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES: usize = 3;
+const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS: [&str; WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES] = [
+    "windows-busy-install-target-backoff-1",
+    "windows-busy-install-target-backoff-2",
+    "windows-busy-install-target-backoff-3",
+];
+
+/// Four total npm attempts use three bounded waits totalling ten seconds.
+pub fn windows_busy_install_target_retry_delay(retry_number: usize) -> Option<std::time::Duration> {
+    match retry_number {
+        1 => Some(std::time::Duration::from_secs(1)),
+        2 => Some(std::time::Duration::from_secs(3)),
+        3 => Some(std::time::Duration::from_secs(6)),
+        _ => None,
+    }
+}
+
+pub fn windows_busy_install_target_retry_rung(retry_number: usize) -> Option<&'static str> {
+    WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS
+        .get(retry_number.checked_sub(1)?)
+        .copied()
+}
+
 /// Whether a failed npm install is the EXPECTED Windows "the `hq` binary is
 /// locked / in use" condition (libuv `EPERM`). npm bubbles the same underlying
 /// error two ways depending on where it aborts:
@@ -5068,7 +5350,7 @@ pub fn is_windows_locked_binary_failure(exit_code: Option<i32>, detail: &str) ->
 /// Detect the Windows npm package-target lock reported as EBUSY/rename. This is
 /// distinct from EPERM while replacing the `hq` shim: the locked target can be a
 /// package directory under the selected prefix's node_modules. All structured
-/// fields must agree before the updater arms its one delayed retry.
+/// fields must agree before the updater arms its bounded retry ladder.
 pub fn is_windows_locked_install_target_failure(
     exit_code: Option<i32>,
     detail: &str,
@@ -5082,15 +5364,13 @@ pub fn is_windows_locked_install_target_failure(
         && !npm_lifecycle_failure(detail).failed
 }
 
-/// Attempt label for the single backoff retry after npm reports EBUSY while
-/// renaming a package under the selected global prefix.
-pub const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG: &str =
-    "windows-busy-install-target-backoff-plain";
+/// First retry label retained for callers that use the original retry seam.
+pub const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG: &str = WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS[0];
 
-/// Decide whether the app may arm its one retry for a Windows locked install
-/// target. The pure seam keeps the failure classifier, one-shot ledger guard,
-/// and attempt cap together so the app cannot accidentally retry another EBUSY
-/// shape or loop after the retry has already run.
+/// Decide whether the app may arm another retry for a Windows locked install
+/// target. The pure seam keeps the failure classifier, bounded retry ledger,
+/// and total attempt cap together so the app cannot retry another EBUSY shape
+/// or loop after the retry budget is exhausted.
 pub fn should_retry_windows_busy_install_target(
     exit_code: Option<i32>,
     detail: &str,
@@ -5098,8 +5378,12 @@ pub fn should_retry_windows_busy_install_target(
     attempted_rungs: &[&str],
     max_attempts: usize,
 ) -> bool {
+    let retries_already_run = attempted_rungs
+        .iter()
+        .filter(|rung| WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS.contains(rung))
+        .count();
     is_windows_locked_install_target_failure(exit_code, detail, prefix)
-        && !attempted_rungs.contains(&WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNG)
+        && retries_already_run < WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES
         && attempted_rungs.len() < max_attempts
 }
 
@@ -5880,6 +6164,9 @@ pub fn install_failure_report_with_environment(
     final_attempt_forced: bool,
     env: &InstallEnvironment,
 ) -> Option<String> {
+    if env.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli {
+        return None;
+    }
     let kind = classify_install_failure_with_environment(
         exit_code,
         detail,
@@ -6008,16 +6295,18 @@ pub enum WindowsBusyRetryOutcome {
     /// The install did not finish with the selected-prefix EBUSY/rename shape.
     #[default]
     NotApplicable,
-    /// The shape matched, but the install attempt budget or repeat guard left no
-    /// retry available.
+    /// The shape matched, but no retry was available or safe to start.
     NotArmed,
-    /// The one bounded retry completed successfully.
+    /// A bounded retry completed successfully.
     Succeeded,
-    /// The one bounded retry ran and the install still failed.
+    /// One or more bounded retries ran and the install still failed with EBUSY.
     Failed,
-    /// The bounded retry failed, but its final output no longer identifies the
+    /// A bounded retry failed, but its final output no longer identifies the
     /// selected install target as locked.
     OtherFailure,
+    /// A terminal-started HQ CLI owns the package files. Leave it running and
+    /// let the next scheduled update check retry after that session exits.
+    DeferredUserCli,
 }
 
 impl WindowsBusyRetryOutcome {
@@ -6028,6 +6317,7 @@ impl WindowsBusyRetryOutcome {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::OtherFailure => "other-failure",
+            Self::DeferredUserCli => "deferred-user-cli",
         }
     }
 
@@ -6035,7 +6325,9 @@ impl WindowsBusyRetryOutcome {
     pub fn lock_holder_class(self) -> Option<&'static str> {
         match self {
             Self::NotArmed | Self::Failed => Some("unknown"),
-            Self::NotApplicable | Self::Succeeded | Self::OtherFailure => None,
+            Self::NotApplicable | Self::Succeeded | Self::OtherFailure | Self::DeferredUserCli => {
+                None
+            }
         }
     }
 }
@@ -6058,9 +6350,222 @@ mod windows_busy_retry_outcome_tests {
             WindowsBusyRetryOutcome::NotApplicable,
             WindowsBusyRetryOutcome::Succeeded,
             WindowsBusyRetryOutcome::OtherFailure,
+            WindowsBusyRetryOutcome::DeferredUserCli,
         ] {
             assert_eq!(outcome.lock_holder_class(), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod restart_manager_holder_tests {
+    use super::*;
+
+    fn result(
+        process_id: u32,
+        application_name: &str,
+        image_name: Option<&str>,
+        has_terminal_ancestor: bool,
+        app_child_kind: Option<AppOwnedProcessKind>,
+    ) -> RestartManagerProcessResult {
+        RestartManagerProcessResult {
+            process_id,
+            process_start_time: u64::from(process_id) * 10,
+            application_name: application_name.to_string(),
+            service_short_name: String::new(),
+            image_name: image_name.map(str::to_string),
+            has_terminal_ancestor,
+            app_child_kind,
+        }
+    }
+
+    #[test]
+    fn restart_manager_results_map_to_the_closed_holder_classes_and_unique_count() {
+        let cases = [
+            (
+                result(
+                    1,
+                    "HQ Sync",
+                    Some("hq-sync.exe"),
+                    false,
+                    Some(AppOwnedProcessKind::HqSyncRunner),
+                ),
+                NpmLockHolderClass::HqSyncRunner,
+            ),
+            (
+                result(
+                    2,
+                    "MCP",
+                    Some("node.exe"),
+                    false,
+                    Some(AppOwnedProcessKind::McpOrWatcherChild),
+                ),
+                NpmLockHolderClass::McpOrWatcherChild,
+            ),
+            (
+                result(3, "Node.js", Some("node.exe"), true, None),
+                NpmLockHolderClass::UserTerminalHqCli,
+            ),
+            (
+                result(
+                    4,
+                    "Antimalware Service Executable",
+                    Some("MsMpEng.exe"),
+                    false,
+                    None,
+                ),
+                NpmLockHolderClass::DefenderOrIndexer,
+            ),
+            (
+                result(
+                    5,
+                    "Unrecognized application",
+                    Some("other.exe"),
+                    false,
+                    None,
+                ),
+                NpmLockHolderClass::Other,
+            ),
+        ];
+        for (input, expected) in cases {
+            let classification = classify_restart_manager_holders(&[input]);
+            assert_eq!(classification.class, expected);
+            assert_eq!(classification.count, 1);
+        }
+
+        let duplicate = result(6, "Node.js", Some("node.exe"), true, None);
+        let classification = classify_restart_manager_holders(&[duplicate.clone(), duplicate]);
+        assert_eq!(classification.class, NpmLockHolderClass::UserTerminalHqCli);
+        assert_eq!(classification.count, 1);
+        let mut windows_search = result(7, "Windows Search", Some("svchost.exe"), false, None);
+        windows_search.service_short_name = "WSearch".to_string();
+        assert_eq!(
+            classify_restart_manager_holders(&[windows_search]).class,
+            NpmLockHolderClass::DefenderOrIndexer
+        );
+        assert_eq!(
+            classify_restart_manager_holders(&[]).class,
+            NpmLockHolderClass::None
+        );
+    }
+
+    #[test]
+    fn an_owned_restart_manager_holder_is_included_in_the_quiescence_wait_set() {
+        let observation = RestartManagerHolderObservation::from_results(
+            &[
+                result(
+                    41,
+                    "HQ Sync",
+                    Some("node.exe"),
+                    false,
+                    Some(AppOwnedProcessKind::HqSyncRunner),
+                ),
+                result(42, "Search Indexer", Some("SearchIndexer.exe"), false, None),
+            ],
+            NpmLockHolderQueryOutcome::Complete,
+        );
+        assert!(observation.includes_owned_process(41, 410));
+        assert!(!observation.includes_owned_process(41, 411));
+        assert!(!observation.includes_owned_process(42, 420));
+    }
+}
+
+#[cfg(test)]
+mod windows_busy_backoff_tests {
+    use super::*;
+
+    const PREFIX: &str = r"C:\Users\me\AppData\Roaming\npm";
+    const DETAIL: &str = "npm error code EBUSY\nnpm error errno -4082\nnpm error syscall rename\nnpm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
+
+    #[test]
+    fn windows_busy_backoff_runs_three_bounded_retries_over_ten_seconds() {
+        let delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
+            .map(|retry| windows_busy_install_target_retry_delay(retry).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            delays,
+            [
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(3),
+                std::time::Duration::from_secs(6),
+            ]
+        );
+        assert_eq!(delays.iter().map(|delay| delay.as_secs()).sum::<u64>(), 10);
+        assert!(windows_busy_install_target_retry_delay(4).is_none());
+
+        let first_retry = windows_busy_install_target_retry_rung(1).unwrap();
+        let second_retry = windows_busy_install_target_retry_rung(2).unwrap();
+        let third_retry = windows_busy_install_target_retry_rung(3).unwrap();
+        assert!(should_retry_windows_busy_install_target(
+            Some(-4082),
+            DETAIL,
+            Some(PREFIX),
+            &["plain"],
+            4
+        ));
+        assert!(should_retry_windows_busy_install_target(
+            Some(-4082),
+            DETAIL,
+            Some(PREFIX),
+            &["plain", first_retry],
+            4
+        ));
+        assert!(should_retry_windows_busy_install_target(
+            Some(-4082),
+            DETAIL,
+            Some(PREFIX),
+            &["plain", first_retry, second_retry],
+            4
+        ));
+        assert!(!should_retry_windows_busy_install_target(
+            Some(-4082),
+            DETAIL,
+            Some(PREFIX),
+            &["plain", first_retry, second_retry, third_retry],
+            4
+        ));
+    }
+}
+
+#[cfg(test)]
+mod deferred_user_cli_report_tests {
+    use super::*;
+
+    #[test]
+    fn deferred_user_cli_outcome_does_not_create_an_error_event() {
+        const PREFIX: &str = r"C:\Users\me\AppData\Roaming\npm";
+        let detail = "npm error code EBUSY\nnpm error errno -4082\nnpm error syscall rename\nnpm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
+        let env = InstallEnvironment {
+            windows_busy_retry_attempts: Some(0),
+            windows_busy_retry_outcome: WindowsBusyRetryOutcome::DeferredUserCli,
+            lock_holder_diagnostic: Some(NpmLockHolderDiagnostic {
+                class: NpmLockHolderClass::UserTerminalHqCli,
+                count: 1,
+                query_outcome: NpmLockHolderQueryOutcome::Complete,
+            }),
+            ..InstallEnvironment::default()
+        };
+        assert!(install_failure_report_with_environment(
+            Some(-4082),
+            detail,
+            Some(PREFIX),
+            false,
+            &env
+        )
+        .is_none());
+        assert_eq!(
+            report_install_failure_episode_at(
+                Some(-4082),
+                detail,
+                Some(PREFIX),
+                false,
+                &env,
+                "5.174.0",
+                &[],
+                0
+            ),
+            InstallFailureEpisode::NotReportable
+        );
     }
 }
 
@@ -6198,6 +6703,9 @@ pub struct InstallEnvironment {
     /// Whether the bounded Windows EBUSY retry was not applicable, unarmed,
     /// successful, or still failing. Tag/diagnostic only; never a grouping key.
     pub windows_busy_retry_outcome: WindowsBusyRetryOutcome,
+    /// Closed, path-free Restart Manager result attached only to a final EBUSY
+    /// failure. Process names, paths, usernames, and PIDs stay in memory.
+    pub lock_holder_diagnostic: Option<NpmLockHolderDiagnostic>,
     /// For a missing-global-install-target failure (HQ-DESKTOP-5K), which ancestor
     /// of the install scope the mkdir remedy found missing and how its creation
     /// went. A pure tag/diagnostic addition (never a fingerprint, signature, or
@@ -6494,10 +7002,17 @@ pub fn report_install_failure_with_environment(
         npm_diagnostics.push_str(" registry_serving_lag=escalated");
     }
     if let Some(attempts) = env.windows_busy_retry_attempts {
-        // The desktop can wait for its own registered command processes, but it
-        // cannot inspect Windows handles owned by antivirus or external tools.
-        if let Some(holder_class) = env.windows_busy_retry_outcome.lock_holder_class() {
-            npm_diagnostics.push_str(&format!(" lock_holder_class={holder_class}"));
+        if matches!(
+            env.windows_busy_retry_outcome,
+            WindowsBusyRetryOutcome::NotArmed | WindowsBusyRetryOutcome::Failed
+        ) {
+            let diagnostic = env.lock_holder_diagnostic.unwrap_or_default();
+            npm_diagnostics.push_str(&format!(
+                " lock_holder_class={} lock_holder_count={} lock_holder_query_outcome={}",
+                diagnostic.class.tag_value(),
+                diagnostic.count,
+                diagnostic.query_outcome.tag_value(),
+            ));
         }
         npm_diagnostics.push_str(&format!(
             " windows_busy_retry_attempts={attempts} windows_busy_retry_outcome={}",
@@ -6595,8 +7110,17 @@ pub fn report_install_failure_with_environment(
                 env.managed_retry_outcome.tag_value(),
             );
             if let Some(attempts) = env.windows_busy_retry_attempts {
-                if let Some(holder_class) = env.windows_busy_retry_outcome.lock_holder_class() {
-                    scope.set_tag("npm_lock_holder_class", holder_class);
+                if matches!(
+                    env.windows_busy_retry_outcome,
+                    WindowsBusyRetryOutcome::NotArmed | WindowsBusyRetryOutcome::Failed
+                ) {
+                    let diagnostic = env.lock_holder_diagnostic.unwrap_or_default();
+                    scope.set_tag("npm_lock_holder_class", diagnostic.class.tag_value());
+                    scope.set_tag("npm_lock_holder_count", diagnostic.count.to_string());
+                    scope.set_tag(
+                        "npm_lock_holder_query_outcome",
+                        diagnostic.query_outcome.tag_value(),
+                    );
                 }
                 scope.set_tag("npm_windows_busy_retry_attempts", attempts.to_string());
                 scope.set_tag(
@@ -12523,16 +13047,20 @@ mod tests {
     }
 
     #[test]
-    fn windows_busy_install_target_retry_is_one_shot_and_bounded() {
+    fn windows_busy_install_target_retry_is_bounded_to_the_shared_attempt_budget() {
         let prefix = r"C:\Users\me\AppData\Roaming\npm";
         let detail = "npm error code EBUSY\n\
             npm error errno -4082\n\
             npm error syscall rename\n\
             npm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
         assert!(should_retry_windows_busy_install_target(
-            Some(-4082), detail, Some(prefix), &[], 4
+            Some(-4082),
+            detail,
+            Some(prefix),
+            &[],
+            4
         ));
-        assert!(!should_retry_windows_busy_install_target(
+        assert!(should_retry_windows_busy_install_target(
             Some(-4082),
             detail,
             Some(prefix),
@@ -12547,7 +13075,11 @@ mod tests {
             4
         ));
         assert!(!should_retry_windows_busy_install_target(
-            Some(-4082), detail, Some(prefix), &[], 0
+            Some(-4082),
+            detail,
+            Some(prefix),
+            &[],
+            0
         ));
     }
 
@@ -15761,6 +16293,7 @@ mod tests {
             managed_retry_outcome: ManagedRetryOutcome::NotArmed,
             windows_busy_retry_attempts: None,
             windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
+            lock_holder_diagnostic: None,
             missing_target_state: MissingTargetState::Unknown,
             target_version: None,
             requested_spec_kind: RequestedSpecKind::Unknown,
