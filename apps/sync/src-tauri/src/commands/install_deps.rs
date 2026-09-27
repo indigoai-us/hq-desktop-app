@@ -5254,9 +5254,6 @@ fn winget_install_args(id: &str) -> [&str; 8] {
 // installed result. Re-probe Git after this source failure so an existing
 // managed Git is accepted, while preserving the original error when absent.
 #[cfg(any(test, windows))]
-const WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE: i32 = -1978335138;
-
-#[cfg(any(test, windows))]
 fn winget_exit_code_from_error(error: &str) -> Option<i32> {
     let rest = error.strip_prefix("Process exited with code ")?;
     rest.split_once(':')
