@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.342] — 2026-09-27
+
+- Cached native builds are now compressed so release packaging can restore them
+  instead of rebuilding.
 - When enabled, cancelling setup treats an installer process group with no live
   members as already cleaned up instead of reporting a cleanup error. The
   rollout flag is off by default.
