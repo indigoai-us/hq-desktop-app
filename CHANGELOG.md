@@ -8,6 +8,16 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- New Files page (Cmd+5, or the file icon in the title bar). It opens full
+  window like Settings, with Back to return to Messages. Browse your
+  personal vault and each company vault on this Mac. Notes open in a reading
+  view with their properties, clickable [[links]], an outline, and the notes
+  that link back to them. Cmd+O jumps to any file. Settings folders and key
+  files are never shown. Large company vaults (tens of thousands of files)
+  stay fast: search, links and counts come from an index the app keeps up to
+  date in the background, folders with thousands of files scroll smoothly,
+  and a very large note shows its first part with a button to open the rest.
+- Markdown documents of a few megabytes no longer crash the reading view.
 - A company you were just added to, including one the setup bot creates for
   you, now syncs onto this Mac by itself. The "Added to … Sync to pull it"
   banner only appears when that sync fails, and its Sync now button retries.

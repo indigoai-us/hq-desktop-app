@@ -170,6 +170,8 @@
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
+  import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
+  import PageHeader from "./PageHeader.svelte";
   import ProjectsHome from "../projects/ProjectsHome.svelte";
   import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
   import CommandPalette, {
@@ -1479,11 +1481,15 @@
     | "library"
     | "shared-files"
     | "projects"
+    | "explorer"
     | "extra"
     | "dm-requests"
   >("conversation");
   /** Company shown on the Projects page; null follows the selected channel. */
   let projectsCompany = $state<string | null>(null);
+  /** Files explorer location (vault id + HQ-relative file). */
+  let explorerVault = $state<string | null>(null);
+  let explorerPath = $state<string | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -3162,6 +3168,15 @@
         shortcut: shortcutLabel("view.projects"),
         action: () => {
           void navigate({ kind: "projects" });
+        },
+      });
+      nav.push({
+        id: "command-go-files",
+        label: "Files",
+        detail: "Browse your personal and company vaults",
+        shortcut: shortcutLabel("view.files"),
+        action: () => {
+          void navigate({ kind: "explorer" });
         },
       });
     }
@@ -5875,6 +5890,8 @@
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
         return { kind: "shared-files" };
+      case "explorer":
+        return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "projects":
         return { kind: "projects", company: projectsCompany };
       case "extra":
@@ -6238,6 +6255,14 @@
         break;
       case "shared-files":
         view = "shared-files";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "explorer":
+        explorerVault = next.vault ?? null;
+        explorerPath = next.path ?? null;
+        view = "explorer";
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
@@ -7649,6 +7674,12 @@
     // the previous page.
     void navigate({ kind: "messages" });
   }
+  function closeFiles(): void {
+    // Same rule as Settings: each opened file is a history step, so Back
+    // means "close Files" and lands on Messages.
+    void navigate({ kind: "messages" });
+  }
+
 
   function companyWorkspaceForSlug(slug: string) {
     const needle = slug.trim();
@@ -7938,6 +7969,15 @@
             group: "Views",
             run: () => {
               void navigate({ kind: "projects" });
+            },
+          } satisfies ShortcutBinding,
+          {
+            id: "view.files",
+            keys: "Mod+5",
+            label: "Files",
+            group: "Views",
+            run: () => {
+              void navigate({ kind: "explorer" });
             },
           } satisfies ShortcutBinding,
         ]
@@ -8243,6 +8283,9 @@
     onopenProjects={isWeb ? undefined : () => {
       void navigate({ kind: "projects" });
     }}
+    onopenFiles={isWeb ? undefined : () => {
+      void navigate({ kind: "explorer" });
+    }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
@@ -8409,6 +8452,29 @@
         {refreshAppVersion}
         {uiVersion}
       />
+    </div>
+  {:else if view === "explorer"}
+    <!-- Full destination, like Settings. -->
+    <div class="desktop-body" data-testid="files-host">
+      <section class="files-page">
+        <PageHeader
+          onback={closeFiles}
+          title="Files"
+          subtitle="your personal and company vaults"
+          backTestId="files-back"
+        />
+        <div class="explorer-host" data-testid="explorer-host">
+          <VaultExplorer
+            {adapter}
+            {companies}
+            vaultId={explorerVault}
+            path={explorerPath}
+            onlocationchange={(loc) => {
+              void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+            }}
+          />
+        </div>
+      </section>
     </div>
   {:else}
     <div class="desktop-body" style:--sidebar-width={`${sidebarWidth}px`}>
@@ -9693,7 +9759,18 @@
     --titlebar-leading-inset: 16px;
   }
 
-  .projects-host {
+  .files-page {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--v4-ground, #161618);
+    color: var(--t1);
+  }
+  .projects-host,
+  .explorer-host {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -9701,7 +9778,8 @@
     min-height: 0;
     overflow: hidden;
   }
-  .projects-host > :global(*) {
+  .projects-host > :global(*),
+  .explorer-host > :global(*) {
     flex: 1 1 auto;
     min-height: 0;
   }
