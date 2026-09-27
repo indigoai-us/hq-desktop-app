@@ -1,5 +1,9 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import {
+    createSyncPlatformAdapter,
+    SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
+  } from '@hq/platform';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
   import { safeUnlisten } from '../../lib/listener-registry';
@@ -173,6 +177,26 @@
   // person explicitly takes over with a provider.
   const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
+  const cancellationFlagAdapter = createSyncPlatformAdapter({
+    invoke: (command, args) => invoke(command, args),
+  });
+  let cancellationEpermClassificationEnabled = false;
+
+  async function refreshCancellationEpermFlag(): Promise<void> {
+    cancellationEpermClassificationEnabled = false;
+    try {
+      const result = await cancellationFlagAdapter.identity.hasFeature(
+        SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
+      );
+      cancellationEpermClassificationEnabled = result.ok && result.value === true;
+    } catch (error) {
+      cancellationEpermClassificationEnabled = false;
+      console.warn(
+        'Setup cancellation EPERM flag lookup failed; keeping the gate off',
+        error,
+      );
+    }
+  }
 
   let {
     initialStep,
@@ -589,6 +613,7 @@
     stopClaudeWatch();
     stopToolWatch();
     cancelSetupRun();
+    void cancellationFlagAdapter.dispose?.();
   });
 
   function setTransitionTimer(callback: () => void, ms: number): number {
@@ -962,8 +987,12 @@
     if (runId !== currentRunId) return;
     const handles = [...activeInstallHandles];
     activeInstallHandles.clear();
+    const reapedEpermIsClean = cancellationEpermClassificationEnabled;
+    void refreshCancellationEpermFlag();
     await Promise.allSettled(
-      handles.map((handle) => invoke('cancel_install', { handle })),
+      handles.map((handle) =>
+        invoke('cancel_install', { handle, reapedEpermIsClean }),
+      ),
     );
   }
 
@@ -1523,6 +1552,7 @@
       cancelSetupRun();
     }
     const runId = beginSetupRun();
+    void refreshCancellationEpermFlag();
     inFlightRunId = runId;
     try {
       if (installPath) effectiveInstallPath = installPath;

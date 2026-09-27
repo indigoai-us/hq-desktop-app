@@ -6,6 +6,7 @@ import {
   FLAG_REFRESH_INTERVAL_MS,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
+  SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -43,6 +44,9 @@ describe("registry key mapping", () => {
     expect(registryKeyFor("meetings")).toBe(MEETINGS_REGISTRY_KEY);
     expect(registryKeyFor(MEETINGS_LEGACY_FLAG)).toBe("desktop.meetings");
     expect(registryKeyFor(CLAUDE_PROVIDER_FLAG)).toBe(CLAUDE_PROVIDER_FLAG);
+    expect(registryKeyFor(SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG)).toBe(
+      SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
+    );
     expect(registryKeyFor("is_indigo_user")).toBeUndefined();
     expect(registryKeyFor("anything-else")).toBeUndefined();
   });

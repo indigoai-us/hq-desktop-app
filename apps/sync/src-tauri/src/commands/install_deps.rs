@@ -7,6 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+#[cfg(unix)]
+use std::io::Read;
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::mem::size_of;
@@ -480,6 +482,7 @@ static CANCEL_REGISTRY: std::sync::OnceLock<Arc<Mutex<HashMap<String, CancelStat
 struct CancelState {
     cancelled: bool,
     cleanup_failure: Option<CancellationCleanupFailure>,
+    reaped_eperm_is_clean: bool,
     #[cfg(unix)]
     pgid: Option<i32>,
     #[cfg(windows)]
@@ -630,23 +633,164 @@ fn cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
 }
 
 #[cfg(unix)]
+fn signal_process_group_with_probe<F, P>(
+    pgid: i32,
+    signal_kind: Signal,
+    reaped_eperm_is_clean: bool,
+    dispatch: F,
+    has_live_members: P,
+) -> Result<(), CancellationCleanupFailure>
+where
+    F: FnOnce(Pid, Signal) -> Result<(), nix::errno::Errno>,
+    P: FnOnce(i32) -> Result<bool, std::io::Error>,
+{
+    match dispatch(Pid::from_raw(-pgid), signal_kind) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(nix::errno::Errno::EPERM)
+            if signal_kind == Signal::SIGTERM && reaped_eperm_is_clean =>
+        {
+            match has_live_members(pgid) {
+                Ok(false) => Ok(()),
+                Ok(true) | Err(_) => Err(CancellationCleanupFailure::from_unix_signal(
+                    signal_kind,
+                    nix::errno::Errno::EPERM,
+                )),
+            }
+        }
+        Err(error) => Err(CancellationCleanupFailure::from_unix_signal(
+            signal_kind,
+            error,
+        )),
+    }
+}
+
+/// Check the complete group, not only its leader: an exited unreaped leader can
+/// coexist with a running child that must keep the cleanup failure visible.
+/// `ps` reports zombie state on both supported Unix targets. Probe errors or a
+/// timeout keep the original EPERM report.
+#[cfg(unix)]
+fn unix_process_group_has_live_members(pgid: i32) -> Result<bool, std::io::Error> {
+    const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
+    let mut probe = Command::new("/bin/ps")
+        .args(["-axo", "pgid=,stat="])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = probe
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "ps stdout was not piped"))?;
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        Read::take(stdout, MAX_OUTPUT_BYTES + 1).read_to_end(&mut output)?;
+        Ok::<_, std::io::Error>(output)
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let status = loop {
+        match probe.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) => {
+                let _ = probe.kill();
+                let _ = probe.wait();
+                let _ = reader.join();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "process group liveness probe timed out",
+                ));
+            }
+            Err(error) => {
+                let _ = probe.kill();
+                let _ = probe.wait();
+                let _ = reader.join();
+                return Err(error);
+            }
+        }
+    };
+    let output = reader
+        .join()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "ps reader panicked"))??;
+    if output.len() as u64 > MAX_OUTPUT_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "process group liveness output exceeded its bound",
+        ));
+    }
+    if !status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "ps process group query failed",
+        ));
+    }
+    let output = String::from_utf8(output).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "ps output was not UTF-8")
+    })?;
+    let mut saw_process = false;
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        saw_process = true;
+        let mut columns = line.split_whitespace();
+        let group = columns
+            .next()
+            .and_then(|value| value.parse::<i32>().ok())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "ps output did not contain a process group id",
+                )
+            })?;
+        let state = columns.next().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ps output did not contain a process state",
+            )
+        })?;
+        if group != pgid {
+            continue;
+        }
+        if !state.starts_with('Z') {
+            return Ok(true);
+        }
+    }
+    if !saw_process {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "ps returned no process entries",
+        ))
+    } else {
+        // A successful complete listing with no matching group also proves
+        // that no process in the group remains to be signaled.
+        Ok(false)
+    }
+}
+
+#[cfg(unix)]
 fn terminate_process_tree(
     handle: &str,
     signal_kind: Signal,
 ) -> Result<(), CancellationCleanupFailure> {
-    let pgid = cancel_registry()
+    let (pgid, reaped_eperm_is_clean) = cancel_registry()
         .lock()
         .unwrap()
         .get(handle)
-        .and_then(|state| state.pgid);
+        .map(|state| (state.pgid, state.reaped_eperm_is_clean))
+        .unwrap_or((None, false));
     let Some(pgid) = pgid else {
         return Ok(());
     };
 
-    match signal::kill(Pid::from_raw(-pgid), signal_kind) {
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(error) => Err(CancellationCleanupFailure::from_unix_signal(signal_kind, error)),
-    }
+    signal_process_group_with_probe(
+        pgid,
+        signal_kind,
+        reaped_eperm_is_clean,
+        signal::kill,
+        unix_process_group_has_live_members,
+    )
 }
 
 #[cfg(windows)]
@@ -2274,12 +2418,13 @@ pub fn check_dep_in(tool: &str, path_dirs: &str) -> DepStatus {
 /// Returns `true` if the handle was registered (i.e. an install was in
 /// progress), `false` otherwise.
 #[tauri::command]
-pub fn cancel_install(handle: String) -> bool {
+pub fn cancel_install(handle: String, reaped_eperm_is_clean: Option<bool>) -> bool {
     let mut reg = cancel_registry().lock().unwrap();
     let Some(state) = reg.get_mut(&handle) else {
         return false;
     };
     state.cancelled = true;
+    state.reaped_eperm_is_clean = reaped_eperm_is_clean.unwrap_or(false);
     drop(reg);
 
     #[cfg(unix)]
@@ -8542,7 +8687,7 @@ mod install_deps_tests {
 
     #[test]
     fn test_cancel_install_unknown_handle_returns_false() {
-        let result = cancel_install("handle-that-does-not-exist-abc999".to_string());
+        let result = cancel_install("handle-that-does-not-exist-abc999".to_string(), None);
         assert!(!result);
     }
 
@@ -8551,9 +8696,21 @@ mod install_deps_tests {
         let handle = "test-handle-registered-001".to_string();
 
         register_cancel_handle(handle.clone());
-        let result = cancel_install(handle);
+        let result = cancel_install(handle, None);
 
         assert!(result);
+    }
+
+    #[test]
+    fn cancel_install_stores_the_reaped_eperm_flag_from_the_caller() {
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+
+        assert!(cancel_install(handle.clone(), Some(true)));
+        assert!(
+            cancel_registry().lock().unwrap()[&handle].reaped_eperm_is_clean,
+            "the hq-flags result must reach cancellation cleanup"
+        );
     }
 
     #[test]
@@ -10681,6 +10838,191 @@ mod cancellation_reporting_tests {
         CancellationCleanupFailure::from_unix_signal(Signal::SIGTERM, nix::errno::Errno::EPERM)
     }
 
+    #[cfg(unix)]
+    struct ProcessGroupChild(std::process::Child);
+
+    #[cfg(unix)]
+    impl ProcessGroupChild {
+        fn spawn(program: &str, args: &[&str]) -> Self {
+            let child = Command::new(program)
+                .args(args)
+                .process_group(0)
+                .spawn()
+                .expect("process-group test child starts");
+            Self(child)
+        }
+
+        fn pgid(&self) -> i32 {
+            self.0.id() as i32
+        }
+
+        fn is_unreaped_zombie(&self) -> bool {
+            let pid = Pid::from_raw(self.pgid());
+            let deadline = Instant::now() + Duration::from_millis(800);
+            loop {
+                let still_exists = signal::kill(pid, None).is_ok();
+                let has_live_members = unix_process_group_has_live_members(self.pgid());
+                if still_exists && matches!(has_live_members, Ok(false)) {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn reap(&mut self) {
+            let _ = self.0.wait().expect("process-group test child reaps");
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ProcessGroupChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    fn report_if_cleanup_failed(
+        result: Result<(), CancellationCleanupFailure>,
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        sentry::test::with_captured_events(|| {
+            if let Err(cleanup) = result {
+                send_setup_cancellation_cleanup_failure(
+                    &scope(),
+                    "hq-cli",
+                    cleanup,
+                    diagnostic("cleanup failed"),
+                );
+            }
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaped_eperm_flag_treats_an_unreaped_zombie_group_as_clean() {
+        let child = ProcessGroupChild::spawn("sh", &["-c", "exit 0"]);
+        let pgid = child.pgid();
+        let is_unreaped_zombie = child.is_unreaped_zombie();
+
+        let result = signal_process_group_with_probe(
+            pgid,
+            Signal::SIGTERM,
+            true,
+            |target, signal_kind| {
+                assert_eq!(target.as_raw(), -pgid);
+                assert_eq!(signal_kind, Signal::SIGTERM);
+                Err(nix::errno::Errno::EPERM)
+            },
+            unix_process_group_has_live_members,
+        );
+        let events = report_if_cleanup_failed(result);
+
+        assert!(
+            is_unreaped_zombie,
+            "leader must remain an unreaped zombie during the probe"
+        );
+        assert!(
+            events.is_empty(),
+            "a dead process group must not emit cleanup failure"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_group_probe_treats_a_successfully_reaped_group_as_empty() {
+        let mut child = ProcessGroupChild::spawn("sh", &["-c", "exit 0"]);
+        let pgid = child.pgid();
+        child.reap();
+
+        assert!(matches!(
+            unix_process_group_has_live_members(pgid),
+            Ok(false)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_group_member_keeps_the_eperm_cleanup_report_and_tags() {
+        let child = ProcessGroupChild::spawn("sleep", &["30"]);
+        let pgid = child.pgid();
+        let result = signal_process_group_with_probe(
+            pgid,
+            Signal::SIGTERM,
+            true,
+            |target, signal_kind| {
+                assert_eq!(target.as_raw(), -pgid);
+                assert_eq!(signal_kind, Signal::SIGTERM);
+                Err(nix::errno::Errno::EPERM)
+            },
+            unix_process_group_has_live_members,
+        );
+        let events = report_if_cleanup_failed(result);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(
+            events[0].fingerprint,
+            vec!["hq-cli", "cancel-cleanup-failed", "SIGTERM", "EPERM"]
+        );
+        assert_eq!(
+            events[0].message.as_deref(),
+            Some("Desktop setup cancellation cleanup could leave an install process running")
+        );
+        assert_eq!(
+            events[0].tags["setup_error_category"],
+            "cancel-cleanup-failed"
+        );
+        assert_eq!(events[0].tags["setup_cancel_signal"], "SIGTERM");
+        assert_eq!(events[0].tags["setup_cancel_os_error_kind"], "EPERM");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaped_eperm_flag_does_not_change_sigkill_escalation() {
+        let result = signal_process_group_with_probe(
+            42,
+            Signal::SIGKILL,
+            true,
+            |_, _| Err(nix::errno::Errno::EPERM),
+            |_| panic!("SIGKILL escalation must not run the reaped-group probe"),
+        );
+        let events = report_if_cleanup_failed(result);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(events[0].tags["setup_cancel_signal"], "SIGKILL");
+        assert_eq!(events[0].tags["setup_cancel_os_error_kind"], "EPERM");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaped_eperm_flag_off_keeps_the_current_cleanup_report() {
+        let child = ProcessGroupChild::spawn("sh", &["-c", "exit 0"]);
+        let pgid = child.pgid();
+        let is_unreaped_zombie = child.is_unreaped_zombie();
+        let result = signal_process_group_with_probe(
+            pgid,
+            Signal::SIGTERM,
+            false,
+            |_, _| Err(nix::errno::Errno::EPERM),
+            unix_process_group_has_live_members,
+        );
+        let events = report_if_cleanup_failed(result);
+
+        assert!(
+            is_unreaped_zombie,
+            "leader must remain an unreaped zombie during the probe"
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(events[0].tags["setup_cancel_signal"], "SIGTERM");
+        assert_eq!(events[0].tags["setup_cancel_os_error_kind"], "EPERM");
+    }
+
     fn diagnostic(error: &str) -> SetupCommandDiagnostic {
         SetupCommandDiagnostic {
             command: "npm install -g @indigoai-us/hq-cli".to_string(),
@@ -10798,7 +11140,7 @@ mod cancellation_reporting_tests {
             handle: Uuid::new_v4().to_string(),
         };
         register_cancel_handle(registration.handle.clone());
-        assert!(cancel_install(registration.handle.clone()));
+        assert!(cancel_install(registration.handle.clone(), None));
 
         let collector = InstallCancellationCollector::new();
         let runtime = tokio::runtime::Builder::new_current_thread()
