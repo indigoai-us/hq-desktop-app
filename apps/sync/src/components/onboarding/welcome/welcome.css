@@ -866,8 +866,8 @@
   color: var(--w-muted);
   margin-bottom: 12px;
 }
-/* Titles hold one line; subtitles wrap to stay whole in a narrow (~800px) window
-   (the prototype ellipsized them there, and titles wrapped). */
+/* One line each, as in the prototype: in a window too narrow for five cards
+   at full width the cards shrink together and the subtitle ellipsizes. */
 .hq-welcome .rail-row .rn {
   display: block;
   font-family: var(--w-font-sans);
@@ -877,6 +877,8 @@
   color: #fff;
   margin-bottom: 2px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .hq-welcome .rail-row .rn::first-letter {
   text-transform: uppercase;
@@ -886,10 +888,9 @@
   font-size: 12px;
   line-height: 16px;
   color: var(--w-muted);
-  text-wrap: pretty;
-}
-.hq-welcome .rail.measuring .rm {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---- 3 · one shortcut: the board draws in, then the chord lights -------- */

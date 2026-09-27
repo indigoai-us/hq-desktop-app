@@ -554,6 +554,27 @@ export interface OrbitRefs {
   nav: HTMLElement | null;
 }
 
+/**
+ * The cloud screen's vertical gaps: title -> orbit, orbit -> rail, rail ->
+ * Next. `space` is the height left for the orbit plus these three gaps once
+ * the title, rail and button are placed; `wantOrbit` is the orbit height
+ * (chips included) the screen should get. The prototype's gaps (40/44/44)
+ * hold whenever that fits; otherwise they shrink together toward 20/24/24.
+ */
+export function orbitGaps(space: number, wantOrbit: number): { gap1: number; gap2: number; navGap: number } {
+  const full = { gap1: 40, gap2: 44, navGap: NAVGAP };
+  const least = { gap1: 20, gap2: 24, navGap: 24 };
+  const fullSum = full.gap1 + full.gap2 + full.navGap;
+  const slack = fullSum - (least.gap1 + least.gap2 + least.navGap);
+  const short = wantOrbit - (space - fullSum);
+  const k = Math.max(0, Math.min(1, short / slack));
+  return {
+    gap1: Math.round(full.gap1 - (full.gap1 - least.gap1) * k),
+    gap2: Math.round(full.gap2 - (full.gap2 - least.gap2) * k),
+    navGap: Math.round(full.navGap - (full.navGap - least.navGap) * k),
+  };
+}
+
 export function createOrbitEngine(refs: OrbitRefs, options: { reveal: () => void }): SceneEngine {
   const rings = [
     { r: 0.26, squash: 0.38, speed: 0.2, dir: 1, rx: 0, ry: 0, el: refs.ellipses[0] },
@@ -575,35 +596,39 @@ export function createOrbitEngine(refs: OrbitRefs, options: { reveal: () => void
     const W = vw();
     const H = vh();
     cx = W / 2;
-    // Equal-width cards. The prototype sized them so the longest subtitle fit
-    // on one line and then ellipsized it once the window was narrower than
-    // five of those; in a narrow (~800px) window that clipped every subtitle
-    // and wrapped the titles. Instead the rail takes the width it needs up to
-    // 96% of the window, titles stay on one line, and subtitles wrap.
-    rail.classList.add('measuring');
+    // Equal-width cards, sized so the longest one-line subtitle fits; in a
+    // narrower window they shrink together and the subtitle ellipsizes (the
+    // prototype's rule). The rail never runs wider than 96% of the window.
     rail.style.width = 'auto';
     for (const row of railRows) row.style.flex = '0 0 auto';
     let maxW = 0;
     for (const row of railRows) maxW = Math.max(maxW, rect(row).width);
     for (const row of railRows) row.style.flex = '1 1 0';
-    rail.classList.remove('measuring');
     rail.style.width = `${Math.min(Math.floor(W * 0.96), Math.ceil(maxW) * railRows.length + 10 * (railRows.length - 1))}px`;
 
     const y = copyTop(H);
-    const GAP1 = 40;
-    const GAP2 = 44;
     const chipHalf = 12;
     const capGap = 58;
     const sideGap = 64;
     const MAX_OUTER_RY = 150;
+    const RATIO = rings[1]!.r / rings[0]!.r;
     const ch = rect(copy).height;
     const rh = rect(rail).height;
     copy.style.top = `${y}px`;
-    const top = y + ch + GAP1;
     const bottom = H - FLOOR; // room under the title
-    const room = bottom - top - rh - GAP2 - NAVGAP - NAVH; // vertical room for the orbit incl. chips
+    // The prototype's gaps (title -> orbit 40, orbit -> rail 44, rail -> Next
+    // 44) assume a tall window. In a short one (a 1024x686 work area) they
+    // left the orbit ~70px tall: the inner ring ran through the mark's
+    // caption and the chips piled onto each other. There the gaps give up
+    // space first, down to a floor, until the orbit is tall enough for its
+    // inner track to clear the mark (at the mark's 72px floor) and caption.
+    const { gap1: GAP1, gap2: GAP2, navGap } = orbitGaps(
+      bottom - (y + ch) - rh - NAVH,
+      2 * (Math.min(MAX_OUTER_RY, ((72 * 161) / 280 / 2 + capGap) * RATIO) + chipHalf),
+    );
+    const top = y + ch + GAP1;
+    const room = bottom - top - rh - GAP2 - navGap - NAVH; // vertical room for the orbit incl. chips
     const maxOuterRy = Math.max(24, Math.min(MAX_OUTER_RY, room / 2 - chipHalf));
-    const RATIO = rings[1]!.r / rings[0]!.r;
     const maxInnerRy = maxOuterRy / RATIO;
     let coreW = 120;
     let coreH = (coreW * 161) / 280;
@@ -624,13 +649,13 @@ export function createOrbitEngine(refs: OrbitRefs, options: { reveal: () => void
       R.ry *= need * fit;
     }
     const orbitH = 2 * (rings[1]!.ry + chipHalf);
-    const block = orbitH + GAP2 + rh + NAVGAP + NAVH;
+    const block = orbitH + GAP2 + rh + navGap + NAVH;
     const start = placeUnder(top, bottom, block, 30);
     cy = Math.round(start + orbitH / 2);
     const railTop = Math.round(cy + orbitH / 2 + GAP2);
     rail.style.bottom = 'auto';
     rail.style.top = `${railTop}px`;
-    placeNav(refs.nav, railTop + rh + NAVGAP);
+    placeNav(refs.nav, railTop + rh + navGap);
     for (const R of rings) {
       R.el.setAttribute('cx', String(cx));
       R.el.setAttribute('cy', String(cy));
