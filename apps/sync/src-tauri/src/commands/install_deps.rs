@@ -9481,7 +9481,9 @@ mod windows_tests {
         // Supplying an explicit Git Bash fixture verifies the launcher uses its
         // absolute path and targets this package's script-relative entry point.
         assert!(
-            qmd_cmd.contains(r#""C:\Program Files\Git\bin\bash.exe" "%~dp0node_modules\@tobilu\qmd\bin\qmd" %*"#),
+            qmd_cmd.contains(
+                r#""C:\Program Files\Git\bin\bash.exe" "%~dp0node_modules\@tobilu\qmd\bin\qmd" %*"#,
+            ),
             "{qmd_cmd}"
         );
         assert!(
@@ -9531,7 +9533,9 @@ mod windows_tests {
         let rewritten = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
         assert_ne!(rewritten, npm_shim);
         assert!(
-            rewritten.contains(r#""C:\Program Files\Git\bin\bash.exe" "%~dp0node_modules\@tobilu\qmd\bin\qmd" %*"#),
+            rewritten.contains(
+                r#""C:\Program Files\Git\bin\bash.exe" "%~dp0node_modules\@tobilu\qmd\bin\qmd" %*"#,
+            ),
             "{rewritten}"
         );
     }
