@@ -35,7 +35,6 @@ import {
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
-  SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
@@ -505,10 +504,7 @@ export function createSyncPlatformAdapter(
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
       hasFeature: (flag) =>
         flags.resolve(flag, () => {
-          if (
-            flag === CLAUDE_PROVIDER_FLAG ||
-            flag === SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG
-          ) {
+          if (flag === CLAUDE_PROVIDER_FLAG) {
             return Promise.resolve(ok(false));
           }
           if (flag === 'meetings') {
@@ -1079,6 +1075,15 @@ export function createSyncPlatformAdapter(
 
     files: {
       listDir: (relPath) => call('list_hq_dir', { relPath }),
+      vault: {
+        summary: (root, includeSystem) =>
+          call('vault_summary', { root, includeSystem }),
+        search: (root, includeSystem, query) =>
+          call('vault_search', { root, includeSystem, query }),
+        noteLinks: (root, includeSystem, path, targets) =>
+          call('vault_note_links', { root, includeSystem, path, targets }),
+        readNote: (path) => call('read_vault_note', { path }),
+      },
       getFileContent: (path) => call('get_company_file_content', { path }),
       listVaultPrefix: (companyUid, prefix) =>
         hqProJson(
@@ -1316,6 +1321,7 @@ export function createSyncPlatformAdapter(
           memory: input.memory ?? null,
           kind: input.kind ?? null,
           companies: input.companies ?? null,
+          displayName: input.displayName ?? null,
         }),
       workers: () => call('local_bots_workers'),
       start: (name) => call('local_bots_start', { name }),

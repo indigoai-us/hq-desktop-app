@@ -13,25 +13,93 @@ describe('unexpectedSurfaceForState', () => {
   });
 
   it('returns onboarding when a machine lands on an onboarding surface', () => {
-    expect(unexpectedSurfaceForState('NeedsInstall', false)).toBe('onboarding');
-    expect(unexpectedSurfaceForState('InstallResume', false)).toBe('onboarding');
-    expect(unexpectedSurfaceForState('NeedsAuthForInstall', false)).toBe('onboarding');
-    expect(unexpectedSurfaceForState('InstalledFirstRun', false)).toBe('onboarding');
+    const installed = {
+      installCompleted: true,
+      firstRunCompleted: false,
+      installInProgress: true,
+      manifestIncomplete: true,
+      hadMachineId: true,
+      hqRootValid: true,
+    };
+    expect(unexpectedSurfaceForState('InstalledFirstRun', false, installed)).toBe('onboarding');
+    expect(unexpectedSurfaceForState('NeedsInstall', false, installed)).toBe('onboarding');
   });
 
-  it('treats onboarding as unexpected even when authenticated is true (mid-install reauth edge)', () => {
-    expect(unexpectedSurfaceForState('NeedsInstall', true)).toBe('onboarding');
+  it('keeps InstalledFirstRun reportable when older setup markers are absent', () => {
+    expect(
+      unexpectedSurfaceForState('InstalledFirstRun', false, {
+        installCompleted: false,
+        firstRunCompleted: false,
+        installInProgress: false,
+        manifestIncomplete: false,
+        hadMachineId: false,
+        hqRootValid: false,
+      }),
+    ).toBe('onboarding');
   });
 
-  it('returns null when lifecycle state is unknown and machine is authenticated', () => {
+  it('does not report onboarding for new or incomplete installs without prior setup evidence', () => {
+    const noPriorSetup = {
+      installCompleted: false,
+      firstRunCompleted: false,
+      installInProgress: false,
+      manifestIncomplete: false,
+      hadMachineId: false,
+      hqRootValid: false,
+    };
+    for (const state of ['NeedsInstall', 'NeedsAuthForInstall', 'InstallResume']) {
+      expect(unexpectedSurfaceForState(state, false, noPriorSetup), state).toBe(null);
+      expect(unexpectedSurfaceForState(state, true, noPriorSetup), state).toBe(null);
+    }
+  });
+
+  it('retains prior-machine evidence when a root is valid even if completion flags are absent', () => {
+    expect(
+      unexpectedSurfaceForState('InstallResume', false, {
+        installCompleted: false,
+        firstRunCompleted: false,
+        installInProgress: false,
+        manifestIncomplete: false,
+        hadMachineId: true,
+        hqRootValid: true,
+      }),
+    ).toBe('onboarding');
+  });
+
+  it('does not treat an interrupted first install as prior setup', () => {
+    const interruptedFirstInstall = {
+      installCompleted: false,
+      firstRunCompleted: false,
+      installInProgress: true,
+      manifestIncomplete: false,
+      hadMachineId: true,
+      hqRootValid: true,
+    };
+
+    expect(unexpectedSurfaceForState('NeedsInstall', false, interruptedFirstInstall)).toBe(null);
+  });
+
+  it('does not treat an incomplete manifest with only completed steps as prior setup', () => {
+    expect(
+      unexpectedSurfaceForState('NeedsInstall', false, {
+        installCompleted: false,
+        firstRunCompleted: false,
+        installInProgress: false,
+        manifestIncomplete: true,
+        hadMachineId: true,
+        hqRootValid: true,
+      }),
+    ).toBe(null);
+  });
+
+  it('returns sign-in when lifecycle state is unknown or steady and auth is absent', () => {
     expect(unexpectedSurfaceForState(null, true)).toBe(null);
     expect(unexpectedSurfaceForState('SteadyState', true)).toBe(null);
+    expect(unexpectedSurfaceForState(null, false)).toBe('sign-in');
+    expect(unexpectedSurfaceForState('SteadyState', false)).toBe('sign-in');
   });
 
-  it('a fresh install (NeedsInstall, not authenticated) shows onboarding — expected on first run', () => {
-    // This IS returned as 'onboarding' because we can't distinguish a fresh
-    // install from a regression here; the backend command does that via
-    // prior_setup_detected (install_completed / first_run_completed / token file).
-    expect(unexpectedSurfaceForState('NeedsInstall', false)).toBe('onboarding');
+  it('keeps the existing report attempt if setup evidence could not be read', () => {
+    expect(unexpectedSurfaceForState('NeedsInstall', false, null)).toBe('onboarding');
   });
 });

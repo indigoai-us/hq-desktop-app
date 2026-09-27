@@ -12,6 +12,8 @@
  * set up the whole time (customer report 2026-09-19, v0.10.296 -> v0.10.297).
  */
 
+import type { StartupSetupEvidence } from './unexpected-startup-surface';
+
 export type TokenPresence = 'present' | 'absent' | 'unknown';
 
 export function normalizeTokenPresence(value: unknown): TokenPresence {
@@ -25,6 +27,8 @@ export type StartupProbeResult = {
   hadStoredToken: boolean;
   /** Bounded observation used to diagnose startup auth restoration. */
   tokenPresence: TokenPresence;
+  /** Setup evidence used only by the unexpected-surface reporter. */
+  setupEvidence?: StartupSetupEvidence | null;
   auth: { authenticated: boolean; expiresAt: string | null };
 };
 

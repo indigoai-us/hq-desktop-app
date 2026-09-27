@@ -12,6 +12,7 @@
   import { listen } from '@tauri-apps/api/event';
   import WorkShell from '@hq/work/WorkShell';
   import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
+  import { createSetupInstallGuideCallbacks } from './lib/install-guide-adapter';
   import {
     applyAvailableUpdate,
     applyRecommendBanner,
@@ -78,6 +79,17 @@
   const adapter = createSyncPlatformAdapter({
     invoke: (command, args) => invokeFn(command, args),
     primeMirrorQuarantineGate: true,
+  });
+  /**
+   * US-005: wire SetupInstallGuide's four callbacks to real Tauri commands so
+   * the #setup dead-end ("no coding tool signed in") becomes a guided Install +
+   * sign-in flow. Works on macOS and Windows: the Rust `install_claude_code`
+   * and `install_codex` commands branch on `#[cfg]` inside the command itself.
+   */
+  const setupInstallGuide = createSetupInstallGuideCallbacks({
+    invoke: <T,>(command: string, args?: Record<string, unknown>) =>
+      invokeFn(command, args as never) as Promise<T>,
+    openUrl: (url: string) => openBrowserUrl(url),
   });
   onDestroy(() => {
     void adapter.dispose?.();
@@ -924,6 +936,7 @@
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
+        {setupInstallGuide}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');

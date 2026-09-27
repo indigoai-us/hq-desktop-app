@@ -57,9 +57,21 @@
   import SetupButton from "./SetupButton.svelte";
   import { SETUP_RUN_STEPS } from "./setup-run";
   import type { SetupAgent } from "./setup-agent.svelte";
-  import { SETUP_BOT_COPY, SETUP_BOT_GENERIC_FAILURE, SETUP_ELSEWHERE_COPY, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
+  import {
+    setupBotCopy,
+    SETUP_BOT_GENERIC_FAILURE,
+    isSetupBotNoRuntimeMessage,
+    SETUP_ELSEWHERE_COPY,
+    setupBotActionLabel,
+    type SetupBotLauncher,
+  } from "./setup-bot";
+  import { hostComputerNoun } from "@hq/platform";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
+  import SetupInstallGuide, {
+    type CodingTool,
+    type InstallOutcome,
+  } from "../settings/SetupInstallGuide.svelte";
 
   interface Props {
     /** Platform seam slices (see @hq/platform PlatformAdapter). */
@@ -126,6 +138,21 @@
      * fails, so nobody is ever stuck on this screen.
      */
     setupBot?: SetupBotLauncher | null;
+    /**
+     * US-005 wiring. When the setup bot cannot start because no coding tool
+     * is signed in on this computer, the hero surfaces a guided install path
+     * instead of a dead-end error. The host provides real callbacks that
+     * drive the Rust `install_claude_code` / `agent_provider_login_start` /
+     * `detect_ai_tools` commands and the manual-download fallback URL. HQ
+     * never asks for or handles the password itself.
+     */
+    installGuide?: {
+      oninstall(tool: CodingTool): Promise<InstallOutcome>;
+      onsignin(tool: CodingTool): Promise<InstallOutcome>;
+      onrefresh(): Promise<void>;
+      downloadUrlFor(tool: CodingTool): string;
+      onopen(url: string): Promise<InstallOutcome> | void;
+    } | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
     /**
@@ -148,13 +175,40 @@
     agent = null,
     onopensessiondetails,
     setupBot = null,
+    installGuide = null,
   }: Props = $props();
+
+  /**
+   * Local AiTools probe for the guided install path. Kept separate from the
+   * launch cascade above so a NO_RUNTIME dead-end can surface the guide
+   * without the launches also re-probing.
+   */
+  let installGuideTools = $state<AiTools | null>(null);
+  let installGuideProbed = false;
+
+  async function ensureInstallGuideTools(): Promise<void> {
+    if (installGuideProbed) return;
+    installGuideProbed = true;
+    try {
+      const res = await shell.detectAiTools();
+      installGuideTools = res.ok ? (res.value as unknown as AiTools) : null;
+    } catch {
+      installGuideTools = null;
+    }
+  }
 
   const rosterCompanies = $derived(setupCompanies(companies));
   const hasCompany = $derived(rosterCompanies.length > 0);
   const rosterLoading = $derived(setupRosterLoading(companies, rosterStatus));
   const rosterFailed = $derived(rosterStatus === "failed" && !hasCompany);
-  const hero = $derived(setupHeroFor(companies, rosterStatus));
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once at mount from the shared Tauri probe so the copy
+   * a person reads never suddenly renames their computer.
+   */
+  const hostNoun = hostComputerNoun();
+  const hero = $derived(setupHeroFor(companies, rosterStatus, { noun: hostNoun }));
+  const copy = $derived(setupBotCopy({ noun: hostNoun }));
 
   let createAnotherBusy = $state(false);
   let createAnotherError = $state<string | null>(null);
@@ -239,10 +293,10 @@
   const heroBody = $derived(
     setupBot && !scriptedFallback && !rosterLoading
       ? setupBot.starting && !setupBot.existing
-        ? SETUP_BOT_COPY.bodyStarting
+        ? copy.bodyStarting
         : setupBot.existing
-        ? SETUP_BOT_COPY.bodyExisting
-        : SETUP_BOT_COPY.body
+        ? copy.bodyExisting
+        : copy.body
       : hero.body,
   );
 
@@ -435,9 +489,9 @@
           onclick={runSetup}
         >
           {setupBot?.starting && !scriptedFallback && !botBusy
-            ? SETUP_BOT_COPY.autoStarting
+            ? copy.autoStarting
             : botBusy || agent?.busy
-              ? SETUP_BOT_COPY.starting
+              ? copy.starting
               : runLabel}
         </SetupButton>
       </div>
@@ -446,9 +500,27 @@
              keep the old scripted run one click away. -->
         <div class="bot-failure" data-testid="setup-bot-failure">
           <p class="launch-error" role="alert" data-testid="setup-bot-error">{visibleBotError}</p>
+          {#if installGuide && isSetupBotNoRuntimeMessage(visibleBotError)}
+            <!-- US-005: no coding tool is signed in. Instead of dead-ending
+                 the user, offer a guided Install + sign-in path. -->
+            {#await ensureInstallGuideTools() then _}
+              <SetupInstallGuide
+                tools={installGuideTools}
+                oninstall={installGuide.oninstall}
+                onsignin={installGuide.onsignin}
+                onrefresh={async () => {
+                  installGuideProbed = false;
+                  await ensureInstallGuideTools();
+                  await installGuide.onrefresh();
+                }}
+                downloadUrlFor={installGuide.downloadUrlFor}
+                onopen={installGuide.onopen}
+              />
+            {/await}
+          {/if}
           <div class="hero-actions" role="group" aria-label="Setup bot recovery">
             <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
-              {SETUP_BOT_COPY.retry}
+              {copy.retry}
             </SetupButton>
             <SetupButton
               variant="quiet"
@@ -456,7 +528,7 @@
               disabled={Boolean(agent?.busy)}
               onclick={useScriptedSetup}
             >
-              {SETUP_BOT_COPY.fallback}
+              {copy.fallback}
             </SetupButton>
           </div>
         </div>

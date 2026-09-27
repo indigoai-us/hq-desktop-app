@@ -65,7 +65,7 @@ export const NAVIGATION_INVENTORY_FILES = [
 
 /** Assignments of `view` in DesktopApp.svelte. Comparisons (`view ===`) are excluded. */
 export const DESKTOP_APP_VIEW_ASSIGN_RE = /\bview = (?:view ===|"[^"]+")/g;
-export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 13;
+export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 14;
 
 /** Direct `navigation.navigate(` calls in HqWorkWorkShell (native/host seams). */
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
@@ -137,6 +137,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // immediately; the selected conversation doesn't change.
   handleHomeChannelResolved: "none",
   closeSettings: "replace",
+  closeFiles: "replace",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
   applyCompanyDeepLink: "push",
@@ -382,6 +383,14 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "push",
     host: "shared-shell",
     inScope: true,
+  },  {
+    id: "close-files",
+    file: SHARED_SHELL_FILE,
+    needle: "function closeFiles(): void",
+    destinationKind: "messages",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
   },
   {
     id: "apply-embedded-navigation",
@@ -604,6 +613,14 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "replace",
     host: "shared-shell",
     inScope: true,
+  },  {
+    id: "files-onback",
+    file: SHARED_SHELL_FILE,
+    needle: "onback={closeFiles}",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
   },
   {
     id: "sidebar-select",
@@ -680,6 +697,16 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     host: "shared-shell",
     inScope: true,
     notes: "Switching company on the Projects page is a history step.",
+  },
+  {
+    id: "files-explorer",
+    file: SHARED_SHELL_FILE,
+    needle: '{:else if view === "explorer"}',
+    destinationKind: "explorer",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Each file or vault opened in the explorer is a history step.",
   },
   {
     id: "shared-files-overlay",
@@ -1409,7 +1436,7 @@ export function matrixRowsForFile(file: string): NavigationHandlerRow[] {
 }
 
 const NAVIGATE_FAMILY_RE =
-  /\b(?:navigate|leaveCurrentDestination|goBack|goForward|pushConversationSurface|openSettings|closeSettings|openLibrary|openExtraPage|openNotification|handleSelect|applyEmbeddedNavigation|applyPendingChannelOpen|applyPendingConversation|applyConversationDeepLink|requestChannelOpen|openReply|closeReply|toggleNotifications|dispatchEmbeddedNavigation|onnavigate)\b/;
+  /\b(?:navigate|leaveCurrentDestination|goBack|goForward|pushConversationSurface|openSettings|closeSettings|closeFiles|openLibrary|openExtraPage|openNotification|handleSelect|applyEmbeddedNavigation|applyPendingChannelOpen|applyPendingConversation|applyConversationDeepLink|requestChannelOpen|openReply|closeReply|toggleNotifications|dispatchEmbeddedNavigation|onnavigate)\b/;
 
 /**
  * In-scope user handlers that must enter history through navigate() (US-004).

@@ -246,6 +246,12 @@
      */
     belowMessages?: Snippet;
     /**
+     * Suggested replies to show as buttons after the newest message. The host
+     * decides which conversation gets them and when; a click sends the text
+     * as the person's reply, exactly as if they had typed it.
+     */
+    suggestedReplies?: readonly string[];
+    /**
      * Sidebar row id (`ch:<id>` / `dm:<uid>`) this composer belongs to. With
      * `draftStorage`, unsent text is restored on mount, persisted (debounced)
      * while typing, flushed on unmount, and cleared on send — so switching
@@ -307,6 +313,7 @@
     attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
+    suggestedReplies = [],
     draftKey = null,
     draftStorage = null,
     composerLocked = false,
@@ -696,6 +703,38 @@
       return;
     }
     const label = detail.option.label;
+    if (replyInputEl) replyInputEl.value = label;
+    replyText = label;
+    await send();
+  }
+
+  // A clicked suggestion hides its set at once, before the reply reaches the
+  // timeline, so a second click cannot send it twice. A new set shows again.
+  let usedSuggestionKey = $state<string | null>(null);
+  const suggestionKey = $derived(suggestedReplies.join("\u0000"));
+  const visibleSuggestions = $derived(
+    suggestionKey && suggestionKey !== usedSuggestionKey ? suggestedReplies : [],
+  );
+
+  // Suggested replies are a shortcut, not the only answers: the last chip says
+  // so, and pressing it puts the cursor in the composer with a prompt to type.
+  const SUGGESTION_OTHER_LABEL = "Something else";
+  const SUGGESTION_OTHER_PLACEHOLDER = "Type your own answer here…";
+  let otherForKey = $state<string | null>(null);
+  const composerPlaceholder = $derived(
+    otherForKey !== null && otherForKey === suggestionKey && visibleSuggestions.length > 0
+      ? SUGGESTION_OTHER_PLACEHOLDER
+      : placeholder,
+  );
+  function chooseOtherSuggestion(): void {
+    if (composerLocked) return;
+    otherForKey = suggestionKey;
+    replyInputEl?.focus();
+  }
+
+  async function sendSuggestion(label: string): Promise<void> {
+    if (composerLocked) return;
+    usedSuggestionKey = suggestionKey;
     if (replyInputEl) replyInputEl.value = label;
     replyText = label;
     await send();
@@ -1814,6 +1853,24 @@
           {/if}
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
+        {#if visibleSuggestions.length > 0 && !composerLocked}
+          <div class="suggested-replies" data-testid="suggested-replies" role="group" aria-label="Suggested replies">
+            {#each visibleSuggestions as label (label)}
+              <button
+                type="button"
+                class="suggested-reply"
+                data-testid="suggested-reply"
+                onclick={() => void sendSuggestion(label)}
+              >{label}</button>
+            {/each}
+            <button
+              type="button"
+              class="suggested-reply suggested-reply-other"
+              data-testid="suggested-reply-other"
+              onclick={chooseOtherSuggestion}
+            >{SUGGESTION_OTHER_LABEL}</button>
+          </div>
+        {/if}
         {/if}
       </div>
       </div>
@@ -1886,7 +1943,7 @@
           oninput={syncComposerFromDom}
           onkeydown={onReplyKeydown}
           onpaste={onComposerPaste}
-          {placeholder}
+          placeholder={composerPlaceholder}
           rows="3"
           aria-label="Reply message"
           data-testid="conversation-composer"
@@ -3107,4 +3164,36 @@
     cursor: default;
   }
 
+  .suggested-replies {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 4px 0 12px 44px;
+  }
+  .suggested-reply {
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.3;
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--raised);
+    color: var(--t1);
+    font-family: var(--font-ui);
+    cursor: pointer;
+    text-align: left;
+    max-width: 100%;
+  }
+  .suggested-reply:hover {
+    background: var(--hover);
+  }
+  .suggested-reply-other {
+    background: transparent;
+    border-style: dashed;
+    color: var(--t2, var(--t1));
+  }
+  .suggested-reply:focus-visible {
+    outline: 2px solid var(--vio-ink, currentColor);
+    outline-offset: 2px;
+  }
 </style>

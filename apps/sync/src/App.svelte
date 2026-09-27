@@ -23,7 +23,10 @@
   } from './lib/auth';
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
-  import { unexpectedSurfaceForState } from './lib/unexpected-startup-surface';
+  import {
+    unexpectedSurfaceForState,
+    type StartupSetupEvidence,
+  } from './lib/unexpected-startup-surface';
   import {
     normalizeTokenPresence,
     resolveStartupState,
@@ -1786,7 +1789,19 @@
       console.warn('get_lifecycle_state unavailable; routing on the auth verdict alone:', err);
       return null;
     });
-    return { lifecycleState: lifecycleState ?? null, hadStoredToken, tokenPresence, auth };
+    const setupEvidence = await invoke<StartupSetupEvidence | null>(
+      'get_startup_setup_evidence',
+    ).catch((err) => {
+      console.warn('startup setup evidence unavailable; retaining backend report guard:', err);
+      return null;
+    });
+    return {
+      lifecycleState: lifecycleState ?? null,
+      hadStoredToken,
+      tokenPresence,
+      setupEvidence,
+      auth,
+    };
   }
 
   /**
@@ -1821,8 +1836,13 @@
     }
 
     const priorSurface = startupSurface({ phase: startupPhase, lifecycleState, authenticated });
-    const { lifecycleState: probedLifecycle, hadStoredToken, tokenPresence, auth: state } =
-      outcome.result;
+    const {
+      lifecycleState: probedLifecycle,
+      hadStoredToken,
+      tokenPresence,
+      setupEvidence,
+      auth: state,
+    } = outcome.result;
     lifecycleState = probedLifecycle;
     authenticated = shouldSkipSignIn(state);
     expiresAt = state.expiresAt ?? '';
@@ -1837,7 +1857,11 @@
     // Report to Sentry when a set-up machine sees the sign-in or onboarding
     // surface. Non-blocking and fail-quiet: telemetry must never affect launch.
     {
-      const unexpectedSurface = unexpectedSurfaceForState(lifecycleState, authenticated);
+      const unexpectedSurface = unexpectedSurfaceForState(
+        lifecycleState,
+        authenticated,
+        setupEvidence,
+      );
       if (unexpectedSurface !== null) {
         invoke('report_unexpected_startup_surface', {
           surface: unexpectedSurface,

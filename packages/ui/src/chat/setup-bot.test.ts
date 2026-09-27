@@ -15,8 +15,8 @@ import {
   setupBotActionLabel,
   SETUP_BOT_COPY,
   SETUP_BOT_INTRO,
-  setupFinaleDue,
   SETUP_BOT_KICKOFF,
+  setupFinaleDue,
   SETUP_BOT_KICKOFF_PREFIX,
   SETUP_BOT_MODE,
   SETUP_BOT_NAME,
@@ -89,20 +89,28 @@ describe("copy", () => {
     expect(prose).toContain("setup bot");
   });
 
+  it("points people who prefer Claude Code or Codex at the Launch button", () => {
+    expect(SETUP_BOT_INTRO).toContain("Claude Code or Codex with the Launch button above");
+  });
+
   it("keeps the intro inside the CLI's --intro limit, on one line", () => {
     expect(SETUP_BOT_INTRO.length).toBeLessThanOrEqual(500);
     // The host rejects control characters in --intro.
     expect(SETUP_BOT_INTRO).not.toMatch(/[\u0000-\u001f\u007f]/);
   });
 
-  it("the intro is two short sentences: the plan, then that it is checking the Mac and may take a minute — never an open question", () => {
+  it("the intro is the plan, then that it is checking the computer and may take a minute, then the Launch pointer, never an open question", () => {
     const sentences = SETUP_BOT_INTRO.split(/(?<=[.!?])\s+/).filter(Boolean);
-    expect(sentences).toHaveLength(2);
+    expect(sentences).toHaveLength(3);
     for (const part of ["tools", "HQ Cloud", "company", "work you already have", "apps", "first bot"]) {
       expect(SETUP_BOT_INTRO).toContain(part);
     }
-    expect(sentences[1]).toMatch(/checking your Mac now/i);
+    // Platform-neutral: never names a specific OS ("your Mac", "your PC")
+    // because the same intro is sent from Windows and macOS alike.
+    expect(sentences[1]).toMatch(/checking your computer now/i);
+    expect(sentences[1]).not.toMatch(/\bmac\b/i);
     expect(sentences[1]).toMatch(/a minute/i);
+    expect(sentences[2]).toMatch(/Launch button/);
     expect(SETUP_BOT_INTRO).not.toContain("?");
     expect(SETUP_BOT_INTRO.toLowerCase()).not.toMatch(/what would you like|say hi whenever/);
   });
@@ -112,6 +120,12 @@ describe("copy", () => {
     expect(SETUP_BOT_KICKOFF).not.toMatch(/[\u0000-\u001f\u007f]/);
     expect(SETUP_BOT_KICKOFF.startsWith(`${SETUP_BOT_KICKOFF_PREFIX} `)).toBe(true);
     expect(SETUP_BOT_KICKOFF_PREFIX).toBe("Kickoff:");
+  });
+
+  it("the kickoff opens with the explain-HQ-or-jump-in question before the first unfinished step", () => {
+    const k = SETUP_BOT_KICKOFF;
+    expect(k).toMatch(/whether I want HQ explained first or to jump straight in/);
+    expect(k.indexOf("explained first")).toBeLessThan(k.indexOf("first unfinished step"));
   });
 
   it("the kickoff asks for the state check, the first unfinished step, and exactly one concrete question or action", () => {

@@ -11,11 +11,13 @@ import {
   DEFAULT_TIMEOUT_MS,
   SMOKE_TOKEN_SECRET,
   evaluateSmokeResult,
+  formatSmokeDiagnostics,
   installSmokeHqCli,
   SMOKE_HQ_CLI_SPEC,
   isSmokeTempDir,
   launchAndWait,
   parseBootLog,
+  redactSmokeLogTail,
   readBundleVersion,
   removeSmokeHome,
   requireNonIndigoRefreshToken,
@@ -130,6 +132,203 @@ describe("bundle version and boot log", () => {
         timedOut: true,
       }),
     ).toThrow(/shell_ready did not fire/);
+  });
+});
+
+describe("smoke boot diagnostics", () => {
+  it("bounds and redacts the sandbox log tail before reporting a boot failure", () => {
+    const refreshToken = "fake-refresh-token-do-not-print";
+    const tail = redactSmokeLogTail(
+      [
+        "discarded old entry",
+        "[boot] desktop-alt window created",
+        `auth refreshToken=${refreshToken}`,
+        `request url contains ${refreshToken}`,
+        "[boot] watchdog timeout — desktop shell did not report ready",
+      ].join("\n"),
+      { refreshToken, maxLines: 4 },
+    );
+
+    expect(tail).toHaveLength(4);
+    expect(tail[0]).toBe("[boot] desktop-alt window created");
+    expect(tail[1]).toBe("[redacted credential-bearing log line]");
+    expect(tail[2]).toBe("[redacted credential-bearing log line]");
+    expect(tail.join("\n")).not.toContain(refreshToken);
+  });
+
+  it("omits arbitrary child output and redacts common credential shapes", () => {
+    const log = [
+      "GH_TOKEN=ghp_fakeTokenValue123456",
+      "Cookie: authjs.session-token=fake-cookie-value",
+      "request https://fake-user:fake-password@example.test/private",
+      "authorization failed with eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.signature123456",
+      "[boot] failed to open recovery window: CLI said something unexpected",
+      "2026-09-27T10:00:00.000Z [boot] watchdog timeout — desktop shell did not report ready",
+    ].join("\n");
+
+    const tail = redactSmokeLogTail(log);
+    expect(tail.slice(0, 4)).toEqual(Array(4).fill("[redacted credential-bearing log line]"));
+    expect(tail[4]).toBe("[omitted non-allowlisted log line]");
+    expect(tail[5]).toBe("2026-09-27T10:00:00.000Z [boot] watchdog timeout — desktop shell did not report ready");
+    expect(tail.join("\n")).not.toMatch(/ghp_fakeTokenValue123456|fake-cookie-value|fake-user|fake-password|eyJhbGci/);
+  });
+
+  it("keeps both real watchdog budget log forms verbatim", () => {
+    const lines = [
+      "[boot] watchdog armed (25s)",
+      "[boot] watchdog armed (25s, env override)",
+    ];
+
+    for (const line of lines) {
+      expect(redactSmokeLogTail(line)).toEqual([line]);
+    }
+  });
+
+  it("keeps every allowlisted boot log aligned with recovery.rs", async () => {
+    const smokeSource = await readFile(join(here, "macos-artifact-smoke.mjs"), "utf8");
+    const recoverySource = await readFile(
+      join(here, "../apps/sync/src-tauri/src/recovery.rs"),
+      "utf8",
+    );
+    const fixedBlock = /const SAFE_BOOT_LOG_MESSAGES = new Set\(\[([\s\S]*?)\]\);/.exec(
+      smokeSource,
+    )?.[1];
+    if (fixedBlock === undefined) throw new Error("fixed boot-message allowlist not found");
+
+    const fixedMessages = fixedBlock
+      .split("\n")
+      .map((line) => line.trim().replace(/,$/, ""))
+      .filter((line) => line.startsWith('"'))
+      .map((line) => JSON.parse(line) as string);
+    expect(fixedMessages.length).toBeGreaterThan(0);
+    for (const message of fixedMessages) {
+      expect(recoverySource).toContain(JSON.stringify(message));
+    }
+
+    const patternBlock = /const SAFE_BOOT_LOG_PATTERNS = \[([\s\S]*?)\n\];/.exec(
+      smokeSource,
+    )?.[1];
+    if (patternBlock === undefined) throw new Error("boot-pattern allowlist not found");
+    const templateDelimiter = String.fromCharCode(96);
+    const patternSources = patternBlock
+      .split("\n")
+      .filter((line) => line.includes("new RegExp("))
+      .map((line) => {
+        const start = line.indexOf("new RegExp(") + "new RegExp(".length;
+        const end = line.lastIndexOf(templateDelimiter + ")");
+        expect(line[start]).toBe(templateDelimiter);
+        expect(end).toBeGreaterThan(start);
+        return line.slice(start + 1, end);
+      });
+    const recoveryTriggersPlaceholder = "$" + "{SAFE_RECOVERY_TRIGGERS}";
+    const safeVersionPlaceholder = "$" + "{SAFE_VERSION}";
+    expect(patternSources).toEqual([
+      "^watchdog armed \\\\(\\\\d+s(?:, env override)?\\\\)$",
+      "^auto-checking for updates before recovery window \\\\(trigger=(?:" +
+        recoveryTriggersPlaceholder +
+        ")\\\\)$",
+      "^recovery window opened \\\\(trigger=(?:" +
+        recoveryTriggersPlaceholder +
+        "), version=v" +
+        safeVersionPlaceholder +
+        "\\\\)$",
+      "^recovery auto-check found v" +
+        safeVersionPlaceholder +
+        " — offering as primary action$",
+    ]);
+
+    const recoveryPatternMessages = [
+      "watchdog armed ({}s{})",
+      "auto-checking for updates before recovery window (trigger={})",
+      "recovery window opened (trigger={}, version=v{})",
+      "recovery auto-check found v{} — offering as primary action",
+    ];
+    for (const message of recoveryPatternMessages) {
+      expect(recoverySource).toContain(JSON.stringify(message));
+    }
+  });
+
+  it("reports launch-to-shell-ready and watchdog timings on either outcome", () => {
+    const timings = {
+      launchToWindowCreatedMs: 340,
+      launchToShellReadyMs: 1_240,
+      launchToWatchdogTimeoutMs: null,
+      launchToRecoveryOpenedMs: null,
+      terminalObservedMs: 1_240,
+    };
+    expect(formatSmokeDiagnostics({ status: "passed", timings })).toContain(
+      "launch_to_shell_ready_ms=1240",
+    );
+    expect(
+      formatSmokeDiagnostics({
+        status: "failed",
+        timings: {
+          ...timings,
+          launchToShellReadyMs: null,
+          launchToWatchdogTimeoutMs: 25_200,
+          terminalObservedMs: 25_200,
+        },
+        sandboxLog: "[boot] watchdog timeout",
+      }),
+    ).toContain(
+      "launch_to_watchdog_timeout_ms=25200",
+    );
+  });
+
+  it("does not let log content inject a GitHub Actions command", () => {
+    const output = formatSmokeDiagnostics({
+      status: "failed",
+      timings: {},
+      sandboxLog: "::error::untrusted log text",
+    });
+    expect(output).toContain("| [omitted non-allowlisted log line]");
+    expect(output).not.toContain("::error");
+    expect(output).not.toContain("untrusted log text");
+  });
+
+  it("emits the sanitized sandbox tail when the boot watchdog fails", async () => {
+    const app = await fakeApp("0.10.179");
+    const refreshToken = "fake-refresh-token-do-not-print";
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: () => boolean;
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+    };
+    child.pid = 4243;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => {
+      child.exitCode = 0;
+      child.emit("exit", 0, null);
+      return true;
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const diagnostics: string[] = [];
+
+    await expect(
+      runArtifactSmoke({
+        appPath: app,
+        expectedVersion: "0.10.179",
+        timeoutMs: 1_000,
+        env: { [SMOKE_TOKEN_SECRET]: refreshToken },
+        launch: true,
+        installHqCliImpl: () => ({ bin: "/fake/hq" }),
+        spawnImpl: (() => child) as typeof import("node:child_process").spawn,
+        readLog: async () =>
+          `[boot] desktop-alt window created\nrefreshToken=${refreshToken}\n[boot] watchdog timeout — desktop shell did not report ready\n`,
+        diagnostic: (message: string) => diagnostics.push(message),
+      }),
+    ).rejects.toThrow(/boot watchdog timed out/);
+
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatch(/launch_to_watchdog_timeout_ms=\d+/);
+    expect(diagnostics[0]).toContain("[boot] desktop-alt window created");
+    expect(diagnostics[0]).toContain("[redacted credential-bearing log line]");
+    expect(diagnostics[0]).not.toContain(refreshToken);
   });
 });
 

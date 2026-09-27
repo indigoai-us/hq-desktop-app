@@ -144,7 +144,7 @@ export const SETUP_URLS = {
   gettingStarted: "https://hqforwork.com/getting-started",
   book: "https://hqforwork.com/book",
   training: "https://hqforwork.com/training",
-  docs: "https://docs.getindigo.ai",
+  docs: "https://docs.hq.computer",
 } as const;
 
 /** Hero copy rendered over the wallpaper at the top of #welcome. */
@@ -154,17 +154,34 @@ export const SETUP_HERO = {
   body: "Create or choose a company below. We'll guide you through cloud setup and choosing a plan, then open your team's channel. Already created a company on the website? Sign in with the same account to continue it here.",
 } as const;
 
+/** Static labels for the returning-user hero that never change with host OS. */
+export const SETUP_HERO_RETURNING_STATIC = {
+  eyebrow: "Welcome to HQ",
+  title: "Your company is ready.",
+} as const;
+
 /**
  * Hero copy when the signed-in account already owns or belongs to a company
  * (created on the website, or on another machine). The welcome pane must lead
- * with THAT company — never with "Create a company" — or a brand-new owner
+ * with THAT company - never with "Create a company" - or a brand-new owner
  * reads the app as having lost the company they just paid for.
+ *
+ * `noun` is "Mac", "PC", or "computer" from `hostComputerNoun`; neutral
+ * fallback when the probe is not ready.
  */
-export const SETUP_HERO_RETURNING = {
-  eyebrow: "Welcome to HQ",
-  title: "Your company is ready.",
-  body: "Run Setup connects this Mac to your company and finishes the last steps in HQ Sessions. It takes about a minute.",
-} as const;
+export function setupHeroReturning(opts: { noun?: string } = {}): typeof SETUP_HERO_RETURNING_STATIC & { body: string } {
+  const noun = opts.noun?.trim() || "computer";
+  return {
+    ...SETUP_HERO_RETURNING_STATIC,
+    body: `Run Setup connects this ${noun} to your company and finishes the last steps in HQ Sessions. It takes about a minute.`,
+  };
+}
+
+/**
+ * Neutral snapshot for tests and non-render call sites. Renderers MUST use
+ * `setupHeroReturning` or `setupHeroFor` with the resolved host noun.
+ */
+export const SETUP_HERO_RETURNING = setupHeroReturning();
 
 /** The one primary action on #welcome. */
 export const SETUP_RUN_LABEL = "Run Setup";
@@ -245,12 +262,19 @@ export function setupRosterLoading(
   return status === "loading" && setupCompanies(companies).length === 0;
 }
 
-/** Pick the hero copy for the roster the shell currently knows about. */
+export type SetupHeroCopy = { eyebrow: string; title: string; body: string };
+
+/**
+ * Pick the hero copy for the roster the shell currently knows about. `noun`
+ * is "Mac", "PC", or "computer" from `hostComputerNoun`; neutral fallback
+ * when the probe is not ready.
+ */
 export function setupHeroFor(
   companies: readonly Workspace[] | null | undefined,
   status: SetupRosterStatus | null | undefined = null,
-): typeof SETUP_HERO | typeof SETUP_HERO_RETURNING | typeof SETUP_HERO_LOADING {
-  if (setupCompanies(companies).length > 0) return SETUP_HERO_RETURNING;
+  opts: { noun?: string } = {},
+): SetupHeroCopy {
+  if (setupCompanies(companies).length > 0) return setupHeroReturning(opts);
   return setupRosterLoading(companies, status) ? SETUP_HERO_LOADING : SETUP_HERO;
 }
 

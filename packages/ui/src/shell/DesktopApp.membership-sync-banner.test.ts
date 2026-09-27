@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
 /**
- * The desktop window's own version of the menubar popover's "You've been
- * added to {company} — Sync to pull it" notice. Proves the shared
- * `joinableMemberships()` selector (../chat/workspaces.js) is wired to a
- * genuinely mounted consumer inside the live shell, not orphaned — and that
- * personal-vault / pending-invite rows stay excluded end to end.
+ * A company the person was just added to syncs onto this Mac by itself
+ * (onboarding test, 2026-09-27: the setup bot created a company and the
+ * person was then asked to press Sync to get it). The "Added to {company}"
+ * banner now appears only when that automatic pull fails, and its Sync now is
+ * the retry. Personal-vault and pending-invite rows are never pulled.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -174,221 +174,130 @@ async function mountApp(
   await settle();
 }
 
-describe("DesktopApp membership sync banner", () => {
-  it("shows the joinable membership and excludes personal + pending rows", async () => {
+describe("DesktopApp membership sync", () => {
+  const failDispatch = () =>
+    startSync.mockResolvedValueOnce({ ok: false, reason: "runner-failed", message: "Sync is already running" });
+  const banner = () => host.querySelector('[data-testid="membership-sync-banner"]');
+  const syncNow = () => host.querySelector<HTMLButtonElement>('[data-testid="membership-sync-now"]')!;
+  const errorText = () => host.querySelector('[data-testid="membership-sync-error"]')?.textContent ?? "";
+
+  it("pulls a company you were just added to by itself, scoped to it, with no banner", async () => {
     await mountApp([joinableCompany, personalRow, pendingCompany]);
-    const banner = host.querySelector('[data-testid="membership-sync-banner"]');
-    expect(banner, "banner renders for a joinable membership").toBeTruthy();
-    expect(banner?.textContent).toContain("Added to Acme");
-    expect(banner?.textContent).not.toContain("Personal");
-    expect(banner?.textContent).not.toContain("Globex");
-  });
-
-  it("shows an email-verification notice when pending invites are skipped", async () => {
-    await mountApp([], null, true);
-    const notice = host.querySelector('[data-testid="email-verification-notice"]');
-    expect(notice?.textContent?.trim()).toBe(
-      "Verify your email to see pending company invites.",
-    );
-    expect(host.querySelector('[data-testid="membership-sync-now"]')).toBeNull();
-  });
-
-  it("starts a real sync through the platform adapter when acted on", async () => {
-    await mountApp([joinableCompany]);
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="membership-sync-now"]')!
-      .click();
-    await settle();
     expect(startSync).toHaveBeenCalledTimes(1);
-  });
-
-  it("scopes the sync to the company it names", async () => {
-    // An unscoped start_sync is SyncRunScope::All — every workspace on the
-    // machine — which is not what "pull it onto this machine" promises.
-    await mountApp([joinableCompany]);
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="membership-sync-now"]')!
-      .click();
-    await settle();
+    // Unscoped would be SyncRunScope::All, every workspace on the machine.
     expect(startSync).toHaveBeenCalledWith("acme");
+    expect(banner(), "nobody is asked to press Sync").toBeNull();
   });
 
-  it("surfaces the reauth path, which start_sync reports as success", async () => {
-    // commands/sync.rs returns Ok on the needs-reauth path deliberately and
-    // emits sync:auth-error instead. Reading only the command result leaves
-    // the user clicking Sync forever with no feedback and no membership.
-    const events = createSyncEventHost();
-    await mountApp([joinableCompany], events.host);
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="membership-sync-now"]')!
-      .click();
-    await settle();
+  it("never pulls personal-vault or pending-invite rows", async () => {
+    await mountApp([personalRow, pendingCompany]);
+    expect(startSync).not.toHaveBeenCalled();
+    expect(banner()).toBeNull();
+  });
 
-    events.emit("sync:auth-error", {
-      message: "Your HQ session needs a quick refresh.",
+  it("pulls each new company once, one after another", async () => {
+    const second = workspace({
+      slug: "initech",
+      displayName: "Initech",
+      cloudUid: "cmp_initech",
+      bucketName: "hq-initech",
     });
-    await settle();
-
-    expect(
-      host.querySelector('[data-testid="membership-sync-error"]')?.textContent,
-    ).toContain("needs a quick refresh");
-    expect(
-      host.querySelector<HTMLButtonElement>(
-        '[data-testid="membership-sync-now"]',
-      )!.disabled,
-      "the control is released so the user can retry",
-    ).toBe(false);
-  });
-
-  it("keeps the busy state until the sync actually completes", async () => {
-    // start_sync resolves once the runner is REGISTERED, not when the pull
-    // finishes, so clearing on the command result flickers Syncing… off while
-    // the sync is still running.
     const events = createSyncEventHost();
-    await mountApp([joinableCompany], events.host);
-    const button = () =>
-      host.querySelector<HTMLButtonElement>(
-        '[data-testid="membership-sync-now"]',
-      )!;
-
-    button().click();
-    await settle();
-    expect(button().disabled, "still syncing after dispatch returns").toBe(true);
-    expect(button().textContent?.trim()).toBe("Syncing…");
-
-    // Another workspace's background run must not clear this banner.
-    events.emit("sync:complete", { company: "someone-else" });
-    await settle();
-    expect(
-      button().disabled,
-      "a different company's sync:complete is not our completion",
-    ).toBe(true);
-
+    await mountApp([joinableCompany, second], events.host);
+    expect(startSync).toHaveBeenCalledTimes(1);
     events.emit("sync:complete", { company: "acme" });
     await settle();
-    expect(button().disabled).toBe(false);
+    expect(startSync).toHaveBeenCalledTimes(2);
+    expect(startSync).toHaveBeenLastCalledWith("initech");
+    events.emit("sync:complete", { company: "initech" });
+    await settle();
+    expect(startSync, "a finished pull is not repeated").toHaveBeenCalledTimes(2);
   });
 
-  it("ignores per-file sync:error, which is not a terminal failure", async () => {
-    // SyncErrorEvent is emitted per file and the run continues past it.
+  it("shows the banner when the automatic pull fails, and Sync now retries", async () => {
     const events = createSyncEventHost();
     await mountApp([joinableCompany], events.host);
-    const button = () =>
-      host.querySelector<HTMLButtonElement>(
-        '[data-testid="membership-sync-now"]',
-      )!;
-    button().click();
-    await settle();
-
-    events.emit("sync:error", {
-      company: "acme",
-      path: "docs/x.md",
-      message: "Access denied",
-    });
-    await settle();
-    expect(
-      host.querySelector('[data-testid="membership-sync-error"]'),
-      "one unreadable file is not a failed pull",
-    ).toBeNull();
-    expect(button().disabled, "still syncing").toBe(true);
-  });
-
-  it("ends the pull when the run finishes without a per-company complete", async () => {
-    const events = createSyncEventHost();
-    await mountApp([joinableCompany], events.host);
-    const button = () =>
-      host.querySelector<HTMLButtonElement>(
-        '[data-testid="membership-sync-now"]',
-      )!;
-    button().click();
-    await settle();
-
+    // The first pull already ran; fail it through the run outcome instead.
     events.emit("sync:all-complete", {
       companiesAttempted: 1,
       errors: [{ company: "acme", message: "Bucket is not reachable" }],
     });
     await settle();
-    expect(button().disabled).toBe(false);
-    expect(
-      host.querySelector('[data-testid="membership-sync-error"]')?.textContent,
-    ).toContain("Bucket is not reachable");
-  });
-
-  it("reports a dispatch failure instead of logging it and moving on", async () => {
-    await mountApp([joinableCompany]);
-    // buildAdapter() re-creates the spy during mount, so the override has to
-    // be installed after mounting, not before.
-    startSync.mockResolvedValueOnce({
-      ok: false,
-      reason: "runner-failed",
-      message: "Sync is already running",
-    });
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="membership-sync-now"]')!
-      .click();
+    expect(banner()?.textContent).toContain("Added to Acme");
+    expect(errorText()).toContain("Bucket is not reachable");
+    syncNow().click();
     await settle();
-
-    expect(
-      host.querySelector('[data-testid="membership-sync-error"]')?.textContent,
-    ).toContain("Sync is already running");
+    expect(startSync).toHaveBeenCalledTimes(2);
+    expect(startSync).toHaveBeenLastCalledWith("acme");
   });
 
-  it("releases the control when the platform has no event bus", async () => {
-    // Web has no sync events; a spinner that can never resolve is worse than
-    // no feedback at all.
+  it("reports a dispatch failure on the retry instead of logging it and moving on", async () => {
+    const events = createSyncEventHost();
+    await mountApp([joinableCompany], events.host);
+    events.emit("sync:auth-error", { message: "Your HQ session needs a quick refresh." });
+    await settle();
+    failDispatch();
+    syncNow().click();
+    await settle();
+    expect(errorText()).toContain("Sync is already running");
+  });
+
+  it("surfaces the reauth path, which start_sync reports as success", async () => {
+    const events = createSyncEventHost();
+    await mountApp([joinableCompany], events.host);
+    events.emit("sync:auth-error", { message: "Your HQ session needs a quick refresh." });
+    await settle();
+    expect(errorText()).toContain("needs a quick refresh");
+    expect(syncNow().disabled, "the control is released so the user can retry").toBe(false);
+  });
+
+  it("a retry puts the banner away while it runs, and brings it back only if it fails again", async () => {
+    const events = createSyncEventHost();
+    await mountApp([joinableCompany], events.host);
+    events.emit("sync:auth-error", { message: "Your HQ session needs a quick refresh." });
+    await settle();
+    syncNow().click();
+    await settle();
+    expect(banner(), "the retry runs quietly, like the first pull").toBeNull();
+    // Another workspace's run finishing is not this pull's outcome.
+    events.emit("sync:complete", { company: "someone-else" });
+    await settle();
+    expect(banner()).toBeNull();
+    events.emit("sync:auth-error", { message: "Still needs a refresh." });
+    await settle();
+    expect(errorText()).toContain("Still needs a refresh");
+  });
+
+  it("ignores per-file sync:error, which is not a terminal failure", async () => {
+    const events = createSyncEventHost();
+    await mountApp([joinableCompany], events.host);
+    events.emit("sync:error", { company: "acme", path: "docs/x.md", message: "Access denied" });
+    await settle();
+    expect(banner(), "one unreadable file is not a failed pull").toBeNull();
+  });
+
+  it("does not loop when the platform has no event bus", async () => {
     await mountApp([joinableCompany], null);
-    const button = () =>
-      host.querySelector<HTMLButtonElement>(
-        '[data-testid="membership-sync-now"]',
-      )!;
-    button().click();
-    await settle();
-    expect(button().disabled).toBe(false);
+    await settle(12);
+    expect(startSync).toHaveBeenCalledTimes(1);
+    expect(banner()).toBeNull();
   });
 
-  it("dismisses for the session without touching the popover's own state", async () => {
-    await mountApp([joinableCompany]);
-    expect(
-      host.querySelector('[data-testid="membership-sync-banner"]'),
-    ).toBeTruthy();
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="membership-sync-dismiss"]')!
-      .click();
+  it("a failed pull's banner can be dismissed for the session", async () => {
+    const events = createSyncEventHost();
+    await mountApp([joinableCompany], events.host);
+    events.emit("sync:auth-error", { message: "Your HQ session needs a quick refresh." });
     await settle();
-    expect(
-      host.querySelector('[data-testid="membership-sync-banner"]'),
-    ).toBeNull();
+    expect(banner()).toBeTruthy();
+    host.querySelector<HTMLButtonElement>('[data-testid="membership-sync-dismiss"]')!.click();
+    await settle();
+    expect(banner()).toBeNull();
   });
 
-  it("one Dismiss clears every pending membership", async () => {
-    const second = workspace({
-      slug: "initech",
-      displayName: "Initech",
-      state: "cloud-only",
-      membershipStatus: "active",
-      cloudUid: "cmp_initech",
-      bucketName: "hq-initech",
-    });
-    await mountApp([joinableCompany, second]);
-    expect(
-      host.querySelector('[data-testid="membership-sync-banner"]')?.textContent,
-    ).toContain("Added to Acme + 1 more");
-
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="membership-sync-dismiss"]')!
-      .click();
-    await settle();
-
-    expect(
-      host.querySelector('[data-testid="membership-sync-banner"]'),
-      "dismissing an aggregate banner must not re-render it for the next company",
-    ).toBeNull();
-  });
-
-  it("renders no banner when there is nothing joinable", async () => {
-    await mountApp([personalRow, pendingCompany]);
-    expect(
-      host.querySelector('[data-testid="membership-sync-banner"]'),
-    ).toBeNull();
+  it("shows an email-verification notice when pending invites are skipped", async () => {
+    await mountApp([], null, true);
+    const notice = host.querySelector('[data-testid="email-verification-notice"]');
+    expect(notice?.textContent?.trim()).toBe("Verify your email to see pending company invites.");
+    expect(host.querySelector('[data-testid="membership-sync-now"]')).toBeNull();
   });
 });

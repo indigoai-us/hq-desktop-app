@@ -26,6 +26,7 @@
   import {
     CLAUDE_PROVIDER_FLAG,
     failure,
+    hostComputerNoun,
     startJitteredPoll,
     type PlatformAdapter,
     type UpdateGateStatus,
@@ -70,7 +71,12 @@
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
-  import { messageMarksSetupDone } from "../chat/messaging/richMessageContent.js";
+  import {
+    messageHasVisibleContent,
+    messageMarksSetupDone,
+    messageOffersSlackAgent,
+    suggestionsForMessage,
+  } from "../chat/messaging/richMessageContent.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -91,15 +97,20 @@
     findSetupBotContact,
     firstSignedInRuntime,
     setupFinaleDue,
+    setupFinaleOffersSlack,
+    setupSlackOfferText,
+    pickSetupBotName,
+    takenBotNames,
+    setupBotIntro,
+    setupBotKickoff,
+    setupBotNoRuntime,
+    setupSuggestionsDue,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
-    SETUP_BOT_INTRO,
-    SETUP_BOT_KICKOFF,
     SETUP_BOT_MODE,
     SETUP_BOT_NAME,
-    SETUP_BOT_NO_RUNTIME,
-    SETUP_BOT_UNAVAILABLE,
     SETUP_BOT_WORKER,
+    SETUP_BOT_UNAVAILABLE,
     singleFlightStart,
     type SetupBotLauncher,
     type SetupBotRef,
@@ -160,6 +171,8 @@
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
+  import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
+  import PageHeader from "./PageHeader.svelte";
   import ProjectsHome from "../projects/ProjectsHome.svelte";
   import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
   import CommandPalette, {
@@ -640,6 +653,12 @@
     /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
     onretryroster?: () => void;
     /**
+     * Re-read `companies` now, without touching `rosterStatus`. Called when a
+     * channel names a company the roster does not have yet (the setup bot
+     * created it); resolves once the host has applied the fresh roster.
+     */
+    onrefreshroster?: () => Promise<unknown>;
+    /**
      * Start reauthentication from the session-expired banner (PL-03). The
      * desktop host clears the dead session and lands the user on its sign-in
      * surface. Omitted → the banner states the problem without an action.
@@ -812,6 +831,21 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
+    /**
+     * US-005 wiring for the guided install path in #setup. When the setup
+     * bot fails to start because no coding tool is signed in, the hero shows
+     * `SetupInstallGuide` instead of a dead-end. The host provides real
+     * callbacks that drive the Rust install / sign-in / detect commands
+     * (see `apps/sync/src/desktop-alt/lib/install-guide-adapter.ts`).
+     * Omitted callers keep today's behavior: error message only, no guide.
+     */
+    setupInstallGuide?: {
+      oninstall(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onsignin(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onrefresh(): Promise<void>;
+      downloadUrlFor(tool: "claude" | "codex"): string;
+      onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
+    } | null;
   }
 
   let {
@@ -834,6 +868,7 @@
     syncEvents = null,
     rosterStatus = null,
     onretryroster,
+    onrefreshroster,
     onsignin,
     self = null,
     tenantAccountId = null,
@@ -873,6 +908,7 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    setupInstallGuide = null,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -906,6 +942,23 @@
       (w) => !dismissedMemberships.has(w.slug),
     ),
   );
+
+  /**
+   * A company you were just added to syncs onto this Mac by itself: nobody
+   * should have to press Sync to get a company they already belong to (the
+   * setup bot creates one, then the person was asked to sync it). Each company
+   * is pulled once per session; the banner only appears when that pull fails,
+   * and its Sync now is then the retry. Plain Set on purpose: it records what
+   * was attempted and must not re-run this effect.
+   */
+  const autoPulledMemberships = new Set<string>();
+  $effect(() => {
+    if (membershipSyncPending || !adapter.isAvailable("canSync")) return;
+    const next = membershipsToPull.find((w) => !autoPulledMemberships.has(w.slug));
+    if (!next) return;
+    autoPulledMemberships.add(next.slug);
+    void syncMembership(next.slug);
+  });
 
   function dismissMembershipPrompt(slugs: string[]): void {
     const next = new Set(dismissedMemberships);
@@ -1150,9 +1203,9 @@
    * both arrive as events; `syncEvents` is how this platform-agnostic shell
    * hears them.
    */
-  async function syncMembership(): Promise<void> {
+  async function syncMembership(slug?: string): Promise<void> {
     if (membershipSyncPending || !adapter.isAvailable("canSync")) return;
-    const target = membershipsToPull[0];
+    const target = slug ? membershipsToPull.find((w) => w.slug === slug) : membershipsToPull[0];
     if (!target) return;
     membershipSyncPending = true;
     membershipSyncError = null;
@@ -1445,11 +1498,15 @@
     | "library"
     | "shared-files"
     | "projects"
+    | "explorer"
     | "extra"
     | "dm-requests"
   >("conversation");
   /** Company shown on the Projects page; null follows the selected channel. */
   let projectsCompany = $state<string | null>(null);
+  /** Files explorer location (vault id + HQ-relative file). */
+  let explorerVault = $state<string | null>(null);
+  let explorerPath = $state<string | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -2199,19 +2256,38 @@
     localBotRuntimeReady = null;
     await loadLocalBotRuntimeReady();
     const runtime = firstSignedInRuntime(localBotRuntimeReady);
-    if (!runtime) return { ok: false, reason: SETUP_BOT_NO_RUNTIME };
+    if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
     // `intro` is sent by the runtime on start, so the first message is
     // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
     // one turn by itself so the bot starts step one without waiting for the
     // person to type.
-    const created = await createBotEntry({
-      name: SETUP_BOT_NAME,
-      worker: SETUP_BOT_WORKER,
-      runtime,
-      intro: SETUP_BOT_INTRO,
-      kickoff: SETUP_BOT_KICKOFF,
-      // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
-    });
+    // A friendly name no bot on the person's roster already has, so two bots
+    // in one company never share one. The roster is read again here: an
+    // unreadable one only makes a clash possible, never blocks setup.
+    let rosterContacts: unknown = null;
+    try {
+      const contacts = await adapter.messaging?.listContacts?.();
+      if (contacts?.ok) rosterContacts = contacts.value;
+    } catch (err) {
+      console.warn("[hq-desktop] could not read the roster to name the setup bot:", err);
+    }
+    const displayName = pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
+    const created = await createBotEntry(
+      {
+        name: SETUP_BOT_NAME,
+        displayName,
+        worker: SETUP_BOT_WORKER,
+        runtime,
+        intro: setupBotIntro({ noun: hostComputerNoun(), displayName }),
+        kickoff: setupBotKickoff({ noun: hostComputerNoun() }),
+        // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
+      },
+    );
+    // The CLI already gave HQ this name; remembering it here labels the DM on
+    // this Mac even with an older hq that could not take --display-name.
+    if (created.ok && created.agentUid) {
+      botDisplayNames = rememberBotDisplayName(botDisplayNames, created.agentUid, displayName);
+    }
     if (created.ok) {
       recordWelcomeSetupRun();
       return { ok: true, existing: false };
@@ -2368,6 +2444,17 @@
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
   });
   /**
+   * The setup bot's suggested replies for its newest message: recommended
+   * answers to what it just asked, or next questions. Setup bot only for now.
+   */
+  const setupSuggestedReplies = $derived.by((): string[] => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return [];
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupSuggestionsDue(timeline, bot.agentUid, messageHasVisibleContent, suggestionsForMessage);
+  });
+  /**
    * The finish card, once put away, stays away.
    *
    * Setup ending is not the end of the conversation: people keep talking to
@@ -2379,6 +2466,18 @@
   const setupFinaleDismissKey = $derived(
     selectedLocalBot ? `setup-finale-dismissed:${selectedLocalBot.agentUid}` : null,
   );
+  /** The setup bot's human name ("Pickles"), when it has one. */
+  const setupBotDisplayName = $derived(
+    selectedLocalBot ? (botDisplayNames[selectedLocalBot.agentUid] ?? null) : null,
+  );
+  /** The bot offered a Slack bot on its finish: only for a person who started their own company. */
+  const setupFinaleSlackOffer = $derived.by(() => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!setupBotDmDone || !bot || !row) return false;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupFinaleOffersSlack(timeline, bot.agentUid, messageOffersSlackAgent);
+  });
   const setupFinaleVisible = $derived.by(() => {
     if (!setupBotDmDone) return false;
     void setupFinaleDismissedAt;
@@ -2949,6 +3048,10 @@
   let cloudError = $state<string | null>(null);
   let manifestError = $state<string | null>(null);
   let emailVerificationRequired = $state(false);
+  /** The membership banner: a failed automatic pull (to retry) or unverified email. */
+  const membershipBannerVisible = $derived(
+    emailVerificationRequired || (membershipsToPull.length > 0 && membershipSyncError !== null),
+  );
   let syncWorkspaces = $state<Record<string, unknown>[]>([]);
   let hqFolderPath = $state<string | null>(null);
 
@@ -3082,6 +3185,15 @@
         shortcut: shortcutLabel("view.projects"),
         action: () => {
           void navigate({ kind: "projects" });
+        },
+      });
+      nav.push({
+        id: "command-go-files",
+        label: "Files",
+        detail: "Browse your personal and company vaults",
+        shortcut: shortcutLabel("view.files"),
+        action: () => {
+          void navigate({ kind: "explorer" });
         },
       });
     }
@@ -5795,6 +5907,8 @@
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
         return { kind: "shared-files" };
+      case "explorer":
+        return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "projects":
         return { kind: "projects", company: projectsCompany };
       case "extra":
@@ -5861,6 +5975,82 @@
       ? "ok"
       : "denied";
   }
+
+  /**
+   * A company made outside this app's own create flow (the setup bot runs
+   * `hq company create`) reaches the channel directory before the host's
+   * roster, which otherwise only reloads on sync-runner events that can land
+   * minutes later. Until then its channels read as a company this person is
+   * not in: hidden from Companies, and "no longer available" on click.
+   */
+  const ROSTER_REFRESH_TIMEOUT_MS = 8_000;
+  const rosterRefreshAsked = new Set<string>();
+  let rosterRefreshInFlight: Promise<void> | null = null;
+
+  function refreshRoster(): Promise<void> {
+    if (!onrefreshroster) return Promise.resolve();
+    if (!rosterRefreshInFlight) {
+      const refresh = onrefreshroster;
+      rosterRefreshInFlight = Promise.race([
+        Promise.resolve()
+          .then(() => refresh())
+          .catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, ROSTER_REFRESH_TIMEOUT_MS)),
+      ])
+        .then(() => svelteTick())
+        .finally(() => {
+          rosterRefreshInFlight = null;
+        });
+    }
+    return rosterRefreshInFlight;
+  }
+
+  /**
+   * Access for a row's company. A "denied" row also asks the host to re-read
+   * the roster; if the company turns up, the unavailable page re-opens the
+   * destination (see the effect below). The answer itself stays synchronous:
+   * the sidebar navigates to Messages right after the row, which would cancel
+   * an awaited channel navigation.
+   */
+  function rowAccessOutcome(
+    destination: Extract<NavigationDestination, { kind: "channel" | "dm" }>,
+    row: ConversationRow,
+  ): NavigationResolveOutcome {
+    if (companyAccess(row.companyUid) !== "denied") {
+      return { status: "ready", destination };
+    }
+    void refreshRoster();
+    return {
+      status: "unavailable",
+      destination,
+      reason: DESTINATION_UNAVAILABLE,
+    };
+  }
+
+  // Proactive half: a rail row whose company the roster lacks asks the host
+  // for a fresh roster once per company key, so the Companies section and
+  // the channel's access catch up without waiting for a click or a sync.
+  $effect(() => {
+    if (!onrefreshroster || companies == null) return;
+    for (const row of railRows) {
+      const key = row.companyUid?.trim();
+      if (!key || rosterRefreshAsked.has(key)) continue;
+      if (companyAccess(key) !== "denied") continue;
+      rosterRefreshAsked.add(key);
+      void refreshRoster();
+    }
+  });
+
+  // Recovery half: the unavailable page for a channel whose company the
+  // re-read roster now includes opens that channel after all.
+  $effect(() => {
+    const blocked = navigationUnavailable?.destination;
+    if (!blocked || (blocked.kind !== "channel" && blocked.kind !== "dm")) return;
+    if (companies == null) return;
+    const row = untrack(() => rowForDestination(blocked));
+    if (!row?.companyUid || companyAccess(row.companyUid) !== "ok") return;
+    void untrack(() => navigate(blocked));
+  });
 
   function companyIsAccessible(companyUid: string | null | undefined): boolean {
     return companyAccess(companyUid) === "ok";
@@ -5942,15 +6132,9 @@
       const row = rowForDestination(destination);
       if (row) {
         // Rows already in the rail came from the membership directory.
-        // Only blank after companies has loaded and the uid is gone.
-        if (companyAccess(row.companyUid) === "denied") {
-          return {
-            status: "unavailable",
-            destination,
-            reason: DESTINATION_UNAVAILABLE,
-          };
-        }
-        return { status: "ready", destination };
+        // Only blank after companies has loaded and the uid is gone; the
+        // roster re-read that a miss triggers re-opens it if it turns up.
+        return rowAccessOutcome(destination, row);
       }
       return waitForDestinationRow(destination, context);
     }
@@ -5979,15 +6163,7 @@
         }
         const row = rowForDestination(destination);
         if (row) {
-          if (companyAccess(row.companyUid) === "denied") {
-            resolve({
-              status: "unavailable",
-              destination,
-              reason: DESTINATION_UNAVAILABLE,
-            });
-            return;
-          }
-          resolve({ status: "ready", destination });
+          resolve(rowAccessOutcome(destination, row));
           return;
         }
         tries += 1;
@@ -6096,6 +6272,14 @@
         break;
       case "shared-files":
         view = "shared-files";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "explorer":
+        explorerVault = next.vault ?? null;
+        explorerPath = next.path ?? null;
+        view = "explorer";
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
@@ -7507,6 +7691,12 @@
     // the previous page.
     void navigate({ kind: "messages" });
   }
+  function closeFiles(): void {
+    // Same rule as Settings: each opened file is a history step, so Back
+    // means "close Files" and lands on Messages.
+    void navigate({ kind: "messages" });
+  }
+
 
   function companyWorkspaceForSlug(slug: string) {
     const needle = slug.trim();
@@ -7796,6 +7986,15 @@
             group: "Views",
             run: () => {
               void navigate({ kind: "projects" });
+            },
+          } satisfies ShortcutBinding,
+          {
+            id: "view.files",
+            keys: "Mod+5",
+            label: "Files",
+            group: "Views",
+            run: () => {
+              void navigate({ kind: "explorer" });
             },
           } satisfies ShortcutBinding,
         ]
@@ -8101,6 +8300,9 @@
     onopenProjects={isWeb ? undefined : () => {
       void navigate({ kind: "projects" });
     }}
+    onopenFiles={isWeb ? undefined : () => {
+      void navigate({ kind: "explorer" });
+    }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
@@ -8172,7 +8374,7 @@
     </div>
   {/if}
 
-  {#if adapter.isAvailable("canSync") && (membershipsToPull.length > 0 || emailVerificationRequired)}
+  {#if adapter.isAvailable("canSync") && membershipBannerVisible}
     <MembershipSyncBanner
       memberships={membershipsToPull}
       emailVerificationRequired={emailVerificationRequired}
@@ -8267,6 +8469,29 @@
         {refreshAppVersion}
         {uiVersion}
       />
+    </div>
+  {:else if view === "explorer"}
+    <!-- Full destination, like Settings. -->
+    <div class="desktop-body" data-testid="files-host">
+      <section class="files-page">
+        <PageHeader
+          onback={closeFiles}
+          title="Files"
+          subtitle="your personal and company vaults"
+          backTestId="files-back"
+        />
+        <div class="explorer-host" data-testid="explorer-host">
+          <VaultExplorer
+            {adapter}
+            {companies}
+            vaultId={explorerVault}
+            path={explorerPath}
+            onlocationchange={(loc) => {
+              void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+            }}
+          />
+        </div>
+      </section>
     </div>
   {:else}
     <div class="desktop-body" style:--sidebar-width={`${sidebarWidth}px`}>
@@ -8879,6 +9104,10 @@
                       onopenurl={(url) => onopenurl?.(url)}
                       ondismiss={dismissSetupFinale}
                       launchError={setupLaunchError}
+                      slackLabel={setupFinaleSlackOffer ? setupSlackOfferText(setupBotDisplayName) : null}
+                      onslack={() => void persistSend(setupSlackOfferText(setupBotDisplayName), []).catch((err) =>
+                          console.warn("[hq-desktop] could not ask the setup bot about Slack:", err),
+                        )}
                     />
                   {/if}
                   {#if inSetupChannelWithAgent}
@@ -9053,6 +9282,7 @@
                     onsetupstarted={recordWelcomeSetupRun}
                     agent={setupAgent}
                     setupBot={setupBotLauncher}
+                    installGuide={setupInstallGuide}
                     onopensessiondetails={extraPages?.sessions
                       ? (sessionId) => openExtraPage("sessions", sessionId)
                       : undefined}
@@ -9229,6 +9459,7 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
+                  suggestedReplies={setupSuggestedReplies}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />
@@ -9546,7 +9777,18 @@
     --titlebar-leading-inset: 16px;
   }
 
-  .projects-host {
+  .files-page {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--v4-ground, #161618);
+    color: var(--t1);
+  }
+  .projects-host,
+  .explorer-host {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -9554,7 +9796,8 @@
     min-height: 0;
     overflow: hidden;
   }
-  .projects-host > :global(*) {
+  .projects-host > :global(*),
+  .explorer-host > :global(*) {
     flex: 1 1 auto;
     min-height: 0;
   }

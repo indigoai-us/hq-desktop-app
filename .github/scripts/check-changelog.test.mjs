@@ -66,6 +66,38 @@ describe("pr: a pull request must add release notes", () => {
     assert.equal(checkPullRequest(EMPTY, WITH_ENTRY).ok, true);
   });
 
+  it("fails when Unreleased repeats a bullet from the latest published release", () => {
+    const repeated = "- Sync no longer stops when a file is renamed while it uploads.";
+    const head = WITH_ENTRY.replace(
+      "## [Unreleased]\n",
+      `## [Unreleased]\n\n${repeated}\n`,
+    );
+    const result = checkPullRequest(EMPTY, head);
+
+    assert.equal(result.ok, false);
+    assert.match(result.message, /already published under ## \[1\.2\.0\]/);
+    assert.match(result.message, /move this bullet out of `## \[Unreleased\]`/i);
+    assert.match(result.message, /Sync no longer stops when a file is renamed while it uploads/);
+  });
+
+  it("compares whole wrapped bullets only against the latest release section", () => {
+    const repeated = "- A release note that wraps across lines\n  without changing its wording.";
+    const base = `# Changelog\n\n## [Unreleased]\n\n## [1.3.0] — 2026-01-03\n\n${repeated}\n\n## [1.2.0] — 2026-01-02\n\n- An older note.\n`;
+    const head = base.replace("## [Unreleased]\n", `## [Unreleased]\n\n${repeated}\n\n- A new note.\n`);
+    const result = checkPullRequest(base, head);
+
+    assert.equal(result.ok, false);
+    assert.match(result.message, /already published under ## \[1\.3\.0\]/);
+    assert.match(result.message, /wraps across lines without changing its wording/);
+  });
+
+  it("does not reject an Unreleased bullet that appears only in an older release", () => {
+    const base = `# Changelog\n\n## [Unreleased]\n\n## [1.3.0] — 2026-01-03\n\n- The current release note.\n\n## [1.2.0] — 2026-01-02\n\n- An older note.\n`;
+    const head = base.replace("## [Unreleased]\n", "## [Unreleased]\n\n- An older note.\n- A new note.\n");
+
+    assert.equal(checkPullRequest(base, head).ok, true);
+  });
+
   it("does not count entries other PRs already wrote", () => {
     assert.equal(checkPullRequest(WITH_ENTRY, WITH_ENTRY).ok, false);
   });

@@ -29,7 +29,12 @@
     SETUP_PROMPT,
     type AiTools,
   } from "./setup-launch";
-  import { SETUP_BOT_COPY, SETUP_BOT_GENERIC_FAILURE, type SetupBotLauncher } from "../chat/setup-bot";
+  import { setupBotCopy, SETUP_BOT_GENERIC_FAILURE, type SetupBotLauncher } from "../chat/setup-bot";
+  import { hostComputerNoun } from "@hq/platform";
+  import SetupInstallGuide, {
+    type CodingTool,
+    type InstallOutcome,
+  } from "./SetupInstallGuide.svelte";
 
   interface Props {
     /** Platform seam slices (see @hq/platform PlatformAdapter). */
@@ -43,15 +48,38 @@
     >;
     /**
      * SETUP AS A BOT (bots v2, step 3). With a launcher, the card's primary
-     * action opens the setup bot's conversation — or creates it when this Mac
-     * has a coding tool signed in. The tool launches below stay as they are:
-     * they are the way through when no runtime is signed in (or the create
-     * fails), and the card must never dead-end.
+     * action opens the setup bot's conversation - or creates it when this
+     * computer has a coding tool signed in. The tool launches below stay as
+     * they are: they are the way through when no runtime is signed in (or the
+     * create fails), and the card must never dead-end.
      */
     setupBot?: SetupBotLauncher | null;
+    /**
+     * US-005: the guided install path shown when NO coding tool is detected.
+     * The host wires these to its own install / sign-in commands
+     * (`install_claude_code`, `provider_login_start`, `detect_ai_tools`,
+     * `open_external`). Optional - omitted callers keep the old fallback,
+     * so this prop is additive.
+     */
+    installGuide?: {
+      oninstall(tool: CodingTool): Promise<InstallOutcome>;
+      onsignin(tool: CodingTool): Promise<InstallOutcome>;
+      onrefresh(): Promise<void>;
+      downloadUrlFor(tool: CodingTool): string;
+      onopen(url: string): Promise<InstallOutcome> | void;
+    } | null;
   }
 
-  let { settings, shell, setupBot = null }: Props = $props();
+  let { settings, shell, setupBot = null, installGuide = null }: Props = $props();
+
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once at mount from the shared Tauri probe - the copy
+   * a person reads must never suddenly rename their computer, and the
+   * neutral fallback covers a probe that has not landed yet.
+   */
+  const hostNoun = hostComputerNoun();
+  const copy = $derived(setupBotCopy({ noun: hostNoun }));
 
   /** The bot path can act: open the one that exists, or make one. */
   const botAction = $derived(Boolean(setupBot && (setupBot.existing || setupBot.ready)));
@@ -88,10 +116,32 @@
 
   const show = $derived(status !== null && !status.hqRootValid);
 
+  /**
+   * The guided install shows when nothing on this computer can drive setup:
+   * no coding tool detected AND no signed-in launcher path. This is the
+   * dead-end US-005 replaces - the old fallback here was two "Open in …"
+   * buttons that both fail on a machine with no CLI, plus a "Copy /setup"
+   * that helps no one without a CLI.
+   */
+  const showInstallGuide = $derived(
+    Boolean(
+      installGuide &&
+        aiTools &&
+        !aiTools.any &&
+        !(setupBot?.existing || setupBot?.ready),
+    ),
+  );
+
   onMount(async () => {
     const res = await settings.getSetupStatus();
     // Status unavailable (web) or errored — stay hidden rather than false-alarm.
     status = res.ok ? (res.value as unknown as SetupStatus) : null;
+    // US-005: probe AI tools eagerly so the guided install path renders
+    // without waiting for a launch click.
+    if (installGuide) {
+      const tools = await shell.detectAiTools();
+      aiTools = tools.ok ? (tools.value as unknown as AiTools) : null;
+    }
   });
 
   async function ensureAiTools(): Promise<AiTools | null> {
@@ -132,8 +182,9 @@
         const res = await shell.launchClaudeCode(status.hqFolderPath);
         if (!res.ok) launchError = failureMessage(res, "Claude Code");
       } else {
-        launchError =
-          "Claude Code was not detected. Open your HQ folder in Claude Code and run /setup.";
+        launchError = installGuide
+          ? "Claude Code isn't installed yet. Use the guided install above - HQ can install it for you and walk you through signing in."
+          : "Claude Code was not detected. Open your HQ folder in Claude Code and run /setup.";
       }
     } finally {
       launching = null;
@@ -152,8 +203,9 @@
         });
         if (!res.ok) launchError = failureMessage(res, "Codex");
       } else {
-        launchError =
-          "Codex CLI was not detected. Open your HQ folder in Codex and run /setup.";
+        launchError = installGuide
+          ? "Codex isn't installed yet. Use the guided install above - HQ can install it for you and walk you through signing in."
+          : "Codex CLI was not detected. Open your HQ folder in Codex and run /setup.";
       }
     } finally {
       launching = null;
@@ -181,7 +233,7 @@
     <div class="setup-copy">
       <h2 class="setup-title">Finish setting up HQ</h2>
       {#if botAction}
-        <p class="setup-body" data-testid="setup-card-bot-body">{SETUP_BOT_COPY.cardBody}</p>
+        <p class="setup-body" data-testid="setup-card-bot-body">{copy.cardBody}</p>
       {:else}
         <p class="setup-body">
           Your HQ folder isn't ready yet. Open your coding tool and run
@@ -195,6 +247,20 @@
         <p class="setup-error" role="alert">{launchError}</p>
       {/if}
     </div>
+    {#if showInstallGuide && installGuide}
+      <SetupInstallGuide
+        tools={aiTools}
+        oninstall={installGuide.oninstall}
+        onsignin={installGuide.onsignin}
+        onrefresh={async () => {
+          const res = await shell.detectAiTools();
+          aiTools = res.ok ? (res.value as unknown as AiTools) : null;
+          await installGuide.onrefresh();
+        }}
+        downloadUrlFor={installGuide.downloadUrlFor}
+        onopen={installGuide.onopen}
+      />
+    {/if}
     <div class="setup-actions">
       {#if botAction}
         <button
@@ -205,10 +271,10 @@
           data-testid="setup-open-bot"
         >
           {botBusy || setupBot?.starting
-            ? SETUP_BOT_COPY.starting
+            ? copy.starting
             : setupBot!.existing
-              ? SETUP_BOT_COPY.open
-              : SETUP_BOT_COPY.create}
+              ? copy.open
+              : copy.create}
         </button>
       {/if}
       <button

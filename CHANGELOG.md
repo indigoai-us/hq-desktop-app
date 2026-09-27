@@ -8,6 +8,85 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Setup and bot-picker copy now names the user's actual computer instead of
+  guessing. On macOS the app says "this Mac", on Windows "this PC", and on
+  Linux or before the platform probe has landed it stays "this computer" so
+  a Windows user never briefly reads "Mac" and a Mac user never briefly
+  reads "PC". The setup bot's hello and kickoff, its Home card and hero,
+  the install error, the "Signed in on this ___" runtime hints, the New bot
+  picker, the Settings AI-tools lede, and the returning-user welcome all go
+  through one shared helper. The onboarding wizard also shows an honest
+  expectation under "Getting your HQ ready": on Windows it explains that
+  antivirus scans and background installs make setup take longer, so a
+  long-running step no longer looks stuck.
+
+## [0.10.347] — 2026-09-27
+
+- The usage data choice during setup now starts on "Share usage data", and its
+  selection circles are drawn in full instead of being cut off on one side.
+- The setup bot's first message now mentions that you can run it in Claude Code
+  or Codex from the Launch button.
+- When setup finds no coding tool installed, the Home setup card offers a
+  guided path instead of the old dead-end "Open in Claude Code / Codex"
+  buttons. One click installs Claude Code, a plain progress line shows what
+  is happening, and after it lands HQ walks you through signing in inside
+  Claude Code's own window. Your password never comes to HQ. If the install
+  fails, the card says why in one sentence and offers a manual download.
+
+## [0.10.346] — 2026-09-27
+
+- New Files page (Cmd+5, or the file icon in the title bar). It opens full
+  window like Settings, with Back to return to Messages. Browse your
+  personal vault and each company vault on this Mac. Notes open in a reading
+  view with their properties, clickable [[links]], an outline, and the notes
+  that link back to them. Cmd+O jumps to any file. Settings folders and key
+  files are never shown. Large company vaults (tens of thousands of files)
+  stay fast: search, links and counts come from an index the app keeps up to
+  date in the background, folders with thousands of files scroll smoothly,
+  and a very large note shows its first part with a button to open the rest.
+- Markdown documents of a few megabytes no longer crash the reading view.
+- A company you were just added to, including one the setup bot creates for
+  you, now syncs onto this Mac by itself. The "Added to … Sync to pull it"
+  banner only appears when that sync fails, and its Sync now button retries.
+- The setup bot now has a name, picked at random from 100 friendly ones
+  (Pickles, Mochi, Waffles…), and never one a bot you can already see uses.
+  It says its name in its first hello. If you started your own company, the
+  card at the end of setup can also offer to put the bot in Slack; clicking it
+  asks the bot to walk you through it.
+- The setup bot's messages can now end with suggested replies: a few buttons
+  under its newest message with the likely answers to its question, or the
+  next questions to ask. Clicking one sends it as your reply. They go away
+  once you reply. The last button, "Something else", puts the cursor in the
+  message box so you can type your own answer.
+- The setup bot now opens by asking whether you want HQ explained first or
+  want to jump straight into setup, instead of starting the first step right
+  away.
+- Clicking a new company's channel right after the setup bot creates it no
+  longer lands on the "no longer available" page. The company rail now asks
+  the host to re-read its company roster as soon as a channel names a company
+  the roster is missing, and the unavailable page re-opens the channel once
+  the company shows up.
+
+## [0.10.345] — 2026-09-27
+
+- Stable releases now keep their published notes out of Unreleased. The changelog
+  check also catches repeated notes before the next tag is cut.
+- On Windows, the CLI updater defers a busy target when no holder is found. It retries on
+  later launches and reports a persistent failure after three attempts.
+- Automatic Core updates wait for startup cache preparation. If it times out, the
+  update is deferred to a later automatic check. Manual updates remain unchanged.
+- Setup cancellation treats SIGTERM EPERM as clean only when a full process group
+  probe confirms no live members. Live groups and SIGKILL errors still surface.
+
+## [0.10.344] — 2026-09-27
+
+- On Windows, setup uses Winget for Git and checks qmd's launcher before marking setup complete.
+- Windows setup waits for Git before installing qmd and rechecks Git after a specific WinGet failure.
+- Updater restarts now find Node from the app-managed toolchain, preventing completed installations from reopening setup when Node is available.
+- Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
+
+## [0.10.342] — 2026-09-27
+
 - When enabled, cancelling setup treats an installer process group with no live
   members as already cleaned up instead of reporting a cleanup error. The
   rollout flag is off by default.

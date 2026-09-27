@@ -4009,7 +4009,7 @@ jobs:
   sync-version:
     name: Sync released version to main
     needs: [validate, publish]
-    if: ${{ needs.publish.result == 'success' && needs.validate.outputs.prerelease != 'true' && inputs.shelltest != true }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.validate.outputs.prerelease != 'true' && inputs.shelltest != true }}
     concurrency:
       # Serialize with itself so two releases finishing together cannot race
       # each other's push and burn all the retries.

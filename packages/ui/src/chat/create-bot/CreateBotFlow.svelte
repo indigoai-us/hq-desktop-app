@@ -17,6 +17,7 @@
    * is reached, so a company bot is never made under a name nobody has seen.
    */
   import { onMount, untrack } from "svelte";
+  import { hostComputerNoun } from "@hq/platform";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -139,6 +140,12 @@
 
   const templates = $derived<readonly LocalBotWorkerOption[]>(companyTemplates(botWorkers ?? []));
   const names = $derived<readonly string[]>(existingNames ?? []);
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once so the stepIssue lines never rename the machine
+   * mid-flow.
+   */
+  const hostNoun = hostComputerNoun();
   const companies = $derived(agentTargets ?? []);
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
@@ -163,6 +170,7 @@
     cloudProvisionOptions,
     cloudQuoteStatus,
     cloudApiKeyPresent: cloudApiKey.trim().length > 0,
+    hostNoun,
   });
 
   // The draft is seeded once from the initial context; later prop changes

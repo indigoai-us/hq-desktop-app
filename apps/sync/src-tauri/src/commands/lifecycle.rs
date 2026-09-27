@@ -40,12 +40,45 @@ pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
 /// commands that run after setup_lifecycle has returned.
 pub struct LifecycleInputsHandle {
     pub inputs: LifecycleInputs,
+    pub manifest_incomplete: bool,
     pub tools_present: bool,
     pub bundled_cli_ready: bool,
     pub hq_root_probe: Option<HqRootProbe>,
     pub hq_program_kind: Option<ResolvedProgramKind>,
     pub node_program_kind: Option<ResolvedProgramKind>,
     pub require_local_toolchain_demoted: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupSetupEvidence {
+    install_completed: bool,
+    first_run_completed: bool,
+    install_in_progress: bool,
+    manifest_incomplete: bool,
+    had_machine_id: bool,
+    hq_root_valid: bool,
+}
+
+/// Setup evidence used by the frontend's unexpected-surface reporting boundary.
+/// Unknown evidence is returned as `None` so the reporter can defer to its own
+/// conservative Rust-side check.
+#[tauri::command]
+pub fn get_startup_setup_evidence(
+    state: State<'_, LifecycleInputsHandle>,
+) -> Option<StartupSetupEvidence> {
+    let inputs = state.inputs;
+    if inputs.evidence_unreadable {
+        return None;
+    }
+    Some(StartupSetupEvidence {
+        install_completed: inputs.install_completed,
+        first_run_completed: inputs.first_run_completed,
+        install_in_progress: inputs.install_in_progress,
+        manifest_incomplete: state.manifest_incomplete,
+        had_machine_id: inputs.had_machine_id,
+        hq_root_valid: inputs.hq_root_valid,
+    })
 }
 
 /// Time at which setup_lifecycle started, used to compute seconds since
@@ -117,6 +150,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
                 consent_answered: false,
                 evidence_unreadable: true,
             },
+            manifest_incomplete: false,
             tools_present: false,
             bundled_cli_ready: false,
             hq_root_probe: None,
@@ -196,6 +230,8 @@ pub fn setup_lifecycle(app: &AppHandle) {
     }
     let evidence_unreadable = hq_root_unreadable || token_unreadable;
 
+    let (install_in_progress, manifest_incomplete) =
+        crate::commands::install_manifest::startup_manifest_evidence_from_disk();
     let inputs = LifecycleInputs {
         install_completed,
         first_run_completed,
@@ -203,7 +239,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         config_valid,
         hq_root_valid,
         has_auth,
-        install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
+        install_in_progress,
         consent_answered,
         evidence_unreadable,
     };
@@ -396,6 +432,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
     app.manage(LifecycleInputsHandle {
         inputs,
+        manifest_incomplete,
         tools_present,
         bundled_cli_ready,
         hq_root_probe: Some(root_probe),
@@ -519,7 +556,8 @@ fn lifecycle_state_str(state: LifecycleState) -> &'static str {
 ///
 /// Called from the frontend after `checkAuth()` resolves, when the resolved
 /// surface is "sign-in" or "onboarding" AND the machine shows prior-setup
-/// evidence (installCompleted, firstRunCompleted, or token file present).
+/// evidence (installCompleted, firstRunCompleted, or an existing machine ID
+/// backed by a valid HQ root).
 /// Rate-limited to one Sentry event per process via `UNEXPECTED_SURFACE_REPORTED`.
 #[tauri::command]
 pub fn report_unexpected_startup_surface(
@@ -573,10 +611,24 @@ pub fn report_unexpected_startup_surface(
         },
     );
 
-    let prior_setup = hq_desktop_core::unexpected_surface::prior_setup_detected(
-        inputs.install_completed,
-        inputs.first_run_completed,
-        token_file_exists,
+    let prior_setup = inputs.evidence_unreadable
+        || hq_desktop_core::unexpected_surface::prior_setup_detected(
+            inputs.install_completed,
+            inputs.first_run_completed,
+            inputs.had_machine_id,
+            inputs.hq_root_valid,
+            inputs.install_in_progress,
+            state.manifest_incomplete,
+        );
+    let sign_in_prior_setup = inputs.evidence_unreadable
+        || inputs.install_completed
+        || inputs.first_run_completed
+        || token_file_exists;
+    let should_report = hq_desktop_core::unexpected_surface::should_report_unexpected_surface(
+        &surface,
+        &lc_state_str,
+        prior_setup,
+        sign_in_prior_setup,
     );
 
     // Always write the log line so diagnostics can find it.
@@ -606,7 +658,7 @@ pub fn report_unexpected_startup_surface(
         crate::app_version::current(),
     );
 
-    if !prior_setup {
+    if !should_report {
         log("lifecycle", &format!("[skip] {log_line}"));
         return;
     }
@@ -727,4 +779,21 @@ mod tests {
         *handle.0.write().unwrap() = LifecycleState::SteadyState;
         assert_eq!(handle.current(), LifecycleState::SteadyState);
     }
+
+    #[test]
+    fn startup_setup_evidence_serializes_manifest_incomplete_separately() {
+        let evidence = StartupSetupEvidence {
+            install_completed: false,
+            first_run_completed: false,
+            install_in_progress: false,
+            manifest_incomplete: true,
+            had_machine_id: true,
+            hq_root_valid: true,
+        };
+        let value = serde_json::to_value(evidence).unwrap();
+
+        assert_eq!(value["manifestIncomplete"], true);
+        assert_eq!(value["installInProgress"], false);
+    }
+
 }

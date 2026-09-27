@@ -16,6 +16,7 @@
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
   import PlainMessageBody from "./PlainMessageBody.svelte";
+  import { HOST_PLACED_BLOCK_KINDS } from "./richMessageContent.js";
   import type {
     BadgeTone,
     CalloutTone,
@@ -227,7 +228,7 @@
   }
 </script>
 
-{#if content.blocks.some((b) => b.kind !== "setupDone")}
+{#if content.blocks.some((b) => !HOST_PLACED_BLOCK_KINDS.has(b.kind))}
 <div class="rich-content" data-testid="rich-message-content">
   {#each content.blocks as block, blockIndex (blockIndex)}
     {#if block.kind === "stat"}

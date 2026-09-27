@@ -240,9 +240,9 @@ describe("setup roster helpers", () => {
   });
 
   it("switches the hero copy once the roster has a company", () => {
-    expect(setupHeroFor(null)).toBe(SETUP_HERO);
-    expect(setupHeroFor([PERSONAL])).toBe(SETUP_HERO);
-    expect(setupHeroFor([PERSONAL, workspace()])).toBe(SETUP_HERO_RETURNING);
+    expect(setupHeroFor(null)).toEqual(SETUP_HERO);
+    expect(setupHeroFor([PERSONAL])).toEqual(SETUP_HERO);
+    expect(setupHeroFor([PERSONAL, workspace()])).toEqual(SETUP_HERO_RETURNING);
     expect(SETUP_HERO_RETURNING.body).not.toMatch(/cmp_|prs_/);
   });
 

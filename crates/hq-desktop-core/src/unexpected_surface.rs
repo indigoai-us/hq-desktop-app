@@ -2,14 +2,36 @@ use crate::cognito::StoredTokenPresence;
 use crate::lifecycle::{HqRootProbe, LifecycleInputs};
 use crate::paths::ResolvedProgramKind;
 
-/// Returns true when the machine shows evidence it was already set up and
-/// signed in, making a sign-in or onboarding surface unexpected.
+/// Returns true when the machine shows evidence it was already set up,
+/// making a sign-in or onboarding surface unexpected.
 pub fn prior_setup_detected(
     install_completed: bool,
     first_run_completed: bool,
-    token_file_exists: bool,
+    had_machine_id: bool,
+    hq_root_valid: bool,
+    install_in_progress: bool,
+    manifest_incomplete: bool,
 ) -> bool {
-    install_completed || first_run_completed || token_file_exists
+    install_completed
+        || first_run_completed
+        || (!install_in_progress && !manifest_incomplete && had_machine_id && hq_root_valid)
+}
+
+/// Decide whether a startup surface is reportable while preserving sign-in
+/// token evidence and InstalledFirstRun reports. Only the three fresh/incomplete
+/// install states are suppressed when no prior setup evidence exists.
+pub fn should_report_unexpected_surface(
+    surface: &str,
+    lifecycle_state: &str,
+    prior_setup: bool,
+    sign_in_prior_setup: bool,
+) -> bool {
+    match (surface, lifecycle_state) {
+        ("onboarding", "NeedsInstall" | "NeedsAuthForInstall" | "InstallResume") => prior_setup,
+        ("onboarding", _) => true,
+        ("sign-in", _) => sign_in_prior_setup,
+        _ => prior_setup,
+    }
 }
 
 /// All fields sent to Sentry on an unexpected startup surface event.
@@ -292,27 +314,104 @@ mod tests {
 
     #[test]
     fn prior_setup_detected_install_completed() {
-        assert!(prior_setup_detected(true, false, false));
+        assert!(prior_setup_detected(
+            true, false, false, false, false, false
+        ));
     }
 
     #[test]
     fn prior_setup_detected_first_run_completed() {
-        assert!(prior_setup_detected(false, true, false));
+        assert!(prior_setup_detected(
+            false, true, false, false, false, false
+        ));
     }
 
     #[test]
-    fn prior_setup_detected_token_file_exists() {
-        assert!(prior_setup_detected(false, false, true));
+    fn prior_setup_detected_with_machine_id_and_valid_hq_root() {
+        assert!(prior_setup_detected(false, false, true, true, false, false));
+    }
+
+    #[test]
+    fn interrupted_first_install_is_not_prior_setup() {
+        assert!(!prior_setup_detected(false, false, true, true, true, false));
+    }
+
+    #[test]
+    fn incomplete_manifest_evidence_excludes_machine_id_and_root_from_prior_setup() {
+        assert!(!prior_setup_detected(false, false, true, true, false, true));
+    }
+
+    #[test]
+    fn completion_markers_override_install_in_progress() {
+        assert!(prior_setup_detected(true, false, true, true, true, true));
+        assert!(prior_setup_detected(false, true, true, true, true, true));
+    }
+
+    #[test]
+    fn needs_install_remains_reportable_with_completed_or_lost_progress_marker() {
+        assert!(should_report_unexpected_surface(
+            "onboarding",
+            "NeedsInstall",
+            prior_setup_detected(true, false, true, true, true, true),
+            false,
+        ));
+        assert!(should_report_unexpected_surface(
+            "onboarding",
+            "NeedsInstall",
+            prior_setup_detected(false, false, true, true, false, false),
+            false,
+        ));
     }
 
     #[test]
     fn prior_setup_not_detected_on_fresh_install() {
-        assert!(!prior_setup_detected(false, false, false));
+        assert!(!prior_setup_detected(
+            false, false, false, false, false, false
+        ));
     }
 
     #[test]
     fn prior_setup_detected_multiple_signals() {
-        assert!(prior_setup_detected(true, true, true));
+        assert!(prior_setup_detected(true, true, false, false, false, false));
+    }
+
+    #[test]
+    fn a_machine_id_without_a_valid_hq_root_is_not_prior_setup_evidence() {
+        assert!(!prior_setup_detected(
+            false, false, true, false, false, false
+        ));
+    }
+
+    #[test]
+    fn fresh_install_onboarding_states_are_not_reported_without_prior_setup() {
+        for state in ["NeedsInstall", "NeedsAuthForInstall", "InstallResume"] {
+            assert!(!should_report_unexpected_surface(
+                "onboarding",
+                state,
+                false,
+                false
+            ));
+        }
+    }
+
+    #[test]
+    fn installed_first_run_remains_reportable_without_marker_evidence() {
+        assert!(should_report_unexpected_surface(
+            "onboarding",
+            "InstalledFirstRun",
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn sign_in_retains_token_file_evidence_without_completion_markers() {
+        assert!(should_report_unexpected_surface(
+            "sign-in",
+            "SteadyState",
+            false,
+            true
+        ));
     }
 
     #[test]
@@ -385,7 +484,10 @@ mod tests {
         assert!(!prior_setup_detected(
             p.install_completed,
             p.first_run_completed,
-            p.token_file_exists,
+            false,
+            false,
+            false,
+            false,
         ));
     }
 

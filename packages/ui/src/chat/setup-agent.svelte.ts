@@ -28,6 +28,7 @@ import {
   type SetupSecretCard,
 } from "./setup-run";
 import { SETUP_GUIDED_PROMPT } from "./setup-channel";
+import { hostComputerNoun } from "@hq/platform";
 
 export type SetupAgentMode = "idle" | "starting" | "live" | "resume" | "stopped" | "done";
 
@@ -237,9 +238,18 @@ export class SetupAgent {
     this.hooks = hooks;
     // Derived after `api` is set: class field initialisers run before the
     // constructor body, so they cannot read it.
+    // Read once. The permission text names the host machine ("Mac", "PC",
+    // or "computer"); a probe that has not landed falls back to the neutral
+    // "computer", never a guess.
+    const hostNoun = hostComputerNoun();
     this.state = $derived(
       this.snapshot
-        ? interpretSetupRun(this.snapshot.events, this.snapshot.phase, this.snapshot.resolvedRequestIds ?? [])
+        ? interpretSetupRun(
+            this.snapshot.events,
+            this.snapshot.phase,
+            this.snapshot.resolvedRequestIds ?? [],
+            { noun: hostNoun },
+          )
         : null,
     );
     this.active = $derived(this.hasApi && this.mode !== "idle");

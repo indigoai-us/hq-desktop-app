@@ -64,6 +64,8 @@ export type NavigationDestination =
   | { kind: "library"; tab: LibraryTab; itemId?: string | null }
   | { kind: "settings"; section?: EmbeddedSettingsSection | null }
   | { kind: "shared-files" }
+  /** The Files explorer; `vault` is `personal` or `company:<slug>`. */
+  | { kind: "explorer"; vault?: string | null; path?: string | null }
   /** The Projects page; `company` is the company slug shown. */
   | { kind: "projects"; company?: string | null }
   /** The DM connection-requests panel; `pairKey` is the request to bring into view. */
@@ -270,6 +272,12 @@ export function canonicalizeDestination(
         kind: "meetings",
         meetingId: trimId(destination.meetingId),
       };
+    case "explorer":
+      return {
+        kind: "explorer",
+        vault: trimId(destination.vault),
+        path: trimId(destination.path),
+      };
     case "projects":
       return { kind: "projects", company: trimId(destination.company) };
     case "library":
@@ -359,6 +367,8 @@ export function canonicalDestinationKey(
       ].join(":");
     case "meetings":
       return `meetings:${dest.meetingId ?? ""}`;
+    case "explorer":
+      return `explorer:${dest.vault ?? ""}:${dest.path ?? ""}`;
     case "projects":
       return `projects:${dest.company ?? ""}`;
     case "library":
@@ -440,6 +450,8 @@ export function destinationLabel(destination: NavigationDestination): string {
       return dest.section ? `Settings · ${settingsSectionLabel(dest.section)}` : "Settings";
     case "shared-files":
       return "Shared files";
+    case "explorer":
+      return dest.path ? `Files · ${dest.path.split("/").pop()}` : "Files";
     case "projects":
       return dest.company ? `Projects · ${dest.company}` : "Projects";
     case "dm-requests":

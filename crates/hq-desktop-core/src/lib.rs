@@ -115,6 +115,7 @@ pub mod sync_progress;
 pub mod toolchain;
 pub mod ui_hot;
 pub mod unexpected_surface;
+pub mod vault_index;
 pub mod watcher_fault;
 pub mod win32_path;
 pub mod update_gate;

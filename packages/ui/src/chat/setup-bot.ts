@@ -38,16 +38,79 @@ export const SETUP_BOT_WORKER = "setup";
 /**
  * The bot's first message, sent by the runtime the moment it starts
  * (`hq bot create --intro`) instead of waiting for a model turn. Two short
- * sentences: the plan, and that it is checking the Mac now and may take a
- * minute (the first model turn is slow, so say so up front) — never an open
- * "what would you like to do?", because the kickoff turn below follows it
- * automatically. Keep it under 500 characters (the CLI's `--intro` limit) and
- * on one line (the host rejects control characters).
+ * sentences: the plan, and that it is checking the person's Mac/PC/computer
+ * now and may take a minute (the first model turn is slow, so say so up
+ * front), plus a pointer to the Launch button for people who prefer Claude
+ * Code or Codex; never an open "what would you like to do?", because the
+ * kickoff turn below follows it automatically. Keep it under 500 characters
+ * (the CLI's `--intro` limit) and on one line (the host rejects control
+ * characters).
+ *
+ * The `noun` is the plain-language name for the host machine ("Mac", "PC",
+ * or "computer") from `hostComputerNoun`. Missing means the probe was not
+ * ready or is unknown, in which case the neutral "computer" is used so a
+ * Windows user never reads "your Mac".
  */
-export const SETUP_BOT_INTRO =
-  "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
-  "the work you already have, your business and the apps you use, and your first bot. " +
-  "I'm checking your Mac now, which can take a minute, and I'll post my first question here as soon as I'm done.";
+export function setupBotIntro(
+  opts: { noun?: string; displayName?: string | null } = {},
+): string {
+  const noun = opts.noun?.trim() || "computer";
+  const intro =
+    "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
+    "the work you already have, your business and the apps you use, and your first bot. " +
+    `I'm checking your ${noun} now, which can take a minute, and I'll post my first question here as soon as I'm done. ` +
+    "If you'd rather, you can run me in Claude Code or Codex with the Launch button above.";
+  const name = opts.displayName?.trim();
+  if (!name) return intro;
+  return intro.replace("Hi, I'm your setup bot", `Hi, I'm ${name}, your setup bot`);
+}
+
+/**
+ * The names a new setup bot is given, one picked at random. Short, friendly,
+ * letters only (the CLI's `--display-name` rules), and none of them a common
+ * first name, so a bot is never mistaken for a teammate.
+ */
+export const SETUP_BOT_NAMES: readonly string[] = [
+  "Pickles", "Biscuit", "Mochi", "Waffles", "Noodle", "Pip", "Bean", "Nugget", "Sprout", "Pudding",
+  "Muffin", "Dumpling", "Pretzel", "Sprinkles", "Tater", "Bubbles", "Gizmo", "Widget", "Doodle", "Toast",
+  "Churro", "Cupcake", "Marshmallow", "Peanut", "Pebble", "Button", "Clover", "Maple", "Hazel", "Juniper",
+  "Olive", "Pumpkin", "Taco", "Nacho", "Bagel", "Scone", "Crumpet", "Truffle", "Fudge", "Cocoa",
+  "Snickers", "Tofu", "Wasabi", "Ginger", "Nutmeg", "Paprika", "Cheddar", "Brie", "Gouda", "Pesto",
+  "Zippy", "Bloop", "Boop", "Wiggles", "Squiggle", "Doodlebug", "Pogo", "Yoyo", "Kazoo", "Banjo",
+  "Pixel", "Sparky", "Rocket", "Comet", "Nova", "Cosmo", "Orbit", "Moonpie", "Stardust", "Nimbus",
+  "Puddle", "Whisker", "Fuzzy", "Fluffy", "Scooter", "Skipper", "Bumble", "Hopper", "Waddles", "Nibbles",
+  "Jellybean", "Gumdrop", "Lollipop", "Taffy", "Honeybun", "Cinnamon", "Popcorn", "Meatball", "Pancake", "Tamale",
+  "Kiwi", "Mango", "Papaya", "Coconut", "Lychee", "Radish", "Turnip", "Parsnip", "Beanie", "Tidbit",
+] as const;
+
+/** Every name already used by a bot on this person's roster, lowercased. */
+export function takenBotNames(contacts: unknown, extra: Iterable<string> = []): Set<string> {
+  const taken = new Set<string>();
+  for (const row of contactRows(contacts)) {
+    const uid = trimmedField(row, "personUid", "uid", "agentUid");
+    if (!uid || !isAgentUid(uid)) continue;
+    const name = trimmedField(row, "displayName", "name");
+    if (name) taken.add(name.toLowerCase());
+  }
+  for (const name of extra) if (name.trim()) taken.add(name.trim().toLowerCase());
+  return taken;
+}
+
+/**
+ * A name for a new setup bot that no bot the person can see already uses, so
+ * two bots in one company never share one. Random among the free names; when
+ * all of them are taken, the least likely clash gets a number ("Pickles 2").
+ */
+export function pickSetupBotName(taken: ReadonlySet<string>, random: () => number = Math.random): string {
+  const free = SETUP_BOT_NAMES.filter((name) => !taken.has(name.toLowerCase()));
+  const pool = free.length > 0 ? free : SETUP_BOT_NAMES;
+  const base = pool[Math.min(pool.length - 1, Math.floor(random() * pool.length))]!;
+  if (free.length > 0) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base} ${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
 
 /**
  * Prefix the setup template recognises (`core/workers/public/setup`, "When
@@ -60,20 +123,28 @@ export const SETUP_BOT_KICKOFF_PREFIX = "Kickoff:";
  * (`hq bot create --kickoff`): one model turn, as if the person had sent it,
  * answered in the DM. It makes the bot start the walkthrough without waiting
  * for the person to type. Under 2000 characters and on one line.
+ *
+ * The `noun` is the plain-language name for the host machine ("Mac", "PC",
+ * or "computer"). Neutral fallback when the probe is not ready.
  */
-export const SETUP_BOT_KICKOFF =
-  `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are checking the Mac now, ` +
-  "so do not greet again or repeat the plan. " +
-  "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
-  "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
-  "Then begin the first unfinished step right away, exactly as your instructions for the kickoff say: " +
-  "do the part you can do yourself, tell me in one line what you found or fixed, " +
-  "and end with exactly one concrete question or one concrete action for me. " +
-  "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
-  "Never end with an open question like \"what would you like to do?\"";
+export function setupBotKickoff(opts: { noun?: string } = {}): string {
+  const noun = opts.noun?.trim() || "computer";
+  return (
+    `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are checking the ${noun} now, ` +
+    "so do not greet again or repeat the plan. " +
+    "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
+    "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
+    "Then, exactly as your instructions for the kickoff say, do the part of the tools step you can do yourself, " +
+    "tell me in one line what you found or fixed, and ask whether I want HQ explained first or to jump straight in, " +
+    "in the exact words your instructions give; that is the one concrete question this message ends with. " +
+    "After I answer, begin the first unfinished step, ending each message with exactly one concrete question or one concrete action for me. " +
+    "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
+    "Never end with an open question like \"what would you like to do?\""
+  );
+}
 
-/** Hero + button copy for the setup-bot path. */
-export const SETUP_BOT_COPY = {
+/** Static labels in the setup-bot copy that never change with the host OS. */
+export const SETUP_BOT_COPY_STATIC = {
   /**
    * Create it and open the conversation. The bot normally starts by itself on
    * first open, so by the time anyone reads this button its hello is already
@@ -84,31 +155,62 @@ export const SETUP_BOT_COPY = {
   open: "Open Setup Agent",
   /** Home's setup card, where "Run Setup" would not say what happens. */
   create: "Create your setup bot",
-  /** Home's setup card, in place of "open your agent and run /setup". */
-  cardBody:
-    "Your HQ folder isn't ready yet. Your setup bot finishes it for you — it runs on this Mac under your own coding tool login.",
   /** While the CLI is provisioning. */
   starting: "Starting…",
   /** The bot is being started automatically on first open. */
   autoStarting: "Starting your setup bot…",
-  /** Under the hero while the automatic start runs. */
-  bodyStarting: "Your setup bot is starting on this Mac. Its conversation opens by itself in a moment.",
-  /** Under the hero, before the first click. */
-  body:
-    "Setup happens in a conversation with your setup bot. It runs on this Mac under your own coding tool login, " +
-    "walks you through getting started, and stays afterwards for anything you need.",
   /** Under the hero once the bot exists. */
   bodyExisting:
-    "Your setup bot is in your messages. Open the conversation to keep going — it picks up wherever you left off.",
+    "Your setup bot is in your messages. Open the conversation to keep going - it picks up wherever you left off.",
   /** After a failed create. */
   retry: "Retry",
   /** The way through when creating the bot will not work right now. */
   fallback: "Use the step-by-step setup instead",
 } as const;
 
-/** No coding tool is signed in, so the CLI cannot start a bot. */
-export const SETUP_BOT_NO_RUNTIME =
-  "No coding tool is signed in on this Mac yet. Sign in to Claude Code, Codex, or Grok, then retry.";
+/**
+ * Hero + button copy for the setup-bot path. `noun` is "Mac", "PC", or
+ * "computer" from `hostComputerNoun`; neutral fallback when the probe is
+ * not ready.
+ */
+export function setupBotCopy(opts: { noun?: string } = {}): typeof SETUP_BOT_COPY_STATIC & {
+  cardBody: string;
+  bodyStarting: string;
+  body: string;
+} {
+  const noun = opts.noun?.trim() || "computer";
+  return {
+    ...SETUP_BOT_COPY_STATIC,
+    /** Home's setup card, in place of "open your agent and run /setup". */
+    cardBody: `Your HQ folder isn't ready yet. Your setup bot finishes it for you - it runs on this ${noun} under your own coding tool login.`,
+    /** Under the hero while the automatic start runs. */
+    bodyStarting: `Your setup bot is starting on this ${noun}. Its conversation opens by itself in a moment.`,
+    /** Under the hero, before the first click. */
+    body:
+      `Setup happens in a conversation with your setup bot. It runs on this ${noun} under your own coding tool login, ` +
+      "walks you through getting started, and stays afterwards for anything you need.",
+  };
+}
+
+/**
+ * No coding tool is signed in, so the CLI cannot start a bot. `noun` is
+ * "Mac", "PC", or "computer"; neutral fallback when the probe is not ready.
+ */
+export function setupBotNoRuntime(opts: { noun?: string } = {}): string {
+  const noun = opts.noun?.trim() || "computer";
+  return `No coding tool is signed in on this ${noun} yet. Sign in to Claude Code, Codex, or Grok, then retry.`;
+}
+
+/**
+ * True when a message is the "no signed-in coding tool" error in any of the
+ * noun variants ("this Mac" / "this PC" / "this computer"). Surfaces that
+ * decide to show the guided install path use this instead of an exact match
+ * against `SETUP_BOT_NO_RUNTIME`, so a Mac-noun message from
+ * `setupBotNoRuntime({ noun })` still triggers the guide.
+ */
+export function isSetupBotNoRuntimeMessage(msg: string | null | undefined): boolean {
+  return !!msg && msg.startsWith("No coding tool is signed in on this");
+}
 
 /** The host has no bots group at all (web build). */
 export const SETUP_BOT_UNAVAILABLE = "The setup bot is only available in the HQ desktop app.";
@@ -128,6 +230,17 @@ export const SETUP_BOT_GENERIC_FAILURE = "Could not start your setup bot. Please
  */
 export const SETUP_BOT_ALREADY_ELSEWHERE =
   "Your account already has a setup bot from another computer. It shows up in your messages once HQ catches up — open it there to carry on.";
+
+/**
+ * Neutral snapshots of the OS-aware copy. Callers that render the copy for a
+ * person MUST use the functions above (which take the resolved host noun);
+ * these consts are here for tests and for the rare non-render call site that
+ * just needs a stable literal.
+ */
+export const SETUP_BOT_INTRO = setupBotIntro();
+export const SETUP_BOT_KICKOFF = setupBotKickoff();
+export const SETUP_BOT_COPY = setupBotCopy();
+export const SETUP_BOT_NO_RUNTIME = setupBotNoRuntime();
 
 /** Runtimes the setup bot may run under, in the order it prefers them. */
 export const SETUP_BOT_RUNTIME_ORDER: ReadonlyArray<LocalBotRow["runtime"]> = ["claude", "codex", "grok"];
@@ -252,7 +365,7 @@ export function singleFlightStart(
 
 /** Label for the one primary action on #welcome / the Home setup card. */
 export function setupBotActionLabel(launcher: Pick<SetupBotLauncher, "existing"> | null | undefined): string {
-  return launcher?.existing ? SETUP_BOT_COPY.open : SETUP_BOT_COPY.run;
+  return launcher?.existing ? SETUP_BOT_COPY_STATIC.open : SETUP_BOT_COPY_STATIC.run;
 }
 
 /** The HQ console on the web: team, billing, bots and settings. */
@@ -268,8 +381,31 @@ export const SETUP_BOT_FINALE_COPY = {
   codex: "Open in Codex",
   consoleLead: "Manage your team, billing and bots from the HQ console on the web.",
   console: "Open the HQ console",
+  slackLead: "Want to talk to your bot where your team already works? A Slack bot needs the Workforce plan.",
+  /** Button label; `{name}` is the bot's name. */
+  slack: "Put {name} in Slack",
   dismiss: "Dismiss",
 } as const;
+
+/** The finish card's Slack button label, and the message it sends the bot. */
+export function setupSlackOfferText(displayName: string | null | undefined): string {
+  return SETUP_BOT_FINALE_COPY.slack.replace("{name}", displayName?.trim() || "my setup bot");
+}
+
+/**
+ * Did the setup bot offer a Slack bot on its finish (`setupDone` with
+ * `slackAgent: true`)? The bot only sets it for someone who started their own
+ * company, never for a person who joined one. Pure.
+ */
+export function setupFinaleOffersSlack(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  offersSlack: (message: { body?: string | null; richContent?: unknown }) => boolean,
+): boolean {
+  const uid = botUid.trim();
+  if (!uid) return false;
+  return messages.some((m) => (m.fromPersonUid ?? "").trim() === uid && offersSlack(m));
+}
 
 /**
  * Should the setup finish card show under this conversation? Pure.
@@ -292,6 +428,34 @@ export function setupFinaleDue(
   const doneAt = messages.findIndex((m) => (m.fromPersonUid ?? "").trim() === uid && marksDone(m));
   if (doneAt < 0) return false;
   return !messages.slice(doneAt + 1).some((m) => (m.fromPersonUid ?? "").trim() !== uid);
+}
+
+/**
+ * The suggested replies to show under the setup bot's conversation. Pure.
+ *
+ * Only the bot's newest message with something to read counts, and only until
+ * the person writes again: a reply (typed or clicked) puts them away, and a
+ * newer bot message without suggestions replaces them with nothing, so old
+ * buttons never linger under a conversation that moved on. Messages with
+ * nothing visible (a lone finish marker) are skipped when finding the newest.
+ *
+ * `messages` is the timeline, oldest first.
+ */
+export function setupSuggestionsDue(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  hasVisibleContent: (message: { body?: string | null; richContent?: unknown }) => boolean,
+  suggestionsFor: (message: { body?: string | null; richContent?: unknown }) => string[],
+): string[] {
+  const uid = botUid.trim();
+  if (!uid) return [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if ((message.fromPersonUid ?? "").trim() !== uid) return [];
+    if (!hasVisibleContent(message) && suggestionsFor(message).length === 0) continue;
+    return suggestionsFor(message);
+  }
+  return [];
 }
 
 /**

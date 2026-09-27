@@ -57,7 +57,18 @@ describe("SetupBotFinale", () => {
     expect(q(host, "setup-bot-finale-console")).not.toBeNull();
   });
 
-  it("never offers a Slack bot: setup ends on the coding tools and the console", () => {
+  it("offers the bot in Slack only when the bot offered it, and asks the bot when clicked", () => {
+    const onslack = vi.fn();
+    const { host } = render({ slackLabel: "Put Pickles in Slack", onslack });
+    const slack = q(host, "setup-bot-finale-slack")!;
+    expect(slack.textContent).toContain("Put Pickles in Slack");
+    expect(host.textContent).toContain("Workforce plan");
+    expect(host.textContent!.toLowerCase()).not.toContain("agent");
+    slack.click();
+    expect(onslack).toHaveBeenCalledOnce();
+  });
+
+  it("offers no Slack bot unless the bot did (someone who joined a company)", () => {
     const { host } = render();
     expect(q(host, "setup-bot-finale-slack")).toBeNull();
     expect(host.textContent).not.toMatch(/slack/i);

@@ -282,7 +282,7 @@ describe("ChatSidebar lifecycle entry points", () => {
     await settle();
     await openModal();
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
-    expect(row?.textContent).toContain("Runs on this Mac or in the cloud");
+    expect(row?.textContent).toContain("Runs on this computer or in the cloud");
     await toHomeStep();
     // Both hosts available → Local is the default, the picker is hidden, and Next leads to details.
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
@@ -431,7 +431,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(plus?.getAttribute("aria-label")).toBe("New message, channel, company, or bot");
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
-    expect(row?.textContent).toContain("Runs on this Mac");
+    expect(row?.textContent).toContain("Runs on this computer");
     await toHomeStep();
     // Only a local host here → Local is checked and Cloud is not offered at all.
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
