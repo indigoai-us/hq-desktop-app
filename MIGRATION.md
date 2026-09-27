@@ -16,7 +16,7 @@ one download, one version, one updater stream.
    installer UI is ported into the Svelte sync app as first-run onboarding; no React in
    the shipped bundle, no second app.
 2. **One product, one version.** A single version string across the whole app.
-3. **Updater domain:** `https://downloads.getindigo.ai/hq-desktop-app/{stable,beta,alpha}/latest.json`.
+3. **Updater domain:** `https://downloads.getindigo.ai/hq-desktop-app/{stable,beta,alpha}/latest.json` (retired, never launched).
    The unified app enables the updater (the installer currently disables it).
 4. **Windows shows the operator surfaces** (`library_local`, `marketplace`, `messages`,
    `projects_local`) — gated by feature/account, not by OS.
@@ -47,7 +47,7 @@ HQ Desktop is one Tauri 2 app: one binary, one download, one version, one update
 - Preserve macOS bundle identifier `ai.indigo.hq-sync-menubar`.
 - Preserve Windows bundle identifier `ai.indigo.hq-sync-win` for the first unified release.
 - Enable the Tauri updater in the unified app.
-- Publish updater manifests under `https://downloads.getindigo.ai/hq-desktop-app/{stable,beta,alpha}/latest.json`.
+- Publish updater manifests under `https://downloads.getindigo.ai/hq-desktop-app/{stable,beta,alpha}/latest.json` (retired, never launched).
 - Fold `hq-sync-win` into the base sync app using the exact fork delta.
 - Make Windows expose `library_local`, `marketplace`, `messages`, and `projects_local`.
 
@@ -271,6 +271,8 @@ Tauri command modules should stay thin in `apps/hq-desktop-app/src-tauri/src/com
 
 ## 8. Build, release, signing (macOS notarization + Windows Azure Trusted Signing), updater and versioning for ONE app — note the installer currently DISABLES the updater while sync ENABLES it, so the unified app must enable the updater; one version; .sig regeneration after Authenticode
 
+> **2026-09-27 note:** This section was planned before the unified app launched. The shipped app (`apps/sync`) polls GitHub Releases: `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json` (see `apps/sync/src-tauri/tauri.conf.json`). The `downloads.getindigo.ai` endpoints below were planned but never launched or deployed.
+
 The unified app has one version across:
 
 ```text
@@ -292,6 +294,8 @@ https://downloads.getindigo.ai/hq-desktop-app/stable/latest.json
 https://downloads.getindigo.ai/hq-desktop-app/beta/latest.json
 https://downloads.getindigo.ai/hq-desktop-app/alpha/latest.json
 ```
+
+> (retired, never launched - these endpoints were planned but never deployed; the shipped app uses GitHub Releases, see dated note above)
 
 For the first unified release, platform overlays may keep separate updater public keys to preserve in-place updates:
 
@@ -352,7 +356,7 @@ CI must prove that Windows compiles the operator surfaces `library_local`, `mark
 | 5. Absorb installer Rust commands | Port installer modules into `hq-installer-setup` and unified command wrappers. Delete obsolete external menubar install paths. | Backend can run mocked setup sequence end-to-end from Svelte/Tauri IPC. |
 | 6. Port onboarding UI | Rebuild React wizard screens in Svelte and wire progress events. | Playwright/Vitest walkthrough covers welcome, install location, sign-in, setup progress, done. |
 | 7. Handoff to tray mode | Implement `enter_sync_mode`: write state, enable autostart, create tray, start sync if configured, hide onboarding. | Fresh install ends in working tray app without launching another binary. |
-| 8. Enable updater | Keep sync updater enabled, move endpoints to `downloads.getindigo.ai/hq-desktop-app`, generate manifests per channel. | Release dry-run emits updater artifacts and valid `latest.json`; installer disabled-updater setting is gone. |
+| 8. Enable updater | Keep sync updater enabled, move endpoints to `downloads.getindigo.ai/hq-desktop-app` (retired, never launched), generate manifests per channel. | Release dry-run emits updater artifacts and valid `latest.json`; installer disabled-updater setting is gone. |
 | 9. Unify release CI | One release workflow builds macOS arm64 and Windows x64, signs/notarizes, regenerates Windows `.sig`, publishes manifests. | Dry-run release validates signatures, notarization, updater install, and old endpoint compatibility. |
 | 10. Delete port sources | Remove `imports/hq-installer-react` and `imports/hq-sync-win` after all mapped files have tracked destinations or explicit discard notes. | `rg`/manifest audit shows no unmapped command/UI/release logic; shipped app still passes full CI. |
 | 11. Public cutover | Update install pages and old download links to the unified artifacts. | Public page smoke downloads one app per OS and updater manifests remain live for old clients. |

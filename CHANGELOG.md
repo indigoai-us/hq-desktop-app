@@ -23,6 +23,7 @@ The release moves it under the version it ships in.
   expectation under "Getting your HQ ready": on Windows it explains that
   antivirus scans and background installs make setup take longer, so a
   long-running step no longer looks stuck.
+- MIGRATION.md: restore the historical updater endpoint URLs with '(retired, never launched)' annotations and add a dated note that the shipped app uses GitHub Releases for updates. Wave 2a of the getindigo.ai deprecation (docs-only, no runtime change).
 
 ## [0.10.347] — 2026-09-27
 
