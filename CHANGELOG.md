@@ -10,6 +10,9 @@ The release moves it under the version it ships in.
 
 - Stable releases now keep their published notes out of Unreleased. The changelog
   check also catches repeated notes before the next tag is cut.
+
+## [0.10.344] — 2026-09-27
+
 - On Windows, setup uses Winget for Git and checks qmd's launcher before marking setup complete.
 - Windows setup waits for Git before installing qmd and rechecks Git after a specific WinGet failure.
 - Updater restarts now find Node from the app-managed toolchain, preventing completed installations from reopening setup when Node is available.
