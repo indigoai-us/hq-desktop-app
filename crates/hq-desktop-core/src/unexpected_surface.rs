@@ -2,14 +2,15 @@ use crate::cognito::StoredTokenPresence;
 use crate::lifecycle::{HqRootProbe, LifecycleInputs};
 use crate::paths::ResolvedProgramKind;
 
-/// Returns true when the machine shows evidence it was already set up and
-/// signed in, making a sign-in or onboarding surface unexpected.
+/// Returns true when the machine shows evidence it was already set up,
+/// making a sign-in or onboarding surface unexpected.
 pub fn prior_setup_detected(
     install_completed: bool,
     first_run_completed: bool,
-    token_file_exists: bool,
+    had_machine_id: bool,
+    hq_root_valid: bool,
 ) -> bool {
-    install_completed || first_run_completed || token_file_exists
+    install_completed || first_run_completed || (had_machine_id && hq_root_valid)
 }
 
 /// All fields sent to Sentry on an unexpected startup surface event.
@@ -292,27 +293,32 @@ mod tests {
 
     #[test]
     fn prior_setup_detected_install_completed() {
-        assert!(prior_setup_detected(true, false, false));
+        assert!(prior_setup_detected(true, false, false, false));
     }
 
     #[test]
     fn prior_setup_detected_first_run_completed() {
-        assert!(prior_setup_detected(false, true, false));
+        assert!(prior_setup_detected(false, true, false, false));
     }
 
     #[test]
-    fn prior_setup_detected_token_file_exists() {
-        assert!(prior_setup_detected(false, false, true));
+    fn prior_setup_detected_with_machine_id_and_valid_hq_root() {
+        assert!(prior_setup_detected(false, false, true, true));
     }
 
     #[test]
     fn prior_setup_not_detected_on_fresh_install() {
-        assert!(!prior_setup_detected(false, false, false));
+        assert!(!prior_setup_detected(false, false, false, false));
     }
 
     #[test]
     fn prior_setup_detected_multiple_signals() {
-        assert!(prior_setup_detected(true, true, true));
+        assert!(prior_setup_detected(true, true, false, false));
+    }
+
+    #[test]
+    fn a_machine_id_without_a_valid_hq_root_is_not_prior_setup_evidence() {
+        assert!(!prior_setup_detected(false, false, true, false));
     }
 
     #[test]
@@ -385,7 +391,8 @@ mod tests {
         assert!(!prior_setup_detected(
             p.install_completed,
             p.first_run_completed,
-            p.token_file_exists,
+            false,
+            false,
         ));
     }
 

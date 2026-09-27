@@ -48,6 +48,34 @@ pub struct LifecycleInputsHandle {
     pub require_local_toolchain_demoted: bool,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupSetupEvidence {
+    install_completed: bool,
+    first_run_completed: bool,
+    had_machine_id: bool,
+    hq_root_valid: bool,
+}
+
+/// Setup evidence used by the frontend's unexpected-surface reporting boundary.
+/// Unknown evidence is returned as `None` so the reporter can defer to its own
+/// conservative Rust-side check.
+#[tauri::command]
+pub fn get_startup_setup_evidence(
+    state: State<'_, LifecycleInputsHandle>,
+) -> Option<StartupSetupEvidence> {
+    let inputs = state.inputs;
+    if inputs.evidence_unreadable {
+        return None;
+    }
+    Some(StartupSetupEvidence {
+        install_completed: inputs.install_completed,
+        first_run_completed: inputs.first_run_completed,
+        had_machine_id: inputs.had_machine_id,
+        hq_root_valid: inputs.hq_root_valid,
+    })
+}
+
 /// Time at which setup_lifecycle started, used to compute seconds since
 /// process start in diagnostic events.
 static SETUP_LIFECYCLE_TIME: OnceLock<Instant> = OnceLock::new();
@@ -515,7 +543,8 @@ fn lifecycle_state_str(state: LifecycleState) -> &'static str {
 ///
 /// Called from the frontend after `checkAuth()` resolves, when the resolved
 /// surface is "sign-in" or "onboarding" AND the machine shows prior-setup
-/// evidence (installCompleted, firstRunCompleted, or token file present).
+/// evidence (installCompleted, firstRunCompleted, or an existing machine ID
+/// backed by a valid HQ root).
 /// Rate-limited to one Sentry event per process via `UNEXPECTED_SURFACE_REPORTED`.
 #[tauri::command]
 pub fn report_unexpected_startup_surface(
@@ -569,11 +598,13 @@ pub fn report_unexpected_startup_surface(
         },
     );
 
-    let prior_setup = hq_desktop_core::unexpected_surface::prior_setup_detected(
-        inputs.install_completed,
-        inputs.first_run_completed,
-        token_file_exists,
-    );
+    let prior_setup = inputs.evidence_unreadable
+        || hq_desktop_core::unexpected_surface::prior_setup_detected(
+            inputs.install_completed,
+            inputs.first_run_completed,
+            inputs.had_machine_id,
+            inputs.hq_root_valid,
+        );
 
     // Always write the log line so diagnostics can find it.
     let log_line = format!(
