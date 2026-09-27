@@ -50,6 +50,63 @@ export const SETUP_BOT_INTRO =
   "I'm checking your Mac now, which can take a minute, and I'll post my first question here as soon as I'm done.";
 
 /**
+ * The setup bot's hello with its name in it: "Hi, I'm Pickles, your setup
+ * bot, and together …". Same plan and length rules as SETUP_BOT_INTRO.
+ */
+export function setupBotIntro(displayName: string | null | undefined): string {
+  const name = displayName?.trim();
+  if (!name) return SETUP_BOT_INTRO;
+  return SETUP_BOT_INTRO.replace("Hi, I'm your setup bot", `Hi, I'm ${name}, your setup bot`);
+}
+
+/**
+ * The names a new setup bot is given, one picked at random. Short, friendly,
+ * letters only (the CLI's `--display-name` rules), and none of them a common
+ * first name, so a bot is never mistaken for a teammate.
+ */
+export const SETUP_BOT_NAMES: readonly string[] = [
+  "Pickles", "Biscuit", "Mochi", "Waffles", "Noodle", "Pip", "Bean", "Nugget", "Sprout", "Pudding",
+  "Muffin", "Dumpling", "Pretzel", "Sprinkles", "Tater", "Bubbles", "Gizmo", "Widget", "Doodle", "Toast",
+  "Churro", "Cupcake", "Marshmallow", "Peanut", "Pebble", "Button", "Clover", "Maple", "Hazel", "Juniper",
+  "Olive", "Pumpkin", "Taco", "Nacho", "Bagel", "Scone", "Crumpet", "Truffle", "Fudge", "Cocoa",
+  "Snickers", "Tofu", "Wasabi", "Ginger", "Nutmeg", "Paprika", "Cheddar", "Brie", "Gouda", "Pesto",
+  "Zippy", "Bloop", "Boop", "Wiggles", "Squiggle", "Doodlebug", "Pogo", "Yoyo", "Kazoo", "Banjo",
+  "Pixel", "Sparky", "Rocket", "Comet", "Nova", "Cosmo", "Orbit", "Moonpie", "Stardust", "Nimbus",
+  "Puddle", "Whisker", "Fuzzy", "Fluffy", "Scooter", "Skipper", "Bumble", "Hopper", "Waddles", "Nibbles",
+  "Jellybean", "Gumdrop", "Lollipop", "Taffy", "Honeybun", "Cinnamon", "Popcorn", "Meatball", "Pancake", "Tamale",
+  "Kiwi", "Mango", "Papaya", "Coconut", "Lychee", "Radish", "Turnip", "Parsnip", "Beanie", "Tidbit",
+] as const;
+
+/** Every name already used by a bot on this person's roster, lowercased. */
+export function takenBotNames(contacts: unknown, extra: Iterable<string> = []): Set<string> {
+  const taken = new Set<string>();
+  for (const row of contactRows(contacts)) {
+    const uid = trimmedField(row, "personUid", "uid", "agentUid");
+    if (!uid || !isAgentUid(uid)) continue;
+    const name = trimmedField(row, "displayName", "name");
+    if (name) taken.add(name.toLowerCase());
+  }
+  for (const name of extra) if (name.trim()) taken.add(name.trim().toLowerCase());
+  return taken;
+}
+
+/**
+ * A name for a new setup bot that no bot the person can see already uses, so
+ * two bots in one company never share one. Random among the free names; when
+ * all of them are taken, the least likely clash gets a number ("Pickles 2").
+ */
+export function pickSetupBotName(taken: ReadonlySet<string>, random: () => number = Math.random): string {
+  const free = SETUP_BOT_NAMES.filter((name) => !taken.has(name.toLowerCase()));
+  const pool = free.length > 0 ? free : SETUP_BOT_NAMES;
+  const base = pool[Math.min(pool.length - 1, Math.floor(random() * pool.length))]!;
+  if (free.length > 0) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base} ${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+/**
  * Prefix the setup template recognises (`core/workers/public/setup`, "When
  * you receive the kickoff").
  */
@@ -66,9 +123,10 @@ export const SETUP_BOT_KICKOFF =
   "so do not greet again or repeat the plan. " +
   "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
   "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
-  "Then begin the first unfinished step right away, exactly as your instructions for the kickoff say: " +
-  "do the part you can do yourself, tell me in one line what you found or fixed, " +
-  "and end with exactly one concrete question or one concrete action for me. " +
+  "Then, exactly as your instructions for the kickoff say, do the part of the tools step you can do yourself, " +
+  "tell me in one line what you found or fixed, and ask whether I want HQ explained first or to jump straight in, " +
+  "in the exact words your instructions give; that is the one concrete question this message ends with. " +
+  "After I answer, begin the first unfinished step, ending each message with exactly one concrete question or one concrete action for me. " +
   "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
   "Never end with an open question like \"what would you like to do?\"";
 
@@ -268,8 +326,31 @@ export const SETUP_BOT_FINALE_COPY = {
   codex: "Open in Codex",
   consoleLead: "Manage your team, billing and bots from the HQ console on the web.",
   console: "Open the HQ console",
+  slackLead: "Want to talk to your bot where your team already works? A Slack bot needs the Workforce plan.",
+  /** Button label; `{name}` is the bot's name. */
+  slack: "Put {name} in Slack",
   dismiss: "Dismiss",
 } as const;
+
+/** The finish card's Slack button label, and the message it sends the bot. */
+export function setupSlackOfferText(displayName: string | null | undefined): string {
+  return SETUP_BOT_FINALE_COPY.slack.replace("{name}", displayName?.trim() || "my setup bot");
+}
+
+/**
+ * Did the setup bot offer a Slack bot on its finish (`setupDone` with
+ * `slackAgent: true`)? The bot only sets it for someone who started their own
+ * company, never for a person who joined one. Pure.
+ */
+export function setupFinaleOffersSlack(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  offersSlack: (message: { body?: string | null; richContent?: unknown }) => boolean,
+): boolean {
+  const uid = botUid.trim();
+  if (!uid) return false;
+  return messages.some((m) => (m.fromPersonUid ?? "").trim() === uid && offersSlack(m));
+}
 
 /**
  * Should the setup finish card show under this conversation? Pure.
@@ -292,6 +373,34 @@ export function setupFinaleDue(
   const doneAt = messages.findIndex((m) => (m.fromPersonUid ?? "").trim() === uid && marksDone(m));
   if (doneAt < 0) return false;
   return !messages.slice(doneAt + 1).some((m) => (m.fromPersonUid ?? "").trim() !== uid);
+}
+
+/**
+ * The suggested replies to show under the setup bot's conversation. Pure.
+ *
+ * Only the bot's newest message with something to read counts, and only until
+ * the person writes again: a reply (typed or clicked) puts them away, and a
+ * newer bot message without suggestions replaces them with nothing, so old
+ * buttons never linger under a conversation that moved on. Messages with
+ * nothing visible (a lone finish marker) are skipped when finding the newest.
+ *
+ * `messages` is the timeline, oldest first.
+ */
+export function setupSuggestionsDue(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  hasVisibleContent: (message: { body?: string | null; richContent?: unknown }) => boolean,
+  suggestionsFor: (message: { body?: string | null; richContent?: unknown }) => string[],
+): string[] {
+  const uid = botUid.trim();
+  if (!uid) return [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if ((message.fromPersonUid ?? "").trim() !== uid) return [];
+    if (!hasVisibleContent(message) && suggestionsFor(message).length === 0) continue;
+    return suggestionsFor(message);
+  }
+  return [];
 }
 
 /**
