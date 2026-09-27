@@ -243,6 +243,12 @@
   const consentOnly = $derived(mode === 'reprompt' || mode === 'consent');
   /** The story screens only, from the menu bar. */
   const replay = $derived(mode === 'replay');
+  /**
+   * First-run onboarding asks the usage-data question as one checkbox line on
+   * the ready screen and records the answer when the person finishes from
+   * there. Consent-only runs keep their own blocking consent screen.
+   */
+  const consentOnReady = $derived(!consentOnly && !replay);
   const onboardingTelemetry = createOnboardingStepTelemetry();
 
   let activeInitialStep = $state<number | null>(null);
@@ -293,6 +299,14 @@
   // Sharing is the default; the person can still pick "Don't share".
   let telemetryChoice = $state<'share' | 'decline' | null>('share');
   let consentSubmitting = $state(false);
+  /** The ready screen, with its usage-data checkbox, has been on show. */
+  let readyConsentShown = false;
+  /**
+   * The ready screen's answer is recorded: sent, held for the install, or
+   * cached on this machine by an offline person who chose to finish anyway.
+   * The checkbox locks once it is, so what it shows is what was recorded.
+   */
+  let readyConsentRecorded = $state(false);
   let privacyOpening = $state(false);
   let privacyOpenError = $state(false);
   // The outcome of the last consent attempt. `null` while unattempted or after
@@ -393,11 +407,14 @@
   let launchEscape = $state<OnboardingEscape | null>(null);
   let showManualTools = $state(false);
   /**
-   * The ready screen's Advanced disclosure (own-tool launchers). Open by
-   * default: people who already use Claude Code or Codex should see that path
-   * without hunting for it. It still collapses if they close it, and reopens
-   * itself when a launch needs a next step.
+   * The ready screen's Advanced disclosure, under the Claude Code and Codex
+   * options: the folder and copy tools for setting HQ up by hand. Collapsed
+   * by default; it opens itself when a launch needs a next step.
    */
+  let advancedOpen = $state(false);
+  $effect(() => {
+    if (launchEscape || claudeWatchExpired || detectionFailed) advancedOpen = true;
+  });
   let revealingFolder = $state(false);
   let commandCopied = $state(false);
   let pathCopied = $state(false);
@@ -535,10 +552,8 @@
   const manualCommand = $derived(readyCommandFor(userFacingInstallPath, aiTools));
   const launchOptions = $derived(availableLaunches(aiTools));
   const launchSlots = $derived<LaunchEntry[]>(launchEntries(aiTools));
-  // The ready screen's "Prefer your own tools?" line: Claude Code and Codex.
+  // The ready screen's two large options: Claude Code and Codex (never Grok).
   const ownToolSlots = $derived(launchSlots.filter((slot) => slot.kind !== 'grok'));
-  const installedLaunchSlots = $derived(ownToolSlots.filter((slot) => slot.installed));
-  const missingLaunchSlots = $derived(ownToolSlots.filter((slot) => !slot.installed));
 
   function toolName(kind: LaunchKind): string {
     if (kind === 'claude') return 'Claude Code';
@@ -590,7 +605,13 @@
   $effect(() => {
     if (activeInitialStep === initialStep) return;
     activeInitialStep = initialStep;
-    router = createWizardRouter({ start: initialStep });
+    // First-run onboarding has no consent screen: its question is on the
+    // ready screen, so a start at the consent step lands there.
+    const start =
+      !consentOnly && !replay && initialStep === CONSENT_STEP_INDEX
+        ? READY_STEP_INDEX
+        : initialStep;
+    router = createWizardRouter({ start });
     setCurrentStep(router.currentStep);
     furthestStep = Math.max(furthestStep, router.currentStep);
     // The connector import only shows itself once it has something to offer;
@@ -1522,10 +1543,13 @@
   let setupCompletionMetrics = $state<SetupCompletionMetrics | null>(null);
 
   /**
-   * Record the telemetry answer and, only when the SERVER confirms the write,
-   * leave the consent step for the ready screen. Called from either option's
-   * Continue. Declining is first-class: it records the answer, withholds no
-   * product capability, and finishes setup exactly like sharing does.
+   * Record the telemetry answer. Returns whether it was recorded; only a
+   * write the SERVER confirmed (or, during an install, an answer held on this
+   * machine) counts. Called from the consent screen's Continue in the
+   * consent-only runs, and from every finish on the first-run ready screen
+   * (`finishWithRecovery`). Declining is first-class: it records the answer,
+   * withholds no product capability, and finishes setup exactly like sharing
+   * does.
    *
    * US-002: the remote write is foreground and its failure is visible.
    *   - AC1: the caller's person entity is guaranteed to exist first, so the
@@ -1536,8 +1560,8 @@
    *     with provenance and reconciled by the consent repair on reconnect. We
    *     say so honestly and never call it a successful server write.
    */
-  async function submitConsent(): Promise<void> {
-    if (telemetryChoice === null || consentSubmitting) return;
+  async function submitConsent(): Promise<boolean> {
+    if (telemetryChoice === null || consentSubmitting) return false;
     consentSubmitting = true;
     consentFailure = null;
     const enabled = telemetryChoice === 'share';
@@ -1553,8 +1577,7 @@
         deferredConsent = held;
         consentSubmitting = false;
         recordStep(CONSENT_STEP_INDEX, 'completed', { outcome: 'answer_held_until_install' });
-        advanceTo(READY_STEP_INDEX, null);
-        return;
+        return true;
       }
     }
     try {
@@ -1600,7 +1623,7 @@
           kind: offlineButCached ? 'offline' : 'server',
           message,
         };
-        return;
+        return false;
       }
 
       if (consentOnly) {
@@ -1611,10 +1634,11 @@
           await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, repromptPersonUid);
         }
         await finishWithRecovery();
-        return;
+        return true;
       }
 
-      advanceTo(CONNECTOR_IMPORT_STEP_INDEX);
+      recordStep(CONSENT_STEP_INDEX, 'completed', { outcome: 'answered_on_ready' });
+      return true;
     } finally {
       consentSubmitting = false;
     }
@@ -1655,7 +1679,12 @@
       await finishWithRecovery();
       return;
     }
-    advanceTo(CONNECTOR_IMPORT_STEP_INDEX);
+    // Ready screen: the answer is cached with provenance and the consent
+    // repair sends it on the next connection. Finish without posting again and
+    // without calling it a confirmed write.
+    readyConsentRecorded = true;
+    consentFailure = null;
+    await finishWithRecovery();
   }
 
   async function startSetupRun() {
@@ -1810,6 +1839,15 @@
     finishInProgress = true;
     finishError = false;
     try {
+      // Every way of finishing from the ready screen (Open HQ Desktop, a
+      // Claude Code or Codex launch, the Claude readiness watch) records the
+      // usage-data answer first, and nothing finishes on a failed write: the
+      // failure is shown with Retry, or for an offline person whose answer is
+      // cached, "Finish setup, send later".
+      if (consentOnReady && readyConsentShown && !readyConsentRecorded) {
+        if (!(await submitConsent())) return false;
+        readyConsentRecorded = true;
+      }
       await onfinish?.();
       onboardingCompleted = true;
       recordStep(currentStep, 'completed', { outcome: 'finished' });
@@ -2186,7 +2224,7 @@
       case 'shortcut':
         // Leaving the explainers is not the setup step "completing": the
         // install records its own completion when it finishes.
-        advanceTo(CONSENT_STEP_INDEX, null);
+        advanceTo(READY_STEP_INDEX, null);
         return;
       case 'consent':
         if (!consentFailure) void submitConsent();
@@ -2220,7 +2258,7 @@
   }
 
   function skipIntro(): void {
-    if (chrome.skip === 'consent') advanceTo(CONSENT_STEP_INDEX, null);
+    if (chrome.skip === 'ready') advanceTo(READY_STEP_INDEX, null);
     else if (chrome.skip === 'end') void finishReplay();
   }
 
@@ -2284,7 +2322,7 @@
   function handleBackdropClick(event: MouseEvent): void {
     const target = event.target;
     if (!(target instanceof Element)) return;
-    if (target.closest('button, a, input, label, .loc, .lrow')) return;
+    if (target.closest('button, a, input, label, summary, .loc, .lrow')) return;
     if (!navRevealed) welcomeController?.fastForward();
   }
 
@@ -2465,6 +2503,12 @@
     });
   });
 
+  // The ready screen carries the usage-data checkbox: once it has been on
+  // show, finishing records the answer.
+  $effect(() => {
+    if (scene === 'ready' && consentOnReady) readyConsentShown = true;
+  });
+
   // Content that changes height re-lays the screen out, so the button under it
   // never overlaps it.
   $effect(() => {
@@ -2480,6 +2524,9 @@
       installPending,
       deferredConsent,
       signInActionsReady,
+      advancedOpen,
+      readyConsentRecorded,
+      aiTools,
     ];
     void tick().then(() => welcomeController?.relayout());
   });
@@ -2769,7 +2816,10 @@
   </section>
 
   {#if !replay}
-    <!-- 4 · help make HQ better: the one question setup cannot skip -->
+    {#if consentOnly}
+    <!-- The consent-only runs (US-005 re-prompt, an installed machine missing
+         its answer): the usage-data question as its own blocking screen.
+         First-run onboarding asks it as a checkbox on the ready screen. -->
     <section
       class="scene s-consent"
       class:on={scene === 'consent'}
@@ -2930,6 +2980,7 @@
         {/if}
       </div>
     </section>
+    {/if}
 
     <!-- Optional: Claude Desktop connectors, offered once the install is done.
          Shows itself only when there is something to offer. -->
@@ -2963,7 +3014,7 @@
       </div>
     </section>
 
-    <!-- 5 · ready: the skyline returns to close the loop -->
+    <!-- 4 · ready: the skyline returns to close the loop -->
     <section
       class="scene s-ready"
       class:on={scene === 'ready'}
@@ -3032,51 +3083,105 @@
             </div>
           </div>
         {/if}
-        <p class="alt" class:on={scene === 'ready' && navRevealed && !finishBlocked} data-testid="onboarding-launchers">
-          Prefer your own tools?
-          {#if launchSlots.length === 0}
-            <!-- `launchSlots` is empty only while detection is still in flight. -->
-            Open HQ in <button
-              class="link"
-              type="button"
-              data-testid="onboarding-launch-download"
-              disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
-              aria-busy={finishing || (launching !== null && launching !== 'watching')}
-              onclick={() => void handleLaunch('download')}
-            >{launching === 'watching'
-                ? 'Waiting for Claude…'
-                : launching === 'download'
-                  ? 'Opening…'
-                  : 'Claude Code'}</button>.
-          {:else}
-            {#if installedLaunchSlots.length > 0}
-              Open HQ in
-              {#each installedLaunchSlots as slot, i (slot.kind)}{#if i > 0}{' '}or{' '}{/if}<button
+        <div class="alt tools" class:on={scene === 'ready' && navRevealed} data-testid="onboarding-launchers">
+          <p class="tools-lead">Or set up HQ in your own AI tool</p>
+          <div class="tool-cards">
+            {#if launchSlots.length === 0}
+              <!-- `launchSlots` is empty only while detection is still in flight. -->
+              <button
+                class="tool-card"
+                type="button"
+                data-testid="onboarding-launch-download"
+                disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
+                aria-busy={finishing || (launching !== null && launching !== 'watching')}
+                onclick={() => void handleLaunch('download')}
+              >
+                <span class="tc-icon" aria-hidden="true">{@render ToolIcon('claude')}</span>
+                <span class="tc-text">
+                  <span class="tc-name">Claude Code</span>
+                  <span class="tc-line">{launching === 'watching'
+                      ? 'Waiting for Claude…'
+                      : launching === 'download'
+                        ? 'Opening…'
+                        : 'Download Claude to set up HQ there'}</span>
+                </span>
+              </button>
+            {:else}
+              {#each ownToolSlots as slot (slot.kind)}
+                {#if slot.installed}
+                  <button
+                    class="tool-card"
+                    type="button"
+                    data-testid="onboarding-launch-{slot.kind}"
+                    disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
+                    aria-busy={finishing || launching === slot.kind}
+                    aria-label={slot.label}
+                    onclick={() => void handleLaunch(slot.kind)}
+                  >
+                    <span class="tc-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
+                    <span class="tc-text">
+                      <span class="tc-name">{toolName(slot.kind)}</span>
+                      <span class="tc-line">{launching === slot.kind ? 'Opening…' : 'Open HQ here and run setup'}</span>
+                    </span>
+                  </button>
+                {:else}
+                  <button
+                    class="tool-card missing"
+                    type="button"
+                    data-testid="onboarding-install-{slot.kind}"
+                    disabled={finishing}
+                    aria-busy={launching === 'watching' && slot.kind === 'claude'}
+                    aria-label={slot.installLabel}
+                    onclick={() => void handleInstallTool(slot.kind)}
+                  >
+                    <span class="tc-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
+                    <span class="tc-text">
+                      <span class="tc-name">{toolName(slot.kind)}</span>
+                      <span class="tc-line">{launching === 'watching' && slot.kind === 'claude'
+                          ? 'Waiting for Claude…'
+                          : 'Not installed · Get it'}</span>
+                    </span>
+                  </button>
+                {/if}
+              {/each}
+            {/if}
+          </div>
+          <!-- Advanced: set HQ up by hand in any tool, as the ready screen
+               always offered: the folder, its path, the command and the
+               /setup and /import-claude prompts. -->
+          <details class="advanced" data-testid="onboarding-advanced" bind:open={advancedOpen}>
+            <summary>Advanced</summary>
+            <p class="advanced-note">Open the HQ folder in any tool and run /setup there.</p>
+            <div class="manual-tools" aria-label="Manual setup options">
+              <button type="button" onclick={handleRevealFolder} disabled={revealingFolder} aria-busy={revealingFolder}>
+                {revealingFolder ? 'Revealing…' : 'Reveal folder'}
+              </button>
+              <button type="button" onclick={handleCopyPath} disabled={copyingAction !== null} aria-busy={copyingAction === 'path'}>
+                {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
+              </button>
+              <button type="button" onclick={handleCopyCommand} disabled={copyingAction !== null} aria-busy={copyingAction === 'command'}>
+                {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
+              </button>
+              <button type="button" onclick={handleCopySetupPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'setup'}>
+                {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
+              </button>
+              <button type="button" onclick={handleCopyImportPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'import'}>
+                {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
+              </button>
+            </div>
+            {#if copyFailure}
+              <p class="copy-action" role="status" data-testid="onboarding-copy-error">
+                Clipboard is blocked. Select the path above, or <button
                   class="link"
                   type="button"
-                  data-testid="onboarding-launch-{slot.kind}"
-                  disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
-                  aria-busy={finishing || launching === slot.kind}
-                  aria-label={slot.label}
-                  onclick={() => void handleLaunch(slot.kind)}
-                >{launching === slot.kind ? 'Opening…' : toolName(slot.kind)}</button>{/each}.
+                  onclick={() => void retryCopyAction()}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction !== null}
+                >{copyingAction ? 'retrying…' : 'try again'}</button>.
+              </p>
             {/if}
-            {#if missingLaunchSlots.length > 0}
-              {installedLaunchSlots.length > 0 ? 'Or get' : 'Get'}
-              {#each missingLaunchSlots as slot, i (slot.kind)}{#if i > 0}{' '}or{' '}{/if}<button
-                  class="link"
-                  type="button"
-                  data-testid="onboarding-install-{slot.kind}"
-                  disabled={finishing}
-                  aria-busy={launching === 'watching' && slot.kind === 'claude'}
-                  aria-label={slot.installLabel}
-                  onclick={() => void handleInstallTool(slot.kind)}
-                >{launching === 'watching' && slot.kind === 'claude'
-                    ? 'Waiting for Claude…'
-                    : toolName(slot.kind)}</button>{/each}.
-            {/if}
-          {/if}
-        </p>
+          </details>
+        </div>
         <div class="ready-notes">
           {#if launchEscape}
             <div class="setup-caution" role="note" data-testid="onboarding-escape" aria-label={launchEscape.title}>
@@ -3111,37 +3216,73 @@
               </div>
             </div>
           {/if}
-          {#if manualToolsVisible}
-            <div class="manual-tools" aria-label="Manual setup options">
-              <button type="button" onclick={handleRevealFolder} disabled={revealingFolder} aria-busy={revealingFolder}>
-                {revealingFolder ? 'Revealing…' : 'Reveal folder'}
-              </button>
-              <button type="button" onclick={handleCopyPath} disabled={copyingAction !== null} aria-busy={copyingAction === 'path'}>
-                {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
-              </button>
-              <button type="button" onclick={handleCopyCommand} disabled={copyingAction !== null} aria-busy={copyingAction === 'command'}>
-                {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
-              </button>
-              <button type="button" onclick={handleCopySetupPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'setup'}>
-                {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
-              </button>
-              <button type="button" onclick={handleCopyImportPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'import'}>
-                {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
-              </button>
-            </div>
-            {#if copyFailure}
-              <p class="copy-action" role="status" data-testid="onboarding-copy-error">
-                Clipboard is blocked. Select the path above, or <button
-                  class="link"
-                  type="button"
-                  onclick={() => void retryCopyAction()}
-                  disabled={copyingAction !== null}
-                  aria-busy={copyingAction !== null}
-                >{copyingAction ? 'retrying…' : 'try again'}</button>.
-              </p>
-            {/if}
+        </div>
+        <!-- Usage data: one quiet line, recorded when the person finishes. -->
+        <div class="alt ready-consent" class:on={scene === 'ready' && navRevealed} data-testid="ready-consent">
+          <label class="rc-check">
+            <input
+              type="checkbox"
+              data-testid="ready-consent-share"
+              checked={telemetryChoice === 'share'}
+              disabled={readyConsentRecorded || consentSubmitting || finishing}
+              onchange={(event) => {
+                telemetryChoice = event.currentTarget.checked ? 'share' : 'decline';
+                consentFailure = null;
+              }}
+            />
+            <span>Share anonymous usage data</span>
+          </label>
+          <span class="rc-sep" aria-hidden="true">·</span>
+          <button
+            type="button"
+            class="consent-link"
+            disabled={privacyOpening}
+            aria-busy={privacyOpening}
+            onclick={() => void handleOpenPrivacy()}
+          >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
+          {#if privacyOpenError}
+            <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
           {/if}
         </div>
+        {#if consentFailure}
+          <div
+            class="note consent-error"
+            class:offline={consentFailure.kind === 'offline'}
+            role="alert"
+            data-testid="consent-error"
+          >
+            {#if consentFailure.kind === 'offline'}
+              <p>
+                You appear to be offline, so your usage data choice couldn't be sent yet.
+                It's saved on this machine and HQ will send it automatically the next
+                time you're connected. You can finish setting up now.
+              </p>
+            {:else}
+              <p>
+                We couldn't save your usage data choice to the server just now. Nothing
+                was lost, your answer is held on this machine. Try again in a moment.
+              </p>
+            {/if}
+            <div class="note-actions">
+              <button
+                class="btn btn-secondary"
+                type="button"
+                data-testid="consent-retry"
+                disabled={consentSubmitting || finishing}
+                onclick={() => void handleFinish()}
+              >{consentSubmitting ? 'Retrying…' : 'Retry'}</button>
+              {#if consentFailure.kind === 'offline'}
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="consent-finish-offline"
+                  disabled={consentSubmitting || finishing}
+                  onclick={() => void finishOffline()}
+                >Finish setup, send later</button>
+              {/if}
+            </div>
+          </div>
+        {/if}
       </div>
     </section>
 
@@ -3295,6 +3436,16 @@
 {#snippet GoogleMark()}
   <!-- the official Google G geometry, filled monochrome -->
   <svg viewBox="0 0 120 120" aria-hidden="true"><g fill="currentColor"><path d="M117.6,61.36c0-4.25-.38-8.35-1.09-12.27H60v23.21h32.29c-1.39,7.5-5.62,13.85-11.97,18.11v15.06h19.39c11.35-10.45,17.89-25.83,17.89-44.1Z" /><path d="M60,120c16.2,0,29.78-5.37,39.71-14.54l-19.39-15.05c-5.37,3.6-12.25,5.73-20.32,5.73-15.63,0-28.85-10.55-33.57-24.74H6.38v15.55C16.25,106.55,36.55,120,60,120Z" /><path d="M26.43,71.4c-1.2-3.6-1.88-7.45-1.88-11.4s.68-7.8,1.88-11.4V33.05H6.38C2.32,41.15,0,50.32,0,60s2.32,18.85,6.38,26.95l20.05-15.55Z" /><path d="M60,23.86c8.81,0,16.72,3.03,22.94,8.98l17.21-17.21C89.75,5.95,76.17,0,60,0,36.55,0,16.25,13.45,6.38,33.05l20.05,15.55C31.15,34.42,44.37,23.86,60,23.86Z" /></g></svg>
+{/snippet}
+
+{#snippet ToolIcon(kind: LaunchKind)}
+  {#if kind === 'codex'}
+    <!-- a terminal prompt -->
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5 9.5 12 5 16.5" /><path d="M12.5 16.5H19" /></svg>
+  {:else}
+    <!-- an eight-ray spark -->
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6 6 18" /></svg>
+  {/if}
 {/snippet}
 
 {#snippet MicrosoftMark()}

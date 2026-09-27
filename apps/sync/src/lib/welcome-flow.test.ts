@@ -24,8 +24,11 @@ import {
 } from './welcome-flow';
 
 describe('welcome flow scene order', () => {
-  it('walks welcome, folder, cloud, shortcut, consent, ready in that order', () => {
-    expect(STORY_SCENES).toEqual(['welcome', 'folder', 'cloud', 'shortcut', 'consent', 'ready']);
+  // Product decision (2026-09-27): usage-data consent is a checkbox on the
+  // ready screen, not a screen of its own, so the first-run flow is five
+  // screens.
+  it('walks welcome, folder, cloud, shortcut, ready in that order', () => {
+    expect(STORY_SCENES).toEqual(['welcome', 'folder', 'cloud', 'shortcut', 'ready']);
     const walked: string[] = ['welcome'];
     let scene = nextScene('welcome', false);
     while (scene && scene !== 'end') {
@@ -54,35 +57,47 @@ describe('welcome flow scene order', () => {
   it('steps back one screen at a time and never before the welcome', () => {
     expect(previousScene('welcome', false)).toBeNull();
     expect(previousScene('folder', false)).toBe('welcome');
-    expect(previousScene('consent', false)).toBe('shortcut');
+    expect(previousScene('ready', false)).toBe('shortcut');
+    // The consent scene is only the consent-only runs, off the story strip.
+    expect(previousScene('consent', false)).toBeNull();
+    expect(nextScene('shortcut', false)).toBe('ready');
     expect(previousScene('connectors', false)).toBeNull();
   });
 });
 
 describe('welcome flow chrome and gating', () => {
-  it('shows Skip intro only on the two explainers, jumping to consent', () => {
+  it('shows Skip intro only on the two explainers, jumping to the ready screen', () => {
     const skips = STORY_SCENES.map(
       (scene) => welcomeChrome({ scene, replay: false, setupCompleted: false }).skip,
     );
-    expect(skips).toEqual([null, null, 'consent', 'consent', null, null]);
+    expect(skips).toEqual([null, null, 'ready', 'ready', null]);
   });
 
-  it('shows Back on screens 1-4 and closes the way back to the folder once installed', () => {
+  it('shows Back on screens 1-3 and closes the way back to the folder once installed', () => {
     const backs = STORY_SCENES.map(
       (scene) => welcomeChrome({ scene, replay: false, setupCompleted: false }).back,
     );
-    expect(backs).toEqual([false, true, true, true, true, false]);
+    expect(backs).toEqual([false, true, true, true, false]);
     expect(welcomeChrome({ scene: 'cloud', replay: false, setupCompleted: true }).back).toBe(false);
     expect(welcomeChrome({ scene: 'shortcut', replay: false, setupCompleted: true }).back).toBe(true);
   });
 
-  it('shows the install card on screens 2-4 only, and five ticks from screen 1', () => {
+  it('shows the install card on the two explainers only, and four ticks from screen 1', () => {
     const cards = STORY_SCENES.map(
       (scene) => welcomeChrome({ scene, replay: false, setupCompleted: false }).installCard,
     );
-    expect(cards).toEqual([false, false, true, true, true, false]);
+    expect(cards).toEqual([false, false, true, true, false]);
     const folder = welcomeChrome({ scene: 'folder', replay: false, setupCompleted: false });
-    expect(folder).toMatchObject({ ticks: true, tickCount: 5, currentTick: 0 });
+    expect(folder).toMatchObject({ ticks: true, tickCount: 4, currentTick: 0 });
+    const ready = welcomeChrome({ scene: 'ready', replay: false, setupCompleted: false });
+    expect(ready).toMatchObject({ ticks: true, tickCount: 4, currentTick: 3 });
+    // The consent-only runs' screen has no story chrome.
+    expect(welcomeChrome({ scene: 'consent', replay: false, setupCompleted: false })).toMatchObject({
+      ticks: false,
+      back: false,
+      skip: null,
+      installCard: false,
+    });
     expect(welcomeChrome({ scene: 'welcome', replay: false, setupCompleted: false }).ticks).toBe(
       false,
     );
@@ -94,7 +109,6 @@ describe('welcome flow chrome and gating', () => {
       'Install here',
       'Next',
       'Next',
-      'Continue',
       'Open HQ Desktop',
     ]);
   });

@@ -1414,14 +1414,15 @@
 .hq-welcome .prog.done .pbar {
   opacity: 0;
 }
-/* the Claude Code / Codex route, demoted to a line under the one real action */
+/* under the one primary action: the Claude Code / Codex options, the
+   Advanced folder tools, and the usage-data line */
 .hq-welcome .alt-block {
   position: absolute;
   left: 50%;
   top: 0;
   transform: translateX(-50%);
   z-index: 4;
-  width: min(560px, 92vw);
+  width: min(600px, 92vw);
   text-align: center;
 }
 .hq-welcome .alt {
@@ -1492,6 +1493,149 @@
 }
 .hq-welcome .completion-mark {
   display: inline-flex;
+}
+
+/* Claude Code and Codex: two large options, for people who work in them */
+.hq-welcome .tools {
+  margin-top: 6px;
+}
+.hq-welcome .tools-lead {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--w-muted);
+}
+.hq-welcome .tool-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.hq-welcome .tool-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 78px;
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    transform 0.15s var(--w-ease-out);
+}
+.hq-welcome .tool-card:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.hq-welcome .tool-card:active:not(:disabled) {
+  transform: scale(0.99);
+}
+.hq-welcome .tool-card:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.hq-welcome .tool-card:focus-visible {
+  outline: 1.5px solid #fff;
+  outline-offset: 3px;
+}
+.hq-welcome .tool-card .tc-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.hq-welcome .tool-card .tc-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.hq-welcome .tool-card .tc-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.hq-welcome .tool-card .tc-name {
+  font-size: 17px;
+  line-height: 22px;
+  font-weight: 500;
+  color: #fff;
+}
+.hq-welcome .tool-card .tc-line {
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--w-muted);
+}
+.hq-welcome .tool-card.missing {
+  border-style: dashed;
+  background: rgba(255, 255, 255, 0.04);
+}
+.hq-welcome .advanced {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-muted);
+}
+.hq-welcome .advanced > summary {
+  width: fit-content;
+  margin: 0 auto;
+  cursor: pointer;
+  color: var(--w-faint);
+}
+.hq-welcome .advanced > summary:hover {
+  color: var(--w-muted);
+}
+.hq-welcome .advanced > summary:focus-visible {
+  outline: 1.5px solid #fff;
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.hq-welcome .advanced .advanced-note {
+  margin: 8px 0;
+}
+/* usage data: one quiet line */
+.hq-welcome .ready-consent {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-faint);
+}
+.hq-welcome .ready-consent .rc-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.hq-welcome .ready-consent input[type='checkbox'] {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+}
+.hq-welcome .ready-consent input[type='checkbox']:disabled {
+  cursor: default;
+}
+.hq-welcome .ready-consent .consent-link {
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-faint);
+  text-decoration-color: rgba(255, 255, 255, 0.25);
+}
+.hq-welcome .ready-consent .consent-link:hover {
+  color: var(--w-muted);
 }
 
 /* ---- panels off the story strip: connector import, tutorial steps ------- */

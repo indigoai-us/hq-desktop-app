@@ -617,11 +617,14 @@ describe('first-run browser session continuation', () => {
     await flush();
 
     primaryButton().click();
+    // Finishing records the usage-data answer first (its own `consent`
+    // completion), then the finish itself.
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(
         ([command, args]) =>
           command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { action?: string } }).properties?.action === 'completed',
+          (args as { properties?: { action?: string } }).properties?.action === 'completed' &&
+          (args as { properties?: { outcome?: string } }).properties?.outcome === 'finished',
       ),
     );
 
@@ -995,10 +998,12 @@ describe('onboarding launch handoff', () => {
     ).toHaveLength(1);
   });
 
-  it('leads with Open HQ Desktop and offers Claude Code and Codex as a quiet line under it', async () => {
-    // Layout change (welcome flow): the own-tool launchers moved from an
-    // "Advanced" disclosure to the prototype's single line under the one
-    // primary action. Same launchers, same test ids, same handoff.
+  it('leads with Open HQ Desktop and offers Claude Code and Codex as two large options under it', async () => {
+    // Product decision (2026-09-27): the own-tool launchers are two large
+    // option cards (icon, name, one line) under the one primary action, so
+    // people who work in Claude Code or Codex can pick them at a glance. Same
+    // launchers, same test ids, same handoff; the folder tools sit under an
+    // Advanced disclosure beneath them.
     mountWizard(vi.fn(), 4, {
       ...NO_AI_TOOLS,
       claude_desktop: true,
@@ -1017,19 +1022,21 @@ describe('onboarding launch handoff', () => {
       'Complete setup in your AI tool',
     );
 
-    // The own-tool line holds exactly the two launchers (never Grok), none of
-    // them primary.
+    // Exactly the two tools (never Grok), none of them the primary button.
     const row = host.querySelector('[data-testid="onboarding-launchers"]');
     expect(row).not.toBeNull();
-    expect(row!.textContent).toContain('Prefer your own tools?');
-    const buttons = Array.from(row!.querySelectorAll('button'));
-    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
+    const cards = Array.from(row!.querySelectorAll<HTMLButtonElement>('.tool-card'));
+    expect(cards.map((button) => button.getAttribute('aria-label'))).toEqual([
       'Open in Claude Code',
       'Open in Codex',
     ]);
-    expect(buttons.map((button) => button.textContent?.trim())).toEqual(['Claude Code', 'Codex']);
+    expect(cards.map((button) => button.querySelector('.tc-name')?.textContent?.trim())).toEqual([
+      'Claude Code',
+      'Codex',
+    ]);
     expect(row!.querySelector('.btn-primary')).toBeNull();
     expect(row!.textContent).not.toMatch(/\bFinish\b/);
+    expect(row!.querySelector('[data-testid="onboarding-advanced"]')).not.toBeNull();
   });
 
   it('offers both Claude Code and Codex when no AI tool is installed', async () => {
@@ -1039,18 +1046,21 @@ describe('onboarding launch handoff', () => {
     mountWizard(vi.fn(), 4);
     await flush();
 
-    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] button')).toHaveLength(2);
+    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] .tool-card')).toHaveLength(2);
     expect(host.querySelector('[data-testid="onboarding-install-claude"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="onboarding-install-codex"]')).not.toBeNull();
 
     // Opening HQ Desktop stays the primary step; the installs sit under Advanced.
     expect(primaryButton().textContent?.trim()).toBe('Open HQ Desktop');
-    // Layout change: the install links sit in the own-tool line by name, and
-    // say what they do to assistive technology.
+    // The install options are the same large cards, by name, and say what
+    // they do to assistive technology.
     expect(readyButton('onboarding-install-claude').getAttribute('aria-label')).toBe(
       'Install Claude Code',
     );
-    expect(readyButton('onboarding-install-claude').textContent?.trim()).toBe('Claude Code');
+    expect(
+      readyButton('onboarding-install-claude').querySelector('.tc-name')?.textContent?.trim(),
+    ).toBe('Claude Code');
+    expect(readyButton('onboarding-install-claude').textContent).toContain('Not installed');
   });
 
   it('restores friendly checklist labels instead of internal setup stage names', async () => {
@@ -1102,22 +1112,17 @@ describe('onboarding launch handoff', () => {
     }
   });
 
-  it('starts the usage data choice on Share, so Continue works without a click', async () => {
-    mountWizard(vi.fn(), 2, NO_AI_TOOLS);
+  it('starts the usage data checkbox on Share, so finishing works without a click', async () => {
+    // Product decision (2026-09-27): the question is a checkbox on the ready
+    // screen, checked (Share) by default.
+    mountWizard(vi.fn(), 4, NO_AI_TOOLS);
     await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="share"]')),
+      Boolean(host.querySelector('[data-testid="ready-consent-share"]')),
     );
-    const share = host.querySelector<HTMLInputElement>(
-      '[data-testid="onboarding-consent"] input[value="share"]',
-    );
-    const decline = host.querySelector<HTMLInputElement>(
-      '[data-testid="onboarding-consent"] input[value="decline"]',
-    );
+    const share = host.querySelector<HTMLInputElement>('[data-testid="ready-consent-share"]');
     expect(share?.checked).toBe(true);
-    expect(decline?.checked).toBe(false);
-    expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.disabled,
-    ).toBe(false);
+    expect(host.querySelector('[data-testid="onboarding-consent"]')).toBeNull();
+    expect(primaryButton().disabled).toBe(false);
   });
 
   it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
@@ -1161,12 +1166,12 @@ describe('onboarding launch handoff', () => {
 
     // The install runs in the background while the person is on the story
     // screens. Let it settle (the failed stage is recorded, not shown), then
-    // answer the usage question and land on the ready screen, as a person would.
+    // skip on to the ready screen, as a person would.
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
     );
-    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="welcome-skip"]')?.click();
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() =>
       Boolean(
@@ -1199,7 +1204,8 @@ describe('onboarding launch handoff', () => {
     launchClaude?.click();
     await flush();
     await vi.advanceTimersByTimeAsync(1);
-    await flush();
+    // Finishing records the usage-data answer before the handoff.
+    await flushUntil(() => onfinish.mock.calls.length > 0);
 
     expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', expect.any(Object));
     expect(onfinish).toHaveBeenCalledOnce();
@@ -1226,12 +1232,9 @@ describe('onboarding launch handoff', () => {
     });
 
     await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+      Boolean(host.querySelector('[data-testid="welcome-skip"]')),
     );
-    host
-      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
-      ?.click();
-    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="welcome-skip"]')?.click();
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
 
@@ -1286,12 +1289,9 @@ describe('onboarding launch handoff', () => {
     });
 
     await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+      Boolean(host.querySelector('[data-testid="welcome-skip"]')),
     );
-    host
-      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
-      ?.click();
-    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="welcome-skip"]')?.click();
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
 
@@ -1438,18 +1438,19 @@ describe('onboarding launch handoff', () => {
     await flush();
     readyButton('onboarding-install-claude').click();
     await flush();
-    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').querySelector('.tc-line')?.textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
     flushSync();
-    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').querySelector('.tc-line')?.textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
     flushSync();
-    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').querySelector('.tc-line')?.textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
-    await flush();
+    // The watch opens Claude, then finishing records the usage-data answer.
+    await flushUntil(() => onfinish.mock.calls.length > 0);
     expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', {
       url: expectedSetupDeepLink('/Users/test/hq'),
     });
@@ -1739,7 +1740,8 @@ describe('ready screen: Open HQ Desktop', () => {
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-open-desktop"]')));
 
     readyButton('onboarding-open-desktop').click();
-    await flush();
+    // Finishing records the usage-data answer first.
+    await flushUntil(() => onfinish.mock.calls.length > 0);
 
     expect(onfinish).toHaveBeenCalledOnce();
     const launchCommands = tauri.invoke.mock.calls

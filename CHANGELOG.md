@@ -8,30 +8,40 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- First-time setup is now one six-screen welcome flow that fills the screen
-  (everything below the menu bar and beside the Dock) with no rounded
-  corners or window shadow. On macOS the background is your own desktop
-  wallpaper, blurred and dimmed; other app windows no longer show through.
-  If the wallpaper cannot be read, and on Windows, the window keeps a soft
-  blur of whatever is behind it. The same full-screen window is used for the
-  sharing re-prompt and "Replay welcome intro". You sign in with
-  Google or Microsoft, pick where HQ lives, and choose "Install here". If
-  you are already signed in to hq.computer in your browser, the sign-in
-  screen shows one "Continue as {your email}" button in place of the
-  Google and Microsoft buttons and waits for you to press it. The
-  install then runs in the background while three short screens explain
-  cloud sync, the Option Shift O shortcut, and the usage-sharing choice. A
+- First-time setup is now one five-screen welcome flow that fills the screen
+  (everything below the menu bar and beside the Dock) with no window
+  shadow. On macOS the background is your own desktop wallpaper, blurred
+  and dimmed; other app windows no longer show through. If the wallpaper
+  cannot be read, and on Windows, the window keeps a soft blur of whatever
+  is behind it. The same full-screen window is used for the sharing
+  re-prompt and "Replay welcome intro". The window has the standard close
+  and minimize buttons (top left on macOS). Minimize puts it in the Dock or
+  taskbar. Close hides it without quitting or cancelling setup: the install
+  keeps running, and clicking the menu-bar item or the Dock icon brings the
+  flow back on the same screen. You sign in with Google or Microsoft, pick
+  where HQ lives, and choose "Install here". If you are already signed in
+  to hq.computer in your browser, the sign-in screen shows one "Continue as
+  {your email}" button in place of the Google and Microsoft buttons and
+  waits for you to press it. The install then runs in the background while
+  two short screens explain cloud sync and the Option Shift O shortcut. A
   small card in the corner shows the real install progress, and install
-  errors show there with a Retry. You can answer the sharing question before
-  the install finishes: the answer is saved on this computer straight away
-  and sent to HQ once setup is ready. If sending fails, the ready screen
-  says so and offers Retry instead of hiding it. "Open HQ Desktop" stays
-  disabled with "Getting ready..." until the install is done, and "Open HQ
-  in Claude Code or Codex" is offered underneath. The separate full-screen
-  intro film is gone; "Replay welcome intro" now plays the first four
-  screens with Next and Done. The flow respects Reduce Motion, works from
-  the keyboard and with a screen reader, and pauses its animation when the
-  window is hidden.
+  errors show there with a Retry. The last screen has "Open HQ Desktop",
+  then Claude Code and Codex as two large options with an icon and one
+  line each. An installed tool opens HQ with setup ready; a missing one
+  links to its download. An "Advanced" section under them has Reveal
+  folder, Copy path, Copy command, Copy /setup and Copy /import-claude.
+  "Open HQ Desktop" and the two tool options stay disabled with "Getting
+  ready..." until the install is done. The usage-sharing question is no
+  longer its own screen: the last screen has one "Share anonymous usage
+  data" checkbox, checked by default, with a "What's collected" link.
+  Nothing is sent until you finish from that screen, whichever option you
+  use. If sending your choice fails, the screen says so and offers Retry;
+  if you are offline, your choice is saved on this computer and you can
+  finish now and have it sent later. The separate full-screen intro film
+  is gone; "Replay welcome intro" now plays the first four screens with
+  Next and Done. The flow respects Reduce Motion, works from the keyboard
+  and with a screen reader, and pauses its animation when the window is
+  hidden.
 
 - Setup and bot-picker copy now names the user's actual computer instead of
   guessing. On macOS the app says "this Mac", on Windows "this PC", and on

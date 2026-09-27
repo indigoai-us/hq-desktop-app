@@ -1,13 +1,19 @@
 /**
- * The welcome flow: first-run onboarding and the welcome story as one six-screen
- * sequence (designer prototype `hq-welcome-flow`).
+ * The welcome flow: first-run onboarding and the welcome story as one
+ * five-screen sequence (designer prototype `hq-welcome-flow`).
  *
  *   0 welcome   particle HQ mark + sign in           (wizard step welcome-signin)
  *   1 folder    "It's a folder" + where HQ lives      (wizard step directory)
  *   2 cloud     company cloud orbit                   (wizard step setup; install runs)
  *   3 shortcut  the Option-Shift-O keyboard           (wizard step setup; install runs)
- *   4 consent   usage data                            (wizard step consent)
- *   5 ready     "HQ is ready." + Open HQ Desktop      (wizard step ready)
+ *   4 ready     "HQ is ready." + Open HQ Desktop,     (wizard step ready)
+ *               the Claude Code / Codex options and
+ *               the usage-data checkbox
+ *
+ * The usage-data question is not a screen of its own in the first-run flow:
+ * it is one checkbox line on the ready screen, recorded when the person
+ * finishes. The `consent` scene is still the whole of the consent-only runs
+ * (the US-005 re-prompt, an installed machine missing its answer).
  *
  * The wizard's own step model (router, step telemetry ids, resume entry
  * points) is unchanged underneath: this module only maps it onto screens and
@@ -32,14 +38,14 @@ import {
 } from './onboarding-wizard';
 import { setupStepSummary } from './onboarding-setup';
 
-export const STORY_SCENES = ['welcome', 'folder', 'cloud', 'shortcut', 'consent', 'ready'] as const;
+export const STORY_SCENES = ['welcome', 'folder', 'cloud', 'shortcut', 'ready'] as const;
 export type StorySceneId = (typeof STORY_SCENES)[number];
 
 /** The menu-bar "Replay welcome intro": the story screens only. */
 export const REPLAY_SCENES = ['welcome', 'folder', 'cloud', 'shortcut'] as const;
 
 export type TutorialSceneId = 'trust' | 'settings' | 'run-setup' | 'handoff' | 'build';
-export type SceneId = StorySceneId | 'connectors' | TutorialSceneId;
+export type SceneId = StorySceneId | 'consent' | 'connectors' | TutorialSceneId;
 
 /**
  * How long each screen's progress tick takes to fill. Nothing auto-advances:
@@ -51,7 +57,6 @@ export const SCENE_HOLD_MS: Record<StorySceneId, number> = {
   folder: 8000,
   cloud: 11000,
   shortcut: 9000,
-  consent: 9000,
   ready: 11000,
 };
 
@@ -119,8 +124,8 @@ export function isStoryScene(scene: SceneId): scene is StorySceneId {
 }
 
 /**
- * Position on the story strip (0-5), or null off it. The connector import sits
- * between consent and ready, so it reads as the ready position.
+ * Position on the story strip (0-4), or null off it. The connector import is
+ * offered from the ready screen, so it reads as the ready position.
  */
 export function storyIndex(scene: SceneId): number | null {
   if (scene === 'connectors') return STORY_SCENES.indexOf('ready');
@@ -165,7 +170,7 @@ export interface WelcomeChrome {
   /** Quiet Back, bottom-left. */
   back: boolean;
   /** "Skip intro": what it skips to, if shown. */
-  skip: 'consent' | 'end' | null;
+  skip: 'ready' | 'end' | null;
   /** The corner "Installing HQ in the background" card. */
   installCard: boolean;
 }
@@ -174,9 +179,9 @@ export interface WelcomeChrome {
  * Per-screen chrome, after the prototype's NAV / REPLAY_NAV tables.
  *
  * Skip intro appears only where there is something optional to skip: the two
- * explainers, where it jumps to the consent question. Screens that need an
- * answer have no Skip. The install card lives on 2-4 only; the ready screen
- * shows the same progress in its own capsule.
+ * explainers, where it jumps to the ready screen. Screens that need an answer
+ * have no Skip. The install card lives on the explainers only; the ready
+ * screen shows the same progress in its own capsule.
  */
 export function welcomeChrome({ scene, replay, setupCompleted }: WelcomeChromeInput): WelcomeChrome {
   const order = storyScenes(replay);
@@ -197,7 +202,7 @@ export function welcomeChrome({ scene, replay, setupCompleted }: WelcomeChromeIn
       installCard: false,
     };
   }
-  let back = scene === 'folder' || scene === 'shortcut' || scene === 'consent';
+  let back = scene === 'folder' || scene === 'shortcut';
   // Back from the first explainer is Back to the folder choice, which cancels
   // a running install so the folder can change. Once the install is done the
   // folder is final, so that way back closes.
@@ -207,8 +212,8 @@ export function welcomeChrome({ scene, replay, setupCompleted }: WelcomeChromeIn
     tickCount,
     currentTick,
     back,
-    skip: scene === 'cloud' || scene === 'shortcut' ? 'consent' : null,
-    installCard: scene === 'cloud' || scene === 'shortcut' || scene === 'consent',
+    skip: scene === 'cloud' || scene === 'shortcut' ? 'ready' : null,
+    installCard: scene === 'cloud' || scene === 'shortcut',
   };
 }
 
@@ -224,8 +229,6 @@ export function forwardLabel(scene: StorySceneId, replay: boolean): string | nul
     case 'cloud':
     case 'shortcut':
       return 'Next';
-    case 'consent':
-      return 'Continue';
     case 'ready':
       return 'Open HQ Desktop';
   }

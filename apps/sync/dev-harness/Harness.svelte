@@ -229,7 +229,8 @@
 {:else if view === 'onboarding'}
   <!-- The first-run welcome flow. Size the viewport to ~800x900 (the real
        window). ?step=0..10 opens a wizard step directly (0 welcome, 1 folder,
-       2 cloud with the install running, 3 consent, 5 ready); the shortcut
+       2 cloud with the install running, 5 ready with the Claude Code / Codex
+       options and the usage-data checkbox; 3 lands on ready too); the shortcut
        screen is Next from 2. ?mode=replay previews the menu-bar "Replay
        welcome intro" (the story screens only). In the app the window is
        transparent over a native blur of the desktop; a browser cannot do that,

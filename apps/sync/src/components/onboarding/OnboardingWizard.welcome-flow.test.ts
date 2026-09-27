@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 
 // The welcome flow: first-run onboarding and the welcome story as one
-// six-screen sequence. These tests drive the real wizard through the DOM with
+// five-screen sequence. (Product decision 2026-09-27: the usage-data question
+// is a checkbox on the ready screen, not its own screen.) These tests drive the real wizard through the DOM with
 // reduced motion on, so every screen lands on its settled frame at once (the
 // same path a person with reduced motion gets) and nothing depends on
 // animation timing.
@@ -153,7 +154,7 @@ afterEach(async () => {
 });
 
 describe('welcome flow: scene order and gating', () => {
-  it('signs in on the welcome and walks folder, cloud, shortcut, consent, ready', async () => {
+  it('signs in on the welcome and walks folder, cloud, shortcut, ready', async () => {
     stubInvoke({
       is_first_run: () => true,
       start_oauth_login: () => ({ authorizeUrl: 'https://placeholder.test/authorize', state: 's' }),
@@ -179,20 +180,21 @@ describe('welcome flow: scene order and gating', () => {
     forwardIn('cloud')!.click();
     await flushUntil(() => scene() === 'shortcut', 'the shortcut screen');
     forwardIn('shortcut')!.click();
-    await flushUntil(() => scene() === 'consent', 'the consent screen');
-    await flushUntil(() => commands().includes('record_install_complete'), 'the install');
-    byId('consent-continue')!.click();
     await flushUntil(() => scene() === 'ready', 'the ready screen');
+    // No consent screen on the way: the question is on the ready screen.
+    expect(byId('onboarding-consent')).toBeNull();
+    expect(byId<HTMLInputElement>('ready-consent-share')!.checked).toBe(true);
+    await flushUntil(() => commands().includes('record_install_complete'), 'the install');
   });
 
-  it('offers Skip intro only on the two explainers, and it jumps to consent', async () => {
+  it('offers Skip intro only on the two explainers, and it jumps to the ready screen', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });
     mountAt(2);
     await flushUntil(() => scene() === 'cloud', 'the cloud screen');
     expect(byId('welcome-skip')).not.toBeNull();
     byId('welcome-skip')!.click();
-    await flushUntil(() => scene() === 'consent', 'the consent screen');
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
     expect(byId('welcome-skip')).toBeNull();
   });
 
@@ -298,8 +300,6 @@ describe('welcome flow: the install runs in the background', () => {
     mountAt(2);
     await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
     byId('welcome-skip')!.click();
-    await flushUntil(() => scene() === 'consent', 'the consent screen');
-    byId('consent-continue')!.click();
     await flushUntil(() => scene() === 'ready', 'the ready screen');
 
     const open = () => byId('onboarding-open-desktop')!;
@@ -307,44 +307,52 @@ describe('welcome flow: the install runs in the background', () => {
     expect(open().disabled).toBe(true);
     expect(open().textContent?.trim()).toBe('Getting ready…');
     expect(title()).toBe('Almost ready.');
-    // The own-tool line waits with it.
+    // The Claude Code and Codex options wait with it.
     expect(byId('onboarding-launch-claude')!.disabled).toBe(true);
+    expect(byId('onboarding-launch-codex')!.disabled).toBe(true);
 
     template.resolve();
     await flushUntil(() => !open().disabled, 'Open HQ Desktop');
     expect(open().textContent?.trim()).toBe('Open HQ Desktop');
     expect(title()).toBe('HQ is ready.');
     expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
+    expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
   });
 });
 
-describe('welcome flow: consent before the install finishes', () => {
-  async function answerDuringInstall(template: ReturnType<typeof deferred<void>>) {
-    mountAt(2);
+describe('welcome flow: the usage-data answer on the ready screen', () => {
+  /** Skip from the first explainer to the ready screen while the install runs. */
+  async function skipToReady() {
     await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
     byId('welcome-skip')!.click();
-    await flushUntil(() => scene() === 'consent', 'the consent screen');
-    host
-      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')!
-      .click();
-    await flush();
-    byId('consent-continue')!.click();
     await flushUntil(() => scene() === 'ready', 'the ready screen');
-    return template;
   }
 
-  it('records the answer locally at once and holds the remote write until the install is ready', async () => {
+  async function uncheckShare() {
+    const box = byId<HTMLInputElement>('ready-consent-share')!;
+    box.click();
+    await flush();
+    expect(box.checked).toBe(false);
+  }
+
+  it('records nothing while the install runs, then records the answer when the person finishes', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });
-    await answerDuringInstall(template);
+    const onfinish = vi.fn();
+    mountAt(2, { onfinish });
+    await skipToReady();
+    await uncheckShare();
 
-    const cache = calls.find((c) => c.command === 'write_menubar_telemetry_pref');
-    expect(cache?.args).toMatchObject({ enabled: false, surface: 'onboarding' });
+    expect(commands()).not.toContain('write_menubar_telemetry_pref');
     expect(commands()).not.toContain('post_telemetry_opt_in');
-    expect(commands()).not.toContain('ensure_person_entity');
 
     template.resolve();
-    await flushUntil(() => commands().includes('post_telemetry_opt_in'), 'the held answer');
+    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
+    // Still nothing: the answer is recorded on finish, not on install.
+    expect(commands()).not.toContain('post_telemetry_opt_in');
+
+    byId('onboarding-open-desktop')!.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     const order = commands();
     expect(order.indexOf('record_install_complete')).toBeLessThan(
       order.indexOf('post_telemetry_opt_in'),
@@ -352,14 +360,17 @@ describe('welcome flow: consent before the install finishes', () => {
     expect(order.indexOf('ensure_person_entity')).toBeLessThan(
       order.indexOf('post_telemetry_opt_in'),
     );
+    expect(calls.find((c) => c.command === 'write_menubar_telemetry_pref')?.args).toMatchObject({
+      enabled: false,
+      surface: 'onboarding',
+    });
     expect(calls.find((c) => c.command === 'post_telemetry_opt_in')?.args).toMatchObject({
       enabled: false,
       surface: 'onboarding',
     });
-    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
   });
 
-  it('surfaces a server failure honestly, blocks finishing until a retry succeeds', async () => {
+  it('surfaces a server failure honestly and finishes only once a retry succeeds', async () => {
     let fail = true;
     const template = deferred();
     stubInvoke({
@@ -369,15 +380,21 @@ describe('welcome flow: consent before the install finishes', () => {
         return undefined;
       },
     });
-    await answerDuringInstall(template);
+    const onfinish = vi.fn();
+    mountAt(2, { onfinish });
+    await skipToReady();
     template.resolve();
-    await flushUntil(() => Boolean(byId('consent-deferred-error')), 'the failure');
-    expect(byId('onboarding-open-desktop')!.disabled).toBe(true);
+    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
+
+    byId('onboarding-open-desktop')!.click();
+    await flushUntil(() => Boolean(byId('consent-error')), 'the failure');
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(byId('consent-finish-offline')).toBeNull();
 
     fail = false;
-    byId('consent-deferred-retry')!.click();
-    await flushUntil(() => !byId('consent-deferred-error'), 'the retry');
-    expect(byId('onboarding-open-desktop')!.disabled).toBe(false);
+    byId('consent-retry')!.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expect(byId('consent-error')).toBeNull();
   });
 
   it('never traps an offline person: the answer waits on this machine and they can finish', async () => {
@@ -389,20 +406,59 @@ describe('welcome flow: consent before the install finishes', () => {
       },
     });
     const onfinish = vi.fn();
-    component = null;
-    host.replaceChildren();
     mountAt(2, { onfinish });
-    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
-    byId('welcome-skip')!.click();
-    await flushUntil(() => scene() === 'consent', 'the consent screen');
-    byId('consent-continue')!.click();
-    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await skipToReady();
     template.resolve();
-    await flushUntil(() => Boolean(byId('consent-deferred-error')), 'the offline note');
-    expect(byId('consent-deferred-error')!.textContent).toContain('saved on this machine');
-    expect(byId('onboarding-open-desktop')!.disabled).toBe(false);
+    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
     byId('onboarding-open-desktop')!.click();
+    await flushUntil(() => Boolean(byId('consent-error')), 'the offline note');
+    expect(byId('consent-error')!.textContent).toContain('saved on this machine');
+    expect(onfinish).not.toHaveBeenCalled();
+    byId('consent-finish-offline')!.click();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expect(calls.filter((c) => c.command === 'post_telemetry_opt_in')).toHaveLength(1);
+  });
+});
+
+describe('welcome flow: Claude Code and Codex on the ready screen', () => {
+  it('offers both as large options with an Advanced disclosure under them', async () => {
+    stubInvoke();
+    mountAt(5);
+    await flushUntil(() => Boolean(byId('onboarding-launch-codex')), 'the tool options');
+
+    const launchers = byId<HTMLElement>('onboarding-launchers')!;
+    const cards = Array.from(launchers.querySelectorAll<HTMLButtonElement>('.tool-card'));
+    expect(cards.map((card) => card.querySelector('.tc-name')?.textContent?.trim())).toEqual([
+      'Claude Code',
+      'Codex',
+    ]);
+    // Each card is icon + name + one short line.
+    for (const card of cards) {
+      expect(card.querySelector('.tc-icon svg')).not.toBeNull();
+      expect(card.querySelector('.tc-line')?.textContent?.trim()).toBeTruthy();
+    }
+    // The primary way on stays Open HQ Desktop.
+    expect(forwardIn('ready')!.textContent?.trim()).toBe('Open HQ Desktop');
+
+    // Advanced sits under the options: collapsed, with the folder and copy tools.
+    const advanced = byId<HTMLDetailsElement>('onboarding-advanced')!;
+    expect(launchers.contains(advanced)).toBe(true);
+    expect(
+      cards.every((card) => card.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
+    expect(advanced.open).toBe(false);
+    expect(advanced.textContent).toContain('Reveal folder');
+    expect(advanced.textContent).toContain('Copy /setup');
+    expect(advanced.textContent).toContain('Copy /import-claude');
+  });
+
+  it('opens Claude Code the way the ready screen always did, then finishes', async () => {
+    stubInvoke();
+    const onfinish = mountAt(5);
+    await flushUntil(() => Boolean(byId('onboarding-launch-claude')), 'the Claude Code option');
+    byId('onboarding-launch-claude')!.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expect(commands()).toContain('open_claude_code_link');
   });
 });
 
