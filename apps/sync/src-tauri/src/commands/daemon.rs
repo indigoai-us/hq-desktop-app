@@ -7634,6 +7634,49 @@ mod tests {
             .any(|row| row["company"] == company && row["upgradeUrl"] == upgrade_url));
     }
 
+    /// The watch daemon is the normal auto-sync path, so it must forward the
+    /// runner's realtime-mode status to the main window just like manual sync.
+    #[test]
+    fn handle_watch_stdout_line_emits_realtime_mode_to_main_window() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        handle.listen(EVENT_SYNC_REALTIME_MODE, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        let line = r#"{"type":"realtime-mode","mode":"poll-only","minPollMs":60000,"maxPollMs":60000}"#;
+        assert!(handle_watch_stdout_line(
+            &handle,
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            line,
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.as_slice(),
+            &[serde_json::json!({
+                "mode": "poll-only",
+                "minPollMs": 60000,
+                "maxPollMs": 60000,
+            })],
+        );
+    }
+
     // ── Double-start prevention ──────────────────────────────────────────
 
     #[test]
