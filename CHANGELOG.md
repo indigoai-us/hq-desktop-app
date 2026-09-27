@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- In a DM with a bot, the "is thinking" / "working on it" line now
+  disappears as soon as the bot's reply appears, instead of staying under
+  the reply for a few more seconds. It shows again when you send another
+  message or the bot reports new work.
+
 - When an update restarts the app before the HQ folder is available, people
   who have completed setup stay on the normal app surface instead of seeing
   onboarding again.
