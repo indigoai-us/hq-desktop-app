@@ -5809,14 +5809,15 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
 #[cfg(windows)]
 fn write_qmd_bash_shim() -> Result<(), String> {
     let prefix = managed_npm_prefix();
-    write_qmd_bash_shim_in(&prefix)
+    write_qmd_bash_shim_in(&prefix, git_bash_path().as_deref())
 }
 
 #[cfg(windows)]
-fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
+fn write_qmd_bash_shim_in(prefix: &Path, bash_path: Option<&Path>) -> Result<(), String> {
     // npm may leave a qmd.cmd shim that resolves by name but still targets a
     // removed package or uses a launcher that cannot run this package's POSIX
-    // entry point. Replace it with a shim whose package target we verify here.
+    // entry point. Verify the target before writing a Git Bash launcher; when
+    // Git Bash is absent, keep a valid Node-based npm shim instead.
     let bin_candidates = [
         prefix
             .join("node_modules")
@@ -5846,22 +5847,42 @@ fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
     // the shim resolves through the USER's shell PATH at run time, where
     // `C:\Windows\System32\bash.exe` (the WSL launcher) precedes Git's bash on
     // any machine with WSL enabled — and WSL bash cannot run a Windows-path
-    // script argument (the INS-0580 failure class).
-    let body = match git_bash_path() {
-        Some(bash) => format!(
-            "@ECHO off\r\n\
-            SETLOCAL\r\n\
-            \"{}\" \"%~dp0{bin_rel}\" %*\r\n",
-            bash.display()
-        ),
-        None => format!(
-            "@ECHO off\r\n\
-            SETLOCAL\r\n\
-            bash \"%~dp0{bin_rel}\" %*\r\n"
-        ),
+    // script argument (the INS-0580 failure class). If Git Bash is absent,
+    // npm's Node-based shim remains usable and must not be replaced by a bare
+    // `bash` invocation that may resolve to WSL or nothing at all.
+    let Some(bash) = bash_path else {
+        let npm_shim_references_entry = std::fs::read_to_string(&cmd_path)
+            .ok()
+            .is_some_and(|shim| qmd_npm_shim_references_entry(&shim, bin_rel));
+        if npm_shim_references_entry {
+            return Ok(());
+        }
+        return Err(
+            "qmd.cmd does not reference the installed package entry point, and Git Bash is unavailable"
+                .to_string(),
+        );
     };
+    let body = format!(
+        "@ECHO off\r\n\
+        SETLOCAL\r\n\
+        \"{}\" \"%~dp0{bin_rel}\" %*\r\n",
+        bash.display()
+    );
     std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn qmd_npm_shim_references_entry(shim: &str, bin_rel: &str) -> bool {
+    let normalized_shim = shim.replace('/', "\\").to_ascii_lowercase();
+    let normalized_entry = bin_rel.replace('/', "\\").to_ascii_lowercase();
+    normalized_shim.match_indices(&normalized_entry).any(|(index, _)| {
+        let suffix = &normalized_shim[index + normalized_entry.len()..];
+        suffix.is_empty()
+            || suffix.as_bytes().first().is_some_and(|byte| {
+                *byte == b'"' || *byte == b'%' || byte.is_ascii_whitespace()
+            })
+    })
 }
 
 /// Absolute path to Git for Windows' bash.exe, if one exists. Never returns
@@ -6770,9 +6791,40 @@ fn is_concurrent_install_skip_result(result: &DepInstallResult) -> bool {
 }
 
 const WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE: i32 = 0x8A15_005E_u32 as i32;
+const QMD_POST_INSTALL_PROBE_COMMAND: &str = "qmd post-install probe";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QmdPostInstallFailure {
+    NotResolved,
+    VersionMismatch,
+    NativeAddonMismatch,
+}
+
+impl QmdPostInstallFailure {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotResolved => "qmd_not_resolved",
+            Self::VersionMismatch => "qmd_version_mismatch",
+            Self::NativeAddonMismatch => "qmd_native_addon_mismatch",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "qmd_not_resolved" => Some(Self::NotResolved),
+            "qmd_version_mismatch" => Some(Self::VersionMismatch),
+            "qmd_native_addon_mismatch" => Some(Self::NativeAddonMismatch),
+            _ => None,
+        }
+    }
+}
 
 fn setup_error_kind(diagnostic: Option<&SetupCommandDiagnostic>) -> Option<&'static str> {
     let diagnostic = diagnostic?;
+    if diagnostic.command == QMD_POST_INSTALL_PROBE_COMMAND {
+        return QmdPostInstallFailure::from_str(&diagnostic.error)
+            .map(QmdPostInstallFailure::as_str);
+    }
     let is_winget = diagnostic.command.split_whitespace().next() == Some("winget");
     (is_winget && diagnostic.exit_code == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE))
         .then_some("winget_pinned_certificate_mismatch")
@@ -6791,8 +6843,13 @@ fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupComm
     if is_concurrent_install_skip_result(result) {
         return OnboardingErrorCategory::ConcurrentInstall;
     }
-    if setup_error_kind(diagnostic).is_some() {
-        return OnboardingErrorCategory::Network;
+    match setup_error_kind(diagnostic) {
+        Some("winget_pinned_certificate_mismatch") => return OnboardingErrorCategory::Network,
+        Some("qmd_not_resolved") => return OnboardingErrorCategory::NotFound,
+        Some("qmd_version_mismatch" | "qmd_native_addon_mismatch") => {
+            return OnboardingErrorCategory::Unknown;
+        }
+        _ => {}
     }
     if diagnostic.and_then(|diagnostic| diagnostic.exit_code).is_some() {
         return OnboardingErrorCategory::ExitNonzero;
@@ -6936,6 +6993,7 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
             #[cfg(windows)] { Some(extended_search_path()) }
             #[cfg(not(windows))] { None::<String> }
         };
+        let is_qmd_post_install_probe = diagnostic.command == QMD_POST_INSTALL_PROBE_COMMAND;
         sentry::with_scope(|sentry_scope| {
             // Keep every dependency-install failure in one issue. Dependency,
             // category, and retry data remain structured context.
@@ -6959,12 +7017,18 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
             sentry_scope.set_extra("setup_os_version", sentry::protocol::Value::String(os.version().to_string()));
             sentry_scope.set_extra("setup_command", sentry::protocol::Value::String(diagnostic.command));
             sentry_scope.set_extra("setup_exit_code", diagnostic.exit_code.map(|code| sentry::protocol::Value::Number(code.into())).unwrap_or(sentry::protocol::Value::Null));
-            sentry_scope.set_extra("setup_stdout_tail", sentry::protocol::Value::String(diagnostic.stdout));
+            sentry_scope.set_extra("setup_stdout_tail", sentry::protocol::Value::String(diagnostic.stdout.clone()));
             sentry_scope.set_extra("setup_stderr_tail", sentry::protocol::Value::String(diagnostic.stderr));
             sentry_scope.set_extra("setup_error", sentry::protocol::Value::String(diagnostic.error));
+            if is_qmd_post_install_probe && qmd_version_token_is_safe(&diagnostic.stdout) {
+                sentry_scope.set_extra(
+                    "setup_resolved_version",
+                    sentry::protocol::Value::String(diagnostic.stdout),
+                );
+            }
             sentry_scope.set_extra("setup_blocked_dependents", sentry::protocol::Value::Array(blocked_dependents.iter().cloned().map(sentry::protocol::Value::String).collect()));
             sentry_scope.set_extra("setup_blocked_dependents_status", sentry::protocol::Value::String(if blocked_dependents.is_empty() { "none" } else { "blocked_by_failed_prerequisite" }.to_string()));
-            if let Some(search_path) = search_path {
+            if let Some(search_path) = search_path.filter(|_| !is_qmd_post_install_probe) {
                 sentry_scope.set_extra("setup_resolved_search_path", sentry::protocol::Value::String(search_path));
             }
         }, || sentry::capture_message("Desktop setup dependency installation failed", sentry::Level::Error));
@@ -7272,6 +7336,49 @@ pub fn qmd_version_matches_pin(version: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn qmd_post_install_failure(status: &DepStatus) -> Option<QmdPostInstallFailure> {
+    if !status.installed {
+        return Some(QmdPostInstallFailure::NotResolved);
+    }
+    if !qmd_version_matches_pin(status.version.as_deref()) {
+        return Some(QmdPostInstallFailure::VersionMismatch);
+    }
+    qmd_native_needs_rebuild(status).then_some(QmdPostInstallFailure::NativeAddonMismatch)
+}
+
+fn qmd_version_token_is_safe(token: &str) -> bool {
+    if token.is_empty() || token.len() > 64 {
+        return false;
+    }
+    let version = token.strip_prefix('v').unwrap_or(token);
+    version.matches('.').count() >= 2
+        && version
+            .split(['.', '-', '+'])
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        && version
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+fn qmd_resolved_version_token(version_output: Option<&str>) -> Option<String> {
+    let token = version_output?.split_whitespace().nth(1)?;
+    qmd_version_token_is_safe(token).then(|| token.to_string())
+}
+
+fn qmd_post_install_diagnostic(
+    failure: QmdPostInstallFailure,
+    status: &DepStatus,
+) -> SetupCommandDiagnostic {
+    SetupCommandDiagnostic {
+        command: QMD_POST_INSTALL_PROBE_COMMAND.to_string(),
+        exit_code: None,
+        stdout: qmd_resolved_version_token(status.version.as_deref()).unwrap_or_default(),
+        stderr: String::new(),
+        error: failure.as_str().to_string(),
+    }
+}
+
 /// True when `path` is inside HQ's managed toolchain (any platform layout).
 pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
     let Some(home) = dirs::home_dir() else { return false };
@@ -7286,11 +7393,11 @@ fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
     #[cfg(not(windows))]
     if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
     let status = check_dep_impl(dep.binary, None);
+    if dep.id == "qmd" {
+        return qmd_post_install_failure(&status).is_none();
+    }
     if !dep_status_satisfies(dep, &status) {
         return false;
-    }
-    if dep.id == "qmd" {
-        return !qmd_native_needs_rebuild(&status);
     }
     true
 }
@@ -7408,6 +7515,24 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         "jq" => install_jq(app.clone()).await,
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
+
+    if dep.id == "qmd" {
+        return match install_result {
+            Err(err) => Err(err),
+            Ok(_) => {
+                let status = check_dep_impl(dep.binary, None);
+                if let Some(failure) = qmd_post_install_failure(&status) {
+                    let diagnostic = qmd_post_install_diagnostic(failure, &status);
+                    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(|collector| {
+                        collector.record(diagnostic);
+                    });
+                    Err(format!("{} did not pass the post-install check", dep.label))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+    }
 
     finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))
 }
@@ -8061,6 +8186,121 @@ mod install_deps_planner_tests {
         assert_eq!(
             setup_error_category(&result, Some(&other_command)),
             OnboardingErrorCategory::ExitNonzero
+        );
+    }
+
+    #[test]
+    fn qmd_post_install_failures_emit_closed_kinds_and_a_sanitized_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qmd_package_bin = tmp
+            .path()
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("bin")
+            .join("qmd");
+        std::fs::create_dir_all(qmd_package_bin.parent().unwrap()).unwrap();
+
+        let cases = [
+            (
+                DepStatus {
+                    installed: false,
+                    version: None,
+                    path: None,
+                },
+                QmdPostInstallFailure::NotResolved,
+                OnboardingErrorCategory::NotFound,
+                None,
+            ),
+            (
+                DepStatus {
+                    installed: true,
+                    version: Some("qmd v2.5.2 (C:\\Users\\Alice\\qmd)".to_string()),
+                    path: None,
+                },
+                QmdPostInstallFailure::VersionMismatch,
+                OnboardingErrorCategory::Unknown,
+                Some("v2.5.2"),
+            ),
+            (
+                DepStatus {
+                    installed: true,
+                    version: Some("qmd v2.5.3 (C:\\Users\\Alice\\qmd)".to_string()),
+                    path: Some(qmd_package_bin.clone()),
+                },
+                QmdPostInstallFailure::NativeAddonMismatch,
+                OnboardingErrorCategory::Unknown,
+                Some("v2.5.3"),
+            ),
+        ];
+
+        for (index, (status, expected_failure, expected_category, expected_version)) in
+            cases.into_iter().enumerate()
+        {
+            let failure = qmd_post_install_failure(&status)
+                .expect("each fixture should fail a distinct qmd post-install check");
+            assert_eq!(failure, expected_failure);
+            let diagnostic = qmd_post_install_diagnostic(failure, &status);
+            assert_eq!(
+                setup_error_kind(Some(&diagnostic)),
+                Some(expected_failure.as_str())
+            );
+            assert_eq!(diagnostic.stdout, expected_version.unwrap_or_default());
+            assert!(!diagnostic.stdout.contains("Users"));
+
+            let run_id = format!("11111111-1111-4111-8111-{:012}", index + 1);
+            let session_id = format!("aaaaaaaa-aaaa-4aaa-8aaa-{:012}", index + 1);
+            let scope = failure_scope(&run_id, 1, &session_id);
+            record_onboarding_failure_detail_with_kind(
+                "deps",
+                Some(&scope),
+                Some("qmd"),
+                expected_category,
+                setup_error_kind(Some(&diagnostic)),
+            );
+            let stored_detail = crate::commands::install_stages::take_onboarding_failure_detail(
+                "deps".to_string(),
+                scope.setup_run_id.clone(),
+                scope.attempt_count,
+                scope.flow.clone(),
+                scope.frontend_session_id.clone(),
+            )
+            .expect("classified qmd detail is retained for the setup attempt");
+            assert_eq!(stored_detail.error_kind.as_deref(), Some(expected_failure.as_str()));
+
+            let events = sentry::test::with_captured_events(|| {
+                send_setup_dependency_failure(
+                    &scope,
+                    "qmd",
+                    expected_category,
+                    diagnostic,
+                    &[],
+                );
+            });
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].tags["setup_error_kind"], expected_failure.as_str());
+            assert!(!events[0].extra.contains_key("setup_resolved_search_path"));
+            if let Some(version) = expected_version {
+                assert_eq!(
+                    events[0].extra.get("setup_resolved_version"),
+                    Some(&sentry::protocol::Value::String(version.to_string()))
+                );
+            } else {
+                assert!(!events[0].extra.contains_key("setup_resolved_version"));
+            }
+        }
+
+        let unrecognized = SetupCommandDiagnostic {
+            command: QMD_POST_INSTALL_PROBE_COMMAND.to_string(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: "qmd path included C:\\Users\\Alice".to_string(),
+        };
+        assert_eq!(setup_error_kind(Some(&unrecognized)), None);
+        assert_eq!(
+            qmd_resolved_version_token(Some("qmd C:\\Users\\Alice\\qmd")),
+            None
         );
     }
 
@@ -9286,13 +9526,68 @@ mod windows_tests {
             &qmd_prefix,
         )
         .is_ok());
-        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd shim should target the installed package");
+        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        write_qmd_bash_shim_in(&qmd_prefix, Some(git_bash))
+            .expect("qmd shim should target the installed package");
         let rewritten = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
         assert_ne!(rewritten, npm_shim);
         assert!(
-            rewritten.contains("%~dp0node_modules\\@tobilu\\qmd\\bin\\qmd"),
+            rewritten.contains(r#""C:\Program Files\Git\bin\bash.exe" "%~dp0node_modules\@tobilu\qmd\bin\qmd" %*"#),
             "{rewritten}"
         );
+    }
+
+    #[test]
+    fn qmd_postinstall_keeps_a_valid_npm_shim_when_git_bash_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qmd_prefix = tmp.path().join("npm-prefix");
+        let package_bin = qmd_prefix
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("bin")
+            .join("qmd");
+        std::fs::create_dir_all(package_bin.parent().unwrap()).unwrap();
+        std::fs::write(&package_bin, b"#!/usr/bin/env node\n").unwrap();
+        let npm_shim = "@ECHO off\r\nCALL \"%~dp0node_modules\\@tobilu\\qmd\\bin\\qmd\" %*\r\n";
+        let cmd_path = qmd_prefix.join("qmd.cmd");
+        std::fs::write(&cmd_path, npm_shim).unwrap();
+
+        write_qmd_bash_shim_in(&qmd_prefix, None).expect("valid npm shim should be preserved");
+
+        assert_eq!(std::fs::read_to_string(cmd_path).unwrap(), npm_shim);
+    }
+
+    #[test]
+    fn qmd_postinstall_without_git_bash_rejects_a_missing_or_unrelated_npm_shim() {
+        for create_unrelated_shim in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let qmd_prefix = tmp.path().join("npm-prefix");
+            let package_bin = qmd_prefix
+                .join("node_modules")
+                .join("@tobilu")
+                .join("qmd")
+                .join("bin")
+                .join("qmd");
+            std::fs::create_dir_all(package_bin.parent().unwrap()).unwrap();
+            std::fs::write(&package_bin, b"#!/usr/bin/env node\n").unwrap();
+            let cmd_path = qmd_prefix.join("qmd.cmd");
+            if create_unrelated_shim {
+                std::fs::write(&cmd_path, "@ECHO off\r\necho qmd\r\n").unwrap();
+            }
+
+            let error = write_qmd_bash_shim_in(&qmd_prefix, None)
+                .expect_err("missing or unrelated npm shim must not become a bare bash shim");
+
+            assert!(
+                error.contains("qmd.cmd does not reference the installed package entry point"),
+                "{error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&cmd_path).ok(),
+                create_unrelated_shim.then(|| "@ECHO off\r\necho qmd\r\n".to_string())
+            );
+        }
     }
 
     #[test]

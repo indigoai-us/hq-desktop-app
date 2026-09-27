@@ -17,6 +17,27 @@ describe('Windows dependency installation regressions', () => {
     expect(writer.includes('if qmd_resolves_in_prefix(prefix)')).toBe(false);
   });
 
+  it('keeps npm qmd.cmd when Git Bash is unavailable instead of invoking bare bash', () => {
+    const start = installDeps.indexOf('fn write_qmd_bash_shim_in(');
+    const end = installDeps.indexOf('\n#[cfg(windows)]', start + 1);
+    const writer = installDeps.slice(start, end);
+
+    expect(writer).toContain('bash_path: Option<&Path>');
+    expect(writer).toContain('qmd_npm_shim_references_entry');
+    expect(writer).toContain('let Some(bash) = bash_path else');
+    expect(writer).not.toContain('bash "%~dp0');
+    expect(writer).toContain('qmd.cmd does not reference the installed package entry point');
+  });
+
+  it('classifies qmd post-install failures and records only a sanitized resolved version', () => {
+    expect(installDeps).toContain('qmd_not_resolved');
+    expect(installDeps).toContain('qmd_version_mismatch');
+    expect(installDeps).toContain('qmd_native_addon_mismatch');
+    expect(installDeps).toContain('QMD_POST_INSTALL_PROBE_COMMAND');
+    expect(installDeps).toContain('qmd_resolved_version_token');
+    expect(installDeps).toContain('setup_resolved_version');
+  });
+
   it('pins Git installs to the Winget community source', () => {
     const start = installDeps.indexOf('fn winget_install_args(');
     const end = installDeps.indexOf('\n#[cfg(windows)]', start + 1);
