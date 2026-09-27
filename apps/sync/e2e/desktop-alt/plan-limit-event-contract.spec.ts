@@ -33,7 +33,10 @@ describe('sync plan-limit event contract', () => {
 
   it('renders a dismissible notice with a server-linked upgrade action', () => {
     expect(workShellSource).toContain("'sync:plan-limit'");
-    expect(workShellSource).toContain('approvedExternalUrl(upgradeUrl)');
+    expect(workShellSource).toContain(
+      'const attributedUrl = withDesktopLimitEntrySurface(upgradeUrl);',
+    );
+    expect(workShellSource).toContain('const approvedUrl = approvedExternalUrl(attributedUrl);');
     expect(workShellSource).toContain('New files are paused for {notice.company}.');
     expect(workShellSource).toContain('testId="sync-plan-limit-upgrade"');
     expect(workShellSource).toContain('onUpgrade={openPlanLimitUpgrade}');
