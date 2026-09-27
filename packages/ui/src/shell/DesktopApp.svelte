@@ -160,6 +160,7 @@
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
+  import PageHeader from "./PageHeader.svelte";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -7238,6 +7239,12 @@
     // the previous page.
     void navigate({ kind: "messages" });
   }
+  function closeFiles(): void {
+    // Same rule as Settings: each opened file is a history step, so Back
+    // means "close Files" and lands on Messages.
+    void navigate({ kind: "messages" });
+  }
+
 
   function companyWorkspaceForSlug(slug: string) {
     const needle = slug.trim();
@@ -7997,6 +8004,29 @@
         {refreshAppVersion}
       />
     </div>
+  {:else if view === "explorer"}
+    <!-- Full destination, like Settings. -->
+    <div class="desktop-body" data-testid="files-host">
+      <section class="files-page">
+        <PageHeader
+          onback={closeFiles}
+          title="Files"
+          subtitle="your personal and company vaults"
+          backTestId="files-back"
+        />
+        <div class="explorer-host" data-testid="explorer-host">
+          <VaultExplorer
+            {adapter}
+            {companies}
+            vaultId={explorerVault}
+            path={explorerPath}
+            onlocationchange={(loc) => {
+              void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+            }}
+          />
+        </div>
+      </section>
+    </div>
   {:else}
     <div class="desktop-body" style:--sidebar-width={`${sidebarWidth}px`}>
       <!-- Kept mounted while closed at phone width: the list owns roster
@@ -8088,19 +8118,7 @@
             onopensettings={() => openSettings("notifications")}
           />
         </div>
-        {#if view === "explorer"}
-          <div class="explorer-host" data-testid="explorer-host">
-            <VaultExplorer
-              {adapter}
-              {companies}
-              vaultId={explorerVault}
-              path={explorerPath}
-              onlocationchange={(loc) => {
-                void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
-              }}
-            />
-          </div>
-        {:else if view === "shared-files"}
+        {#if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
             onback={() => {
@@ -9248,6 +9266,16 @@
     --titlebar-leading-inset: 16px;
   }
 
+  .files-page {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--v4-ground, #161618);
+    color: var(--t1);
+  }
   .explorer-host {
     display: flex;
     flex: 1 1 auto;

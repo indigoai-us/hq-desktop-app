@@ -134,6 +134,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openDmRequests: "push",
   handleDmRequestResolved: "push",
   closeSettings: "replace",
+  closeFiles: "replace",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
   applyCompanyDeepLink: "push",
@@ -374,6 +375,14 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "push",
     host: "shared-shell",
     inScope: true,
+  },  {
+    id: "close-files",
+    file: SHARED_SHELL_FILE,
+    needle: "function closeFiles(): void",
+    destinationKind: "messages",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
   },
   {
     id: "apply-embedded-navigation",
@@ -596,6 +605,14 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "replace",
     host: "shared-shell",
     inScope: true,
+  },  {
+    id: "files-onback",
+    file: SHARED_SHELL_FILE,
+    needle: "onback={closeFiles}",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
   },
   {
     id: "sidebar-select",
@@ -666,7 +683,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "files-explorer",
     file: SHARED_SHELL_FILE,
-    needle: '{#if view === "explorer"}',
+    needle: '{:else if view === "explorer"}',
     destinationKind: "explorer",
     history: "push",
     host: "shared-shell",
@@ -676,7 +693,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "shared-files-overlay",
     file: SHARED_SHELL_FILE,
-    needle: '{:else if view === "shared-files"}',
+    needle: '{#if view === "shared-files"}',
     destinationKind: "shared-files",
     history: "push",
     host: "shared-shell",
@@ -1401,7 +1418,7 @@ export function matrixRowsForFile(file: string): NavigationHandlerRow[] {
 }
 
 const NAVIGATE_FAMILY_RE =
-  /\b(?:navigate|leaveCurrentDestination|goBack|goForward|pushConversationSurface|openSettings|closeSettings|openLibrary|openExtraPage|openNotification|handleSelect|applyEmbeddedNavigation|applyPendingChannelOpen|applyPendingConversation|applyConversationDeepLink|requestChannelOpen|openReply|closeReply|toggleNotifications|dispatchEmbeddedNavigation|onnavigate)\b/;
+  /\b(?:navigate|leaveCurrentDestination|goBack|goForward|pushConversationSurface|openSettings|closeSettings|closeFiles|openLibrary|openExtraPage|openNotification|handleSelect|applyEmbeddedNavigation|applyPendingChannelOpen|applyPendingConversation|applyConversationDeepLink|requestChannelOpen|openReply|closeReply|toggleNotifications|dispatchEmbeddedNavigation|onnavigate)\b/;
 
 /**
  * In-scope user handlers that must enter history through navigate() (US-004).

@@ -8,7 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- New Files page (Cmd+5, or the file icon in the title bar): browse your
+- New Files page (Cmd+5, or the file icon in the title bar). It opens full
+  window like Settings, with Back to return to Messages. Browse your
   personal vault and each company vault on this Mac. Notes open in a reading
   view with their properties, clickable [[links]], an outline, and the notes
   that link back to them. Cmd+O jumps to any file. Settings folders and key
