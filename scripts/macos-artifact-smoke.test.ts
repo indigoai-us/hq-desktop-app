@@ -11,11 +11,13 @@ import {
   DEFAULT_TIMEOUT_MS,
   SMOKE_TOKEN_SECRET,
   evaluateSmokeResult,
+  formatSmokeDiagnostics,
   installSmokeHqCli,
   SMOKE_HQ_CLI_SPEC,
   isSmokeTempDir,
   launchAndWait,
   parseBootLog,
+  redactSmokeLogTail,
   readBundleVersion,
   removeSmokeHome,
   requireNonIndigoRefreshToken,
@@ -130,6 +132,109 @@ describe("bundle version and boot log", () => {
         timedOut: true,
       }),
     ).toThrow(/shell_ready did not fire/);
+  });
+});
+
+describe("smoke boot diagnostics", () => {
+  it("bounds and redacts the sandbox log tail before reporting a boot failure", () => {
+    const refreshToken = "fake-refresh-token-do-not-print";
+    const tail = redactSmokeLogTail(
+      [
+        "discarded old entry",
+        "[boot] desktop-alt window created",
+        `auth refreshToken=${refreshToken}`,
+        `request url contains ${refreshToken}`,
+        "[boot] watchdog timeout — desktop shell did not report ready",
+      ].join("\n"),
+      { refreshToken, maxLines: 4 },
+    );
+
+    expect(tail).toHaveLength(4);
+    expect(tail[0]).toBe("[boot] desktop-alt window created");
+    expect(tail[1]).toBe("[redacted token-bearing log line]");
+    expect(tail[2]).toBe("request url contains [REDACTED]");
+    expect(tail.join("\n")).not.toContain(refreshToken);
+  });
+
+  it("reports launch-to-shell-ready and watchdog timings on either outcome", () => {
+    const timings = {
+      launchToWindowCreatedMs: 340,
+      launchToShellReadyMs: 1_240,
+      launchToWatchdogTimeoutMs: null,
+      launchToRecoveryOpenedMs: null,
+      terminalObservedMs: 1_240,
+    };
+    expect(formatSmokeDiagnostics({ status: "passed", timings })).toContain(
+      "launch_to_shell_ready_ms=1240",
+    );
+    expect(
+      formatSmokeDiagnostics({
+        status: "failed",
+        timings: {
+          ...timings,
+          launchToShellReadyMs: null,
+          launchToWatchdogTimeoutMs: 25_200,
+          terminalObservedMs: 25_200,
+        },
+        sandboxLog: "[boot] watchdog timeout",
+      }),
+    ).toContain(
+      "launch_to_watchdog_timeout_ms=25200",
+    );
+  });
+
+  it("does not let log content inject a GitHub Actions command", () => {
+    const output = formatSmokeDiagnostics({
+      status: "failed",
+      timings: {},
+      sandboxLog: "::error::untrusted log text",
+    });
+    expect(output).toContain("| %3A%3Aerror%3A%3Auntrusted log text");
+  });
+
+  it("emits the sanitized sandbox tail when the boot watchdog fails", async () => {
+    const app = await fakeApp("0.10.179");
+    const refreshToken = "fake-refresh-token-do-not-print";
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: () => boolean;
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+    };
+    child.pid = 4243;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => {
+      child.exitCode = 0;
+      child.emit("exit", 0, null);
+      return true;
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const diagnostics: string[] = [];
+
+    await expect(
+      runArtifactSmoke({
+        appPath: app,
+        expectedVersion: "0.10.179",
+        timeoutMs: 1_000,
+        env: { [SMOKE_TOKEN_SECRET]: refreshToken },
+        launch: true,
+        installHqCliImpl: () => ({ bin: "/fake/hq" }),
+        spawnImpl: (() => child) as typeof import("node:child_process").spawn,
+        readLog: async () =>
+          `[boot] desktop-alt window created\nrefreshToken=${refreshToken}\n[boot] watchdog timeout — desktop shell did not report ready\n`,
+        diagnostic: (message: string) => diagnostics.push(message),
+      }),
+    ).rejects.toThrow(/boot watchdog timed out/);
+
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatch(/launch_to_watchdog_timeout_ms=\d+/);
+    expect(diagnostics[0]).toContain("[boot] desktop-alt window created");
+    expect(diagnostics[0]).toContain("[redacted token-bearing log line]");
+    expect(diagnostics[0]).not.toContain(refreshToken);
   });
 });
 

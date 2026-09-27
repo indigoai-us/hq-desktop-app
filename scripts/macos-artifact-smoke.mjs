@@ -35,6 +35,7 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEEP_LINK = "hqwork://open?channel=setup";
 export const SMOKE_TEMP_PREFIX = "hq-release-smoke-";
 export const CHILD_STOP_WAIT_MS = 1_000;
+export const SMOKE_LOG_TAIL_LINES = 80;
 /** npm spec for the CLI the app looks for; the same spec the app installs. */
 export const SMOKE_HQ_CLI_SPEC = "@indigoai-us/hq-cli";
 export const HQ_CLI_INSTALL_TIMEOUT_MS = 180_000;
@@ -139,6 +140,56 @@ export function parseBootLog(text) {
     recoveryOpened: /recovery window opened/.test(source),
     watchdogTimeout: /watchdog timeout/.test(source),
   };
+}
+
+/**
+ * Keep a useful bounded tail of the sandbox log without exposing credentials.
+ * Token-bearing lines are omitted, and the exact refresh token is scrubbed
+ * from any other line before it can reach Actions output.
+ */
+export function redactSmokeLogTail(text, { refreshToken, maxLines = SMOKE_LOG_TAIL_LINES } = {}) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const boundedLines = Number.isInteger(maxLines) && maxLines > 0 ? maxLines : SMOKE_LOG_TAIL_LINES;
+  return lines
+    .slice(-boundedLines)
+    .map((line) => {
+      if (
+        /(?:refresh|access|id)[_-]?token["']?\s*[:=]\s*["']?/i.test(line) ||
+        /authorization["']?\s*[:=]/i.test(line) ||
+        /\bbearer\s+\S+/i.test(line)
+      ) {
+        return "[redacted token-bearing log line]";
+      }
+      if (typeof refreshToken === "string" && refreshToken.length > 0) {
+        return line.split(refreshToken).join("[REDACTED]");
+      }
+      return line;
+    });
+}
+
+function formatElapsed(value) {
+  return Number.isFinite(value) ? String(Math.max(0, Math.round(value))) : "not observed";
+}
+
+/** Format launch milestones for both smoke outcomes; include logs only on failure. */
+export function formatSmokeDiagnostics({ status, timings, sandboxLog = "", refreshToken } = {}) {
+  const lines = [
+    `macos-artifact-smoke timings (${status})`,
+    `launch_to_window_created_ms=${formatElapsed(timings?.launchToWindowCreatedMs)}`,
+    `launch_to_shell_ready_ms=${formatElapsed(timings?.launchToShellReadyMs)} (observed at the 200ms log poll)`,
+    `launch_to_watchdog_timeout_ms=${formatElapsed(timings?.launchToWatchdogTimeoutMs)}`,
+    `launch_to_recovery_opened_ms=${formatElapsed(timings?.launchToRecoveryOpenedMs)}`,
+    `smoke_terminal_observed_ms=${formatElapsed(timings?.terminalObservedMs)}`,
+  ];
+  if (status !== "passed") {
+    lines.push("sandbox hq-sync.log tail (up to 80 lines; token-bearing lines redacted):");
+    for (const line of redactSmokeLogTail(sandboxLog, { refreshToken })) {
+      // Prefix each untrusted log line so it cannot be interpreted as a
+      // GitHub Actions workflow command.
+      lines.push(`| ${line.replaceAll("::", "%3A%3A")}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 export function evaluateSmokeResult({
@@ -340,12 +391,13 @@ export async function launchAndWait({
   timeoutMs,
   spawnImpl = spawn,
   readLog = (path) => readFile(path, "utf8").catch(() => ""),
-  now = () => Date.now(),
+  now = () => performance.now(),
   sleep = delay,
   killGroup,
   warn = defaultWarn,
 }) {
   const binary = resolveBinary(appPath);
+  const launchStartedAt = now();
   const child = spawnImpl(binary, [DEEP_LINK], {
     env: {
       ...process.env,
@@ -374,27 +426,67 @@ export async function launchAndWait({
   const deadline = now() + timeoutMs;
   let timedOut = true;
   let log = parseBootLog("");
+  let sandboxLog = "";
+  const milestones = {
+    windowCreated: null,
+    shellReady: null,
+    watchdogTimeout: null,
+    recoveryOpened: null,
+  };
+  const observeLog = (text) => {
+    const observedAt = now() - launchStartedAt;
+    const parsed = parseBootLog(text);
+    for (const [field, present] of [
+      ["windowCreated", parsed.windowCreated],
+      ["shellReady", parsed.shellReady],
+      ["watchdogTimeout", parsed.watchdogTimeout],
+      ["recoveryOpened", parsed.recoveryOpened],
+    ]) {
+      if (present && milestones[field] === null) milestones[field] = observedAt;
+    }
+    return parsed;
+  };
+  let terminalObservedAt = null;
+  let launchError = null;
   try {
     while (now() < deadline) {
       if (spawnError) {
-        throw smokeError(`failed to launch app: ${spawnError.message}`);
+        launchError = smokeError(`failed to launch app: ${spawnError.message}`);
+        terminalObservedAt = now() - launchStartedAt;
+        break;
       }
-      const fileLog = await readLog(logPath);
-      log = parseBootLog(`${fileLog}\n${stdout}\n${stderr}`);
+      sandboxLog = await readLog(logPath);
+      log = observeLog(`${sandboxLog}\n${stdout}\n${stderr}`);
       if (log.shellReady || log.recoveryOpened || log.watchdogTimeout) {
         timedOut = false;
+        terminalObservedAt = now() - launchStartedAt;
         break;
       }
       await sleep(200);
     }
-    if (spawnError) {
-      throw smokeError(`failed to launch app: ${spawnError.message}`);
+    if (spawnError && !launchError) {
+      launchError = smokeError(`failed to launch app: ${spawnError.message}`);
+      terminalObservedAt = now() - launchStartedAt;
+    } else if (timedOut && !launchError) {
+      sandboxLog = await readLog(logPath);
+      log = observeLog(`${sandboxLog}\n${stdout}\n${stderr}`);
+      terminalObservedAt = now() - launchStartedAt;
     }
-    if (timedOut) {
-      const fileLog = await readLog(logPath);
-      log = parseBootLog(`${fileLog}\n${stdout}\n${stderr}`);
-    }
-    return { log, timedOut, stdout, stderr };
+    return {
+      log,
+      timedOut,
+      launchError,
+      stdout,
+      stderr,
+      sandboxLog,
+      timings: {
+        launchToWindowCreatedMs: milestones.windowCreated,
+        launchToShellReadyMs: milestones.shellReady,
+        launchToWatchdogTimeoutMs: milestones.watchdogTimeout,
+        launchToRecoveryOpenedMs: milestones.recoveryOpened,
+        terminalObservedMs: terminalObservedAt,
+      },
+    };
   } finally {
     const stopped = await stopChild(
       child,
@@ -498,6 +590,7 @@ export async function runArtifactSmoke({
   removeHomeImpl = removeSmokeHome,
   installHqCliImpl = installSmokeHqCli,
   warn = defaultWarn,
+  diagnostic = (message) => process.stderr.write(`${message}\n`),
 }) {
   const refreshToken = requireNonIndigoRefreshToken(env);
   const version = normalizeVersion(expectedVersion);
@@ -522,7 +615,7 @@ export async function runArtifactSmoke({
   try {
     const { logPath } = await writeSmokeHome({ home, refreshToken });
     installHqCliImpl({ home });
-    const { log, timedOut } = await launchAndWait({
+    const { log, timedOut, launchError, sandboxLog, timings } = await launchAndWait({
       appPath: resolvedApp,
       home,
       logPath,
@@ -533,12 +626,27 @@ export async function runArtifactSmoke({
       sleep,
       warn,
     });
-    return evaluateSmokeResult({
-      log,
-      bundleVersion,
-      expectedVersion: version,
-      timedOut,
-    });
+    try {
+      if (launchError) throw launchError;
+      const result = evaluateSmokeResult({
+        log,
+        bundleVersion,
+        expectedVersion: version,
+        timedOut,
+      });
+      diagnostic(formatSmokeDiagnostics({ status: "passed", timings }));
+      return result;
+    } catch (error) {
+      diagnostic(
+        formatSmokeDiagnostics({
+          status: "failed",
+          timings,
+          sandboxLog,
+          refreshToken,
+        }),
+      );
+      throw error;
+    }
   } finally {
     try {
       removeHomeImpl(home);
@@ -658,6 +766,7 @@ export async function runCli(argv = process.argv.slice(2), options = {}) {
     mkdtempImpl: options.mkdtempImpl,
     removeHomeImpl: options.removeHomeImpl,
     warn: options.warn,
+    diagnostic: options.diagnostic,
   });
   process.stdout.write(`${JSON.stringify({ ...result, launched: launch })}\n`);
   return result;
