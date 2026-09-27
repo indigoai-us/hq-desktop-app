@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.345] — 2026-09-27
+
 - Stable releases now keep their published notes out of Unreleased. The changelog
   check also catches repeated notes before the next tag is cut.
 - On Windows, the CLI updater defers a busy target when no holder is found. It retries on
