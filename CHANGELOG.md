@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The setup bot now has a name, picked at random from 100 friendly ones
+  (Pickles, Mochi, Waffles…), and never one a bot you can already see uses.
+  It says its name in its first hello. If you started your own company, the
+  card at the end of setup can also offer to put the bot in Slack; clicking it
+  asks the bot to walk you through it.
 - The setup bot's messages can now end with suggested replies: a few buttons
   under its newest message with the likely answers to its question, or the
   next questions to ask. Clicking one sends it as your reply. They go away

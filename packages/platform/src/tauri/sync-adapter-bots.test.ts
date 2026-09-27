@@ -56,9 +56,16 @@ describe('sync adapter local bots create', () => {
           memory: 'local',
           kind: null,
           companies: null,
+          displayName: null,
         },
       },
     ]);
+  });
+
+  it('passes the display name through to local_bots_create', async () => {
+    const { adapter, calls } = adapterWithRecorder();
+    await adapter.bots!.create({ name: 'setup', runtime: 'claude', worker: 'setup', displayName: 'Pickles' });
+    expect(calls[0]?.args).toMatchObject({ name: 'setup', displayName: 'Pickles' });
   });
 
   it('passes the bot kind and each company slug through to local_bots_create (bot-kinds)', async () => {
@@ -102,6 +109,7 @@ describe('sync adapter local bots create', () => {
       memory: null,
       kind: null,
       companies: null,
+      displayName: null,
     });
   });
 
@@ -164,6 +172,7 @@ describe('tauri adapter local bots create', () => {
           memory: 'synced',
           kind: null,
           companies: null,
+          displayName: null,
         },
       },
     ]);
