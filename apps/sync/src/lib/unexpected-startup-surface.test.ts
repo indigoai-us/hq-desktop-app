@@ -23,6 +23,17 @@ describe('unexpectedSurfaceForState', () => {
     expect(unexpectedSurfaceForState('NeedsInstall', false, installed)).toBe('onboarding');
   });
 
+  it('keeps InstalledFirstRun reportable when older setup markers are absent', () => {
+    expect(
+      unexpectedSurfaceForState('InstalledFirstRun', false, {
+        installCompleted: false,
+        firstRunCompleted: false,
+        hadMachineId: false,
+        hqRootValid: false,
+      }),
+    ).toBe('onboarding');
+  });
+
   it('does not report onboarding for new or incomplete installs without prior setup evidence', () => {
     const noPriorSetup = {
       installCompleted: false,

@@ -13,6 +13,23 @@ pub fn prior_setup_detected(
     install_completed || first_run_completed || (had_machine_id && hq_root_valid)
 }
 
+/// Decide whether a startup surface is reportable while preserving sign-in
+/// token evidence and InstalledFirstRun reports. Only the three fresh/incomplete
+/// install states are suppressed when no prior setup evidence exists.
+pub fn should_report_unexpected_surface(
+    surface: &str,
+    lifecycle_state: &str,
+    prior_setup: bool,
+    sign_in_prior_setup: bool,
+) -> bool {
+    match (surface, lifecycle_state) {
+        ("onboarding", "NeedsInstall" | "NeedsAuthForInstall" | "InstallResume") => prior_setup,
+        ("onboarding", _) => true,
+        ("sign-in", _) => sign_in_prior_setup,
+        _ => prior_setup,
+    }
+}
+
 /// All fields sent to Sentry on an unexpected startup surface event.
 /// No tokens, emails, or file contents are ever included.
 #[derive(Debug, Clone)]
@@ -319,6 +336,38 @@ mod tests {
     #[test]
     fn a_machine_id_without_a_valid_hq_root_is_not_prior_setup_evidence() {
         assert!(!prior_setup_detected(false, false, true, false));
+    }
+
+    #[test]
+    fn fresh_install_onboarding_states_are_not_reported_without_prior_setup() {
+        for state in ["NeedsInstall", "NeedsAuthForInstall", "InstallResume"] {
+            assert!(!should_report_unexpected_surface(
+                "onboarding",
+                state,
+                false,
+                false
+            ));
+        }
+    }
+
+    #[test]
+    fn installed_first_run_remains_reportable_without_marker_evidence() {
+        assert!(should_report_unexpected_surface(
+            "onboarding",
+            "InstalledFirstRun",
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn sign_in_retains_token_file_evidence_without_completion_markers() {
+        assert!(should_report_unexpected_surface(
+            "sign-in",
+            "SteadyState",
+            false,
+            true
+        ));
     }
 
     #[test]

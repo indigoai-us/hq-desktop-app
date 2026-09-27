@@ -605,6 +605,16 @@ pub fn report_unexpected_startup_surface(
             inputs.had_machine_id,
             inputs.hq_root_valid,
         );
+    let sign_in_prior_setup = inputs.evidence_unreadable
+        || inputs.install_completed
+        || inputs.first_run_completed
+        || token_file_exists;
+    let should_report = hq_desktop_core::unexpected_surface::should_report_unexpected_surface(
+        &surface,
+        &lc_state_str,
+        prior_setup,
+        sign_in_prior_setup,
+    );
 
     // Always write the log line so diagnostics can find it.
     let log_line = format!(
@@ -633,7 +643,7 @@ pub fn report_unexpected_startup_surface(
         crate::app_version::current(),
     );
 
-    if !prior_setup {
+    if !should_report {
         log("lifecycle", &format!("[skip] {log_line}"));
         return;
     }

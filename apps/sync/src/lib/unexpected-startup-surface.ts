@@ -27,10 +27,13 @@ export function unexpectedSurfaceForState(
   setupEvidence?: StartupSetupEvidence | null,
 ): 'sign-in' | 'onboarding' | null {
   if (isOnboardingState(lifecycleState)) {
-    // Unknown evidence keeps the old reporting attempt; the Rust reporting
-    // boundary independently applies the same predicate. Known absence means
-    // this is a normal first install or an install still in progress.
-    if (setupEvidence != null && !hasPriorSetup(setupEvidence)) return null;
+    // Suppress expected onboarding only for fresh or incomplete installs.
+    // InstalledFirstRun remains reportable even if older marker fields are absent.
+    const freshInstallState =
+      lifecycleState === 'NeedsInstall' ||
+      lifecycleState === 'NeedsAuthForInstall' ||
+      lifecycleState === 'InstallResume';
+    if (freshInstallState && setupEvidence != null && !hasPriorSetup(setupEvidence)) return null;
     return 'onboarding';
   }
   if (!authenticated) return 'sign-in';
