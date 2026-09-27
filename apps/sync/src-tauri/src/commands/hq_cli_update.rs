@@ -1353,25 +1353,6 @@ fn clear_windows_busy_deferral_marker() {
 }
 
 #[cfg(target_os = "windows")]
-async fn windows_busy_deferral_flag_is_enabled() -> bool {
-    let path = hq_desktop_core::routes::path_for(hq_desktop_core::routes::FLAGS_RESOLVE, "");
-    match crate::commands::hq_pro::hq_pro_fetch(path, "GET".to_string(), None).await {
-        Ok(response) => hq_desktop_core::hq_cli_update::windows_busy_deferral_flag_enabled(
-            response.status,
-            &response.body,
-        ),
-        Err(_) => {
-            // Keep the flag read fail-closed without logging auth, URL, or transport details.
-            log(
-                "hq-cli-update",
-                "Windows EBUSY deferral flag read failed; preserving install failure behavior",
-            );
-            false
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn record_windows_busy_deferral_breadcrumb(attempts: u8, outcome: WindowsBusyDeferralOutcome) {
     sentry::add_breadcrumb(sentry::Breadcrumb {
         category: Some("hq-cli-update".into()),
@@ -1413,10 +1394,6 @@ async fn defer_windows_busy_install_if_eligible(
     if cmp_semver(before_version, target_version) != std::cmp::Ordering::Less {
         return None;
     }
-    if !windows_busy_deferral_flag_is_enabled().await {
-        return None;
-    }
-
     let hq_for_version = hq.to_string();
     let version_probes = tokio::task::spawn_blocking(move || {
         let command_version = hq_version_string(Path::new(&hq_for_version));
@@ -1464,7 +1441,6 @@ async fn defer_windows_busy_install_if_eligible(
         }
     };
     let decision = windows_busy_deferral_decision(
-        true,
         old_cli_still_works,
         exit_code,
         detail,

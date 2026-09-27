@@ -132,6 +132,66 @@ function subtract(lines, remove) {
 
 const quote = (line) => `"${line.length > 80 ? `${line.slice(0, 77)}...` : line}"`;
 
+const RELEASE_VERSION = /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha|beta)\.\d+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** Return the latest versioned release section in changelog order. */
+function latestPublishedRelease(sections) {
+  for (const [version, lines] of sections) {
+    if (version !== UNRELEASED && RELEASE_VERSION.test(version)) return { version, lines };
+  }
+  return undefined;
+}
+
+/**
+ * Read Markdown list items as one normalized string per top-level bullet.
+ * Wrapped lines and nested bullets remain part of their parent item.
+ * @param {string[] | undefined} lines
+ * @returns {string[]}
+ */
+function bulletItems(lines) {
+  const text = (lines ?? []).join("\n").replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+  const items = [];
+  let fence = null;
+  let currentIndent = null;
+  let current = [];
+  const finish = () => {
+    if (current.length > 0) items.push(current.join(" ").replace(/\s+/g, " ").trim());
+    current = [];
+    currentIndent = null;
+  };
+
+  for (const line of text.split(/\r?\n/)) {
+    const marker = FENCE.exec(line);
+    if (marker) {
+      finish();
+      if (fence === null) fence = marker[1];
+      else if (marker[1] === fence) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+
+    const bullet = /^(\s*)([-*+])\s+(\S.*)$/.exec(line);
+    if (bullet) {
+      const indent = bullet[1].length;
+      if (current.length > 0 && indent > currentIndent) {
+        current.push(`${bullet[2]} ${bullet[3].trim()}`);
+      } else {
+        finish();
+        currentIndent = indent;
+        current = [bullet[3].trim()];
+      }
+      continue;
+    }
+
+    if (!line.trim() || MARKDOWN_HEADING.test(line.trim())) continue;
+    const indent = /^\s*/.exec(line)?.[0].length ?? 0;
+    if (current.length > 0 && indent > currentIndent) current.push(line.trim());
+    else finish();
+  }
+  finish();
+  return items;
+}
+
 /**
  * @param {string} baseText CHANGELOG.md on the PR's base
  * @param {string} headText CHANGELOG.md as the PR would merge it
@@ -165,6 +225,18 @@ export function checkPullRequest(baseText, headText) {
       ok: false,
       message: `This PR removes or rewrites ${removed.length} existing note(s) under \`## [Unreleased]\` in CHANGELOG.md, starting with ${quote(removed[0])}. Those notes belong to changes that have not been released yet, so keep them exactly as they are and add your own entry alongside them. If the edit is deliberate (a correction, or a note for a change that was reverted), add the \`no-changelog\` label so the edit is visible in review.`,
     };
+  }
+
+  const latestRelease = latestPublishedRelease(head);
+  if (latestRelease) {
+    const publishedBullets = new Set(bulletItems(latestRelease.lines));
+    const repeated = bulletItems(head.get(UNRELEASED)).find((bullet) => publishedBullets.has(bullet));
+    if (repeated) {
+      return {
+        ok: false,
+        message: `This PR repeats a note already published under ## [${latestRelease.version}]: ${JSON.stringify(`- ${repeated}`)}. Move this bullet out of \`## [Unreleased]\` before merging.`,
+      };
+    }
   }
 
   const added = subtract(after, before);
