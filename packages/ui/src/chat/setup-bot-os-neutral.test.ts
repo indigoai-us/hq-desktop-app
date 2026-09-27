@@ -1,12 +1,16 @@
 /**
  * Regression: the operator saw "No coding tool is signed in on this Mac yet"
  * on a Windows setup bot (US-006). The class of the bug is any setup /
- * onboarding string that names "Mac" or "macOS" while rendering on a Windows
- * host.
+ * onboarding string that names "Mac" on a Windows host, or "PC" on a Mac.
  *
- * This test asserts the platform-neutrality of the exported setup copy that
- * the setup bot, its cards and its install prompts consume. Any regression
- * that lands a Mac-named string back into these exports fails here.
+ * The setup copy is now OS-aware: every affected export is a function that
+ * takes the plain-language host noun ("Mac", "PC", or "computer" from
+ * `hostComputerNoun`). This test locks two things down:
+ *
+ * 1. Under a macOS probe, no setup or onboarding string renders "PC".
+ * 2. Under a Windows probe, no setup or onboarding string renders "Mac".
+ * 3. With no noun (probe not ready / unknown OS), the neutral "computer"
+ *    wording is used - never a guess.
  *
  * The onboarding-wizard subtitle carries the platform-aware "this may take
  * longer on Windows" line and is covered by
@@ -15,75 +19,96 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  SETUP_BOT_COPY,
-  SETUP_BOT_INTRO,
-  SETUP_BOT_KICKOFF,
-  SETUP_BOT_NO_RUNTIME,
+  setupBotCopy,
+  setupBotIntro,
+  setupBotKickoff,
+  setupBotNoRuntime,
   SETUP_BOT_ALREADY_ELSEWHERE,
   SETUP_BOT_GENERIC_FAILURE,
   SETUP_BOT_UNAVAILABLE,
   SETUP_ELSEWHERE_COPY,
 } from "./setup-bot";
-import { SETUP_RUN_PERMISSION } from "./setup-run";
-import { SETUP_HERO_RETURNING } from "./setup-channel";
+import { setupRunPermission } from "./setup-run";
+import { setupHeroReturning } from "./setup-channel";
 
-/**
- * Match `Mac`, `Macs`, `macOS` as whole words, case-insensitive. Deliberately
- * excludes internal substrings such as "Machine" or "Macedonia".
- */
+/** Match `Mac`, `Macs`, `macOS` as whole words, case-insensitive. */
 const MAC_NAMED = /\bmac(os|s)?\b/i;
+/** Match `PC` or `PCs` as whole words. */
+const PC_NAMED = /\bPCs?\b/;
 
-function assertNeutral(label: string, value: unknown): void {
-  if (typeof value !== "string") return;
-  if (MAC_NAMED.test(value)) {
-    throw new Error(
-      `${label} names "Mac" in copy that a Windows setup bot also renders: ${JSON.stringify(value)}`,
-    );
-  }
+interface OsExpectation {
+  osLabel: string;
+  noun: string;
+  /** Whole-word regex the rendered copy MUST contain. */
+  expects: RegExp;
+  /** Substring the rendered copy must NOT contain (the wrong OS name). */
+  forbids: RegExp;
 }
 
-describe("setup exports are platform-neutral (US-006 regression)", () => {
-  it("SETUP_BOT_INTRO never says 'Mac' - a Windows setup bot sends the same intro", () => {
-    assertNeutral("SETUP_BOT_INTRO", SETUP_BOT_INTRO);
-  });
+const AFFECTED_STRINGS: ReadonlyArray<{ label: string; render: (opts: { noun?: string }) => string }> = [
+  { label: "setupBotIntro", render: (o) => setupBotIntro(o) },
+  { label: "setupBotKickoff", render: (o) => setupBotKickoff(o) },
+  { label: "setupBotCopy.cardBody", render: (o) => setupBotCopy(o).cardBody },
+  { label: "setupBotCopy.bodyStarting", render: (o) => setupBotCopy(o).bodyStarting },
+  { label: "setupBotCopy.body", render: (o) => setupBotCopy(o).body },
+  { label: "setupBotNoRuntime", render: (o) => setupBotNoRuntime(o) },
+  { label: "setupRunPermission.text", render: (o) => setupRunPermission(o).text },
+  { label: "setupHeroReturning.body", render: (o) => setupHeroReturning(o).body },
+];
 
-  it("SETUP_BOT_KICKOFF never says 'Mac' - the bot's kickoff runs on every platform", () => {
-    assertNeutral("SETUP_BOT_KICKOFF", SETUP_BOT_KICKOFF);
-  });
+const CASES: OsExpectation[] = [
+  { osLabel: "macOS", noun: "Mac", expects: /\bMac\b/, forbids: PC_NAMED },
+  { osLabel: "Windows", noun: "PC", expects: /\bPC\b/, forbids: MAC_NAMED },
+];
 
-  it("SETUP_BOT_COPY.* - the hero, card body, starting and body strings - never say 'Mac'", () => {
-    for (const [key, value] of Object.entries(SETUP_BOT_COPY)) {
-      assertNeutral(`SETUP_BOT_COPY.${key}`, value);
+describe("setup copy is OS-aware (US-006 regression, extended for OS-specific wording)", () => {
+  for (const c of CASES) {
+    for (const s of AFFECTED_STRINGS) {
+      it(`${s.label} names ${c.noun} on ${c.osLabel} and never the wrong OS`, () => {
+        const rendered = s.render({ noun: c.noun });
+        expect(rendered, `${s.label} on ${c.osLabel}: expected to name ${c.noun}`).toMatch(c.expects);
+        if (c.forbids.test(rendered)) {
+          throw new Error(`${s.label} on ${c.osLabel} contains the wrong OS name: ${JSON.stringify(rendered)}`);
+        }
+      });
     }
-  });
+  }
 
-  it("SETUP_BOT_NO_RUNTIME - the exact string the operator flagged on Windows - is now platform-neutral", () => {
-    assertNeutral("SETUP_BOT_NO_RUNTIME", SETUP_BOT_NO_RUNTIME);
-    // Positive check on the wording, not just its absence.
-    expect(SETUP_BOT_NO_RUNTIME).toContain("this computer");
-  });
+  for (const s of AFFECTED_STRINGS) {
+    it(`${s.label} falls back to neutral "computer" when the probe is not ready`, () => {
+      // Both an absent noun and an unknown probe must produce the same
+      // neutral wording. Never guesses "Mac" or "PC".
+      const missing = s.render({});
+      const empty = s.render({ noun: "" });
+      const whitespace = s.render({ noun: "   " });
+      for (const rendered of [missing, empty, whitespace]) {
+        expect(rendered).toContain("computer");
+        expect(rendered).not.toMatch(MAC_NAMED);
+        expect(rendered).not.toMatch(PC_NAMED);
+      }
+    });
+  }
 
-  it("SETUP_BOT_ALREADY_ELSEWHERE, SETUP_BOT_GENERIC_FAILURE and SETUP_BOT_UNAVAILABLE are neutral", () => {
-    assertNeutral("SETUP_BOT_ALREADY_ELSEWHERE", SETUP_BOT_ALREADY_ELSEWHERE);
-    assertNeutral("SETUP_BOT_GENERIC_FAILURE", SETUP_BOT_GENERIC_FAILURE);
-    assertNeutral("SETUP_BOT_UNAVAILABLE", SETUP_BOT_UNAVAILABLE);
-  });
-
-  it("SETUP_ELSEWHERE_COPY.* is neutral (Claude Code / Codex still named, but no OS)", () => {
+  it("static copy that has no OS-dependent word stays platform-neutral", () => {
     for (const [key, value] of Object.entries(SETUP_ELSEWHERE_COPY)) {
-      assertNeutral(`SETUP_ELSEWHERE_COPY.${key}`, value);
+      if (typeof value !== "string") continue;
+      expect(value, `SETUP_ELSEWHERE_COPY.${key}`).not.toMatch(MAC_NAMED);
+      expect(value, `SETUP_ELSEWHERE_COPY.${key}`).not.toMatch(PC_NAMED);
+    }
+    for (const [label, value] of [
+      ["SETUP_BOT_ALREADY_ELSEWHERE", SETUP_BOT_ALREADY_ELSEWHERE],
+      ["SETUP_BOT_GENERIC_FAILURE", SETUP_BOT_GENERIC_FAILURE],
+      ["SETUP_BOT_UNAVAILABLE", SETUP_BOT_UNAVAILABLE],
+    ] as const) {
+      expect(value, label).not.toMatch(MAC_NAMED);
+      expect(value, label).not.toMatch(PC_NAMED);
     }
   });
 
-  it("SETUP_RUN_PERMISSION.* is neutral - the permission card renders on Windows too", () => {
-    for (const [key, value] of Object.entries(SETUP_RUN_PERMISSION)) {
-      assertNeutral(`SETUP_RUN_PERMISSION.${key}`, value);
-    }
-  });
-
-  it("SETUP_HERO_RETURNING.* is neutral - the returning-user hero renders on Windows too", () => {
-    for (const [key, value] of Object.entries(SETUP_HERO_RETURNING)) {
-      assertNeutral(`SETUP_HERO_RETURNING.${key}`, value);
-    }
+  it("setupBotIntro carries the display name through the OS-aware substitution", () => {
+    const rendered = setupBotIntro({ noun: "PC", displayName: "Pickles" });
+    expect(rendered).toContain("Hi, I'm Pickles, your setup bot");
+    expect(rendered).toContain("your PC");
+    expect(rendered).not.toMatch(MAC_NAMED);
   });
 });

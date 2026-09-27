@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  hostComputerNounFor,
   readOnboardingHostOs,
   setupExpectationCopy,
+  thisComputerNounFor,
+  yourComputerNounFor,
 } from "./onboarding-platform";
 
 describe("readOnboardingHostOs", () => {
@@ -36,6 +39,28 @@ describe("readOnboardingHostOs", () => {
     expect(readOnboardingHostOs(null)).toBe("unknown");
     expect(readOnboardingHostOs(undefined)).toBe("unknown");
     expect(readOnboardingHostOs("Something Else/1.0")).toBe("unknown");
+  });
+});
+
+describe("hostComputerNounFor", () => {
+  it("names a Mac on macOS", () => {
+    expect(hostComputerNounFor("macos")).toBe("Mac");
+    expect(thisComputerNounFor("macos")).toBe("this Mac");
+    expect(yourComputerNounFor("macos")).toBe("your Mac");
+  });
+
+  it("names a PC on Windows", () => {
+    expect(hostComputerNounFor("windows")).toBe("PC");
+    expect(thisComputerNounFor("windows")).toBe("this PC");
+    expect(yourComputerNounFor("windows")).toBe("your PC");
+  });
+
+  it("falls back to the neutral 'computer' for Linux and the not-ready 'unknown' state", () => {
+    for (const os of ["linux", "unknown"] as const) {
+      expect(hostComputerNounFor(os)).toBe("computer");
+      expect(thisComputerNounFor(os)).toBe("this computer");
+      expect(yourComputerNounFor(os)).toBe("your computer");
+    }
   });
 });
 

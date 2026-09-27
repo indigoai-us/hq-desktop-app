@@ -24,7 +24,7 @@
     PlatformAdapter,
     RemoteBotRow,
   } from "@hq/platform";
-  import { startJitteredPoll } from "@hq/platform";
+  import { hostComputerNoun, startJitteredPoll } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { LOCAL_BOT_RUNTIMES, localBotCompanies, localBotKindLabel } from "../chat/local-bots.js";
@@ -78,6 +78,13 @@
   type Runtime = LocalBotRow["runtime"];
   const RUNTIMES = LOCAL_BOT_RUNTIMES;
   const POLL_MS = 30_000;
+
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once so status/adopt lines never rename the machine
+   * mid-flight; the neutral fallback covers a probe that has not landed.
+   */
+  const hostNoun = hostComputerNoun();
 
   // ── Local group ─────────────────────────────────────────────────────────────
   let bots = $state<LocalBotRow[]>([]);
@@ -343,7 +350,7 @@
     const api = adapter?.bots;
     if (!api?.adopt || adoptBusy) return;
     adoptBusy = name;
-    line = `Bringing ${name} back to this computer…`;
+    line = `Bringing ${name} back to this ${hostNoun}…`;
     lineIsError = false;
     const result = await api.adopt(name);
     if (!result.ok) {
@@ -352,10 +359,10 @@
       // A named refusal is permanent, so it must not read "please try again".
       line = isNotRunnableHereReason(botFailureReason(result.message))
         ? botStaysInCloudLine(name)
-        : `Could not bring ${name} back to this computer. Please try again.`;
+        : `Could not bring ${name} back to this ${hostNoun}. Please try again.`;
       lineIsError = true;
     } else {
-      line = `${name} is back on this computer.`;
+      line = `${name} is back on this ${hostNoun}.`;
       await Promise.all([load(true), loadRemote()]);
     }
     adoptBusy = null;
@@ -485,7 +492,7 @@
 <section class="settings-section bots-pane" data-testid="settings-bots">
   <p class="lead">
     Every bot you work with, in one place. Cloud bots run in a company's cloud
-    and are always on; local bots run on this computer with your own Claude Code,
+    and are always on; local bots run on this {hostNoun} with your own Claude Code,
     Codex, or Grok login. Message either from the desktop app or your phone.
   </p>
 
@@ -498,7 +505,7 @@
     {#if !adapter?.bots}
       <div class="settings-card">
         <p class="muted empty" data-testid="settings-bots-local-unavailable">
-          Local bots run from the HQ desktop app on your computer. Open HQ
+          Local bots run from the HQ desktop app on your {hostNoun}. Open HQ
           there to create one.
         </p>
       </div>
@@ -601,7 +608,7 @@
             <div class="bot-main">
               <strong>On another computer</strong>
               <small>
-                These bots are yours, but they aren't set up on this computer yet.
+                These bots are yours, but they aren't set up on this {hostNoun} yet.
                 Bringing one back keeps its name, its memory and your
                 conversations with it.
               </small>
@@ -668,7 +675,7 @@
       <div class="settings-card create" data-testid="settings-bots-create">
         <div class="bot-main">
           <strong>New bot</strong>
-          <small>Blank, from a template, or a copy of a bot you have - thinking with a tool signed in on this computer.</small>
+          <small>Blank, from a template, or a copy of a bot you have - thinking with a tool signed in on this {hostNoun}.</small>
         </div>
         <div class="create-controls">
           <button

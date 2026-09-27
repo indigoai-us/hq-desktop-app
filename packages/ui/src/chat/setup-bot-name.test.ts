@@ -48,10 +48,11 @@ describe("setup bot names", () => {
 
   it("puts the name in the hello and keeps it under the CLI's 500 characters", () => {
     const longest = [...SETUP_BOT_NAMES].sort((a, b) => b.length - a.length)[0]!;
-    const intro = setupBotIntro(longest);
+    const intro = setupBotIntro({ displayName: longest });
     expect(intro.startsWith(`Hi, I'm ${longest}, your setup bot`)).toBe(true);
     expect(intro.length).toBeLessThanOrEqual(500);
-    expect(setupBotIntro(null)).toBe(SETUP_BOT_INTRO);
+    expect(setupBotIntro({ displayName: null })).toBe(SETUP_BOT_INTRO);
+    expect(setupBotIntro()).toBe(SETUP_BOT_INTRO);
   });
 });
 

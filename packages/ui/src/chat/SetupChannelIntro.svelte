@@ -57,7 +57,8 @@
   import SetupButton from "./SetupButton.svelte";
   import { SETUP_RUN_STEPS } from "./setup-run";
   import type { SetupAgent } from "./setup-agent.svelte";
-  import { SETUP_BOT_COPY, SETUP_BOT_GENERIC_FAILURE, SETUP_ELSEWHERE_COPY, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
+  import { setupBotCopy, SETUP_BOT_GENERIC_FAILURE, SETUP_ELSEWHERE_COPY, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
+  import { hostComputerNoun } from "@hq/platform";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
 
@@ -154,7 +155,14 @@
   const hasCompany = $derived(rosterCompanies.length > 0);
   const rosterLoading = $derived(setupRosterLoading(companies, rosterStatus));
   const rosterFailed = $derived(rosterStatus === "failed" && !hasCompany);
-  const hero = $derived(setupHeroFor(companies, rosterStatus));
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once at mount from the shared Tauri probe so the copy
+   * a person reads never suddenly renames their computer.
+   */
+  const hostNoun = hostComputerNoun();
+  const hero = $derived(setupHeroFor(companies, rosterStatus, { noun: hostNoun }));
+  const copy = $derived(setupBotCopy({ noun: hostNoun }));
 
   let createAnotherBusy = $state(false);
   let createAnotherError = $state<string | null>(null);
@@ -239,10 +247,10 @@
   const heroBody = $derived(
     setupBot && !scriptedFallback && !rosterLoading
       ? setupBot.starting && !setupBot.existing
-        ? SETUP_BOT_COPY.bodyStarting
+        ? copy.bodyStarting
         : setupBot.existing
-        ? SETUP_BOT_COPY.bodyExisting
-        : SETUP_BOT_COPY.body
+        ? copy.bodyExisting
+        : copy.body
       : hero.body,
   );
 
@@ -435,9 +443,9 @@
           onclick={runSetup}
         >
           {setupBot?.starting && !scriptedFallback && !botBusy
-            ? SETUP_BOT_COPY.autoStarting
+            ? copy.autoStarting
             : botBusy || agent?.busy
-              ? SETUP_BOT_COPY.starting
+              ? copy.starting
               : runLabel}
         </SetupButton>
       </div>
@@ -448,7 +456,7 @@
           <p class="launch-error" role="alert" data-testid="setup-bot-error">{visibleBotError}</p>
           <div class="hero-actions" role="group" aria-label="Setup bot recovery">
             <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
-              {SETUP_BOT_COPY.retry}
+              {copy.retry}
             </SetupButton>
             <SetupButton
               variant="quiet"
@@ -456,7 +464,7 @@
               disabled={Boolean(agent?.busy)}
               onclick={useScriptedSetup}
             >
-              {SETUP_BOT_COPY.fallback}
+              {copy.fallback}
             </SetupButton>
           </div>
         </div>

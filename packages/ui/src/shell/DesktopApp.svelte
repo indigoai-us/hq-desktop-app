@@ -26,6 +26,7 @@
   import {
     CLAUDE_PROVIDER_FLAG,
     failure,
+    hostComputerNoun,
     startJitteredPoll,
     type PlatformAdapter,
     type UpdateGateStatus,
@@ -101,15 +102,15 @@
     pickSetupBotName,
     takenBotNames,
     setupBotIntro,
+    setupBotKickoff,
+    setupBotNoRuntime,
     setupSuggestionsDue,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
-    SETUP_BOT_KICKOFF,
     SETUP_BOT_MODE,
     SETUP_BOT_NAME,
-    SETUP_BOT_NO_RUNTIME,
-    SETUP_BOT_UNAVAILABLE,
     SETUP_BOT_WORKER,
+    SETUP_BOT_UNAVAILABLE,
     singleFlightStart,
     type SetupBotLauncher,
     type SetupBotRef,
@@ -2239,7 +2240,7 @@
     localBotRuntimeReady = null;
     await loadLocalBotRuntimeReady();
     const runtime = firstSignedInRuntime(localBotRuntimeReady);
-    if (!runtime) return { ok: false, reason: SETUP_BOT_NO_RUNTIME };
+    if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
     // `intro` is sent by the runtime on start, so the first message is
     // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
     // one turn by itself so the bot starts step one without waiting for the
@@ -2261,8 +2262,8 @@
         displayName,
         worker: SETUP_BOT_WORKER,
         runtime,
-        intro: setupBotIntro(displayName),
-        kickoff: SETUP_BOT_KICKOFF,
+        intro: setupBotIntro({ noun: hostComputerNoun(), displayName }),
+        kickoff: setupBotKickoff({ noun: hostComputerNoun() }),
         // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
       },
     );

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PlatformAdapter, SessionProviderId } from "@hq/platform";
+  import { hostComputerNoun } from "@hq/platform";
   import "./settings-chrome.css";
 
   interface Props {
@@ -13,6 +14,13 @@
     { id: "codex", name: "Codex", short: "Codex" },
     { id: "grok", name: "Grok", short: "Grok" },
   ];
+
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once so the AI-tools lede never renames the machine
+   * mid-flight.
+   */
+  const hostNoun = hostComputerNoun();
 
   let loading = $state(true);
   let error = $state("");
@@ -189,7 +197,7 @@
   <div class="ss-section">
     <p class="ss-section-label">AI tools</p>
     <p class="ss-lede">
-      Sign in to the tools your local bots think with. Local bots and sessions use the Claude Code, Codex, or Grok CLI on this computer; HQ can install the CLI and open the tool’s own sign-in. HQ sign-in is separate. Usage stays with the tool account - remaining quota is not shown here yet.
+      Sign in to the tools your local bots think with. Local bots and sessions use the Claude Code, Codex, or Grok CLI on this {hostNoun}; HQ can install the CLI and open the tool’s own sign-in. HQ sign-in is separate. Usage stays with the tool account - remaining quota is not shown here yet.
     </p>
     {#if error}
       <p class="ss-lede" role="alert" data-testid="settings-agents-error">{error}</p>

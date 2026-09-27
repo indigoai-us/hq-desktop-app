@@ -8,12 +8,17 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Setup and bot-picker copy on Windows no longer says "Mac". The setup bot,
-  its cards, install prompts, and the "Signed in on this ___" hints now say
-  "this computer" so a Windows user sees the same wording. The onboarding
-  wizard also shows an honest expectation under "Getting your HQ ready": on
-  Windows it explains that antivirus scans and background installs make
-  setup take longer, so a long-running step no longer looks stuck.
+- Setup and bot-picker copy now names the user's actual computer instead of
+  guessing. On macOS the app says "this Mac", on Windows "this PC", and on
+  Linux or before the platform probe has landed it stays "this computer" so
+  a Windows user never briefly reads "Mac" and a Mac user never briefly
+  reads "PC". The setup bot's hello and kickoff, its Home card and hero,
+  the install error, the "Signed in on this ___" runtime hints, the New bot
+  picker, the Settings AI-tools lede, and the returning-user welcome all go
+  through one shared helper. The onboarding wizard also shows an honest
+  expectation under "Getting your HQ ready": on Windows it explains that
+  antivirus scans and background installs make setup take longer, so a
+  long-running step no longer looks stuck.
 
 ## [0.10.346] — 2026-09-27
 

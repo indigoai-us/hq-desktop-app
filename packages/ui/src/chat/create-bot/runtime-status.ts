@@ -118,17 +118,22 @@ const INSTALL_HINT: Readonly<Record<string, string>> = {
  * all), kept separate from the status so a host with no sign-in path still
  * gets the right words with a "Settings → AI tools" fallback instead of a
  * button that does nothing.
+ *
+ * `noun` is "Mac", "PC", or "computer" from `hostComputerNoun`; neutral
+ * fallback when the probe is not ready.
  */
 export function runtimeFooter(
   status: RuntimeStatus | null,
   label: string,
   id: string,
   canSignIn: boolean,
+  noun: string = "computer",
 ): RuntimeFooter {
+  const host = noun.trim() || "computer";
   switch (status?.state) {
     case "notInstalled":
       return {
-        text: `${label} isn’t installed on this computer. ${INSTALL_HINT[id] ?? "Install it, then check again."}`,
+        text: `${label} isn’t installed on this ${host}. ${INSTALL_HINT[id] ?? "Install it, then check again."}`,
         action: "retry",
         actionLabel: "Check again",
         isError: true,
@@ -143,15 +148,15 @@ export function runtimeFooter(
     case "signedOut":
       return {
         text: canSignIn
-          ? `${label} is not signed in on this computer.`
-          : `${label} is not signed in on this computer. Sign in under Settings → AI tools, or pick another.`,
+          ? `${label} is not signed in on this ${host}.`
+          : `${label} is not signed in on this ${host}. Sign in under Settings → AI tools, or pick another.`,
         action: canSignIn ? "signin" : null,
         actionLabel: canSignIn ? "Sign in" : null,
         isError: false,
       };
     default:
       return {
-        text: `Signed in on this computer - the bot uses your own ${label} plan.`,
+        text: `Signed in on this ${host} - the bot uses your own ${label} plan.`,
         action: null,
         actionLabel: null,
         isError: false,
@@ -159,15 +164,24 @@ export function runtimeFooter(
   }
 }
 
-/** The `stepIssue` line for a runtime that cannot host a bot yet. */
-export function runtimeStepIssue(status: RuntimeStatus | null, label: string): string | null {
+/**
+ * The `stepIssue` line for a runtime that cannot host a bot yet. `noun` is
+ * "Mac", "PC", or "computer" from `hostComputerNoun`; neutral fallback when
+ * the probe is not ready.
+ */
+export function runtimeStepIssue(
+  status: RuntimeStatus | null,
+  label: string,
+  noun: string = "computer",
+): string | null {
+  const host = noun.trim() || "computer";
   switch (status?.state) {
     case "notInstalled":
-      return `${label} isn’t installed on this computer.`;
+      return `${label} isn’t installed on this ${host}.`;
     case "probeFailed":
       return `HQ couldn’t check whether ${label} is signed in.`;
     case "signedOut":
-      return `${label} is not signed in on this computer.`;
+      return `${label} is not signed in on this ${host}.`;
     default:
       return null;
   }

@@ -10,6 +10,7 @@
    * profile sheets and the Settings → Bots groups.
    */
   import { botKindLabel, type BotKind } from "./bot-kind.js";
+  import { hostComputerNoun } from "@hq/platform";
 
   interface Props {
     kind: BotKind;
@@ -19,11 +20,13 @@
   }
 
   let { kind, runtime = null, size = "sm", variant = "icon" }: Props = $props();
+  /** Read once so the tooltip does not rename the machine on OS-plugin land. */
+  const hostNoun = hostComputerNoun();
   const label = $derived(botKindLabel(kind, runtime));
   const hint = $derived(
     kind === "cloud"
       ? `${label} — runs in your company's cloud, always on`
-      : `${label} - runs on this computer under your own login`,
+      : `${label} - runs on this ${hostNoun} under your own login`,
   );
 </script>
 

@@ -95,19 +95,31 @@ export interface CreateBotContext {
   cloudProvisionOptions?: AgentProvisionOptionsView | null;
   cloudQuoteStatus?: "loading" | "ready" | "error";
   cloudApiKeyPresent?: boolean;
+  /**
+   * Plain-language name for the host machine ("Mac", "PC", or "computer")
+   * from `hostComputerNoun`. Absent means "not ready"; the copy stays neutral.
+   */
+  hostNoun?: string;
 }
 
-/** One-line copy for each bot scope, shown beside the choice. */
-export const BOT_SCOPE_COPY: Record<BotScope, { title: string; sub: string }> = {
-  personal: {
-    title: "Personal — acts as you",
-    sub: "Works under your account, with everything you can reach. Stays on this computer. It has no company identity, so teammates can’t find it - make it a company bot to share it.",
-  },
-  company: {
-    title: "For a company",
-    sub: "Has its own identity and only reaches its companies' files. Can move to the cloud later.",
-  },
-};
+/**
+ * One-line copy for each bot scope, shown beside the choice. `noun` is
+ * "Mac", "PC", or "computer" from `hostComputerNoun`; neutral fallback when
+ * the probe is not ready.
+ */
+export function botScopeCopy(opts: { noun?: string } = {}): Record<BotScope, { title: string; sub: string }> {
+  const noun = opts.noun?.trim() || "computer";
+  return {
+    personal: {
+      title: "Personal - acts as you",
+      sub: `Works under your account, with everything you can reach. Stays on this ${noun}. It has no company identity, so teammates can’t find it - make it a company bot to share it.`,
+    },
+    company: {
+      title: "For a company",
+      sub: "Has its own identity and only reaches its companies' files. Can move to the cloud later.",
+    },
+  };
+}
 
 export const INTRO_MAX = 500;
 /** Display names are a label, not a description. */
@@ -430,16 +442,17 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
       return null;
     case "home":
       if (draft.home === "local") {
-        if (!ctx.canLocal) return "Bots can’t run on this computer.";
+        const host = ctx.hostNoun?.trim() || "computer";
+        if (!ctx.canLocal) return `Bots can’t run on this ${host}.`;
         {
           const label = LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime;
           const status = runtimeStatusOf(ctx.runtimeStatus, draft.runtime);
           // The status is the authority when the host has one: it names WHICH
           // problem, so the person is not told to sign in to a CLI that is not
           // installed. The boolean is the fallback for hosts without it.
-          if (status) return runtimeBlocksNext(status) ? runtimeStepIssue(status, label) : null;
+          if (status) return runtimeBlocksNext(status) ? runtimeStepIssue(status, label, host) : null;
           if (!runtimeIsReady(ctx.runtimeReady, draft.runtime)) {
-            return `${label} is not signed in on this computer.`;
+            return `${label} is not signed in on this ${host}.`;
           }
         }
         return null;

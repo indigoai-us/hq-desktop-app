@@ -29,7 +29,8 @@
     SETUP_PROMPT,
     type AiTools,
   } from "./setup-launch";
-  import { SETUP_BOT_COPY, SETUP_BOT_GENERIC_FAILURE, type SetupBotLauncher } from "../chat/setup-bot";
+  import { setupBotCopy, SETUP_BOT_GENERIC_FAILURE, type SetupBotLauncher } from "../chat/setup-bot";
+  import { hostComputerNoun } from "@hq/platform";
 
   interface Props {
     /** Platform seam slices (see @hq/platform PlatformAdapter). */
@@ -52,6 +53,15 @@
   }
 
   let { settings, shell, setupBot = null }: Props = $props();
+
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once at mount from the shared Tauri probe - the copy
+   * a person reads must never suddenly rename their computer, and the
+   * neutral fallback covers a probe that has not landed yet.
+   */
+  const hostNoun = hostComputerNoun();
+  const copy = $derived(setupBotCopy({ noun: hostNoun }));
 
   /** The bot path can act: open the one that exists, or make one. */
   const botAction = $derived(Boolean(setupBot && (setupBot.existing || setupBot.ready)));
@@ -181,7 +191,7 @@
     <div class="setup-copy">
       <h2 class="setup-title">Finish setting up HQ</h2>
       {#if botAction}
-        <p class="setup-body" data-testid="setup-card-bot-body">{SETUP_BOT_COPY.cardBody}</p>
+        <p class="setup-body" data-testid="setup-card-bot-body">{copy.cardBody}</p>
       {:else}
         <p class="setup-body">
           Your HQ folder isn't ready yet. Open your coding tool and run
@@ -205,10 +215,10 @@
           data-testid="setup-open-bot"
         >
           {botBusy || setupBot?.starting
-            ? SETUP_BOT_COPY.starting
+            ? copy.starting
             : setupBot!.existing
-              ? SETUP_BOT_COPY.open
-              : SETUP_BOT_COPY.create}
+              ? copy.open
+              : copy.create}
         </button>
       {/if}
       <button

@@ -15,6 +15,33 @@
 
 export type OnboardingHostOs = "windows" | "macos" | "linux" | "unknown";
 
+/** Plain-language name for the machine, from an onboarding-side OS read. */
+export type OnboardingHostNoun = "Mac" | "PC" | "computer";
+
+/**
+ * Pick the everyday computer noun the wizard shows. The wizard runs in the
+ * `main` Tauri window before the OS plugin lands, so it cannot use the shared
+ * `@hq/platform` probe. Callers pass the UA-derived OS from
+ * `readOnboardingHostOs`; anything not macOS or Windows falls back to the
+ * neutral "computer" so a Linux user or a not-ready UA never gets the wrong
+ * brand.
+ */
+export function hostComputerNounFor(os: OnboardingHostOs): OnboardingHostNoun {
+  if (os === "windows") return "PC";
+  if (os === "macos") return "Mac";
+  return "computer";
+}
+
+/** "this Mac" / "this PC" / "this computer" for the wizard. */
+export function thisComputerNounFor(os: OnboardingHostOs): string {
+  return `this ${hostComputerNounFor(os)}`;
+}
+
+/** "your Mac" / "your PC" / "your computer" for the wizard. */
+export function yourComputerNounFor(os: OnboardingHostOs): string {
+  return `your ${hostComputerNounFor(os)}`;
+}
+
 /** OS family read from a user-agent string. */
 export function readOnboardingHostOs(userAgent: string | null | undefined): OnboardingHostOs {
   const ua = (userAgent ?? "").toLowerCase();

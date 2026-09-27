@@ -14,8 +14,9 @@
   import AvatarPackPicker from "../../avatars/AvatarPackPicker.svelte";
   import type { AvatarPack, AvatarSelection } from "../../avatars/types.js";
   import IdentityMark from "../messaging/IdentityMark.svelte";
+  import { hostComputerNoun } from "@hq/platform";
   import {
-    BOT_SCOPE_COPY,
+    botScopeCopy,
     NAME_MAX,
     TITLE_MAX,
     botHandle,
@@ -62,6 +63,14 @@
   }: Props = $props();
 
   const SCOPES: readonly BotScope[] = ["personal", "company"];
+
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once at mount from the shared Tauri probe so a slow
+   * OS-plugin land never flashes the wrong name in the scope copy.
+   */
+  const hostNoun = hostComputerNoun();
+  const scopeCopy = $derived(botScopeCopy({ noun: hostNoun }));
 
   const nameError = $derived(displayNameIssue(draft.name));
   const nameTouched = $derived(draft.name.trim().length > 0);
@@ -262,8 +271,8 @@
           tabindex={draft.scope === scope ? 0 : -1}
           onclick={() => pickScope(scope)}
         >
-          <span class="cb-card-row"><span class="cb-card-title">{BOT_SCOPE_COPY[scope].title}</span></span>
-          <span class="cb-card-sub">{BOT_SCOPE_COPY[scope].sub}</span>
+          <span class="cb-card-row"><span class="cb-card-title">{scopeCopy[scope].title}</span></span>
+          <span class="cb-card-sub">{scopeCopy[scope].sub}</span>
         </button>
       {/each}
     </div>

@@ -6,6 +6,7 @@
    * host only through `SetupRunApi` (provider status + browser sign-in).
    */
   import { onDestroy } from "svelte";
+  import { hostComputerNoun } from "@hq/platform";
   import SetupButton from "./SetupButton.svelte";
   import type { SetupProviderLoginState, SetupProviderStatus, SetupProviderTool, SetupRunApi } from "./setup-run";
 
@@ -50,6 +51,13 @@
     { id: "claude", name: "Claude Code", app: "Claude" },
     { id: "codex", name: "Codex", app: "ChatGPT" },
   ];
+
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once so the install-error sentence never renames the
+   * machine mid-flight.
+   */
+  const hostNoun = hostComputerNoun();
 
   const available = (tool: SetupProviderTool) => (tool === "claude" ? providers.claudeAvailable : providers.codexAvailable);
   const connected = (tool: SetupProviderTool) =>
@@ -131,7 +139,7 @@
       if (token === generation) {
         loginState = "error";
         message = installing
-          ? `Could not install ${name} on this computer. Download it below, then connect.`
+          ? `Could not install ${name} on this ${hostNoun}. Download it below, then connect.`
           : "Could not connect the coding tool. Please try again.";
       }
     } finally {

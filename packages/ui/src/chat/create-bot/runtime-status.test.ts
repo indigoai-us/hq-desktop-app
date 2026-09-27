@@ -134,6 +134,38 @@ describe("reading the host's payload", () => {
   });
 });
 
+describe("OS-aware wording (US-006 extension)", () => {
+  it("names the machine 'Mac' on macOS in every footer arm", () => {
+    expect(runtimeFooter(MISSING, "Claude Code", "claude", true, "Mac").text).toContain("on this Mac");
+    expect(runtimeFooter(SIGNED_OUT, "Codex", "codex", true, "Mac").text).toContain("on this Mac");
+    expect(runtimeFooter(SIGNED_IN, "Grok", "grok", true, "Mac").text).toContain("Signed in on this Mac");
+    expect(runtimeStepIssue(MISSING, "Claude Code", "Mac")).toBe("Claude Code isn’t installed on this Mac.");
+    expect(runtimeStepIssue(SIGNED_OUT, "Codex", "Mac")).toBe("Codex is not signed in on this Mac.");
+  });
+
+  it("names the machine 'PC' on Windows and never says 'Mac'", () => {
+    for (const status of [MISSING, SIGNED_OUT, SIGNED_IN]) {
+      const footer = runtimeFooter(status, "Claude Code", "claude", true, "PC");
+      expect(footer.text).toContain("this PC");
+      expect(footer.text).not.toMatch(/\bMac\b/);
+    }
+    expect(runtimeStepIssue(MISSING, "Claude Code", "PC")).toBe("Claude Code isn’t installed on this PC.");
+    expect(runtimeStepIssue(SIGNED_OUT, "Codex", "PC")).toBe("Codex is not signed in on this PC.");
+  });
+
+  it("falls back to neutral 'computer' when the probe is not ready", () => {
+    // Missing arg, empty string, and whitespace all resolve to the same
+    // neutral wording so a Windows user never briefly reads "Mac".
+    for (const noun of [undefined, "", "   "]) {
+      const footer = runtimeFooter(MISSING, "Claude Code", "claude", true, noun as string | undefined);
+      expect(footer.text).toContain("on this computer");
+      expect(footer.text).not.toMatch(/\bMac\b/);
+      expect(footer.text).not.toMatch(/\bPC\b/);
+    }
+    expect(runtimeStepIssue(SIGNED_OUT, "Codex", undefined as unknown as string)).toBe("Codex is not signed in on this computer.");
+  });
+});
+
 describe("the sign-in that never opened", () => {
   it("names the runtime and what to do", () => {
     const message = runtimeSignInTimeoutMessage("Claude Code");
