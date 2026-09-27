@@ -724,6 +724,7 @@ fn main() {
             intro_window::set_intro_fullscreen,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
+            commands::lifecycle::get_startup_setup_evidence,
             commands::lifecycle::get_setup_status,
             commands::lifecycle::mark_welcome_setup_complete,
             commands::lifecycle::report_unexpected_startup_surface,
