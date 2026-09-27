@@ -8,6 +8,23 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First-time setup is now one six-screen welcome flow in a larger window
+  (about 800 by 900) over a soft blur of your own desktop. You sign in with
+  Google or Microsoft, pick where HQ lives, and choose "Install here". The
+  install then runs in the background while three short screens explain
+  cloud sync, the Option Shift O shortcut, and the usage-sharing choice. A
+  small card in the corner shows the real install progress, and install
+  errors show there with a Retry. You can answer the sharing question before
+  the install finishes: the answer is saved on this computer straight away
+  and sent to HQ once setup is ready. If sending fails, the ready screen
+  says so and offers Retry instead of hiding it. "Open HQ Desktop" stays
+  disabled with "Getting ready..." until the install is done, and "Open HQ
+  in Claude Code or Codex" is offered underneath. The separate full-screen
+  intro film is gone; "Replay welcome intro" now plays the first four
+  screens with Next and Done. The flow respects Reduce Motion, works from
+  the keyboard and with a screen reader, and pauses its animation when the
+  window is hidden.
+
 - Setup and bot-picker copy now names the user's actual computer instead of
   guessing. On macOS the app says "this Mac", on Windows "this PC", and on
   Linux or before the platform probe has landed it stays "this computer" so

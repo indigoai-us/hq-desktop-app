@@ -34,10 +34,10 @@ describe('HQ-DESKTOP-38: main-window resize ACL', () => {
     // PL-07 deleted the tray popover, which was the other `setSize` caller.
     // Onboarding still grows the `main` window for the wizard and shrinks it
     // back afterwards, so `core:window:allow-set-size` stays required. The
-    // cinematic intro made the size a parameter (card vs. full-screen film),
-    // so the call passes `target` — but every resize still routes through the
-    // work-area clamp, which is what this pins.
-    expect(onboarding).toContain('win.setSize(await responsiveOnboardingSize(target))');
+    // welcome flow replaced the card and the full-screen film with one
+    // 800x900 window, so the call names that size. Every resize still routes
+    // through the work-area clamp, which is what this pins.
+    expect(onboarding).toContain('win.setSize(await responsiveWelcomeSize(WELCOME_WINDOW_SIZE))');
     expect(onboarding).toContain('win.setSize(COMPACT_WINDOW_SIZE)');
   });
 

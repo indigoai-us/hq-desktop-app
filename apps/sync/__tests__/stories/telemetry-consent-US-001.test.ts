@@ -236,8 +236,8 @@ describe('US-001 consent step UI', () => {
     expect(checkboxes).toHaveLength(0);
     // Native continuation is unavailable in this fixture. Its silent
     // first-run fallback still offers the pre-existing provider buttons.
-    await flushUntil(() => (signin!.textContent ?? '').includes('Log in with Google'));
-    expect(signin!.textContent).toContain('Log in with Google');
+    await flushUntil(() => (signin!.textContent ?? '').includes('Continue with Google'));
+    expect(signin!.textContent).toContain('Continue with Google');
   });
 });
 
@@ -294,7 +294,8 @@ describe('US-001 recording the answer', () => {
     expect(ready).not.toBeNull();
     expect(ready!.classList.contains('on')).toBe(true);
     expect(ready!.textContent).toContain('HQ is ready');
-    expect(ready!.textContent).toContain('Open in Claude Code');
+    // The own-tool line (welcome flow layout): "Open HQ in Claude Code".
+    expect(ready!.textContent).toContain('Open HQ in Claude Code');
     // The launcher is present AND enabled — a decline must not disable it.
     const launch = ready!.querySelector<HTMLButtonElement>('.btns .btn-primary');
     expect(launch).not.toBeNull();

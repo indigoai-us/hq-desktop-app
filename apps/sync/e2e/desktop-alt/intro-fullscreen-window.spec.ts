@@ -6,9 +6,15 @@
 // the window to the monitor's WORK AREA — so the menu bar and the Dock stayed
 // on top of the film, and the film arrived as a window rather than as a fade.
 //
-// Source contract over the one window path both entry points use (first run and
-// "Replay welcome intro"), so a later change cannot quietly put the film back
-// inside a card.
+// Source contract over the film's window path, so a later change cannot quietly
+// put the film back inside a card.
+//
+// Product change (welcome flow, 2026-09): the shipped app no longer plays this
+// film. First run and "Replay welcome intro" both open the six-screen welcome
+// flow in an ~800x900 window over a native blur of the desktop
+// (`welcome_window.rs`, `Onboarding.svelte`). The film and its full-screen
+// window path remain for the standalone preview under apps/intro, which is what
+// the rest of this file still pins.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -79,16 +85,17 @@ describe('welcome intro: full screen over a blurred desktop', () => {
     expect(introWindowTs).toContain('export const INTRO_FADE_OUT_MS = 450;');
   });
 
-  it('is reachable from both entry points and restores the window after', () => {
+  it('is no longer how the shipped app opens: the welcome flow has its own window', () => {
+    // The film's command stays registered for the preview's shared window path.
     expect(mainRs).toContain('intro_window::set_intro_fullscreen');
-    // First run and replay both mount Onboarding, and both come through the
-    // one enter/exit pair.
-    expect(onboarding).toContain('enterIntroFullscreen');
-    expect(onboarding).toContain('exitIntroFullscreen');
-    // The screen goes back before the setup card is sized onto the window.
-    expect(onboarding).toContain('void exitIntroWindow().then(() => sizeForOnboarding(ONBOARDING_SIZE))');
-    expect(onboarding).toContain('void exitIntroWindow().then(() => restorePopoverSize())');
-    // The restore is a copy of the saved frame, not a fresh computation.
+    // First run and replay both mount Onboarding, which now sizes the welcome
+    // window and puts the native blur behind it instead of taking the screen.
+    expect(onboarding).not.toContain('enterIntroFullscreen');
+    expect(onboarding).not.toContain('CinematicIntro');
+    expect(onboarding).toContain("invoke('set_welcome_backdrop'");
+    expect(onboarding).toContain('new LogicalSize(800, 900)');
+    expect(mainRs).toContain('welcome_window::set_welcome_backdrop');
+    // The restore is still a copy of the saved frame, not a fresh computation.
     expect(introWindowRs).toContain('SAVED_STATE');
     expect(introWindowRs).toContain('saved.decorated');
   });
@@ -116,7 +123,5 @@ describe('welcome intro: full screen over a blurred desktop', () => {
   it('keeps Escape, Skip and the chord scene as they were', () => {
     expect(cinematicIntro).toContain("if (event.key === 'Escape')");
     expect(cinematicIntro).toContain('Skip intro');
-    // The boundary fallback still drops to the wizard with the card restored.
-    expect(onboarding).toContain('svelte:boundary onerror={handleIntroError}');
   });
 });

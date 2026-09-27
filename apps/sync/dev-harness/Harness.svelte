@@ -227,10 +227,19 @@
   <div class="fake-desktop" aria-hidden="true"></div>
   <CinematicIntro onfinish={() => {}} startAtBeat={introBeat} />
 {:else if view === 'onboarding'}
-  <!-- First-run onboarding at its real 780x620 transparent-window size.
-       Pass ?step=0..3 to inspect every reachable lifecycle screen directly;
-       continuation=on previews the verified-browser-account offer. -->
-  <OnboardingWizard initialStep={onboardingStep} onfinish={() => {}} />
+  <!-- The first-run welcome flow. Size the viewport to ~800x900 (the real
+       window). ?step=0..10 opens a wizard step directly (0 welcome, 1 folder,
+       2 cloud with the install running, 3 consent, 5 ready); the shortcut
+       screen is Next from 2. ?mode=replay previews the menu-bar "Replay
+       welcome intro" (the story screens only). In the app the window is
+       transparent over a native blur of the desktop; a browser cannot do that,
+       so the harness paints a stand-in desktop behind it. -->
+  <div class="fake-desktop" aria-hidden="true"></div>
+  <OnboardingWizard
+    initialStep={onboardingStep}
+    mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
+    onfinish={() => {}}
+  />
 {:else if view === 'global-error'}
   <!-- Deterministic render failure for visually verifying the production
        Svelte error boundary without breaking any other harness route. -->

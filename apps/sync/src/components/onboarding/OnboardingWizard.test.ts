@@ -88,6 +88,22 @@ async function flush(): Promise<void> {
   flushSync();
 }
 
+/**
+ * A screen's markup without the parts its entrance animation moves: the
+ * motion engines toggle `on` classes and write inline positions on a real
+ * animation-frame clock, so two renders of the same screen differ only there.
+ */
+function stableMarkup(element: HTMLElement | null): string | undefined {
+  if (!element) return undefined;
+  const clone = element.cloneNode(true) as HTMLElement;
+  for (const node of [clone, ...Array.from(clone.querySelectorAll<HTMLElement>('*'))]) {
+    node.classList?.remove('on');
+    if (node.getAttribute('class') === '') node.removeAttribute('class');
+    if (!node.closest('.pbar')) node.removeAttribute('style');
+  }
+  return clone.innerHTML;
+}
+
 function emitTauriEvent(name: string, payload: unknown = {}): void {
   const handler = eventHarness.handlers.get(name);
   if (!handler) throw new Error(`Expected a listener for ${name}.`);
@@ -212,8 +228,9 @@ function providerButtons(): HTMLButtonElement[] {
 
 function expectPreBranchProviderScreen(): void {
   expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
-    'Log in with Google',
-    'Log in with Microsoft',
+    // Welcome flow copy (designer prototype): same two providers, same flow.
+    'Continue with Google',
+    'Continue with Microsoft',
   ]);
   expect(providerButtons().every((button) => !button.disabled)).toBe(true);
   expect(host.querySelector('.inline-note.error')).toBeNull();
@@ -228,7 +245,22 @@ async function advancePastSignIn(): Promise<void> {
 }
 
 beforeEach(() => {
-  vi.useFakeTimers();
+  // Timers and the clock are faked; animation frames are not. The welcome
+  // flow's motion runs on requestAnimationFrame, and faking it made every
+  // advanceTimersByTime(300_000) also simulate ~18,000 frames of orbiting
+  // chips that no assertion reads. The behaviour under test (setup, sign-in,
+  // telemetry, timeouts) runs on timers and is still fully simulated.
+  vi.useFakeTimers({
+    toFake: [
+      'setTimeout',
+      'clearTimeout',
+      'setInterval',
+      'clearInterval',
+      'setImmediate',
+      'clearImmediate',
+      'Date',
+    ],
+  });
   vi.setSystemTime(new Date('2026-07-28T12:00:00.000Z'));
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -883,7 +915,10 @@ describe('onboarding launch handoff', () => {
     ).toHaveLength(1);
   });
 
-  it('leads with Open HQ Desktop and keeps Claude Code and Codex under Advanced', async () => {
+  it('leads with Open HQ Desktop and offers Claude Code and Codex as a quiet line under it', async () => {
+    // Layout change (welcome flow): the own-tool launchers moved from an
+    // "Advanced" disclosure to the prototype's single line under the one
+    // primary action. Same launchers, same test ids, same handoff.
     mountWizard(vi.fn(), 4, {
       ...NO_AI_TOOLS,
       claude_desktop: true,
@@ -902,20 +937,17 @@ describe('onboarding launch handoff', () => {
       'Complete setup in your AI tool',
     );
 
-    // Advanced holds exactly the two own-tool launchers, none of them primary.
-    // It starts open and recommends that path to people who already use those
-    // tools, so they do not have to discover the disclosure on their own.
-    const advanced = host.querySelector<HTMLDetailsElement>('[data-testid="onboarding-advanced"]');
-    expect(advanced).not.toBeNull();
-    expect(advanced!.open).toBe(true);
-    expect(advanced!.textContent).toContain('Recommended if you already use Claude Code or Codex');
-    expect(advanced!.querySelector('summary')?.textContent?.trim()).toBe('Advanced');
-    const row = advanced!.querySelector('[data-testid="onboarding-launchers"]');
+    // The own-tool line holds exactly the two launchers (never Grok), none of
+    // them primary.
+    const row = host.querySelector('[data-testid="onboarding-launchers"]');
     expect(row).not.toBeNull();
-    const labels = Array.from(row!.querySelectorAll('button')).map((button) =>
-      button.textContent?.trim(),
-    );
-    expect(labels).toEqual(['Open in Claude Code', 'Open in Codex']);
+    expect(row!.textContent).toContain('Prefer your own tools?');
+    const buttons = Array.from(row!.querySelectorAll('button'));
+    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Open in Claude Code',
+      'Open in Codex',
+    ]);
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(['Claude Code', 'Codex']);
     expect(row!.querySelector('.btn-primary')).toBeNull();
     expect(row!.textContent).not.toMatch(/\bFinish\b/);
   });
@@ -933,7 +965,12 @@ describe('onboarding launch handoff', () => {
 
     // Opening HQ Desktop stays the primary step; the installs sit under Advanced.
     expect(primaryButton().textContent?.trim()).toBe('Open HQ Desktop');
-    expect(readyButton('onboarding-install-claude').textContent?.trim()).toBe('Install Claude Code');
+    // Layout change: the install links sit in the own-tool line by name, and
+    // say what they do to assistive technology.
+    expect(readyButton('onboarding-install-claude').getAttribute('aria-label')).toBe(
+      'Install Claude Code',
+    );
+    expect(readyButton('onboarding-install-claude').textContent?.trim()).toBe('Claude Code');
   });
 
   it('restores friendly checklist labels instead of internal setup stage names', async () => {
@@ -1013,9 +1050,9 @@ describe('onboarding launch handoff', () => {
     await flushUntil(() =>
       Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
     );
-    const cleanCompletion = host.querySelector<HTMLElement>(
-      '[data-testid="onboarding-summary"]',
-    )?.innerHTML;
+    const cleanCompletion = stableMarkup(
+      host.querySelector<HTMLElement>('[data-testid="onboarding-summary"]'),
+    );
     expect(cleanCompletion).toBeTruthy();
 
     await unmount(component!);
@@ -1042,22 +1079,28 @@ describe('onboarding launch handoff', () => {
       props: { initialStep: 2, onfinish },
     });
 
-    // The install runs on its own while the consent card waits. Its Continue
-    // is not pressed here: the choice now starts on Share, so pressing it would
-    // move the wizard on mid-install, which is not what this test is about.
-    await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
-    );
+    // The install runs in the background while the person is on the story
+    // screens. Let it settle (the failed stage is recorded, not shown), then
+    // answer the usage question and land on the ready screen, as a person would.
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      Boolean(
+        host.querySelector('[data-testid="onboarding-summary"]')?.classList.contains('on') &&
+          host.querySelector('[data-testid="onboarding-launch-claude"]'),
+      ),
     );
 
-    const summary = host.querySelector('[data-testid="onboarding-summary"]');
+    const summary = host.querySelector<HTMLElement>('[data-testid="onboarding-summary"]');
     const launchClaude = host.querySelector<HTMLButtonElement>(
       '[data-testid="onboarding-launch-claude"]',
     );
-    expect((summary as HTMLElement | null)?.innerHTML).toBe(cleanCompletion);
+    // Same screen, byte for byte, apart from where its entrance animation is.
+    expect(stableMarkup(summary)).toBe(cleanCompletion);
     expect(summary?.textContent).not.toContain('dependency installation failed');
     expect(summary?.textContent).not.toContain('HQ setup needs attention');
     expect(
@@ -1650,9 +1693,16 @@ describe('setup restart', () => {
     button.click();
   }
 
-  /** Leave the setup step, then come back through Install. */
+  /** Back to the folder choice from the first explainer (the flow's Back). */
+  function clickBack(): void {
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="welcome-back"]');
+    if (!button) throw new Error('Expected the welcome flow Back button.');
+    button.click();
+  }
+
+  /** Leave the setup step, then come back through Install here. */
   async function leaveAndReturn(): Promise<void> {
-    clickIn('onboarding-setup', '.btn-secondary');
+    clickBack();
     await flush();
     await vi.advanceTimersByTimeAsync(1_000);
     await flush();
@@ -1682,7 +1732,7 @@ describe('setup restart', () => {
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
     await flushUntil(() => eventHarness.handlers.has('install:progress'));
     emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
-    clickIn('onboarding-setup', '.btn-secondary');
+    clickBack();
     await flush();
   }
 
@@ -1869,7 +1919,14 @@ describe('setup progress direction', () => {
     )?.textContent;
     const seconds = elapsed?.match(/(\d+)s/)?.[1];
     return {
-      percent: Number.parseInt(host.querySelector('.ppct')?.textContent ?? '', 10),
+      // Layout change: the ring's percent label became the install card's bar,
+      // which carries the same tracked percent as its progressbar value.
+      percent: Number.parseInt(
+        host
+          .querySelector('[data-testid="onboarding-setup-progress"]')
+          ?.getAttribute('aria-valuenow') ?? '',
+        10,
+      ),
       bands: [...(panel?.querySelectorAll('[data-band-status]') ?? [])].map(
         (band) => band.getAttribute('data-band-status') ?? '',
       ),
