@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- MIGRATION.md: replace the retired downloads host with `hqforwork.com/install` (docs-only, no runtime change). Wave 2a of the getindigo.ai deprecation.
+
 ## [0.10.346] — 2026-09-27
 
 - New Files page (Cmd+5, or the file icon in the title bar). It opens full
