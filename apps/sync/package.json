@@ -1,7 +1,7 @@
 {
   "name": "hq-sync",
   "private": true,
-  "version": "0.10.347",
+  "version": "0.10.348",
   "type": "module",
   "scripts": {
     "dev": "vite",
