@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The setup bot now opens by asking whether you want HQ explained first or
+  want to jump straight into setup, instead of starting the first step right
+  away.
 - Clicking a new company's channel right after the setup bot creates it no
   longer lands on the "no longer available" page. The company rail now asks
   the host to re-read its company roster as soon as a channel names a company
