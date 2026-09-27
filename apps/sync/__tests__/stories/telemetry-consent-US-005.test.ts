@@ -200,13 +200,14 @@ describe('US-005 the re-prompt opens straight on the blocking consent step', () 
   });
 
   // ── AC2: blocking exactly like onboarding ────────────────────────────────
-  it('pre-selects neither option and keeps continue disabled until answered (AC2)', async () => {
+  // Product decision (2026-09-27): the re-prompt also starts on Share.
+  it('starts on Share with continue enabled (AC2)', async () => {
     await mountReprompt();
 
     const radios = consentRadios();
     expect(radios).toHaveLength(2);
-    expect(radios.every((r) => !r.checked)).toBe(true);
-    expect(continueBtn().disabled).toBe(true);
+    expect(radios.map((r) => r.checked)).toEqual([true, false]);
+    expect(continueBtn().disabled).toBe(false);
 
     // Nothing autofocused.
     const active = document.activeElement;

@@ -164,12 +164,14 @@ describe('US-001 wizard step model', () => {
 });
 
 describe('US-001 consent step UI', () => {
-  it('pre-selects neither option and autofocuses nothing (AC 1)', async () => {
+  // Product decision (2026-09-27): the choice starts on Share; the person can
+  // still pick "Don't share" before continuing.
+  it('starts on Share and autofocuses nothing (AC 1)', async () => {
     await mountAt(3);
 
     const radios = consentRadios();
     expect(radios).toHaveLength(2);
-    expect(radios.every((r) => !r.checked)).toBe(true);
+    expect(radios.map((r) => r.checked)).toEqual([true, false]);
 
     // Nothing on the consent panel grabs focus on render.
     const active = document.activeElement;
@@ -177,9 +179,9 @@ describe('US-001 consent step UI', () => {
     expect(consentPanel().contains(active)).toBe(false);
   });
 
-  it('keeps continue disabled until an option is chosen, for BOTH options (AC 2)', async () => {
+  it('keeps continue enabled for BOTH options, starting from the Share default (AC 2)', async () => {
     await mountAt(3);
-    expect(consentContinue().disabled).toBe(true);
+    expect(consentContinue().disabled).toBe(false);
 
     // Share enables continue.
     const [share, decline] = consentRadios();
@@ -333,10 +335,10 @@ describe('US-001 source regressions', () => {
     expect(signInBlock).not.toContain('emitDesktopTelemetry');
   });
 
-  it('drops the pre-ticked telemetry boolean for a tri-state choice', () => {
+  it('keeps the tri-state choice, starting on Share', () => {
     expect(wizardSource).not.toContain('telemetryEnabled');
     expect(wizardSource).toContain(
-      "let telemetryChoice = $state<'share' | 'decline' | null>(null);",
+      "let telemetryChoice = $state<'share' | 'decline' | null>('share');",
     );
   });
 });

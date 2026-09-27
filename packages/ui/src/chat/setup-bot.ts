@@ -40,9 +40,10 @@ export const SETUP_BOT_WORKER = "setup";
  * (`hq bot create --intro`) instead of waiting for a model turn. Two short
  * sentences: the plan, and that it is checking the person's Mac/PC/computer
  * now and may take a minute (the first model turn is slow, so say so up
- * front); never an open "what would you like to do?", because the kickoff
- * turn below follows it automatically. Keep it under 500 characters (the
- * CLI's `--intro` limit) and on one line (the host rejects control
+ * front), plus a pointer to the Launch button for people who prefer Claude
+ * Code or Codex; never an open "what would you like to do?", because the
+ * kickoff turn below follows it automatically. Keep it under 500 characters
+ * (the CLI's `--intro` limit) and on one line (the host rejects control
  * characters).
  *
  * The `noun` is the plain-language name for the host machine ("Mac", "PC",
@@ -57,7 +58,8 @@ export function setupBotIntro(
   const intro =
     "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
     "the work you already have, your business and the apps you use, and your first bot. " +
-    `I'm checking your ${noun} now, which can take a minute, and I'll post my first question here as soon as I'm done.`;
+    `I'm checking your ${noun} now, which can take a minute, and I'll post my first question here as soon as I'm done. ` +
+    "If you'd rather, you can run me in Claude Code or Codex with the Launch button above.";
   const name = opts.displayName?.trim();
   if (!name) return intro;
   return intro.replace("Hi, I'm your setup bot", `Hi, I'm ${name}, your setup bot`);
@@ -197,6 +199,17 @@ export function setupBotCopy(opts: { noun?: string } = {}): typeof SETUP_BOT_COP
 export function setupBotNoRuntime(opts: { noun?: string } = {}): string {
   const noun = opts.noun?.trim() || "computer";
   return `No coding tool is signed in on this ${noun} yet. Sign in to Claude Code, Codex, or Grok, then retry.`;
+}
+
+/**
+ * True when a message is the "no signed-in coding tool" error in any of the
+ * noun variants ("this Mac" / "this PC" / "this computer"). Surfaces that
+ * decide to show the guided install path use this instead of an exact match
+ * against `SETUP_BOT_NO_RUNTIME`, so a Mac-noun message from
+ * `setupBotNoRuntime({ noun })` still triggers the guide.
+ */
+export function isSetupBotNoRuntimeMessage(msg: string | null | undefined): boolean {
+  return !!msg && msg.startsWith("No coding tool is signed in on this");
 }
 
 /** The host has no bots group at all (web build). */
