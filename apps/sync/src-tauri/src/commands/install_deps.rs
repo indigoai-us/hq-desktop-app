@@ -9414,16 +9414,24 @@ mod windows_tests {
             .join("qmd");
         std::fs::create_dir_all(qmd_bin.parent().unwrap()).unwrap();
         std::fs::write(&qmd_bin, b"").unwrap();
-        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd shim should write");
+        let git_bash = tmp.path().join("Git").join("bin").join("bash.exe");
+        std::fs::create_dir_all(git_bash.parent().unwrap()).unwrap();
+        std::fs::write(&git_bash, b"Git Bash").unwrap();
+        write_qmd_bash_shim_in(&qmd_prefix, Some(&git_bash)).expect("qmd shim should write");
         let qmd_cmd = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
-        // The bash invocation is either an absolute Git Bash path (when one is
-        // installed on the test machine) or a bare `bash` fallback — both end
-        // with the same script-relative argument.
         assert!(
-            qmd_cmd.contains("\"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*"),
+            qmd_cmd.contains(&format!(
+                "\"{}\" \"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*",
+                git_bash.display()
+            )),
             "{qmd_cmd}"
         );
-        assert!(qmd_cmd.to_lowercase().contains("bash"), "{qmd_cmd}");
+        assert!(
+            !qmd_cmd
+                .lines()
+                .any(|line| line.trim_start().starts_with("bash ")),
+            "shim must not use PATH-resolved bash: {qmd_cmd}"
+        );
         assert!(
             !qmd_cmd.to_lowercase().contains("system32"),
             "shim must never invoke the WSL launcher: {qmd_cmd}"
