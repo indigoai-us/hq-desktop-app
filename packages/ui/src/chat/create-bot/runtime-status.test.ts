@@ -44,7 +44,7 @@ describe("what the footer offers", () => {
 
   it("tells a missing CLI where to get it, and never says signed out", () => {
     const footer = runtimeFooter(MISSING, "Claude Code", "claude", true);
-    expect(footer.text).toContain("isn’t installed on this Mac");
+    expect(footer.text).toContain("isn’t installed on this computer");
     expect(footer.text).toContain("claude.ai/download");
     expect(footer.text).not.toContain("signed in");
     expect(footer.actionLabel).toBe("Check again");
@@ -70,7 +70,7 @@ describe("what the footer offers", () => {
 
   it("is a plain confirmation when signed in", () => {
     const footer = runtimeFooter(SIGNED_IN, "Codex", "codex", true);
-    expect(footer.text).toContain("Signed in on this Mac");
+    expect(footer.text).toContain("Signed in on this computer");
     expect(footer.isError).toBe(false);
   });
 });
@@ -98,9 +98,9 @@ describe("gating", () => {
   });
 
   it("gives each blocking state its own sentence", () => {
-    expect(runtimeStepIssue(MISSING, "Claude Code")).toBe("Claude Code isn’t installed on this Mac.");
+    expect(runtimeStepIssue(MISSING, "Claude Code")).toBe("Claude Code isn’t installed on this computer.");
     expect(runtimeStepIssue(FAILED, "Claude Code")).toBe("HQ couldn’t check whether Claude Code is signed in.");
-    expect(runtimeStepIssue(SIGNED_OUT, "Claude Code")).toBe("Claude Code is not signed in on this Mac.");
+    expect(runtimeStepIssue(SIGNED_OUT, "Claude Code")).toBe("Claude Code is not signed in on this computer.");
     expect(runtimeStepIssue(SIGNED_IN, "Claude Code")).toBeNull();
     expect(runtimeStepIssue(null, "Claude Code")).toBeNull();
   });
@@ -131,6 +131,38 @@ describe("reading the host's payload", () => {
     expect(runtimeStatusOf(map, "claude")).toEqual(SIGNED_OUT);
     expect(runtimeStatusOf(map, "codex")).toBeNull();
     expect(runtimeStatusOf(null, "claude")).toBeNull();
+  });
+});
+
+describe("OS-aware wording (US-006 extension)", () => {
+  it("names the machine 'Mac' on macOS in every footer arm", () => {
+    expect(runtimeFooter(MISSING, "Claude Code", "claude", true, "Mac").text).toContain("on this Mac");
+    expect(runtimeFooter(SIGNED_OUT, "Codex", "codex", true, "Mac").text).toContain("on this Mac");
+    expect(runtimeFooter(SIGNED_IN, "Grok", "grok", true, "Mac").text).toContain("Signed in on this Mac");
+    expect(runtimeStepIssue(MISSING, "Claude Code", "Mac")).toBe("Claude Code isn’t installed on this Mac.");
+    expect(runtimeStepIssue(SIGNED_OUT, "Codex", "Mac")).toBe("Codex is not signed in on this Mac.");
+  });
+
+  it("names the machine 'PC' on Windows and never says 'Mac'", () => {
+    for (const status of [MISSING, SIGNED_OUT, SIGNED_IN]) {
+      const footer = runtimeFooter(status, "Claude Code", "claude", true, "PC");
+      expect(footer.text).toContain("this PC");
+      expect(footer.text).not.toMatch(/\bMac\b/);
+    }
+    expect(runtimeStepIssue(MISSING, "Claude Code", "PC")).toBe("Claude Code isn’t installed on this PC.");
+    expect(runtimeStepIssue(SIGNED_OUT, "Codex", "PC")).toBe("Codex is not signed in on this PC.");
+  });
+
+  it("falls back to neutral 'computer' when the probe is not ready", () => {
+    // Missing arg, empty string, and whitespace all resolve to the same
+    // neutral wording so a Windows user never briefly reads "Mac".
+    for (const noun of [undefined, "", "   "]) {
+      const footer = runtimeFooter(MISSING, "Claude Code", "claude", true, noun as string | undefined);
+      expect(footer.text).toContain("on this computer");
+      expect(footer.text).not.toMatch(/\bMac\b/);
+      expect(footer.text).not.toMatch(/\bPC\b/);
+    }
+    expect(runtimeStepIssue(SIGNED_OUT, "Codex", undefined as unknown as string)).toBe("Codex is not signed in on this computer.");
   });
 });
 

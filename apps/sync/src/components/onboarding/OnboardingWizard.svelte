@@ -81,6 +81,10 @@
     type StageId,
     type StageState,
   } from '../../lib/onboarding-setup';
+  import {
+    readOnboardingHostOs,
+    setupExpectationCopy,
+  } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
   import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
   import {
@@ -215,7 +219,8 @@
   // pre-ticked boolean on the sign-in panel, which biased the choice AND posted
   // the answer before the person entity existed — so the write 404'd and the
   // answer was dropped. Consent is now its own step after setup.)
-  let telemetryChoice = $state<'share' | 'decline' | null>(null);
+  // Sharing is the default; the person can still pick "Don't share".
+  let telemetryChoice = $state<'share' | 'decline' | null>('share');
   let consentSubmitting = $state(false);
   let privacyOpening = $state(false);
   let privacyOpenError = $state(false);
@@ -434,6 +439,13 @@
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
+  // US-004: honest expectation-setting under "Getting your HQ ready". The UA
+  // read is one-shot at render - the host cannot change during onboarding -
+  // and stays neutral when the UA has not landed yet.
+  const setupHostOs = $derived(
+    readOnboardingHostOs(typeof navigator === 'undefined' ? null : navigator.userAgent),
+  );
+  const setupExpectation = $derived(setupExpectationCopy(setupHostOs));
   const setupSubStatusModel = $derived(
     setupSubStatus({
       stageId: currentStageId,
@@ -2387,6 +2399,11 @@
           aria-labelledby="onboarding-title-setup"
         >
           <h2 class="h" id="onboarding-title-setup">Getting your HQ ready</h2>
+          <p
+            class="body setup-expectation"
+            data-testid="onboarding-setup-expectation"
+            data-host-os={setupHostOs}
+          >{setupExpectation}</p>
           <div class="list" aria-label="Setup checklist">
             {#each setupBands as band}
               <div
@@ -3059,7 +3076,9 @@
   .consent-options { margin:14px 0 0; padding:0; border:0; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
   .consent-option { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; border:1px solid var(--c-field-border); border-radius:10px; cursor:pointer; transition:border-color .12s, background-color .12s; }
   .consent-option.selected { border-color:var(--check-bg); background:color-mix(in srgb, var(--check-bg) 8%, transparent); }
-  .consent-option input { margin-top:2px; width:16px; height:16px; flex-shrink:0; accent-color:var(--check-bg); cursor:pointer; }
+  /* Drawn by hand: the native radio's built-in side margins clipped its ring in this card. */
+  .consent-option input { appearance:none; -webkit-appearance:none; box-sizing:border-box; margin:1px 0 0; width:16px; height:16px; flex:0 0 16px; border:1.5px solid var(--c-field-border); border-radius:50%; background:transparent; cursor:pointer; }
+  .consent-option input:checked { border:5px solid var(--check-bg); background:var(--c-bg, #fff); }
   .consent-option:has(input:focus-visible) { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; }
   .consent-option-copy { display:flex; flex-direction:column; gap:1px; }
   .consent-option-title { color:var(--c-text); font-size:14px; font-weight:500; line-height:18px; }

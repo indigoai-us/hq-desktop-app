@@ -16,7 +16,7 @@
   import {
     SETUP_FAILURE_COPY,
     SETUP_RUN_DONE,
-    SETUP_RUN_PERMISSION,
+    SETUP_RUN_PERMISSION_STATIC,
     SETUP_RUN_STEPS,
     SETUP_RUN_STOPPED,
     setupRunContinueLabel,
@@ -452,14 +452,14 @@
             disabled={busy}
             onclick={() => onpermission?.(question.requestId, "allowSession")}
           >
-            {SETUP_RUN_PERMISSION.allowSession}
+            {SETUP_RUN_PERMISSION_STATIC.allowSession}
           </SetupButton>
           <SetupButton
             data-testid="setup-run-allow-once"
             disabled={busy}
             onclick={() => onpermission?.(question.requestId, "allowOnce")}
           >
-            {SETUP_RUN_PERMISSION.allowOnce}
+            {SETUP_RUN_PERMISSION_STATIC.allowOnce}
           </SetupButton>
           <SetupButton
             variant="quiet"
@@ -467,7 +467,7 @@
             disabled={busy}
             onclick={() => onpermission?.(question.requestId, "deny")}
           >
-            {SETUP_RUN_PERMISSION.deny}
+            {SETUP_RUN_PERMISSION_STATIC.deny}
           </SetupButton>
         </div>
       {:else if variant === "prompt"}

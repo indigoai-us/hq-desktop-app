@@ -242,13 +242,32 @@ export const SETUP_RUN_STOPPED = {
   body: "Run Setup again to pick up where it left off.",
 } as const;
 
-/** Copy for the permission card (plain words, no tool or command text). */
-export const SETUP_RUN_PERMISSION = {
-  text: "Setup needs your OK to take its next step on this Mac.",
+/** Static labels on the permission card that never change with the host OS. */
+export const SETUP_RUN_PERMISSION_STATIC = {
   allowOnce: "Allow",
   allowSession: "Allow for the rest of setup",
   deny: "Not now",
 } as const;
+
+/**
+ * Copy for the permission card (plain words, no tool or command text).
+ * `noun` is "Mac", "PC", or "computer" from `hostComputerNoun`; neutral
+ * fallback when the probe is not ready.
+ */
+export function setupRunPermission(opts: { noun?: string } = {}): typeof SETUP_RUN_PERMISSION_STATIC & { text: string } {
+  const noun = opts.noun?.trim() || "computer";
+  return {
+    ...SETUP_RUN_PERMISSION_STATIC,
+    text: `Setup needs your OK to take its next step on this ${noun}.`,
+  };
+}
+
+/**
+ * Neutral snapshot of the permission copy. Renderers MUST use
+ * `setupRunPermission` with the resolved host noun; this const is here for
+ * tests and non-render call sites.
+ */
+export const SETUP_RUN_PERMISSION = setupRunPermission();
 
 /** Label for the resume affordance: "Continue setup (2 of 4)". */
 export function setupRunContinueLabel(step: number): string {
@@ -419,6 +438,7 @@ export function interpretSetupRun(
   events: readonly SetupRunEvent[],
   phase: SetupRunPhase = "working",
   resolvedRequestIds: readonly string[] = [],
+  opts: { noun?: string } = {},
 ): SetupRunState {
   const statuses = emptyStatuses();
   const resolved = new Set(resolvedRequestIds);
@@ -622,7 +642,7 @@ export function interpretSetupRun(
         };
       }
     } else if (pendingRequest?.kind === "permission") {
-      question = { kind: "permission", requestId: pendingRequest.requestId, text: SETUP_RUN_PERMISSION.text };
+      question = { kind: "permission", requestId: pendingRequest.requestId, text: setupRunPermission({ noun: opts.noun }).text };
     } else if (
       assistantIsLatest &&
       lastAssistant &&

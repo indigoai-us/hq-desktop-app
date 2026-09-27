@@ -18,6 +18,7 @@
    * (no tool, tool present + not signed in, install fails, signed in).
    */
   import type { AiTools } from "./setup-launch";
+  import { thisComputerNoun } from "@hq/platform";
 
   export type CodingTool = "claude" | "codex";
 
@@ -94,6 +95,13 @@
   let activeTool = $state<CodingTool>(preferred);
 
   const toolLabel = $derived(TOOL_LABEL[activeTool]);
+  /**
+   * "this Mac" / "this PC" / "this computer" - the plain-language name for
+   * the host machine. Read once from the shared Tauri probe; the neutral
+   * fallback covers a probe that has not landed yet, so a Windows user never
+   * briefly reads "on this Mac".
+   */
+  const machinePhrase = thisComputerNoun();
 
   const primaryLabel = $derived.by(() => {
     if (phase === "installing") return `Installing ${toolLabel}…`;
@@ -108,7 +116,7 @@
   });
 
   const lede = $derived.by(() => {
-    if (tools === null) return `Checking whether ${toolLabel} is on this computer…`;
+    if (tools === null) return `Checking whether ${toolLabel} is on ${machinePhrase}…`;
     if (phase === "installing") {
       return `HQ is downloading and installing ${toolLabel}. This usually takes a minute or two. Leave this window open.`;
     }
@@ -127,7 +135,7 @@
     if (phase === "done") {
       return `${toolLabel} is ready. HQ can finish setup now.`;
     }
-    return `Setup needs a coding tool on this computer. HQ can install ${toolLabel} for you and walk you through signing in - no CLI needed.`;
+    return `Setup needs a coding tool on ${machinePhrase}. HQ can install ${toolLabel} for you and walk you through signing in - no CLI needed.`;
   });
 
   async function runInstall(): Promise<void> {

@@ -6,6 +6,7 @@
    * online or the bot's first message lands.
    */
   import { untrack } from "svelte";
+  import { hostComputerNoun } from "@hq/platform";
 
   export type BotProgressState = "creating" | "installing" | "online" | "failed";
 
@@ -32,9 +33,16 @@
 
   let { name, phase, reason = null, onretry, retrying = false, canRetry = true }: Props = $props();
 
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once so the "Installing on this ___" label never
+   * flashes from one name to another after the OS-plugin probe lands.
+   */
+  const hostNoun = hostComputerNoun();
+
   const STEPS = [
     { id: "creating", label: "Creating identity" },
-    { id: "installing", label: "Installing on this Mac" },
+    { id: "installing", label: `Installing on this ${hostNoun}` },
     { id: "online", label: "Online" },
   ] as const;
 

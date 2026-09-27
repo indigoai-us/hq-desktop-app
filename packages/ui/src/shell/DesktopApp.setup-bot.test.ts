@@ -210,7 +210,7 @@ describe("#welcome Run Setup creates the setup bot", () => {
       displayName: input.displayName,
       worker: "setup",
       runtime: "claude",
-      intro: setupBotIntro(input.displayName),
+      intro: setupBotIntro({ displayName: input.displayName }),
       // The bot starts step one by itself right after the intro.
       kickoff: SETUP_BOT_KICKOFF,
     });

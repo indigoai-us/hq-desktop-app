@@ -205,12 +205,45 @@ describe("SetupInstallGuide - safety rules", () => {
     }
   });
 
-  it("never says the OS-specific name - Windows users see the same non-mac copy", async () => {
-    await render({ tools: { ...NO_AI_TOOLS } });
-    const body = host.querySelector<HTMLElement>('[data-testid="setup-install-guide"]')!;
-    // The install-guide lede talks about "on this computer", never "on this Mac".
-    expect(body.textContent).not.toMatch(/\bMac(OS|s)?\b/i);
-    expect(body.textContent).toContain("this computer");
+  it("names the host machine OS-aware: Mac / PC / computer, and never the wrong one", async () => {
+    // Class-level regression (US-006): the lede must name the actual host
+    // machine. Under a Windows probe it must never render "Mac"; under a
+    // macOS probe it must never render "PC"; without a probe it falls back
+    // to the neutral "this computer".
+    const setHostOs = (value: string | undefined) => {
+      const g = globalThis as { __HQ_HOST_OS__?: unknown; __TAURI_INTERNALS__?: unknown };
+      if (value === undefined) {
+        delete g.__HQ_HOST_OS__;
+        delete g.__TAURI_INTERNALS__;
+      } else {
+        g.__HQ_HOST_OS__ = value;
+        g.__TAURI_INTERNALS__ = {};
+      }
+    };
+    try {
+      setHostOs("windows");
+      await render({ tools: { ...NO_AI_TOOLS } });
+      let body = host.querySelector<HTMLElement>('[data-testid="setup-install-guide"]')!;
+      expect(body.textContent).not.toMatch(/\bMac(OS|s)?\b/i);
+      await unmount(component!);
+      component = null;
+      host.remove();
+
+      setHostOs("macos");
+      await render({ tools: { ...NO_AI_TOOLS } });
+      body = host.querySelector<HTMLElement>('[data-testid="setup-install-guide"]')!;
+      expect(body.textContent).not.toMatch(/\bPCs?\b/);
+      await unmount(component!);
+      component = null;
+      host.remove();
+
+      setHostOs(undefined);
+      await render({ tools: { ...NO_AI_TOOLS } });
+      body = host.querySelector<HTMLElement>('[data-testid="setup-install-guide"]')!;
+      expect(body.textContent).toContain("this computer");
+    } finally {
+      setHostOs(undefined);
+    }
   });
 
   it("checks-in-progress state renders when tools is null (host is still probing)", async () => {

@@ -8,7 +8,25 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Setup and bot-picker copy now names the user's actual computer instead of
+  guessing. On macOS the app says "this Mac", on Windows "this PC", and on
+  Linux or before the platform probe has landed it stays "this computer" so
+  a Windows user never briefly reads "Mac" and a Mac user never briefly
+  reads "PC". The setup bot's hello and kickoff, its Home card and hero,
+  the install error, the "Signed in on this ___" runtime hints, the New bot
+  picker, the Settings AI-tools lede, and the returning-user welcome all go
+  through one shared helper. The onboarding wizard also shows an honest
+  expectation under "Getting your HQ ready": on Windows it explains that
+  antivirus scans and background installs make setup take longer, so a
+  long-running step no longer looks stuck.
 - MIGRATION.md: restore the historical updater endpoint URLs with '(retired, never launched)' annotations and add a dated note that the shipped app uses GitHub Releases for updates. Wave 2a of the getindigo.ai deprecation (docs-only, no runtime change).
+
+## [0.10.347] — 2026-09-27
+
+- The usage data choice during setup now starts on "Share usage data", and its
+  selection circles are drawn in full instead of being cut off on one side.
+- The setup bot's first message now mentions that you can run it in Claude Code
+  or Codex from the Launch button.
 - When setup finds no coding tool installed, the Home setup card offers a
   guided path instead of the old dead-end "Open in Claude Code / Codex"
   buttons. One click installs Claude Code, a plain progress line shows what

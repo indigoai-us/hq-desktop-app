@@ -251,7 +251,7 @@ describe("bots that live on another computer", () => {
     await settle(14);
 
     const status = q('[data-testid="settings-bots-status"]');
-    expect(status?.textContent).toContain("Could not bring scout back to this Mac");
+    expect(status?.textContent).toContain("Could not bring scout back to this computer");
     expect(status?.textContent).not.toContain("403");
     expect(status?.textContent).not.toContain("/v1/");
   });

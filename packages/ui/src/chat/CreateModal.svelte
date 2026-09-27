@@ -23,6 +23,7 @@
     LocalBotCreateInput,
     LocalBotWorkerOption,
   } from "@hq/platform";
+  import { hostComputerNoun } from "@hq/platform";
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
   import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
@@ -217,6 +218,13 @@
 
   /** Company channel vs project channel; only meaningful inside a company. */
   let channelKind = $state<"channel" | "project">(initialKind);
+
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once so the New-bot hint never renames the machine
+   * mid-flight.
+   */
+  const hostNoun = hostComputerNoun();
 
   // ── lifecycle entry points (New company / New bot) ───────────────────────
   const agentTargets = $derived<ScopeCompany[]>(
@@ -2303,9 +2311,9 @@
               <span class="create-entry-label">New bot</span>
               <span class="create-entry-hint">
                 {canCreateLocalBot && canCreateCloudBot
-                  ? "Runs on this Mac or in the cloud"
+                  ? `Runs on this ${hostNoun} or in the cloud`
                   : canCreateLocalBot
-                    ? "Runs on this Mac"
+                    ? `Runs on this ${hostNoun}`
                     : agentTargets.length === 1
                       ? `In ${agentTargets[0]?.label}`
                       : "Pick a company"}
