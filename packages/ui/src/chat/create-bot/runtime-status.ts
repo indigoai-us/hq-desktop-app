@@ -15,7 +15,12 @@
  * Pure on purpose: every state's copy and gating is unit-tested without a DOM.
  */
 
-/** What HQ knows about one runtime CLI on this Mac. Mirrors the Rust enum. */
+import { hostDeviceNoun } from "../../common/platform.js";
+
+/** "Mac", "PC", or "computer" for this window's host (see `common/platform.ts`). */
+const HOST_NOUN = hostDeviceNoun();
+
+/** What HQ knows about one runtime CLI on this host. Mirrors the Rust enum. */
 export type RuntimeStatus =
   | { state: "signedIn" }
   | { state: "signedOut" }
@@ -104,8 +109,13 @@ export function runtimeBlocksNext(status: RuntimeStatus | null): boolean {
   return status.state !== "signedIn";
 }
 
-/** Where to get a runtime, named for the footer's not-installed line. */
-const INSTALL_HINT: Readonly<Record<string, string>> = {
+/**
+ * Where to get a runtime, named for the footer's not-installed line. Exported
+ * as the one source of install guidance for a missing coding-tool CLI so
+ * other "no CLI signed in yet" copy (e.g. the setup bot's `SETUP_BOT_NO_RUNTIME`
+ * in `chat/setup-bot.ts`) reuses it instead of inventing its own instructions.
+ */
+export const INSTALL_HINT: Readonly<Record<string, string>> = {
   claude: "Install it from claude.ai/download, or run “npm i -g @anthropic-ai/claude-code”.",
   codex: "Install it with the ChatGPT desktop app, or run “npm i -g @openai/codex”.",
   grok: "Install it with “npm i -g @vibe-kit/grok-cli”.",
@@ -128,7 +138,7 @@ export function runtimeFooter(
   switch (status?.state) {
     case "notInstalled":
       return {
-        text: `${label} isn’t installed on this Mac. ${INSTALL_HINT[id] ?? "Install it, then check again."}`,
+        text: `${label} isn’t installed on this ${HOST_NOUN}. ${INSTALL_HINT[id] ?? "Install it, then check again."}`,
         action: "retry",
         actionLabel: "Check again",
         isError: true,
@@ -143,15 +153,15 @@ export function runtimeFooter(
     case "signedOut":
       return {
         text: canSignIn
-          ? `${label} is not signed in on this Mac.`
-          : `${label} is not signed in on this Mac. Sign in under Settings → AI tools, or pick another.`,
+          ? `${label} is not signed in on this ${HOST_NOUN}.`
+          : `${label} is not signed in on this ${HOST_NOUN}. Sign in under Settings → AI tools, or pick another.`,
         action: canSignIn ? "signin" : null,
         actionLabel: canSignIn ? "Sign in" : null,
         isError: false,
       };
     default:
       return {
-        text: `Signed in on this Mac — the bot uses your own ${label} plan.`,
+        text: `Signed in on this ${HOST_NOUN} — the bot uses your own ${label} plan.`,
         action: null,
         actionLabel: null,
         isError: false,
@@ -163,11 +173,11 @@ export function runtimeFooter(
 export function runtimeStepIssue(status: RuntimeStatus | null, label: string): string | null {
   switch (status?.state) {
     case "notInstalled":
-      return `${label} isn’t installed on this Mac.`;
+      return `${label} isn’t installed on this ${HOST_NOUN}.`;
     case "probeFailed":
       return `HQ couldn’t check whether ${label} is signed in.`;
     case "signedOut":
-      return `${label} is not signed in on this Mac.`;
+      return `${label} is not signed in on this ${HOST_NOUN}.`;
     default:
       return null;
   }

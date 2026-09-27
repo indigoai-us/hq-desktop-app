@@ -17,6 +17,8 @@
 // emit an explicit marker line (`[hq-setup] step=<id> status=<running|done>`)
 // which always wins over prose matching.
 
+import { hostDeviceNoun } from "../common/platform.js";
+
 // ---------------------------------------------------------------------------
 // Steps
 // ---------------------------------------------------------------------------
@@ -244,7 +246,7 @@ export const SETUP_RUN_STOPPED = {
 
 /** Copy for the permission card (plain words, no tool or command text). */
 export const SETUP_RUN_PERMISSION = {
-  text: "Setup needs your OK to take its next step on this Mac.",
+  text: `Setup needs your OK to take its next step on this ${hostDeviceNoun()}.`,
   allowOnce: "Allow",
   allowSession: "Allow for the rest of setup",
   deny: "Not now",

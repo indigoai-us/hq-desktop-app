@@ -28,7 +28,11 @@
    * localStorage so a relaunch offers "Continue setup (N of 4)".
    */
   import { onMount } from "svelte";
+  import { hostDeviceNoun } from "../common/platform.js";
   import type { AiTools } from "../settings/setup-launch";
+
+  /** "Mac", "PC", or "computer" for this window's host. */
+  const HOST_NOUN = hostDeviceNoun();
   import SetupWelcomeMark from "./SetupWelcomeMark.svelte";
   import type { SettingsApi, ShellApi } from "@hq/platform";
   import {
@@ -420,10 +424,10 @@
       {/if}
 
       {#if agent?.api && agent.providers && !agent.providersReady}
-        <!-- No signed-in agent on this Mac yet: connect one first. -->
+        <!-- No signed-in agent on this host yet: connect one first. -->
         <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
       {:else}
-      <div class="hero-actions" role="group" aria-label="Set up this Mac">
+      <div class="hero-actions" role="group" aria-label={`Set up this ${HOST_NOUN}`}>
         <SetupButton
           variant="primary"
           data-testid="setup-run"

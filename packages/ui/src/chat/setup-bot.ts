@@ -19,6 +19,17 @@
 import type { LocalBotRow } from "@hq/platform";
 
 import { isAgentUid } from "./agent-thinking.js";
+import { INSTALL_HINT } from "./create-bot/runtime-status.js";
+import { hostDeviceNoun } from "../common/platform.js";
+
+/**
+ * "Mac", "PC", or "computer" for THIS window's host, read once at import time
+ * (the host never changes mid-session). Every "runs on this ___" sentence in
+ * this module uses it instead of hardcoding "Mac", so the copy is correct on
+ * Windows too (hq-onboarding-windows-copy — the setup bot originally shipped
+ * Mac-only and its copy was never updated for the Windows build).
+ */
+const HOST_NOUN = hostDeviceNoun();
 
 /**
  * FALLBACK FLAG (one build only). `true` = Run Setup creates the setup bot.
@@ -47,7 +58,7 @@ export const SETUP_BOT_WORKER = "setup";
 export const SETUP_BOT_INTRO =
   "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
   "the work you already have, your business and the apps you use, and your first bot. " +
-  "I'm checking your Mac now, which can take a minute, and I'll post my first question here as soon as I'm done.";
+  `I'm checking your ${HOST_NOUN} now, which can take a minute, and I'll post my first question here as soon as I'm done.`;
 
 /**
  * The setup bot's hello with its name in it: "Hi, I'm Pickles, your setup
@@ -119,7 +130,7 @@ export const SETUP_BOT_KICKOFF_PREFIX = "Kickoff:";
  * for the person to type. Under 2000 characters and on one line.
  */
 export const SETUP_BOT_KICKOFF =
-  `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are checking the Mac now, ` +
+  `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are checking the ${HOST_NOUN} now, ` +
   "so do not greet again or repeat the plan. " +
   "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
   "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
@@ -144,16 +155,16 @@ export const SETUP_BOT_COPY = {
   create: "Create your setup bot",
   /** Home's setup card, in place of "open your agent and run /setup". */
   cardBody:
-    "Your HQ folder isn't ready yet. Your setup bot finishes it for you — it runs on this Mac under your own coding tool login.",
+    `Your HQ folder isn't ready yet. Your setup bot finishes it for you — it runs on this ${HOST_NOUN} under your own coding tool login.`,
   /** While the CLI is provisioning. */
   starting: "Starting…",
   /** The bot is being started automatically on first open. */
   autoStarting: "Starting your setup bot…",
   /** Under the hero while the automatic start runs. */
-  bodyStarting: "Your setup bot is starting on this Mac. Its conversation opens by itself in a moment.",
+  bodyStarting: `Your setup bot is starting on this ${HOST_NOUN}. Its conversation opens by itself in a moment.`,
   /** Under the hero, before the first click. */
   body:
-    "Setup happens in a conversation with your setup bot. It runs on this Mac under your own coding tool login, " +
+    `Setup happens in a conversation with your setup bot. It runs on this ${HOST_NOUN} under your own coding tool login, ` +
     "walks you through getting started, and stays afterwards for anything you need.",
   /** Under the hero once the bot exists. */
   bodyExisting:
@@ -164,9 +175,18 @@ export const SETUP_BOT_COPY = {
   fallback: "Use the step-by-step setup instead",
 } as const;
 
-/** No coding tool is signed in, so the CLI cannot start a bot. */
+/**
+ * No coding tool is signed in, so the CLI cannot start a bot. The setup bot
+ * runs ON TOP OF a coding-tool CLI (Claude Code, Codex, or Grok) — it does not
+ * bundle one — so someone with none of those installed needs to be told that
+ * up front, with exactly how to get one, rather than just "sign in, then
+ * retry" with nothing to sign in to.
+ */
 export const SETUP_BOT_NO_RUNTIME =
-  "No coding tool is signed in on this Mac yet. Sign in to Claude Code, Codex, or Grok, then retry.";
+  `The setup bot needs a coding tool CLI signed in on this ${HOST_NOUN} — it doesn't come with one. ` +
+  `Claude Code: ${INSTALL_HINT.claude} Codex: ${INSTALL_HINT.codex} ` +
+  "Install and sign in to one, then retry. " +
+  "No CLI installed yet? Use the step-by-step setup below instead — it walks you through installing one.";
 
 /** The host has no bots group at all (web build). */
 export const SETUP_BOT_UNAVAILABLE = "The setup bot is only available in the HQ desktop app.";

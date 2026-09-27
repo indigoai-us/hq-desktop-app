@@ -19,6 +19,7 @@ import {
   resumeStartStageFromManifest,
   setStageStatus,
   setupAutoRetryDelayMs,
+  setupBandExpectationHint,
   setupCompletionResult,
   setupNeedsAttention,
   setupProgressPercent,
@@ -206,6 +207,20 @@ describe("setup progress percent", () => {
         allDone: true,
       }),
     ).toBe(100);
+  });
+});
+
+describe("setup band expectation hints", () => {
+  it("tells the person the workspace-building step can take several minutes", () => {
+    expect(setupBandExpectationHint("Building your workspace")).toMatch(
+      /several minutes/i,
+    );
+  });
+
+  it("has no hint for bands with no known long-running risk", () => {
+    expect(setupBandExpectationHint("Laying the groundwork")).toBeNull();
+    expect(setupBandExpectationHint("Making it yours")).toBeNull();
+    expect(setupBandExpectationHint("unknown band")).toBeNull();
   });
 });
 

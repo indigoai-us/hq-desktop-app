@@ -475,6 +475,23 @@ export const FRIENDLY_SETUP_BAND_LABELS = [
   'Syncing across your devices',
 ] as const;
 
+/**
+ * "Building your workspace" covers the dependency/toolchain install band,
+ * which can legitimately run for several minutes on a slow network or a
+ * machine missing prerequisites. Shown under that band while it is active so
+ * a long-running step reads as expected rather than stuck
+ * (hq-onboarding-long-step-expectation).
+ */
+export const SETUP_BAND_EXPECTATION_HINTS: Partial<Record<string, string>> = {
+  'Building your workspace':
+    "This step can take several minutes — it's safe to leave it running.",
+};
+
+/** The expectation-setting hint for a band label, or null when it has none. */
+export function setupBandExpectationHint(label: string): string | null {
+  return SETUP_BAND_EXPECTATION_HINTS[label] ?? null;
+}
+
 export function friendlySetupBands(overallPercent: number): FriendlySetupBand[] {
   const clamped = Math.max(0, Math.min(100, overallPercent));
   const activeBand = clamped >= 100 ? -1 : Math.min(4, Math.floor(clamped / 20));

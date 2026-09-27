@@ -16,6 +16,8 @@ Current operational docs:
 - [`rich-agent-messages.md`](rich-agent-messages.md) — the structured-content
   (`hq-block`) wire contract and the `systemEvent` v1 envelope (incl. `lifecycle_card`).
 - [`phase2-status.md`](phase2-status.md) — Phase 2 status (historical).
+- [`windows-install-troubleshooting.md`](windows-install-troubleshooting.md) —
+  what to do when Norton (or another antivirus) blocks the Windows installer.
 
 App-scoped docs live under [`../apps/sync/docs/`](../apps/sync/docs/); the desktop
 window, Tauri command, and company-channel map is
