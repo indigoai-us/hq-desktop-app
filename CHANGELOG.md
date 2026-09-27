@@ -10,8 +10,10 @@ The release moves it under the version it ships in.
 
 - On Windows, setup uses Winget for Git and checks qmd's launcher before marking setup complete.
 - Updater restarts now find Node from the app-managed toolchain, preventing completed installations from reopening setup when Node is available.
-
 - Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
+
+## [0.10.342] — 2026-09-27
+
 - When enabled, cancelling setup treats an installer process group with no live
   members as already cleaned up instead of reporting a cleanup error. The
   rollout flag is off by default.
