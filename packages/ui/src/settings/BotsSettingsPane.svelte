@@ -668,7 +668,7 @@
       <div class="settings-card create" data-testid="settings-bots-create">
         <div class="bot-main">
           <strong>New bot</strong>
-          <small>Blank, from a template, or a copy of a bot you have — thinking with a tool signed in on this computer.</small>
+          <small>Blank, from a template, or a copy of a bot you have - thinking with a tool signed in on this computer.</small>
         </div>
         <div class="create-controls">
           <button

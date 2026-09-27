@@ -439,7 +439,7 @@
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
   // US-004: honest expectation-setting under "Getting your HQ ready". The UA
-  // read is one-shot at render — the host cannot change during onboarding —
+  // read is one-shot at render - the host cannot change during onboarding -
   // and stays neutral when the UA has not landed yet.
   const setupHostOs = $derived(
     readOnboardingHostOs(typeof navigator === 'undefined' ? null : navigator.userAgent),

@@ -43,21 +43,21 @@ function assertNeutral(label: string, value: unknown): void {
 }
 
 describe("setup exports are platform-neutral (US-006 regression)", () => {
-  it("SETUP_BOT_INTRO never says 'Mac' — a Windows setup bot sends the same intro", () => {
+  it("SETUP_BOT_INTRO never says 'Mac' - a Windows setup bot sends the same intro", () => {
     assertNeutral("SETUP_BOT_INTRO", SETUP_BOT_INTRO);
   });
 
-  it("SETUP_BOT_KICKOFF never says 'Mac' — the bot's kickoff runs on every platform", () => {
+  it("SETUP_BOT_KICKOFF never says 'Mac' - the bot's kickoff runs on every platform", () => {
     assertNeutral("SETUP_BOT_KICKOFF", SETUP_BOT_KICKOFF);
   });
 
-  it("SETUP_BOT_COPY.* — the hero, card body, starting and body strings — never say 'Mac'", () => {
+  it("SETUP_BOT_COPY.* - the hero, card body, starting and body strings - never say 'Mac'", () => {
     for (const [key, value] of Object.entries(SETUP_BOT_COPY)) {
       assertNeutral(`SETUP_BOT_COPY.${key}`, value);
     }
   });
 
-  it("SETUP_BOT_NO_RUNTIME — the exact string the operator flagged on Windows — is now platform-neutral", () => {
+  it("SETUP_BOT_NO_RUNTIME - the exact string the operator flagged on Windows - is now platform-neutral", () => {
     assertNeutral("SETUP_BOT_NO_RUNTIME", SETUP_BOT_NO_RUNTIME);
     // Positive check on the wording, not just its absence.
     expect(SETUP_BOT_NO_RUNTIME).toContain("this computer");
@@ -75,13 +75,13 @@ describe("setup exports are platform-neutral (US-006 regression)", () => {
     }
   });
 
-  it("SETUP_RUN_PERMISSION.* is neutral — the permission card renders on Windows too", () => {
+  it("SETUP_RUN_PERMISSION.* is neutral - the permission card renders on Windows too", () => {
     for (const [key, value] of Object.entries(SETUP_RUN_PERMISSION)) {
       assertNeutral(`SETUP_RUN_PERMISSION.${key}`, value);
     }
   });
 
-  it("SETUP_HERO_RETURNING.* is neutral — the returning-user hero renders on Windows too", () => {
+  it("SETUP_HERO_RETURNING.* is neutral - the returning-user hero renders on Windows too", () => {
     for (const [key, value] of Object.entries(SETUP_HERO_RETURNING)) {
       assertNeutral(`SETUP_HERO_RETURNING.${key}`, value);
     }

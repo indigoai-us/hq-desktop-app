@@ -8,6 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Setup and bot-picker copy on Windows no longer says "Mac". The setup bot,
+  its cards, install prompts, and the "Signed in on this ___" hints now say
+  "this computer" so a Windows user sees the same wording. The onboarding
+  wizard also shows an honest expectation under "Getting your HQ ready": on
+  Windows it explains that antivirus scans and background installs make
+  setup take longer, so a long-running step no longer looks stuck.
+
 ## [0.10.346] — 2026-09-27
 
 - New Files page (Cmd+5, or the file icon in the title bar). It opens full

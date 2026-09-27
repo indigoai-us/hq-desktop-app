@@ -35,7 +35,7 @@ export function readOnboardingHostOs(userAgent: string | null | undefined): Onbo
 export function setupExpectationCopy(os: OnboardingHostOs): string {
   switch (os) {
     case "windows":
-      return "This usually takes a few minutes. On Windows it can take longer — antivirus scans and background installs run behind the scenes. HQ keeps going even if the line below sits on the same step for a while.";
+      return "This usually takes a few minutes. On Windows it can take longer: antivirus scans and background installs run behind the scenes. HQ keeps going even if the line below sits on the same step for a while.";
     case "macos":
       return "This usually takes a couple of minutes. Each step below shows what HQ is doing and how long it has been running.";
     default:

@@ -189,7 +189,7 @@
   <div class="ss-section">
     <p class="ss-section-label">AI tools</p>
     <p class="ss-lede">
-      Sign in to the tools your local bots think with. Local bots and sessions use the Claude Code, Codex, or Grok CLI on this computer; HQ can install the CLI and open the tool’s own sign-in. HQ sign-in is separate. Usage stays with the tool account — remaining quota is not shown here yet.
+      Sign in to the tools your local bots think with. Local bots and sessions use the Claude Code, Codex, or Grok CLI on this computer; HQ can install the CLI and open the tool’s own sign-in. HQ sign-in is separate. Usage stays with the tool account - remaining quota is not shown here yet.
     </p>
     {#if error}
       <p class="ss-lede" role="alert" data-testid="settings-agents-error">{error}</p>

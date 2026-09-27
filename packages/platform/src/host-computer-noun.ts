@@ -33,7 +33,7 @@ export function hostComputerNoun(
 }
 
 /**
- * "this Mac" / "this PC" / "this computer" — the demonstrative form used in
+ * "this Mac" / "this PC" / "this computer" - the demonstrative form used in
  * onboarding sentences ("Setup runs on this ___").
  */
 export function thisComputerNoun(
@@ -43,7 +43,7 @@ export function thisComputerNoun(
 }
 
 /**
- * "your Mac" / "your PC" / "your computer" — the possessive form used when the
+ * "your Mac" / "your PC" / "your computer" - the possessive form used when the
  * sentence is about the person's machine ("checking your ___").
  */
 export function yourComputerNoun(

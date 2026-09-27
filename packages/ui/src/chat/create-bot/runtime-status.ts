@@ -151,7 +151,7 @@ export function runtimeFooter(
       };
     default:
       return {
-        text: `Signed in on this computer — the bot uses your own ${label} plan.`,
+        text: `Signed in on this computer - the bot uses your own ${label} plan.`,
         action: null,
         actionLabel: null,
         isError: false,

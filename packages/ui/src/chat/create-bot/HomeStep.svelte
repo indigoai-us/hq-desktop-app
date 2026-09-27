@@ -242,7 +242,7 @@
           {/if}
         </p>
       {:else}
-        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this computer — the bot uses your own {draftLabel} plan.</p>
+        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this computer - the bot uses your own {draftLabel} plan.</p>
       {/if}
     </div>
 

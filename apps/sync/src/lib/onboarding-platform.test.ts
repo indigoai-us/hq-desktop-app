@@ -48,7 +48,7 @@ describe("setupExpectationCopy", () => {
     expect(copy).not.toMatch(/exactly|\d+%/i);
   });
 
-  it("names no OS in the Mac line — the wording is a plain, honest expectation", () => {
+  it("names no OS in the Mac line - the wording is a plain, honest expectation", () => {
     const copy = setupExpectationCopy("macos");
     expect(copy).not.toMatch(/\bWindows\b/i);
     expect(copy).toMatch(/minutes/i);

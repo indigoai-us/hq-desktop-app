@@ -94,7 +94,7 @@ describe("SetupIncompleteCard with a setup bot", () => {
     expect(start).not.toHaveBeenCalled();
   });
 
-  it("US-006 regression: the card body never says 'Mac' — the same card renders on Windows", async () => {
+  it("US-006 regression: the card body never says 'Mac' - the same card renders on Windows", async () => {
     const start = vi.fn(async () => ({ ok: true as const, existing: false }));
     await render({ existing: false, ready: true, start });
 

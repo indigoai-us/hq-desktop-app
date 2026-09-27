@@ -148,7 +148,7 @@ export const SETUP_BOT_COPY = {
   create: "Create your setup bot",
   /** Home's setup card, in place of "open your agent and run /setup". */
   cardBody:
-    "Your HQ folder isn't ready yet. Your setup bot finishes it for you — it runs on this computer under your own coding tool login.",
+    "Your HQ folder isn't ready yet. Your setup bot finishes it for you - it runs on this computer under your own coding tool login.",
   /** While the CLI is provisioning. */
   starting: "Starting…",
   /** The bot is being started automatically on first open. */

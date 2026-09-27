@@ -23,7 +23,7 @@
   const hint = $derived(
     kind === "cloud"
       ? `${label} — runs in your company's cloud, always on`
-      : `${label} — runs on this computer under your own login`,
+      : `${label} - runs on this computer under your own login`,
   );
 </script>
 
