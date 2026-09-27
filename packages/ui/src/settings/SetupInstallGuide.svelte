@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * SetupInstallGuide — the guided path US-005 asked for. When setup finds no
+   * SetupInstallGuide - the guided path US-005 asked for. When setup finds no
    * coding tool installed (or none signed in), the SetupIncompleteCard used to
    * dead-end at "Open your HQ folder in Claude Code and run /setup", which
    * helps nobody without a CLI. This component replaces that dead-end with:
@@ -82,7 +82,7 @@
   // Sign-in evidence isn't in AiTools yet; the host tells us via `onsignin`.
   // The guide's "signed in?" state is local, seeded by whether ANY tool
   // record is present (installed) AND the caller marks it so. Kept minimal
-  // for testability — the SetupIncompleteCard's own launcher state is what
+  // for testability - the SetupIncompleteCard's own launcher state is what
   // actually drives the wider "setup is unblocked" decision.
   let signInCompletedFor = $state<CodingTool | null>(null);
 
@@ -113,13 +113,13 @@
       return `HQ is downloading and installing ${toolLabel}. This usually takes a minute or two. Leave this window open.`;
     }
     if (phase === "installed-need-signin" || (installed[activeTool] && phase === "idle")) {
-      return `${toolLabel} is installed. Sign in to finish — HQ opens ${toolLabel}'s own sign-in window; your password never comes to HQ.`;
+      return `${toolLabel} is installed. Sign in to finish. HQ opens ${toolLabel}'s own sign-in window; your password never comes to HQ.`;
     }
     if (phase === "signing-in") {
       return `Finish signing in in the ${toolLabel} window. HQ will notice as soon as it's done.`;
     }
     if (phase === "install-failed") {
-      return `HQ couldn't install ${toolLabel}. This is usually antivirus, a permission prompt HQ can't see, or being offline. You can download it yourself instead — one step.`;
+      return `HQ couldn't install ${toolLabel}. This is usually antivirus, a permission prompt HQ can't see, or being offline. You can download it yourself instead - one step.`;
     }
     if (phase === "signin-failed") {
       return `Sign-in did not complete. Try again in the ${toolLabel} window, or pick a different coding tool.`;
@@ -127,7 +127,7 @@
     if (phase === "done") {
       return `${toolLabel} is ready. HQ can finish setup now.`;
     }
-    return `Setup needs a coding tool on this computer. HQ can install ${toolLabel} for you and walk you through signing in — no CLI needed.`;
+    return `Setup needs a coding tool on this computer. HQ can install ${toolLabel} for you and walk you through signing in - no CLI needed.`;
   });
 
   async function runInstall(): Promise<void> {

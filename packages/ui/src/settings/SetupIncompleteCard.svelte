@@ -47,7 +47,7 @@
     >;
     /**
      * SETUP AS A BOT (bots v2, step 3). With a launcher, the card's primary
-     * action opens the setup bot's conversation — or creates it when this
+     * action opens the setup bot's conversation - or creates it when this
      * computer has a coding tool signed in. The tool launches below stay as
      * they are: they are the way through when no runtime is signed in (or the
      * create fails), and the card must never dead-end.
@@ -57,7 +57,7 @@
      * US-005: the guided install path shown when NO coding tool is detected.
      * The host wires these to its own install / sign-in commands
      * (`install_claude_code`, `provider_login_start`, `detect_ai_tools`,
-     * `open_external`). Optional — omitted callers keep the old fallback,
+     * `open_external`). Optional - omitted callers keep the old fallback,
      * so this prop is additive.
      */
     installGuide?: {
@@ -109,7 +109,7 @@
   /**
    * The guided install shows when nothing on this computer can drive setup:
    * no coding tool detected AND no signed-in launcher path. This is the
-   * dead-end US-005 replaces — the old fallback here was two "Open in …"
+   * dead-end US-005 replaces - the old fallback here was two "Open in …"
    * buttons that both fail on a machine with no CLI, plus a "Copy /setup"
    * that helps no one without a CLI.
    */
@@ -173,7 +173,7 @@
         if (!res.ok) launchError = failureMessage(res, "Claude Code");
       } else {
         launchError = installGuide
-          ? "Claude Code isn't installed yet. Use the guided install above — HQ can install it for you and walk you through signing in."
+          ? "Claude Code isn't installed yet. Use the guided install above - HQ can install it for you and walk you through signing in."
           : "Claude Code was not detected. Open your HQ folder in Claude Code and run /setup.";
       }
     } finally {
@@ -194,7 +194,7 @@
         if (!res.ok) launchError = failureMessage(res, "Codex");
       } else {
         launchError = installGuide
-          ? "Codex isn't installed yet. Use the guided install above — HQ can install it for you and walk you through signing in."
+          ? "Codex isn't installed yet. Use the guided install above - HQ can install it for you and walk you through signing in."
           : "Codex CLI was not detected. Open your HQ folder in Codex and run /setup.";
       }
     } finally {

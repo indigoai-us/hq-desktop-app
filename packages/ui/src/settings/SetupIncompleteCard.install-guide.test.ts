@@ -80,7 +80,7 @@ async function render(opts: Opts = {}): Promise<{
   return { oninstall, onsignin };
 }
 
-describe("SetupIncompleteCard — guided install path (US-005)", () => {
+describe("SetupIncompleteCard - guided install path (US-005)", () => {
   it("renders the guided install when no coding tool is installed and installGuide is provided", async () => {
     await render({ claudeInstalled: false });
     const guide = host.querySelector('[data-testid="setup-install-guide"]');
@@ -104,13 +104,13 @@ describe("SetupIncompleteCard — guided install path (US-005)", () => {
     expect(host.querySelector('[data-testid="setup-install-guide"]')).toBeNull();
   });
 
-  it("routes a click on Install through the caller's oninstall — HQ never asks for the password itself", async () => {
+  it("routes a click on Install through the caller's oninstall - HQ never asks for the password itself", async () => {
     const { oninstall, onsignin } = await render({ claudeInstalled: false });
     const primary = host.querySelector<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
     primary.click();
     await settle();
     expect(oninstall).toHaveBeenCalledWith("claude");
-    // Sign-in has not run yet — the guide is a two-step flow.
+    // Sign-in has not run yet - the guide is a two-step flow.
     expect(onsignin).not.toHaveBeenCalled();
   });
 });

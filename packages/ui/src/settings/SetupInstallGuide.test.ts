@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 /**
- * SetupInstallGuide — the four paths US-005 asks about:
+ * SetupInstallGuide - the four paths US-005 asks about:
  *  1. no coding tool installed → offer Install, run it, then guide sign-in
  *  2. tool present but not signed in → skip the install step, guide sign-in
  *  3. install fails (antivirus / offline / permission) → plain error + manual download
@@ -89,7 +89,7 @@ function lede(): string {
   return q('[data-testid="setup-install-guide-lede"]')!.textContent ?? "";
 }
 
-describe("SetupInstallGuide — no coding tool is installed", () => {
+describe("SetupInstallGuide - no coding tool is installed", () => {
   it("offers Install as the primary action, runs it, then guides sign-in", async () => {
     const { oninstall, onsignin, onrefresh } = await render({
       tools: { ...NO_AI_TOOLS },
@@ -121,7 +121,7 @@ describe("SetupInstallGuide — no coding tool is installed", () => {
   });
 });
 
-describe("SetupInstallGuide — tool present but not signed in", () => {
+describe("SetupInstallGuide - tool present but not signed in", () => {
   it("skips the install step and offers sign-in directly", async () => {
     const tools: AiTools = { ...NO_AI_TOOLS, claude_cli: true, any: true };
     const { oninstall, onsignin } = await render({ tools });
@@ -134,13 +134,13 @@ describe("SetupInstallGuide — tool present but not signed in", () => {
 
     primary.click();
     await vi.waitFor(() => expect(state()).toBe("done"));
-    // Install path never fired — the guide correctly picked the right step.
+    // Install path never fired - the guide correctly picked the right step.
     expect(oninstall).not.toHaveBeenCalled();
     expect(onsignin).toHaveBeenCalledWith("claude");
   });
 });
 
-describe("SetupInstallGuide — install fails", () => {
+describe("SetupInstallGuide - install fails", () => {
   it("says what happened in plain words and offers a manual download", async () => {
     const oninstall = vi.fn<(tool: CodingTool) => Promise<InstallOutcome>>(async () => ({
       ok: false,
@@ -172,12 +172,12 @@ describe("SetupInstallGuide — install fails", () => {
     expect(
       q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.textContent,
     ).toContain("Retry installing Claude Code");
-    // Refresh was not called after the failure — nothing to re-detect.
+    // Refresh was not called after the failure - nothing to re-detect.
     expect(onrefresh).not.toHaveBeenCalled();
   });
 });
 
-describe("SetupInstallGuide — signed in", () => {
+describe("SetupInstallGuide - signed in", () => {
   it("reaches the done phase and disables the primary action", async () => {
     const tools: AiTools = { ...NO_AI_TOOLS, claude_cli: true, any: true };
     const { onsignin } = await render({
@@ -193,7 +193,7 @@ describe("SetupInstallGuide — signed in", () => {
   });
 });
 
-describe("SetupInstallGuide — safety rules", () => {
+describe("SetupInstallGuide - safety rules", () => {
   it("never asks for or handles the user's password directly", async () => {
     // The guide's textContent (across every phase's lede) must never contain
     // password / passphrase / OTP prompts; sign-in belongs to the tool's own
@@ -205,7 +205,7 @@ describe("SetupInstallGuide — safety rules", () => {
     }
   });
 
-  it("never says the OS-specific name — Windows users see the same non-mac copy", async () => {
+  it("never says the OS-specific name - Windows users see the same non-mac copy", async () => {
     await render({ tools: { ...NO_AI_TOOLS } });
     const body = host.querySelector<HTMLElement>('[data-testid="setup-install-guide"]')!;
     // The install-guide lede talks about "on this computer", never "on this Mac".
@@ -216,7 +216,7 @@ describe("SetupInstallGuide — safety rules", () => {
   it("checks-in-progress state renders when tools is null (host is still probing)", async () => {
     await render({ tools: null });
     expect(lede()).toContain("Checking whether Claude Code is on this computer");
-    // The primary button is still callable — the install path assumes the
+    // The primary button is still callable - the install path assumes the
     // tool isn't there and offers Install as the reasonable first step.
     expect(
       q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.textContent,
