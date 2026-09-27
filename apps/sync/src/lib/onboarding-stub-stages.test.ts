@@ -125,8 +125,14 @@ describe('honest onboarding stage reporting', () => {
       'fs::create_dir_all(&settings)\n        .map_err(|_| "Could not prepare personal settings.".to_string())?',
     );
     expect(personalization).not.toContain('return Ok(())');
+    // Kill switch off: the sequential first-push, awaited.
     expect(initialSync).toContain(
-      'ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)',
+      'ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)\n            .await',
+    );
+    // Default: provision, then hand off to the running sync daemon or upload
+    // with bounded concurrency — still awaited, never detached.
+    expect(initialSync).toContain(
+      'ensure_personal_vault_for_install(&app, &vault, &hq_root)\n        .await',
     );
     expect(initialSync).toContain(
       'initial_cloud_sync_failure_message(Some(&error))',

@@ -938,11 +938,27 @@ fn initial_cloud_sync_failure_message(error: Option<&str>) -> String {
     }
 }
 
+/// Whether the install stage uses the daemon handoff + concurrent first-push.
+///
+/// `configured` is the `desktop.install-initial-sync-handoff` registry value.
+/// Default ON: only an explicit `false` restores the previous sequential
+/// first-push. A missing row or an unreachable registry keeps the default.
+fn initial_sync_handoff_enabled(configured: Option<bool>) -> bool {
+    configured.unwrap_or(true)
+}
+
 /// Provision and verify the first personal-vault cloud sync.
 ///
 /// The frontend has the stage's bounded timeout. This command therefore waits
 /// for the provisioning and first-push result instead of reporting success for
 /// a detached task whose outcome is not known yet.
+///
+/// With the handoff flag on (default), the stage waits for provisioning and
+/// then either confirms the running sync daemon will upload the personal
+/// vault, or uploads it itself with bounded concurrency. Success means "the
+/// vault exists and its upload is done or owned by the running daemon", not
+/// "every file is already in the cloud". With the flag off, it runs the
+/// previous sequential first-push unchanged.
 #[tauri::command]
 pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), String> {
     let jwt = resolve_jwt()
@@ -954,9 +970,30 @@ pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), Strin
     let hq_root =
         PathBuf::from(resolve_hq_path().map_err(|_| initial_cloud_sync_failure_message(None))?);
 
-    crate::commands::personal::ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)
+    use crate::commands::personal::{
+        ensure_personal_bucket_and_first_push, ensure_personal_vault_for_install,
+    };
+    let handoff = initial_sync_handoff_enabled(
+        crate::commands::hq_pro::feature_flag_value(
+            crate::commands::personal::INSTALL_INITIAL_SYNC_HANDOFF_FLAG,
+        )
+        .await,
+    );
+    if !handoff {
+        crate::util::logfile::log(
+            "personal",
+            "initial-sync: handoff flag off — running the sequential first-push",
+        );
+        return ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)
+            .await
+            .map_err(|error| initial_cloud_sync_failure_message(Some(&error)));
+    }
+
+    let outcome = ensure_personal_vault_for_install(&app, &vault, &hq_root)
         .await
-        .map_err(|error| initial_cloud_sync_failure_message(Some(&error)))
+        .map_err(|error| initial_cloud_sync_failure_message(Some(&error)))?;
+    crate::util::logfile::log("personal", &format!("initial-sync: {outcome:?}"));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1270,10 +1307,47 @@ mod tests {
             .expect("install stage tests must exist");
         let initial_sync = &src[initial_sync_start..tests_start];
 
+        // Both branches await their provisioning result; neither detaches it.
+        let squashed: String = initial_sync.split_whitespace().collect();
         assert!(
-            initial_sync.contains("ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)")
+            squashed.contains("ensure_personal_bucket_and_first_push(&app,&vault,&hq_root).await"),
+            "flag-off branch must await the sequential first-push"
+        );
+        assert!(
+            squashed.contains("ensure_personal_vault_for_install(&app,&vault,&hq_root).await"),
+            "flag-on branch must await the install handoff"
         );
         assert!(!initial_sync.contains("tauri::async_runtime::spawn"));
+    }
+
+    #[test]
+    fn initial_sync_handoff_flag_defaults_on_and_explicit_false_restores_legacy() {
+        // Registry unreachable or row missing: shipped default (on).
+        assert!(initial_sync_handoff_enabled(None));
+        assert!(initial_sync_handoff_enabled(Some(true)));
+        // Operator kill switch.
+        assert!(!initial_sync_handoff_enabled(Some(false)));
+    }
+
+    #[test]
+    fn initial_sync_flag_off_branch_runs_before_and_instead_of_the_handoff() {
+        let src = include_str!("install_stages.rs");
+        let start = src
+            .find("pub async fn start_initial_cloud_sync")
+            .expect("initial cloud sync command must exist");
+        let body = &src[start..];
+        let flag_check = body.find("if !handoff").expect("flag-off branch must exist");
+        let after = &body[flag_check..];
+        let legacy = after
+            .find("ensure_personal_bucket_and_first_push(")
+            .expect("legacy call must exist");
+        let handoff = after
+            .find("ensure_personal_vault_for_install(")
+            .expect("handoff call must exist");
+        // The flag-off branch returns the legacy result before the handoff.
+        assert!(legacy < handoff);
+        let legacy_branch = &after[..handoff];
+        assert!(legacy_branch.contains("return "), "flag-off branch must return early");
     }
 
     #[test]

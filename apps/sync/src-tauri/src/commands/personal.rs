@@ -547,12 +547,42 @@ async fn upload_with_retry(
 /// Reads + writes the personal-vault journal under `PERSONAL_VAULT_JOURNAL_SLUG`
 /// (`__hq_personal_vault__`) — the same slug the steady-state runner uses — so
 /// currency decisions agree with the runner instead of a stale legacy journal.
+///
+/// One-file-at-a-time entry point (`upload_concurrency = 1`). Production
+/// reaches the same loop through `ensure_impl_with` in `FirstPushMode::Legacy`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn run_personal_first_push<C, P, S>(
     hq_root: &Path,
     uploader: UploaderFn,
     on_scan: C,
     on_progress: P,
     on_skip: S,
+) -> Result<(usize, usize), String>
+where
+    C: Fn(usize, usize, Option<String>),
+    P: Fn(usize, usize, Option<String>),
+    S: Fn(String, String),
+{
+    run_personal_first_push_with_concurrency(hq_root, uploader, on_scan, on_progress, on_skip, 1)
+        .await
+}
+
+/// Same walk as `run_personal_first_push`, with the upload phase allowed to
+/// keep up to `upload_concurrency` PutObjects in flight.
+///
+/// `upload_concurrency <= 1` runs the original one-at-a-time loop unchanged;
+/// that is the path the `desktop.install-initial-sync-handoff` kill switch
+/// restores. Anything larger runs the bounded concurrent loop below. The scan
+/// phase, the journal baseline, the per-file retry policy
+/// (`upload_with_retry`), the vanished-file tolerance, and the first-error
+/// abort are the same in both.
+pub(crate) async fn run_personal_first_push_with_concurrency<C, P, S>(
+    hq_root: &Path,
+    uploader: UploaderFn,
+    on_scan: C,
+    on_progress: P,
+    on_skip: S,
+    upload_concurrency: usize,
 ) -> Result<(usize, usize), String>
 where
     C: Fn(usize, usize, Option<String>),
@@ -679,7 +709,22 @@ where
     // carried from the scan: holding the whole changed set in memory would
     // pin the entire vault on a true first push. Re-hashing keeps the
     // journal entry honest if a file changed between phases.
-    if upload_err.is_none() {
+    if upload_err.is_none() && upload_concurrency > 1 {
+        let plan_total = plan.len();
+        upload_err = upload_plan_concurrently(
+            plan,
+            &mut journal,
+            &now,
+            &uploader,
+            &on_progress,
+            &on_skip,
+            upload_concurrency,
+            &mut uploaded,
+            &mut skipped,
+        )
+        .await?;
+        on_progress(plan_total, plan_total, None);
+    } else if upload_err.is_none() {
         let plan_total = plan.len();
         'upload: for (i, (abs, rel_key)) in plan.into_iter().enumerate() {
             on_progress(i, plan_total, Some(rel_key.clone()));
@@ -753,6 +798,133 @@ where
     }
 
     Ok((uploaded, skipped))
+}
+
+/// Result of one planned upload in the concurrent upload phase.
+enum PlannedUpload {
+    /// Uploaded; journal it.
+    Uploaded {
+        rel_key: String,
+        sha256_hex: String,
+        size: u64,
+    },
+    /// The file now matches its journal entry (changed back between phases).
+    Unchanged,
+    /// The file disappeared between the scan and the read.
+    Vanished(String),
+}
+
+/// Upload phase with bounded concurrency. Mirrors the sequential loop in
+/// `run_personal_first_push_with_concurrency` file for file:
+///
+/// - `on_progress(i, total, Some(rel))` fires for each planned file before it
+///   is read, with `i` its position in the plan;
+/// - a vanished file is skipped with the same reason, other read errors abort;
+/// - each file goes through `upload_with_retry` (same attempts, same
+///   transient/permanent split);
+/// - the first failure stops the phase and becomes the returned error. Uploads
+///   already in flight at that moment are dropped without being journaled,
+///   which is safe because re-uploading them later is idempotent;
+/// - the journal is flushed every `JOURNAL_WRITE_BATCH` uploads.
+///
+/// Returns `Ok(Some(err))` for an upload/read failure (the caller writes the
+/// journal and surfaces it, as the sequential loop does) and `Err` only for a
+/// journal write failure, matching the sequential loop's `?`.
+#[allow(clippy::too_many_arguments)]
+async fn upload_plan_concurrently<P, S>(
+    plan: Vec<(PathBuf, String)>,
+    journal: &mut crate::util::journal::SyncJournal,
+    now: &str,
+    uploader: &UploaderFn,
+    on_progress: &P,
+    on_skip: &S,
+    upload_concurrency: usize,
+    uploaded: &mut usize,
+    skipped: &mut usize,
+) -> Result<Option<String>, String>
+where
+    P: Fn(usize, usize, Option<String>),
+    S: Fn(String, String),
+{
+    use futures_util::stream::StreamExt as _;
+
+    let plan_total = plan.len();
+    // Snapshot each planned file's baseline hash up front so the in-flight
+    // futures never borrow the journal the loop below is writing to. Only this
+    // phase writes the journal, and only for keys it has uploaded, so the
+    // snapshot is the same value the sequential loop would read.
+    let planned: Vec<(usize, PathBuf, String, Option<String>)> = plan
+        .into_iter()
+        .enumerate()
+        .map(|(i, (abs, rel_key))| {
+            let baseline = journal.files.get(&rel_key).map(|e| e.hash.clone());
+            (i, abs, rel_key, baseline)
+        })
+        .collect();
+
+    let mut results = futures_util::stream::iter(planned.into_iter().map(
+        |(i, abs, rel_key, baseline)| {
+            let uploader = uploader.clone();
+            async move {
+                on_progress(i, plan_total, Some(rel_key.clone()));
+                let contents = match std::fs::read(&abs) {
+                    Ok(c) => Bytes::from(c),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(PlannedUpload::Vanished(rel_key));
+                    }
+                    Err(e) => return Err(format!("{}: {e}", abs.display())),
+                };
+                let size = contents.len() as u64;
+                let sha256_hex = format!("{:x}", Sha256::digest(&contents));
+                if baseline.as_deref() == Some(sha256_hex.as_str()) {
+                    return Ok(PlannedUpload::Unchanged);
+                }
+                upload_with_retry(&rel_key, contents, &sha256_hex, &uploader).await?;
+                Ok(PlannedUpload::Uploaded {
+                    rel_key,
+                    sha256_hex,
+                    size,
+                })
+            }
+        },
+    ))
+    .buffer_unordered(upload_concurrency.max(1));
+
+    while let Some(result) = results.next().await {
+        match result {
+            Ok(PlannedUpload::Uploaded {
+                rel_key,
+                sha256_hex,
+                size,
+            }) => {
+                journal.files.insert(
+                    rel_key,
+                    JournalEntry {
+                        hash: sha256_hex,
+                        size,
+                        synced_at: now.to_string(),
+                        direction: Direction::Up,
+                        // Same as the sequential loop: Rust authors neither
+                        // remoteEtag nor mtimeMs; the runner stamps both later.
+                        remote_etag: None,
+                        mtime_ms: None,
+                        extra: Default::default(),
+                    },
+                );
+                *uploaded += 1;
+                if *uploaded % JOURNAL_WRITE_BATCH == 0 {
+                    write_journal(PERSONAL_VAULT_JOURNAL_SLUG, journal)?;
+                }
+            }
+            Ok(PlannedUpload::Unchanged) => *skipped += 1,
+            Ok(PlannedUpload::Vanished(rel_key)) => {
+                on_skip(rel_key, "file vanished before read".into());
+                *skipped += 1;
+            }
+            Err(e) => return Ok(Some(e)),
+        }
+    }
+    Ok(None)
 }
 
 // ── Cache validation ──────────────────────────────────────────────────────────
@@ -1041,12 +1213,319 @@ pub async fn ensure_personal_bucket_and_first_push<R: tauri::Runtime + 'static>(
 
 /// Internal version that accepts an optional uploader override for tests.
 /// When `uploader_override` is `None`, the real S3 client is used.
+///
+/// This is the pre-handoff behaviour: no sync-daemon check and the one-file-
+/// at-a-time upload. It is what `start_initial_cloud_sync` runs when the
+/// `desktop.install-initial-sync-handoff` kill switch is off.
 pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
     app: &tauri::AppHandle<R>,
     vault: &VaultClient,
     hq_root: &Path,
     uploader_override: Option<UploaderFn>,
 ) -> Result<(), String> {
+    ensure_impl_with(app, vault, hq_root, uploader_override, &FirstPushMode::Legacy)
+        .await
+        .map(|_| ())
+}
+
+// ── Install-stage handoff to the sync daemon ──────────────────────────────────
+
+/// hq-flags kill switch for the fast install-stage initial sync. Default ON:
+/// only an explicit `false` in the registry restores the old sequential
+/// first-push. A missing row or an unreachable registry keeps it on.
+pub(crate) const INSTALL_INITIAL_SYNC_HANDOFF_FLAG: &str = "desktop.install-initial-sync-handoff";
+
+/// Uploads kept in flight by the concurrent first-push. Kept small on purpose:
+/// each in-flight file is held in memory (up to the 50 MB per-file limit), and
+/// eight is already enough to take a ~1,600-file first push from minutes to
+/// seconds at ~75 ms per PutObject.
+pub(crate) const FIRST_PUSH_UPLOAD_CONCURRENCY: usize = 8;
+
+/// How long the install stage waits for a daemon that is still `Starting` to
+/// reach `Running` before it stops waiting and uploads the files itself.
+const DAEMON_STARTING_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+const DAEMON_STARTING_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// After a handoff, how long to wait for the daemon's personal-vault journal
+/// before the background safety net runs the upload itself, and how often to
+/// look.
+const HANDOFF_SAFETY_NET_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const HANDOFF_SAFETY_NET_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Everything the handoff gate needs to know about the sync daemon, read at
+/// one point in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DaemonHandoffSnapshot {
+    pub lifecycle: crate::commands::daemon::WatchDaemonState,
+    /// The user-facing Auto-sync toggle (`realtimeSync`).
+    pub auto_sync_enabled: bool,
+    /// The Personal sync toggle. Off means the daemon runs `--skip-personal`.
+    pub personal_sync_enabled: bool,
+    /// Sync is not paused (Cloud Off) and not disabled by the dev kill switch.
+    pub spawn_allowed: bool,
+    /// A Cognito session is cached, so the daemon can authenticate.
+    pub signed_in: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DaemonHandoffDecision {
+    /// The daemon is running and will push the personal vault.
+    Confirmed,
+    /// The daemon is still starting; ask again shortly.
+    Pending,
+    /// Not confirmed. The caller uploads the files itself.
+    Refused,
+}
+
+/// The handoff rule. The daemon only counts as owning the upload when every
+/// condition holds and it is `Running` (in production: a live runner process,
+/// see `daemon::watch_daemon_handoff_lifecycle`). `Starting` is not enough on
+/// its own (its preflight can still fail), so it is `Pending`. `Backoff`, `Stopped`,
+/// Auto-sync off, Personal sync off, sync paused, or signed out are `Refused`.
+pub(crate) fn daemon_handoff_decision(snapshot: &DaemonHandoffSnapshot) -> DaemonHandoffDecision {
+    use crate::commands::daemon::WatchDaemonState;
+    if !(snapshot.auto_sync_enabled
+        && snapshot.personal_sync_enabled
+        && snapshot.spawn_allowed
+        && snapshot.signed_in)
+    {
+        return DaemonHandoffDecision::Refused;
+    }
+    match snapshot.lifecycle {
+        WatchDaemonState::Running => DaemonHandoffDecision::Confirmed,
+        WatchDaemonState::Starting => DaemonHandoffDecision::Pending,
+        WatchDaemonState::Backoff | WatchDaemonState::Stopped => DaemonHandoffDecision::Refused,
+    }
+}
+
+fn live_daemon_handoff_snapshot() -> DaemonHandoffSnapshot {
+    DaemonHandoffSnapshot {
+        lifecycle: crate::commands::daemon::watch_daemon_handoff_lifecycle(),
+        auto_sync_enabled: crate::commands::daemon::is_realtime_sync_enabled(),
+        personal_sync_enabled: hq_desktop_core::daemon::is_personal_sync_enabled(),
+        spawn_allowed: hq_desktop_core::daemon::ensure_sync_spawn_allowed().is_ok(),
+        signed_in: matches!(crate::commands::cognito::read_tokens_from_file(), Ok(Some(_))),
+    }
+}
+
+/// Source of daemon snapshots plus the wait policy for a `Starting` daemon.
+/// Production reads live state; tests inject a scripted sequence.
+#[derive(Clone)]
+pub(crate) struct DaemonHandoffProbe {
+    snapshot: Arc<dyn Fn() -> DaemonHandoffSnapshot + Send + Sync>,
+    starting_wait: std::time::Duration,
+    poll_interval: std::time::Duration,
+}
+
+impl DaemonHandoffProbe {
+    pub(crate) fn live() -> Self {
+        Self {
+            snapshot: Arc::new(live_daemon_handoff_snapshot),
+            starting_wait: DAEMON_STARTING_WAIT,
+            poll_interval: DAEMON_STARTING_POLL,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scripted(
+        snapshot: Arc<dyn Fn() -> DaemonHandoffSnapshot + Send + Sync>,
+        starting_wait: std::time::Duration,
+        poll_interval: std::time::Duration,
+    ) -> Self {
+        Self {
+            snapshot,
+            starting_wait,
+            poll_interval,
+        }
+    }
+
+    fn snapshot(&self) -> DaemonHandoffSnapshot {
+        (self.snapshot)()
+    }
+
+    /// True only when the daemon is positively confirmed to own the upload.
+    /// A `Starting` daemon is given `starting_wait` to reach `Running`; any
+    /// other answer, or running out of time, is `false`.
+    pub(crate) async fn daemon_owns_personal_upload(&self) -> bool {
+        let deadline = tokio::time::Instant::now() + self.starting_wait;
+        loop {
+            match daemon_handoff_decision(&self.snapshot()) {
+                DaemonHandoffDecision::Confirmed => return true,
+                DaemonHandoffDecision::Refused => return false,
+                DaemonHandoffDecision::Pending => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    tokio::time::sleep(self.poll_interval).await;
+                }
+            }
+        }
+    }
+}
+
+/// How `ensure_impl_with` handles the upload once the vault is provisioned.
+#[derive(Clone)]
+pub(crate) enum FirstPushMode {
+    /// Pre-handoff behaviour: no daemon check, one upload at a time.
+    Legacy,
+    /// Install stage: hand the upload to the sync daemon when the probe
+    /// confirms it owns it; otherwise upload with bounded concurrency.
+    InstallHandoff(DaemonHandoffProbe),
+    /// Upload with bounded concurrency, no daemon check. Used by the
+    /// post-handoff safety net once the daemon has had its chance.
+    ConcurrentWalk,
+}
+
+/// What the personal first-push did. `start_initial_cloud_sync` only needs
+/// Ok/Err; the variants exist for logs and tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PersonalFirstPushOutcome {
+    /// The person entity exists but was not resolvable this cycle (benign 409).
+    PersonEntityAlreadyExists,
+    /// The runner's personal journal already exists; the runner owns sync.
+    EngineOwnsSteadyState,
+    /// The vault is provisioned and the running sync daemon will upload it.
+    /// Nothing was uploaded by this call.
+    HandedToSyncDaemon,
+    /// This call walked the vault and uploaded what changed.
+    Uploaded {
+        files_uploaded: usize,
+        files_skipped: usize,
+    },
+}
+
+/// Install-stage entry point used by `start_initial_cloud_sync` when the
+/// `desktop.install-initial-sync-handoff` flag is on.
+///
+/// Provisions the person entity and personal bucket, then either hands the
+/// upload to the running sync daemon (returning in seconds) or, when the
+/// daemon is not positively confirmed, uploads the vault itself with bounded
+/// concurrency. After a handoff, a background safety net waits for the
+/// daemon's personal journal and runs the upload itself if the daemon stops
+/// or never gets to it.
+pub async fn ensure_personal_vault_for_install<R: tauri::Runtime + 'static>(
+    app: &tauri::AppHandle<R>,
+    vault: &VaultClient,
+    hq_root: &Path,
+) -> Result<PersonalFirstPushOutcome, String> {
+    let probe = DaemonHandoffProbe::live();
+    let outcome = ensure_impl_with(
+        app,
+        vault,
+        hq_root,
+        None,
+        &FirstPushMode::InstallHandoff(probe.clone()),
+    )
+    .await?;
+    if outcome == PersonalFirstPushOutcome::HandedToSyncDaemon {
+        spawn_handoff_safety_net(app.clone(), hq_root.to_path_buf(), probe);
+    }
+    Ok(outcome)
+}
+
+/// Why the post-handoff wait ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandoffWatchVerdict {
+    /// The daemon's personal journal appeared: it synced the vault.
+    DaemonSynced,
+    /// The daemon stopped owning the upload (crashed, backoff, toggled off).
+    DaemonStopped,
+    /// The deadline passed without a personal journal.
+    TimedOut,
+}
+
+/// Wait for the daemon to finish its first personal-vault pass.
+pub(crate) async fn watch_daemon_handoff<J>(
+    probe: &DaemonHandoffProbe,
+    journal_exists: J,
+    deadline: std::time::Duration,
+    poll_interval: std::time::Duration,
+) -> HandoffWatchVerdict
+where
+    J: Fn() -> bool,
+{
+    let until = tokio::time::Instant::now() + deadline;
+    loop {
+        if journal_exists() {
+            return HandoffWatchVerdict::DaemonSynced;
+        }
+        if daemon_handoff_decision(&probe.snapshot()) == DaemonHandoffDecision::Refused {
+            return HandoffWatchVerdict::DaemonStopped;
+        }
+        if tokio::time::Instant::now() >= until {
+            return HandoffWatchVerdict::TimedOut;
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
+/// One safety net at a time, so a retried install stage cannot stack them.
+static HANDOFF_SAFETY_NET_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Background follow-up to a handoff. The daemon may have planned its first
+/// pass before this install provisioned the personal bucket, in which case
+/// that pass carries no personal target, or it may crash. Either way the
+/// personal journal does not appear, and this runs the same concurrent walk
+/// the install stage would have run. The walk re-checks the journal gate, so
+/// it does nothing once the runner owns the vault. Errors are logged; the
+/// install stage has already reported its result.
+fn spawn_handoff_safety_net<R: tauri::Runtime + 'static>(
+    app: tauri::AppHandle<R>,
+    hq_root: PathBuf,
+    probe: DaemonHandoffProbe,
+) {
+    use std::sync::atomic::Ordering;
+    if HANDOFF_SAFETY_NET_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let verdict = watch_daemon_handoff(
+            &probe,
+            engine_owns_personal_steady_state,
+            HANDOFF_SAFETY_NET_DEADLINE,
+            HANDOFF_SAFETY_NET_POLL,
+        )
+        .await;
+        log(
+            "personal",
+            &format!("personal handoff safety net: verdict={verdict:?}"),
+        );
+        if verdict != HandoffWatchVerdict::DaemonSynced {
+            let result = async {
+                let jwt = crate::commands::sync::resolve_jwt().await?;
+                let vault_url = crate::commands::sync::resolve_vault_api_url()?;
+                let vault = VaultClient::new(&vault_url, &jwt);
+                ensure_impl_with(&app, &vault, &hq_root, None, &FirstPushMode::ConcurrentWalk)
+                    .await
+            }
+            .await;
+            match result {
+                Ok(outcome) => log(
+                    "personal",
+                    &format!("personal handoff safety net finished: {outcome:?}"),
+                ),
+                Err(e) => log(
+                    "personal",
+                    &format!("personal handoff safety net upload failed: {e}"),
+                ),
+            }
+        }
+        HANDOFF_SAFETY_NET_IN_FLIGHT.store(false, Ordering::Release);
+    });
+}
+
+/// Shared provisioning + gating + upload body for every mode.
+pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
+    app: &tauri::AppHandle<R>,
+    vault: &VaultClient,
+    hq_root: &Path,
+    uploader_override: Option<UploaderFn>,
+    mode: &FirstPushMode,
+) -> Result<PersonalFirstPushOutcome, String> {
     let (person_uid, bucket_name) = match resolve_or_provision(app, vault).await? {
         Some(p) => p,
         None => {
@@ -1067,7 +1546,7 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
                 "personal",
                 "personal first-push skipped — person entity already exists (benign 409)",
             );
-            return Ok(());
+            return Ok(PersonalFirstPushOutcome::PersonEntityAlreadyExists);
         }
     };
 
@@ -1112,8 +1591,58 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
                 files_skipped: 0,
             },
         );
-        return Ok(());
+        return Ok(PersonalFirstPushOutcome::EngineOwnsSteadyState);
     }
+
+    // ── Install-stage handoff gate ─────────────────────────────────────────
+    // On a fresh install the runner's journal does not exist yet, so the gate
+    // above stays open, but the sync daemon started seconds earlier is about
+    // to push these same files. Walking and uploading them here as well took
+    // ~2 minutes of a ~2.5 minute install. When the daemon is positively
+    // confirmed to own the upload (running, Auto-sync on, Personal sync on,
+    // not paused, signed in), skip the walk. The vault is provisioned above,
+    // so the daemon has a bucket to push into. Anything less than a positive
+    // confirmation falls through to the walk. Only the install mode checks;
+    // Legacy and ConcurrentWalk never skip here.
+    if let FirstPushMode::InstallHandoff(probe) = mode {
+        if probe.daemon_owns_personal_upload().await {
+            log(
+                "personal",
+                "personal first-push handed to the sync daemon — vault provisioned, daemon running and will upload",
+            );
+            // Diagnostic only; no UI treats this as an error. Says plainly that
+            // the files are not uploaded by this step.
+            let _ = app.emit(
+                EVENT_SYNC_PERSONAL_FIRST_PUSH_SKIPPED,
+                SyncPersonalFirstPushSkippedEvent {
+                    person_uid: person_uid.clone(),
+                    path: "personal".to_string(),
+                    reason: "handed-to-sync-daemon".to_string(),
+                },
+            );
+            // Same COMPLETE the steady-state gate emits, so listeners latch.
+            // files_uploaded: 0 is accurate: this call uploaded nothing.
+            let _ = app.emit(
+                EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE,
+                SyncPersonalFirstPushCompleteEvent {
+                    person_uid: person_uid.clone(),
+                    files_uploaded: 0,
+                    files_skipped: 0,
+                },
+            );
+            return Ok(PersonalFirstPushOutcome::HandedToSyncDaemon);
+        }
+        log(
+            "personal",
+            "personal first-push not handed off — sync daemon not confirmed; uploading here",
+        );
+    }
+    let upload_concurrency = match mode {
+        FirstPushMode::Legacy => 1,
+        FirstPushMode::InstallHandoff(_) | FirstPushMode::ConcurrentWalk => {
+            FIRST_PUSH_UPLOAD_CONCURRENCY
+        }
+    };
 
     // Obtain STS credentials via /sts/vend-self (never vend-child)
     let vend_result = match vault
@@ -1195,7 +1724,7 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
     let person_uid_skip = person_uid.clone();
     let puid_complete = person_uid.clone();
 
-    let (files_uploaded, files_skipped) = run_personal_first_push(
+    let (files_uploaded, files_skipped) = run_personal_first_push_with_concurrency(
         hq_root,
         uploader,
         move |scanned, total, file| {
@@ -1230,6 +1759,7 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
                 },
             );
         },
+        upload_concurrency,
     )
     .await?;
 
@@ -1242,7 +1772,10 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
         },
     );
 
-    Ok(())
+    Ok(PersonalFirstPushOutcome::Uploaded {
+        files_uploaded,
+        files_skipped,
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -2913,5 +3446,599 @@ mod tests {
             "got: {}",
             p.display()
         );
+    }
+
+    // ── Install-stage handoff + concurrent first-push ─────────────────────
+
+    use crate::commands::daemon::WatchDaemonState;
+    use std::time::Duration;
+
+    fn daemon_snapshot(lifecycle: WatchDaemonState) -> DaemonHandoffSnapshot {
+        DaemonHandoffSnapshot {
+            lifecycle,
+            auto_sync_enabled: true,
+            personal_sync_enabled: true,
+            spawn_allowed: true,
+            signed_in: true,
+        }
+    }
+
+    fn fixed_probe(snapshot: DaemonHandoffSnapshot) -> DaemonHandoffProbe {
+        DaemonHandoffProbe::scripted(
+            Arc::new(move || snapshot),
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+        )
+    }
+
+    /// Returns each snapshot in turn, then repeats the last one.
+    fn sequence_probe(
+        seq: Vec<DaemonHandoffSnapshot>,
+        starting_wait: Duration,
+    ) -> DaemonHandoffProbe {
+        let idx = Arc::new(AtomicUsize::new(0));
+        DaemonHandoffProbe::scripted(
+            Arc::new(move || {
+                let i = idx.fetch_add(1, Ordering::SeqCst);
+                seq[i.min(seq.len() - 1)]
+            }),
+            starting_wait,
+            Duration::from_millis(1),
+        )
+    }
+
+    /// Uploader that records the peak number of uploads in flight.
+    fn make_tracking_uploader(
+        in_flight: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        calls: Arc<Mutex<Vec<String>>>,
+    ) -> UploaderFn {
+        Arc::new(
+            move |key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
+                let in_flight = in_flight.clone();
+                let peak = peak.clone();
+                let calls = calls.clone();
+                Box::pin(async move {
+                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    calls.lock().unwrap().push(key);
+                    UploadOutcome::Ok
+                })
+            },
+        )
+    }
+
+    async fn mount_vault_with_bucket(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entities": [person_entity_json("prs_x", "user@example.com", Some("hq-vault-prs-x"), "2026-01-01T00:00:00Z")]
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sts/vend-self"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(vend_self_ok()))
+            .mount(server)
+            .await;
+    }
+
+    fn seed_vault_files(root: &Path, n: usize) {
+        for i in 0..n {
+            write_file(
+                &root.join(format!("core/skills/s{i}.md")),
+                format!("core file {i}").as_bytes(),
+            );
+        }
+        write_file(&root.join("knowledge/notes.md"), b"notes");
+    }
+
+    #[test]
+    fn handoff_decision_requires_every_condition_and_a_running_daemon() {
+        use DaemonHandoffDecision::*;
+        let running = daemon_snapshot(WatchDaemonState::Running);
+        assert_eq!(daemon_handoff_decision(&running), Confirmed);
+        assert_eq!(
+            daemon_handoff_decision(&daemon_snapshot(WatchDaemonState::Starting)),
+            Pending
+        );
+        assert_eq!(
+            daemon_handoff_decision(&daemon_snapshot(WatchDaemonState::Backoff)),
+            Refused
+        );
+        assert_eq!(
+            daemon_handoff_decision(&daemon_snapshot(WatchDaemonState::Stopped)),
+            Refused
+        );
+        for lifecycle in [WatchDaemonState::Running, WatchDaemonState::Starting] {
+            let base = daemon_snapshot(lifecycle);
+            for off in [
+                DaemonHandoffSnapshot { auto_sync_enabled: false, ..base },
+                DaemonHandoffSnapshot { personal_sync_enabled: false, ..base },
+                DaemonHandoffSnapshot { spawn_allowed: false, ..base },
+                DaemonHandoffSnapshot { signed_in: false, ..base },
+            ] {
+                assert_eq!(
+                    daemon_handoff_decision(&off),
+                    Refused,
+                    "any missing condition must refuse the handoff: {off:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_waits_for_a_starting_daemon_to_reach_running() {
+        let probe = sequence_probe(
+            vec![
+                daemon_snapshot(WatchDaemonState::Starting),
+                daemon_snapshot(WatchDaemonState::Starting),
+                daemon_snapshot(WatchDaemonState::Running),
+            ],
+            Duration::from_secs(5),
+        );
+        assert!(probe.daemon_owns_personal_upload().await);
+    }
+
+    #[tokio::test]
+    async fn probe_refuses_a_daemon_that_never_finishes_starting() {
+        let probe = sequence_probe(
+            vec![daemon_snapshot(WatchDaemonState::Starting)],
+            Duration::from_millis(20),
+        );
+        assert!(!probe.daemon_owns_personal_upload().await);
+    }
+
+    #[tokio::test]
+    async fn probe_refuses_a_daemon_whose_start_fails() {
+        let probe = sequence_probe(
+            vec![
+                daemon_snapshot(WatchDaemonState::Starting),
+                daemon_snapshot(WatchDaemonState::Backoff),
+            ],
+            Duration::from_secs(5),
+        );
+        assert!(!probe.daemon_owns_personal_upload().await);
+    }
+
+    // REGRESSION (install initial-sync took ~2 of ~2.5 minutes): with the
+    // sync daemon running, the install stage must provision and return
+    // without walking or uploading the personal vault.
+    #[tokio::test]
+    async fn install_handoff_with_running_daemon_does_not_walk_or_upload() {
+        let server = MockServer::start().await;
+        mount_vault_with_bucket(&server).await;
+
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let tmp_home = TempDir::new().unwrap();
+        seed_vault_files(tmp_hq.path(), 30);
+        let upload_counter = Arc::new(AtomicUsize::new(0));
+        let completes: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+        let scans = Arc::new(AtomicUsize::new(0));
+
+        let (result, journal_written) = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+            let _home = scoped_home(tmp_home.path());
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            let c = completes.clone();
+            app.listen(EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE, move |e| {
+                c.lock().unwrap().push(e.payload().to_string());
+            });
+            let sc = scans.clone();
+            app.listen(EVENT_SYNC_PERSONAL_FIRST_PUSH_SCAN, move |_| {
+                sc.fetch_add(1, Ordering::SeqCst);
+            });
+            let vault = VaultClient::new(&server.uri(), "tok");
+            let r = ensure_impl_with(
+                &handle,
+                &vault,
+                tmp_hq.path(),
+                Some(make_counter_uploader(upload_counter.clone())),
+                &FirstPushMode::InstallHandoff(fixed_probe(daemon_snapshot(
+                    WatchDaemonState::Running,
+                ))),
+            )
+            .await;
+            let written = engine_owns_personal_steady_state();
+            std::env::remove_var("HQ_STATE_DIR");
+            (r, written)
+        };
+
+        assert_eq!(result, Ok(PersonalFirstPushOutcome::HandedToSyncDaemon));
+        assert_eq!(upload_counter.load(Ordering::SeqCst), 0, "no uploads");
+        assert_eq!(scans.load(Ordering::SeqCst), 0, "no walk");
+        assert!(
+            !journal_written,
+            "the handoff must not create the runner's personal journal"
+        );
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            !reqs.iter().any(|r| r.url.path() == "/sts/vend-self"),
+            "no upload credentials are vended on a handoff"
+        );
+        let completes = completes.lock().unwrap();
+        assert_eq!(completes.len(), 1, "COMPLETE must still be emitted once");
+        assert!(completes[0].contains("\"filesUploaded\":0"), "{}", completes[0]);
+    }
+
+    // When the daemon is not positively confirmed, the install stage uploads
+    // the vault itself — with bounded concurrency.
+    #[tokio::test]
+    async fn install_handoff_uploads_itself_when_the_daemon_is_not_confirmed() {
+        let base = daemon_snapshot(WatchDaemonState::Running);
+        let cases = [
+            ("daemon stopped", daemon_snapshot(WatchDaemonState::Stopped)),
+            ("daemon in backoff", daemon_snapshot(WatchDaemonState::Backoff)),
+            ("daemon stuck starting", daemon_snapshot(WatchDaemonState::Starting)),
+            ("auto-sync off", DaemonHandoffSnapshot { auto_sync_enabled: false, ..base }),
+            ("personal sync off", DaemonHandoffSnapshot { personal_sync_enabled: false, ..base }),
+            ("sync paused", DaemonHandoffSnapshot { spawn_allowed: false, ..base }),
+            ("signed out", DaemonHandoffSnapshot { signed_in: false, ..base }),
+        ];
+        for (label, snapshot) in cases {
+            let server = MockServer::start().await;
+            mount_vault_with_bucket(&server).await;
+            let tmp_state = TempDir::new().unwrap();
+            let tmp_hq = TempDir::new().unwrap();
+            let tmp_home = TempDir::new().unwrap();
+            seed_vault_files(tmp_hq.path(), 20);
+            let in_flight = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+
+            let result = {
+                let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+                std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+                let _home = scoped_home(tmp_home.path());
+                let app = tauri::test::mock_app();
+                let handle = app.handle().clone();
+                let vault = VaultClient::new(&server.uri(), "tok");
+                let r = ensure_impl_with(
+                    &handle,
+                    &vault,
+                    tmp_hq.path(),
+                    Some(make_tracking_uploader(in_flight, peak.clone(), calls.clone())),
+                    &FirstPushMode::InstallHandoff(fixed_probe(snapshot)),
+                )
+                .await;
+                std::env::remove_var("HQ_STATE_DIR");
+                r
+            };
+
+            assert_eq!(
+                result,
+                Ok(PersonalFirstPushOutcome::Uploaded {
+                    files_uploaded: 21,
+                    files_skipped: 0
+                }),
+                "{label}: the stage must upload the vault itself"
+            );
+            let calls = calls.lock().unwrap();
+            assert!(
+                calls.iter().any(|k| k.starts_with("core/")),
+                "{label}: core/ stays in the personal vault"
+            );
+            let peak = peak.load(Ordering::SeqCst);
+            assert!(
+                peak > 1 && peak <= FIRST_PUSH_UPLOAD_CONCURRENCY,
+                "{label}: fallback uploads must be concurrent and bounded; peak={peak}"
+            );
+        }
+    }
+
+    // Kill switch off: `ensure_impl` is the pre-handoff path. It never
+    // consults the daemon and uploads strictly one file at a time.
+    #[tokio::test]
+    async fn legacy_mode_uploads_sequentially_without_a_daemon_check() {
+        let server = MockServer::start().await;
+        mount_vault_with_bucket(&server).await;
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let tmp_home = TempDir::new().unwrap();
+        seed_vault_files(tmp_hq.path(), 12);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+
+        let result = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+            let _home = scoped_home(tmp_home.path());
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            let vault = VaultClient::new(&server.uri(), "tok");
+            let r = ensure_impl(
+                &handle,
+                &vault,
+                tmp_hq.path(),
+                Some(make_tracking_uploader(in_flight, peak.clone(), calls.clone())),
+            )
+            .await;
+            std::env::remove_var("HQ_STATE_DIR");
+            r
+        };
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(calls.lock().unwrap().len(), 13);
+        assert_eq!(peak.load(Ordering::SeqCst), 1, "legacy path is sequential");
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_push_is_bounded_and_journals_every_upload() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+        seed_vault_files(root, 60);
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+        let progress: Arc<Mutex<Vec<(usize, usize, Option<String>)>>> =
+            Arc::new(Mutex::new(vec![]));
+        let p = progress.clone();
+        let (uploaded, skipped) = run_personal_first_push_with_concurrency(
+            root,
+            make_tracking_uploader(in_flight.clone(), peak.clone(), calls.clone()),
+            |_, _, _| {},
+            move |done, total, file| p.lock().unwrap().push((done, total, file)),
+            |_, _| {},
+            FIRST_PUSH_UPLOAD_CONCURRENCY,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!((uploaded, skipped), (61, 0));
+        let peak_seen = peak.load(Ordering::SeqCst);
+        assert!(
+            peak_seen > 1 && peak_seen <= FIRST_PUSH_UPLOAD_CONCURRENCY,
+            "peak in flight must be concurrent but bounded; got {peak_seen}"
+        );
+        let journal = read_journal(PERSONAL_VAULT_JOURNAL_SLUG).unwrap();
+        assert_eq!(journal.files.len(), 61, "every upload is journaled");
+        let progress = progress.lock().unwrap();
+        assert_eq!(progress.len(), 62, "one event per planned file plus the final one");
+        assert!(progress.iter().all(|(_, total, _)| *total == 61));
+        assert_eq!(progress.last().unwrap(), &(61, 61, None));
+
+        // Re-run: the journal written by the concurrent phase makes it a no-op.
+        let calls2: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+        let (uploaded2, _) = run_personal_first_push_with_concurrency(
+            root,
+            make_tracking_uploader(in_flight, peak, calls2.clone()),
+            |_, _, _| {},
+            |_, _, _| {},
+            |_, _| {},
+            FIRST_PUSH_UPLOAD_CONCURRENCY,
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("HQ_STATE_DIR");
+        assert_eq!(uploaded2, 0);
+        assert!(calls2.lock().unwrap().is_empty());
+    }
+
+    /// One file fails permanently. Returns the error and the journal size.
+    async fn run_with_one_failing_file(concurrency: usize) -> (String, usize) {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+        write_file(&root.join("knowledge/a-bad.md"), b"bad");
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+        let uploader: UploaderFn = Arc::new(
+            |key: String, _data: Bytes, _sha: String| -> BoxFuture<UploadOutcome> {
+                Box::pin(async move {
+                    if key == "knowledge/a-bad.md" {
+                        UploadOutcome::Permanent("AccessDenied".into())
+                    } else {
+                        UploadOutcome::Ok
+                    }
+                })
+            },
+        );
+        let err = run_personal_first_push_with_concurrency(
+            root,
+            uploader,
+            |_, _, _| {},
+            |_, _, _| {},
+            |_, _| {},
+            concurrency,
+        )
+        .await
+        .expect_err("a permanent failure must fail the push");
+        let journaled = read_journal(PERSONAL_VAULT_JOURNAL_SLUG).unwrap().files.len();
+        std::env::remove_var("HQ_STATE_DIR");
+        (err, journaled)
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_push_surfaces_a_failed_file_exactly_like_sequential() {
+        let (seq_err, seq_journaled) = run_with_one_failing_file(1).await;
+        let (con_err, con_journaled) = run_with_one_failing_file(FIRST_PUSH_UPLOAD_CONCURRENCY).await;
+        assert_eq!(seq_err, "permanent upload error: AccessDenied");
+        assert_eq!(con_err, seq_err, "same error text on both paths");
+        assert_eq!((seq_journaled, con_journaled), (0, 0), "the failed file is not journaled");
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_push_keeps_transient_retry_semantics() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+        write_file(&root.join("knowledge/flaky.md"), b"flaky");
+        write_file(&root.join("knowledge/down.md"), b"down");
+        write_file(&root.join("knowledge/fine.md"), b"fine");
+
+        let attempts: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+            Arc::new(Mutex::new(Default::default()));
+        let a = attempts.clone();
+        let uploader: UploaderFn = Arc::new(
+            move |key: String, _data: Bytes, _sha: String| -> BoxFuture<UploadOutcome> {
+                let n = {
+                    let mut m = a.lock().unwrap();
+                    let n = m.entry(key.clone()).or_insert(0);
+                    *n += 1;
+                    *n
+                };
+                Box::pin(async move {
+                    match key.as_str() {
+                        // Two transient failures, then success: retried.
+                        "knowledge/flaky.md" if n < 3 => UploadOutcome::Transient("503".into()),
+                        // Always transient: gives up after 3 attempts.
+                        "knowledge/down.md" => UploadOutcome::Transient("503".into()),
+                        _ => UploadOutcome::Ok,
+                    }
+                })
+            },
+        );
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+        let err = run_personal_first_push_with_concurrency(
+            root,
+            uploader,
+            |_, _, _| {},
+            |_, _, _| {},
+            |_, _| {},
+            FIRST_PUSH_UPLOAD_CONCURRENCY,
+        )
+        .await
+        .expect_err("a file that never succeeds fails the push");
+        std::env::remove_var("HQ_STATE_DIR");
+
+        assert_eq!(
+            err,
+            "upload 'knowledge/down.md' failed after 3 attempts: 503"
+        );
+        let attempts = attempts.lock().unwrap();
+        assert_eq!(attempts.get("knowledge/down.md"), Some(&3));
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_push_skips_a_vanished_file() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+        write_file(&root.join("knowledge/stays.md"), b"i remain");
+        write_file(&root.join("knowledge/vanishes.md"), b"delete me mid-push");
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+        let skips: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(vec![]));
+        let skips_c = skips.clone();
+        let vanish_abs = root.join("knowledge/vanishes.md");
+        let (uploaded, _) = run_personal_first_push_with_concurrency(
+            root,
+            make_uploader(Arc::new(Mutex::new(vec![]))),
+            |_, _, _| {},
+            move |_, _, file| {
+                if file.as_deref() == Some("knowledge/vanishes.md") {
+                    let _ = std::fs::remove_file(&vanish_abs);
+                }
+            },
+            move |key, reason| skips_c.lock().unwrap().push((key, reason)),
+            FIRST_PUSH_UPLOAD_CONCURRENCY,
+        )
+        .await
+        .expect("a vanished file must not fail the push");
+        std::env::remove_var("HQ_STATE_DIR");
+
+        assert_eq!(uploaded, 1);
+        assert!(skips
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(k, r)| k == "knowledge/vanishes.md" && r == "file vanished before read"));
+    }
+
+    #[tokio::test]
+    async fn handoff_watch_reports_how_the_daemon_handoff_ended() {
+        let running = fixed_probe(daemon_snapshot(WatchDaemonState::Running));
+
+        // Journal appears on the third look: the daemon synced the vault.
+        let looks = Arc::new(AtomicUsize::new(0));
+        let l = looks.clone();
+        let verdict = watch_daemon_handoff(
+            &running,
+            move || l.fetch_add(1, Ordering::SeqCst) >= 2,
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(verdict, HandoffWatchVerdict::DaemonSynced);
+
+        // Daemon crashes into backoff before writing the journal.
+        let crashed = sequence_probe(
+            vec![
+                daemon_snapshot(WatchDaemonState::Running),
+                daemon_snapshot(WatchDaemonState::Backoff),
+            ],
+            Duration::from_secs(5),
+        );
+        let verdict = watch_daemon_handoff(
+            &crashed,
+            || false,
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(verdict, HandoffWatchVerdict::DaemonStopped);
+
+        // Daemon keeps running but never syncs personal (e.g. its first pass
+        // was planned before the bucket existed).
+        let verdict = watch_daemon_handoff(
+            &running,
+            || false,
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(verdict, HandoffWatchVerdict::TimedOut);
+    }
+
+    // After the safety net's wait, its walk re-checks the journal gate: once
+    // the runner owns the vault it uploads nothing (split-brain guard).
+    #[tokio::test]
+    async fn safety_net_walk_respects_the_steady_state_gate() {
+        let server = MockServer::start().await;
+        mount_vault_with_bucket(&server).await;
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let tmp_home = TempDir::new().unwrap();
+        seed_vault_files(tmp_hq.path(), 5);
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        let result = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+            let _home = scoped_home(tmp_home.path());
+            let jp = crate::util::journal::journal_path(PERSONAL_VAULT_JOURNAL_SLUG).unwrap();
+            std::fs::write(&jp, "{\"files\":{},\"last_sync\":\"\"}").unwrap();
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            let vault = VaultClient::new(&server.uri(), "tok");
+            let r = ensure_impl_with(
+                &handle,
+                &vault,
+                tmp_hq.path(),
+                Some(make_counter_uploader(counter.clone())),
+                &FirstPushMode::ConcurrentWalk,
+            )
+            .await;
+            std::env::remove_var("HQ_STATE_DIR");
+            r
+        };
+        assert_eq!(result, Ok(PersonalFirstPushOutcome::EngineOwnsSteadyState));
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 }
