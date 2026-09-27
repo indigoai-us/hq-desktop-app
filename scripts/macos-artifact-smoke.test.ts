@@ -151,9 +151,26 @@ describe("smoke boot diagnostics", () => {
 
     expect(tail).toHaveLength(4);
     expect(tail[0]).toBe("[boot] desktop-alt window created");
-    expect(tail[1]).toBe("[redacted token-bearing log line]");
-    expect(tail[2]).toBe("request url contains [REDACTED]");
+    expect(tail[1]).toBe("[redacted credential-bearing log line]");
+    expect(tail[2]).toBe("[redacted credential-bearing log line]");
     expect(tail.join("\n")).not.toContain(refreshToken);
+  });
+
+  it("omits arbitrary child output and redacts common credential shapes", () => {
+    const log = [
+      "GH_TOKEN=ghp_fakeTokenValue123456",
+      "Cookie: authjs.session-token=fake-cookie-value",
+      "request https://fake-user:fake-password@example.test/private",
+      "authorization failed with eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.signature123456",
+      "[boot] failed to open recovery window: CLI said something unexpected",
+      "2026-09-27T10:00:00.000Z [boot] watchdog timeout — desktop shell did not report ready",
+    ].join("\n");
+
+    const tail = redactSmokeLogTail(log);
+    expect(tail.slice(0, 4)).toEqual(Array(4).fill("[redacted credential-bearing log line]"));
+    expect(tail[4]).toBe("[omitted non-allowlisted log line]");
+    expect(tail[5]).toBe("2026-09-27T10:00:00.000Z [boot] watchdog timeout — desktop shell did not report ready");
+    expect(tail.join("\n")).not.toMatch(/ghp_fakeTokenValue123456|fake-cookie-value|fake-user|fake-password|eyJhbGci/);
   });
 
   it("reports launch-to-shell-ready and watchdog timings on either outcome", () => {
@@ -189,7 +206,9 @@ describe("smoke boot diagnostics", () => {
       timings: {},
       sandboxLog: "::error::untrusted log text",
     });
-    expect(output).toContain("| %3A%3Aerror%3A%3Auntrusted log text");
+    expect(output).toContain("| [omitted non-allowlisted log line]");
+    expect(output).not.toContain("::error");
+    expect(output).not.toContain("untrusted log text");
   });
 
   it("emits the sanitized sandbox tail when the boot watchdog fails", async () => {
@@ -233,7 +252,7 @@ describe("smoke boot diagnostics", () => {
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]).toMatch(/launch_to_watchdog_timeout_ms=\d+/);
     expect(diagnostics[0]).toContain("[boot] desktop-alt window created");
-    expect(diagnostics[0]).toContain("[redacted token-bearing log line]");
+    expect(diagnostics[0]).toContain("[redacted credential-bearing log line]");
     expect(diagnostics[0]).not.toContain(refreshToken);
   });
 });

@@ -142,10 +142,50 @@ export function parseBootLog(text) {
   };
 }
 
+const SAFE_BOOT_LOG_MESSAGES = new Set([
+  "HQ_DESKTOP_FORCE_RECOVERY set — opening recovery window",
+  "~/.hq/desktop-safe-mode present — opening recovery window",
+  "desktop-alt window created",
+  "desktop-alt closed by user",
+  "desktop-alt webview gone before shell_ready",
+  "shell ready — watchdog cancelled",
+  "watchdog timeout — desktop shell did not report ready",
+  "recovery auto-check: no update/rollback available",
+  "shell_ready from UI",
+  "reset local UI state",
+  "recovery window closed",
+  "tray Check for updates…",
+  "tray check: up to date",
+  "tray Recovery…",
+]);
+
+const SAFE_RECOVERY_TRIGGERS = "watchdog-timeout|webview-crash|safe-mode|menu";
+const SAFE_VERSION = "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:beta|alpha|shelltest)\\.(?:0|[1-9]\\d*))?";
+const SAFE_BOOT_LOG_PATTERNS = [
+  new RegExp(`^watchdog armed \\d+s(?:, env override)?$`),
+  new RegExp(`^auto-checking for updates before recovery window \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS})\\)$`),
+  new RegExp(`^recovery window opened \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS}), version=v${SAFE_VERSION}\\)$`),
+  new RegExp(`^recovery auto-check found v${SAFE_VERSION} — offering as primary action$`),
+];
+
+const CREDENTIAL_SHAPES = [
+  /\b(?:password|passwd|secret|api[_-]?key|(?:id|access|refresh)[_-]?token|token|gh[_-]?token|github[_-]?token|client[_-]?secret|credential|private[_-]?key|cookie|set-cookie|authorization|proxy-authorization)\s*[:=]\s*\S+/i,
+  /\b(?:bearer|basic)\s+\S+/i,
+  /\b(?:https?|ssh|ftp):\/\/[^/\s:@]+:[^/\s@]+@/i,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
+  /\b(?:gh[pousr]_|github_pat_|xox[baprs]-|sk[-_]|AKIA|AIza|npm_)[A-Za-z0-9_-]{8,}/,
+];
+
+function safeBootMessage(line) {
+  const match = /^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z )?\[boot\] (.*)$/.exec(line);
+  if (!match) return false;
+  return SAFE_BOOT_LOG_MESSAGES.has(match[1]) || SAFE_BOOT_LOG_PATTERNS.some((pattern) => pattern.test(match[1]));
+}
+
 /**
- * Keep a useful bounded tail of the sandbox log without exposing credentials.
- * Token-bearing lines are omitted, and the exact refresh token is scrubbed
- * from any other line before it can reach Actions output.
+ * Keep a bounded tail of known-safe boot events. hq-sync.log also contains
+ * arbitrary child stderr, so unmatched lines are omitted instead of relying
+ * on a growing credential-pattern denylist before writing to Actions logs.
  */
 export function redactSmokeLogTail(text, { refreshToken, maxLines = SMOKE_LOG_TAIL_LINES } = {}) {
   const lines = String(text ?? "").split(/\r?\n/);
@@ -153,17 +193,12 @@ export function redactSmokeLogTail(text, { refreshToken, maxLines = SMOKE_LOG_TA
   return lines
     .slice(-boundedLines)
     .map((line) => {
-      if (
-        /(?:refresh|access|id)[_-]?token["']?\s*[:=]\s*["']?/i.test(line) ||
-        /authorization["']?\s*[:=]/i.test(line) ||
-        /\bbearer\s+\S+/i.test(line)
-      ) {
-        return "[redacted token-bearing log line]";
-      }
-      if (typeof refreshToken === "string" && refreshToken.length > 0) {
-        return line.split(refreshToken).join("[REDACTED]");
-      }
-      return line;
+      if (safeBootMessage(line)) return line;
+      const carriesKnownCredential = CREDENTIAL_SHAPES.some((pattern) => pattern.test(line)) ||
+        (typeof refreshToken === "string" && refreshToken.length > 0 && line.includes(refreshToken));
+      return carriesKnownCredential
+        ? "[redacted credential-bearing log line]"
+        : "[omitted non-allowlisted log line]";
     });
 }
 
@@ -182,7 +217,7 @@ export function formatSmokeDiagnostics({ status, timings, sandboxLog = "", refre
     `smoke_terminal_observed_ms=${formatElapsed(timings?.terminalObservedMs)}`,
   ];
   if (status !== "passed") {
-    lines.push("sandbox hq-sync.log tail (up to 80 lines; token-bearing lines redacted):");
+    lines.push("sandbox hq-sync.log tail (up to 80 lines; only known-safe boot events shown):");
     for (const line of redactSmokeLogTail(sandboxLog, { refreshToken })) {
       // Prefix each untrusted log line so it cannot be interpreted as a
       // GitHub Actions workflow command.
