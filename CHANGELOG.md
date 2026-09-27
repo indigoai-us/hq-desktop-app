@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.346] — 2026-09-27
+
 - New Files page (Cmd+5, or the file icon in the title bar). It opens full
   window like Settings, with Back to return to Messages. Browse your
   personal vault and each company vault on this Mac. Notes open in a reading
