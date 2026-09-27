@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- A company you were just added to, including one the setup bot creates for
+  you, now syncs onto this Mac by itself. The "Added to … Sync to pull it"
+  banner only appears when that sync fails, and its Sync now button retries.
 - The setup bot now has a name, picked at random from 100 friendly ones
   (Pickles, Mochi, Waffles…), and never one a bot you can already see uses.
   It says its name in its first hello. If you started your own company, the
