@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When Git is already installed, Windows setup can continue after a WinGet
+  certificate mismatch. If qmd cannot run because Git Bash is missing, setup
+  reports that problem.
 - Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
 - When enabled, cancelling setup treats an installer process group with no live
   members as already cleaned up instead of reporting a cleanup error. The

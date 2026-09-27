@@ -5849,7 +5849,8 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
 #[cfg(windows)]
 fn write_qmd_bash_shim() -> Result<(), String> {
     let prefix = managed_npm_prefix();
-    write_qmd_bash_shim_in(&prefix)
+    let git_bash = git_bash_path();
+    write_qmd_bash_shim_in(&prefix, git_bash.as_deref())
 }
 
 #[cfg(any(test, windows))]
@@ -5894,24 +5895,69 @@ fn write_qmd_bash_shim_at(prefix: &Path, git_bash: Option<&Path>) -> Result<(), 
         ));
     };
 
-    let body = qmd_bash_shim_contents(bin_rel, git_bash)?;
     let cmd_path = prefix.join("qmd.cmd");
+    let body = match qmd_bash_shim_contents(bin_rel, git_bash) {
+        Ok(body) => body,
+        Err(error) => {
+            if cmd_path.exists() {
+                if let Err(remove_error) = std::fs::remove_file(&cmd_path) {
+                    return Err(format!(
+                        "{error}; failed to remove unsafe {cmd_path:?}: {remove_error}"
+                    ));
+                }
+            }
+            return Err(error);
+        }
+    };
     std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
     Ok(())
 }
 
-#[cfg(windows)]
-fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
-    if qmd_resolves_in_prefix(prefix) {
-        return Ok(());
-    }
+#[cfg(any(test, windows))]
+fn write_qmd_bash_shim_in(prefix: &Path, git_bash: Option<&Path>) -> Result<(), String> {
     // Resolve Git Bash to an absolute path at install time. A bare `bash` in
     // the shim resolves through the USER's shell PATH at run time, where
     // `C:\Windows\System32\bash.exe` (the WSL launcher) precedes Git's bash on
     // any machine with WSL enabled — and WSL bash cannot run a Windows-path
     // script argument (the INS-0580 failure class).
-    let git_bash = git_bash_path();
-    write_qmd_bash_shim_at(prefix, git_bash.as_deref())
+    write_qmd_bash_shim_at(prefix, git_bash)
+}
+
+#[cfg(any(test, windows))]
+fn git_bash_candidates(
+    git_executable: Option<&Path>,
+    program_files: &Path,
+    local_app_data: &Path,
+    user_profile: &Path,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(git) = git_executable {
+        // <root>\cmd\git.exe or <root>\bin\git.exe -> <root>\bin\bash.exe
+        if let Some(root) = git.parent().and_then(|p| p.parent()) {
+            candidates.push(root.join("bin").join("bash.exe"));
+        }
+    }
+    candidates.extend([
+        user_profile
+            .join("scoop")
+            .join("apps")
+            .join("git")
+            .join("current")
+            .join("bin")
+            .join("bash.exe"),
+        program_files.join("Git").join("bin").join("bash.exe"),
+        local_app_data
+            .join("Programs")
+            .join("Git")
+            .join("bin")
+            .join("bash.exe"),
+    ]);
+    candidates
+}
+
+#[cfg(any(test, windows))]
+fn first_existing_git_bash(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 /// Absolute path to Git for Windows' bash.exe, if one exists. Never returns
@@ -5921,30 +5967,13 @@ fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
 #[cfg(windows)]
 fn git_bash_path() -> Option<PathBuf> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if let Ok(git) = which::which_in("git", Some(extended_search_path()), &cwd) {
-        // <root>\cmd\git.exe or <root>\bin\git.exe -> <root>\bin\bash.exe
-        if let Some(root) = git.parent().and_then(|p| p.parent()) {
-            let bash = root.join("bin").join("bash.exe");
-            if bash.is_file() {
-                return Some(bash);
-            }
-        }
-    }
-    let candidates = [
-        program_files().join("Git").join("bin").join("bash.exe"),
-        local_app_data()
-            .join("Programs")
-            .join("Git")
-            .join("bin")
-            .join("bash.exe"),
-    ];
-    candidates.into_iter().find(|c| c.is_file())
-}
-
-#[cfg(windows)]
-fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    which::which_in("qmd", Some(prefix.to_string_lossy().as_ref()), cwd).is_ok()
+    let git = which::which_in("git", Some(extended_search_path()), &cwd).ok();
+    first_existing_git_bash(git_bash_candidates(
+        git.as_deref(),
+        &program_files(),
+        &local_app_data(),
+        &user_profile(),
+    ))
 }
 
 #[cfg(windows)]
@@ -7680,23 +7709,26 @@ mod install_deps_planner_tests {
         std::fs::create_dir_all(qmd_bin.parent().unwrap()).unwrap();
         std::fs::write(&qmd_bin, b"#!/usr/bin/env bash\n").unwrap();
 
-        let error = write_qmd_bash_shim_at(&prefix, None).unwrap_err();
+        let cmd_path = prefix.join("qmd.cmd");
+        std::fs::write(&cmd_path, "npm-generated shim using PATH bash\r\n").unwrap();
+        let error = write_qmd_bash_shim_in(&prefix, None).unwrap_err();
         assert!(error.contains("Git Bash"), "{error}");
         assert!(error.contains("bash.exe"), "{error}");
         assert!(
-            !prefix.join("qmd.cmd").exists(),
-            "a missing Git Bash must not leave a bare-bash shim behind"
+            !cmd_path.exists(),
+            "a missing Git Bash must remove the npm shim that can resolve bare bash"
         );
 
         let git_bash = tmp.path().join("Git").join("bin").join("bash.exe");
         std::fs::create_dir_all(git_bash.parent().unwrap()).unwrap();
         std::fs::write(&git_bash, b"bash").unwrap();
-        write_qmd_bash_shim_at(&prefix, Some(&git_bash)).unwrap();
+        std::fs::write(&cmd_path, "npm-generated shim using PATH bash\r\n").unwrap();
+        write_qmd_bash_shim_in(&prefix, Some(&git_bash)).unwrap();
 
-        let shim = std::fs::read_to_string(prefix.join("qmd.cmd")).unwrap();
+        let shim = std::fs::read_to_string(&cmd_path).unwrap();
         assert!(
             shim.contains(&format!("\"{}\" \"%~dp0", git_bash.display())),
-            "shim must invoke the absolute Git Bash path: {shim}"
+            "the installed npm shim must be replaced with one that invokes the absolute Git Bash path: {shim}"
         );
         assert!(
             !shim
@@ -7704,6 +7736,34 @@ mod install_deps_planner_tests {
                 .any(|line| line.trim_start().starts_with("bash ")),
             "shim must not fall back to a PATH-resolved bash: {shim}"
         );
+    }
+
+    #[test]
+    fn git_bash_path_finds_scoop_install_behind_git_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user_profile = tmp.path().join("profile");
+        let git_shim = user_profile.join("scoop").join("shims").join("git.exe");
+        let scoop_bash = user_profile
+            .join("scoop")
+            .join("apps")
+            .join("git")
+            .join("current")
+            .join("bin")
+            .join("bash.exe");
+        std::fs::create_dir_all(git_shim.parent().unwrap()).unwrap();
+        std::fs::write(&git_shim, b"scoop shim").unwrap();
+        std::fs::create_dir_all(scoop_bash.parent().unwrap()).unwrap();
+        std::fs::write(&scoop_bash, b"Git Bash").unwrap();
+
+        let candidates = git_bash_candidates(
+            Some(&git_shim),
+            &tmp.path().join("Program Files"),
+            &tmp.path().join("LocalAppData"),
+            &user_profile,
+        );
+        let resolved = first_existing_git_bash(candidates);
+
+        assert_eq!(resolved.as_deref(), Some(scoop_bash.as_path()));
     }
 
     #[test]
@@ -9382,18 +9442,31 @@ mod windows_tests {
     }
 
     #[test]
-    fn qmd_postinstall_accepts_cmd_shim_from_npm() {
+    fn qmd_postinstall_replaces_npm_shim_with_absolute_git_bash() {
         let tmp = tempfile::tempdir().unwrap();
         let qmd_prefix = tmp.path().join("npm-prefix");
-        std::fs::create_dir_all(&qmd_prefix).unwrap();
-        let npm_shim = "@echo off\r\necho qmd\r\n";
-        std::fs::write(qmd_prefix.join("qmd.cmd"), npm_shim).unwrap();
+        let qmd_bin = qmd_prefix
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("qmd");
+        std::fs::create_dir_all(qmd_bin.parent().unwrap()).unwrap();
+        std::fs::write(&qmd_bin, b"#!/usr/bin/env bash\n").unwrap();
 
-        assert!(qmd_resolves_in_prefix(&qmd_prefix));
-        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd.cmd should count as installed");
-        assert_eq!(
-            std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap(),
-            npm_shim
+        let npm_shim = "@echo off\r\nbash qmd\r\n";
+        let cmd_path = qmd_prefix.join("qmd.cmd");
+        std::fs::write(&cmd_path, npm_shim).unwrap();
+        let git_bash = tmp.path().join("Git").join("bin").join("bash.exe");
+        std::fs::create_dir_all(git_bash.parent().unwrap()).unwrap();
+        std::fs::write(&git_bash, b"Git Bash").unwrap();
+
+        write_qmd_bash_shim_in(&qmd_prefix, Some(&git_bash))
+            .expect("qmd.cmd should be replaced with the Git Bash shim");
+        let shim = std::fs::read_to_string(cmd_path).unwrap();
+        assert_ne!(shim, npm_shim);
+        assert!(
+            shim.contains(&format!("\"{}\" \"%~dp0", git_bash.display())),
+            "qmd.cmd should use the absolute Git Bash path: {shim}"
         );
     }
 
