@@ -16,6 +16,9 @@ The release moves it under the version it ships in.
   update is deferred to a later automatic check. Manual updates remain unchanged.
 - Setup cancellation treats SIGTERM EPERM as clean only when a full process group
   probe confirms no live members. Live groups and SIGKILL errors still surface.
+
+## [0.10.344] — 2026-09-27
+
 - On Windows, setup uses Winget for Git and checks qmd's launcher before marking setup complete.
 - Windows setup waits for Git before installing qmd and rechecks Git after a specific WinGet failure.
 - Updater restarts now find Node from the app-managed toolchain, preventing completed installations from reopening setup when Node is available.
