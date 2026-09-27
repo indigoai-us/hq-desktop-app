@@ -8,7 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- MIGRATION.md: replace the retired downloads host with `hqforwork.com/install` (docs-only, no runtime change). Wave 2a of the getindigo.ai deprecation.
+- MIGRATION.md: restore the historical updater endpoint URLs with '(retired, never launched)' annotations and add a dated note that the shipped app uses GitHub Releases for updates. Wave 2a of the getindigo.ai deprecation (docs-only, no runtime change).
+- When setup finds no coding tool installed, the Home setup card offers a
+  guided path instead of the old dead-end "Open in Claude Code / Codex"
+  buttons. One click installs Claude Code, a plain progress line shows what
+  is happening, and after it lands HQ walks you through signing in inside
+  Claude Code's own window. Your password never comes to HQ. If the install
+  fails, the card says why in one sentence and offers a manual download.
 
 ## [0.10.346] — 2026-09-27
 
