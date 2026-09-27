@@ -163,7 +163,7 @@ export const SETUP_HERO = {
 export const SETUP_HERO_RETURNING = {
   eyebrow: "Welcome to HQ",
   title: "Your company is ready.",
-  body: "Run Setup connects this Mac to your company and finishes the last steps in HQ Sessions. It takes about a minute.",
+  body: "Run Setup connects this computer to your company and finishes the last steps in HQ Sessions. It takes about a minute.",
 } as const;
 
 /** The one primary action on #welcome. */

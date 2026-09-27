@@ -94,6 +94,17 @@ describe("SetupIncompleteCard with a setup bot", () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  it("US-006 regression: the card body never says 'Mac' — the same card renders on Windows", async () => {
+    const start = vi.fn(async () => ({ ok: true as const, existing: false }));
+    await render({ existing: false, ready: true, start });
+
+    const body = host.querySelector('[data-testid="setup-card-bot-body"]')!;
+    // The exact string the operator saw was "on this Mac"; the whole class of
+    // Mac-named setup copy must be gone (see setup-bot-os-neutral.test.ts).
+    expect(body.textContent).not.toMatch(/\bMac(OS|s)?\b/i);
+    expect(body.textContent).toContain("this computer");
+  });
+
   it("without a launcher at all, the card is exactly what it was", async () => {
     await render(null);
     expect(host.querySelector('[data-testid="setup-open-bot"]')).toBeNull();

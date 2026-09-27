@@ -131,7 +131,7 @@
       if (token === generation) {
         loginState = "error";
         message = installing
-          ? `Could not install ${name} on this Mac. Download it below, then connect.`
+          ? `Could not install ${name} on this computer. Download it below, then connect.`
           : "Could not connect the coding tool. Please try again.";
       }
     } finally {

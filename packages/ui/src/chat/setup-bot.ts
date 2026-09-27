@@ -38,16 +38,20 @@ export const SETUP_BOT_WORKER = "setup";
 /**
  * The bot's first message, sent by the runtime the moment it starts
  * (`hq bot create --intro`) instead of waiting for a model turn. Two short
- * sentences: the plan, and that it is checking the Mac now and may take a
+ * sentences: the plan, and that it is checking the computer now and may take a
  * minute (the first model turn is slow, so say so up front) — never an open
  * "what would you like to do?", because the kickoff turn below follows it
  * automatically. Keep it under 500 characters (the CLI's `--intro` limit) and
  * on one line (the host rejects control characters).
+ *
+ * Wording is deliberately platform-neutral ("your computer") so a Windows user
+ * never reads "your Mac". The regression is guarded by
+ * `setup-bot-os-neutral.test.ts`.
  */
 export const SETUP_BOT_INTRO =
   "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
   "the work you already have, your business and the apps you use, and your first bot. " +
-  "I'm checking your Mac now, which can take a minute, and I'll post my first question here as soon as I'm done.";
+  "I'm checking your computer now, which can take a minute, and I'll post my first question here as soon as I'm done.";
 
 /**
  * The setup bot's hello with its name in it: "Hi, I'm Pickles, your setup
@@ -119,7 +123,7 @@ export const SETUP_BOT_KICKOFF_PREFIX = "Kickoff:";
  * for the person to type. Under 2000 characters and on one line.
  */
 export const SETUP_BOT_KICKOFF =
-  `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are checking the Mac now, ` +
+  `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are checking the computer now, ` +
   "so do not greet again or repeat the plan. " +
   "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
   "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
@@ -144,16 +148,16 @@ export const SETUP_BOT_COPY = {
   create: "Create your setup bot",
   /** Home's setup card, in place of "open your agent and run /setup". */
   cardBody:
-    "Your HQ folder isn't ready yet. Your setup bot finishes it for you — it runs on this Mac under your own coding tool login.",
+    "Your HQ folder isn't ready yet. Your setup bot finishes it for you — it runs on this computer under your own coding tool login.",
   /** While the CLI is provisioning. */
   starting: "Starting…",
   /** The bot is being started automatically on first open. */
   autoStarting: "Starting your setup bot…",
   /** Under the hero while the automatic start runs. */
-  bodyStarting: "Your setup bot is starting on this Mac. Its conversation opens by itself in a moment.",
+  bodyStarting: "Your setup bot is starting on this computer. Its conversation opens by itself in a moment.",
   /** Under the hero, before the first click. */
   body:
-    "Setup happens in a conversation with your setup bot. It runs on this Mac under your own coding tool login, " +
+    "Setup happens in a conversation with your setup bot. It runs on this computer under your own coding tool login, " +
     "walks you through getting started, and stays afterwards for anything you need.",
   /** Under the hero once the bot exists. */
   bodyExisting:
@@ -166,7 +170,7 @@ export const SETUP_BOT_COPY = {
 
 /** No coding tool is signed in, so the CLI cannot start a bot. */
 export const SETUP_BOT_NO_RUNTIME =
-  "No coding tool is signed in on this Mac yet. Sign in to Claude Code, Codex, or Grok, then retry.";
+  "No coding tool is signed in on this computer yet. Sign in to Claude Code, Codex, or Grok, then retry.";
 
 /** The host has no bots group at all (web build). */
 export const SETUP_BOT_UNAVAILABLE = "The setup bot is only available in the HQ desktop app.";

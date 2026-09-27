@@ -44,7 +44,7 @@ describe("what the footer offers", () => {
 
   it("tells a missing CLI where to get it, and never says signed out", () => {
     const footer = runtimeFooter(MISSING, "Claude Code", "claude", true);
-    expect(footer.text).toContain("isn’t installed on this Mac");
+    expect(footer.text).toContain("isn’t installed on this computer");
     expect(footer.text).toContain("claude.ai/download");
     expect(footer.text).not.toContain("signed in");
     expect(footer.actionLabel).toBe("Check again");
@@ -70,7 +70,7 @@ describe("what the footer offers", () => {
 
   it("is a plain confirmation when signed in", () => {
     const footer = runtimeFooter(SIGNED_IN, "Codex", "codex", true);
-    expect(footer.text).toContain("Signed in on this Mac");
+    expect(footer.text).toContain("Signed in on this computer");
     expect(footer.isError).toBe(false);
   });
 });
@@ -98,9 +98,9 @@ describe("gating", () => {
   });
 
   it("gives each blocking state its own sentence", () => {
-    expect(runtimeStepIssue(MISSING, "Claude Code")).toBe("Claude Code isn’t installed on this Mac.");
+    expect(runtimeStepIssue(MISSING, "Claude Code")).toBe("Claude Code isn’t installed on this computer.");
     expect(runtimeStepIssue(FAILED, "Claude Code")).toBe("HQ couldn’t check whether Claude Code is signed in.");
-    expect(runtimeStepIssue(SIGNED_OUT, "Claude Code")).toBe("Claude Code is not signed in on this Mac.");
+    expect(runtimeStepIssue(SIGNED_OUT, "Claude Code")).toBe("Claude Code is not signed in on this computer.");
     expect(runtimeStepIssue(SIGNED_IN, "Claude Code")).toBeNull();
     expect(runtimeStepIssue(null, "Claude Code")).toBeNull();
   });

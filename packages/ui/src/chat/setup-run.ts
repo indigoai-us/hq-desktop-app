@@ -244,7 +244,7 @@ export const SETUP_RUN_STOPPED = {
 
 /** Copy for the permission card (plain words, no tool or command text). */
 export const SETUP_RUN_PERMISSION = {
-  text: "Setup needs your OK to take its next step on this Mac.",
+  text: "Setup needs your OK to take its next step on this computer.",
   allowOnce: "Allow",
   allowSession: "Allow for the rest of setup",
   deny: "Not now",

@@ -2,6 +2,7 @@
 export * from "./adapter.js";
 export * from "./capabilities.js";
 export * from "./host-platform.js";
+export * from "./host-computer-noun.js";
 export * from "./library-shelf.js";
 export {
   CLAUDE_PROVIDER_FLAG,

@@ -2303,9 +2303,9 @@
               <span class="create-entry-label">New bot</span>
               <span class="create-entry-hint">
                 {canCreateLocalBot && canCreateCloudBot
-                  ? "Runs on this Mac or in the cloud"
+                  ? "Runs on this computer or in the cloud"
                   : canCreateLocalBot
-                    ? "Runs on this Mac"
+                    ? "Runs on this computer"
                     : agentTargets.length === 1
                       ? `In ${agentTargets[0]?.label}`
                       : "Pick a company"}

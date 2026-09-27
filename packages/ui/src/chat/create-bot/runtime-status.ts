@@ -128,7 +128,7 @@ export function runtimeFooter(
   switch (status?.state) {
     case "notInstalled":
       return {
-        text: `${label} isn’t installed on this Mac. ${INSTALL_HINT[id] ?? "Install it, then check again."}`,
+        text: `${label} isn’t installed on this computer. ${INSTALL_HINT[id] ?? "Install it, then check again."}`,
         action: "retry",
         actionLabel: "Check again",
         isError: true,
@@ -143,15 +143,15 @@ export function runtimeFooter(
     case "signedOut":
       return {
         text: canSignIn
-          ? `${label} is not signed in on this Mac.`
-          : `${label} is not signed in on this Mac. Sign in under Settings → AI tools, or pick another.`,
+          ? `${label} is not signed in on this computer.`
+          : `${label} is not signed in on this computer. Sign in under Settings → AI tools, or pick another.`,
         action: canSignIn ? "signin" : null,
         actionLabel: canSignIn ? "Sign in" : null,
         isError: false,
       };
     default:
       return {
-        text: `Signed in on this Mac — the bot uses your own ${label} plan.`,
+        text: `Signed in on this computer — the bot uses your own ${label} plan.`,
         action: null,
         actionLabel: null,
         isError: false,
@@ -163,11 +163,11 @@ export function runtimeFooter(
 export function runtimeStepIssue(status: RuntimeStatus | null, label: string): string | null {
   switch (status?.state) {
     case "notInstalled":
-      return `${label} isn’t installed on this Mac.`;
+      return `${label} isn’t installed on this computer.`;
     case "probeFailed":
       return `HQ couldn’t check whether ${label} is signed in.`;
     case "signedOut":
-      return `${label} is not signed in on this Mac.`;
+      return `${label} is not signed in on this computer.`;
     default:
       return null;
   }

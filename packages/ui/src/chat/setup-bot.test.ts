@@ -95,13 +95,16 @@ describe("copy", () => {
     expect(SETUP_BOT_INTRO).not.toMatch(/[\u0000-\u001f\u007f]/);
   });
 
-  it("the intro is two short sentences: the plan, then that it is checking the Mac and may take a minute — never an open question", () => {
+  it("the intro is two short sentences: the plan, then that it is checking the computer and may take a minute — never an open question", () => {
     const sentences = SETUP_BOT_INTRO.split(/(?<=[.!?])\s+/).filter(Boolean);
     expect(sentences).toHaveLength(2);
     for (const part of ["tools", "HQ Cloud", "company", "work you already have", "apps", "first bot"]) {
       expect(SETUP_BOT_INTRO).toContain(part);
     }
-    expect(sentences[1]).toMatch(/checking your Mac now/i);
+    // Platform-neutral: never names a specific OS ("your Mac", "your PC")
+    // because the same intro is sent from Windows and macOS alike.
+    expect(sentences[1]).toMatch(/checking your computer now/i);
+    expect(sentences[1]).not.toMatch(/\bmac\b/i);
     expect(sentences[1]).toMatch(/a minute/i);
     expect(SETUP_BOT_INTRO).not.toContain("?");
     expect(SETUP_BOT_INTRO.toLowerCase()).not.toMatch(/what would you like|say hi whenever/);

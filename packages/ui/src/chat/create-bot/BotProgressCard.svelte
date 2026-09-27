@@ -34,7 +34,7 @@
 
   const STEPS = [
     { id: "creating", label: "Creating identity" },
-    { id: "installing", label: "Installing on this Mac" },
+    { id: "installing", label: "Installing on this computer" },
     { id: "online", label: "Online" },
   ] as const;
 

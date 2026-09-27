@@ -101,7 +101,7 @@ export interface CreateBotContext {
 export const BOT_SCOPE_COPY: Record<BotScope, { title: string; sub: string }> = {
   personal: {
     title: "Personal — acts as you",
-    sub: "Works under your account, with everything you can reach. Stays on this Mac. It has no company identity, so teammates can’t find it — make it a company bot to share it.",
+    sub: "Works under your account, with everything you can reach. Stays on this computer. It has no company identity, so teammates can’t find it — make it a company bot to share it.",
   },
   company: {
     title: "For a company",
@@ -439,7 +439,7 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
           // installed. The boolean is the fallback for hosts without it.
           if (status) return runtimeBlocksNext(status) ? runtimeStepIssue(status, label) : null;
           if (!runtimeIsReady(ctx.runtimeReady, draft.runtime)) {
-            return `${label} is not signed in on this Mac.`;
+            return `${label} is not signed in on this computer.`;
           }
         }
         return null;

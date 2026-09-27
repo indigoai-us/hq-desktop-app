@@ -154,7 +154,7 @@
       </span>
       <span class="cb-card-sub">
         {canLocal
-          ? "Runs on this Mac with your own login. Works while this computer is on. Message it from your phone."
+          ? "Runs on this computer with your own login. Works while this computer is on. Message it from your phone."
           : "Bots can't run on this computer."}
       </span>
     </button>
@@ -175,7 +175,7 @@
           <span class="cb-card-meta">Company credits</span>
         </span>
         <span class="cb-card-sub">
-          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this Mac is off.
+          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this computer is off.
         </span>
       </button>
     {/if}
@@ -234,7 +234,7 @@
         {/if}
       {:else if !runtimeIsReady(runtimeReady, draft.runtime)}
         <p class="cb-help" data-testid="chat-bot-runtime-help" data-runtime-state="signedOut">
-          {draftLabel} is not signed in on this Mac.
+          {draftLabel} is not signed in on this computer.
           {#if signInApi || onsignin}
             <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>Sign in</button>
           {:else}
@@ -242,7 +242,7 @@
           {/if}
         </p>
       {:else}
-        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this Mac — the bot uses your own {draftLabel} plan.</p>
+        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this computer — the bot uses your own {draftLabel} plan.</p>
       {/if}
     </div>
 

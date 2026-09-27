@@ -343,7 +343,7 @@
     const api = adapter?.bots;
     if (!api?.adopt || adoptBusy) return;
     adoptBusy = name;
-    line = `Bringing ${name} back to this Mac…`;
+    line = `Bringing ${name} back to this computer…`;
     lineIsError = false;
     const result = await api.adopt(name);
     if (!result.ok) {
@@ -352,10 +352,10 @@
       // A named refusal is permanent, so it must not read "please try again".
       line = isNotRunnableHereReason(botFailureReason(result.message))
         ? botStaysInCloudLine(name)
-        : `Could not bring ${name} back to this Mac. Please try again.`;
+        : `Could not bring ${name} back to this computer. Please try again.`;
       lineIsError = true;
     } else {
-      line = `${name} is back on this Mac.`;
+      line = `${name} is back on this computer.`;
       await Promise.all([load(true), loadRemote()]);
     }
     adoptBusy = null;
@@ -485,7 +485,7 @@
 <section class="settings-section bots-pane" data-testid="settings-bots">
   <p class="lead">
     Every bot you work with, in one place. Cloud bots run in a company's cloud
-    and are always on; local bots run on this Mac with your own Claude Code,
+    and are always on; local bots run on this computer with your own Claude Code,
     Codex, or Grok login. Message either from the desktop app or your phone.
   </p>
 
@@ -498,8 +498,8 @@
     {#if !adapter?.bots}
       <div class="settings-card">
         <p class="muted empty" data-testid="settings-bots-local-unavailable">
-          Local bots run from the HQ desktop app on your Mac. Open HQ there to
-          create one.
+          Local bots run from the HQ desktop app on your computer. Open HQ
+          there to create one.
         </p>
       </div>
     {:else}
@@ -601,7 +601,7 @@
             <div class="bot-main">
               <strong>On another computer</strong>
               <small>
-                These bots are yours, but they aren't set up on this Mac yet.
+                These bots are yours, but they aren't set up on this computer yet.
                 Bringing one back keeps its name, its memory and your
                 conversations with it.
               </small>
@@ -668,7 +668,7 @@
       <div class="settings-card create" data-testid="settings-bots-create">
         <div class="bot-main">
           <strong>New bot</strong>
-          <small>Blank, from a template, or a copy of a bot you have — thinking with a tool signed in on this Mac.</small>
+          <small>Blank, from a template, or a copy of a bot you have — thinking with a tool signed in on this computer.</small>
         </div>
         <div class="create-controls">
           <button

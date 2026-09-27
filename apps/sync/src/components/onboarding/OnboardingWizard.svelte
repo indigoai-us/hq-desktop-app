@@ -81,6 +81,10 @@
     type StageId,
     type StageState,
   } from '../../lib/onboarding-setup';
+  import {
+    readOnboardingHostOs,
+    setupExpectationCopy,
+  } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
   import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
   import {
@@ -434,6 +438,13 @@
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
+  // US-004: honest expectation-setting under "Getting your HQ ready". The UA
+  // read is one-shot at render — the host cannot change during onboarding —
+  // and stays neutral when the UA has not landed yet.
+  const setupHostOs = $derived(
+    readOnboardingHostOs(typeof navigator === 'undefined' ? null : navigator.userAgent),
+  );
+  const setupExpectation = $derived(setupExpectationCopy(setupHostOs));
   const setupSubStatusModel = $derived(
     setupSubStatus({
       stageId: currentStageId,
@@ -2387,6 +2398,11 @@
           aria-labelledby="onboarding-title-setup"
         >
           <h2 class="h" id="onboarding-title-setup">Getting your HQ ready</h2>
+          <p
+            class="body setup-expectation"
+            data-testid="onboarding-setup-expectation"
+            data-host-os={setupHostOs}
+          >{setupExpectation}</p>
           <div class="list" aria-label="Setup checklist">
             {#each setupBands as band}
               <div
