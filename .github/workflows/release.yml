@@ -1377,6 +1377,7 @@ jobs:
         run: |
           set -euo pipefail
           ASSET="shell-macos-${SHELL_KEY}.tar.gz"
+          node scripts/shell-archive.mjs check-size shell-out/shell-macos.tar.gz
           cp shell-out/shell-macos.tar.gz "$RUNNER_TEMP/$ASSET"
           for attempt in 1 2 3 4 5; do
             if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
@@ -1817,7 +1818,7 @@ jobs:
         id: cache
         uses: actions/cache/restore@v4
         with:
-          path: shell-out/shell-windows-x64.tar
+          path: shell-out/shell-windows-x64.tar.zst
           key: shell-windows-x64-${{ steps.key.outputs.key }}
 
       # Cross-tag store, same rationale as shell-macos: Actions caches are
@@ -1832,7 +1833,7 @@ jobs:
           SHELL_KEY: ${{ steps.key.outputs.key }}
         run: |
           set -euo pipefail
-          ASSET="shell-windows-x64-${SHELL_KEY}.tar"
+          ASSET="shell-windows-x64-${SHELL_KEY}.tar.zst"
           if ! gh release view shell-cache -R "$REPOSITORY" >/dev/null 2>&1; then
             gh release create shell-cache -R "$REPOSITORY" --prerelease --latest=false \
               --title "Shell cache" \
@@ -1841,7 +1842,7 @@ jobs:
           fi
           mkdir -p shell-out
           if gh release view shell-cache -R "$REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ASSET"; then
-            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-windows-x64.tar --clobber
+            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-windows-x64.tar.zst --clobber
             echo "hit=true" >> "$GITHUB_OUTPUT"
             echo "Restored $ASSET from the shell-cache release."
           else
@@ -1895,23 +1896,37 @@ jobs:
           RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
         run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
 
-      # The whole target/<triple> dir, not just the exe: assemble-windows-x64
-      # reruns `tauri build` to produce the signed MSI/NSIS bundles, and that
-      # needs cargo's own incremental build state to skip recompilation.
       - name: Package shell
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/shell-out"
-          tar --force-local -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar" target/x86_64-pc-windows-msvc binaries
+          # Only what `tauri bundle` in assemble-windows-x64 reads: the exe, its
+          # PDB and the sidecar launcher. cargo intermediates (deps, build,
+          # incremental, .fingerprint) and the resource copies build.rs made
+          # (recall-sdk-bridge node_modules, placeholder ui) are excluded;
+          # assemble never runs cargo and bundles resources from source.
+          # zstd keeps the asset well under GitHub's 2 GiB release-asset limit.
+          du -sh target/x86_64-pc-windows-msvc/release/* target/x86_64-pc-windows-msvc/release/.fingerprint binaries 2>/dev/null | sort -h | tail -n 15 || true
+          tar --force-local -C src-tauri \
+            --exclude=target/x86_64-pc-windows-msvc/release/deps \
+            --exclude=target/x86_64-pc-windows-msvc/release/build \
+            --exclude=target/x86_64-pc-windows-msvc/release/incremental \
+            --exclude=target/x86_64-pc-windows-msvc/release/.fingerprint \
+            --exclude=target/x86_64-pc-windows-msvc/release/examples \
+            --exclude=target/x86_64-pc-windows-msvc/release/recall-sdk-bridge \
+            --exclude=target/x86_64-pc-windows-msvc/release/ui \
+            -cf - target/x86_64-pc-windows-msvc binaries \
+            | zstd -T0 -9 -q -f -o "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar.zst"
+          node "$GITHUB_WORKSPACE/scripts/shell-archive.mjs" check-size "$GITHUB_WORKSPACE/shell-out/shell-windows-x64.tar.zst" | tee -a "$GITHUB_STEP_SUMMARY"
           ls -la "$GITHUB_WORKSPACE/shell-out"
 
       - name: Save shell to the Actions cache
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          path: shell-out/shell-windows-x64.tar
+          path: shell-out/shell-windows-x64.tar.zst
           key: shell-windows-x64-${{ steps.key.outputs.key }}
 
       - name: Upload shell to the shell-cache release
@@ -1923,8 +1938,9 @@ jobs:
           SHELL_KEY: ${{ steps.key.outputs.key }}
         run: |
           set -euo pipefail
-          ASSET="shell-windows-x64-${SHELL_KEY}.tar"
-          cp shell-out/shell-windows-x64.tar "$RUNNER_TEMP/$ASSET"
+          ASSET="shell-windows-x64-${SHELL_KEY}.tar.zst"
+          node scripts/shell-archive.mjs check-size shell-out/shell-windows-x64.tar.zst
+          cp shell-out/shell-windows-x64.tar.zst "$RUNNER_TEMP/$ASSET"
           for attempt in 1 2 3 4 5; do
             if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
               echo "Uploaded $ASSET to the shell-cache release."
@@ -1948,7 +1964,7 @@ jobs:
           elif [ "$RELEASE_HIT" = "true" ]; then SOURCE="restored from shell-cache release";
           else SOURCE="built"; fi
           echo "Windows x64 shell ${{ steps.key.outputs.key }}: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
-          test -s shell-out/shell-windows-x64.tar
+          test -s shell-out/shell-windows-x64.tar.zst
 
       # Keep the shell-cache release bounded: the newest 6 assets for this
       # target stay, older ones are deleted. Only this target's assets are
@@ -1988,7 +2004,7 @@ jobs:
           name: shell-windows-x64
           if-no-files-found: error
           retention-days: 3
-          path: shell-out/shell-windows-x64.tar
+          path: shell-out/shell-windows-x64.tar.zst
 
   shell-windows-arm64:
     name: Windows arm64 shell (restore or build)
@@ -2045,7 +2061,7 @@ jobs:
         id: cache
         uses: actions/cache/restore@v4
         with:
-          path: shell-out/shell-windows-arm64.tar
+          path: shell-out/shell-windows-arm64.tar.zst
           key: shell-windows-arm64-${{ steps.key.outputs.key }}
 
       # Cross-tag store, same rationale as shell-macos: Actions caches are
@@ -2060,7 +2076,7 @@ jobs:
           SHELL_KEY: ${{ steps.key.outputs.key }}
         run: |
           set -euo pipefail
-          ASSET="shell-windows-arm64-${SHELL_KEY}.tar"
+          ASSET="shell-windows-arm64-${SHELL_KEY}.tar.zst"
           if ! gh release view shell-cache -R "$REPOSITORY" >/dev/null 2>&1; then
             gh release create shell-cache -R "$REPOSITORY" --prerelease --latest=false \
               --title "Shell cache" \
@@ -2069,7 +2085,7 @@ jobs:
           fi
           mkdir -p shell-out
           if gh release view shell-cache -R "$REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ASSET"; then
-            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-windows-arm64.tar --clobber
+            gh release download shell-cache -R "$REPOSITORY" -p "$ASSET" -O shell-out/shell-windows-arm64.tar.zst --clobber
             echo "hit=true" >> "$GITHUB_OUTPUT"
             echo "Restored $ASSET from the shell-cache release."
           else
@@ -2153,23 +2169,37 @@ jobs:
           RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
         run: pnpm tauri build --no-bundle --target aarch64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
 
-      # The whole target/<triple> dir, not just the exe: assemble-windows-arm64
-      # reruns `tauri build` to produce the signed MSI/NSIS bundles, and that
-      # needs cargo's own incremental build state to skip recompilation.
       - name: Package shell
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/shell-out"
-          tar --force-local -C src-tauri -cf "$GITHUB_WORKSPACE/shell-out/shell-windows-arm64.tar" target/aarch64-pc-windows-msvc binaries
+          # Only what `tauri bundle` in assemble-windows-arm64 reads: the exe, its
+          # PDB and the sidecar launcher. cargo intermediates (deps, build,
+          # incremental, .fingerprint) and the resource copies build.rs made
+          # (recall-sdk-bridge node_modules, placeholder ui) are excluded;
+          # assemble never runs cargo and bundles resources from source.
+          # zstd keeps the asset well under GitHub's 2 GiB release-asset limit.
+          du -sh target/aarch64-pc-windows-msvc/release/* target/aarch64-pc-windows-msvc/release/.fingerprint binaries 2>/dev/null | sort -h | tail -n 15 || true
+          tar --force-local -C src-tauri \
+            --exclude=target/aarch64-pc-windows-msvc/release/deps \
+            --exclude=target/aarch64-pc-windows-msvc/release/build \
+            --exclude=target/aarch64-pc-windows-msvc/release/incremental \
+            --exclude=target/aarch64-pc-windows-msvc/release/.fingerprint \
+            --exclude=target/aarch64-pc-windows-msvc/release/examples \
+            --exclude=target/aarch64-pc-windows-msvc/release/recall-sdk-bridge \
+            --exclude=target/aarch64-pc-windows-msvc/release/ui \
+            -cf - target/aarch64-pc-windows-msvc binaries \
+            | zstd -T0 -9 -q -f -o "$GITHUB_WORKSPACE/shell-out/shell-windows-arm64.tar.zst"
+          node "$GITHUB_WORKSPACE/scripts/shell-archive.mjs" check-size "$GITHUB_WORKSPACE/shell-out/shell-windows-arm64.tar.zst" | tee -a "$GITHUB_STEP_SUMMARY"
           ls -la "$GITHUB_WORKSPACE/shell-out"
 
       - name: Save shell to the Actions cache
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          path: shell-out/shell-windows-arm64.tar
+          path: shell-out/shell-windows-arm64.tar.zst
           key: shell-windows-arm64-${{ steps.key.outputs.key }}
 
       - name: Upload shell to the shell-cache release
@@ -2181,8 +2211,9 @@ jobs:
           SHELL_KEY: ${{ steps.key.outputs.key }}
         run: |
           set -euo pipefail
-          ASSET="shell-windows-arm64-${SHELL_KEY}.tar"
-          cp shell-out/shell-windows-arm64.tar "$RUNNER_TEMP/$ASSET"
+          ASSET="shell-windows-arm64-${SHELL_KEY}.tar.zst"
+          node scripts/shell-archive.mjs check-size shell-out/shell-windows-arm64.tar.zst
+          cp shell-out/shell-windows-arm64.tar.zst "$RUNNER_TEMP/$ASSET"
           for attempt in 1 2 3 4 5; do
             if gh release upload shell-cache "$RUNNER_TEMP/$ASSET" -R "$REPOSITORY" --clobber; then
               echo "Uploaded $ASSET to the shell-cache release."
@@ -2206,7 +2237,7 @@ jobs:
           elif [ "$RELEASE_HIT" = "true" ]; then SOURCE="restored from shell-cache release";
           else SOURCE="built"; fi
           echo "Windows arm64 shell ${{ steps.key.outputs.key }}: $SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
-          test -s shell-out/shell-windows-arm64.tar
+          test -s shell-out/shell-windows-arm64.tar.zst
 
       # Keep the shell-cache release bounded: the newest 6 assets for this
       # target stay, older ones are deleted. Only this target's assets are
@@ -2246,7 +2277,7 @@ jobs:
           name: shell-windows-arm64
           if-no-files-found: error
           retention-days: 3
-          path: shell-out/shell-windows-arm64.tar
+          path: shell-out/shell-windows-arm64.tar.zst
 
   assemble-windows-x64:
     name: Assemble, sign and package Windows x64
@@ -2311,7 +2342,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tar --force-local -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-x64.tar"
+          zstd -d -q -c "$RUNNER_TEMP/shell/shell-windows-x64.tar.zst" | tar --force-local -C src-tauri -xf -
           test -f src-tauri/target/x86_64-pc-windows-msvc/release/hq-sync-menubar.exe
           test -f src-tauri/binaries/recall-desktop-sdk-x86_64-pc-windows-msvc.exe
 
@@ -2649,7 +2680,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tar --force-local -C src-tauri -xf "$RUNNER_TEMP/shell/shell-windows-arm64.tar"
+          zstd -d -q -c "$RUNNER_TEMP/shell/shell-windows-arm64.tar.zst" | tar --force-local -C src-tauri -xf -
           test -f src-tauri/target/aarch64-pc-windows-msvc/release/hq-sync-menubar.exe
           test -f src-tauri/binaries/recall-desktop-sdk-aarch64-pc-windows-msvc.exe
 
@@ -3978,7 +4009,7 @@ jobs:
   sync-version:
     name: Sync released version to main
     needs: [validate, publish]
-    if: ${{ needs.publish.result == 'success' && needs.validate.outputs.prerelease != 'true' && inputs.shelltest != true }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.validate.outputs.prerelease != 'true' && inputs.shelltest != true }}
     concurrency:
       # Serialize with itself so two releases finishing together cannot race
       # each other's push and burn all the retries.

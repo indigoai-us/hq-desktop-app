@@ -1645,6 +1645,42 @@ describe('setup restart', () => {
     await flush();
   }
 
+  async function cancelSetupWithoutFlagSource(): Promise<void> {
+    const unavailableFlagSource = new Promise<never>(() => {});
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'hq_pro_fetch':
+          return unavailableFlagSource;
+        case 'fetch_and_extract_template':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() => eventHarness.handlers.has('install:progress'));
+    emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
+    clickIn('onboarding-setup', '.btn-secondary');
+    await flush();
+  }
+
+  it('cancels an installer when no feature flag source is available', async () => {
+    await cancelSetupWithoutFlagSource();
+    const cancelCall = () =>
+      tauri.invoke.mock.calls.find(([command]) => command === 'cancel_install');
+
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'hq_pro_fetch'),
+    ).toHaveLength(0);
+    await flushUntil(() => cancelCall() !== undefined);
+    expect(cancelCall()?.[1]).toEqual({ handle: 'setup-installer-handle' });
+  });
+
   it('starts over when the person leaves mid-stage and comes back', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
