@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- getindigo.ai deprecation wave 2a: remove dead updater-manifest publish script (`imports/hq-installer-react/scripts/publish-updater-manifest.ts`). The script targeted `updates.hq-installer.getindigo.ai` (NXDOMAIN); no workflow or package.json script invoked it. The shipped app polls GitHub Releases for updates.
+- Removed an unused internal script left over from the old installer. No change to how the app updates.
 
 ## [0.10.348] — 2026-09-27
 

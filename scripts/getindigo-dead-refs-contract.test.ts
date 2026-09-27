@@ -61,13 +61,6 @@ const HISTORICAL_ALLOWLIST = [
     reason:
       "2026-09-27 dated note in section 8 explaining the planned vs actual updater host.",
   },
-  {
-    file: "CHANGELOG.md",
-    needle:
-      "The script targeted `updates.hq-installer.getindigo.ai` (NXDOMAIN); no workflow or package.json script invoked it.",
-    reason:
-      "Wave 2a changelog entry recording the retired domain. Historical record of what was removed.",
-  },
 ];
 
 const RETIRED_HOSTS: readonly string[] = [
