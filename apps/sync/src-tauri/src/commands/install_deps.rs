@@ -5246,6 +5246,36 @@ async fn winget_install(app: &AppHandle, id: &str) -> Result<String, String> {
     .await
 }
 
+// WinGet documents 0x8A15005E (-1978335138) as
+// APPINSTALLER_CLI_ERROR_PINNED_CERTIFICATE_MISMATCH, not as an already-
+// installed result. Re-probe Git after this source failure so an existing
+// managed Git is accepted, while preserving the original error when absent.
+#[cfg(any(test, windows))]
+const WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE: i32 = -1978335138;
+
+#[cfg(any(test, windows))]
+fn winget_exit_code_from_error(error: &str) -> Option<i32> {
+    let rest = error.strip_prefix("Process exited with code ")?;
+    rest.split_once(':')
+        .map_or(rest, |(code, _)| code)
+        .trim()
+        .parse()
+        .ok()
+}
+
+#[cfg(any(test, windows))]
+fn resolve_git_winget_install_failure(
+    exit_code: Option<i32>,
+    error: String,
+    git_is_satisfied: bool,
+) -> Result<String, String> {
+    if exit_code == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE) && git_is_satisfied {
+        Ok("Git already available after WinGet certificate mismatch".to_string())
+    } else {
+        Err(error)
+    }
+}
+
 #[cfg(windows)]
 async fn scoop_install(app: &AppHandle, name: &str) -> Result<String, String> {
     run_streaming(app, "scoop", &["install", name]).await
@@ -5636,9 +5666,22 @@ async fn install_git_windows(app: AppHandle) -> Result<String, String> {
     match pm {
         PackageManager::Winget => {
             emit_progress(&app, "Installing Git via winget...");
-            winget_install(&app, "Git.Git").await?;
-            append_user_path(&program_files().join("Git").join("cmd"))?;
-            Ok("git installed via winget".to_string())
+            match winget_install(&app, "Git.Git").await {
+                Ok(_) => {
+                    append_user_path(&program_files().join("Git").join("cmd"))?;
+                    Ok("git installed via winget".to_string())
+                }
+                Err(error) => {
+                    let exit_code = winget_exit_code_from_error(&error);
+                    let git_is_satisfied = exit_code
+                        == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE)
+                        && dependency_defs()
+                            .iter()
+                            .find(|dep| dep.id == "git")
+                            .is_some_and(|dep| dep_is_satisfied(&app, dep));
+                    resolve_git_winget_install_failure(exit_code, error, git_is_satisfied)
+                }
+            }
         }
         PackageManager::Scoop => {
             emit_progress(&app, "Installing Git via scoop...");
@@ -5809,12 +5852,29 @@ fn write_qmd_bash_shim() -> Result<(), String> {
     write_qmd_bash_shim_in(&prefix)
 }
 
-#[cfg(windows)]
-fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
-    if qmd_resolves_in_prefix(prefix) {
-        return Ok(());
+#[cfg(any(test, windows))]
+fn qmd_bash_shim_contents(bin_rel: &str, git_bash: Option<&Path>) -> Result<String, String> {
+    let bash = git_bash.ok_or_else(|| {
+        "Git Bash bash.exe was not found; qmd requires Git Bash to run its POSIX entrypoint"
+            .to_string()
+    })?;
+    if !bash.is_absolute() {
+        return Err(format!(
+            "Git Bash path must be absolute to create the qmd shim: {}",
+            bash.display()
+        ));
     }
 
+    Ok(format!(
+        "@ECHO off\r\n\
+        SETLOCAL\r\n\
+        \"{}\" \"%~dp0{bin_rel}\" %*\r\n",
+        bash.display()
+    ))
+}
+
+#[cfg(any(test, windows))]
+fn write_qmd_bash_shim_at(prefix: &Path, git_bash: Option<&Path>) -> Result<(), String> {
     let bin_candidates = [
         prefix
             .join("node_modules")
@@ -5834,27 +5894,24 @@ fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
         ));
     };
 
+    let body = qmd_bash_shim_contents(bin_rel, git_bash)?;
     let cmd_path = prefix.join("qmd.cmd");
+    std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
+    if qmd_resolves_in_prefix(prefix) {
+        return Ok(());
+    }
     // Resolve Git Bash to an absolute path at install time. A bare `bash` in
     // the shim resolves through the USER's shell PATH at run time, where
     // `C:\Windows\System32\bash.exe` (the WSL launcher) precedes Git's bash on
     // any machine with WSL enabled — and WSL bash cannot run a Windows-path
     // script argument (the INS-0580 failure class).
-    let body = match git_bash_path() {
-        Some(bash) => format!(
-            "@ECHO off\r\n\
-            SETLOCAL\r\n\
-            \"{}\" \"%~dp0{bin_rel}\" %*\r\n",
-            bash.display()
-        ),
-        None => format!(
-            "@ECHO off\r\n\
-            SETLOCAL\r\n\
-            bash \"%~dp0{bin_rel}\" %*\r\n"
-        ),
-    };
-    std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
-    Ok(())
+    let git_bash = git_bash_path();
+    write_qmd_bash_shim_at(prefix, git_bash.as_deref())
 }
 
 /// Absolute path to Git for Windows' bash.exe, if one exists. Never returns
@@ -6590,7 +6647,7 @@ const DEP_DEFS: &[DepDef] = &[
         label: "qmd",
         binary: "qmd",
         optional: false,
-        depends_on: &["node"],
+        depends_on: &["node", "git"],
     },
     DepDef {
         id: "hq-cli",
@@ -7374,6 +7431,30 @@ fn finish_orchestrated_dep_install(
     }
 }
 
+#[cfg(any(test, windows))]
+fn qmd_post_install_error(status: &DepStatus, git_bash_available: bool) -> String {
+    if status.path.is_none() {
+        return "qmd was not found on PATH after install".to_string();
+    }
+    if !status.installed {
+        return if git_bash_available {
+            "qmd was found on PATH, but its --version probe failed".to_string()
+        } else {
+            "qmd was found on PATH, but its version probe cannot run because Git Bash bash.exe was not found"
+                .to_string()
+        };
+    }
+    if !qmd_version_matches_pin(status.version.as_deref()) {
+        return format!(
+            "qmd version mismatch after install: expected {}, found {}",
+            MANAGED_QMD_VERSION,
+            status.version.as_deref().unwrap_or("unknown")
+        );
+    }
+
+    "qmd native addon was not ready after install".to_string()
+}
+
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
     if dep_is_satisfied(app, dep) {
         return Ok(());
@@ -7393,7 +7474,14 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
-    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))
+    let found_after_install = dep_is_satisfied(app, dep);
+    #[cfg(windows)]
+    if dep.id == "qmd" && install_result.is_ok() && !found_after_install {
+        let status = check_dep_impl(dep.binary, None);
+        return Err(qmd_post_install_error(&status, git_bash_path().is_some()));
+    }
+
+    finish_orchestrated_dep_install(dep.label, install_result, found_after_install)
 }
 
 #[tauri::command]
@@ -7579,6 +7667,141 @@ pub async fn install_deps(
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn qmd_shim_requires_git_bash_and_uses_its_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path().join("npm-prefix");
+        let qmd_bin = prefix
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("qmd");
+        std::fs::create_dir_all(qmd_bin.parent().unwrap()).unwrap();
+        std::fs::write(&qmd_bin, b"#!/usr/bin/env bash\n").unwrap();
+
+        let error = write_qmd_bash_shim_at(&prefix, None).unwrap_err();
+        assert!(error.contains("Git Bash"), "{error}");
+        assert!(error.contains("bash.exe"), "{error}");
+        assert!(
+            !prefix.join("qmd.cmd").exists(),
+            "a missing Git Bash must not leave a bare-bash shim behind"
+        );
+
+        let git_bash = tmp.path().join("Git").join("bin").join("bash.exe");
+        std::fs::create_dir_all(git_bash.parent().unwrap()).unwrap();
+        std::fs::write(&git_bash, b"bash").unwrap();
+        write_qmd_bash_shim_at(&prefix, Some(&git_bash)).unwrap();
+
+        let shim = std::fs::read_to_string(prefix.join("qmd.cmd")).unwrap();
+        assert!(
+            shim.contains(&format!("\"{}\" \"%~dp0", git_bash.display())),
+            "shim must invoke the absolute Git Bash path: {shim}"
+        );
+        assert!(
+            !shim
+                .lines()
+                .any(|line| line.trim_start().starts_with("bash ")),
+            "shim must not fall back to a PATH-resolved bash: {shim}"
+        );
+    }
+
+    #[test]
+    fn qmd_postinstall_probe_error_names_missing_bash_and_version_mismatch() {
+        let bash_missing = DepStatus {
+            installed: false,
+            version: None,
+            path: Some(PathBuf::from("C:/toolchain/qmd.cmd")),
+        };
+        let error = qmd_post_install_error(&bash_missing, false);
+        assert!(error.contains("Git Bash bash.exe was not found"), "{error}");
+        assert!(!error.contains("not found after install"), "{error}");
+
+        let wrong_version = DepStatus {
+            installed: true,
+            version: Some("qmd 1.0.7-ghost".to_string()),
+            path: Some(PathBuf::from("C:/toolchain/qmd.cmd")),
+        };
+        let error = qmd_post_install_error(&wrong_version, true);
+        assert!(error.contains("version mismatch"), "{error}");
+        assert!(error.contains("1.0.7-ghost"), "{error}");
+
+        let absent = DepStatus {
+            installed: false,
+            version: None,
+            path: None,
+        };
+        assert_eq!(
+            qmd_post_install_error(&absent, false),
+            "qmd was not found on PATH after install"
+        );
+    }
+
+    #[test]
+    fn qmd_install_waits_for_git_before_running() {
+        let deps = dependency_defs();
+        let qmd = deps.iter().find(|dep| dep.id == "qmd").unwrap();
+        assert!(qmd.depends_on.contains(&"git"));
+
+        let mut result_by_id = premark_optional_results(deps);
+        let mut ok_set = HashSet::new();
+        for dep_id in ["node", "yq"] {
+            let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
+            result_by_id.insert(dep.id, ok_result(dep));
+            ok_set.insert(dep.id);
+        }
+        if cfg!(not(windows)) {
+            let jq = deps.iter().find(|dep| dep.id == "jq").unwrap();
+            result_by_id.insert(jq.id, ok_result(jq));
+            ok_set.insert(jq.id);
+        }
+
+        assert!(
+            !ready_required_deps(deps, &result_by_id, &ok_set)
+                .iter()
+                .any(|dep| dep.id == "qmd"),
+            "qmd must wait while Git is unresolved"
+        );
+
+        let git = deps.iter().find(|dep| dep.id == "git").unwrap();
+        result_by_id.insert(git.id, ok_result(git));
+        ok_set.insert(git.id);
+        assert!(
+            ready_required_deps(deps, &result_by_id, &ok_set)
+                .iter()
+                .any(|dep| dep.id == "qmd"),
+            "qmd becomes ready once Git is satisfied"
+        );
+    }
+
+    #[test]
+    fn winget_certificate_mismatch_accepts_git_when_present() {
+        let error = format_install_error(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE, &[]);
+        let exit_code = winget_exit_code_from_error(&error);
+        assert_eq!(exit_code, Some(-1978335138));
+
+        assert_eq!(
+            resolve_git_winget_install_failure(exit_code, error, true),
+            Ok("Git already available after WinGet certificate mismatch".to_string())
+        );
+    }
+
+    #[test]
+    fn winget_certificate_mismatch_keeps_error_when_git_is_absent() {
+        let error = format_install_error(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE, &[]);
+        let exit_code = winget_exit_code_from_error(&error);
+
+        assert_eq!(
+            resolve_git_winget_install_failure(exit_code, error.clone(), false),
+            Err(error.clone()),
+            "an absent Git must preserve the original WinGet exit code"
+        );
+        assert_eq!(
+            resolve_git_winget_install_failure(Some(-1), error.clone(), true),
+            Err(error),
+            "other WinGet errors must not be suppressed by a Git probe"
+        );
+    }
 
     #[test]
     fn path_persistence_failure_remains_fatal_after_the_managed_binary_is_visible() {
