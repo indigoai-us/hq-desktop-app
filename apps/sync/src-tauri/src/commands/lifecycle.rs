@@ -40,6 +40,7 @@ pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
 /// commands that run after setup_lifecycle has returned.
 pub struct LifecycleInputsHandle {
     pub inputs: LifecycleInputs,
+    pub manifest_incomplete: bool,
     pub tools_present: bool,
     pub bundled_cli_ready: bool,
     pub hq_root_probe: Option<HqRootProbe>,
@@ -53,6 +54,8 @@ pub struct LifecycleInputsHandle {
 pub struct StartupSetupEvidence {
     install_completed: bool,
     first_run_completed: bool,
+    install_in_progress: bool,
+    manifest_incomplete: bool,
     had_machine_id: bool,
     hq_root_valid: bool,
 }
@@ -71,6 +74,8 @@ pub fn get_startup_setup_evidence(
     Some(StartupSetupEvidence {
         install_completed: inputs.install_completed,
         first_run_completed: inputs.first_run_completed,
+        install_in_progress: inputs.install_in_progress,
+        manifest_incomplete: state.manifest_incomplete,
         had_machine_id: inputs.had_machine_id,
         hq_root_valid: inputs.hq_root_valid,
     })
@@ -143,6 +148,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
                 consent_answered: false,
                 evidence_unreadable: true,
             },
+            manifest_incomplete: false,
             tools_present: false,
             bundled_cli_ready: false,
             hq_root_probe: None,
@@ -222,6 +228,8 @@ pub fn setup_lifecycle(app: &AppHandle) {
     }
     let evidence_unreadable = hq_root_unreadable || token_unreadable;
 
+    let (install_in_progress, manifest_incomplete) =
+        crate::commands::install_manifest::startup_manifest_evidence_from_disk();
     let inputs = LifecycleInputs {
         install_completed,
         first_run_completed,
@@ -229,7 +237,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         config_valid,
         hq_root_valid,
         has_auth,
-        install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
+        install_in_progress,
         consent_answered,
         evidence_unreadable,
     };
@@ -420,6 +428,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
     app.manage(LifecycleInputsHandle {
         inputs,
+        manifest_incomplete,
         tools_present,
         bundled_cli_ready,
         hq_root_probe: Some(root_probe),
@@ -604,6 +613,8 @@ pub fn report_unexpected_startup_surface(
             inputs.first_run_completed,
             inputs.had_machine_id,
             inputs.hq_root_valid,
+            inputs.install_in_progress,
+            state.manifest_incomplete,
         );
     let sign_in_prior_setup = inputs.evidence_unreadable
         || inputs.install_completed
@@ -764,4 +775,21 @@ mod tests {
         *handle.0.write().unwrap() = LifecycleState::SteadyState;
         assert_eq!(handle.current(), LifecycleState::SteadyState);
     }
+
+    #[test]
+    fn startup_setup_evidence_serializes_manifest_incomplete_separately() {
+        let evidence = StartupSetupEvidence {
+            install_completed: false,
+            first_run_completed: false,
+            install_in_progress: false,
+            manifest_incomplete: true,
+            had_machine_id: true,
+            hq_root_valid: true,
+        };
+        let value = serde_json::to_value(evidence).unwrap();
+
+        assert_eq!(value["manifestIncomplete"], true);
+        assert_eq!(value["installInProgress"], false);
+    }
+
 }

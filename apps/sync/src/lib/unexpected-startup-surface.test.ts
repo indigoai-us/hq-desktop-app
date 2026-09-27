@@ -16,6 +16,8 @@ describe('unexpectedSurfaceForState', () => {
     const installed = {
       installCompleted: true,
       firstRunCompleted: false,
+      installInProgress: true,
+      manifestIncomplete: true,
       hadMachineId: true,
       hqRootValid: true,
     };
@@ -28,6 +30,8 @@ describe('unexpectedSurfaceForState', () => {
       unexpectedSurfaceForState('InstalledFirstRun', false, {
         installCompleted: false,
         firstRunCompleted: false,
+        installInProgress: false,
+        manifestIncomplete: false,
         hadMachineId: false,
         hqRootValid: false,
       }),
@@ -38,6 +42,8 @@ describe('unexpectedSurfaceForState', () => {
     const noPriorSetup = {
       installCompleted: false,
       firstRunCompleted: false,
+      installInProgress: false,
+      manifestIncomplete: false,
       hadMachineId: false,
       hqRootValid: false,
     };
@@ -52,10 +58,38 @@ describe('unexpectedSurfaceForState', () => {
       unexpectedSurfaceForState('InstallResume', false, {
         installCompleted: false,
         firstRunCompleted: false,
+        installInProgress: false,
+        manifestIncomplete: false,
         hadMachineId: true,
         hqRootValid: true,
       }),
     ).toBe('onboarding');
+  });
+
+  it('does not treat an interrupted first install as prior setup', () => {
+    const interruptedFirstInstall = {
+      installCompleted: false,
+      firstRunCompleted: false,
+      installInProgress: true,
+      manifestIncomplete: false,
+      hadMachineId: true,
+      hqRootValid: true,
+    };
+
+    expect(unexpectedSurfaceForState('NeedsInstall', false, interruptedFirstInstall)).toBe(null);
+  });
+
+  it('does not treat an incomplete manifest with only completed steps as prior setup', () => {
+    expect(
+      unexpectedSurfaceForState('NeedsInstall', false, {
+        installCompleted: false,
+        firstRunCompleted: false,
+        installInProgress: false,
+        manifestIncomplete: true,
+        hadMachineId: true,
+        hqRootValid: true,
+      }),
+    ).toBe(null);
   });
 
   it('returns sign-in when lifecycle state is unknown or steady and auth is absent', () => {
