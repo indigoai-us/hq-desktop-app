@@ -162,7 +162,7 @@ const SAFE_BOOT_LOG_MESSAGES = new Set([
 const SAFE_RECOVERY_TRIGGERS = "watchdog-timeout|webview-crash|safe-mode|menu";
 const SAFE_VERSION = "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:beta|alpha|shelltest)\\.(?:0|[1-9]\\d*))?";
 const SAFE_BOOT_LOG_PATTERNS = [
-  new RegExp(`^watchdog armed \\d+s(?:, env override)?$`),
+  new RegExp(`^watchdog armed \\(\\d+s(?:, env override)?\\)$`),
   new RegExp(`^auto-checking for updates before recovery window \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS})\\)$`),
   new RegExp(`^recovery window opened \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS}), version=v${SAFE_VERSION}\\)$`),
   new RegExp(`^recovery auto-check found v${SAFE_VERSION} — offering as primary action$`),

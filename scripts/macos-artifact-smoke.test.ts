@@ -173,6 +173,81 @@ describe("smoke boot diagnostics", () => {
     expect(tail.join("\n")).not.toMatch(/ghp_fakeTokenValue123456|fake-cookie-value|fake-user|fake-password|eyJhbGci/);
   });
 
+  it("keeps both real watchdog budget log forms verbatim", () => {
+    const lines = [
+      "[boot] watchdog armed (25s)",
+      "[boot] watchdog armed (25s, env override)",
+    ];
+
+    for (const line of lines) {
+      expect(redactSmokeLogTail(line)).toEqual([line]);
+    }
+  });
+
+  it("keeps every allowlisted boot log aligned with recovery.rs", async () => {
+    const smokeSource = await readFile(join(here, "macos-artifact-smoke.mjs"), "utf8");
+    const recoverySource = await readFile(
+      join(here, "../apps/sync/src-tauri/src/recovery.rs"),
+      "utf8",
+    );
+    const fixedBlock = /const SAFE_BOOT_LOG_MESSAGES = new Set\(\[([\s\S]*?)\]\);/.exec(
+      smokeSource,
+    )?.[1];
+    if (fixedBlock === undefined) throw new Error("fixed boot-message allowlist not found");
+
+    const fixedMessages = fixedBlock
+      .split("\n")
+      .map((line) => line.trim().replace(/,$/, ""))
+      .filter((line) => line.startsWith('"'))
+      .map((line) => JSON.parse(line) as string);
+    expect(fixedMessages.length).toBeGreaterThan(0);
+    for (const message of fixedMessages) {
+      expect(recoverySource).toContain(JSON.stringify(message));
+    }
+
+    const patternBlock = /const SAFE_BOOT_LOG_PATTERNS = \[([\s\S]*?)\n\];/.exec(
+      smokeSource,
+    )?.[1];
+    if (patternBlock === undefined) throw new Error("boot-pattern allowlist not found");
+    const templateDelimiter = String.fromCharCode(96);
+    const patternSources = patternBlock
+      .split("\n")
+      .filter((line) => line.includes("new RegExp("))
+      .map((line) => {
+        const start = line.indexOf("new RegExp(") + "new RegExp(".length;
+        const end = line.lastIndexOf(templateDelimiter + ")");
+        expect(line[start]).toBe(templateDelimiter);
+        expect(end).toBeGreaterThan(start);
+        return line.slice(start + 1, end);
+      });
+    const recoveryTriggersPlaceholder = "$" + "{SAFE_RECOVERY_TRIGGERS}";
+    const safeVersionPlaceholder = "$" + "{SAFE_VERSION}";
+    expect(patternSources).toEqual([
+      "^watchdog armed \\\\(\\\\d+s(?:, env override)?\\\\)$",
+      "^auto-checking for updates before recovery window \\\\(trigger=(?:" +
+        recoveryTriggersPlaceholder +
+        ")\\\\)$",
+      "^recovery window opened \\\\(trigger=(?:" +
+        recoveryTriggersPlaceholder +
+        "), version=v" +
+        safeVersionPlaceholder +
+        "\\\\)$",
+      "^recovery auto-check found v" +
+        safeVersionPlaceholder +
+        " — offering as primary action$",
+    ]);
+
+    const recoveryPatternMessages = [
+      "watchdog armed ({}s{})",
+      "auto-checking for updates before recovery window (trigger={})",
+      "recovery window opened (trigger={}, version=v{})",
+      "recovery auto-check found v{} — offering as primary action",
+    ];
+    for (const message of recoveryPatternMessages) {
+      expect(recoverySource).toContain(JSON.stringify(message));
+    }
+  });
+
   it("reports launch-to-shell-ready and watchdog timings on either outcome", () => {
     const timings = {
       launchToWindowCreatedMs: 340,
