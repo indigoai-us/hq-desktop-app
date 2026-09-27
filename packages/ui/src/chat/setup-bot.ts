@@ -123,9 +123,10 @@ export const SETUP_BOT_KICKOFF =
   "so do not greet again or repeat the plan. " +
   "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
   "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
-  "Then begin the first unfinished step right away, exactly as your instructions for the kickoff say: " +
-  "do the part you can do yourself, tell me in one line what you found or fixed, " +
-  "and end with exactly one concrete question or one concrete action for me. " +
+  "Then, exactly as your instructions for the kickoff say, do the part of the tools step you can do yourself, " +
+  "tell me in one line what you found or fixed, and ask whether I want HQ explained first or to jump straight in, " +
+  "in the exact words your instructions give; that is the one concrete question this message ends with. " +
+  "After I answer, begin the first unfinished step, ending each message with exactly one concrete question or one concrete action for me. " +
   "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
   "Never end with an open question like \"what would you like to do?\"";
 
@@ -372,6 +373,34 @@ export function setupFinaleDue(
   const doneAt = messages.findIndex((m) => (m.fromPersonUid ?? "").trim() === uid && marksDone(m));
   if (doneAt < 0) return false;
   return !messages.slice(doneAt + 1).some((m) => (m.fromPersonUid ?? "").trim() !== uid);
+}
+
+/**
+ * The suggested replies to show under the setup bot's conversation. Pure.
+ *
+ * Only the bot's newest message with something to read counts, and only until
+ * the person writes again: a reply (typed or clicked) puts them away, and a
+ * newer bot message without suggestions replaces them with nothing, so old
+ * buttons never linger under a conversation that moved on. Messages with
+ * nothing visible (a lone finish marker) are skipped when finding the newest.
+ *
+ * `messages` is the timeline, oldest first.
+ */
+export function setupSuggestionsDue(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  hasVisibleContent: (message: { body?: string | null; richContent?: unknown }) => boolean,
+  suggestionsFor: (message: { body?: string | null; richContent?: unknown }) => string[],
+): string[] {
+  const uid = botUid.trim();
+  if (!uid) return [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if ((message.fromPersonUid ?? "").trim() !== uid) return [];
+    if (!hasVisibleContent(message) && suggestionsFor(message).length === 0) continue;
+    return suggestionsFor(message);
+  }
+  return [];
 }
 
 /**
