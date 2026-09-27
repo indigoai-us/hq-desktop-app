@@ -5269,8 +5269,11 @@ fn resolve_git_winget_install_failure(
     error: String,
     git_is_satisfied: bool,
 ) -> Result<String, String> {
-    let _ = (exit_code, git_is_satisfied);
-    Err(error)
+    if exit_code == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE) && git_is_satisfied {
+        Ok("Git already available after WinGet certificate mismatch".to_string())
+    } else {
+        Err(error)
+    }
 }
 
 #[cfg(windows)]
@@ -5912,9 +5915,6 @@ fn write_qmd_bash_shim_at(prefix: &Path, git_bash: Option<&Path>) -> Result<(), 
 
 #[cfg(any(test, windows))]
 fn write_qmd_bash_shim_in(prefix: &Path, git_bash: Option<&Path>) -> Result<(), String> {
-    if prefix.join("qmd.cmd").exists() {
-        return Ok(());
-    }
     // Resolve Git Bash to an absolute path at install time. A bare `bash` in
     // the shim resolves through the USER's shell PATH at run time, where
     // `C:\Windows\System32\bash.exe` (the WSL launcher) precedes Git's bash on
