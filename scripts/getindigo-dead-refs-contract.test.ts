@@ -63,7 +63,10 @@ const HISTORICAL_ALLOWLIST = [
   },
 ];
 
-const RETIRED_HOSTS: readonly string[] = ["downloads.getindigo.ai"];
+const RETIRED_HOSTS: readonly string[] = [
+  "downloads.getindigo.ai",
+  "updates.hq-installer.getindigo.ai",
+];
 
 // This test file itself mentions the host as search data - exclude it from the
 // offender list.
