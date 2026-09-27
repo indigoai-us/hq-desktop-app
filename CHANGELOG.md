@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When an update restarts the app before the HQ folder is available, people
+  who have completed setup stay on the normal app surface instead of seeing
+  onboarding again.
+
 - Setup and bot-picker copy now names the user's actual computer instead of
   guessing. On macOS the app says "this Mac", on Windows "this PC", and on
   Linux or before the platform probe has landed it stays "this computer" so

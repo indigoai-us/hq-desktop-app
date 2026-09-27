@@ -4,6 +4,7 @@
 //! sync tray agent. Pure over its inputs so it is directly unit-testable.
 
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 
@@ -277,6 +278,55 @@ pub fn probe_hq_root(root: &Path) -> HqRootProbe {
     }
 }
 
+/// Probe the HQ root during startup. LaunchAgent starts (including login and
+/// KeepAlive relaunches) recheck an initially missing root briefly because an
+/// updater can relaunch before the filesystem has settled. Only a root that
+/// remains missing through the bounded window is classified as missing.
+pub fn probe_hq_root_for_startup(root: &Path, launch_agent_relaunch: bool) -> HqRootProbe {
+    probe_hq_root_for_startup_with(
+        launch_agent_relaunch,
+        || probe_hq_root(root),
+        std::thread::sleep,
+    )
+}
+
+const STARTUP_ROOT_RECHECKS: usize = 3;
+const STARTUP_ROOT_RECHECK_DELAY: Duration = Duration::from_millis(200);
+
+fn probe_hq_root_for_startup_with(
+    launch_agent_relaunch: bool,
+    mut probe: impl FnMut() -> HqRootProbe,
+    mut wait: impl FnMut(Duration),
+) -> HqRootProbe {
+    let mut result = probe();
+    if !launch_agent_relaunch {
+        if result == HqRootProbe::Unreadable {
+            wait(Duration::from_millis(250));
+            return probe();
+        }
+        return result;
+    }
+    if result == HqRootProbe::Valid {
+        return result;
+    }
+
+    let mut observed_unreadable = result == HqRootProbe::Unreadable;
+    for _ in 0..STARTUP_ROOT_RECHECKS {
+        wait(STARTUP_ROOT_RECHECK_DELAY);
+        result = probe();
+        if result == HqRootProbe::Valid {
+            return result;
+        }
+        observed_unreadable |= result == HqRootProbe::Unreadable;
+    }
+
+    if observed_unreadable {
+        HqRootProbe::Unreadable
+    } else {
+        HqRootProbe::Missing
+    }
+}
+
 /// The pure classifier.
 pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     // An install is recognized from what is actually on disk: a valid HQ root
@@ -405,6 +455,34 @@ mod tests {
     }
 
     #[test]
+    fn updater_relaunch_rechecks_missing_root_until_it_appears_before_classifying() {
+        let mut observations = [HqRootProbe::Missing, HqRootProbe::Valid].into_iter();
+        let mut waits = Vec::new();
+        let root_probe = probe_hq_root_for_startup_with(
+            true,
+            || observations.next().expect("probe observation"),
+            |duration| waits.push(duration),
+        );
+        assert_eq!(root_probe, HqRootProbe::Valid);
+        assert_eq!(waits, [Duration::from_millis(200)]);
+
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            hq_root_valid: root_probe == HqRootProbe::Valid,
+            has_auth: false,
+            consent_answered: true,
+            evidence_unreadable: root_probe == HqRootProbe::Unreadable,
+            ..input()
+        });
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
+        assert!(!verdict.needs_install_backfill);
+        assert!(!verdict.needs_first_run_backfill);
+        assert!(!installation_required(verdict.state));
+    }
+
+    #[test]
     fn unreadable_evidence_does_not_bypass_an_unanswered_consent() {
         // machineId written, first run never finished: consent is still owed.
         let verdict = classify_lifecycle(LifecycleInputs {
@@ -433,8 +511,6 @@ mod tests {
 
     #[test]
     fn real_session_loss_still_reaches_the_setup_card() {
-        // Nothing unreadable: the HQ folder is genuinely gone and there is no
-        // auth. The install card is the correct surface.
         let verdict = classify_lifecycle(LifecycleInputs {
             install_completed: true,
             first_run_completed: true,
@@ -444,8 +520,66 @@ mod tests {
             evidence_unreadable: false,
             ..input()
         });
-
         assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
+    }
+
+    #[test]
+    fn login_and_keepalive_launches_keep_persistently_missing_root_on_setup_card() {
+        // Both macOS RunAtLoad and KeepAlive launches carry the same LaunchAgent
+        // argument. A root that stays missing after the bounded settle is real
+        // session loss, even when completion markers remain on disk.
+        for launch_context in ["login RunAtLoad", "KeepAlive relaunch"] {
+            let mut probes = 0;
+            let mut waits = 0;
+            let root_probe = probe_hq_root_for_startup_with(
+                true,
+                || {
+                    probes += 1;
+                    HqRootProbe::Missing
+                },
+                |duration| {
+                    assert_eq!(duration, Duration::from_millis(200));
+                    waits += 1;
+                },
+            );
+            assert_eq!(root_probe, HqRootProbe::Missing, "{launch_context}");
+            assert_eq!(probes, 1 + STARTUP_ROOT_RECHECKS, "{launch_context}");
+            assert_eq!(waits, STARTUP_ROOT_RECHECKS, "{launch_context}");
+
+            let verdict = classify_lifecycle(LifecycleInputs {
+                install_completed: true,
+                first_run_completed: true,
+                had_machine_id: true,
+                hq_root_valid: false,
+                has_auth: false,
+                evidence_unreadable: false,
+                ..input()
+            });
+            assert_eq!(
+                verdict.state,
+                LifecycleState::NeedsAuthForInstall,
+                "{launch_context}"
+            );
+            assert!(installation_required(verdict.state), "{launch_context}");
+        }
+    }
+
+    #[test]
+    fn a_mixed_missing_and_unreadable_recheck_is_not_classified_as_missing() {
+        let mut observations = [
+            HqRootProbe::Missing,
+            HqRootProbe::Unreadable,
+            HqRootProbe::Missing,
+            HqRootProbe::Missing,
+        ]
+        .into_iter();
+        let root_probe = probe_hq_root_for_startup_with(
+            true,
+            || observations.next().expect("probe observation"),
+            |_| {},
+        );
+
+        assert_eq!(root_probe, HqRootProbe::Unreadable);
     }
 
     #[test]
