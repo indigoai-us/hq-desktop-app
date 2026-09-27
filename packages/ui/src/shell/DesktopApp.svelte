@@ -830,6 +830,21 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
+    /**
+     * US-005 wiring for the guided install path in #setup. When the setup
+     * bot fails to start because no coding tool is signed in, the hero shows
+     * `SetupInstallGuide` instead of a dead-end. The host provides real
+     * callbacks that drive the Rust install / sign-in / detect commands
+     * (see `apps/sync/src/desktop-alt/lib/install-guide-adapter.ts`).
+     * Omitted callers keep today's behavior: error message only, no guide.
+     */
+    setupInstallGuide?: {
+      oninstall(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onsignin(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onrefresh(): Promise<void>;
+      downloadUrlFor(tool: "claude" | "codex"): string;
+      onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
+    } | null;
   }
 
   let {
@@ -892,6 +907,7 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    setupInstallGuide = null,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -9265,6 +9281,7 @@
                     onsetupstarted={recordWelcomeSetupRun}
                     agent={setupAgent}
                     setupBot={setupBotLauncher}
+                    installGuide={setupInstallGuide}
                     onopensessiondetails={extraPages?.sessions
                       ? (sessionId) => openExtraPage("sessions", sessionId)
                       : undefined}

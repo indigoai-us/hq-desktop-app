@@ -12,6 +12,12 @@ The release moves it under the version it ships in.
   selection circles are drawn in full instead of being cut off on one side.
 - The setup bot's first message now mentions that you can run it in Claude Code
   or Codex from the Launch button.
+- When setup finds no coding tool installed, the Home setup card offers a
+  guided path instead of the old dead-end "Open in Claude Code / Codex"
+  buttons. One click installs Claude Code, a plain progress line shows what
+  is happening, and after it lands HQ walks you through signing in inside
+  Claude Code's own window. Your password never comes to HQ. If the install
+  fails, the card says why in one sentence and offers a manual download.
 
 ## [0.10.346] — 2026-09-27
 

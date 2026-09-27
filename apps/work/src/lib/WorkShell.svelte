@@ -193,6 +193,17 @@
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
     /**
+     * US-005 wiring for the guided install path in #setup - forwarded to
+     * DesktopApp's `setupInstallGuide` prop.
+     */
+    setupInstallGuide?: {
+      oninstall(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onsignin(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onrefresh(): Promise<void>;
+      downloadUrlFor(tool: "claude" | "codex"): string;
+      onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
+    } | null;
+    /**
      * Backoff between failed company-roster fetches (tests shorten it). The
      * default is bounded; a roster that keeps failing stops retrying.
      */
@@ -232,6 +243,7 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    setupInstallGuide = null,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
@@ -974,6 +986,7 @@
       {rowExtrasLoading}
       {rowExtrasError}
       {rowExtras}
+      {setupInstallGuide}
     />
   {/key}
   {#if externalLinkError}
