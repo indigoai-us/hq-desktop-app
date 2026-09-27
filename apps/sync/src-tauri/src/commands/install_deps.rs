@@ -5249,6 +5249,37 @@ fn winget_install_args(id: &str) -> [&str; 8] {
     ]
 }
 
+// WinGet documents 0x8A15005E (-1978335138) as
+// APPINSTALLER_CLI_ERROR_PINNED_CERTIFICATE_MISMATCH, not as an already-
+// installed result. Re-probe Git after this source failure so an existing
+// managed Git is accepted, while preserving the original error when absent.
+#[cfg(any(test, windows))]
+fn winget_exit_code_from_error(error: &str) -> Option<i32> {
+    let rest = error.strip_prefix("Process exited with code ")?;
+    rest.split_once(':')
+        .map_or(rest, |(code, _)| code)
+        .trim()
+        .parse()
+        .ok()
+}
+
+#[cfg(any(test, windows))]
+fn resolve_git_winget_install_failure<F>(
+    error: String,
+    git_is_satisfied: F,
+) -> Result<String, String>
+where
+    F: FnOnce() -> bool,
+{
+    if winget_exit_code_from_error(&error) == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE)
+        && git_is_satisfied()
+    {
+        Ok("Git already available after WinGet certificate mismatch".to_string())
+    } else {
+        Err(error)
+    }
+}
+
 #[cfg(windows)]
 async fn scoop_install(app: &AppHandle, name: &str) -> Result<String, String> {
     run_streaming(app, "scoop", &["install", name]).await
@@ -5639,9 +5670,18 @@ async fn install_git_windows(app: AppHandle) -> Result<String, String> {
     match pm {
         PackageManager::Winget => {
             emit_progress(&app, "Installing Git via winget...");
-            winget_install(&app, "Git.Git").await?;
-            append_user_path(&program_files().join("Git").join("cmd"))?;
-            Ok("git installed via winget".to_string())
+            match winget_install(&app, "Git.Git").await {
+                Ok(_) => {
+                    append_user_path(&program_files().join("Git").join("cmd"))?;
+                    Ok("git installed via winget".to_string())
+                }
+                Err(error) => resolve_git_winget_install_failure(error, || {
+                    dependency_defs()
+                        .iter()
+                        .find(|dep| dep.id == "git")
+                        .is_some_and(|dep| dep_is_satisfied(&app, dep))
+                }),
+            }
         }
         PackageManager::Scoop => {
             emit_progress(&app, "Installing Git via scoop...");
@@ -6612,7 +6652,7 @@ const DEP_DEFS: &[DepDef] = &[
         label: "qmd",
         binary: "qmd",
         optional: false,
-        depends_on: &["node"],
+        depends_on: &["node", "git"],
     },
     DepDef {
         id: "hq-cli",
@@ -7965,6 +8005,94 @@ mod install_deps_planner_tests {
             ids(ready_required_deps(deps, &result_by_id, &ok_set)),
             vec!["qmd", "hq-cli"]
         );
+    }
+
+    #[test]
+    fn qmd_planner_waits_for_git_before_running() {
+        let deps = dependency_defs();
+        let mut result_by_id = premark_optional_results(deps);
+        let mut ok_set = HashSet::new();
+
+        for dep_id in ["node", "yq", "jq"] {
+            let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
+            result_by_id.insert(dep.id, ok_result(dep));
+            ok_set.insert(dep.id);
+        }
+
+        assert!(
+            !ready_required_deps(deps, &result_by_id, &ok_set)
+                .iter()
+                .any(|dep| dep.id == "qmd"),
+            "qmd must stay blocked until Git is satisfied"
+        );
+
+        let git = deps.iter().find(|dep| dep.id == "git").unwrap();
+        result_by_id.insert(git.id, ok_result(git));
+        ok_set.insert(git.id);
+
+        assert!(
+            ready_required_deps(deps, &result_by_id, &ok_set)
+                .iter()
+                .any(|dep| dep.id == "qmd"),
+            "qmd becomes ready once Git is satisfied"
+        );
+    }
+
+    #[test]
+    fn winget_certificate_mismatch_accepts_git_when_present() {
+        let error = format_install_error(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE, &[]);
+        let probes = std::cell::Cell::new(0);
+
+        let result = resolve_git_winget_install_failure(error, || {
+            probes.set(probes.get() + 1);
+            true
+        });
+
+        assert_eq!(
+            result,
+            Ok("Git already available after WinGet certificate mismatch".to_string())
+        );
+        assert_eq!(
+            probes.get(),
+            1,
+            "the exact error must trigger one Git re-probe"
+        );
+    }
+
+    #[test]
+    fn winget_certificate_mismatch_keeps_error_when_git_is_absent() {
+        let error = format_install_error(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE, &[]);
+        let probes = std::cell::Cell::new(0);
+
+        let result = resolve_git_winget_install_failure(error.clone(), || {
+            probes.set(probes.get() + 1);
+            false
+        });
+
+        assert_eq!(
+            result,
+            Err(error),
+            "an absent Git must preserve the original WinGet exit code and error"
+        );
+        assert_eq!(
+            probes.get(),
+            1,
+            "the exact error must trigger one Git re-probe"
+        );
+    }
+
+    #[test]
+    fn other_winget_errors_do_not_reprobe_git() {
+        let error = format_install_error(-1, &[]);
+        let probes = std::cell::Cell::new(0);
+
+        let result = resolve_git_winget_install_failure(error.clone(), || {
+            probes.set(probes.get() + 1);
+            true
+        });
+
+        assert_eq!(result, Err(error));
+        assert_eq!(probes.get(), 0, "only the named WinGet code re-probes Git");
     }
 
     #[test]
