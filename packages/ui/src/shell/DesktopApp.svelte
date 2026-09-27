@@ -907,6 +907,23 @@
     ),
   );
 
+  /**
+   * A company you were just added to syncs onto this Mac by itself: nobody
+   * should have to press Sync to get a company they already belong to (the
+   * setup bot creates one, then the person was asked to sync it). Each company
+   * is pulled once per session; the banner only appears when that pull fails,
+   * and its Sync now is then the retry. Plain Set on purpose: it records what
+   * was attempted and must not re-run this effect.
+   */
+  const autoPulledMemberships = new Set<string>();
+  $effect(() => {
+    if (membershipSyncPending || !adapter.isAvailable("canSync")) return;
+    const next = membershipsToPull.find((w) => !autoPulledMemberships.has(w.slug));
+    if (!next) return;
+    autoPulledMemberships.add(next.slug);
+    void syncMembership(next.slug);
+  });
+
   function dismissMembershipPrompt(slugs: string[]): void {
     const next = new Set(dismissedMemberships);
     for (const slug of slugs) next.add(slug);
@@ -1150,9 +1167,9 @@
    * both arrive as events; `syncEvents` is how this platform-agnostic shell
    * hears them.
    */
-  async function syncMembership(): Promise<void> {
+  async function syncMembership(slug?: string): Promise<void> {
     if (membershipSyncPending || !adapter.isAvailable("canSync")) return;
-    const target = membershipsToPull[0];
+    const target = slug ? membershipsToPull.find((w) => w.slug === slug) : membershipsToPull[0];
     if (!target) return;
     membershipSyncPending = true;
     membershipSyncError = null;
@@ -2949,6 +2966,10 @@
   let cloudError = $state<string | null>(null);
   let manifestError = $state<string | null>(null);
   let emailVerificationRequired = $state(false);
+  /** The membership banner: a failed automatic pull (to retry) or unverified email. */
+  const membershipBannerVisible = $derived(
+    emailVerificationRequired || (membershipsToPull.length > 0 && membershipSyncError !== null),
+  );
   let syncWorkspaces = $state<Record<string, unknown>[]>([]);
   let hqFolderPath = $state<string | null>(null);
 
@@ -8172,7 +8193,7 @@
     </div>
   {/if}
 
-  {#if adapter.isAvailable("canSync") && (membershipsToPull.length > 0 || emailVerificationRequired)}
+  {#if adapter.isAvailable("canSync") && membershipBannerVisible}
     <MembershipSyncBanner
       memberships={membershipsToPull}
       emailVerificationRequired={emailVerificationRequired}

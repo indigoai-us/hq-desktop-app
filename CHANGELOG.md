@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- A company you were just added to, including one the setup bot creates for
+  you, now syncs onto this Mac by itself. The "Added to … Sync to pull it"
+  banner only appears when that sync fails, and its Sync now button retries.
+
 ## [0.10.341] — 2026-09-26
 
 - When enabled, automatic Core updates wait for startup cache preparation before
