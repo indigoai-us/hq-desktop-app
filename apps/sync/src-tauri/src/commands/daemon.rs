@@ -7647,6 +7647,13 @@ mod tests {
         use tauri::Listener;
 
         let app = tauri::test::mock_app();
+        let main_window = tauri::WebviewWindowBuilder::new(
+            &app,
+            "main",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .build()
+        .unwrap();
         let handle = app.handle().clone();
         let hq_folder = TempDir::new().unwrap();
         let totals = Mutex::new(RunTotals::default());
@@ -7654,7 +7661,7 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let seen_w = seen.clone();
-        handle.listen(EVENT_SYNC_REALTIME_MODE, move |event| {
+        main_window.listen(EVENT_SYNC_REALTIME_MODE, move |event| {
             seen_w
                 .lock()
                 .unwrap()
