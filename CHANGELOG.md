@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.347] — 2026-09-27
+
 - The usage data choice during setup now starts on "Share usage data", and its
   selection circles are drawn in full instead of being cut off on one side.
 - The setup bot's first message now mentions that you can run it in Claude Code
