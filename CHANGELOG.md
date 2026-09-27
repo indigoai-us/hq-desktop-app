@@ -425,6 +425,8 @@ The release moves it under the version it ships in.
 - When enabled, cancelling setup treats an installer process group with no live
   members as already cleaned up instead of reporting a cleanup error. The
   rollout flag is off by default.
+- Automatic sync now forwards live-update availability to the tray, so poll-only
+  status appears without starting a manual sync.
 
 ## [0.10.341] — 2026-09-26
 

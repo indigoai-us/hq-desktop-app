@@ -335,6 +335,11 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
             );
         }
     }
+    if let SyncEvent::RealtimeMode(payload) = &event {
+        if let Err(error) = app.emit_to("main", EVENT_SYNC_REALTIME_MODE, payload.clone()) {
+            log("daemon", &format!("failed to emit realtime-mode status: {error}"));
+        }
+    }
     if let SyncEvent::AllComplete(payload) = &event {
         let (conflicts, uploads_pass) = {
             let t = totals.lock().unwrap_or_else(|e| e.into_inner());
