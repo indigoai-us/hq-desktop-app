@@ -15,7 +15,10 @@ The release moves it under the version it ships in.
   If the wallpaper cannot be read, and on Windows, the window keeps a soft
   blur of whatever is behind it. The same full-screen window is used for the
   sharing re-prompt and "Replay welcome intro". You sign in with
-  Google or Microsoft, pick where HQ lives, and choose "Install here". The
+  Google or Microsoft, pick where HQ lives, and choose "Install here". If
+  you are already signed in to hq.computer in your browser, the sign-in
+  screen shows one "Continue as {your email}" button in place of the
+  Google and Microsoft buttons and waits for you to press it. The
   install then runs in the background while three short screens explain
   cloud sync, the Option Shift O shortcut, and the usage-sharing choice. A
   small card in the corner shows the real install progress, and install

@@ -239,6 +239,34 @@ function expectPreBranchProviderScreen(): void {
   expect(host.textContent).not.toContain('Finishing your sign-in in the browser');
 }
 
+function continueAsButton(): HTMLButtonElement | null {
+  return host.querySelector<HTMLButtonElement>(
+    '[data-testid="onboarding-signin"] [data-testid="onboarding-continue-as"]',
+  );
+}
+
+function expectOnSignInStep(): void {
+  expect(
+    host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'),
+  ).toBe(false);
+  expect(host.querySelector('.hq-welcome')?.getAttribute('data-current-scene')).toBe('welcome');
+}
+
+function refocusCalls(): number {
+  return tauri.invoke.mock.calls.filter(([command]) => command === 'bring_main_window_to_front')
+    .length;
+}
+
+function signInCompletedEvents(): Array<Record<string, unknown>> {
+  return tauri.invoke.mock.calls
+    .filter(([command]) => command === 'emit_desktop_operational_telemetry')
+    .map(([, args]) => (args as { properties: Record<string, unknown> }).properties)
+    .filter(
+      (properties) =>
+        properties?.step === 'welcome-signin' && properties?.action === 'completed',
+    );
+}
+
 async function advancePastSignIn(): Promise<void> {
   await vi.advanceTimersByTimeAsync(400);
   await flush();
@@ -374,23 +402,65 @@ describe('first-run browser session continuation', () => {
     resolveConfig({ ...CONTINUATION_CONFIG, variant: 'control' });
   });
 
-  it('automatically signs in an eligible browser session without rendering a prompt or click', async () => {
-    stubContinuationInvoke();
+  it('activates an eligible browser session but waits for the Continue button before leaving sign-in', async () => {
+    stubContinuationInvoke({ identity: { email: 'person@placeholder.test' } });
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
 
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_confirm'),
     );
+    await flushUntil(() => continueAsButton() !== null);
     await advancePastSignIn();
 
     expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_confirm', {
       attemptId: 'continuation-attempt',
     });
     expect(tauri.invoke).not.toHaveBeenCalledWith('start_oauth_login', expect.anything());
-    expect(host.textContent).not.toContain('Continue as');
+    // Regression: the session is active, but the wizard must not advance on
+    // its own. It stays on sign-in and offers exactly one button.
+    expectOnSignInStep();
+    expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
+      'Continue as person@placeholder.test',
+    ]);
+    const button = continueAsButton()!;
+    expect(button.classList.contains('btn-primary')).toBe(true);
+    expect(button.closest('.btns-slot')).not.toBeNull();
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
     expect(host.textContent).not.toContain('Use another account');
-    expect(host.textContent).not.toContain('Finishing your sign-in in the browser');
-    expect(providerButtons()).toHaveLength(0);
+    expect(signInCompletedEvents()).toHaveLength(0);
+    expect(refocusCalls()).toBe(0);
+
+    button.click();
+    await advancePastSignIn();
+
+    expect(refocusCalls()).toBe(1);
+    expect(signInCompletedEvents()).toEqual([
+      expect.objectContaining({
+        step: 'welcome-signin',
+        action: 'completed',
+        outcome: 'authenticated',
+      }),
+    ]);
+    expect(signInCompletedEvents()[0]).not.toHaveProperty('provider');
+    expect(
+      host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('labels the button "Continue" when the continued account has no email', async () => {
+    stubContinuationInvoke({ identity: {} });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => continueAsButton() !== null);
+    await advancePastSignIn();
+
+    expectOnSignInStep();
+    expect(continueAsButton()?.textContent?.trim()).toBe('Continue');
+
+    continueAsButton()!.click();
+    await advancePastSignIn();
+
     expect(
       host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'),
     ).toBe(true);
@@ -473,6 +543,16 @@ describe('first-run browser session continuation', () => {
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_confirm'),
     );
+    await flushUntil(() => continueAsButton() !== null);
+    await advancePastSignIn();
+
+    // The late continuation replaces the providers with one button and waits.
+    expectOnSignInStep();
+    expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
+      'Continue as placeholder account',
+    ]);
+
+    continueAsButton()!.click();
     await advancePastSignIn();
 
     expect(

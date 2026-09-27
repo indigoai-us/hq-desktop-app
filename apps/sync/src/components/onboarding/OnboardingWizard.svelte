@@ -309,8 +309,9 @@
 
   // Browser session continuation belongs on the first screen someone sees
   // after downloading HQ, not only on the returning-user sign-in surfaces.
-  // The first-run wizard completes an eligible session itself; it never
-  // renders a continuation prompt or account choice.
+  // The first-run wizard activates an eligible session in the background, then
+  // waits for the person to press "Continue as {email}" before leaving the
+  // sign-in screen. It never renders an account choice.
   let continuation = $state<ContinuationState>({ phase: 'idle' });
   let continuationDepsRef: ContinuationDeps | null = null;
   let continuationPrepared = false;
@@ -319,6 +320,11 @@
   let automaticContinuationAttemptActive = false;
   let automaticContinuationRevealTimer: number | null = null;
   let signInActionsReady = $state(false);
+  // Set once automatic continuation has authenticated this app. The sign-in
+  // screen then offers one button instead of the providers; `email` is the
+  // verified browser identity, or null when it was not provided.
+  let continuedAccount = $state<{ email: string | null } | null>(null);
+  let continuedAccountConfirming = $state(false);
   let onboardingAppVersion =
     typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : 'unknown';
   let onboardingAppVersionResolution: Promise<void> | null = null;
@@ -923,7 +929,24 @@
       window.clearTimeout(automaticContinuationRevealTimer);
       automaticContinuationRevealTimer = null;
     }
-    await completeAuthenticatedSignIn(currentSignInCall);
+    // The session is active, but the person still presses a button to leave
+    // the sign-in screen. The button replaces the providers in the same slot,
+    // so it appears only once the welcome animation has revealed that block.
+    const rawEmail: unknown = activated.identity?.email;
+    const email = typeof rawEmail === 'string' ? rawEmail.trim() : '';
+    continuedAccount = { email: email || null };
+    signInActionsReady = true;
+  }
+
+  async function handleContinuationConfirm(): Promise<void> {
+    if (!continuedAccount || continuedAccountConfirming) return;
+    if (currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+    continuedAccountConfirming = true;
+    try {
+      await completeAuthenticatedSignIn(currentSignInCall);
+    } finally {
+      if (mounted) continuedAccountConfirming = false;
+    }
   }
 
   function stopAutomaticContinuationAttempt(): void {
@@ -2548,7 +2571,18 @@
         {#if !replay}
           <!-- The consent question is its own screen; nothing is asked here. -->
           <div class="btns-slot">
-            {#if signInActionsReady}
+            {#if signInActionsReady && continuedAccount}
+              <div class="btns">
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  data-testid="onboarding-continue-as"
+                  disabled={continuedAccountConfirming}
+                  aria-busy={continuedAccountConfirming}
+                  onclick={handleContinuationConfirm}
+                >{continuedAccount.email ? `Continue as ${continuedAccount.email}` : 'Continue'}</button>
+              </div>
+            {:else if signInActionsReady}
               <div class="btns">
                 <button
                   class="btn btn-primary"
