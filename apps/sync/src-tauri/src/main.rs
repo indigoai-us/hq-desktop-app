@@ -1270,6 +1270,9 @@ fn main() {
             if let Some(window) = app.get_webview_window("main") {
                 if first_run {
                     welcome_window::set_welcome_window_active(true);
+                    // Close and minimize controls from the first frame: the
+                    // flow can run for minutes and must never trap the screen.
+                    welcome_window::apply_window_controls(&window, true);
                     let _ = window.set_shadow(false);
                     hq_platform::window_effects::clear_popover_vibrancy(&window);
                     if !welcome_window::fit_to_work_area(&window) {

@@ -154,9 +154,109 @@ pub fn fit_to_work_area(window: &tauri::WebviewWindow) -> bool {
     true
 }
 
+/// The native window controls `main` carries.
+///
+/// The welcome flow fills the screen and can run for minutes while the install
+/// works in the background, so it gets the standard close and minimize
+/// controls: on macOS the traffic lights, top-left over the flow (overlay title
+/// bar, title hidden); on Windows the caption buttons. Zoom / maximize stays
+/// off, the window already fills the work area. Close only hides the window
+/// (`main.rs` `on_window_event`), so setup keeps running and the menu-bar item
+/// or the Dock brings the flow back at the same screen.
+///
+/// The compact card has no chrome at all. On Windows it also stays out of the
+/// taskbar; the welcome window needs a taskbar button so a minimized window
+/// can be restored from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowControls {
+    pub decorations: bool,
+    pub closable: bool,
+    pub minimizable: bool,
+    pub maximizable: bool,
+    /// Windows only: keep the window out of the taskbar.
+    pub skip_taskbar: bool,
+}
+
+/// The controls for the welcome window (`welcome`) or the compact card.
+pub fn window_controls(welcome: bool) -> WindowControls {
+    if welcome {
+        WindowControls {
+            decorations: true,
+            closable: true,
+            minimizable: true,
+            maximizable: false,
+            skip_taskbar: false,
+        }
+    } else {
+        WindowControls {
+            decorations: false,
+            closable: true,
+            minimizable: true,
+            maximizable: false,
+            skip_taskbar: true,
+        }
+    }
+}
+
+/// Put the native close / minimize controls on `main` for the welcome flow
+/// (`welcome`), or take them off for the compact card. Main thread only.
+pub fn apply_window_controls(window: &tauri::WebviewWindow, welcome: bool) {
+    let controls = window_controls(welcome);
+    // macOS sets the whole style mask in one synchronous AppKit call. tao's
+    // `set_decorations` applies its mask asynchronously and rebuilds it from
+    // scratch, which would drop the full-size-content bit an overlay title
+    // bar needs, depending on which dispatch lands last.
+    #[cfg(target_os = "macos")]
+    macos::set_window_controls(window, style_mask_for(controls));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.set_decorations(controls.decorations);
+        let _ = window.set_closable(controls.closable);
+        let _ = window.set_minimizable(controls.minimizable);
+        let _ = window.set_maximizable(controls.maximizable);
+        #[cfg(target_os = "windows")]
+        let _ = window.set_skip_taskbar(controls.skip_taskbar);
+    }
+}
+
+// NSWindowStyleMask bits (AppKit SDK).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const STYLE_TITLED: usize = 1 << 0;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const STYLE_CLOSABLE: usize = 1 << 1;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const STYLE_MINIATURIZABLE: usize = 1 << 2;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const STYLE_RESIZABLE: usize = 1 << 3;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const STYLE_FULL_SIZE_CONTENT_VIEW: usize = 1 << 15;
+
+/// The macOS style mask for `controls`. With decorations it is a titled window
+/// whose content runs under the title bar (overlay), so only the traffic
+/// lights show; without, the borderless card `tauri.conf.json` declares. It
+/// is never resizable, which also leaves the zoom button disabled.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn style_mask_for(controls: WindowControls) -> usize {
+    if !controls.decorations {
+        return 0;
+    }
+    let mut mask = STYLE_TITLED | STYLE_FULL_SIZE_CONTENT_VIEW;
+    if controls.closable {
+        mask |= STYLE_CLOSABLE;
+    }
+    if controls.minimizable {
+        mask |= STYLE_MINIATURIZABLE;
+    }
+    if controls.maximizable {
+        mask |= STYLE_RESIZABLE;
+    }
+    mask
+}
+
 /// Give `main` to the welcome flow (`enabled`): fill the work area, no window
-/// shadow. Or hand it back: shadow on, and the renderer re-applies the compact
-/// size and the popover material.
+/// shadow, close and minimize controls. Or hand it back: shadow on, no
+/// controls, and the renderer re-applies the compact size and the popover
+/// material.
 #[tauri::command]
 pub fn set_welcome_window(app: AppHandle, enabled: bool) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
@@ -166,6 +266,7 @@ pub fn set_welcome_window(app: AppHandle, enabled: bool) -> Result<(), String> {
     let handle = window.clone();
     window
         .run_on_main_thread(move || {
+            apply_window_controls(&handle, enabled);
             if enabled {
                 let _ = handle.set_shadow(false);
                 fit_to_work_area(&handle);
@@ -541,6 +642,37 @@ mod macos {
         }
     }
 
+    /// Apply `mask` as the window's style mask. A titled mask gets a
+    /// transparent title bar with the title hidden, so the traffic lights sit
+    /// over the welcome flow's backdrop; the title stays set for the Dock tile
+    /// and the Window menu. Keeps the current first responder, since changing
+    /// the style mask can drop it and key handling in the webview with it.
+    /// Main thread only.
+    pub fn set_window_controls(window: &tauri::WebviewWindow, mask: usize) {
+        let titled = mask & 1 != 0;
+        // NSWindowTitleVisible = 0, NSWindowTitleHidden = 1.
+        let visibility: isize = if titled { 1 } else { 0 };
+        // SAFETY: main thread (run_on_main_thread or `.setup()`); the NSWindow
+        // pointer is checked before use and every message goes to it.
+        unsafe {
+            let ns_win = ns_window(window);
+            if ns_win.is_null() {
+                return;
+            }
+            let responder: *mut AnyObject = msg_send![ns_win, firstResponder];
+            let _: () = msg_send![ns_win, setStyleMask: mask];
+            let _: () = msg_send![ns_win, setTitlebarAppearsTransparent: titled];
+            let _: () = msg_send![ns_win, setTitleVisibility: visibility];
+            if !responder.is_null() {
+                let _: bool = msg_send![ns_win, makeFirstResponder: responder];
+            }
+        }
+        log(
+            LOG_TAG,
+            &format!("welcome-window: style mask {mask:#x} (titled={titled})"),
+        );
+    }
+
     /// Remove the welcome backdrop if it is there.
     pub fn remove_backdrop(window: &tauri::WebviewWindow) {
         // SAFETY: main thread; see `install_backdrop`.
@@ -692,6 +824,36 @@ mod tests {
             jpeg_data_url(&[0xff, 0xd8, 0xff]).as_deref(),
             Some("data:image/jpeg;base64,/9j/")
         );
+    }
+
+    #[test]
+    fn the_welcome_window_can_be_closed_and_minimized_but_not_zoomed() {
+        let welcome = window_controls(true);
+        assert!(welcome.decorations, "the controls need a titled window");
+        assert!(welcome.closable);
+        assert!(welcome.minimizable);
+        assert!(!welcome.maximizable, "it already fills the work area");
+        assert!(
+            !welcome.skip_taskbar,
+            "a minimized welcome window must be restorable from the taskbar"
+        );
+    }
+
+    #[test]
+    fn the_compact_card_goes_back_to_no_chrome() {
+        let card = window_controls(false);
+        assert!(!card.decorations);
+        assert!(card.skip_taskbar);
+        assert!(!card.maximizable);
+    }
+
+    #[test]
+    fn the_macos_style_masks_are_overlay_titled_or_borderless() {
+        // Titled | Closable | Miniaturizable | FullSizeContentView: traffic
+        // lights over the content, zoom disabled (not resizable).
+        assert_eq!(style_mask_for(window_controls(true)), 0b111 | (1 << 15));
+        // Borderless, not resizable: the card as tauri.conf.json declares it.
+        assert_eq!(style_mask_for(window_controls(false)), 0);
     }
 
     #[test]
