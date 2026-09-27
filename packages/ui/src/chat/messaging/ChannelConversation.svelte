@@ -716,6 +716,22 @@
     suggestionKey && suggestionKey !== usedSuggestionKey ? suggestedReplies : [],
   );
 
+  // Suggested replies are a shortcut, not the only answers: the last chip says
+  // so, and pressing it puts the cursor in the composer with a prompt to type.
+  const SUGGESTION_OTHER_LABEL = "Something else";
+  const SUGGESTION_OTHER_PLACEHOLDER = "Type your own answer here…";
+  let otherForKey = $state<string | null>(null);
+  const composerPlaceholder = $derived(
+    otherForKey !== null && otherForKey === suggestionKey && visibleSuggestions.length > 0
+      ? SUGGESTION_OTHER_PLACEHOLDER
+      : placeholder,
+  );
+  function chooseOtherSuggestion(): void {
+    if (composerLocked) return;
+    otherForKey = suggestionKey;
+    replyInputEl?.focus();
+  }
+
   async function sendSuggestion(label: string): Promise<void> {
     if (composerLocked) return;
     usedSuggestionKey = suggestionKey;
@@ -1847,6 +1863,12 @@
                 onclick={() => void sendSuggestion(label)}
               >{label}</button>
             {/each}
+            <button
+              type="button"
+              class="suggested-reply suggested-reply-other"
+              data-testid="suggested-reply-other"
+              onclick={chooseOtherSuggestion}
+            >{SUGGESTION_OTHER_LABEL}</button>
           </div>
         {/if}
         {/if}
@@ -1921,7 +1943,7 @@
           oninput={syncComposerFromDom}
           onkeydown={onReplyKeydown}
           onpaste={onComposerPaste}
-          {placeholder}
+          placeholder={composerPlaceholder}
           rows="3"
           aria-label="Reply message"
           data-testid="conversation-composer"
@@ -3164,6 +3186,11 @@
   }
   .suggested-reply:hover {
     background: var(--hover);
+  }
+  .suggested-reply-other {
+    background: transparent;
+    border-style: dashed;
+    color: var(--t2, var(--t1));
   }
   .suggested-reply:focus-visible {
     outline: 2px solid var(--vio-ink, currentColor);

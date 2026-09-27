@@ -77,6 +77,29 @@ describe("ChannelConversation suggested replies", () => {
     expect(buttons(root).map((b) => b.textContent?.trim())).toEqual(["Invite Sara", "Skip for now"]);
   });
 
+  it("always offers Something else, which sends nothing and puts the cursor in the composer to type", async () => {
+    // Test Mac 2026-09-27: ClickUp / Asana / Notion / Monday read as the only
+    // choices. The last chip says other answers are fine.
+    const onsend = vi.fn(async () => {});
+    const { root } = await mountWith({ onsend, suggestedReplies: ["ClickUp", "Asana"] });
+    const other = root.querySelector<HTMLButtonElement>('[data-testid="suggested-reply-other"]')!;
+    expect(other.textContent?.trim()).toBe("Something else");
+    const composer = root.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')!;
+    const before = composer.placeholder;
+    other.click();
+    flushSync();
+    await tick();
+    expect(onsend).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(composer);
+    expect(composer.placeholder).toBe("Type your own answer here…");
+    expect(buttons(root).length, "the suggestions stay available").toBe(2);
+    // A typed answer or a new set of suggestions puts the normal prompt back.
+    buttons(root)[0].click();
+    await tick();
+    flushSync();
+    expect(composer.placeholder).toBe(before);
+  });
+
   it("shows nothing while the composer is locked", async () => {
     const { root } = await mountWith({ suggestedReplies: ["Yes"], composerLocked: true });
     expect(root.querySelector('[data-testid="suggested-replies"]')).toBeNull();

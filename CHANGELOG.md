@@ -11,7 +11,8 @@ The release moves it under the version it ships in.
 - The setup bot's messages can now end with suggested replies: a few buttons
   under its newest message with the likely answers to its question, or the
   next questions to ask. Clicking one sends it as your reply. They go away
-  once you reply.
+  once you reply. The last button, "Something else", puts the cursor in the
+  message box so you can type your own answer.
 
 - When enabled, automatic Core updates wait for startup cache preparation before
   running the rescue. If the wait limit expires, the update moves to a later
