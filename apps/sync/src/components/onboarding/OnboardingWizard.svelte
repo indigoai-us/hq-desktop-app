@@ -1,9 +1,5 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import {
-    createSyncPlatformAdapter,
-    SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
-  } from '@hq/platform';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
   import { safeUnlisten } from '../../lib/listener-registry';
@@ -172,36 +168,11 @@
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
   const MIN_VISIBLE_MS_FOR_ABANDON = 1500;
-  const SETUP_CANCELLATION_FLAG_LOOKUP_TIMEOUT_MS = 2_000;
   // Provider buttons remain available after this short head start. The native
   // continuation attempt keeps running until it completes, expires, or a
   // person explicitly takes over with a provider.
   const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
-  const cancellationFlagAdapter = createSyncPlatformAdapter({
-    invoke: (command, args) => invoke(command, args),
-  });
-  let cancellationEpermFlagLookup: Promise<boolean> = Promise.resolve(false);
-
-  function refreshCancellationEpermFlag(): Promise<boolean> {
-    const lookup = (async (): Promise<boolean> => {
-      try {
-        const result = await cancellationFlagAdapter.identity.hasFeature(
-          SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
-        );
-        return result.ok && result.value === true;
-      } catch (error) {
-        console.warn(
-          'Setup cancellation EPERM flag lookup failed; keeping the gate off',
-          error,
-        );
-        return false;
-      }
-    })();
-    cancellationEpermFlagLookup = lookup;
-    return lookup;
-  }
-
   let {
     initialStep,
     onfinish,
@@ -617,7 +588,6 @@
     stopClaudeWatch();
     stopToolWatch();
     cancelSetupRun();
-    void cancellationFlagAdapter.dispose?.();
   });
 
   function setTransitionTimer(callback: () => void, ms: number): number {
@@ -991,21 +961,9 @@
     if (runId !== currentRunId) return;
     const handles = [...activeInstallHandles];
     activeInstallHandles.clear();
-    const flagLookup = cancellationEpermFlagLookup;
-    const reapedEpermIsClean = await withTimeout(
-      flagLookup,
-      SETUP_CANCELLATION_FLAG_LOOKUP_TIMEOUT_MS,
-      () => new Error('Setup cancellation EPERM flag lookup timed out'),
-    ).catch((error) => {
-      console.warn(
-        'Setup cancellation EPERM flag lookup did not settle; keeping the gate off',
-        error,
-      );
-      return false;
-    });
     await Promise.allSettled(
       handles.map((handle) =>
-        invoke('cancel_install', { handle, reapedEpermIsClean }),
+        invoke('cancel_install', { handle }),
       ),
     );
   }
@@ -1566,7 +1524,6 @@
       cancelSetupRun();
     }
     const runId = beginSetupRun();
-    void refreshCancellationEpermFlag();
     inFlightRunId = runId;
     try {
       if (installPath) effectiveInstallPath = installPath;

@@ -5298,13 +5298,9 @@ pub struct NpmLockHolderDiagnostic {
 }
 
 pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES: usize = 3;
-/// New no-holder deferral is separately gated by the hq-flags registry. The
-/// manager owns registration and rollout; an absent or unreadable value is off.
-pub const WINDOWS_BUSY_INSTALL_TARGET_DEFERRAL_FLAG: &str = "desktop.cli-update-ebusy-deferral";
 /// After this many consecutive same-target deferrals, surface the existing
 /// install failure again instead of extending the quiet period.
 pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS: u8 = 3;
-const WINDOWS_BUSY_DEFERRAL_FLAG_SNAPSHOT_MAX_BYTES: usize = 16 * 1024;
 const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS: [&str; WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES] = [
     "windows-busy-install-target-backoff-1",
     "windows-busy-install-target-backoff-2",
@@ -5448,33 +5444,6 @@ pub fn parse_windows_busy_deferral_marker(
     }))
 }
 
-/// Whether a response from the same `/v1/flags/resolve` service used by the
-/// desktop hq-flags client enables this key. A missing key, malformed snapshot,
-/// non-200 response, or failed request all preserve today's install behavior.
-pub fn windows_busy_deferral_flag_enabled(status: u16, body: &str) -> bool {
-    const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
-    if status != 200 || body.len() > WINDOWS_BUSY_DEFERRAL_FLAG_SNAPSHOT_MAX_BYTES {
-        return false;
-    }
-    let Ok(snapshot) = serde_json::from_str::<Value>(body) else {
-        return false;
-    };
-    let valid_version = snapshot
-        .get("version")
-        .and_then(Value::as_u64)
-        .is_some_and(|version| version <= MAX_SAFE_JSON_INTEGER);
-    let Some(flags) = snapshot.get("flags").and_then(Value::as_object) else {
-        return false;
-    };
-    if !valid_version || !flags.values().all(Value::is_boolean) {
-        return false;
-    }
-    flags
-        .get(WINDOWS_BUSY_INSTALL_TARGET_DEFERRAL_FLAG)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsBusyDeferralDecision {
     Deferred { attempts: u8 },
@@ -5504,7 +5473,6 @@ pub fn windows_busy_cli_version_unchanged(
 /// existing retries, and only if the old CLI still answers its version probe.
 /// Every other shape continues down today's install-failure path.
 pub fn windows_busy_deferral_decision(
-    flag_enabled: bool,
     old_cli_still_works: bool,
     exit_code: Option<i32>,
     detail: &str,
@@ -5520,8 +5488,7 @@ pub fn windows_busy_deferral_decision(
             && diagnostic.count == 0
             && diagnostic.query_outcome == NpmLockHolderQueryOutcome::Complete
     });
-    if !flag_enabled
-        || !old_cli_still_works
+    if !old_cli_still_works
         || retry_attempts != Some(WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES as u8)
         || retry_outcome != WindowsBusyRetryOutcome::Failed
         || !no_holder_was_confirmed
@@ -6489,7 +6456,7 @@ impl WindowsBusyRetryOutcome {
     }
 }
 
-/// Closed telemetry outcome for the hq-flags-gated no-holder deferral. The
+/// Closed telemetry outcome for the no-holder deferral. The
 /// first two deferrals are breadcrumbs only; `Exhausted` is attached to the
 /// existing Error report on the bounded terminal attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -6530,13 +6497,11 @@ mod windows_busy_deferral_tests {
     }
 
     fn decide(
-        flag_enabled: bool,
         old_cli_still_works: bool,
         holder: NpmLockHolderDiagnostic,
         marker: Option<&WindowsBusyDeferralMarker>,
     ) -> Option<WindowsBusyDeferralDecision> {
         windows_busy_deferral_decision(
-            flag_enabled,
             old_cli_still_works,
             Some(-4082),
             DETAIL,
@@ -6547,45 +6512,6 @@ mod windows_busy_deferral_tests {
             marker,
             TARGET,
         )
-    }
-
-    #[test]
-    fn registry_snapshot_controls_the_new_deferral_and_fails_closed() {
-        let enabled = serde_json::json!({
-            "version": 4,
-            "flags": {"desktop.cli-update-ebusy-deferral": true}
-        });
-        assert!(windows_busy_deferral_flag_enabled(
-            200,
-            &enabled.to_string()
-        ));
-
-        let disabled = serde_json::json!({
-            "version": 4,
-            "flags": {"desktop.cli-update-ebusy-deferral": false}
-        });
-        assert!(!windows_busy_deferral_flag_enabled(
-            200,
-            &disabled.to_string()
-        ));
-        let unregistered = serde_json::json!({"version": 4, "flags": {}});
-        assert!(!windows_busy_deferral_flag_enabled(
-            200,
-            &unregistered.to_string()
-        ));
-        assert!(!windows_busy_deferral_flag_enabled(
-            503,
-            &enabled.to_string()
-        ));
-        assert!(!windows_busy_deferral_flag_enabled(200, "not-json"));
-        assert!(!windows_busy_deferral_flag_enabled(
-            200,
-            &" ".repeat(WINDOWS_BUSY_DEFERRAL_FLAG_SNAPSHOT_MAX_BYTES + 1),
-        ));
-        assert!(!windows_busy_deferral_flag_enabled(
-            200,
-            r#"{"version":4,"flags":{"desktop.cli-update-ebusy-deferral":"true"}}"#
-        ));
     }
 
     #[test]
@@ -6612,7 +6538,7 @@ mod windows_busy_deferral_tests {
     #[test]
     fn exact_no_holder_ebusy_defers_then_reports_on_the_third_attempt() {
         assert_eq!(
-            decide(true, true, confirmed_no_holder(), None),
+            decide(true, confirmed_no_holder(), None),
             Some(WindowsBusyDeferralDecision::Deferred { attempts: 1 })
         );
         let prior = WindowsBusyDeferralMarker {
@@ -6620,7 +6546,7 @@ mod windows_busy_deferral_tests {
             attempts: 2,
         };
         assert_eq!(
-            decide(true, true, confirmed_no_holder(), Some(&prior)),
+            decide(true, confirmed_no_holder(), Some(&prior)),
             Some(WindowsBusyDeferralDecision::Exhausted { attempts: 3 })
         );
         let old_target = WindowsBusyDeferralMarker {
@@ -6628,12 +6554,11 @@ mod windows_busy_deferral_tests {
             attempts: 2,
         };
         assert_eq!(
-            decide(true, true, confirmed_no_holder(), Some(&old_target)),
+            decide(true, confirmed_no_holder(), Some(&old_target)),
             Some(WindowsBusyDeferralDecision::Deferred { attempts: 1 })
         );
         assert_eq!(
             decide(
-                true,
                 true,
                 confirmed_no_holder(),
                 Some(&WindowsBusyDeferralMarker {
@@ -6659,7 +6584,7 @@ mod windows_busy_deferral_tests {
         );
         assert!(old_cli_unchanged);
         assert_eq!(
-            decide(true, old_cli_unchanged, confirmed_no_holder(), None),
+            decide(old_cli_unchanged, confirmed_no_holder(), None),
             Some(WindowsBusyDeferralDecision::Deferred { attempts: 1 })
         );
     }
@@ -6676,10 +6601,7 @@ mod windows_busy_deferral_tests {
             Some(command_liveness_version),
         );
         assert!(!old_cli_unchanged);
-        assert_eq!(
-            decide(true, old_cli_unchanged, confirmed_no_holder(), None),
-            None
-        );
+        assert_eq!(decide(old_cli_unchanged, confirmed_no_holder(), None), None);
         assert!(install_failure_report(Some(-4082), DETAIL, Some(PREFIX)).is_some());
     }
 
@@ -6705,23 +6627,31 @@ mod windows_busy_deferral_tests {
     }
 
     #[test]
-    fn flag_off_real_holder_incomplete_query_or_unusable_cli_keeps_existing_path() {
+    fn no_flag_source_does_not_suppress_confirmed_no_holder_deferral() {
+        assert_eq!(
+            decide(true, confirmed_no_holder(), None),
+            Some(WindowsBusyDeferralDecision::Deferred { attempts: 1 }),
+            "a missing feature flag source must not disable this bug fix"
+        );
+    }
+
+    #[test]
+    fn real_holder_incomplete_query_or_unusable_cli_keeps_existing_path() {
         let no_holder = confirmed_no_holder();
-        assert_eq!(decide(false, true, no_holder, None), None);
-        assert_eq!(decide(true, false, no_holder, None), None);
+        assert_eq!(decide(false, no_holder, None), None);
 
         let real_holder = NpmLockHolderDiagnostic {
             class: NpmLockHolderClass::DefenderOrIndexer,
             count: 1,
             query_outcome: NpmLockHolderQueryOutcome::Complete,
         };
-        assert_eq!(decide(true, true, real_holder, None), None);
+        assert_eq!(decide(true, real_holder, None), None);
         let incomplete_query = NpmLockHolderDiagnostic {
             class: NpmLockHolderClass::None,
             count: 0,
             query_outcome: NpmLockHolderQueryOutcome::Unavailable,
         };
-        assert_eq!(decide(true, true, incomplete_query, None), None);
+        assert_eq!(decide(true, incomplete_query, None), None);
         assert!(install_failure_report(Some(-4082), DETAIL, Some(PREFIX)).is_some());
     }
 

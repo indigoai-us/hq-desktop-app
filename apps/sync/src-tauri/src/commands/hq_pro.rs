@@ -270,12 +270,9 @@ mod tests {
 
     #[test]
     fn configured_feature_flag_uses_the_hq_flags_resolver_value() {
-        let body = r#"{"version":1,"flags":{"desktop.core-update-waits-for-prewarm":true}}"#;
+        let body = r#"{"version":1,"flags":{"desktop.test-feature":true}}"#;
         let values = parse_feature_flag_response(200, body).unwrap();
-        assert_eq!(
-            values.get("desktop.core-update-waits-for-prewarm"),
-            Some(&true)
-        );
+        assert_eq!(values.get("desktop.test-feature"), Some(&true));
     }
 
     #[test]
@@ -283,14 +280,14 @@ mod tests {
         let unconfigured = r#"{"version":1,"flags":{}}"#;
         let malformed = "not-json";
         let values = parse_feature_flag_response(200, unconfigured).unwrap();
-        assert_eq!(values.get("desktop.core-update-waits-for-prewarm"), None);
+        assert_eq!(values.get("desktop.test-feature"), None);
         assert!(parse_feature_flag_response(200, malformed).is_none());
         assert!(parse_feature_flag_response(503, unconfigured).is_none());
     }
 
     #[tokio::test]
     async fn feature_flag_resolution_uses_a_fresh_scoped_snapshot_each_time() {
-        let flag = "desktop.core-update-waits-for-prewarm";
+        let flag = "desktop.test-feature";
         let first_scope = feature_flag_enabled_with_fetch(flag, || async {
             Ok(HqProHttpResponse {
                 status: 200,
@@ -314,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_flag_snapshots_fail_closed_and_valid_snapshot_enables_rollout() {
-        let flag = "desktop.core-update-waits-for-prewarm";
+        let flag = "desktop.test-feature";
         let missing_version = feature_flag_enabled_with_fetch(flag, || async {
             Ok(HqProHttpResponse {
                 status: 200,

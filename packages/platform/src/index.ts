@@ -5,7 +5,6 @@ export * from "./host-platform.js";
 export * from "./library-shelf.js";
 export {
   CLAUDE_PROVIDER_FLAG,
-  SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
 } from "./flags.js";
 
 // Shared 429 / Retry-After policy and the jittered background pollers (R2).

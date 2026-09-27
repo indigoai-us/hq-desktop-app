@@ -10,6 +10,12 @@ The release moves it under the version it ships in.
 
 - Stable releases now keep their published notes out of Unreleased. The changelog
   check also catches repeated notes before the next tag is cut.
+- On Windows, the CLI updater defers a busy target when no holder is found. It retries on
+  later launches and reports a persistent failure after three attempts.
+- Automatic Core updates wait for startup cache preparation. If it times out, the
+  update is deferred to a later automatic check. Manual updates remain unchanged.
+- Setup cancellation treats SIGTERM EPERM as clean only when a full process group
+  probe confirms no live members. Live groups and SIGKILL errors still surface.
 - On Windows, setup uses Winget for Git and checks qmd's launcher before marking setup complete.
 - Windows setup waits for Git before installing qmd and rechecks Git after a specific WinGet failure.
 - Updater restarts now find Node from the app-managed toolchain, preventing completed installations from reopening setup when Node is available.

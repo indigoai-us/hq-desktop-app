@@ -482,7 +482,6 @@ static CANCEL_REGISTRY: std::sync::OnceLock<Arc<Mutex<HashMap<String, CancelStat
 struct CancelState {
     cancelled: bool,
     cleanup_failure: Option<CancellationCleanupFailure>,
-    reaped_eperm_is_clean: bool,
     #[cfg(unix)]
     pgid: Option<i32>,
     #[cfg(windows)]
@@ -636,7 +635,6 @@ fn cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
 fn signal_process_group_with_probe<F, P>(
     pgid: i32,
     signal_kind: Signal,
-    reaped_eperm_is_clean: bool,
     dispatch: F,
     has_live_members: P,
 ) -> Result<(), CancellationCleanupFailure>
@@ -646,9 +644,7 @@ where
 {
     match dispatch(Pid::from_raw(-pgid), signal_kind) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(nix::errno::Errno::EPERM)
-            if signal_kind == Signal::SIGTERM && reaped_eperm_is_clean =>
-        {
+        Err(nix::errno::Errno::EPERM) if signal_kind == Signal::SIGTERM => {
             match has_live_members(pgid) {
                 Ok(false) => Ok(()),
                 Ok(true) | Err(_) => Err(CancellationCleanupFailure::from_unix_signal(
@@ -774,12 +770,11 @@ fn terminate_process_tree(
     handle: &str,
     signal_kind: Signal,
 ) -> Result<(), CancellationCleanupFailure> {
-    let (pgid, reaped_eperm_is_clean) = cancel_registry()
+    let pgid = cancel_registry()
         .lock()
         .unwrap()
         .get(handle)
-        .map(|state| (state.pgid, state.reaped_eperm_is_clean))
-        .unwrap_or((None, false));
+        .and_then(|state| state.pgid);
     let Some(pgid) = pgid else {
         return Ok(());
     };
@@ -787,7 +782,6 @@ fn terminate_process_tree(
     signal_process_group_with_probe(
         pgid,
         signal_kind,
-        reaped_eperm_is_clean,
         signal::kill,
         unix_process_group_has_live_members,
     )
@@ -2418,13 +2412,12 @@ pub fn check_dep_in(tool: &str, path_dirs: &str) -> DepStatus {
 /// Returns `true` if the handle was registered (i.e. an install was in
 /// progress), `false` otherwise.
 #[tauri::command]
-pub fn cancel_install(handle: String, reaped_eperm_is_clean: Option<bool>) -> bool {
+pub fn cancel_install(handle: String) -> bool {
     let mut reg = cancel_registry().lock().unwrap();
     let Some(state) = reg.get_mut(&handle) else {
         return false;
     };
     state.cancelled = true;
-    state.reaped_eperm_is_clean = reaped_eperm_is_clean.unwrap_or(false);
     drop(reg);
 
     #[cfg(unix)]
@@ -9158,7 +9151,7 @@ mod install_deps_tests {
 
     #[test]
     fn test_cancel_install_unknown_handle_returns_false() {
-        let result = cancel_install("handle-that-does-not-exist-abc999".to_string(), None);
+        let result = cancel_install("handle-that-does-not-exist-abc999".to_string());
         assert!(!result);
     }
 
@@ -9167,21 +9160,18 @@ mod install_deps_tests {
         let handle = "test-handle-registered-001".to_string();
 
         register_cancel_handle(handle.clone());
-        let result = cancel_install(handle, None);
+        let result = cancel_install(handle);
 
         assert!(result);
     }
 
     #[test]
-    fn cancel_install_stores_the_reaped_eperm_flag_from_the_caller() {
+    fn cancel_install_does_not_require_a_feature_flag_source() {
         let handle = Uuid::new_v4().to_string();
         register_cancel_handle(handle.clone());
 
-        assert!(cancel_install(handle.clone(), Some(true)));
-        assert!(
-            cancel_registry().lock().unwrap()[&handle].reaped_eperm_is_clean,
-            "the hq-flags result must reach cancellation cleanup"
-        );
+        assert!(cancel_install(handle.clone()));
+        assert!(cancel_registry().lock().unwrap()[&handle].cancelled);
     }
 
     #[test]
@@ -11462,7 +11452,7 @@ mod cancellation_reporting_tests {
 
     #[cfg(unix)]
     #[test]
-    fn reaped_eperm_flag_treats_an_unreaped_zombie_group_as_clean() {
+    fn reaped_eperm_treats_an_unreaped_zombie_group_as_clean() {
         let child = ProcessGroupChild::spawn("sh", &["-c", "exit 0"]);
         let pgid = child.pgid();
         let is_unreaped_zombie = child.is_unreaped_zombie();
@@ -11470,7 +11460,6 @@ mod cancellation_reporting_tests {
         let result = signal_process_group_with_probe(
             pgid,
             Signal::SIGTERM,
-            true,
             |target, signal_kind| {
                 assert_eq!(target.as_raw(), -pgid);
                 assert_eq!(signal_kind, Signal::SIGTERM);
@@ -11511,7 +11500,6 @@ mod cancellation_reporting_tests {
         let result = signal_process_group_with_probe(
             pgid,
             Signal::SIGTERM,
-            true,
             |target, signal_kind| {
                 assert_eq!(target.as_raw(), -pgid);
                 assert_eq!(signal_kind, Signal::SIGTERM);
@@ -11541,11 +11529,10 @@ mod cancellation_reporting_tests {
 
     #[cfg(unix)]
     #[test]
-    fn reaped_eperm_flag_does_not_change_sigkill_escalation() {
+    fn reaped_eperm_does_not_change_sigkill_escalation() {
         let result = signal_process_group_with_probe(
             42,
             Signal::SIGKILL,
-            true,
             |_, _| Err(nix::errno::Errno::EPERM),
             |_| panic!("SIGKILL escalation must not run the reaped-group probe"),
         );
@@ -11558,30 +11545,6 @@ mod cancellation_reporting_tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn reaped_eperm_flag_off_keeps_the_current_cleanup_report() {
-        let child = ProcessGroupChild::spawn("sh", &["-c", "exit 0"]);
-        let pgid = child.pgid();
-        let is_unreaped_zombie = child.is_unreaped_zombie();
-        let result = signal_process_group_with_probe(
-            pgid,
-            Signal::SIGTERM,
-            false,
-            |_, _| Err(nix::errno::Errno::EPERM),
-            unix_process_group_has_live_members,
-        );
-        let events = report_if_cleanup_failed(result);
-
-        assert!(
-            is_unreaped_zombie,
-            "leader must remain an unreaped zombie during the probe"
-        );
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].level, sentry::Level::Error);
-        assert_eq!(events[0].tags["setup_cancel_signal"], "SIGTERM");
-        assert_eq!(events[0].tags["setup_cancel_os_error_kind"], "EPERM");
-    }
-
     fn diagnostic(error: &str) -> SetupCommandDiagnostic {
         SetupCommandDiagnostic {
             command: "npm install -g @indigoai-us/hq-cli".to_string(),
@@ -11699,7 +11662,7 @@ mod cancellation_reporting_tests {
             handle: Uuid::new_v4().to_string(),
         };
         register_cancel_handle(registration.handle.clone());
-        assert!(cancel_install(registration.handle.clone(), None));
+        assert!(cancel_install(registration.handle.clone()));
 
         let collector = InstallCancellationCollector::new();
         let runtime = tokio::runtime::Builder::new_current_thread()

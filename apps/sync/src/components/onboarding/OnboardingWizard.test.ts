@@ -1645,13 +1645,8 @@ describe('setup restart', () => {
     await flush();
   }
 
-  async function cancelSetupWithPendingFlagRead(): Promise<
-    (response: { status: number; body: string }) => void
-  > {
-    let resolveFlagRead!: (response: { status: number; body: string }) => void;
-    const flagRead = new Promise<{ status: number; body: string }>((resolve) => {
-      resolveFlagRead = resolve;
-    });
+  async function cancelSetupWithoutFlagSource(): Promise<void> {
+    const unavailableFlagSource = new Promise<never>(() => {});
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
         case 'resolve_hq_path':
@@ -1659,7 +1654,7 @@ describe('setup restart', () => {
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'hq_pro_fetch':
-          return flagRead;
+          return unavailableFlagSource;
         case 'fetch_and_extract_template':
           return new Promise<never>(() => {});
         default:
@@ -1672,42 +1667,18 @@ describe('setup restart', () => {
     emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
     clickIn('onboarding-setup', '.btn-secondary');
     await flush();
-    return resolveFlagRead;
   }
 
-  it('waits for the setup cancellation flag lookup before cancelling an installer', async () => {
-    const resolveFlagRead = await cancelSetupWithPendingFlagRead();
+  it('cancels an installer when no feature flag source is available', async () => {
+    await cancelSetupWithoutFlagSource();
     const cancelCall = () =>
       tauri.invoke.mock.calls.find(([command]) => command === 'cancel_install');
 
-    expect(cancelCall()).toBeUndefined();
-    resolveFlagRead({
-      status: 200,
-      body: JSON.stringify({
-        version: 1,
-        flags: { 'desktop.setup-cancel-eperm-reaped-is-clean': true },
-      }),
-    });
-
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'hq_pro_fetch'),
+    ).toHaveLength(0);
     await flushUntil(() => cancelCall() !== undefined);
-    expect(cancelCall()?.[1]).toEqual({
-      handle: 'setup-installer-handle',
-      reapedEpermIsClean: true,
-    });
-  });
-
-  it('fails closed when the setup cancellation flag lookup does not settle in time', async () => {
-    await cancelSetupWithPendingFlagRead();
-    const cancelCall = () =>
-      tauri.invoke.mock.calls.find(([command]) => command === 'cancel_install');
-
-    expect(cancelCall()).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(2_000);
-    await flushUntil(() => cancelCall() !== undefined);
-    expect(cancelCall()?.[1]).toEqual({
-      handle: 'setup-installer-handle',
-      reapedEpermIsClean: false,
-    });
+    expect(cancelCall()?.[1]).toEqual({ handle: 'setup-installer-handle' });
   });
 
   it('starts over when the person leaves mid-stage and comes back', async () => {
