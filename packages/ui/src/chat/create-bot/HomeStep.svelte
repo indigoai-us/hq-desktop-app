@@ -10,6 +10,7 @@
    */
   import { initialsFor } from "../sidebar-model.js";
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
+  import { hostComputerNoun } from "@hq/platform";
   import RuntimeSignIn, { type RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import { runtimeIsReady, type BotHome, type BotRuntime, type CreateBotDraft } from "./create-bot-model.js";
   import {
@@ -68,9 +69,15 @@
   /** True while a Check again / Try again is in flight. */
   let rechecking = $state(false);
 
+  /**
+   * The plain-language name for the host machine ("Mac", "PC", or
+   * "computer"). Read once at mount from the shared Tauri probe so a slow
+   * OS-plugin land does not flash "PC" then "Mac".
+   */
+  const hostNoun = hostComputerNoun();
   const draftStatus = $derived(runtimeStatusOf(runtimeStatus, draft.runtime));
   const draftLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
-  const footer = $derived(runtimeFooter(draftStatus, draftLabel, draft.runtime, Boolean(signInApi || onsignin)));
+  const footer = $derived(runtimeFooter(draftStatus, draftLabel, draft.runtime, Boolean(signInApi || onsignin), hostNoun));
 
   async function recheck(): Promise<void> {
     if (rechecking || !onrecheck) return;
@@ -154,8 +161,8 @@
       </span>
       <span class="cb-card-sub">
         {canLocal
-          ? "Runs on this Mac with your own login. Works while this computer is on. Message it from your phone."
-          : "Bots can't run on this computer."}
+          ? `Runs on this ${hostNoun} with your own login. Works while this ${hostNoun} is on. Message it from your phone.`
+          : `Bots can't run on this ${hostNoun}.`}
       </span>
     </button>
     {#if canCloud}
@@ -175,7 +182,7 @@
           <span class="cb-card-meta">Company credits</span>
         </span>
         <span class="cb-card-sub">
-          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this Mac is off.
+          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this {hostNoun} is off.
         </span>
       </button>
     {/if}
@@ -234,7 +241,7 @@
         {/if}
       {:else if !runtimeIsReady(runtimeReady, draft.runtime)}
         <p class="cb-help" data-testid="chat-bot-runtime-help" data-runtime-state="signedOut">
-          {draftLabel} is not signed in on this Mac.
+          {draftLabel} is not signed in on this {hostNoun}.
           {#if signInApi || onsignin}
             <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>Sign in</button>
           {:else}
@@ -242,7 +249,7 @@
           {/if}
         </p>
       {:else}
-        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this Mac — the bot uses your own {draftLabel} plan.</p>
+        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this {hostNoun} - the bot uses your own {draftLabel} plan.</p>
       {/if}
     </div>
 

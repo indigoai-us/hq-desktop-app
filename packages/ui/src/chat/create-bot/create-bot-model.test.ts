@@ -270,7 +270,7 @@ describe("steps", () => {
   it("home needs a signed-in runtime (Local) or a company (Cloud)", () => {
     const c = ctx();
     expect(stepIssue("home", draft({ home: "local", runtime: "claude" }), c)).toBeNull();
-    expect(stepIssue("home", draft({ home: "local", runtime: "codex" }), c)).toBe("Codex is not signed in on this Mac.");
+    expect(stepIssue("home", draft({ home: "local", runtime: "codex" }), c)).toBe("Codex is not signed in on this computer.");
     expect(stepIssue("home", draft({ home: "local" }), ctx({ canLocal: false }))).toContain("can’t run on this computer");
     expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBeNull();
     expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_nope" }), c)).toBe("Pick a company.");
