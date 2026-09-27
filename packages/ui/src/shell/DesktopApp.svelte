@@ -70,7 +70,12 @@
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
-  import { messageMarksSetupDone } from "../chat/messaging/richMessageContent.js";
+  import {
+    messageHasVisibleContent,
+    messageMarksSetupDone,
+    messageOffersSlackAgent,
+    suggestionsForMessage,
+  } from "../chat/messaging/richMessageContent.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -91,9 +96,14 @@
     findSetupBotContact,
     firstSignedInRuntime,
     setupFinaleDue,
+    setupFinaleOffersSlack,
+    setupSlackOfferText,
+    pickSetupBotName,
+    takenBotNames,
+    setupBotIntro,
+    setupSuggestionsDue,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
-    SETUP_BOT_INTRO,
     SETUP_BOT_KICKOFF,
     SETUP_BOT_MODE,
     SETUP_BOT_NAME,
@@ -642,6 +652,12 @@
     /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
     onretryroster?: () => void;
     /**
+     * Re-read `companies` now, without touching `rosterStatus`. Called when a
+     * channel names a company the roster does not have yet (the setup bot
+     * created it); resolves once the host has applied the fresh roster.
+     */
+    onrefreshroster?: () => Promise<unknown>;
+    /**
      * Start reauthentication from the session-expired banner (PL-03). The
      * desktop host clears the dead session and lands the user on its sign-in
      * surface. Omitted → the banner states the problem without an action.
@@ -836,6 +852,7 @@
     syncEvents = null,
     rosterStatus = null,
     onretryroster,
+    onrefreshroster,
     onsignin,
     self = null,
     tenantAccountId = null,
@@ -2210,14 +2227,33 @@
     // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
     // one turn by itself so the bot starts step one without waiting for the
     // person to type.
-    const created = await createBotEntry({
-      name: SETUP_BOT_NAME,
-      worker: SETUP_BOT_WORKER,
-      runtime,
-      intro: SETUP_BOT_INTRO,
-      kickoff: SETUP_BOT_KICKOFF,
-      // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
-    });
+    // A friendly name no bot on the person's roster already has, so two bots
+    // in one company never share one. The roster is read again here: an
+    // unreadable one only makes a clash possible, never blocks setup.
+    let rosterContacts: unknown = null;
+    try {
+      const contacts = await adapter.messaging?.listContacts?.();
+      if (contacts?.ok) rosterContacts = contacts.value;
+    } catch (err) {
+      console.warn("[hq-desktop] could not read the roster to name the setup bot:", err);
+    }
+    const displayName = pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
+    const created = await createBotEntry(
+      {
+        name: SETUP_BOT_NAME,
+        displayName,
+        worker: SETUP_BOT_WORKER,
+        runtime,
+        intro: setupBotIntro(displayName),
+        kickoff: SETUP_BOT_KICKOFF,
+        // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
+      },
+    );
+    // The CLI already gave HQ this name; remembering it here labels the DM on
+    // this Mac even with an older hq that could not take --display-name.
+    if (created.ok && created.agentUid) {
+      botDisplayNames = rememberBotDisplayName(botDisplayNames, created.agentUid, displayName);
+    }
     if (created.ok) {
       recordWelcomeSetupRun();
       return { ok: true, existing: false };
@@ -2374,6 +2410,17 @@
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
   });
   /**
+   * The setup bot's suggested replies for its newest message: recommended
+   * answers to what it just asked, or next questions. Setup bot only for now.
+   */
+  const setupSuggestedReplies = $derived.by((): string[] => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return [];
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupSuggestionsDue(timeline, bot.agentUid, messageHasVisibleContent, suggestionsForMessage);
+  });
+  /**
    * The finish card, once put away, stays away.
    *
    * Setup ending is not the end of the conversation: people keep talking to
@@ -2385,6 +2432,18 @@
   const setupFinaleDismissKey = $derived(
     selectedLocalBot ? `setup-finale-dismissed:${selectedLocalBot.agentUid}` : null,
   );
+  /** The setup bot's human name ("Pickles"), when it has one. */
+  const setupBotDisplayName = $derived(
+    selectedLocalBot ? (botDisplayNames[selectedLocalBot.agentUid] ?? null) : null,
+  );
+  /** The bot offered a Slack bot on its finish: only for a person who started their own company. */
+  const setupFinaleSlackOffer = $derived.by(() => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!setupBotDmDone || !bot || !row) return false;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupFinaleOffersSlack(timeline, bot.agentUid, messageOffersSlackAgent);
+  });
   const setupFinaleVisible = $derived.by(() => {
     if (!setupBotDmDone) return false;
     void setupFinaleDismissedAt;
@@ -5879,6 +5938,82 @@
       : "denied";
   }
 
+  /**
+   * A company made outside this app's own create flow (the setup bot runs
+   * `hq company create`) reaches the channel directory before the host's
+   * roster, which otherwise only reloads on sync-runner events that can land
+   * minutes later. Until then its channels read as a company this person is
+   * not in: hidden from Companies, and "no longer available" on click.
+   */
+  const ROSTER_REFRESH_TIMEOUT_MS = 8_000;
+  const rosterRefreshAsked = new Set<string>();
+  let rosterRefreshInFlight: Promise<void> | null = null;
+
+  function refreshRoster(): Promise<void> {
+    if (!onrefreshroster) return Promise.resolve();
+    if (!rosterRefreshInFlight) {
+      const refresh = onrefreshroster;
+      rosterRefreshInFlight = Promise.race([
+        Promise.resolve()
+          .then(() => refresh())
+          .catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, ROSTER_REFRESH_TIMEOUT_MS)),
+      ])
+        .then(() => svelteTick())
+        .finally(() => {
+          rosterRefreshInFlight = null;
+        });
+    }
+    return rosterRefreshInFlight;
+  }
+
+  /**
+   * Access for a row's company. A "denied" row also asks the host to re-read
+   * the roster; if the company turns up, the unavailable page re-opens the
+   * destination (see the effect below). The answer itself stays synchronous:
+   * the sidebar navigates to Messages right after the row, which would cancel
+   * an awaited channel navigation.
+   */
+  function rowAccessOutcome(
+    destination: Extract<NavigationDestination, { kind: "channel" | "dm" }>,
+    row: ConversationRow,
+  ): NavigationResolveOutcome {
+    if (companyAccess(row.companyUid) !== "denied") {
+      return { status: "ready", destination };
+    }
+    void refreshRoster();
+    return {
+      status: "unavailable",
+      destination,
+      reason: DESTINATION_UNAVAILABLE,
+    };
+  }
+
+  // Proactive half: a rail row whose company the roster lacks asks the host
+  // for a fresh roster once per company key, so the Companies section and
+  // the channel's access catch up without waiting for a click or a sync.
+  $effect(() => {
+    if (!onrefreshroster || companies == null) return;
+    for (const row of railRows) {
+      const key = row.companyUid?.trim();
+      if (!key || rosterRefreshAsked.has(key)) continue;
+      if (companyAccess(key) !== "denied") continue;
+      rosterRefreshAsked.add(key);
+      void refreshRoster();
+    }
+  });
+
+  // Recovery half: the unavailable page for a channel whose company the
+  // re-read roster now includes opens that channel after all.
+  $effect(() => {
+    const blocked = navigationUnavailable?.destination;
+    if (!blocked || (blocked.kind !== "channel" && blocked.kind !== "dm")) return;
+    if (companies == null) return;
+    const row = untrack(() => rowForDestination(blocked));
+    if (!row?.companyUid || companyAccess(row.companyUid) !== "ok") return;
+    void untrack(() => navigate(blocked));
+  });
+
   function companyIsAccessible(companyUid: string | null | undefined): boolean {
     return companyAccess(companyUid) === "ok";
   }
@@ -5959,15 +6094,9 @@
       const row = rowForDestination(destination);
       if (row) {
         // Rows already in the rail came from the membership directory.
-        // Only blank after companies has loaded and the uid is gone.
-        if (companyAccess(row.companyUid) === "denied") {
-          return {
-            status: "unavailable",
-            destination,
-            reason: DESTINATION_UNAVAILABLE,
-          };
-        }
-        return { status: "ready", destination };
+        // Only blank after companies has loaded and the uid is gone; the
+        // roster re-read that a miss triggers re-opens it if it turns up.
+        return rowAccessOutcome(destination, row);
       }
       return waitForDestinationRow(destination, context);
     }
@@ -5996,15 +6125,7 @@
         }
         const row = rowForDestination(destination);
         if (row) {
-          if (companyAccess(row.companyUid) === "denied") {
-            resolve({
-              status: "unavailable",
-              destination,
-              reason: DESTINATION_UNAVAILABLE,
-            });
-            return;
-          }
-          resolve({ status: "ready", destination });
+          resolve(rowAccessOutcome(destination, row));
           return;
         }
         tries += 1;
@@ -8945,6 +9066,10 @@
                       onopenurl={(url) => onopenurl?.(url)}
                       ondismiss={dismissSetupFinale}
                       launchError={setupLaunchError}
+                      slackLabel={setupFinaleSlackOffer ? setupSlackOfferText(setupBotDisplayName) : null}
+                      onslack={() => void persistSend(setupSlackOfferText(setupBotDisplayName), []).catch((err) =>
+                          console.warn("[hq-desktop] could not ask the setup bot about Slack:", err),
+                        )}
                     />
                   {/if}
                   {#if inSetupChannelWithAgent}
@@ -9295,6 +9420,7 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
+                  suggestedReplies={setupSuggestedReplies}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />

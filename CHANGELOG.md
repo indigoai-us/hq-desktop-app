@@ -18,6 +18,24 @@ The release moves it under the version it ships in.
   date in the background, folders with thousands of files scroll smoothly,
   and a very large note shows its first part with a button to open the rest.
 - Markdown documents of a few megabytes no longer crash the reading view.
+- The setup bot now has a name, picked at random from 100 friendly ones
+  (Pickles, Mochi, Waffles…), and never one a bot you can already see uses.
+  It says its name in its first hello. If you started your own company, the
+  card at the end of setup can also offer to put the bot in Slack; clicking it
+  asks the bot to walk you through it.
+- The setup bot's messages can now end with suggested replies: a few buttons
+  under its newest message with the likely answers to its question, or the
+  next questions to ask. Clicking one sends it as your reply. They go away
+  once you reply. The last button, "Something else", puts the cursor in the
+  message box so you can type your own answer.
+- The setup bot now opens by asking whether you want HQ explained first or
+  want to jump straight into setup, instead of starting the first step right
+  away.
+- Clicking a new company's channel right after the setup bot creates it no
+  longer lands on the "no longer available" page. The company rail now asks
+  the host to re-read its company roster as soon as a channel names a company
+  the roster is missing, and the unavailable page re-opens the channel once
+  the company shows up.
 
 ## [0.10.345] — 2026-09-27
 

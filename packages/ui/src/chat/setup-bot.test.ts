@@ -114,6 +114,12 @@ describe("copy", () => {
     expect(SETUP_BOT_KICKOFF_PREFIX).toBe("Kickoff:");
   });
 
+  it("the kickoff opens with the explain-HQ-or-jump-in question before the first unfinished step", () => {
+    const k = SETUP_BOT_KICKOFF;
+    expect(k).toMatch(/whether I want HQ explained first or to jump straight in/);
+    expect(k.indexOf("explained first")).toBeLessThan(k.indexOf("first unfinished step"));
+  });
+
   it("the kickoff asks for the state check, the first unfinished step, and exactly one concrete question or action", () => {
     const k = SETUP_BOT_KICKOFF;
     expect(k).toMatch(/signed in to HQ Cloud/);
