@@ -57,9 +57,13 @@
   import SetupButton from "./SetupButton.svelte";
   import { SETUP_RUN_STEPS } from "./setup-run";
   import type { SetupAgent } from "./setup-agent.svelte";
-  import { SETUP_BOT_COPY, SETUP_BOT_GENERIC_FAILURE, SETUP_ELSEWHERE_COPY, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
+  import { SETUP_BOT_COPY, SETUP_BOT_GENERIC_FAILURE, SETUP_BOT_NO_RUNTIME, SETUP_ELSEWHERE_COPY, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
+  import SetupInstallGuide, {
+    type CodingTool,
+    type InstallOutcome,
+  } from "../settings/SetupInstallGuide.svelte";
 
   interface Props {
     /** Platform seam slices (see @hq/platform PlatformAdapter). */
@@ -126,6 +130,21 @@
      * fails, so nobody is ever stuck on this screen.
      */
     setupBot?: SetupBotLauncher | null;
+    /**
+     * US-005 wiring. When the setup bot cannot start because no coding tool
+     * is signed in on this computer, the hero surfaces a guided install path
+     * instead of a dead-end error. The host provides real callbacks that
+     * drive the Rust `install_claude_code` / `agent_provider_login_start` /
+     * `detect_ai_tools` commands and the manual-download fallback URL. HQ
+     * never asks for or handles the password itself.
+     */
+    installGuide?: {
+      oninstall(tool: CodingTool): Promise<InstallOutcome>;
+      onsignin(tool: CodingTool): Promise<InstallOutcome>;
+      onrefresh(): Promise<void>;
+      downloadUrlFor(tool: CodingTool): string;
+      onopen(url: string): Promise<InstallOutcome> | void;
+    } | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
     /**
@@ -148,7 +167,27 @@
     agent = null,
     onopensessiondetails,
     setupBot = null,
+    installGuide = null,
   }: Props = $props();
+
+  /**
+   * Local AiTools probe for the guided install path. Kept separate from the
+   * launch cascade above so a NO_RUNTIME dead-end can surface the guide
+   * without the launches also re-probing.
+   */
+  let installGuideTools = $state<AiTools | null>(null);
+  let installGuideProbed = false;
+
+  async function ensureInstallGuideTools(): Promise<void> {
+    if (installGuideProbed) return;
+    installGuideProbed = true;
+    try {
+      const res = await shell.detectAiTools();
+      installGuideTools = res.ok ? (res.value as unknown as AiTools) : null;
+    } catch {
+      installGuideTools = null;
+    }
+  }
 
   const rosterCompanies = $derived(setupCompanies(companies));
   const hasCompany = $derived(rosterCompanies.length > 0);
@@ -446,6 +485,24 @@
              keep the old scripted run one click away. -->
         <div class="bot-failure" data-testid="setup-bot-failure">
           <p class="launch-error" role="alert" data-testid="setup-bot-error">{visibleBotError}</p>
+          {#if installGuide && visibleBotError === SETUP_BOT_NO_RUNTIME}
+            <!-- US-005: no coding tool is signed in. Instead of dead-ending
+                 the user, offer a guided Install + sign-in path. -->
+            {#await ensureInstallGuideTools() then _}
+              <SetupInstallGuide
+                tools={installGuideTools}
+                oninstall={installGuide.oninstall}
+                onsignin={installGuide.onsignin}
+                onrefresh={async () => {
+                  installGuideProbed = false;
+                  await ensureInstallGuideTools();
+                  await installGuide.onrefresh();
+                }}
+                downloadUrlFor={installGuide.downloadUrlFor}
+                onopen={installGuide.onopen}
+              />
+            {/await}
+          {/if}
           <div class="hero-actions" role="group" aria-label="Setup bot recovery">
             <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
               {SETUP_BOT_COPY.retry}
