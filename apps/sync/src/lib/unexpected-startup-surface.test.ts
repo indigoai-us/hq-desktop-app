@@ -17,6 +17,7 @@ describe('unexpectedSurfaceForState', () => {
       installCompleted: true,
       firstRunCompleted: false,
       installInProgress: true,
+      manifestIncomplete: true,
       hadMachineId: true,
       hqRootValid: true,
     };
@@ -30,6 +31,7 @@ describe('unexpectedSurfaceForState', () => {
         installCompleted: false,
         firstRunCompleted: false,
         installInProgress: false,
+        manifestIncomplete: false,
         hadMachineId: false,
         hqRootValid: false,
       }),
@@ -41,6 +43,7 @@ describe('unexpectedSurfaceForState', () => {
       installCompleted: false,
       firstRunCompleted: false,
       installInProgress: false,
+      manifestIncomplete: false,
       hadMachineId: false,
       hqRootValid: false,
     };
@@ -56,6 +59,7 @@ describe('unexpectedSurfaceForState', () => {
         installCompleted: false,
         firstRunCompleted: false,
         installInProgress: false,
+        manifestIncomplete: false,
         hadMachineId: true,
         hqRootValid: true,
       }),
@@ -67,11 +71,25 @@ describe('unexpectedSurfaceForState', () => {
       installCompleted: false,
       firstRunCompleted: false,
       installInProgress: true,
+      manifestIncomplete: false,
       hadMachineId: true,
       hqRootValid: true,
     };
 
     expect(unexpectedSurfaceForState('NeedsInstall', false, interruptedFirstInstall)).toBe(null);
+  });
+
+  it('does not treat an incomplete manifest with only completed steps as prior setup', () => {
+    expect(
+      unexpectedSurfaceForState('NeedsInstall', false, {
+        installCompleted: false,
+        firstRunCompleted: false,
+        installInProgress: false,
+        manifestIncomplete: true,
+        hadMachineId: true,
+        hqRootValid: true,
+      }),
+    ).toBe(null);
   });
 
   it('returns sign-in when lifecycle state is unknown or steady and auth is absent', () => {

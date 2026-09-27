@@ -10,10 +10,11 @@ pub fn prior_setup_detected(
     had_machine_id: bool,
     hq_root_valid: bool,
     install_in_progress: bool,
+    manifest_incomplete: bool,
 ) -> bool {
     install_completed
         || first_run_completed
-        || (!install_in_progress && had_machine_id && hq_root_valid)
+        || (!install_in_progress && !manifest_incomplete && had_machine_id && hq_root_valid)
 }
 
 /// Decide whether a startup surface is reportable while preserving sign-in
@@ -313,28 +314,37 @@ mod tests {
 
     #[test]
     fn prior_setup_detected_install_completed() {
-        assert!(prior_setup_detected(true, false, false, false, false));
+        assert!(prior_setup_detected(
+            true, false, false, false, false, false
+        ));
     }
 
     #[test]
     fn prior_setup_detected_first_run_completed() {
-        assert!(prior_setup_detected(false, true, false, false, false));
+        assert!(prior_setup_detected(
+            false, true, false, false, false, false
+        ));
     }
 
     #[test]
     fn prior_setup_detected_with_machine_id_and_valid_hq_root() {
-        assert!(prior_setup_detected(false, false, true, true, false));
+        assert!(prior_setup_detected(false, false, true, true, false, false));
     }
 
     #[test]
     fn interrupted_first_install_is_not_prior_setup() {
-        assert!(!prior_setup_detected(false, false, true, true, true));
+        assert!(!prior_setup_detected(false, false, true, true, true, false));
+    }
+
+    #[test]
+    fn incomplete_manifest_evidence_excludes_machine_id_and_root_from_prior_setup() {
+        assert!(!prior_setup_detected(false, false, true, true, false, true));
     }
 
     #[test]
     fn completion_markers_override_install_in_progress() {
-        assert!(prior_setup_detected(true, false, true, true, true));
-        assert!(prior_setup_detected(false, true, true, true, true));
+        assert!(prior_setup_detected(true, false, true, true, true, true));
+        assert!(prior_setup_detected(false, true, true, true, true, true));
     }
 
     #[test]
@@ -342,30 +352,34 @@ mod tests {
         assert!(should_report_unexpected_surface(
             "onboarding",
             "NeedsInstall",
-            prior_setup_detected(true, false, true, true, true),
+            prior_setup_detected(true, false, true, true, true, true),
             false,
         ));
         assert!(should_report_unexpected_surface(
             "onboarding",
             "NeedsInstall",
-            prior_setup_detected(false, false, true, true, false),
+            prior_setup_detected(false, false, true, true, false, false),
             false,
         ));
     }
 
     #[test]
     fn prior_setup_not_detected_on_fresh_install() {
-        assert!(!prior_setup_detected(false, false, false, false, false));
+        assert!(!prior_setup_detected(
+            false, false, false, false, false, false
+        ));
     }
 
     #[test]
     fn prior_setup_detected_multiple_signals() {
-        assert!(prior_setup_detected(true, true, false, false, false));
+        assert!(prior_setup_detected(true, true, false, false, false, false));
     }
 
     #[test]
     fn a_machine_id_without_a_valid_hq_root_is_not_prior_setup_evidence() {
-        assert!(!prior_setup_detected(false, false, true, false, false));
+        assert!(!prior_setup_detected(
+            false, false, true, false, false, false
+        ));
     }
 
     #[test]
@@ -470,6 +484,7 @@ mod tests {
         assert!(!prior_setup_detected(
             p.install_completed,
             p.first_run_completed,
+            false,
             false,
             false,
             false,

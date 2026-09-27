@@ -231,15 +231,36 @@ fn append_failure_once(manifest: &mut InstallManifest, stage: &str, message: &st
 }
 
 pub fn manifest_indicates_install_in_progress(manifest: &InstallManifest) -> bool {
+    manifest.completed_at.is_none()
+        && manifest
+            .steps
+            .values()
+            .any(|step| matches!(step.status, ItemStatus::Running | ItemStatus::Failed))
+}
+
+/// Evidence that the manifest has recorded setup work without a completion
+/// marker. This is used only when deciding whether to report a prior setup;
+/// lifecycle routing continues to use manifest_indicates_install_in_progress.
+pub fn manifest_has_incomplete_setup_evidence(manifest: &InstallManifest) -> bool {
     manifest.completed_at.is_none() && !manifest.steps.is_empty()
 }
 
-pub fn install_in_progress_from_disk() -> bool {
+/// Read the manifest once so lifecycle state and diagnostic evidence use a
+/// consistent snapshot. The second value never participates in lifecycle
+/// classification.
+pub fn startup_manifest_evidence_from_disk() -> (bool, bool) {
     let Ok(path) = manifest_path() else {
-        return false;
+        return (false, false);
     };
     let manifest = read_manifest_from_path(&path, String::new(), installer_version());
-    manifest_indicates_install_in_progress(&manifest)
+    (
+        manifest_indicates_install_in_progress(&manifest),
+        manifest_has_incomplete_setup_evidence(&manifest),
+    )
+}
+
+pub fn install_in_progress_from_disk() -> bool {
+    startup_manifest_evidence_from_disk().0
 }
 
 #[cfg(test)]
@@ -524,9 +545,10 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_manifest_with_only_completed_steps_stays_in_progress() {
+    fn incomplete_manifest_with_only_completed_steps_is_evidence_only() {
         let mut manifest = empty_manifest("/tmp/HQ".to_string(), "test".to_string());
         assert!(!manifest_indicates_install_in_progress(&manifest));
+        assert!(!manifest_has_incomplete_setup_evidence(&manifest));
 
         manifest.steps.insert(
             "content".to_string(),
@@ -537,9 +559,42 @@ mod tests {
                 error: None,
             },
         );
-        assert!(manifest_indicates_install_in_progress(&manifest));
+        assert!(!manifest_indicates_install_in_progress(&manifest));
+        assert!(manifest_has_incomplete_setup_evidence(&manifest));
 
         manifest.completed_at = Some("done".to_string());
         assert!(!manifest_indicates_install_in_progress(&manifest));
+        assert!(!manifest_has_incomplete_setup_evidence(&manifest));
+    }
+
+    #[test]
+    fn all_ok_incomplete_manifest_preserves_lifecycle_classification() {
+        let mut manifest = empty_manifest("/tmp/HQ".to_string(), "test".to_string());
+        manifest.steps.insert(
+            "content".to_string(),
+            StepRecord {
+                status: ItemStatus::Ok,
+                started_at: Some("t1".to_string()),
+                completed_at: Some("t2".to_string()),
+                error: None,
+            },
+        );
+
+        let install_in_progress = manifest_indicates_install_in_progress(&manifest);
+        assert!(!install_in_progress);
+        assert!(manifest_has_incomplete_setup_evidence(&manifest));
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: false,
+            first_run_completed: false,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: false,
+            install_in_progress,
+            consent_answered: false,
+            evidence_unreadable: false,
+        });
+
+        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
     }
 }

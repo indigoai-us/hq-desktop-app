@@ -4,6 +4,7 @@ export interface StartupSetupEvidence {
   installCompleted: boolean;
   firstRunCompleted: boolean;
   installInProgress: boolean;
+  manifestIncomplete: boolean;
   hadMachineId: boolean;
   hqRootValid: boolean;
 }
@@ -12,7 +13,10 @@ function hasPriorSetup(evidence: StartupSetupEvidence): boolean {
   return (
     evidence.installCompleted ||
     evidence.firstRunCompleted ||
-    (!evidence.installInProgress && evidence.hadMachineId && evidence.hqRootValid)
+    (!evidence.installInProgress &&
+      !evidence.manifestIncomplete &&
+      evidence.hadMachineId &&
+      evidence.hqRootValid)
   );
 }
 
