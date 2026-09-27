@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- getindigo.ai deprecation wave 2a: remove dead updater-manifest publish script (`imports/hq-installer-react/scripts/publish-updater-manifest.ts`). The script targeted `updates.hq-installer.getindigo.ai` (NXDOMAIN); no workflow or package.json script invoked it. The shipped app polls GitHub Releases for updates.
+
 - When an update restarts the app before the HQ folder is available, people
   who have completed setup stay on the normal app surface instead of seeing
   onboarding again.
