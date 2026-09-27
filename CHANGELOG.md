@@ -18,6 +18,9 @@ The release moves it under the version it ships in.
   date in the background, folders with thousands of files scroll smoothly,
   and a very large note shows its first part with a button to open the rest.
 - Markdown documents of a few megabytes no longer crash the reading view.
+- A company you were just added to, including one the setup bot creates for
+  you, now syncs onto this Mac by itself. The "Added to … Sync to pull it"
+  banner only appears when that sync fails, and its Sync now button retries.
 - The setup bot now has a name, picked at random from 100 friendly ones
   (Pickles, Mochi, Waffles…), and never one a bot you can already see uses.
   It says its name in its first hello. If you started your own company, the
