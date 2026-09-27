@@ -231,11 +231,7 @@ fn append_failure_once(manifest: &mut InstallManifest, stage: &str, message: &st
 }
 
 pub fn manifest_indicates_install_in_progress(manifest: &InstallManifest) -> bool {
-    manifest.completed_at.is_none()
-        && manifest
-            .steps
-            .values()
-            .any(|step| matches!(step.status, ItemStatus::Running | ItemStatus::Failed))
+    manifest.completed_at.is_none() && !manifest.steps.is_empty()
 }
 
 pub fn install_in_progress_from_disk() -> bool {
@@ -525,5 +521,25 @@ mod tests {
 
         assert_eq!(verdict.state, LifecycleState::InstallResume);
         assert!(!verdict.needs_install_backfill);
+    }
+
+    #[test]
+    fn incomplete_manifest_with_only_completed_steps_stays_in_progress() {
+        let mut manifest = empty_manifest("/tmp/HQ".to_string(), "test".to_string());
+        assert!(!manifest_indicates_install_in_progress(&manifest));
+
+        manifest.steps.insert(
+            "content".to_string(),
+            StepRecord {
+                status: ItemStatus::Ok,
+                started_at: Some("t1".to_string()),
+                completed_at: Some("t2".to_string()),
+                error: None,
+            },
+        );
+        assert!(manifest_indicates_install_in_progress(&manifest));
+
+        manifest.completed_at = Some("done".to_string());
+        assert!(!manifest_indicates_install_in_progress(&manifest));
     }
 }
