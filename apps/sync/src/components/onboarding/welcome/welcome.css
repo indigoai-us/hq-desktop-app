@@ -648,6 +648,30 @@
   transform: rotateX(-62deg);
 }
 
+/* In a short window the folder screen closes up its spacing so the skyline
+   keeps a readable band under Install here: engines.ts sets --fold-k from 0
+   (the prototype's spacing) to 1 (tightest) on the copy and the tree. */
+.hq-welcome .s-folder .copy .body {
+  margin-top: calc(14px - 6px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .troot {
+  margin-bottom: calc(14px - 6px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .trow {
+  padding-top: calc(7px - 3px * var(--fold-k, 0));
+  padding-bottom: calc(7px - 3px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .loc {
+  margin-top: calc(22px - 10px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .loc .lcap {
+  margin-bottom: calc(10px - 4px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .loc .lrow {
+  padding-top: calc(9px - 3px * var(--fold-k, 0));
+  padding-bottom: calc(9px - 3px * var(--fold-k, 0));
+}
+
 /* the tree that replaces the folder */
 .hq-welcome .tree {
   position: absolute;

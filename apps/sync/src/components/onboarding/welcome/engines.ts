@@ -303,6 +303,32 @@ export function createMarkEngine(
 // ---------------------------------------------------------------------------
 
 const SKY = 0.3;
+/** Skyline cell (px): one character per cell. */
+const SKY_CELL = 11;
+/** Clear space kept between the content block and the towers under it. */
+const SKY_PAD = 28;
+
+/**
+ * The skyline's ground row: its bottom row of characters sits in the last
+ * cell row. The prototype used ceil(H / cell), which in a window whose height
+ * is just over a whole number of cells (686 = 62.4 cells) put that row's
+ * centre below the window edge, so the base of every tower was cut off.
+ * When the last row's centre would fall off-screen it moves up one row.
+ */
+export function skylineGround(H: number): number {
+  const rows = Math.ceil(H / SKY_CELL);
+  return (rows - 1) * SKY_CELL + SKY_CELL / 2 > H ? rows - 1 : rows;
+}
+
+/**
+ * Height (px) kept free under a screen's content for the skyline: 60% of
+ * its tallest tower (SKY of the window) plus the clear gap above it. A tall
+ * window (820x910) leaves more than this under the folder tree, as in the
+ * prototype; a short one (a 1024x686 work area) left two or three rows.
+ */
+export function skylineBand(H: number): number {
+  return Math.ceil(Math.floor((H * SKY) / SKY_CELL) * 0.6) * SKY_CELL + SKY_PAD;
+}
 
 export interface KeepOut {
   l: number;
@@ -316,7 +342,7 @@ export function createSkyline(cv: HTMLCanvasElement, keepOut: () => KeepOut, RIS
   const DENSE = '#HQ*';
   const ALL = SPARSE + DENSE;
   const TIERS = [0.2, 0.3, 0.41, 0.53, 0.66, 0.8, 1.0];
-  const CELL = 11;
+  const CELL = SKY_CELL;
   const FONT = 10;
   let W = 0;
   let H = 0;
@@ -337,12 +363,11 @@ export function createSkyline(cv: HTMLCanvasElement, keepOut: () => KeepOut, RIS
   function build() {
     cols = Math.ceil(W / CELL);
     rows = Math.ceil(H / CELL);
-    const groundRow = rows;
+    const groundRow = skylineGround(H);
     const maxH = Math.floor((H * SKY) / CELL);
     const ko = keepOut();
-    const PAD = 28;
     const FADE = 190;
-    const freeRows = Math.max(2, Math.floor((H - ko.b - PAD) / CELL));
+    const freeRows = Math.max(2, Math.floor((H - ko.b - SKY_PAD) / CELL));
     function capAt(px: number) {
       if (freeRows >= maxH) return maxH;
       const d = px < ko.l ? ko.l - px : px > ko.r ? px - ko.r : 0;
@@ -464,20 +489,51 @@ export function createFolderEngine(refs: FolderRefs, options: { reveal: () => vo
     return { l: Math.min(a.left, b.left), r: Math.max(a.right, b.right), b: Math.max(a.bottom, b.bottom) };
   }
 
+  // Vertical spacing of the folder screen, 0 = the prototype's, 1 = tightest.
+  // In a short window the gaps in the copy, the tree and the location row
+  // (welcome.css, var(--fold-k)) and the gaps around the tree close up so
+  // the skyline keeps a readable band under Install here.
+  let navGap = NAVGAP;
+  function setFold(k: number) {
+    const v = k.toFixed(3);
+    copy.style.setProperty('--fold-k', v);
+    tree.style.setProperty('--fold-k', v);
+    navGap = Math.round(NAVGAP - (NAVGAP - 24) * k);
+    return Math.round(34 - 16 * k); // copy -> tree gap
+  }
+
   // centre the copy + tree block in the space between the titlebar and the
   // skyline; the folder sits at that block's centre before it hands over
-  function layoutTree() {
+  function place(gap: number) {
     const H = vh();
     const y = copyTop(H);
     const ceiling = Math.round(H * (1 - SKY));
-    const GAP = 34;
     const ch = rect(copy).height;
     const th = rect(tree).height;
+    const roomTop = y + ch + gap;
+    const treeTop = placeUnder(roomTop, ceiling, th + navGap + NAVH, 30);
+    return { y, th, treeTop, bottom: treeTop + th + navGap + NAVH };
+  }
+
+  function layoutTree() {
+    const H = vh();
+    const limit = H - skylineBand(H);
+    let gap = setFold(0);
+    let at = place(gap);
+    if (at.bottom > limit) {
+      const loose = at.bottom;
+      gap = setFold(1);
+      at = place(gap);
+      const saved = loose - at.bottom;
+      if (at.bottom < limit && saved > 0) {
+        gap = setFold(Math.min(1, (loose - limit) / saved));
+        at = place(gap);
+      }
+    }
+    const { y, th, treeTop } = at;
     copy.style.top = `${y}px`;
-    const roomTop = y + ch + GAP;
-    const treeTop = placeUnder(roomTop, ceiling, th + NAVGAP + NAVH, 30);
     tree.style.top = `${treeTop}px`;
-    placeNav(refs.nav, treeTop + th + NAVGAP);
+    placeNav(refs.nav, treeTop + th + navGap);
     const fy = Math.round(treeTop + th / 2);
     folder.style.top = `${fy}px`; // dead centre of where the tree will be
     // dock target: beside the HQ/ root, on the tree's left edge
@@ -491,7 +547,7 @@ export function createFolderEngine(refs: FolderRefs, options: { reveal: () => vo
     canvas,
     () => {
       const k = keepOut();
-      k.b += NAVGAP + NAVH;
+      k.b += navGap + NAVH;
       return k;
     },
     1.6,
@@ -976,7 +1032,8 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
     const G1 = 36;
     const G2 = 32;
     const block = ch + G1 + PROGH + G2 + NAVH + ALTGAP + altH;
-    const y = Math.max(56, Math.round((H - block) / 2));
+    // centred, but never low enough to crowd the skyline's band
+    const y = Math.max(56, Math.min(Math.round((H - block) / 2), H - skylineBand(H) - block));
     refs.copy.style.top = `${y}px`;
     const pt = y + ch + G1;
     refs.prog.style.top = `${pt}px`;
