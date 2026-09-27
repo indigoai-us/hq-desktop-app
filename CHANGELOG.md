@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The setup bot's messages can now end with suggested replies: a few buttons
+  under its newest message with the likely answers to its question, or the
+  next questions to ask. Clicking one sends it as your reply. They go away
+  once you reply. The last button, "Something else", puts the cursor in the
+  message box so you can type your own answer.
 - The setup bot now opens by asking whether you want HQ explained first or
   want to jump straight into setup, instead of starting the first step right
   away.
