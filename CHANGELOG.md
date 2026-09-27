@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.348] — 2026-09-27
+
 - When an update restarts the app before the HQ folder is available, people
   who have completed setup stay on the normal app surface instead of seeing
   onboarding again.
