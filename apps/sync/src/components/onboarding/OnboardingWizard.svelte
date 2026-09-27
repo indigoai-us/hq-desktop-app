@@ -3041,16 +3041,85 @@
           <span class="pbar" aria-hidden="true"><b style:width={`${installPending ? installCard.percent : 100}%`}></b></span>
         </div>
       </div>
-      <div class="nav" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady}>
-        <div class="btns">
+      <!-- Three options of the same size: HQ Desktop (primary, white) centred
+           on its own line, Claude Code and Codex (secondary) side by side
+           under it. -->
+      <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers">
+        <div class="tool-cards">
           <button
-            class="btn btn-primary"
+            class="tool-card tool-card-desktop"
             type="button"
             data-testid="onboarding-open-desktop"
+            aria-label="Open HQ Desktop"
             disabled={!openDesktop.enabled}
             aria-busy={finishing || installPending}
             onclick={() => void handleFinish()}
-          >{openDesktop.label}</button>
+          >
+            <span class="tc-icon" aria-hidden="true">{@render ToolIcon('desktop')}</span>
+            <span class="tc-text">
+              <span class="tc-name">HQ Desktop</span>
+              <span class="tc-line">{openDesktop.label === 'Open HQ Desktop' ? 'Use HQ’s own app' : openDesktop.label}</span>
+            </span>
+          </button>
+          {#if launchSlots.length === 0}
+            <!-- `launchSlots` is empty only while detection is still in flight. -->
+            <button
+              class="tool-card"
+              type="button"
+              data-testid="onboarding-launch-download"
+              disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
+              aria-busy={finishing || (launching !== null && launching !== 'watching')}
+              onclick={() => void handleLaunch('download')}
+            >
+              <span class="tc-icon" aria-hidden="true">{@render ToolIcon('claude')}</span>
+              <span class="tc-text">
+                <span class="tc-name">Claude Code</span>
+                <span class="tc-line">{launching === 'watching'
+                    ? 'Waiting for Claude…'
+                    : launching === 'download'
+                      ? 'Opening…'
+                      : 'Download Claude to set up HQ there'}</span>
+              </span>
+            </button>
+          {:else}
+            {#each ownToolSlots as slot (slot.kind)}
+              {#if slot.installed}
+                <button
+                  class="tool-card"
+                  type="button"
+                  data-testid="onboarding-launch-{slot.kind}"
+                  disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
+                  aria-busy={finishing || launching === slot.kind}
+                  aria-label={slot.label}
+                  onclick={() => void handleLaunch(slot.kind)}
+                >
+                  <span class="tc-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
+                  <span class="tc-text">
+                    <span class="tc-name">{toolName(slot.kind)}</span>
+                    <span class="tc-line">{launching === slot.kind ? 'Opening…' : 'Open HQ here and run setup'}</span>
+                  </span>
+                </button>
+              {:else}
+                <button
+                  class="tool-card missing"
+                  type="button"
+                  data-testid="onboarding-install-{slot.kind}"
+                  disabled={finishing}
+                  aria-busy={launching === 'watching' && slot.kind === 'claude'}
+                  aria-label={slot.installLabel}
+                  onclick={() => void handleInstallTool(slot.kind)}
+                >
+                  <span class="tc-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
+                  <span class="tc-text">
+                    <span class="tc-name">{toolName(slot.kind)}</span>
+                    <span class="tc-line">{launching === 'watching' && slot.kind === 'claude'
+                        ? 'Waiting for Claude…'
+                        : 'Not installed · Get it'}</span>
+                  </span>
+                </button>
+              {/if}
+            {/each}
+          {/if}
         </div>
       </div>
       <div class="alt-block" bind:this={refs.readyAlt}>
@@ -3083,105 +3152,41 @@
             </div>
           </div>
         {/if}
-        <div class="alt tools" class:on={scene === 'ready' && navRevealed} data-testid="onboarding-launchers">
-          <p class="tools-lead">Or set up HQ in your own AI tool</p>
-          <div class="tool-cards">
-            {#if launchSlots.length === 0}
-              <!-- `launchSlots` is empty only while detection is still in flight. -->
-              <button
-                class="tool-card"
-                type="button"
-                data-testid="onboarding-launch-download"
-                disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
-                aria-busy={finishing || (launching !== null && launching !== 'watching')}
-                onclick={() => void handleLaunch('download')}
-              >
-                <span class="tc-icon" aria-hidden="true">{@render ToolIcon('claude')}</span>
-                <span class="tc-text">
-                  <span class="tc-name">Claude Code</span>
-                  <span class="tc-line">{launching === 'watching'
-                      ? 'Waiting for Claude…'
-                      : launching === 'download'
-                        ? 'Opening…'
-                        : 'Download Claude to set up HQ there'}</span>
-                </span>
-              </button>
-            {:else}
-              {#each ownToolSlots as slot (slot.kind)}
-                {#if slot.installed}
-                  <button
-                    class="tool-card"
-                    type="button"
-                    data-testid="onboarding-launch-{slot.kind}"
-                    disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
-                    aria-busy={finishing || launching === slot.kind}
-                    aria-label={slot.label}
-                    onclick={() => void handleLaunch(slot.kind)}
-                  >
-                    <span class="tc-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
-                    <span class="tc-text">
-                      <span class="tc-name">{toolName(slot.kind)}</span>
-                      <span class="tc-line">{launching === slot.kind ? 'Opening…' : 'Open HQ here and run setup'}</span>
-                    </span>
-                  </button>
-                {:else}
-                  <button
-                    class="tool-card missing"
-                    type="button"
-                    data-testid="onboarding-install-{slot.kind}"
-                    disabled={finishing}
-                    aria-busy={launching === 'watching' && slot.kind === 'claude'}
-                    aria-label={slot.installLabel}
-                    onclick={() => void handleInstallTool(slot.kind)}
-                  >
-                    <span class="tc-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
-                    <span class="tc-text">
-                      <span class="tc-name">{toolName(slot.kind)}</span>
-                      <span class="tc-line">{launching === 'watching' && slot.kind === 'claude'
-                          ? 'Waiting for Claude…'
-                          : 'Not installed · Get it'}</span>
-                    </span>
-                  </button>
-                {/if}
-              {/each}
-            {/if}
+        <!-- Advanced: set HQ up by hand in any tool, as the ready screen
+             always offered: the folder, its path, the command and the
+             /setup and /import-claude prompts. -->
+        <details class="alt advanced" class:on={scene === 'ready' && navRevealed} data-testid="onboarding-advanced" bind:open={advancedOpen}>
+          <summary>Advanced</summary>
+          <p class="advanced-note">Open the HQ folder in any tool and run /setup there.</p>
+          <div class="manual-tools" aria-label="Manual setup options">
+            <button type="button" onclick={handleRevealFolder} disabled={revealingFolder} aria-busy={revealingFolder}>
+              {revealingFolder ? 'Revealing…' : 'Reveal folder'}
+            </button>
+            <button type="button" onclick={handleCopyPath} disabled={copyingAction !== null} aria-busy={copyingAction === 'path'}>
+              {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
+            </button>
+            <button type="button" onclick={handleCopyCommand} disabled={copyingAction !== null} aria-busy={copyingAction === 'command'}>
+              {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
+            </button>
+            <button type="button" onclick={handleCopySetupPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'setup'}>
+              {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
+            </button>
+            <button type="button" onclick={handleCopyImportPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'import'}>
+              {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
+            </button>
           </div>
-          <!-- Advanced: set HQ up by hand in any tool, as the ready screen
-               always offered: the folder, its path, the command and the
-               /setup and /import-claude prompts. -->
-          <details class="advanced" data-testid="onboarding-advanced" bind:open={advancedOpen}>
-            <summary>Advanced</summary>
-            <p class="advanced-note">Open the HQ folder in any tool and run /setup there.</p>
-            <div class="manual-tools" aria-label="Manual setup options">
-              <button type="button" onclick={handleRevealFolder} disabled={revealingFolder} aria-busy={revealingFolder}>
-                {revealingFolder ? 'Revealing…' : 'Reveal folder'}
-              </button>
-              <button type="button" onclick={handleCopyPath} disabled={copyingAction !== null} aria-busy={copyingAction === 'path'}>
-                {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
-              </button>
-              <button type="button" onclick={handleCopyCommand} disabled={copyingAction !== null} aria-busy={copyingAction === 'command'}>
-                {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
-              </button>
-              <button type="button" onclick={handleCopySetupPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'setup'}>
-                {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
-              </button>
-              <button type="button" onclick={handleCopyImportPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'import'}>
-                {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
-              </button>
-            </div>
-            {#if copyFailure}
-              <p class="copy-action" role="status" data-testid="onboarding-copy-error">
-                Clipboard is blocked. Select the path above, or <button
-                  class="link"
-                  type="button"
-                  onclick={() => void retryCopyAction()}
-                  disabled={copyingAction !== null}
-                  aria-busy={copyingAction !== null}
-                >{copyingAction ? 'retrying…' : 'try again'}</button>.
-              </p>
-            {/if}
-          </details>
-        </div>
+          {#if copyFailure}
+            <p class="copy-action" role="status" data-testid="onboarding-copy-error">
+              Clipboard is blocked. Select the path above, or <button
+                class="link"
+                type="button"
+                onclick={() => void retryCopyAction()}
+                disabled={copyingAction !== null}
+                aria-busy={copyingAction !== null}
+              >{copyingAction ? 'retrying…' : 'try again'}</button>.
+            </p>
+          {/if}
+        </details>
         <div class="ready-notes">
           {#if launchEscape}
             <div class="setup-caution" role="note" data-testid="onboarding-escape" aria-label={launchEscape.title}>
@@ -3438,8 +3443,11 @@
   <svg viewBox="0 0 120 120" aria-hidden="true"><g fill="currentColor"><path d="M117.6,61.36c0-4.25-.38-8.35-1.09-12.27H60v23.21h32.29c-1.39,7.5-5.62,13.85-11.97,18.11v15.06h19.39c11.35-10.45,17.89-25.83,17.89-44.1Z" /><path d="M60,120c16.2,0,29.78-5.37,39.71-14.54l-19.39-15.05c-5.37,3.6-12.25,5.73-20.32,5.73-15.63,0-28.85-10.55-33.57-24.74H6.38v15.55C16.25,106.55,36.55,120,60,120Z" /><path d="M26.43,71.4c-1.2-3.6-1.88-7.45-1.88-11.4s.68-7.8,1.88-11.4V33.05H6.38C2.32,41.15,0,50.32,0,60s2.32,18.85,6.38,26.95l20.05-15.55Z" /><path d="M60,23.86c8.81,0,16.72,3.03,22.94,8.98l17.21-17.21C89.75,5.95,76.17,0,60,0,36.55,0,16.25,13.45,6.38,33.05l20.05,15.55C31.15,34.42,44.37,23.86,60,23.86Z" /></g></svg>
 {/snippet}
 
-{#snippet ToolIcon(kind: LaunchKind)}
-  {#if kind === 'codex'}
+{#snippet ToolIcon(kind: LaunchKind | 'desktop')}
+  {#if kind === 'desktop'}
+    <!-- a window -->
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="M3.5 9.5h17" /></svg>
+  {:else if kind === 'codex'}
     <!-- a terminal prompt -->
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5 9.5 12 5 16.5" /><path d="M12.5 16.5H19" /></svg>
   {:else}

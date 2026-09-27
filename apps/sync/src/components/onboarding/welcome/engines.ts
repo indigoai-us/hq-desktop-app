@@ -1029,9 +1029,11 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
     const H = vh();
     const ch = rect(refs.copy).height;
     const altH = Math.max(18, rect(refs.alt).height);
+    // The ready screen's nav is the row of option cards, taller than a button.
+    const navH = Math.max(NAVH, refs.nav ? rect(refs.nav).height : 0);
     const G1 = 36;
     const G2 = 32;
-    const block = ch + G1 + PROGH + G2 + NAVH + ALTGAP + altH;
+    const block = ch + G1 + PROGH + G2 + navH + ALTGAP + altH;
     // centred, but never low enough to crowd the skyline's band
     const y = Math.max(56, Math.min(Math.round((H - block) / 2), H - skylineBand(H) - block));
     refs.copy.style.top = `${y}px`;
@@ -1039,7 +1041,7 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
     refs.prog.style.top = `${pt}px`;
     const nt = pt + PROGH + G2;
     placeNav(refs.nav, nt);
-    refs.alt.style.top = `${Math.round(nt + NAVH + ALTGAP)}px`;
+    refs.alt.style.top = `${Math.round(nt + navH + ALTGAP)}px`;
   }
   return {
     size() {

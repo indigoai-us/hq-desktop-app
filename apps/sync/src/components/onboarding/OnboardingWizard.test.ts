@@ -64,9 +64,10 @@ const NO_AI_TOOLS = {
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
+/** The ready screen's HQ Desktop option (Open HQ Desktop). */
 function primaryButton(): HTMLButtonElement {
   const button = host.querySelector<HTMLButtonElement>(
-    '[data-testid="onboarding-summary"] .btn-primary',
+    '[data-testid="onboarding-summary"] [data-testid="onboarding-open-desktop"]',
   );
   if (!button) {
     throw new Error('Expected the onboarding summary primary button to render.');
@@ -998,12 +999,12 @@ describe('onboarding launch handoff', () => {
     ).toHaveLength(1);
   });
 
-  it('leads with Open HQ Desktop and offers Claude Code and Codex as two large options under it', async () => {
-    // Product decision (2026-09-27): the own-tool launchers are two large
-    // option cards (icon, name, one line) under the one primary action, so
-    // people who work in Claude Code or Codex can pick them at a glance. Same
-    // launchers, same test ids, same handoff; the folder tools sit under an
-    // Advanced disclosure beneath them.
+  it('offers HQ Desktop as the primary option and Claude Code and Codex as secondary ones', async () => {
+    // Product decision (2026-09-27): HQ Desktop, Claude Code and Codex are
+    // three option cards of the same size (icon, name, one line): HQ Desktop
+    // in the white primary style, centred on its own line, and the two tools
+    // as dark secondary cards side by side under it. Same test ids, same
+    // handoff; the folder tools sit under an Advanced disclosure beneath them.
     mountWizard(vi.fn(), 4, {
       ...NO_AI_TOOLS,
       claude_desktop: true,
@@ -1014,29 +1015,40 @@ describe('onboarding launch handoff', () => {
     await flushUntil(() =>
       Boolean(host.querySelector('[data-testid="onboarding-launch-codex"]')),
     );
-
-    // The one primary action: open HQ Desktop, where the setup bot takes over.
-    expect(primaryButton().textContent?.trim()).toBe('Open HQ Desktop');
-    expect(primaryButton().dataset.testid).toBe('onboarding-open-desktop');
     expect(host.querySelector('[data-testid="onboarding-summary"]')?.textContent).not.toContain(
       'Complete setup in your AI tool',
     );
 
-    // Exactly the two tools (never Grok), none of them the primary button.
+    // Exactly three options, in this order (never Grok), all the same card.
     const row = host.querySelector('[data-testid="onboarding-launchers"]');
     expect(row).not.toBeNull();
     const cards = Array.from(row!.querySelectorAll<HTMLButtonElement>('.tool-card'));
     expect(cards.map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Open HQ Desktop',
       'Open in Claude Code',
       'Open in Codex',
     ]);
     expect(cards.map((button) => button.querySelector('.tc-name')?.textContent?.trim())).toEqual([
+      'HQ Desktop',
       'Claude Code',
       'Codex',
     ]);
-    expect(row!.querySelector('.btn-primary')).toBeNull();
+    expect(cards[0]!.dataset.testid).toBe('onboarding-open-desktop');
+    expect(cards[0]!.querySelector('.tc-line')?.textContent?.trim()).toBe('Use HQ’s own app');
+    for (const card of cards) {
+      expect(card.classList.contains('btn')).toBe(false);
+      expect(card.querySelector('.tc-icon svg')).not.toBeNull();
+    }
+    // Only HQ Desktop carries the primary style.
+    expect(cards.map((card) => card.classList.contains('tool-card-desktop'))).toEqual([
+      true,
+      false,
+      false,
+    ]);
     expect(row!.textContent).not.toMatch(/\bFinish\b/);
-    expect(row!.querySelector('[data-testid="onboarding-advanced"]')).not.toBeNull();
+    // Advanced comes after the options.
+    const advanced = host.querySelector('[data-testid="onboarding-advanced"]')!;
+    expect(row!.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('offers both Claude Code and Codex when no AI tool is installed', async () => {
@@ -1046,12 +1058,13 @@ describe('onboarding launch handoff', () => {
     mountWizard(vi.fn(), 4);
     await flush();
 
-    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] .tool-card')).toHaveLength(2);
+    // HQ Desktop plus the two tools.
+    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] .tool-card')).toHaveLength(3);
     expect(host.querySelector('[data-testid="onboarding-install-claude"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="onboarding-install-codex"]')).not.toBeNull();
 
-    // Opening HQ Desktop stays the primary step; the installs sit under Advanced.
-    expect(primaryButton().textContent?.trim()).toBe('Open HQ Desktop');
+    // HQ Desktop is still offered, as one of the three equal options.
+    expect(primaryButton().getAttribute('aria-label')).toBe('Open HQ Desktop');
     // The install options are the same large cards, by name, and say what
     // they do to assistive technology.
     expect(readyButton('onboarding-install-claude').getAttribute('aria-label')).toBe(

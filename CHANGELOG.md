@@ -25,13 +25,13 @@ The release moves it under the version it ships in.
   waits for you to press it. The install then runs in the background while
   two short screens explain cloud sync and the Option Shift O shortcut. A
   small card in the corner shows the real install progress, and install
-  errors show there with a Retry. The last screen has "Open HQ Desktop",
-  then Claude Code and Codex as two large options with an icon and one
-  line each. An installed tool opens HQ with setup ready; a missing one
-  links to its download. An "Advanced" section under them has Reveal
+  errors show there with a Retry. The last screen offers three options of
+  the same size, each with an icon and one line: HQ Desktop in white on
+  its own line, then Claude Code and Codex as dark cards side by side. An installed tool
+  opens HQ with setup ready; a missing one links to its download. An "Advanced" section under them has Reveal
   folder, Copy path, Copy command, Copy /setup and Copy /import-claude.
-  "Open HQ Desktop" and the two tool options stay disabled with "Getting
-  ready..." until the install is done. The usage-sharing question is no
+  The three options stay disabled until the install is done, and HQ
+  Desktop says "Getting ready..." meanwhile. The usage-sharing question is no
   longer its own screen: the last screen has one "Share anonymous usage
   data" checkbox, checked by default, with a "What's collected" link.
   Nothing is sent until you finish from that screen, whichever option you

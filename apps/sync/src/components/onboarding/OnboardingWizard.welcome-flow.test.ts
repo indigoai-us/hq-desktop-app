@@ -118,7 +118,9 @@ const scene = () => root().dataset.currentScene;
 const byId = <T extends HTMLElement = HTMLButtonElement>(id: string) =>
   host.querySelector<T>(`[data-testid="${id}"]`);
 const forwardIn = (sceneName: string) =>
-  host.querySelector<HTMLButtonElement>(`[data-scene="${sceneName}"] .nav .btn-primary`);
+  sceneName === 'ready'
+    ? host.querySelector<HTMLButtonElement>('[data-scene="ready"] [data-testid="onboarding-open-desktop"]')
+    : host.querySelector<HTMLButtonElement>(`[data-scene="${sceneName}"] .nav .btn-primary`);
 const commands = () => calls.map((c) => c.command);
 
 beforeEach(() => {
@@ -305,7 +307,7 @@ describe('welcome flow: the install runs in the background', () => {
     const open = () => byId('onboarding-open-desktop')!;
     const title = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
     expect(open().disabled).toBe(true);
-    expect(open().textContent?.trim()).toBe('Getting ready…');
+    expect(open().querySelector('.tc-line')?.textContent?.trim()).toBe('Getting ready…');
     expect(title()).toBe('Almost ready.');
     // The Claude Code and Codex options wait with it.
     expect(byId('onboarding-launch-claude')!.disabled).toBe(true);
@@ -313,7 +315,7 @@ describe('welcome flow: the install runs in the background', () => {
 
     template.resolve();
     await flushUntil(() => !open().disabled, 'Open HQ Desktop');
-    expect(open().textContent?.trim()).toBe('Open HQ Desktop');
+    expect(open().querySelector('.tc-line')?.textContent?.trim()).toBe('Use HQ’s own app');
     expect(title()).toBe('HQ is ready.');
     expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
     expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
@@ -421,7 +423,7 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
 });
 
 describe('welcome flow: Claude Code and Codex on the ready screen', () => {
-  it('offers both as large options with an Advanced disclosure under them', async () => {
+  it('offers HQ Desktop (primary), Claude Code and Codex (secondary) with Advanced under them', async () => {
     stubInvoke();
     mountAt(5);
     await flushUntil(() => Boolean(byId('onboarding-launch-codex')), 'the tool options');
@@ -429,20 +431,26 @@ describe('welcome flow: Claude Code and Codex on the ready screen', () => {
     const launchers = byId<HTMLElement>('onboarding-launchers')!;
     const cards = Array.from(launchers.querySelectorAll<HTMLButtonElement>('.tool-card'));
     expect(cards.map((card) => card.querySelector('.tc-name')?.textContent?.trim())).toEqual([
+      'HQ Desktop',
       'Claude Code',
       'Codex',
+    ]);
+    // One card component for all three; HQ Desktop alone is the primary style.
+    expect(cards.every((card) => card.classList.contains('tool-card'))).toBe(true);
+    expect(cards.map((card) => card.classList.contains('tool-card-desktop'))).toEqual([
+      true,
+      false,
+      false,
     ]);
     // Each card is icon + name + one short line.
     for (const card of cards) {
       expect(card.querySelector('.tc-icon svg')).not.toBeNull();
       expect(card.querySelector('.tc-line')?.textContent?.trim()).toBeTruthy();
     }
-    // The primary way on stays Open HQ Desktop.
-    expect(forwardIn('ready')!.textContent?.trim()).toBe('Open HQ Desktop');
+    expect(forwardIn('ready')!.getAttribute('aria-label')).toBe('Open HQ Desktop');
 
     // Advanced sits under the options: collapsed, with the folder and copy tools.
     const advanced = byId<HTMLDetailsElement>('onboarding-advanced')!;
-    expect(launchers.contains(advanced)).toBe(true);
     expect(
       cards.every((card) => card.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING),
     ).toBe(true);
