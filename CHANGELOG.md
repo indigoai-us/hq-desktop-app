@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When enabled, cancelling setup treats an installer process group with no live
+  members as already cleaned up instead of reporting a cleanup error. The
+  rollout flag is off by default.
+
 ## [0.10.341] — 2026-09-26
 
 - When enabled, automatic Core updates wait for startup cache preparation before
