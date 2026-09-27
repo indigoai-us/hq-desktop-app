@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export const TARGETS = ["macos", "windows-x64", "windows-arm64"];
-const ASSET = /^shell-(macos|windows-x64|windows-arm64)-([0-9a-f]{64})\.(tar\.gz|tar)$/;
+const ASSET = /^shell-(macos|windows-x64|windows-arm64)-([0-9a-f]{64})\.(tar\.gz|tar\.zst|tar)$/;
 
 export function parseAssetName(name) {
   const m = ASSET.exec(name);

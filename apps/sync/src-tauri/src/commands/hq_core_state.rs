@@ -73,7 +73,6 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
 const CORE_STATE_REUSE_WINDOW: Duration = Duration::from_secs(15);
 
 static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
-const CORE_UPDATE_PREWARM_FLAG: &str = "desktop.core-update-waits-for-prewarm";
 const CORE_UPDATE_PREWARM_WAIT: Duration = hq_desktop_core::prewarm::AUTOMATIC_UPDATE_PREWARM_WAIT;
 const MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES: u8 = 3;
 const CONSECUTIVE_FAILURE_CAP_SKIP_REASON: &str = "consecutive_failure_cap_reached";
@@ -4154,7 +4153,6 @@ fn skip_automatic_core_update_for_installed_target(
 }
 
 async fn automatic_core_update_preinstall<Wait, WaitFuture, AutoUpdatesEnabled, SyncCheck>(
-    wait_enabled: bool,
     wait_for_prewarm: Wait,
     auto_updates_enabled_after_wait: AutoUpdatesEnabled,
     sync_in_progress_after_wait: SyncCheck,
@@ -4165,16 +4163,6 @@ where
     AutoUpdatesEnabled: FnOnce() -> bool,
     SyncCheck: FnOnce() -> bool,
 {
-    if !wait_enabled {
-        return if !auto_updates_enabled_after_wait() {
-            AutomaticCoreUpdatePreinstall::SkipAutomaticUpdatesDisabled
-        } else if sync_in_progress_after_wait() {
-            AutomaticCoreUpdatePreinstall::DeferForSync
-        } else {
-            AutomaticCoreUpdatePreinstall::Proceed
-        };
-    }
-
     match wait_for_prewarm().await {
         hq_desktop_core::prewarm::PrewarmWaitOutcome::NotRunning
         | hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed => {
@@ -4727,10 +4715,7 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
         None,
         || automatic_core_update_target_already_installed(state),
         || async {
-            let wait_enabled =
-                crate::commands::hq_pro::feature_flag_enabled(CORE_UPDATE_PREWARM_FLAG).await;
             let decision = automatic_core_update_preinstall(
-                wait_enabled,
                 || hq_desktop_core::prewarm::wait_for_active_prewarm(CORE_UPDATE_PREWARM_WAIT),
                 hq_desktop_core::hq_cli_update::auto_update_enabled,
                 crate::updater::sync_in_progress,
@@ -4965,22 +4950,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flag_off_keeps_the_existing_lock_contention_failure_path() {
+    async fn automatic_core_update_waits_for_prewarm_without_a_flag_source() {
+        let wait_calls = Arc::new(AtomicUsize::new(0));
+        let wait_calls_for_gate = Arc::clone(&wait_calls);
+        let decision = automatic_core_update_preinstall(
+            move || {
+                wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
+                async { hq_desktop_core::prewarm::PrewarmWaitOutcome::TimedOut }
+            },
+            || true,
+            || false,
+        )
+        .await;
+
+        assert_eq!(decision, AutomaticCoreUpdatePreinstall::DeferForPrewarm);
+        assert_eq!(wait_calls.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn automatic_core_update_waits_before_reporting_lock_contention() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let home = TempDir::new().unwrap();
         let candidate = CoreAutoUpdateCandidate {
             channel: Channel::Release,
             local_version: Some("15.0.4"),
-            target_version: "c154-flag-off-lock-contention",
+            target_version: "c172-lock-contention-after-prewarm",
             is_eligible: true,
             version_behind: true,
         };
         let coordinator = hq_desktop_core::prewarm::PrewarmCoordinator::new();
         coordinator.prewarm_started();
+        coordinator.prewarm_finished();
         let wait_calls = Arc::new(AtomicUsize::new(0));
         let wait_calls_for_gate = Arc::clone(&wait_calls);
         let decision = automatic_core_update_preinstall(
-            false,
             || {
                 wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
                 coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT)
@@ -4990,7 +4993,7 @@ mod tests {
         )
         .await;
         assert_eq!(decision, AutomaticCoreUpdatePreinstall::Proceed);
-        assert_eq!(wait_calls.load(Ordering::Acquire), 0);
+        assert_eq!(wait_calls.load(Ordering::Acquire), 1);
 
         let reports = Arc::new(AtomicUsize::new(0));
         let reports_for_install = Arc::clone(&reports);
@@ -5024,14 +5027,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flag_off_still_defers_if_sync_starts_during_the_flag_read() {
+    async fn sync_starting_after_prewarm_defers_before_install() {
         let wait_calls = Arc::new(AtomicUsize::new(0));
         let wait_calls_for_gate = Arc::clone(&wait_calls);
         let sync_calls = Arc::new(AtomicUsize::new(0));
         let sync_calls_for_check = Arc::clone(&sync_calls);
 
         let decision = automatic_core_update_preinstall(
-            false,
             || {
                 wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
                 async { hq_desktop_core::prewarm::PrewarmWaitOutcome::NotRunning }
@@ -5046,66 +5048,7 @@ mod tests {
 
         assert_eq!(decision, AutomaticCoreUpdatePreinstall::DeferForSync);
         assert_eq!(sync_calls.load(Ordering::Acquire), 1);
-        assert_eq!(wait_calls.load(Ordering::Acquire), 0);
-    }
-
-    #[tokio::test]
-    async fn auto_updates_disabled_during_flag_off_path_skip_before_guard_or_install() {
-        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
-        let home = TempDir::new().unwrap();
-        let candidate = CoreAutoUpdateCandidate {
-            channel: Channel::Release,
-            local_version: Some("15.0.4"),
-            target_version: "15.0.117-flag-off-opt-out",
-            is_eligible: true,
-            version_behind: true,
-        };
-        let wait_calls = Arc::new(AtomicUsize::new(0));
-        let wait_calls_for_gate = Arc::clone(&wait_calls);
-        let auto_update_checks = Arc::new(AtomicUsize::new(0));
-        let auto_update_checks_for_gate = Arc::clone(&auto_update_checks);
-        let installs = Arc::new(AtomicUsize::new(0));
-        let installs_for_call = Arc::clone(&installs);
-
-        let outcome = execute_native_core_auto_update_with_clock_and_preinstall(
-            candidate,
-            true,
-            false,
-            Instant::now,
-            Some(home.path()),
-            move || async move {
-                automatic_core_update_preinstall(
-                    false,
-                    move || {
-                        wait_calls_for_gate.fetch_add(1, Ordering::AcqRel);
-                        async { hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed }
-                    },
-                    move || {
-                        auto_update_checks_for_gate.fetch_add(1, Ordering::AcqRel);
-                        false
-                    },
-                    || false,
-                )
-                .await
-            },
-            move |_, run_guard, _| async move {
-                let _run_guard = run_guard;
-                installs_for_call.fetch_add(1, Ordering::AcqRel);
-                Ok(CoreUpdateAutoInstall::new(0, true))
-            },
-        )
-        .await;
-
-        assert_eq!(
-            outcome,
-            NativeCoreAutoUpdateOutcome::SkippedAutomaticUpdatesDisabled
-        );
-        assert_eq!(auto_update_checks.load(Ordering::Acquire), 1);
-        assert_eq!(wait_calls.load(Ordering::Acquire), 0);
-        assert_eq!(installs.load(Ordering::Acquire), 0);
-        let manual_guard = try_begin_core_update()
-            .expect("the flag-off opt-out must skip before taking the update guard");
-        drop(manual_guard);
+        assert_eq!(wait_calls.load(Ordering::Acquire), 1);
     }
 
     #[tokio::test]
@@ -5191,7 +5134,6 @@ mod tests {
             version_behind: true,
         };
         let decision = automatic_core_update_preinstall(
-            true,
             || async { hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed },
             || true,
             || true,
@@ -5329,7 +5271,6 @@ mod tests {
             Some(home.path()),
             move || async move {
                 automatic_core_update_preinstall(
-                    true,
                     move || {
                         wait_calls_for_check.fetch_add(1, Ordering::AcqRel);
                         async { hq_desktop_core::prewarm::PrewarmWaitOutcome::Completed }
@@ -5396,7 +5337,6 @@ mod tests {
                 },
                 move || async move {
                     automatic_core_update_preinstall(
-                        true,
                         move || async move {
                             let _ = waiting_tx.send(());
                             resume_wait_rx
@@ -5449,7 +5389,6 @@ mod tests {
         coordinator.prewarm_started();
 
         let mut waiting = Box::pin(automatic_core_update_preinstall(
-            true,
             || coordinator.wait_for_active(CORE_UPDATE_PREWARM_WAIT),
             || true,
             || false,

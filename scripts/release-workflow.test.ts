@@ -695,6 +695,19 @@ describe("release workflow channel contract", () => {
     expect(sync).not.toContain("git add -A");
   });
 
+  it("runs stable sync after the intentionally skipped shelltest tag job", () => {
+    const validate = jobBody("validate");
+    const sync = jobBody("sync-version");
+
+    // Tag pushes intentionally skip shelltest-tag. The validate job accepts
+    // that result, and sync must override the implicit success() check too.
+    expect(validate).toContain("needs: shelltest-tag");
+    expect(validate).toContain("needs.shelltest-tag.result == 'skipped'");
+    expect(sync).toMatch(
+      /if: \$\{\{ !cancelled\(\) && needs\.publish\.result == 'success' && needs\.validate\.outputs\.prerelease != 'true' && inputs\.shelltest != true \}\}/,
+    );
+  });
+
   // Release notes are the only record users get of a release and are permanent
   // once published. They come from CHANGELOG.md, written in each change's own
   // PR (changelog.yml), and every step that touches them is pinned here: an
@@ -1148,6 +1161,20 @@ exec "$REAL_NODE" "$@"
       expect(stamp).toContain('"assemble-stamp/version.json":"version.json"');
       expect(jobBody(`assemble-windows-${arch}`)).toContain("--config $env:TAURI_ASSEMBLE_STAMP_CONFIG");
       expect(jobBody(`shell-windows-${arch}`)).toContain("toolchain: ${{ steps.key.outputs.toolchain }}");
+    }
+    // Windows shells are zstd-compressed .tar.zst so they stay under GitHub's
+    // 2 GiB release-asset limit; build, store, restore and assemble agree.
+    for (const arch of ["x64", "arm64"]) {
+      const shell = jobBody(`shell-windows-${arch}`);
+      expect(shell).toContain(`ASSET="shell-windows-${arch}-\${SHELL_KEY}.tar.zst"`);
+      expect(shell).toContain(`-O shell-out/shell-windows-${arch}.tar.zst --clobber`);
+      expect(shell).toContain(`| zstd -T0 -9 -q -f -o "$GITHUB_WORKSPACE/shell-out/shell-windows-${arch}.tar.zst"`);
+      expect(shell).not.toMatch(/shell-windows-[a-z0-9]+\.tar["\s]/);
+      const upload = stepBody(shell, "Upload shell to the shell-cache release");
+      expect(upload.indexOf(`node scripts/shell-archive.mjs check-size shell-out/shell-windows-${arch}.tar.zst`)).toBeGreaterThan(-1);
+      expect(upload.indexOf("check-size")).toBeLessThan(upload.indexOf("gh release upload"));
+      const restore = stepBody(jobBody(`assemble-windows-${arch}`), "Restore shell into src-tauri");
+      expect(restore).toContain(`zstd -d -q -c "$RUNNER_TEMP/shell/shell-windows-${arch}.tar.zst" | tar --force-local -C src-tauri -xf -`);
     }
     const verify = stepBody(jobBody("publish"), "Verify bundled shell keys match the tagged sources");
     expect(verify).toContain("node scripts/shell-hash.mjs");
