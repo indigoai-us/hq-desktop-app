@@ -4,8 +4,8 @@ use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 #[cfg(not(windows))]
 use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
 use hq_desktop_core::lifecycle::{
-    hq_root_valid, menubar_flags, probe_hq_root, should_backfill_welcome_setup_pending,
-    HqRootProbe, LifecycleInputs, LifecycleState,
+    hq_root_valid, menubar_flags, probe_hq_root_for_startup,
+    should_backfill_welcome_setup_pending, HqRootProbe, LifecycleInputs, LifecycleState,
 };
 use hq_desktop_core::paths::ResolvedProgramKind;
 use serde_json::{Map, Value};
@@ -108,7 +108,7 @@ pub fn set_lifecycle_state(app: &AppHandle, state: LifecycleState) {
 /// markers when needed, and cache the state for command consumers.
 pub fn setup_lifecycle(app: &AppHandle) {
     let _ = SETUP_LIFECYCLE_TIME.get_or_init(Instant::now);
-    let updater_restart =
+    let launch_agent_relaunch =
         std::env::args().any(|arg| arg == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
     let menubar_path = match paths::menubar_json_path() {
         Ok(path) => Some(path),
@@ -197,15 +197,10 @@ pub fn setup_lifecycle(app: &AppHandle) {
         config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
         menubar.get("hqPath").and_then(Value::as_str),
     );
-    // Probe twice when the first look fails: an auto-update relaunch can race
-    // a still-settling filesystem (a rewritten settings tree, a volume that
-    // has not remounted). Two unreadable looks is evidence we cannot tell,
-    // not evidence the machine is new.
-    let mut root_probe = probe_hq_root(&hq_root);
-    if root_probe == HqRootProbe::Unreadable {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        root_probe = probe_hq_root(&hq_root);
-    }
+    // LaunchAgent starts include login and KeepAlive relaunches as well as an
+    // updater kick. Recheck an initially missing root briefly so a just-updated
+    // app does not mistake a settling filesystem for a deleted HQ folder.
+    let root_probe = probe_hq_root_for_startup(&hq_root, launch_agent_relaunch);
     let hq_root_valid = root_probe == HqRootProbe::Valid;
     let hq_root_unreadable = root_probe == HqRootProbe::Unreadable;
     if hq_root_unreadable {
@@ -267,8 +262,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         // When the install evidence itself could not be read, a "tools are
         // missing" reading of the same filesystem is not trustworthy either,
         // so it must not demote a set-up machine to NeedsInstall.
-        let classified =
-            hq_desktop_core::lifecycle::classify_lifecycle_for_startup(inputs, updater_restart);
+        let classified = hq_desktop_core::lifecycle::classify_lifecycle(inputs);
         let verdict = if evidence_unreadable {
             classified
         } else {
@@ -287,8 +281,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         )
     };
     #[cfg(windows)]
-    let verdict =
-        hq_desktop_core::lifecycle::classify_lifecycle_for_startup(inputs, updater_restart);
+    let verdict = hq_desktop_core::lifecycle::classify_lifecycle(inputs);
     #[cfg(windows)]
     let (
         tools_present,
