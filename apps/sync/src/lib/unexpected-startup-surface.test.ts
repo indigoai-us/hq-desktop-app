@@ -16,6 +16,7 @@ describe('unexpectedSurfaceForState', () => {
     const installed = {
       installCompleted: true,
       firstRunCompleted: false,
+      installInProgress: true,
       hadMachineId: true,
       hqRootValid: true,
     };
@@ -28,6 +29,7 @@ describe('unexpectedSurfaceForState', () => {
       unexpectedSurfaceForState('InstalledFirstRun', false, {
         installCompleted: false,
         firstRunCompleted: false,
+        installInProgress: false,
         hadMachineId: false,
         hqRootValid: false,
       }),
@@ -38,6 +40,7 @@ describe('unexpectedSurfaceForState', () => {
     const noPriorSetup = {
       installCompleted: false,
       firstRunCompleted: false,
+      installInProgress: false,
       hadMachineId: false,
       hqRootValid: false,
     };
@@ -52,10 +55,23 @@ describe('unexpectedSurfaceForState', () => {
       unexpectedSurfaceForState('InstallResume', false, {
         installCompleted: false,
         firstRunCompleted: false,
+        installInProgress: false,
         hadMachineId: true,
         hqRootValid: true,
       }),
     ).toBe('onboarding');
+  });
+
+  it('does not treat an interrupted first install as prior setup', () => {
+    const interruptedFirstInstall = {
+      installCompleted: false,
+      firstRunCompleted: false,
+      installInProgress: true,
+      hadMachineId: true,
+      hqRootValid: true,
+    };
+
+    expect(unexpectedSurfaceForState('NeedsInstall', false, interruptedFirstInstall)).toBe(null);
   });
 
   it('returns sign-in when lifecycle state is unknown or steady and auth is absent', () => {

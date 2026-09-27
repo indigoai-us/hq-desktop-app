@@ -53,6 +53,7 @@ pub struct LifecycleInputsHandle {
 pub struct StartupSetupEvidence {
     install_completed: bool,
     first_run_completed: bool,
+    install_in_progress: bool,
     had_machine_id: bool,
     hq_root_valid: bool,
 }
@@ -71,6 +72,7 @@ pub fn get_startup_setup_evidence(
     Some(StartupSetupEvidence {
         install_completed: inputs.install_completed,
         first_run_completed: inputs.first_run_completed,
+        install_in_progress: inputs.install_in_progress,
         had_machine_id: inputs.had_machine_id,
         hq_root_valid: inputs.hq_root_valid,
     })
@@ -604,6 +606,7 @@ pub fn report_unexpected_startup_surface(
             inputs.first_run_completed,
             inputs.had_machine_id,
             inputs.hq_root_valid,
+            inputs.install_in_progress,
         );
     let sign_in_prior_setup = inputs.evidence_unreadable
         || inputs.install_completed
