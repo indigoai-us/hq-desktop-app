@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On Windows, setup uses Winget for Git and checks qmd's launcher before marking setup complete.
 - Updater restarts now find Node from the app-managed toolchain, preventing completed installations from reopening setup when Node is available.
 
 - Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
