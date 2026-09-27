@@ -55,8 +55,8 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, R
 use winreg::{RegKey, RegValue};
 
 use crate::commands::install_stages::{
-    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
-    OnboardingFailureScope,
+    clear_onboarding_failure_detail, record_onboarding_failure_detail,
+    record_onboarding_failure_detail_with_kind, OnboardingErrorCategory, OnboardingFailureScope,
 };
 use crate::util::logfile::log;
 
@@ -5231,19 +5231,22 @@ fn emit_progress<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
 
 #[cfg(windows)]
 async fn winget_install(app: &AppHandle, id: &str) -> Result<String, String> {
-    run_streaming(
-        app,
+    let args = winget_install_args(id);
+    run_streaming(app, "winget", &args).await
+}
+
+#[cfg(windows)]
+fn winget_install_args(id: &str) -> [&str; 8] {
+    [
+        "install",
+        "--id",
+        id,
+        "--source",
         "winget",
-        &[
-            "install",
-            "--id",
-            id,
-            "--silent",
-            "--accept-source-agreements",
-            "--accept-package-agreements",
-        ],
-    )
-    .await
+        "--silent",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+    ]
 }
 
 #[cfg(windows)]
@@ -5811,22 +5814,26 @@ fn write_qmd_bash_shim() -> Result<(), String> {
 
 #[cfg(windows)]
 fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
-    if qmd_resolves_in_prefix(prefix) {
-        return Ok(());
-    }
-
+    // npm may leave a qmd.cmd shim that resolves by name but still targets a
+    // removed package or uses a launcher that cannot run this package's POSIX
+    // entry point. Replace it with a shim whose package target we verify here.
     let bin_candidates = [
         prefix
             .join("node_modules")
             .join("@tobilu")
             .join("qmd")
+            .join("bin")
             .join("qmd"),
-        prefix.join("node_modules").join("qmd").join("qmd"),
+        prefix
+            .join("node_modules")
+            .join("qmd")
+            .join("bin")
+            .join("qmd"),
     ];
     let bin_rel: &str = if bin_candidates[0].exists() {
-        r"node_modules\@tobilu\qmd\qmd"
+        r"node_modules\@tobilu\qmd\bin\qmd"
     } else if bin_candidates[1].exists() {
-        r"node_modules\qmd\qmd"
+        r"node_modules\qmd\bin\qmd"
     } else {
         return Err(format!(
             "qmd bin not found at {:?} or {:?} (npm install incomplete)",
@@ -5882,12 +5889,6 @@ fn git_bash_path() -> Option<PathBuf> {
             .join("bash.exe"),
     ];
     candidates.into_iter().find(|c| c.is_file())
-}
-
-#[cfg(windows)]
-fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    which::which_in("qmd", Some(prefix.to_string_lossy().as_ref()), cwd).is_ok()
 }
 
 #[cfg(windows)]
@@ -6768,6 +6769,15 @@ fn is_concurrent_install_skip_result(result: &DepInstallResult) -> bool {
     })
 }
 
+const WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE: i32 = 0x8A15_005E_u32 as i32;
+
+fn setup_error_kind(diagnostic: Option<&SetupCommandDiagnostic>) -> Option<&'static str> {
+    let diagnostic = diagnostic?;
+    let is_winget = diagnostic.command.split_whitespace().next() == Some("winget");
+    (is_winget && diagnostic.exit_code == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE))
+        .then_some("winget_pinned_certificate_mismatch")
+}
+
 fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupCommandDiagnostic>) -> OnboardingErrorCategory {
     // The status is set only from InstallCancellation, which is captured at the
     // streaming cancellation source. Never infer this category from the
@@ -6780,6 +6790,9 @@ fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupComm
     // exit_code branch; this is what keeps it off the error-level Sentry path.
     if is_concurrent_install_skip_result(result) {
         return OnboardingErrorCategory::ConcurrentInstall;
+    }
+    if setup_error_kind(diagnostic).is_some() {
+        return OnboardingErrorCategory::Network;
     }
     if diagnostic.and_then(|diagnostic| diagnostic.exit_code).is_some() {
         return OnboardingErrorCategory::ExitNonzero;
@@ -6932,6 +6945,9 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
             sentry_scope.set_tag("setup_stage", "deps");
             sentry_scope.set_tag("setup_dependency", dependency);
             sentry_scope.set_tag("setup_error_category", category.as_str());
+            if let Some(error_kind) = setup_error_kind(Some(&diagnostic)) {
+                sentry_scope.set_tag("setup_error_kind", error_kind);
+            }
             sentry_scope.set_tag("setup_execution", "attempted");
             sentry_scope.set_tag("setup_flow", setup_flow_token(&scope.flow));
             sentry_scope.set_tag("setup_attempt", scope.attempt_count.to_string());
@@ -7559,14 +7575,13 @@ pub async fn install_deps(
             let result = result_by_id
                 .get(failed_dependency)
                 .expect("failed dependency has an install result");
-            record_onboarding_failure_detail(
+            let diagnostic = diagnostic_by_id.get(failed_dependency);
+            record_onboarding_failure_detail_with_kind(
                 "deps",
                 failure_scope.as_ref(),
                 Some(failed_dependency),
-                setup_error_category(
-                    result,
-                    diagnostic_by_id.get(failed_dependency),
-                ),
+                setup_error_category(result, diagnostic),
+                setup_error_kind(diagnostic),
             );
         }
         Err(format!(
@@ -7959,6 +7974,94 @@ mod install_deps_planner_tests {
         assert!(!string_extra(event, "setup_os_version").is_empty());
         assert_eq!(event.extra["setup_blocked_dependents"], sentry::protocol::Value::Array(vec![sentry::protocol::Value::String("hq-cli".into())]));
         assert_eq!(string_extra(event, "setup_blocked_dependents_status"), "blocked_by_failed_prerequisite");
+    }
+
+    #[test]
+    fn winget_pinned_certificate_mismatch_has_a_stable_category_and_kind() {
+        let dependency = dependency_defs()
+            .into_iter()
+            .find(|dep| dep.id == "git")
+            .expect("git dependency is registered");
+        let result = DepInstallResult {
+            id: dependency.id,
+            label: dependency.label,
+            optional: dependency.optional,
+            status: DepInstallStatus::Failed,
+            error: Some("Process exited with code -1978335138".to_string()),
+        };
+        let diagnostic = SetupCommandDiagnostic {
+            command: "winget install --id Git.Git --source winget".to_string(),
+            exit_code: Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE),
+            stdout: String::new(),
+            stderr: String::new(),
+            error: "server certificate did not match pinned certificate".to_string(),
+        };
+
+        assert_eq!(
+            setup_error_kind(Some(&diagnostic)),
+            Some("winget_pinned_certificate_mismatch")
+        );
+        assert_eq!(
+            setup_error_category(&result, Some(&diagnostic)),
+            OnboardingErrorCategory::Network
+        );
+
+        let scope = failure_scope(
+            "11111111-1111-4111-8111-111111111111",
+            1,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        );
+        let category = setup_error_category(&result, Some(&diagnostic));
+        let error_kind = setup_error_kind(Some(&diagnostic));
+        record_onboarding_failure_detail_with_kind(
+            "deps",
+            Some(&scope),
+            Some("git"),
+            category,
+            error_kind,
+        );
+        let stored_detail = crate::commands::install_stages::take_onboarding_failure_detail(
+            "deps".to_string(),
+            scope.setup_run_id.clone(),
+            scope.attempt_count,
+            scope.flow.clone(),
+            scope.frontend_session_id.clone(),
+        )
+        .expect("classified detail is retained for the setup attempt");
+        assert_eq!(stored_detail.error_category, "network");
+        assert_eq!(
+            stored_detail.error_kind.as_deref(),
+            Some("winget_pinned_certificate_mismatch")
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            send_setup_dependency_failure(
+                &scope,
+                "git",
+                OnboardingErrorCategory::Network,
+                diagnostic,
+                &[],
+            );
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["setup_error_category"], "network");
+        assert_eq!(
+            events[0].tags["setup_error_kind"],
+            "winget_pinned_certificate_mismatch"
+        );
+
+        let other_command = SetupCommandDiagnostic {
+            command: "scoop install git".to_string(),
+            exit_code: Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE),
+            stdout: String::new(),
+            stderr: String::new(),
+            error: "server certificate did not match pinned certificate".to_string(),
+        };
+        assert_eq!(setup_error_kind(Some(&other_command)), None);
+        assert_eq!(
+            setup_error_category(&result, Some(&other_command)),
+            OnboardingErrorCategory::ExitNonzero
+        );
     }
 
     /// A failed node prerequisite blocks qmd and hq-cli, but only node is a
@@ -9128,6 +9231,7 @@ mod windows_tests {
             .join("node_modules")
             .join("@tobilu")
             .join("qmd")
+            .join("bin")
             .join("qmd");
         std::fs::create_dir_all(qmd_bin.parent().unwrap()).unwrap();
         std::fs::write(&qmd_bin, b"").unwrap();
@@ -9137,7 +9241,7 @@ mod windows_tests {
         // installed on the test machine) or a bare `bash` fallback — both end
         // with the same script-relative argument.
         assert!(
-            qmd_cmd.contains("\"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*"),
+            qmd_cmd.contains("\"%~dp0node_modules\\@tobilu\\qmd\\bin\\qmd\" %*"),
             "{qmd_cmd}"
         );
         assert!(qmd_cmd.to_lowercase().contains("bash"), "{qmd_cmd}");
@@ -9159,19 +9263,48 @@ mod windows_tests {
     }
 
     #[test]
-    fn qmd_postinstall_accepts_cmd_shim_from_npm() {
+    fn qmd_postinstall_replaces_a_resolving_npm_shim_with_the_verified_target() {
         let tmp = tempfile::tempdir().unwrap();
         let qmd_prefix = tmp.path().join("npm-prefix");
         std::fs::create_dir_all(&qmd_prefix).unwrap();
+        let package_bin = qmd_prefix
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("bin")
+            .join("qmd");
+        std::fs::create_dir_all(package_bin.parent().unwrap()).unwrap();
+        std::fs::write(&package_bin, b"#!/usr/bin/env node\n").unwrap();
         let npm_shim = "@echo off\r\necho qmd\r\n";
         std::fs::write(qmd_prefix.join("qmd.cmd"), npm_shim).unwrap();
 
-        assert!(qmd_resolves_in_prefix(&qmd_prefix));
-        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd.cmd should count as installed");
-        assert_eq!(
-            std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap(),
-            npm_shim
+        // Name resolution alone accepts npm's shim, even if it does not run
+        // the package entry point needed by this install's Bash launch path.
+        assert!(which::which_in(
+            "qmd",
+            Some(qmd_prefix.to_string_lossy().as_ref()),
+            &qmd_prefix,
+        )
+        .is_ok());
+        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd shim should target the installed package");
+        let rewritten = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
+        assert_ne!(rewritten, npm_shim);
+        assert!(
+            rewritten.contains("%~dp0node_modules\\@tobilu\\qmd\\bin\\qmd"),
+            "{rewritten}"
         );
+    }
+
+    #[test]
+    fn winget_install_is_pinned_to_the_community_source() {
+        let args = winget_install_args("Git.Git");
+        assert_eq!(args[0], "install");
+        assert_eq!(args[1], "--id");
+        assert_eq!(args[2], "Git.Git");
+        assert_eq!(args[3], "--source");
+        assert_eq!(args[4], "winget");
+        assert!(args.contains(&"--accept-source-agreements"));
+        assert!(args.contains(&"--accept-package-agreements"));
     }
 
     #[test]
