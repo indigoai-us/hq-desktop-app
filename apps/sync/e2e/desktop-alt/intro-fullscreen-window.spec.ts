@@ -10,8 +10,8 @@
 // put the film back inside a card.
 //
 // Product change (welcome flow, 2026-09): the shipped app no longer plays this
-// film. First run and "Replay welcome intro" both open the six-screen welcome
-// flow in an ~800x900 window over a native blur of the desktop
+// film. First run and "Replay welcome intro" both open the five-screen welcome
+// flow in a window that fills the work area over the blurred desktop wallpaper
 // (`welcome_window.rs`, `Onboarding.svelte`). The film and its full-screen
 // window path remain for the standalone preview under apps/intro, which is what
 // the rest of this file still pins.
@@ -93,7 +93,10 @@ describe('welcome intro: full screen over a blurred desktop', () => {
     expect(onboarding).not.toContain('enterIntroFullscreen');
     expect(onboarding).not.toContain('CinematicIntro');
     expect(onboarding).toContain("invoke('set_welcome_backdrop'");
-    expect(onboarding).toContain('new LogicalSize(800, 900)');
+    // The welcome window fills the monitor's work area natively
+    // (`set_welcome_window`, welcome_window.rs), not a fixed 800x900.
+    expect(onboarding).toContain("invoke('set_welcome_window'");
+    expect(onboarding).not.toContain('new LogicalSize(800, 900)');
     expect(mainRs).toContain('welcome_window::set_welcome_backdrop');
     // The restore is still a copy of the saved frame, not a fresh computation.
     expect(introWindowRs).toContain('SAVED_STATE');
