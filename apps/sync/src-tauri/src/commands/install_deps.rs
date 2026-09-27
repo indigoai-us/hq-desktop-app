@@ -11544,7 +11544,6 @@ mod cancellation_reporting_tests {
         assert_eq!(events[0].tags["setup_cancel_os_error_kind"], "EPERM");
     }
 
-    #[cfg(unix)]
     fn diagnostic(error: &str) -> SetupCommandDiagnostic {
         SetupCommandDiagnostic {
             command: "npm install -g @indigoai-us/hq-cli".to_string(),
