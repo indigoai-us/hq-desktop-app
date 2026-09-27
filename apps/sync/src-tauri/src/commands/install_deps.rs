@@ -9475,16 +9475,15 @@ mod windows_tests {
             .join("qmd");
         std::fs::create_dir_all(qmd_bin.parent().unwrap()).unwrap();
         std::fs::write(&qmd_bin, b"").unwrap();
-        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd shim should write");
+        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        write_qmd_bash_shim_in(&qmd_prefix, Some(git_bash)).expect("qmd shim should write");
         let qmd_cmd = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
-        // The bash invocation is either an absolute Git Bash path (when one is
-        // installed on the test machine) or a bare `bash` fallback — both end
-        // with the same script-relative argument.
+        // Supplying an explicit Git Bash fixture verifies the launcher uses its
+        // absolute path and targets this package's script-relative entry point.
         assert!(
-            qmd_cmd.contains("\"%~dp0node_modules\\@tobilu\\qmd\\bin\\qmd\" %*"),
+            qmd_cmd.contains(r#""C:\Program Files\Git\bin\bash.exe" "%~dp0node_modules\@tobilu\qmd\bin\qmd" %*"#),
             "{qmd_cmd}"
         );
-        assert!(qmd_cmd.to_lowercase().contains("bash"), "{qmd_cmd}");
         assert!(
             !qmd_cmd.to_lowercase().contains("system32"),
             "shim must never invoke the WSL launcher: {qmd_cmd}"
