@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.342] — 2026-09-27
+
+- No user-facing changes. Cached native builds are now compressed so release
+  packaging can restore them instead of rebuilding.
+
 ## [0.10.341] — 2026-09-26
 
 - When enabled, automatic Core updates wait for startup cache preparation before
