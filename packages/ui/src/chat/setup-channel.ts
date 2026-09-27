@@ -144,7 +144,7 @@ export const SETUP_URLS = {
   gettingStarted: "https://hqforwork.com/getting-started",
   book: "https://hqforwork.com/book",
   training: "https://hqforwork.com/training",
-  docs: "https://docs.getindigo.ai",
+  docs: "https://docs.hq.computer",
 } as const;
 
 /** Hero copy rendered over the wallpaper at the top of #welcome. */

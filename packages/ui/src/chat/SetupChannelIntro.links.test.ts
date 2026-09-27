@@ -62,7 +62,7 @@ describe("setup welcome copy model", () => {
     );
     expect(SETUP_URLS.book).toBe("https://hqforwork.com/book");
     expect(SETUP_URLS.training).toBe("https://hqforwork.com/training");
-    expect(SETUP_URLS.docs).toBe("https://docs.getindigo.ai");
+    expect(SETUP_URLS.docs).toBe("https://docs.hq.computer");
   });
 
   it("lists guide, book, training, and docs as resources with https hrefs", () => {
