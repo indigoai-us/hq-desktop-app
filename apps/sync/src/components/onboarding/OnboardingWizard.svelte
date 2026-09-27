@@ -172,6 +172,7 @@
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
   const MIN_VISIBLE_MS_FOR_ABANDON = 1500;
+  const SETUP_CANCELLATION_FLAG_LOOKUP_TIMEOUT_MS = 2_000;
   // Provider buttons remain available after this short head start. The native
   // continuation attempt keeps running until it completes, expires, or a
   // person explicitly takes over with a provider.
@@ -180,22 +181,25 @@
   const cancellationFlagAdapter = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
   });
-  let cancellationEpermClassificationEnabled = false;
+  let cancellationEpermFlagLookup: Promise<boolean> = Promise.resolve(false);
 
-  async function refreshCancellationEpermFlag(): Promise<void> {
-    cancellationEpermClassificationEnabled = false;
-    try {
-      const result = await cancellationFlagAdapter.identity.hasFeature(
-        SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
-      );
-      cancellationEpermClassificationEnabled = result.ok && result.value === true;
-    } catch (error) {
-      cancellationEpermClassificationEnabled = false;
-      console.warn(
-        'Setup cancellation EPERM flag lookup failed; keeping the gate off',
-        error,
-      );
-    }
+  function refreshCancellationEpermFlag(): Promise<boolean> {
+    const lookup = (async (): Promise<boolean> => {
+      try {
+        const result = await cancellationFlagAdapter.identity.hasFeature(
+          SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
+        );
+        return result.ok && result.value === true;
+      } catch (error) {
+        console.warn(
+          'Setup cancellation EPERM flag lookup failed; keeping the gate off',
+          error,
+        );
+        return false;
+      }
+    })();
+    cancellationEpermFlagLookup = lookup;
+    return lookup;
   }
 
   let {
@@ -987,8 +991,18 @@
     if (runId !== currentRunId) return;
     const handles = [...activeInstallHandles];
     activeInstallHandles.clear();
-    const reapedEpermIsClean = cancellationEpermClassificationEnabled;
-    void refreshCancellationEpermFlag();
+    const flagLookup = cancellationEpermFlagLookup;
+    const reapedEpermIsClean = await withTimeout(
+      flagLookup,
+      SETUP_CANCELLATION_FLAG_LOOKUP_TIMEOUT_MS,
+      () => new Error('Setup cancellation EPERM flag lookup timed out'),
+    ).catch((error) => {
+      console.warn(
+        'Setup cancellation EPERM flag lookup did not settle; keeping the gate off',
+        error,
+      );
+      return false;
+    });
     await Promise.allSettled(
       handles.map((handle) =>
         invoke('cancel_install', { handle, reapedEpermIsClean }),
