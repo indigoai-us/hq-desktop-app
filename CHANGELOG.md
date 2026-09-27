@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The usage data choice during setup now starts on "Share usage data", and its
+  selection circles are drawn in full instead of being cut off on one side.
+- The setup bot's first message now mentions that you can run it in Claude Code
+  or Codex from the Launch button.
 - When setup finds no coding tool installed, the Home setup card offers a
   guided path instead of the old dead-end "Open in Claude Code / Codex"
   buttons. One click installs Claude Code, a plain progress line shows what
