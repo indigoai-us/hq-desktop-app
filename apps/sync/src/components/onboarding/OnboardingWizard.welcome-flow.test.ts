@@ -449,3 +449,30 @@ describe('welcome flow: replay', () => {
     await flushUntil(() => onfinish.mock.calls.length === 1, 'Escape');
   });
 });
+
+describe('welcome flow: the backdrop', () => {
+  const WALLPAPER = 'data:image/jpeg;base64,/9j/';
+
+  it('paints the wallpaper full-bleed behind the veil when there is one', async () => {
+    stubInvoke();
+    mountAt(0, { wallpaper: WALLPAPER });
+    await flushUntil(() => scene() === 'welcome', 'the welcome');
+
+    const layer = byId<HTMLDivElement>('welcome-wallpaper');
+    expect(layer).not.toBeNull();
+    expect(layer!.style.backgroundImage).toContain(WALLPAPER);
+    expect(root().classList.contains('has-wallpaper')).toBe(true);
+    // Behind the veil: the veil blurs and dims it.
+    const veil = root().querySelector('.veil')!;
+    expect(layer!.compareDocumentPosition(veil) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('stays transparent over the native blur when there is no wallpaper', async () => {
+    stubInvoke();
+    mountAt(0);
+    await flushUntil(() => scene() === 'welcome', 'the welcome');
+
+    expect(byId('welcome-wallpaper')).toBeNull();
+    expect(root().classList.contains('has-wallpaper')).toBe(false);
+  });
+});

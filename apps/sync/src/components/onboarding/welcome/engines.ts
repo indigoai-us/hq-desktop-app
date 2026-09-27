@@ -577,7 +577,7 @@ export function createOrbitEngine(refs: OrbitRefs, options: { reveal: () => void
     cx = W / 2;
     // Equal-width cards. The prototype sized them so the longest subtitle fit
     // on one line and then ellipsized it once the window was narrower than
-    // five of those; at the app's ~800px window that clipped every subtitle
+    // five of those; in a narrow (~800px) window that clipped every subtitle
     // and wrapped the titles. Instead the rail takes the width it needs up to
     // 96% of the window, titles stay on one line, and subtitles wrap.
     rail.classList.add('measuring');

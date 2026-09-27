@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { onDestroy, onMount } from 'svelte';
   import { initialStepForLifecycle, CONSENT_STEP_INDEX, WELCOME_SIGNIN_STEP_INDEX, type WizardMode } from '../lib/onboarding-wizard';
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
@@ -32,40 +32,25 @@
     repromptPersonUid = null,
   }: Props = $props();
 
-  /**
-   * The welcome flow is a full-bleed window (designer prototype: ~800x900)
-   * over a native blur of the person's own desktop. It shrinks to fit a
-   * smaller screen, keeping a small margin so the rounded corners and the
-   * window shadow never touch the screen edge.
-   */
-  const WELCOME_WINDOW_SIZE = new LogicalSize(800, 900);
+  /** Size of the `main` window once the welcome flow hands it back. */
   const COMPACT_WINDOW_SIZE = new LogicalSize(288, 360);
-  /** The blur settles over the desktop with the prototype's veil timing. */
+  /** The native fallback blur settles with the prototype's veil timing. */
   const WELCOME_BACKDROP_FADE_MS = 1800;
 
-  async function responsiveWelcomeSize(
-    target: LogicalSize = WELCOME_WINDOW_SIZE,
-  ): Promise<LogicalSize> {
-    try {
-      const monitor = await currentMonitor();
-      if (!monitor) return target;
-      const workArea = monitor.workArea.size.toLogical(monitor.scaleFactor);
-      return new LogicalSize(
-        Math.max(360, Math.min(target.width, workArea.width - 32)),
-        Math.max(420, Math.min(target.height, workArea.height - 32)),
-      );
-    } catch {
-      return target;
-    }
-  }
+  /**
+   * The person's desktop wallpaper (a JPEG data URL), painted behind the flow
+   * and blurred and dimmed by its veil. `null` until read, and for good when it
+   * cannot be read, in which case the native behind-window blur stands in.
+   */
+  let wallpaper = $state<string | null>(null);
+  let destroyed = false;
 
   let initialStep = $state(0);
   let onboardingFlow = $state<OnboardingFlow>('first_install');
   let activeLifecycleState = $state<string | null>(null);
 
   // The main window carries the frosted popover vibrancy. The welcome flow
-  // replaces it with its own dark behind-window blur (`set_welcome_backdrop`)
-  // and re-applies the popover material on the tray handoff.
+  // takes it off and re-applies it on the hand-back.
   async function setWindowVibrancy(enabled: boolean) {
     if (typeof invoke !== 'function') return;
     await invoke('set_main_window_vibrancy', { enabled }).catch(() => {});
@@ -79,40 +64,60 @@
     }).catch(() => {});
   }
 
-  /**
-   * Size the window to the welcome flow and put the blurred desktop behind it.
-   * The window stays transparent; the renderer draws only the veil and the
-   * content, so there is no rectangle of wallpaper or card to see.
-   */
-  async function sizeForWelcome() {
-    await setWindowVibrancy(false);
+  async function setWelcomeWindow(enabled: boolean) {
+    if (typeof invoke !== 'function') return;
+    await invoke('set_welcome_window', { enabled }).catch(() => {});
+  }
+
+  async function readWallpaper(): Promise<string | null> {
+    if (typeof invoke !== 'function') return null;
     try {
-      const win = getCurrentWindow();
-      await win.setSize(await responsiveWelcomeSize(WELCOME_WINDOW_SIZE));
-      await win.center();
+      const url = await invoke<string | null>('get_desktop_wallpaper');
+      return typeof url === 'string' && url.startsWith('data:image/') ? url : null;
     } catch {
-      // Non-Tauri / test environment.
+      return null;
     }
-    await setWelcomeBackdrop(true);
+  }
+
+  /**
+   * Give the window to the welcome flow: it fills the work area of the current
+   * monitor (native, `set_welcome_window`), and the person's wallpaper goes
+   * behind it. Without a wallpaper, the native blur of whatever is behind the
+   * window stands in, as before.
+   */
+  async function enterWelcomeWindow() {
+    await setWindowVibrancy(false);
+    if (destroyed) return;
+    await setWelcomeWindow(true);
+    const url = await readWallpaper();
+    if (destroyed) return;
+    if (url) {
+      wallpaper = url;
+    } else {
+      await setWelcomeBackdrop(true);
+    }
   }
 
   async function restorePopoverSize() {
     await setWelcomeBackdrop(false);
+    await setWelcomeWindow(false);
     await setWindowVibrancy(true);
     try {
       const win = getCurrentWindow();
       await win.setShadow(true).catch(() => {});
       await win.setSize(COMPACT_WINDOW_SIZE);
+      await win.center();
     } catch {
       // Non-Tauri / test environment.
     }
   }
 
   onMount(() => {
-    void sizeForWelcome();
+    void enterWelcomeWindow();
   });
 
   onDestroy(() => {
+    destroyed = true;
     void restorePopoverSize();
   });
 
@@ -166,5 +171,6 @@
   {onboardingFlow}
   {mode}
   {repromptPersonUid}
+  {wallpaper}
   onfinish={handleFinish}
 />

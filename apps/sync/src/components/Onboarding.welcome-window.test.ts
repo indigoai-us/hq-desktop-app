@@ -7,7 +7,9 @@ vi.mock('svelte', async () => {
   return await import('../../node_modules/svelte/src/index-client.js');
 });
 
-const tauri = vi.hoisted(() => ({ invoke: vi.fn(async (..._args: unknown[]) => undefined) }));
+const tauri = vi.hoisted(() => ({
+  invoke: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
+}));
 const win = vi.hoisted(() => ({
   setSize: vi.fn(async (..._args: unknown[]) => undefined),
   setShadow: vi.fn(async (..._args: unknown[]) => undefined),
@@ -23,7 +25,6 @@ vi.mock('@tauri-apps/api/window', async () => {
   return {
     ...actual,
     getCurrentWindow: () => win,
-    currentMonitor: async () => null,
   };
 });
 
@@ -38,7 +39,7 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import Onboarding from './Onboarding.svelte';
 
 async function settle(): Promise<void> {
-  for (let i = 0; i < 6; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     flushSync();
     await tick();
     await Promise.resolve();
@@ -49,12 +50,15 @@ function commands(): string[] {
   return tauri.invoke.mock.calls.map(([command]) => String(command));
 }
 
+const WALLPAPER = 'data:image/jpeg;base64,/9j/';
+
 describe('Onboarding: the welcome flow window', () => {
   let host: HTMLDivElement;
   let component: Record<string, unknown> | null = null;
 
   beforeEach(() => {
-    tauri.invoke.mockClear();
+    tauri.invoke.mockReset();
+    tauri.invoke.mockImplementation(async () => undefined);
     win.setSize.mockClear();
     win.setShadow.mockClear();
     win.center.mockClear();
@@ -68,7 +72,7 @@ describe('Onboarding: the welcome flow window', () => {
     host.remove();
   });
 
-  it('opens a first install straight on the welcome flow, in an 800x900 window over the blurred desktop', async () => {
+  it('opens a first install straight on the welcome flow, filling the screen over the blurred desktop', async () => {
     component = mount(Onboarding, {
       target: host,
       props: { state: 'NeedsInstall', mode: 'onboarding' },
@@ -78,18 +82,69 @@ describe('Onboarding: the welcome flow window', () => {
     const stub = host.querySelector<HTMLElement>('[data-testid="wizard-stub"]');
     expect(stub?.dataset.mode).toBe('onboarding');
     expect(stub?.dataset.initialStep).toBe('0');
-    const size = win.setSize.mock.calls[0]?.[0] as { width: number; height: number };
-    expect([size.width, size.height]).toEqual([800, 900]);
-    expect(win.center).toHaveBeenCalled();
-    // The popover material comes off and the welcome backdrop goes on.
+    // The native side fits the window to the work area; the renderer no
+    // longer sizes it to a card.
+    expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
+    expect(win.setSize).not.toHaveBeenCalled();
+    // The popover material comes off first.
     expect(tauri.invoke).toHaveBeenCalledWith('set_main_window_vibrancy', { enabled: false });
+    expect(commands().indexOf('set_main_window_vibrancy')).toBeLessThan(
+      commands().indexOf('set_welcome_window'),
+    );
+    expect(commands()).toContain('get_desktop_wallpaper');
+  });
+
+  it('paints the wallpaper and does not ask for the native blur when the wallpaper is available', async () => {
+    tauri.invoke.mockImplementation(async (command: unknown) =>
+      command === 'get_desktop_wallpaper' ? WALLPAPER : undefined,
+    );
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+
+    const stub = host.querySelector<HTMLElement>('[data-testid="wizard-stub"]');
+    expect(stub?.dataset.wallpaper).toBe(WALLPAPER);
+    expect(tauri.invoke).not.toHaveBeenCalledWith('set_welcome_backdrop', {
+      enabled: true,
+      fadeMs: 1800,
+    });
+  });
+
+  it('falls back to the native blur when the wallpaper cannot be read', async () => {
+    tauri.invoke.mockImplementation(async (command: unknown) => {
+      if (command === 'get_desktop_wallpaper') throw new Error('no wallpaper');
+      return undefined;
+    });
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+
+    expect(host.querySelector<HTMLElement>('[data-testid="wizard-stub"]')?.dataset.wallpaper).toBe('');
     expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_backdrop', {
       enabled: true,
       fadeMs: 1800,
     });
-    expect(commands().indexOf('set_main_window_vibrancy')).toBeLessThan(
+    expect(commands().indexOf('get_desktop_wallpaper')).toBeLessThan(
       commands().indexOf('set_welcome_backdrop'),
     );
+  });
+
+  it('falls back to the native blur when there is no wallpaper (non-macOS)', async () => {
+    tauri.invoke.mockImplementation(async () => null);
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_backdrop', {
+      enabled: true,
+      fadeMs: 1800,
+    });
   });
 
   it('hands the window back to the compact popover when it goes away', async () => {
@@ -109,9 +164,11 @@ describe('Onboarding: the welcome flow window', () => {
       enabled: false,
       fadeMs: 1800,
     });
+    expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: false });
     expect(tauri.invoke).toHaveBeenCalledWith('set_main_window_vibrancy', { enabled: true });
     const size = win.setSize.mock.calls.at(-1)?.[0] as { width: number; height: number };
     expect([size.width, size.height]).toEqual([288, 360]);
+    expect(win.center).toHaveBeenCalled();
   });
 
   it('resumes a half-finished install on the install, not the welcome', async () => {

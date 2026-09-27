@@ -173,6 +173,13 @@
     onboardingFlow?: OnboardingFlow;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
+    /**
+     * The person's desktop wallpaper as an image URL (`Onboarding.svelte`
+     * reads it natively). Painted full-bleed behind the flow, where the veil
+     * blurs and dims it. `null` means the window is transparent over the
+     * native behind-window blur instead.
+     */
+    wallpaper?: string | null;
   }
 
   interface DetectHqResult {
@@ -225,6 +232,7 @@
     mode = 'onboarding',
     onboardingFlow = 'first_install',
     repromptPersonUid = null,
+    wallpaper = null,
   }: Props = $props();
 
   const isReprompt = $derived(mode === 'reprompt');
@@ -2502,6 +2510,7 @@
 <div
   class="hq-welcome"
   class:replay
+  class:has-wallpaper={!!wallpaper}
   class:motion-failed={motionFailed}
   data-testid="onboarding-wizard"
   data-current-scene={scene}
@@ -2509,6 +2518,14 @@
   onclick={handleBackdropClick}
 >
   <h1 class="sr-only">{replay ? 'Welcome to HQ' : 'HQ desktop onboarding'}</h1>
+  {#if wallpaper}
+    <div
+      class="wallpaper"
+      data-testid="welcome-wallpaper"
+      style:background-image={`url("${wallpaper}")`}
+      aria-hidden="true"
+    ></div>
+  {/if}
   <div class="veil" class:on={veilOn} aria-hidden="true"></div>
   <div class="grain" class:on={scene === 'folder' || scene === 'ready'} aria-hidden="true"></div>
   <div class="titlebar" data-tauri-drag-region aria-hidden="true"></div>

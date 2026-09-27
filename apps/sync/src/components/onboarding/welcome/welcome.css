@@ -8,11 +8,11 @@
    Everything is namespaced under .hq-welcome so none of it leaks into the rest
    of the app.
 
-   The one deliberate departure from the prototype: there is no wallpaper.
-   The window is transparent over a native blur of whatever is behind it
-   (src-tauri welcome_window.rs), and .veil is the prototype's dark scrim on
-   top of that, so the flow reads as the person's own desktop, blurred and
-   dimmed.
+   The window fills the monitor's work area (src-tauri welcome_window.rs) and
+   the backdrop is the person's own desktop wallpaper (.wallpaper), which the
+   veil blurs and dims as the prototype's did. When the wallpaper cannot be
+   read the window stays transparent over a native blur of whatever is behind
+   it, and .veil only dims.
    --------------------------------------------------------------------------- */
 
 @font-face {
@@ -42,12 +42,10 @@
   --w-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --w-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --w-radius-button: 8px;
-  --w-window-radius: 12px;
 
   position: fixed;
   inset: 0;
   overflow: hidden;
-  border-radius: var(--w-window-radius);
   color: var(--w-text);
   font-family: var(--w-font-sans);
   font-size: 16px;
@@ -98,7 +96,20 @@
 
 /* The film opens on the person's own desktop, undimmed. The veil then settles
    over it and is fully down well before the mark's caption lands. Once down it
-   stays down for every screen. The blur itself is native (behind the window). */
+   stays down for every screen. Over the wallpaper the veil also blurs it
+   (backdrop-filter, as in the prototype); without one the blur is native,
+   behind the window, and the veil only dims. */
+.hq-welcome.has-wallpaper {
+  background: #000;
+}
+.hq-welcome .wallpaper {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
 .hq-welcome .veil {
   position: absolute;
   inset: 0;
@@ -108,6 +119,18 @@
 }
 .hq-welcome .veil.on {
   background: var(--w-veil-bg);
+}
+.hq-welcome.has-wallpaper .veil {
+  -webkit-backdrop-filter: blur(0) saturate(100%);
+  backdrop-filter: blur(0) saturate(100%);
+  transition:
+    background 1.8s var(--w-ease-in-out),
+    -webkit-backdrop-filter 1.8s var(--w-ease-in-out),
+    backdrop-filter 1.8s var(--w-ease-in-out);
+}
+.hq-welcome.has-wallpaper .veil.on {
+  -webkit-backdrop-filter: blur(34px) saturate(125%);
+  backdrop-filter: blur(34px) saturate(125%);
 }
 
 .hq-welcome .titlebar {
@@ -843,7 +866,7 @@
   color: var(--w-muted);
   margin-bottom: 12px;
 }
-/* Titles hold one line; subtitles wrap to stay whole at the ~800px window
+/* Titles hold one line; subtitles wrap to stay whole in a narrow (~800px) window
    (the prototype ellipsized them there, and titles wrapped). */
 .hq-welcome .rail-row .rn {
   display: block;

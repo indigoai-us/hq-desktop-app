@@ -5,10 +5,16 @@
     mode = 'onboarding',
     initialStep = 0,
     onfinish,
-  }: { mode?: string; initialStep?: number; onfinish?: () => void | Promise<void> } = $props();
+    wallpaper = null,
+  }: {
+    mode?: string;
+    initialStep?: number;
+    onfinish?: () => void | Promise<void>;
+    wallpaper?: string | null;
+  } = $props();
 </script>
 
-<div data-testid="wizard-stub" data-mode={mode} data-initial-step={initialStep}>
+<div data-testid="wizard-stub" data-mode={mode} data-initial-step={initialStep} data-wallpaper={wallpaper ?? ''}>
   wizard
   <button type="button" data-testid="wizard-stub-finish" onclick={() => void onfinish?.()}>finish</button>
 </div>

@@ -13,6 +13,7 @@ const mainCapability = JSON.parse(
 ) as { windows: string[]; permissions: string[] };
 const onboarding = readFileSync(root('src/components/Onboarding.svelte'), 'utf8');
 const nativeMain = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
+const nativeWelcome = readFileSync(root('src-tauri/src/welcome_window.rs'), 'utf8');
 const app = readFileSync(root('src/App.svelte'), 'utf8');
 const listenerRegistry = readFileSync(root('src/lib/listener-registry.ts'), 'utf8');
 
@@ -32,21 +33,21 @@ describe('HQ-DESKTOP-38: main-window resize ACL', () => {
 
   it('keeps the permission paired with its one remaining caller, onboarding', () => {
     // PL-07 deleted the tray popover, which was the other `setSize` caller.
-    // Onboarding still grows the `main` window for the wizard and shrinks it
-    // back afterwards, so `core:window:allow-set-size` stays required. The
-    // welcome flow replaced the card and the full-screen film with one
-    // 800x900 window, so the call names that size. Every resize still routes
-    // through the work-area clamp, which is what this pins.
-    expect(onboarding).toContain('win.setSize(await responsiveWelcomeSize(WELCOME_WINDOW_SIZE))');
+    // The welcome flow now fills the work area natively (`set_welcome_window`)
+    // and Onboarding shrinks the window back to the compact size when it hands
+    // it back, so `core:window:allow-set-size` stays required for that.
+    expect(onboarding).toContain("invoke('set_welcome_window', { enabled })");
     expect(onboarding).toContain('win.setSize(COMPACT_WINDOW_SIZE)');
   });
 
   it('caps first-run onboarding to the active monitor work area on every platform', () => {
-    expect(onboarding).toContain('currentMonitor()');
-    expect(onboarding).toContain('monitor.workArea.size.toLogical(monitor.scaleFactor)');
-    expect(nativeMain).toContain('current_monitor()');
-    expect(nativeMain).toContain('monitor.work_area()');
-    expect(nativeMain).toContain('.clamp(420.0, 620.0)');
+    // One native helper sizes the welcome window for first run, the consent
+    // re-prompt and the replay: the current monitor's work area, not the
+    // full display.
+    expect(nativeWelcome).toContain('pub fn fit_to_work_area(');
+    expect(nativeWelcome).toContain('current_monitor()');
+    expect(nativeWelcome).toContain('monitor.work_area()');
+    expect(nativeMain).toContain('welcome_window::fit_to_work_area(&window)');
   });
 });
 

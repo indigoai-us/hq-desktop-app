@@ -859,7 +859,12 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }
 
-/// Show + focus the main window centered on screen for first-run onboarding.
+/// Show + focus the main window for first-run onboarding.
+///
+/// The welcome flow fills the work area of the current monitor
+/// (`welcome_window::fit_to_work_area`); `center()` would measure against the
+/// full display and push the bottom edge under the Dock, so it is only the
+/// fallback when no monitor can be read.
 ///
 /// Must not leave the window sticky-topmost — OAuth opens a normal browser
 /// afterward, and a permanently topmost installer would cover the provider UI.
@@ -868,7 +873,9 @@ pub fn show_window_centered(app: &AppHandle) {
         return;
     };
     hide_desktop_alt(app);
-    let _ = window.center();
+    if !crate::welcome_window::fit_to_work_area(&window) {
+        let _ = window.center();
+    }
     crate::util::window_focus::bring_webview_to_front(&window);
 }
 
@@ -1094,6 +1101,16 @@ pub fn show_onboarding_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    // The welcome flow owns `main` and fills the work area: re-fit it rather
+    // than anchoring it under the tray icon like the compact card.
+    if crate::welcome_window::welcome_window_active() {
+        crate::welcome_window::fit_to_work_area(&window);
+        #[cfg(target_os = "windows")]
+        crate::util::window_focus::raise_transiently_topmost(&window);
+        #[cfg(not(target_os = "windows"))]
+        crate::util::window_focus::bring_webview_to_front(&window);
+        return;
+    }
     #[cfg(target_os = "windows")]
     {
         position_above_tray_fallback(&window);

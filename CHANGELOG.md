@@ -8,8 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- First-time setup is now one six-screen welcome flow in a larger window
-  (about 800 by 900) over a soft blur of your own desktop. You sign in with
+- First-time setup is now one six-screen welcome flow that fills the screen
+  (everything below the menu bar and beside the Dock) with no rounded
+  corners or window shadow. On macOS the background is your own desktop
+  wallpaper, blurred and dimmed; other app windows no longer show through.
+  If the wallpaper cannot be read, and on Windows, the window keeps a soft
+  blur of whatever is behind it. The same full-screen window is used for the
+  sharing re-prompt and "Replay welcome intro". You sign in with
   Google or Microsoft, pick where HQ lives, and choose "Install here". The
   install then runs in the background while three short screens explain
   cloud sync, the Option Shift O shortcut, and the usage-sharing choice. A
