@@ -12,6 +12,30 @@ The release moves it under the version it ships in.
   you, now syncs onto this Mac by itself. The "Added to … Sync to pull it"
   banner only appears when that sync fails, and its Sync now button retries.
 
+## [0.10.345] — 2026-09-27
+
+- Stable releases now keep their published notes out of Unreleased. The changelog
+  check also catches repeated notes before the next tag is cut.
+- On Windows, the CLI updater defers a busy target when no holder is found. It retries on
+  later launches and reports a persistent failure after three attempts.
+- Automatic Core updates wait for startup cache preparation. If it times out, the
+  update is deferred to a later automatic check. Manual updates remain unchanged.
+- Setup cancellation treats SIGTERM EPERM as clean only when a full process group
+  probe confirms no live members. Live groups and SIGKILL errors still surface.
+
+## [0.10.344] — 2026-09-27
+
+- On Windows, setup uses Winget for Git and checks qmd's launcher before marking setup complete.
+- Windows setup waits for Git before installing qmd and rechecks Git after a specific WinGet failure.
+- Updater restarts now find Node from the app-managed toolchain, preventing completed installations from reopening setup when Node is available.
+- Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
+
+## [0.10.342] — 2026-09-27
+
+- When enabled, cancelling setup treats an installer process group with no live
+  members as already cleaned up instead of reporting a cleanup error. The
+  rollout flag is off by default.
+
 ## [0.10.341] — 2026-09-26
 
 - When enabled, automatic Core updates wait for startup cache preparation before
