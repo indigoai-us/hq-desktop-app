@@ -74,3 +74,4 @@ winreg = "0.55"
 sentry = { version = "^0.35", features = ["test"] }
 # client_info's build_client timeout regression test stands up a mock server.
 wiremock = "0.6"
+tokio = { version = "1", features = ["test-util"] }

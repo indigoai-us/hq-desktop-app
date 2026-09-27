@@ -9,6 +9,19 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
+- When enabled, cancelling setup treats an installer process group with no live
+  members as already cleaned up instead of reporting a cleanup error. The
+  rollout flag is off by default.
+
+## [0.10.341] — 2026-09-26
+
+- When enabled, automatic Core updates wait for startup cache preparation before
+  running the rescue. If the wait limit expires, the update moves to a later
+  automatic check; manual updates keep their current behavior. The rollout flag
+  defaults off.
+- Windows releases no longer fail to save the prebuilt native app, because it is now compressed and trimmed to stay under GitHub's 2 GiB file limit.
+
+## [0.10.340] — 2026-09-26
 - Update holds now apply to manual installs too, and a recording that ends with an error no longer blocks updates.
 - When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
 - Release builds no longer recompile the native app every time. The job that

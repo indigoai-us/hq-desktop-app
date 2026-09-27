@@ -73,12 +73,17 @@ import {
 } from "@indigoai-us/hq-flags-client";
 import { ok, type AdapterPromise, type AdapterResult } from "./adapter.js";
 
+export const SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG =
+  "desktop.setup-cancel-eperm-reaped-is-clean";
+
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
   "agents.claude-provider": "agents.claude-provider",
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
+  [SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG]:
+    SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG,
 };
 
 export const MEETINGS_LEGACY_FLAG = "meetings";

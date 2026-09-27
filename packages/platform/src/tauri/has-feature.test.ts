@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TauriPlatformAdapter } from "./index.js";
 import { createSyncPlatformAdapter } from "./sync-adapter.js";
+import { SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG } from "../flags.js";
 
 interface Invocation {
   cmd: string;
@@ -85,6 +86,64 @@ describe("TauriPlatformAdapter hasFeature", () => {
 });
 
 describe("createSyncPlatformAdapter hasFeature", () => {
+  it("reads the setup cancellation EPERM gate from the registry", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { [SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG]: true },
+            }),
+          };
+        }
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(
+      adapter.identity.hasFeature(SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG),
+    ).resolves.toEqual({ ok: true, value: true });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+    await adapter.dispose?.();
+  });
+
+  it("setup cancellation EPERM gate stays off when the registry read fails", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") return { status: 503, body: "down" };
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(
+      adapter.identity.hasFeature(SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG),
+    ).resolves.toEqual({ ok: true, value: false });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+    await adapter.dispose?.();
+  });
+
+  it("setup cancellation EPERM gate stays off when the registry key is missing", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") {
+          return { status: 200, body: JSON.stringify({ version: 1, flags: {} }) };
+        }
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(
+      adapter.identity.hasFeature(SETUP_CANCEL_EPERM_REAPED_IS_CLEAN_FLAG),
+    ).resolves.toEqual({ ok: true, value: false });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+    await adapter.dispose?.();
+  });
+
   it("Claude provider flag fails closed when the registry is unavailable", async () => {
     const calls: Invocation[] = [];
     const adapter = createSyncPlatformAdapter({
