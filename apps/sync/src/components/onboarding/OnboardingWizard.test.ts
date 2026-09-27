@@ -985,6 +985,24 @@ describe('onboarding launch handoff', () => {
     }
   });
 
+  it('starts the usage data choice on Share, so Continue works without a click', async () => {
+    mountWizard(vi.fn(), 2, NO_AI_TOOLS);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="share"]')),
+    );
+    const share = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-consent"] input[value="share"]',
+    );
+    const decline = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-consent"] input[value="decline"]',
+    );
+    expect(share?.checked).toBe(true);
+    expect(decline?.checked).toBe(false);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.disabled,
+    ).toBe(false);
+  });
+
   it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
     const claudeDesktopOnly = {
       ...NO_AI_TOOLS,
@@ -1024,13 +1042,12 @@ describe('onboarding launch handoff', () => {
       props: { initialStep: 2, onfinish },
     });
 
+    // The install runs on its own while the consent card waits. Its Continue
+    // is not pressed here: the choice now starts on Share, so pressing it would
+    // move the wizard on mid-install, which is not what this test is about.
     await flushUntil(() =>
       Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
     );
-    host
-      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
-      ?.click();
-    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() =>
       Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),

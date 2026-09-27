@@ -39,7 +39,8 @@ export const SETUP_BOT_WORKER = "setup";
  * The bot's first message, sent by the runtime the moment it starts
  * (`hq bot create --intro`) instead of waiting for a model turn. Two short
  * sentences: the plan, and that it is checking the Mac now and may take a
- * minute (the first model turn is slow, so say so up front) — never an open
+ * minute (the first model turn is slow, so say so up front), plus a pointer to
+ * the Launch button for people who prefer Claude Code or Codex — never an open
  * "what would you like to do?", because the kickoff turn below follows it
  * automatically. Keep it under 500 characters (the CLI's `--intro` limit) and
  * on one line (the host rejects control characters).
@@ -47,7 +48,8 @@ export const SETUP_BOT_WORKER = "setup";
 export const SETUP_BOT_INTRO =
   "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
   "the work you already have, your business and the apps you use, and your first bot. " +
-  "I'm checking your Mac now, which can take a minute, and I'll post my first question here as soon as I'm done.";
+  "I'm checking your Mac now, which can take a minute, and I'll post my first question here as soon as I'm done. " +
+  "If you'd rather, you can run me in Claude Code or Codex with the Launch button above.";
 
 /**
  * The setup bot's hello with its name in it: "Hi, I'm Pickles, your setup
