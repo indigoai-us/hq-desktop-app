@@ -8,6 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Clicking a new company's channel right after the setup bot creates it no
+  longer lands on the "no longer available" page. The company rail now asks
+  the host to re-read its company roster as soon as a channel names a company
+  the roster is missing, and the unavailable page re-opens the channel once
+  the company shows up.
+
 ## [0.10.345] — 2026-09-27
 
 - Stable releases now keep their published notes out of Unreleased. The changelog
