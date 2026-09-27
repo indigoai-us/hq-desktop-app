@@ -423,41 +423,36 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
 });
 
 describe('welcome flow: Claude Code and Codex on the ready screen', () => {
-  it('offers HQ Desktop (primary), Claude Code and Codex (secondary) with Advanced under them', async () => {
+  it('offers HQ Desktop as the large card and the installed tools as smaller buttons under it', async () => {
     stubInvoke();
     mountAt(5);
     await flushUntil(() => Boolean(byId('onboarding-launch-codex')), 'the tool options');
 
     const launchers = byId<HTMLElement>('onboarding-launchers')!;
-    const cards = Array.from(launchers.querySelectorAll<HTMLButtonElement>('.tool-card'));
-    expect(cards.map((card) => card.querySelector('.tc-name')?.textContent?.trim())).toEqual([
-      'HQ Desktop',
-      'Claude Code',
-      'Codex',
-    ]);
-    // One card component for all three; HQ Desktop alone is the primary style.
-    expect(cards.every((card) => card.classList.contains('tool-card'))).toBe(true);
-    expect(cards.map((card) => card.classList.contains('tool-card-desktop'))).toEqual([
-      true,
-      false,
-      false,
-    ]);
-    // Each card is icon + name + one short line.
-    for (const card of cards) {
-      expect(card.querySelector('.tc-icon svg')).not.toBeNull();
-      expect(card.querySelector('.tc-line')?.textContent?.trim()).toBeTruthy();
+    const desktop = launchers.querySelector<HTMLButtonElement>('.tool-card-desktop')!;
+    expect(desktop.dataset.testid).toBe('onboarding-open-desktop');
+    expect(desktop.querySelector('.tc-icon svg')).not.toBeNull();
+    expect(desktop.querySelector('.tc-name')?.textContent?.trim()).toBe('HQ Desktop');
+    expect(desktop.querySelector('.tc-line')?.textContent?.trim()).toBe('Use HQ’s own app');
+    const pills = Array.from(launchers.querySelectorAll<HTMLButtonElement>('.tool-pill'));
+    expect(pills.map((pill) => pill.textContent?.trim())).toEqual(['Claude Code', 'Codex']);
+    for (const pill of pills) {
+      expect(pill.classList.contains('tool-card')).toBe(false);
+      expect(pill.querySelector('svg')).not.toBeNull();
     }
     expect(forwardIn('ready')!.getAttribute('aria-label')).toBe('Open HQ Desktop');
 
-    // Advanced sits under the options: collapsed, with the folder and copy tools.
-    const advanced = byId<HTMLDetailsElement>('onboarding-advanced')!;
+    // Product decision (2026-09-27): no Advanced section and no manual tools.
+    expect(byId('onboarding-advanced')).toBeNull();
+    const ready = byId<HTMLElement>('onboarding-summary')!;
+    for (const tool of ['Reveal folder', 'Copy path', 'Copy command', 'Copy /setup', 'Copy /import-claude']) {
+      expect(ready.textContent).not.toContain(tool);
+    }
+    // The usage-data line sits under the options.
+    const consent = byId<HTMLElement>('ready-consent')!;
     expect(
-      cards.every((card) => card.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING),
+      [desktop, ...pills].every((card) => card.compareDocumentPosition(consent) & Node.DOCUMENT_POSITION_FOLLOWING),
     ).toBe(true);
-    expect(advanced.open).toBe(false);
-    expect(advanced.textContent).toContain('Reveal folder');
-    expect(advanced.textContent).toContain('Copy /setup');
-    expect(advanced.textContent).toContain('Copy /import-claude');
   });
 
   it('opens Claude Code the way the ready screen always did, then finishes', async () => {

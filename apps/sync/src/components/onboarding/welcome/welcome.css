@@ -1466,61 +1466,67 @@
   color: #fff;
   font-weight: 500;
 }
-.hq-welcome .manual-tools {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-}
-.hq-welcome .manual-tools button {
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--w-muted);
-  font-size: 11.5px;
-  line-height: 15px;
-  padding: 4px 8px;
-}
-.hq-welcome .manual-tools button:hover:not(:disabled) {
-  color: #fff;
-}
-.hq-welcome .manual-tools button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.hq-welcome .manual-tools button:focus-visible {
-  outline: 1.5px solid #fff;
-  outline-offset: 2px;
-}
 .hq-welcome .completion-mark {
   display: inline-flex;
 }
 
-/* The ready screen's three options, all the same size: HQ Desktop, the
-   primary one (white), centred on its own line; Claude Code and Codex, the
-   secondary ones (dark cards), side by side under it. One column only when
-   the window is too narrow for two. */
+/* The ready screen's options: HQ Desktop, the primary one, as a large white
+   card; under it, the installed tools as smaller dark pill buttons, centred
+   whether there are one or two. */
 .hq-welcome .ready-options {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
   width: min(600px, 92vw);
 }
-.hq-welcome .tool-cards {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: 1fr;
-  gap: 12px;
+.hq-welcome .ready-options .tool-card-desktop {
+  width: min(320px, 100%);
 }
-.hq-welcome .tool-cards .tool-card-desktop {
-  grid-column: 1 / -1;
-  justify-self: center;
-  width: calc((100% - 12px) / 2);
+.hq-welcome .tool-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
 }
-@media (max-width: 480px) {
-  .hq-welcome .tool-cards {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .hq-welcome .tool-cards .tool-card-desktop {
-    width: 100%;
-  }
+.hq-welcome .tool-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 170px;
+  height: 38px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 13.5px;
+  line-height: 18px;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+.hq-welcome .tool-pill:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.hq-welcome .tool-pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.hq-welcome .tool-pill:focus-visible {
+  outline: 1.5px solid #fff;
+  outline-offset: 3px;
+}
+.hq-welcome .tool-pill .tp-icon {
+  display: inline-flex;
+}
+.hq-welcome .tool-pill .tp-icon svg {
+  width: 16px;
+  height: 16px;
 }
 .hq-welcome .tool-card {
   display: flex;
@@ -1606,33 +1612,6 @@
 }
 .hq-welcome .tool-card.tool-card-desktop .tc-line {
   color: rgba(0, 0, 0, 0.6);
-}
-.hq-welcome .tool-card.missing {
-  border-style: dashed;
-  background: rgba(255, 255, 255, 0.04);
-}
-.hq-welcome .advanced {
-  margin-top: 12px;
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--w-muted);
-}
-.hq-welcome .advanced > summary {
-  width: fit-content;
-  margin: 0 auto;
-  cursor: pointer;
-  color: var(--w-faint);
-}
-.hq-welcome .advanced > summary:hover {
-  color: var(--w-muted);
-}
-.hq-welcome .advanced > summary:focus-visible {
-  outline: 1.5px solid #fff;
-  outline-offset: 3px;
-  border-radius: 3px;
-}
-.hq-welcome .advanced .advanced-note {
-  margin: 8px 0;
 }
 /* usage data: one quiet line */
 .hq-welcome .ready-consent {
@@ -1766,9 +1745,6 @@
 }
 .hq-welcome .setup-caution-copy span {
   color: var(--w-muted);
-}
-.hq-welcome .copy-action {
-  margin: 0;
 }
 
 /* A screen's motion failed (a canvas or layout error): show everything in its

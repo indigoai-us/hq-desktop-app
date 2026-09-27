@@ -54,7 +54,6 @@
   import {
     friendlyPath,
     homeDirFromDefaultHqPath,
-    toUserFacingPath,
   } from '../../lib/onboarding-path';
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
@@ -75,10 +74,8 @@
   import {
     NO_AI_TOOLS,
     availableLaunches,
-    installUrlFor,
     launchEntries,
     markToolUnavailable,
-    readyCommandFor,
     type AiTools,
     type LaunchEntry,
     type LaunchKind,
@@ -212,14 +209,6 @@
     stalled?: boolean;
     message?: string;
   };
-  type ClaudeReady = {
-    installed: boolean;
-    desktop_installed: boolean;
-    logged_in: boolean;
-  };
-
-  const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
-  const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
   const MIN_VISIBLE_MS_FOR_ABANDON = 1500;
   // Provider buttons remain available after this short head start. The native
   // continuation attempt keeps running until it completes, expires, or a
@@ -398,31 +387,9 @@
   let probeInFlight = false;
   let detectorMounted = false;
   let launching = $state<
-    'claude' | 'codex' | 'grok' | 'download' | 'watching' | null
+    'claude' | 'codex' | 'grok' | null
   >(null);
-  let claudeWatchInterval: number | null = null;
-  let claudeWatchStartedAt = 0;
-  let claudeWatchConsecutiveFailures = 0;
-  let claudeWatchExpired = $state(false);
   let launchEscape = $state<OnboardingEscape | null>(null);
-  let showManualTools = $state(false);
-  /**
-   * The ready screen's Advanced disclosure, under the Claude Code and Codex
-   * options: the folder and copy tools for setting HQ up by hand. Collapsed
-   * by default; it opens itself when a launch needs a next step.
-   */
-  let advancedOpen = $state(false);
-  $effect(() => {
-    if (launchEscape || claudeWatchExpired || detectionFailed) advancedOpen = true;
-  });
-  let revealingFolder = $state(false);
-  let commandCopied = $state(false);
-  let pathCopied = $state(false);
-  let importPromptCopied = $state(false);
-  let setupPromptCopied = $state(false);
-  type CopyAction = 'path' | 'command' | 'import' | 'setup';
-  let copyingAction = $state<CopyAction | null>(null);
-  let copyFailure = $state<CopyAction | null>(null);
   let finishing = $state(false);
   // Svelte clears rune-backed state during teardown, so keep the active
   // handoff marker outside that state for onDestroy's abandonment check.
@@ -546,14 +513,12 @@
           : null,
     }),
   );
-  const userFacingInstallPath = $derived(
-    installPath ? toUserFacingPath(installPath) : null,
-  );
-  const manualCommand = $derived(readyCommandFor(userFacingInstallPath, aiTools));
   const launchOptions = $derived(availableLaunches(aiTools));
   const launchSlots = $derived<LaunchEntry[]>(launchEntries(aiTools));
-  // The ready screen's two large options: Claude Code and Codex (never Grok).
+  // The ready screen's tool buttons: Claude Code and Codex (never Grok).
   const ownToolSlots = $derived(launchSlots.filter((slot) => slot.kind !== 'grok'));
+  /** Only installed tools get a button on the ready screen. */
+  const installedToolSlots = $derived(ownToolSlots.filter((slot) => slot.installed));
 
   function toolName(kind: LaunchKind): string {
     if (kind === 'claude') return 'Claude Code';
@@ -570,9 +535,6 @@
       },
     };
   }
-  const manualToolsVisible = $derived(
-    showManualTools || Boolean(launchEscape || detectionFailed),
-  );
 
   // ─── Welcome flow: chrome, install card, ready gate ─────────────────────
   /** An install this flow started is still running. */
@@ -597,7 +559,7 @@
       installPending,
       consent: consentGate,
       finishing,
-      launching: launching !== null && launching !== 'watching',
+      launching: launching !== null,
     }),
   );
   const storyOrder = $derived(storyScenes(replay));
@@ -745,8 +707,6 @@
     stopAutomaticContinuationAttempt();
     mounted = false;
     currentSignInCall += 1;
-    stopClaudeWatch();
-    stopToolWatch();
     cancelSetupRun();
   });
 
@@ -1777,62 +1737,6 @@
     return aiTools ?? NO_AI_TOOLS;
   }
 
-  async function copyText(text: string, setCopied: (value: boolean) => void) {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  }
-
-  async function runCopyAction(
-    action: CopyAction,
-    text: string,
-    setCopied: (value: boolean) => void,
-  ) {
-    if (copyingAction) return;
-    copyFailure = null;
-    copyingAction = action;
-    try {
-      await copyText(text, setCopied);
-    } catch (err) {
-      console.error(`onboarding: copy ${action} failed`, err);
-      copyFailure = action;
-    } finally {
-      copyingAction = null;
-    }
-  }
-
-  async function handleCopyCommand() {
-    await runCopyAction('command', manualCommand, (value) => (commandCopied = value));
-  }
-
-  async function handleCopyPath() {
-    await runCopyAction(
-      'path',
-      userFacingInstallPath ?? '~/hq',
-      (value) => (pathCopied = value),
-    );
-  }
-
-  async function handleCopyImportPrompt() {
-    await runCopyAction('import', '/import-claude', (value) => (importPromptCopied = value));
-  }
-
-  async function handleCopySetupPrompt() {
-    await runCopyAction('setup', '/setup', (value) => (setupPromptCopied = value));
-  }
-
-  async function retryCopyAction() {
-    if (copyFailure === 'path') {
-      await handleCopyPath();
-    } else if (copyFailure === 'command') {
-      await handleCopyCommand();
-    } else if (copyFailure === 'import') {
-      await handleCopyImportPrompt();
-    } else if (copyFailure === 'setup') {
-      await handleCopySetupPrompt();
-    }
-  }
-
   async function finishWithRecovery(): Promise<boolean> {
     if (finishing || finishInProgress) return false;
     finishing = true;
@@ -1840,7 +1744,7 @@
     finishError = false;
     try {
       // Every way of finishing from the ready screen (Open HQ Desktop, a
-      // Claude Code or Codex launch, the Claude readiness watch) records the
+      // Claude Code or Codex launch) records the
       // usage-data answer first, and nothing finishes on a failed write: the
       // failure is shown with Retry, or for an offline person whose answer is
       // cached, "Finish setup, send later".
@@ -1866,19 +1770,6 @@
     await finishWithRecovery();
   }
 
-  async function handleRevealFolder() {
-    launchEscape = null;
-    revealingFolder = true;
-    try {
-      await invoke('reveal_folder', { path: installPath ?? '~/hq' });
-    } catch (err) {
-      launchEscape = escapeForLaunch('folder', errorMessage(err));
-      showManualTools = true;
-    } finally {
-      revealingFolder = false;
-    }
-  }
-
   async function handleLaunchClaudeCode() {
     launchEscape = null;
     launching = 'claude';
@@ -1900,12 +1791,10 @@
         launched = true;
       } else {
         launchEscape = escapeForLaunch('claude', 'Claude Code was not detected');
-        showManualTools = true;
       }
     } catch (err) {
       const msg = errorMessage(err);
       launchEscape = escapeForLaunch('claude', msg);
-      showManualTools = true;
       if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
         aiTools = markToolUnavailable(aiTools, 'claude_desktop');
       }
@@ -1937,12 +1826,10 @@
         launched = true;
       } else {
         launchEscape = escapeForLaunch('codex', 'Codex was not detected');
-        showManualTools = true;
       }
     } catch (err) {
       const msg = errorMessage(err);
       launchEscape = escapeForLaunch('codex', msg);
-      showManualTools = true;
       if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
         aiTools = markToolUnavailable(aiTools, 'codex_desktop');
       } else {
@@ -1968,11 +1855,9 @@
         launched = true;
       } else {
         launchEscape = escapeForLaunch('grok', 'Grok CLI was not detected');
-        showManualTools = true;
       }
     } catch (err) {
       launchEscape = escapeForLaunch('grok', errorMessage(err));
-      showManualTools = true;
       aiTools = markToolUnavailable(aiTools, 'grok_cli');
     } finally {
       launching = null;
@@ -1980,156 +1865,7 @@
     if (launched) await finishWithRecovery();
   }
 
-  function stopClaudeWatch() {
-    if (claudeWatchInterval !== null) {
-      window.clearInterval(claudeWatchInterval);
-    }
-    claudeWatchInterval = null;
-    if (launching === 'watching') {
-      launching = null;
-    }
-  }
-
-  function stopClaudeWatchWithError(err: unknown) {
-    stopClaudeWatch();
-    launchEscape = escapeForLaunch('claude', errorMessage(err));
-    showManualTools = true;
-  }
-
-  async function pollClaudeReady() {
-    if (Date.now() - claudeWatchStartedAt >= 15 * 60 * 1000) {
-      stopClaudeWatch();
-      claudeWatchExpired = true;
-      return;
-    }
-
-    let ready: ClaudeReady;
-    try {
-      ready = await invoke<ClaudeReady>('detect_claude_ready');
-      claudeWatchConsecutiveFailures = 0;
-    } catch (err) {
-      claudeWatchConsecutiveFailures += 1;
-      if (
-        claudeWatchConsecutiveFailures >=
-        CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES
-      ) {
-        stopClaudeWatchWithError(err);
-      }
-      return;
-    }
-
-    const desktopFallbackReady =
-      ready.desktop_installed &&
-      Date.now() - claudeWatchStartedAt >= CLAUDE_DESKTOP_READY_FALLBACK_MS;
-    if (!ready.installed || (!ready.logged_in && !desktopFallbackReady)) {
-      return;
-    }
-
-    stopClaudeWatch();
-    launching = 'claude';
-    let launched = false;
-    try {
-      const url = buildClaudeCodeUrl({
-        folder: installPath ?? '',
-        prompt: SETUP_DEEP_LINK_PROMPT,
-      });
-      await invoke('open_claude_code_link', { url });
-      launched = true;
-    } catch (err) {
-      stopClaudeWatchWithError(err);
-    } finally {
-      launching = null;
-    }
-    if (launched) await finishWithRecovery();
-  }
-
-  function startClaudeWatch() {
-    if (claudeWatchInterval !== null) {
-      return;
-    }
-    claudeWatchExpired = false;
-    claudeWatchConsecutiveFailures = 0;
-    claudeWatchStartedAt = Date.now();
-    launching = 'watching';
-    claudeWatchInterval = window.setInterval(() => {
-      void pollClaudeReady();
-    }, 3000);
-  }
-
-  // Re-probe after sending someone off to install a tool that has no
-  // dedicated readiness command (Claude has `pollClaudeReady`; Codex and Grok
-  // do not). Bounded so a browser tab left open on the install page cannot
-  // leave an interval running for the life of the window.
-  const TOOL_WATCH_INTERVAL_MS = 3000;
-  const TOOL_WATCH_MAX_MS = 5 * 60 * 1000;
-  let toolWatchInterval: number | null = null;
-  let toolWatchStartedAt = 0;
-
-  function stopToolWatch() {
-    if (toolWatchInterval !== null) {
-      window.clearInterval(toolWatchInterval);
-      toolWatchInterval = null;
-    }
-  }
-
-  function startToolWatch(kind: LaunchKind) {
-    if (toolWatchInterval !== null) return;
-    toolWatchStartedAt = Date.now();
-    toolWatchInterval = window.setInterval(() => {
-      if (Date.now() - toolWatchStartedAt > TOOL_WATCH_MAX_MS) {
-        stopToolWatch();
-        return;
-      }
-      void probeAiTools().then(() => {
-        if (launchEntries(aiTools).some((slot) => slot.kind === kind && slot.installed)) {
-          stopToolWatch();
-        }
-      });
-    }, TOOL_WATCH_INTERVAL_MS);
-  }
-
-  async function handleInstallTool(kind: LaunchKind) {
-    // Claude keeps its dedicated path: `handleDownloadClaude` also starts the
-    // logged-in watch, which the generic re-probe cannot replicate.
-    if (kind === 'claude') {
-      await handleDownloadClaude();
-      return;
-    }
-    launchEscape = null;
-    try {
-      await openExternal(installUrlFor(kind));
-      startToolWatch(kind);
-    } catch (err) {
-      launchEscape = escapeForLaunch('download', errorMessage(err));
-      showManualTools = true;
-    }
-  }
-
-  async function handleDownloadClaude() {
-    launchEscape = null;
-    const watching = claudeWatchInterval !== null;
-    if (!watching) {
-      launching = 'download';
-    }
-    try {
-      await openExternal('https://claude.ai/download');
-      if (!watching) {
-        startClaudeWatch();
-      }
-    } catch (err) {
-      launchEscape = escapeForLaunch('download', errorMessage(err));
-      showManualTools = true;
-    } finally {
-      if (launching === 'download') {
-        launching = null;
-      }
-    }
-  }
-
-  function handleLaunch(kind: LaunchKind | 'download') {
-    if (launching === 'watching' || kind === 'download') {
-      return handleDownloadClaude();
-    }
+  function handleLaunch(kind: LaunchKind) {
     if (kind === 'claude') return handleLaunchClaudeCode();
     if (kind === 'codex') return handleLaunchCodex();
     return handleLaunchGrok();
@@ -2190,9 +1926,6 @@
       // The only genuine start-over: the next run earns its percent again.
       resetSetupProgressTracker(setupProgressTracker);
       setupRetry = null;
-    }
-    if (previous === READY_STEP_INDEX && next !== READY_STEP_INDEX) {
-      stopClaudeWatch();
     }
     scene = nextScene;
   }
@@ -2517,14 +2250,10 @@
       consentFailure,
       finishError,
       launchEscape,
-      manualToolsVisible,
-      copyFailure,
-      claudeWatchExpired,
       detectionFailed,
       installPending,
       deferredConsent,
       signInActionsReady,
-      advancedOpen,
       readyConsentRecorded,
       aiTools,
     ];
@@ -3041,86 +2770,44 @@
           <span class="pbar" aria-hidden="true"><b style:width={`${installPending ? installCard.percent : 100}%`}></b></span>
         </div>
       </div>
-      <!-- Three options of the same size: HQ Desktop (primary, white) centred
-           on its own line, Claude Code and Codex (secondary) side by side
-           under it. -->
+      <!-- HQ Desktop is the primary option: the large white card. Claude Code
+           and Codex are smaller secondary buttons under it, shown only for
+           the tools detection says are installed. Nothing shows for them
+           while detection is in flight. -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers">
-        <div class="tool-cards">
-          <button
-            class="tool-card tool-card-desktop"
-            type="button"
-            data-testid="onboarding-open-desktop"
-            aria-label="Open HQ Desktop"
-            disabled={!openDesktop.enabled}
-            aria-busy={finishing || installPending}
-            onclick={() => void handleFinish()}
-          >
-            <span class="tc-icon" aria-hidden="true">{@render ToolIcon('desktop')}</span>
-            <span class="tc-text">
-              <span class="tc-name">HQ Desktop</span>
-              <span class="tc-line">{openDesktop.label === 'Open HQ Desktop' ? 'Use HQ’s own app' : openDesktop.label}</span>
-            </span>
-          </button>
-          {#if launchSlots.length === 0}
-            <!-- `launchSlots` is empty only while detection is still in flight. -->
-            <button
-              class="tool-card"
-              type="button"
-              data-testid="onboarding-launch-download"
-              disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
-              aria-busy={finishing || (launching !== null && launching !== 'watching')}
-              onclick={() => void handleLaunch('download')}
-            >
-              <span class="tc-icon" aria-hidden="true">{@render ToolIcon('claude')}</span>
-              <span class="tc-text">
-                <span class="tc-name">Claude Code</span>
-                <span class="tc-line">{launching === 'watching'
-                    ? 'Waiting for Claude…'
-                    : launching === 'download'
-                      ? 'Opening…'
-                      : 'Download Claude to set up HQ there'}</span>
-              </span>
-            </button>
-          {:else}
-            {#each ownToolSlots as slot (slot.kind)}
-              {#if slot.installed}
-                <button
-                  class="tool-card"
-                  type="button"
-                  data-testid="onboarding-launch-{slot.kind}"
-                  disabled={finishing || (launching !== null && launching !== 'watching') || finishBlocked}
-                  aria-busy={finishing || launching === slot.kind}
-                  aria-label={slot.label}
-                  onclick={() => void handleLaunch(slot.kind)}
-                >
-                  <span class="tc-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
-                  <span class="tc-text">
-                    <span class="tc-name">{toolName(slot.kind)}</span>
-                    <span class="tc-line">{launching === slot.kind ? 'Opening…' : 'Open HQ here and run setup'}</span>
-                  </span>
-                </button>
-              {:else}
-                <button
-                  class="tool-card missing"
-                  type="button"
-                  data-testid="onboarding-install-{slot.kind}"
-                  disabled={finishing}
-                  aria-busy={launching === 'watching' && slot.kind === 'claude'}
-                  aria-label={slot.installLabel}
-                  onclick={() => void handleInstallTool(slot.kind)}
-                >
-                  <span class="tc-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
-                  <span class="tc-text">
-                    <span class="tc-name">{toolName(slot.kind)}</span>
-                    <span class="tc-line">{launching === 'watching' && slot.kind === 'claude'
-                        ? 'Waiting for Claude…'
-                        : 'Not installed · Get it'}</span>
-                  </span>
-                </button>
-              {/if}
+        <button
+          class="tool-card tool-card-desktop"
+          type="button"
+          data-testid="onboarding-open-desktop"
+          aria-label="Open HQ Desktop"
+          disabled={!openDesktop.enabled}
+          aria-busy={finishing || installPending}
+          onclick={() => void handleFinish()}
+        >
+          <span class="tc-icon" aria-hidden="true">{@render ToolIcon('desktop')}</span>
+          <span class="tc-text">
+            <span class="tc-name">HQ Desktop</span>
+            <span class="tc-line">{openDesktop.label === 'Open HQ Desktop' ? 'Use HQ’s own app' : openDesktop.label}</span>
+          </span>
+        </button>
+        {#if installedToolSlots.length > 0}
+          <div class="tool-pills">
+            {#each installedToolSlots as slot (slot.kind)}
+              <button
+                class="tool-pill"
+                type="button"
+                data-testid="onboarding-launch-{slot.kind}"
+                disabled={finishing || launching !== null || finishBlocked}
+                aria-busy={finishing || launching === slot.kind}
+                aria-label={slot.label}
+                onclick={() => void handleLaunch(slot.kind)}
+              >
+                <span class="tp-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
+                <span class="tp-name">{launching === slot.kind ? 'Opening…' : toolName(slot.kind)}</span>
+              </button>
             {/each}
-          {/if}
-        </div>
+          </div>
+        {/if}
       </div>
       <div class="alt-block" bind:this={refs.readyAlt}>
         {#if installPending}
@@ -3152,41 +2839,6 @@
             </div>
           </div>
         {/if}
-        <!-- Advanced: set HQ up by hand in any tool, as the ready screen
-             always offered: the folder, its path, the command and the
-             /setup and /import-claude prompts. -->
-        <details class="alt advanced" class:on={scene === 'ready' && navRevealed} data-testid="onboarding-advanced" bind:open={advancedOpen}>
-          <summary>Advanced</summary>
-          <p class="advanced-note">Open the HQ folder in any tool and run /setup there.</p>
-          <div class="manual-tools" aria-label="Manual setup options">
-            <button type="button" onclick={handleRevealFolder} disabled={revealingFolder} aria-busy={revealingFolder}>
-              {revealingFolder ? 'Revealing…' : 'Reveal folder'}
-            </button>
-            <button type="button" onclick={handleCopyPath} disabled={copyingAction !== null} aria-busy={copyingAction === 'path'}>
-              {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
-            </button>
-            <button type="button" onclick={handleCopyCommand} disabled={copyingAction !== null} aria-busy={copyingAction === 'command'}>
-              {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
-            </button>
-            <button type="button" onclick={handleCopySetupPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'setup'}>
-              {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
-            </button>
-            <button type="button" onclick={handleCopyImportPrompt} disabled={copyingAction !== null} aria-busy={copyingAction === 'import'}>
-              {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
-            </button>
-          </div>
-          {#if copyFailure}
-            <p class="copy-action" role="status" data-testid="onboarding-copy-error">
-              Clipboard is blocked. Select the path above, or <button
-                class="link"
-                type="button"
-                onclick={() => void retryCopyAction()}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction !== null}
-              >{copyingAction ? 'retrying…' : 'try again'}</button>.
-            </p>
-          {/if}
-        </details>
         <div class="ready-notes">
           {#if launchEscape}
             <div class="setup-caution" role="note" data-testid="onboarding-escape" aria-label={launchEscape.title}>
@@ -3203,9 +2855,6 @@
           {/if}
           {#if detectionFailed && !launchEscape}
             <p role="status">Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.</p>
-          {/if}
-          {#if claudeWatchExpired}
-            <p role="status">Claude is taking longer than expected. You can open this HQ folder from Claude manually.</p>
           {/if}
           {#if finishError}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">

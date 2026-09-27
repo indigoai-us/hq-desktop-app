@@ -37,7 +37,6 @@ vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 
-import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
 import OnboardingWizard from './OnboardingWizard.svelte';
 import {
   BUILD_STEP_INDEX,
@@ -344,11 +343,6 @@ afterEach(async () => {
  * Desktop by a link is untrusted when it scans skills, so HQ's project
  * `/setup` skill does not exist in the session the link opens.
  */
-function expectedSetupDeepLink(folder: string): string {
-  const params = new URLSearchParams({ q: SETUP_DEEP_LINK_PROMPT });
-  params.set('folder', folder);
-  return `claude://code/new?${params.toString()}`;
-}
 
 describe('first-run browser session continuation', () => {
   it('records one launch receipt and retries the same receipt after a resumed wizard', async () => {
@@ -951,10 +945,20 @@ describe('onboarding launch handoff', () => {
     readyButton('onboarding-launch-claude').click();
     await flush();
 
+    // The inline launch error gives the next step. Product decision
+    // (2026-09-27): no Advanced section or manual tools any more, so the
+    // message must not point at them.
     const summary = host.querySelector('[data-testid="onboarding-summary"]');
-    expect(summary?.textContent).toContain('Open the folder and run /setup');
-    expect(summary?.textContent).toContain('Reveal folder');
-    expect(summary?.textContent).toContain('Copy /setup');
+    const escape = host.querySelector('[data-testid="onboarding-escape"]');
+    expect(escape).not.toBeNull();
+    expect(escape?.textContent).toContain('Open the folder and run /setup');
+    expect(escape?.textContent).toContain('HQ Desktop');
+    expect(escape?.textContent).not.toMatch(/Reveal|copy the command|below/i);
+    expect(summary?.querySelector('[data-testid="onboarding-advanced"]')).toBeNull();
+    expect(summary?.textContent).not.toContain('Reveal folder');
+    expect(summary?.textContent).not.toContain('Copy /setup');
+    // HQ Desktop is still there to finish with.
+    expect(readyButton('onboarding-open-desktop').disabled).toBe(false);
     expect(summary?.textContent).not.toContain('core/core.yaml');
     expect(summary?.textContent).not.toContain('Could not open Claude Code');
     expect(summary?.querySelector('.inline-note.error')).toBeNull();
@@ -999,12 +1003,11 @@ describe('onboarding launch handoff', () => {
     ).toHaveLength(1);
   });
 
-  it('offers HQ Desktop as the primary option and Claude Code and Codex as secondary ones', async () => {
-    // Product decision (2026-09-27): HQ Desktop, Claude Code and Codex are
-    // three option cards of the same size (icon, name, one line): HQ Desktop
-    // in the white primary style, centred on its own line, and the two tools
-    // as dark secondary cards side by side under it. Same test ids, same
-    // handoff; the folder tools sit under an Advanced disclosure beneath them.
+  it('offers HQ Desktop as the primary card and installed tools as smaller buttons under it', async () => {
+    // Product decision (2026-09-27): HQ Desktop is the large white card.
+    // Claude Code and Codex are smaller secondary pill buttons under it, and
+    // only for tools detection says are installed. Same test ids, same
+    // handoff. There is no Advanced section.
     mountWizard(vi.fn(), 4, {
       ...NO_AI_TOOLS,
       claude_desktop: true,
@@ -1019,61 +1022,112 @@ describe('onboarding launch handoff', () => {
       'Complete setup in your AI tool',
     );
 
-    // Exactly three options, in this order (never Grok), all the same card.
     const row = host.querySelector('[data-testid="onboarding-launchers"]');
     expect(row).not.toBeNull();
-    const cards = Array.from(row!.querySelectorAll<HTMLButtonElement>('.tool-card'));
-    expect(cards.map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Open HQ Desktop',
+    const desktop = row!.querySelector<HTMLButtonElement>('.tool-card')!;
+    expect(row!.querySelectorAll('.tool-card')).toHaveLength(1);
+    expect(desktop.dataset.testid).toBe('onboarding-open-desktop');
+    expect(desktop.classList.contains('tool-card-desktop')).toBe(true);
+    expect(desktop.querySelector('.tc-name')?.textContent?.trim()).toBe('HQ Desktop');
+    expect(desktop.querySelector('.tc-line')?.textContent?.trim()).toBe('Use HQ’s own app');
+
+    // The installed tools (never Grok), as secondary pills, in this order.
+    const pills = Array.from(row!.querySelectorAll<HTMLButtonElement>('.tool-pill'));
+    expect(pills.map((button) => button.getAttribute('aria-label'))).toEqual([
       'Open in Claude Code',
       'Open in Codex',
     ]);
-    expect(cards.map((button) => button.querySelector('.tc-name')?.textContent?.trim())).toEqual([
-      'HQ Desktop',
-      'Claude Code',
-      'Codex',
-    ]);
-    expect(cards[0]!.dataset.testid).toBe('onboarding-open-desktop');
-    expect(cards[0]!.querySelector('.tc-line')?.textContent?.trim()).toBe('Use HQ’s own app');
-    for (const card of cards) {
-      expect(card.classList.contains('btn')).toBe(false);
-      expect(card.querySelector('.tc-icon svg')).not.toBeNull();
-    }
-    // Only HQ Desktop carries the primary style.
-    expect(cards.map((card) => card.classList.contains('tool-card-desktop'))).toEqual([
-      true,
-      false,
-      false,
-    ]);
+    expect(pills.map((button) => button.textContent?.trim())).toEqual(['Claude Code', 'Codex']);
+    for (const pill of pills) expect(pill.querySelector('svg')).not.toBeNull();
     expect(row!.textContent).not.toMatch(/\bFinish\b/);
-    // Advanced comes after the options.
-    const advanced = host.querySelector('[data-testid="onboarding-advanced"]')!;
-    expect(row!.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // No Advanced section and no install links on the ready screen.
+    expect(host.querySelector('[data-testid="onboarding-advanced"]')).toBeNull();
+    expect(host.querySelector('[data-testid^="onboarding-install-"]')).toBeNull();
+    // The usage-data line comes after the options.
+    const consent = host.querySelector('[data-testid="ready-consent"]')!;
+    expect(row!.compareDocumentPosition(consent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('offers both Claude Code and Codex when no AI tool is installed', async () => {
-    // Previously this screen offered "Download Claude" alone, so a machine
-    // with neither agent was never told Codex was an option — HQ read as
-    // single-vendor at exactly the moment someone picks a tool.
+  it('shows no tool button and no install link when neither tool is installed', async () => {
     mountWizard(vi.fn(), 4);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'detect_ai_tools'),
+    );
+    await flush();
     await flush();
 
-    // HQ Desktop plus the two tools.
-    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] .tool-card')).toHaveLength(3);
-    expect(host.querySelector('[data-testid="onboarding-install-claude"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="onboarding-install-codex"]')).not.toBeNull();
-
-    // HQ Desktop is still offered, as one of the three equal options.
+    const row = host.querySelector('[data-testid="onboarding-launchers"]')!;
+    expect(row.querySelectorAll('.tool-pill')).toHaveLength(0);
+    expect(row.querySelector('.tool-pills')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-launch-claude"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-launch-codex"]')).toBeNull();
+    expect(host.querySelector('[data-testid^="onboarding-install-"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-launch-download"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-advanced"]')).toBeNull();
+    // HQ Desktop and the usage-data line are still offered.
     expect(primaryButton().getAttribute('aria-label')).toBe('Open HQ Desktop');
-    // The install options are the same large cards, by name, and say what
-    // they do to assistive technology.
-    expect(readyButton('onboarding-install-claude').getAttribute('aria-label')).toBe(
-      'Install Claude Code',
+    expect(host.querySelector('[data-testid="ready-consent"]')).not.toBeNull();
+  });
+
+  it('shows only the installed tool when just one is installed', async () => {
+    mountWizard(vi.fn(), 4, { ...NO_AI_TOOLS, codex_desktop: true, any: true });
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-codex"]')),
     );
-    expect(
-      readyButton('onboarding-install-claude').querySelector('.tc-name')?.textContent?.trim(),
-    ).toBe('Claude Code');
-    expect(readyButton('onboarding-install-claude').textContent).toContain('Not installed');
+    const pills = Array.from(
+      host.querySelectorAll<HTMLButtonElement>('[data-testid="onboarding-launchers"] .tool-pill'),
+    );
+    expect(pills.map((pill) => pill.dataset.testid)).toEqual(['onboarding-launch-codex']);
+    // No button and no install link for the uninstalled tool.
+    expect(host.querySelector('[data-testid="onboarding-launch-claude"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-install-claude"]')).toBeNull();
+  });
+
+  it('shows no tool buttons while detection is still pending', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 4 } });
+    await flush();
+    await flush();
+    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] .tool-pill')).toHaveLength(0);
+    expect(host.querySelector('[data-testid^="onboarding-install-"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-launch-download"]')).toBeNull();
+    expect(primaryButton()).not.toBeNull();
+  });
+
+  it('adds a tool button once a re-check finds the tool installed', async () => {
+    let tools = NO_AI_TOOLS;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return tools;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 4 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'detect_ai_tools'),
+    );
+    await flush();
+    expect(host.querySelector('[data-testid="onboarding-launch-claude"]')).toBeNull();
+
+    tools = { ...NO_AI_TOOLS, claude_desktop: true, any: true };
+    // The ready screen re-probes every 3s while no tool is installed.
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
   });
 
   it('restores friendly checklist labels instead of internal setup stage names', async () => {
@@ -1209,9 +1263,6 @@ describe('onboarding launch handoff', () => {
     ).not.toBeNull();
     expect(host.querySelector('[data-testid="onboarding-retry-failed-stages"]')).toBeNull();
     expect(launchClaude?.disabled).toBe(false);
-    expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-install-codex"]')?.disabled,
-    ).toBe(false);
     expect(tauri.invoke).toHaveBeenCalledWith('record_install_complete');
 
     launchClaude?.click();
@@ -1222,44 +1273,6 @@ describe('onboarding launch handoff', () => {
 
     expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', expect.any(Object));
     expect(onfinish).toHaveBeenCalledOnce();
-  });
-
-  it('keeps the download handoff enabled after a required setup failure while tool detection is pending', async () => {
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/placeholder/hq';
-        case 'detect_ai_tools':
-          return new Promise<never>(() => {});
-        case 'install_deps':
-          throw new Error('dependency installation failed');
-        case 'detect_claude_desktop_connectors':
-          return { present: false, count: 0, path: '/placeholder/connectors' };
-        default:
-          return undefined;
-      }
-    });
-    component = mount(OnboardingWizard, {
-      target: host,
-      props: { initialStep: 2, onfinish: vi.fn() },
-    });
-
-    await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="welcome-skip"]')),
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="welcome-skip"]')?.click();
-    await vi.advanceTimersByTimeAsync(1_000);
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
-
-    const download = host.querySelector<HTMLButtonElement>(
-      '[data-testid="onboarding-launch-download"]',
-    );
-    expect(download).not.toBeNull();
-    expect(download?.disabled).toBe(false);
-
-    download?.click();
-    await flush();
-    expect(tauri.open).toHaveBeenCalledWith('https://claude.ai/download');
   });
 
   it('keeps the success completion indicator after a required setup failure', async () => {
@@ -1330,7 +1343,7 @@ describe('onboarding launch handoff', () => {
     );
 
     expect(host.querySelector('[data-testid="onboarding-install-codex"]')).toBeNull();
-    expect(host.querySelector('[data-testid="onboarding-install-claude"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-launch-claude"]')).toBeNull();
   });
 
   it('opens Codex from its own button when Claude is also installed', async () => {
@@ -1425,121 +1438,6 @@ describe('onboarding launch handoff', () => {
     expect(host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on')).toBe(true);
     expect(host.querySelector('[data-testid="onboarding-summary"]')?.classList.contains('on')).toBe(false);
     expect(tauri.invoke.mock.calls.map(([command]) => command)).not.toContain('read_install_manifest');
-  });
-
-  it('keeps Waiting for Claude visible through not-ready polls, then deep-links once', async () => {
-    const onfinish = mountWizard();
-    let readyPolls = 0;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'detect_claude_ready':
-          readyPolls += 1;
-          return readyPolls < 3
-            ? { installed: false, logged_in: false }
-            : { installed: true, logged_in: true };
-        case 'open_claude_code_link':
-          return undefined;
-        default:
-          return undefined;
-      }
-    });
-
-    await flush();
-    readyButton('onboarding-install-claude').click();
-    await flush();
-    expect(readyButton('onboarding-install-claude').querySelector('.tc-line')?.textContent).toBe('Waiting for Claude…');
-
-    await vi.advanceTimersByTimeAsync(3000);
-    flushSync();
-    expect(readyButton('onboarding-install-claude').querySelector('.tc-line')?.textContent).toBe('Waiting for Claude…');
-
-    await vi.advanceTimersByTimeAsync(3000);
-    flushSync();
-    expect(readyButton('onboarding-install-claude').querySelector('.tc-line')?.textContent).toBe('Waiting for Claude…');
-
-    await vi.advanceTimersByTimeAsync(3000);
-    // The watch opens Claude, then finishing records the usage-data answer.
-    await flushUntil(() => onfinish.mock.calls.length > 0);
-    expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', {
-      url: expectedSetupDeepLink('/Users/test/hq'),
-    });
-    expect(tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'))
-      .toHaveLength(1);
-    expect(onfinish).toHaveBeenCalledOnce();
-  });
-
-  it('opens Claude Desktop after the bounded installed-only fallback', async () => {
-    const onfinish = mountWizard();
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'detect_claude_ready':
-          return { installed: true, desktop_installed: true, logged_in: false };
-        case 'open_claude_code_link':
-          return undefined;
-        default:
-          return undefined;
-      }
-    });
-
-    await flush();
-    readyButton('onboarding-install-claude').click();
-    await flush();
-
-    await vi.advanceTimersByTimeAsync(27_000);
-    await flush();
-    expect(tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'))
-      .toHaveLength(0);
-
-    await vi.advanceTimersByTimeAsync(3_000);
-    await flush();
-    expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', {
-      url: expectedSetupDeepLink('/Users/test/hq'),
-    });
-    expect(onfinish).toHaveBeenCalledOnce();
-  });
-
-  it('stops the watcher and surfaces one error after consecutive readiness failures', async () => {
-    mountWizard();
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'detect_claude_ready':
-          throw new Error('Claude probe unavailable');
-        default:
-          return undefined;
-      }
-    });
-
-    await flush();
-    readyButton('onboarding-install-claude').click();
-    await flush();
-
-    await vi.advanceTimersByTimeAsync(9000);
-    await flush();
-    expect(
-      tauri.invoke.mock.calls.filter(([command]) => command === 'detect_claude_ready'),
-    ).toHaveLength(3);
-    const escape = host.querySelector('[data-testid="onboarding-escape"]');
-    expect(escape?.textContent).toContain('Open the folder yourself');
-    expect(escape?.textContent).not.toContain('Claude probe unavailable');
-    expect(host.textContent).toContain('Copy /setup');
-
-    await vi.advanceTimersByTimeAsync(6000);
-    await flush();
-    expect(
-      tauri.invoke.mock.calls.filter(([command]) => command === 'detect_claude_ready'),
-    ).toHaveLength(3);
   });
 });
 
