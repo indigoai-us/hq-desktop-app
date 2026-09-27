@@ -985,6 +985,49 @@ describe('onboarding launch handoff', () => {
     }
   });
 
+  it('shows an expectation hint while "Building your workspace" is the active band', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<never>(() => {});
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2 },
+    });
+
+    await flushUntil(() => {
+      const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+      return checklist?.textContent?.includes('Building your workspace') ?? false;
+    });
+
+    // The "content" stage settles quickly but "deps" (the "Building your
+    // workspace" band) hangs on the mocked install_deps promise above, so the
+    // band only becomes 'active' once enough real time has passed for the
+    // ring's creep to push the tracked percent past the first band's 20%
+    // threshold (see stageCreepAt / setupProgressPercent).
+    await vi.advanceTimersByTimeAsync(5000);
+    await flushUntil(() => {
+      const row = Array.from(host.querySelectorAll('[data-band-status]')).find((el) =>
+        el.textContent?.includes('Building your workspace'),
+      );
+      return row?.getAttribute('data-band-status') === 'active';
+    });
+
+    const hint = host.querySelector('[data-testid="onboarding-setup-expectation-hint"]');
+    expect(hint).not.toBeNull();
+    expect(hint?.textContent).toMatch(/several minutes/i);
+  });
+
   it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
     const claudeDesktopOnly = {
       ...NO_AI_TOOLS,

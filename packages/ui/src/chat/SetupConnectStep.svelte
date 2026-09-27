@@ -1,13 +1,17 @@
 <script lang="ts">
   /**
    * The Connect step on #welcome: before setup can run, at least one coding
-   * agent (Claude Code or Codex) must be installed and signed in on this Mac.
+   * agent (Claude Code or Codex) must be installed and signed in on this host.
    * The same flow the Sessions page shows, in the hero's voice. Talks to the
    * host only through `SetupRunApi` (provider status + browser sign-in).
    */
   import { onDestroy } from "svelte";
   import SetupButton from "./SetupButton.svelte";
+  import { hostDeviceNoun } from "../common/platform.js";
   import type { SetupProviderLoginState, SetupProviderStatus, SetupProviderTool, SetupRunApi } from "./setup-run";
+
+  /** "Mac", "PC", or "computer" for this window's host. */
+  const HOST_NOUN = hostDeviceNoun();
 
   interface Props {
     api: SetupRunApi;
@@ -111,7 +115,7 @@
     message = "";
     const token = ++generation;
     // "Could not connect" is the wrong sentence when there is nothing to
-    // connect TO yet: a tool that is not on this Mac has to be installed
+    // connect TO yet: a tool that is not on this host has to be installed
     // first, and the row already offers the download. Say which of the two
     // actually went wrong.
     const name = TOOLS.find((entry) => entry.id === tool)?.name ?? "the coding tool";
@@ -131,7 +135,7 @@
       if (token === generation) {
         loginState = "error";
         message = installing
-          ? `Could not install ${name} on this Mac. Download it below, then connect.`
+          ? `Could not install ${name} on this ${HOST_NOUN}. Download it below, then connect.`
           : "Could not connect the coding tool. Please try again.";
       }
     } finally {

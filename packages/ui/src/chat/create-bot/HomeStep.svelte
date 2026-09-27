@@ -9,6 +9,9 @@
    * to the name it affects — see DetailsStep.
    */
   import { initialsFor } from "../sidebar-model.js";
+  import { hostDeviceNoun } from "../../common/platform.js";
+
+  const HOST_NOUN = hostDeviceNoun();
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import RuntimeSignIn, { type RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import { runtimeIsReady, type BotHome, type BotRuntime, type CreateBotDraft } from "./create-bot-model.js";
@@ -154,7 +157,7 @@
       </span>
       <span class="cb-card-sub">
         {canLocal
-          ? "Runs on this Mac with your own login. Works while this computer is on. Message it from your phone."
+          ? `Runs on this ${HOST_NOUN} with your own login. Works while this computer is on. Message it from your phone.`
           : "Bots can't run on this computer."}
       </span>
     </button>
@@ -175,7 +178,7 @@
           <span class="cb-card-meta">Company credits</span>
         </span>
         <span class="cb-card-sub">
-          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this Mac is off.
+          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this {HOST_NOUN} is off.
         </span>
       </button>
     {/if}
@@ -234,7 +237,7 @@
         {/if}
       {:else if !runtimeIsReady(runtimeReady, draft.runtime)}
         <p class="cb-help" data-testid="chat-bot-runtime-help" data-runtime-state="signedOut">
-          {draftLabel} is not signed in on this Mac.
+          {draftLabel} is not signed in on this {HOST_NOUN}.
           {#if signInApi || onsignin}
             <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>Sign in</button>
           {:else}
@@ -242,7 +245,7 @@
           {/if}
         </p>
       {:else}
-        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this Mac — the bot uses your own {draftLabel} plan.</p>
+        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this {HOST_NOUN} — the bot uses your own {draftLabel} plan.</p>
       {/if}
     </div>
 

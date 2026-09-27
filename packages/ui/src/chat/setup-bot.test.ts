@@ -3,7 +3,7 @@
  * bot, which runtime a new one thinks with, the button label, and the
  * product wording of the copy it ships with.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 
 import { messageMarksSetupDone, richContentForMessage } from "./messaging/richMessageContent";
@@ -20,9 +20,37 @@ import {
   SETUP_BOT_KICKOFF_PREFIX,
   SETUP_BOT_MODE,
   SETUP_BOT_NAME,
+  SETUP_BOT_NO_RUNTIME,
   SETUP_BOT_WORKER,
   type SetupBotStart,
 } from "./setup-bot";
+
+describe("SETUP_BOT_NO_RUNTIME", () => {
+  it("says a CLI is required and how to install one, instead of dead-ending on 'sign in'", () => {
+    expect(SETUP_BOT_NO_RUNTIME).toMatch(/claude\.ai\/download/i);
+    expect(SETUP_BOT_NO_RUNTIME).toMatch(/codex/i);
+    expect(SETUP_BOT_NO_RUNTIME).toMatch(/step-by-step/i);
+  });
+
+  it("never says Mac when this window is running on Windows", async () => {
+    const originalUA = navigator.userAgent;
+    Object.defineProperty(navigator, "userAgent", {
+      value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+      configurable: true,
+    });
+    try {
+      vi.resetModules();
+      const mod = await import("./setup-bot");
+      expect(mod.SETUP_BOT_NO_RUNTIME).toContain("this PC");
+      expect(mod.SETUP_BOT_NO_RUNTIME.toLowerCase()).not.toContain("mac");
+      expect(mod.SETUP_BOT_COPY.cardBody).toContain("this PC");
+      expect(mod.SETUP_BOT_COPY.cardBody.toLowerCase()).not.toContain("mac");
+    } finally {
+      Object.defineProperty(navigator, "userAgent", { value: originalUA, configurable: true });
+      vi.resetModules();
+    }
+  });
+});
 
 function bot(name: string, agentUid = `agt_${name}`): LocalBotRow {
   return {
@@ -101,7 +129,7 @@ describe("copy", () => {
     for (const part of ["tools", "HQ Cloud", "company", "work you already have", "apps", "first bot"]) {
       expect(SETUP_BOT_INTRO).toContain(part);
     }
-    expect(sentences[1]).toMatch(/checking your Mac now/i);
+    expect(sentences[1]).toMatch(/checking your (Mac|PC|computer) now/i);
     expect(sentences[1]).toMatch(/a minute/i);
     expect(SETUP_BOT_INTRO).not.toContain("?");
     expect(SETUP_BOT_INTRO.toLowerCase()).not.toMatch(/what would you like|say hi whenever/);

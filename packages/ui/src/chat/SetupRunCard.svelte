@@ -13,6 +13,7 @@
    * sets the white-on-art button colours, the others use shell tokens.
    */
   import SetupButton from "./SetupButton.svelte";
+  import { hostDeviceNoun } from "../common/platform.js";
   import {
     SETUP_FAILURE_COPY,
     SETUP_RUN_DONE,
@@ -212,7 +213,13 @@
   }
 
   const eyebrow = $derived(
-    done ? "Setup complete" : stopped ? "Setup paused" : mode === "resume" ? "Setup in progress" : "Setting up this Mac",
+    done
+      ? "Setup complete"
+      : stopped
+        ? "Setup paused"
+        : mode === "resume"
+          ? "Setup in progress"
+          : `Setting up this ${hostDeviceNoun()}`,
   );
 </script>
 

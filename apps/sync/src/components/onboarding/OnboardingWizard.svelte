@@ -56,6 +56,7 @@
     friendlySetupBands,
     contentProgressSubStatus,
     resetSetupProgressTracker,
+    setupBandExpectationHint,
     setupRetryAttempt,
     setupSubStatus,
     stageCreepAt,
@@ -2403,6 +2404,11 @@
                 {/if}
                 <span class="lt">{band.label}</span>
               </div>
+              {#if band.status === 'active' && setupBandExpectationHint(band.label)}
+                <div class="li-sub" data-testid="onboarding-setup-expectation-hint">
+                  <span class="sub-text">{setupBandExpectationHint(band.label)}</span>
+                </div>
+              {/if}
               {#if band.status === 'active' && setupSubStatusModel.text}
                 <div
                   class="li-sub"

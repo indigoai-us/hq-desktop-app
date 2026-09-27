@@ -87,7 +87,7 @@ describe("a runtime that is not installed", () => {
     expect(chip.dataset.runtimeState).toBe("notInstalled");
 
     const help = q('[data-testid="chat-bot-runtime-help"]')!;
-    expect(help.textContent).toContain("isn’t installed on this Mac");
+    expect(help.textContent).toMatch(/isn’t installed on this (Mac|PC|computer)/);
     expect(help.textContent).toContain("claude.ai/download");
     // The dead end from the screenshot: a Sign in that cannot succeed.
     expect(q('[data-testid="chat-bot-runtime-signin"]')).toBeNull();
@@ -112,7 +112,7 @@ describe("a runtime that is not installed", () => {
   it("blocks Next, and says which problem it is", async () => {
     await openHome(MISSING);
     expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("isn’t installed on this Mac");
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toMatch(/isn’t installed on this (Mac|PC|computer)/);
   });
 });
 
@@ -145,7 +145,7 @@ describe("a runtime that is installed and signed out", () => {
     await openHome({ state: "signedOut" }, { onsignin });
 
     expect(q('[data-testid="chat-bot-runtime-claude"]')!.textContent).toContain("not signed in");
-    expect(q('[data-testid="chat-bot-runtime-help"]')!.textContent).toContain("is not signed in on this Mac");
+    expect(q('[data-testid="chat-bot-runtime-help"]')!.textContent).toMatch(/is not signed in on this (Mac|PC|computer)/);
 
     click('[data-testid="chat-bot-runtime-signin"]');
     await settle();
@@ -155,7 +155,7 @@ describe("a runtime that is installed and signed out", () => {
   it("blocks Next", async () => {
     await openHome({ state: "signedOut" });
     expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("not signed in on this Mac");
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toMatch(/not signed in on this (Mac|PC|computer)/);
   });
 });
 
@@ -164,7 +164,7 @@ describe("a runtime that is signed in", () => {
     await openHome({ state: "signedIn" });
 
     expect(q('[data-testid="chat-bot-runtime-claude"]')!.textContent).not.toContain("·");
-    expect(q('[data-testid="chat-bot-runtime-help"]')!.textContent).toContain("Signed in on this Mac");
+    expect(q('[data-testid="chat-bot-runtime-help"]')!.textContent).toMatch(/Signed in on this (Mac|PC|computer)/);
     expect(q('[data-testid="chat-bot-runtime-signin"]')).toBeNull();
     expect(q('[data-testid="chat-bot-runtime-recheck"]')).toBeNull();
     expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(false);

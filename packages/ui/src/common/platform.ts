@@ -24,3 +24,30 @@ export function isMac(): boolean {
     typeof navigator !== "undefined" && isMacUserAgent(navigator.userAgent)
   );
 }
+
+/** True when the user-agent identifies a Windows host. */
+export function isWindowsUserAgent(userAgent: string): boolean {
+  return /Windows/i.test(userAgent);
+}
+
+/** True when this window is running on Windows. */
+export function isWindows(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    isWindowsUserAgent(navigator.userAgent)
+  );
+}
+
+/**
+ * The word for "this computer" in copy that used to hardcode "Mac" — HQ ships
+ * on macOS, Windows, and Linux, and a Windows user reading "on this Mac" reads
+ * as a platform bug, not a typo (fixed for hq-onboarding-windows-copy). Picks
+ * the OS name where we can tell, falling back to the generic "computer" on
+ * Linux or when the signal is ambiguous — never defaults to "Mac".
+ */
+export function hostDeviceNoun(userAgent?: string): string {
+  const ua = userAgent ?? (typeof navigator !== "undefined" ? navigator.userAgent : "");
+  if (isMacUserAgent(ua)) return "Mac";
+  if (isWindowsUserAgent(ua)) return "PC";
+  return "computer";
+}
