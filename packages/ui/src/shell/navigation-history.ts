@@ -66,6 +66,8 @@ export type NavigationDestination =
   | { kind: "shared-files" }
   /** The Files explorer; `vault` is `personal` or `company:<slug>`. */
   | { kind: "explorer"; vault?: string | null; path?: string | null }
+  /** The Projects page; `company` is the company slug shown. */
+  | { kind: "projects"; company?: string | null }
   /** The DM connection-requests panel; `pairKey` is the request to bring into view. */
   | { kind: "dm-requests"; pairKey?: string | null }
   | {
@@ -127,9 +129,10 @@ export function historyNeighbor(
 
 const CHANNEL_TABS = new Set<ChannelSurfaceTab>(["chat", "board", "files"]);
 const AGENT_SURFACES = new Set<AgentSurfaceTab>(["chat", "details"]);
-// Office is hidden for company channels; "office" is intentionally excluded
-// here so a stale deep link normalizes back to Chat.
-const COMPANY_TABS = new Set<CompanyChannelTabId>(["chat"]);
+// Office/Team/Settings/Atlas are not desktop tabs; those ids are
+// intentionally excluded here so a stale deep link normalizes back to Chat.
+// Projects is an in-channel tab and is preserved.
+const COMPANY_TABS = new Set<CompanyChannelTabId>(["chat", "projects"]);
 const LIBRARY_TABS = new Set<LibraryTab>([
   "skills",
   "workers",
@@ -275,6 +278,8 @@ export function canonicalizeDestination(
         vault: trimId(destination.vault),
         path: trimId(destination.path),
       };
+    case "projects":
+      return { kind: "projects", company: trimId(destination.company) };
     case "library":
       return {
         kind: "library",
@@ -364,6 +369,8 @@ export function canonicalDestinationKey(
       return `meetings:${dest.meetingId ?? ""}`;
     case "explorer":
       return `explorer:${dest.vault ?? ""}:${dest.path ?? ""}`;
+    case "projects":
+      return `projects:${dest.company ?? ""}`;
     case "library":
       return `library:${dest.tab}:${dest.itemId ?? ""}`;
     case "settings":
@@ -445,6 +452,8 @@ export function destinationLabel(destination: NavigationDestination): string {
       return "Shared files";
     case "explorer":
       return dest.path ? `Files · ${dest.path.split("/").pop()}` : "Files";
+    case "projects":
+      return dest.company ? `Projects · ${dest.company}` : "Projects";
     case "dm-requests":
       return "Connection requests";
     case "extra":

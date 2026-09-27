@@ -494,3 +494,108 @@ describe('hq-CLI updater creates a missing npm global install target and escalat
     expect(cli).toContain('paths::managed_npm_prefix_in(&root)');
   });
 });
+
+describe('hq-CLI Windows EBUSY recovery waits for app commands and records the bounded retry (HQ-DESKTOP-7X)', () => {
+  const cli = readRepoFile('src-tauri/src/commands/hq_cli_update.rs');
+  const processRs = readRepoFile('src-tauri/src/commands/process.rs');
+  const syncRs = readRepoFile('src-tauri/src/commands/sync.rs');
+  const core = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+
+  it('quiesces app-owned processes for each executor and holds admission through retries', () => {
+    const installFlow = cli.slice(cli.indexOf('async fn install_hq_cli_update_once('));
+    const holderRootsAt = installFlow.indexOf('hq_cli_package_directories_from_bin(');
+    const executorSelectionAt = installFlow.indexOf(
+      'let executor = match install_executor_for_hq_bin(',
+    );
+    const pnpmAt = installFlow.indexOf('install_hq_cli_update_via_pnpm(&app');
+    const pnpmQuiesceAt = installFlow.indexOf('wait_for_cli_install_quiescence(');
+    const npmQuiesceAt = installFlow.indexOf(
+      'wait_for_cli_install_quiescence(',
+      pnpmQuiesceAt + 1,
+    );
+    const npmInstallAt = installFlow.indexOf('run_npm_install_with_retries(&npm');
+    const managedRetryAt = installFlow.indexOf('match managed_toolchain_retry(');
+
+    expect(holderRootsAt).toBeGreaterThanOrEqual(0);
+    expect(holderRootsAt).toBeLessThan(executorSelectionAt);
+    expect(pnpmQuiesceAt).toBeGreaterThanOrEqual(0);
+    expect(pnpmAt).toBeGreaterThan(pnpmQuiesceAt);
+    expect(npmQuiesceAt).toBeGreaterThan(pnpmAt);
+    expect(npmInstallAt).toBeGreaterThan(npmQuiesceAt);
+    expect(managedRetryAt).toBeGreaterThan(npmInstallAt);
+    expect(installFlow).not.toContain('drop(_cli_process_quiescence)');
+    expect(installFlow).toContain('CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT');
+    expect(cli).toContain(
+      'const CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);',
+    );
+    expect(processRs).toContain('pub async fn wait_for_cli_install_quiescence(');
+    const quiescence = processRs.slice(
+      processRs.indexOf('pub async fn wait_for_cli_install_quiescence('),
+      processRs.indexOf('#[cfg(target_os = "windows")]\nfn windows_process_open_error_means_exited'),
+    );
+    expect(quiescence).toContain('UPDATE_QUIESCE_REQUESTED');
+    expect(quiescence).toContain('UPDATE_SENSITIVE_OPERATIONS');
+    expect(quiescence).toContain('.active');
+    expect(quiescence).toContain('.keys()');
+    expect(quiescence).toContain('.retired');
+    expect(quiescence).toContain('.values()');
+    expect(quiescence).toContain('process_could_hold_hq_cli_install_target');
+    expect(quiescence).not.toContain('cancel_process_for_generation(');
+
+    // These long-running runners execute the separately pinned hq-cloud package,
+    // so they do not hold the global hq-cli install target.
+    expect(processRs).toContain('SYNC_PROCESS_HANDLE: &str = "hq-sync"');
+    expect(processRs).toContain('SYNC_DAEMON_PROCESS_HANDLE: &str = "hq-sync-daemon"');
+    expect(processRs).toContain('RECALL_SDK_PROCESS_HANDLE: &str = "recall-sdk"');
+    expect(syncRs).toContain('test_build_sync_spawn_args_pins_hq_cloud_package');
+    expect(syncRs).toContain('assert_eq!(HQ_CLOUD_PACKAGE, "@indigoai-us/hq-cloud");');
+  });
+
+  it('keeps holder-aware EBUSY backoff distinct from managed Node repair and reports its evidence (HQ-DESKTOP-7X)', () => {
+    const retry = cli.slice(
+      cli.indexOf('// Windows EBUSY while renaming a package under the selected prefix'),
+      cli.indexOf('\n    Ok(output)', cli.indexOf('// Windows EBUSY while renaming a package under the selected prefix')),
+    );
+    expect(retry).toContain('is_windows_locked_install_target_failure(');
+    expect(retry).toContain('should_retry_windows_busy_install_target(');
+    expect(retry).toContain('windows_busy_install_target_retry_rung(retry_number)');
+    expect(retry).toContain('windows_busy_install_target_retry_delay(retry_number)');
+    expect(retry).toContain('tokio::time::sleep(delay).await');
+    expect(retry).toContain('NpmLockHolderClass::UserTerminalHqCli');
+    expect(retry).toContain('WindowsBusyRetryOutcome::DeferredUserCli');
+    expect(retry).toContain('read_hq_cli_package_holders(prefix).await');
+    expect(retry).toContain('WindowsBusyRetryOutcome::NotArmed');
+    expect(retry).toContain('WindowsBusyRetryOutcome::Succeeded');
+    expect(retry).toContain('WindowsBusyRetryOutcome::Failed');
+    expect(retry).toContain('WindowsBusyRetryOutcome::OtherFailure');
+    const retryAttemptAt = retry.indexOf('windows_busy_install_target_retry_rung(retry_number)');
+    const retryInstallAt = retry.indexOf(
+      'output = run_recorded_npm_install_attempt(',
+      retryAttemptAt,
+    );
+    const finalFailureClassificationAt = retry.indexOf(
+      'if !is_windows_locked_install_target_failure(',
+      retryInstallAt,
+    );
+    expect(retryInstallAt).toBeGreaterThan(retryAttemptAt);
+    expect(finalFailureClassificationAt).toBeGreaterThan(retryInstallAt);
+    expect(core).toContain('pub enum WindowsBusyRetryOutcome');
+    expect(core).toContain('pub fn lock_holder_class(self)');
+    expect(core).toContain('npm_lock_holder_class');
+    expect(core).toContain('npm_windows_busy_retry_attempts');
+    expect(core).toContain('npm_windows_busy_retry_outcome');
+    expect(core).toContain(
+      'pub fn windows_busy_install_target_retry_delay(retry_number: usize)',
+    );
+    expect(core).toContain(
+      'if env.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli',
+    );
+    expect(processRs).toContain('pub fn query_hq_cli_package_holders(');
+    expect(processRs).toContain('RmStartSession');
+    expect(processRs).toContain('RmRegisterResources');
+    expect(processRs).toContain('RmGetList');
+    expect(processRs).toContain('process_start_time: Option<u64>');
+    expect(processRs).toContain('registered_process_has_current_identity');
+    expect(processRs).toContain('pub async fn wait_for_hq_cli_package_holders(');
+  });
+});

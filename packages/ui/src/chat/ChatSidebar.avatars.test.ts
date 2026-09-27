@@ -41,6 +41,8 @@ function stubApi(overrides: Partial<ChatSidebarApi> = {}): ChatSidebarApi {
     sendChannelMessage: async () => {},
     sendDm: async () => {},
     searchMessages: async () => ({ results: [] }),
+    logToFile: async () => {},
+    ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     ...overrides,
   };
 }

@@ -7,6 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+#[cfg(unix)]
+use std::io::Read;
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::mem::size_of;
@@ -53,8 +55,8 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, R
 use winreg::{RegKey, RegValue};
 
 use crate::commands::install_stages::{
-    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
-    OnboardingFailureScope,
+    clear_onboarding_failure_detail, record_onboarding_failure_detail,
+    record_onboarding_failure_detail_with_kind, OnboardingErrorCategory, OnboardingFailureScope,
 };
 use crate::util::logfile::log;
 
@@ -630,6 +632,140 @@ fn cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
 }
 
 #[cfg(unix)]
+fn signal_process_group_with_probe<F, P>(
+    pgid: i32,
+    signal_kind: Signal,
+    dispatch: F,
+    has_live_members: P,
+) -> Result<(), CancellationCleanupFailure>
+where
+    F: FnOnce(Pid, Signal) -> Result<(), nix::errno::Errno>,
+    P: FnOnce(i32) -> Result<bool, std::io::Error>,
+{
+    match dispatch(Pid::from_raw(-pgid), signal_kind) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(nix::errno::Errno::EPERM) if signal_kind == Signal::SIGTERM => {
+            match has_live_members(pgid) {
+                Ok(false) => Ok(()),
+                Ok(true) | Err(_) => Err(CancellationCleanupFailure::from_unix_signal(
+                    signal_kind,
+                    nix::errno::Errno::EPERM,
+                )),
+            }
+        }
+        Err(error) => Err(CancellationCleanupFailure::from_unix_signal(
+            signal_kind,
+            error,
+        )),
+    }
+}
+
+/// Check the complete group, not only its leader: an exited unreaped leader can
+/// coexist with a running child that must keep the cleanup failure visible.
+/// `ps` reports zombie state on both supported Unix targets. Probe errors or a
+/// timeout keep the original EPERM report.
+#[cfg(unix)]
+fn unix_process_group_has_live_members(pgid: i32) -> Result<bool, std::io::Error> {
+    const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
+    let mut probe = Command::new("/bin/ps")
+        .args(["-axo", "pgid=,stat="])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = probe
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "ps stdout was not piped"))?;
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        Read::take(stdout, MAX_OUTPUT_BYTES + 1).read_to_end(&mut output)?;
+        Ok::<_, std::io::Error>(output)
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let status = loop {
+        match probe.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) => {
+                let _ = probe.kill();
+                let _ = probe.wait();
+                let _ = reader.join();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "process group liveness probe timed out",
+                ));
+            }
+            Err(error) => {
+                let _ = probe.kill();
+                let _ = probe.wait();
+                let _ = reader.join();
+                return Err(error);
+            }
+        }
+    };
+    let output = reader
+        .join()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "ps reader panicked"))??;
+    if output.len() as u64 > MAX_OUTPUT_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "process group liveness output exceeded its bound",
+        ));
+    }
+    if !status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "ps process group query failed",
+        ));
+    }
+    let output = String::from_utf8(output).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "ps output was not UTF-8")
+    })?;
+    let mut saw_process = false;
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        saw_process = true;
+        let mut columns = line.split_whitespace();
+        let group = columns
+            .next()
+            .and_then(|value| value.parse::<i32>().ok())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "ps output did not contain a process group id",
+                )
+            })?;
+        let state = columns.next().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ps output did not contain a process state",
+            )
+        })?;
+        if group != pgid {
+            continue;
+        }
+        if !state.starts_with('Z') {
+            return Ok(true);
+        }
+    }
+    if !saw_process {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "ps returned no process entries",
+        ))
+    } else {
+        // A successful complete listing with no matching group also proves
+        // that no process in the group remains to be signaled.
+        Ok(false)
+    }
+}
+
+#[cfg(unix)]
 fn terminate_process_tree(
     handle: &str,
     signal_kind: Signal,
@@ -643,10 +779,12 @@ fn terminate_process_tree(
         return Ok(());
     };
 
-    match signal::kill(Pid::from_raw(-pgid), signal_kind) {
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(error) => Err(CancellationCleanupFailure::from_unix_signal(signal_kind, error)),
-    }
+    signal_process_group_with_probe(
+        pgid,
+        signal_kind,
+        signal::kill,
+        unix_process_group_has_live_members,
+    )
 }
 
 #[cfg(windows)]
@@ -5086,19 +5224,53 @@ fn emit_progress<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
 
 #[cfg(windows)]
 async fn winget_install(app: &AppHandle, id: &str) -> Result<String, String> {
-    run_streaming(
-        app,
+    let args = winget_install_args(id);
+    run_streaming(app, "winget", &args).await
+}
+
+#[cfg(windows)]
+fn winget_install_args(id: &str) -> [&str; 8] {
+    [
+        "install",
+        "--id",
+        id,
+        "--source",
         "winget",
-        &[
-            "install",
-            "--id",
-            id,
-            "--silent",
-            "--accept-source-agreements",
-            "--accept-package-agreements",
-        ],
-    )
-    .await
+        "--silent",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+    ]
+}
+
+// WinGet documents 0x8A15005E (-1978335138) as
+// APPINSTALLER_CLI_ERROR_PINNED_CERTIFICATE_MISMATCH, not as an already-
+// installed result. Re-probe Git after this source failure so an existing
+// managed Git is accepted, while preserving the original error when absent.
+#[cfg(any(test, windows))]
+fn winget_exit_code_from_error(error: &str) -> Option<i32> {
+    let rest = error.strip_prefix("Process exited with code ")?;
+    rest.split_once(':')
+        .map_or(rest, |(code, _)| code)
+        .trim()
+        .parse()
+        .ok()
+}
+
+#[cfg(any(test, windows))]
+fn resolve_git_winget_install_failure<F>(
+    error: String,
+    git_is_satisfied: F,
+) -> Result<String, String>
+where
+    F: FnOnce() -> bool,
+{
+    if winget_exit_code_from_error(&error) == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE)
+        && git_is_satisfied()
+    {
+        Ok("Git already available after WinGet certificate mismatch".to_string())
+    } else {
+        Err(error)
+    }
 }
 
 #[cfg(windows)]
@@ -5491,9 +5663,18 @@ async fn install_git_windows(app: AppHandle) -> Result<String, String> {
     match pm {
         PackageManager::Winget => {
             emit_progress(&app, "Installing Git via winget...");
-            winget_install(&app, "Git.Git").await?;
-            append_user_path(&program_files().join("Git").join("cmd"))?;
-            Ok("git installed via winget".to_string())
+            match winget_install(&app, "Git.Git").await {
+                Ok(_) => {
+                    append_user_path(&program_files().join("Git").join("cmd"))?;
+                    Ok("git installed via winget".to_string())
+                }
+                Err(error) => resolve_git_winget_install_failure(error, || {
+                    dependency_defs()
+                        .iter()
+                        .find(|dep| dep.id == "git")
+                        .is_some_and(|dep| dep_is_satisfied(&app, dep))
+                }),
+            }
         }
         PackageManager::Scoop => {
             emit_progress(&app, "Installing Git via scoop...");
@@ -5661,27 +5842,32 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
 #[cfg(windows)]
 fn write_qmd_bash_shim() -> Result<(), String> {
     let prefix = managed_npm_prefix();
-    write_qmd_bash_shim_in(&prefix)
+    write_qmd_bash_shim_in(&prefix, git_bash_path().as_deref())
 }
 
 #[cfg(windows)]
-fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
-    if qmd_resolves_in_prefix(prefix) {
-        return Ok(());
-    }
-
+fn write_qmd_bash_shim_in(prefix: &Path, bash_path: Option<&Path>) -> Result<(), String> {
+    // npm may leave a qmd.cmd shim that resolves by name but still targets a
+    // removed package or uses a launcher that cannot run this package's POSIX
+    // entry point. Verify the target before writing a Git Bash launcher; when
+    // Git Bash is absent, keep a valid Node-based npm shim instead.
     let bin_candidates = [
         prefix
             .join("node_modules")
             .join("@tobilu")
             .join("qmd")
+            .join("bin")
             .join("qmd"),
-        prefix.join("node_modules").join("qmd").join("qmd"),
+        prefix
+            .join("node_modules")
+            .join("qmd")
+            .join("bin")
+            .join("qmd"),
     ];
     let bin_rel: &str = if bin_candidates[0].exists() {
-        r"node_modules\@tobilu\qmd\qmd"
+        r"node_modules\@tobilu\qmd\bin\qmd"
     } else if bin_candidates[1].exists() {
-        r"node_modules\qmd\qmd"
+        r"node_modules\qmd\bin\qmd"
     } else {
         return Err(format!(
             "qmd bin not found at {:?} or {:?} (npm install incomplete)",
@@ -5694,22 +5880,42 @@ fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
     // the shim resolves through the USER's shell PATH at run time, where
     // `C:\Windows\System32\bash.exe` (the WSL launcher) precedes Git's bash on
     // any machine with WSL enabled — and WSL bash cannot run a Windows-path
-    // script argument (the INS-0580 failure class).
-    let body = match git_bash_path() {
-        Some(bash) => format!(
-            "@ECHO off\r\n\
-            SETLOCAL\r\n\
-            \"{}\" \"%~dp0{bin_rel}\" %*\r\n",
-            bash.display()
-        ),
-        None => format!(
-            "@ECHO off\r\n\
-            SETLOCAL\r\n\
-            bash \"%~dp0{bin_rel}\" %*\r\n"
-        ),
+    // script argument (the INS-0580 failure class). If Git Bash is absent,
+    // npm's Node-based shim remains usable and must not be replaced by a bare
+    // `bash` invocation that may resolve to WSL or nothing at all.
+    let Some(bash) = bash_path else {
+        let npm_shim_references_entry = std::fs::read_to_string(&cmd_path)
+            .ok()
+            .is_some_and(|shim| qmd_npm_shim_references_entry(&shim, bin_rel));
+        if npm_shim_references_entry {
+            return Ok(());
+        }
+        return Err(
+            "qmd.cmd does not reference the installed package entry point, and Git Bash is unavailable"
+                .to_string(),
+        );
     };
+    let body = format!(
+        "@ECHO off\r\n\
+        SETLOCAL\r\n\
+        \"{}\" \"%~dp0{bin_rel}\" %*\r\n",
+        bash.display()
+    );
     std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn qmd_npm_shim_references_entry(shim: &str, bin_rel: &str) -> bool {
+    let normalized_shim = shim.replace('/', "\\").to_ascii_lowercase();
+    let normalized_entry = bin_rel.replace('/', "\\").to_ascii_lowercase();
+    normalized_shim.match_indices(&normalized_entry).any(|(index, _)| {
+        let suffix = &normalized_shim[index + normalized_entry.len()..];
+        suffix.is_empty()
+            || suffix.as_bytes().first().is_some_and(|byte| {
+                *byte == b'"' || *byte == b'%' || byte.is_ascii_whitespace()
+            })
+    })
 }
 
 /// Absolute path to Git for Windows' bash.exe, if one exists. Never returns
@@ -5737,12 +5943,6 @@ fn git_bash_path() -> Option<PathBuf> {
             .join("bash.exe"),
     ];
     candidates.into_iter().find(|c| c.is_file())
-}
-
-#[cfg(windows)]
-fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    which::which_in("qmd", Some(prefix.to_string_lossy().as_ref()), cwd).is_ok()
 }
 
 #[cfg(windows)]
@@ -6445,7 +6645,7 @@ const DEP_DEFS: &[DepDef] = &[
         label: "qmd",
         binary: "qmd",
         optional: false,
-        depends_on: &["node"],
+        depends_on: &["node", "git"],
     },
     DepDef {
         id: "hq-cli",
@@ -6623,6 +6823,46 @@ fn is_concurrent_install_skip_result(result: &DepInstallResult) -> bool {
     })
 }
 
+const WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE: i32 = 0x8A15_005E_u32 as i32;
+const QMD_POST_INSTALL_PROBE_COMMAND: &str = "qmd post-install probe";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QmdPostInstallFailure {
+    NotResolved,
+    VersionMismatch,
+    NativeAddonMismatch,
+}
+
+impl QmdPostInstallFailure {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotResolved => "qmd_not_resolved",
+            Self::VersionMismatch => "qmd_version_mismatch",
+            Self::NativeAddonMismatch => "qmd_native_addon_mismatch",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "qmd_not_resolved" => Some(Self::NotResolved),
+            "qmd_version_mismatch" => Some(Self::VersionMismatch),
+            "qmd_native_addon_mismatch" => Some(Self::NativeAddonMismatch),
+            _ => None,
+        }
+    }
+}
+
+fn setup_error_kind(diagnostic: Option<&SetupCommandDiagnostic>) -> Option<&'static str> {
+    let diagnostic = diagnostic?;
+    if diagnostic.command == QMD_POST_INSTALL_PROBE_COMMAND {
+        return QmdPostInstallFailure::from_str(&diagnostic.error)
+            .map(QmdPostInstallFailure::as_str);
+    }
+    let is_winget = diagnostic.command.split_whitespace().next() == Some("winget");
+    (is_winget && diagnostic.exit_code == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE))
+        .then_some("winget_pinned_certificate_mismatch")
+}
+
 fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupCommandDiagnostic>) -> OnboardingErrorCategory {
     // The status is set only from InstallCancellation, which is captured at the
     // streaming cancellation source. Never infer this category from the
@@ -6635,6 +6875,14 @@ fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupComm
     // exit_code branch; this is what keeps it off the error-level Sentry path.
     if is_concurrent_install_skip_result(result) {
         return OnboardingErrorCategory::ConcurrentInstall;
+    }
+    match setup_error_kind(diagnostic) {
+        Some("winget_pinned_certificate_mismatch") => return OnboardingErrorCategory::Network,
+        Some("qmd_not_resolved") => return OnboardingErrorCategory::NotFound,
+        Some("qmd_version_mismatch" | "qmd_native_addon_mismatch") => {
+            return OnboardingErrorCategory::Unknown;
+        }
+        _ => {}
     }
     if diagnostic.and_then(|diagnostic| diagnostic.exit_code).is_some() {
         return OnboardingErrorCategory::ExitNonzero;
@@ -6778,6 +7026,7 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
             #[cfg(windows)] { Some(extended_search_path()) }
             #[cfg(not(windows))] { None::<String> }
         };
+        let is_qmd_post_install_probe = diagnostic.command == QMD_POST_INSTALL_PROBE_COMMAND;
         sentry::with_scope(|sentry_scope| {
             // Keep every dependency-install failure in one issue. Dependency,
             // category, and retry data remain structured context.
@@ -6787,6 +7036,9 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
             sentry_scope.set_tag("setup_stage", "deps");
             sentry_scope.set_tag("setup_dependency", dependency);
             sentry_scope.set_tag("setup_error_category", category.as_str());
+            if let Some(error_kind) = setup_error_kind(Some(&diagnostic)) {
+                sentry_scope.set_tag("setup_error_kind", error_kind);
+            }
             sentry_scope.set_tag("setup_execution", "attempted");
             sentry_scope.set_tag("setup_flow", setup_flow_token(&scope.flow));
             sentry_scope.set_tag("setup_attempt", scope.attempt_count.to_string());
@@ -6794,16 +7046,22 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
             sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
             sentry_scope.set_extra("setup_run_id", sentry::protocol::Value::String(setup_correlation_id(&scope.setup_run_id)));
             sentry_scope.set_extra("setup_frontend_session_id", sentry::protocol::Value::String(setup_correlation_id(&scope.frontend_session_id)));
-            sentry_scope.set_extra("setup_app_version", sentry::protocol::Value::String(env!("APP_VERSION").to_string()));
+            sentry_scope.set_extra("setup_app_version", sentry::protocol::Value::String(crate::app_version::current().to_string()));
             sentry_scope.set_extra("setup_os_version", sentry::protocol::Value::String(os.version().to_string()));
             sentry_scope.set_extra("setup_command", sentry::protocol::Value::String(diagnostic.command));
             sentry_scope.set_extra("setup_exit_code", diagnostic.exit_code.map(|code| sentry::protocol::Value::Number(code.into())).unwrap_or(sentry::protocol::Value::Null));
-            sentry_scope.set_extra("setup_stdout_tail", sentry::protocol::Value::String(diagnostic.stdout));
+            sentry_scope.set_extra("setup_stdout_tail", sentry::protocol::Value::String(diagnostic.stdout.clone()));
             sentry_scope.set_extra("setup_stderr_tail", sentry::protocol::Value::String(diagnostic.stderr));
             sentry_scope.set_extra("setup_error", sentry::protocol::Value::String(diagnostic.error));
+            if is_qmd_post_install_probe && qmd_version_token_is_safe(&diagnostic.stdout) {
+                sentry_scope.set_extra(
+                    "setup_resolved_version",
+                    sentry::protocol::Value::String(diagnostic.stdout),
+                );
+            }
             sentry_scope.set_extra("setup_blocked_dependents", sentry::protocol::Value::Array(blocked_dependents.iter().cloned().map(sentry::protocol::Value::String).collect()));
             sentry_scope.set_extra("setup_blocked_dependents_status", sentry::protocol::Value::String(if blocked_dependents.is_empty() { "none" } else { "blocked_by_failed_prerequisite" }.to_string()));
-            if let Some(search_path) = search_path {
+            if let Some(search_path) = search_path.filter(|_| !is_qmd_post_install_probe) {
                 sentry_scope.set_extra("setup_resolved_search_path", sentry::protocol::Value::String(search_path));
             }
         }, || sentry::capture_message("Desktop setup dependency installation failed", sentry::Level::Error));
@@ -6886,7 +7144,7 @@ fn send_setup_cancellation_cleanup_failure(
                 );
                 sentry_scope.set_extra(
                     "setup_app_version",
-                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                    sentry::protocol::Value::String(crate::app_version::current().to_string()),
                 );
                 sentry_scope.set_extra(
                     "setup_os_version",
@@ -7111,6 +7369,49 @@ pub fn qmd_version_matches_pin(version: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn qmd_post_install_failure(status: &DepStatus) -> Option<QmdPostInstallFailure> {
+    if !status.installed {
+        return Some(QmdPostInstallFailure::NotResolved);
+    }
+    if !qmd_version_matches_pin(status.version.as_deref()) {
+        return Some(QmdPostInstallFailure::VersionMismatch);
+    }
+    qmd_native_needs_rebuild(status).then_some(QmdPostInstallFailure::NativeAddonMismatch)
+}
+
+fn qmd_version_token_is_safe(token: &str) -> bool {
+    if token.is_empty() || token.len() > 64 {
+        return false;
+    }
+    let version = token.strip_prefix('v').unwrap_or(token);
+    version.matches('.').count() >= 2
+        && version
+            .split(['.', '-', '+'])
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        && version
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+fn qmd_resolved_version_token(version_output: Option<&str>) -> Option<String> {
+    let token = version_output?.split_whitespace().nth(1)?;
+    qmd_version_token_is_safe(token).then(|| token.to_string())
+}
+
+fn qmd_post_install_diagnostic(
+    failure: QmdPostInstallFailure,
+    status: &DepStatus,
+) -> SetupCommandDiagnostic {
+    SetupCommandDiagnostic {
+        command: QMD_POST_INSTALL_PROBE_COMMAND.to_string(),
+        exit_code: None,
+        stdout: qmd_resolved_version_token(status.version.as_deref()).unwrap_or_default(),
+        stderr: String::new(),
+        error: failure.as_str().to_string(),
+    }
+}
+
 /// True when `path` is inside HQ's managed toolchain (any platform layout).
 pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
     let Some(home) = dirs::home_dir() else { return false };
@@ -7125,11 +7426,11 @@ fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
     #[cfg(not(windows))]
     if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
     let status = check_dep_impl(dep.binary, None);
+    if dep.id == "qmd" {
+        return qmd_post_install_failure(&status).is_none();
+    }
     if !dep_status_satisfies(dep, &status) {
         return false;
-    }
-    if dep.id == "qmd" {
-        return !qmd_native_needs_rebuild(&status);
     }
     true
 }
@@ -7247,6 +7548,24 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         "jq" => install_jq(app.clone()).await,
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
+
+    if dep.id == "qmd" {
+        return match install_result {
+            Err(err) => Err(err),
+            Ok(_) => {
+                let status = check_dep_impl(dep.binary, None);
+                if let Some(failure) = qmd_post_install_failure(&status) {
+                    let diagnostic = qmd_post_install_diagnostic(failure, &status);
+                    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(|collector| {
+                        collector.record(diagnostic);
+                    });
+                    Err(format!("{} did not pass the post-install check", dep.label))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+    }
 
     finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))
 }
@@ -7414,14 +7733,13 @@ pub async fn install_deps(
             let result = result_by_id
                 .get(failed_dependency)
                 .expect("failed dependency has an install result");
-            record_onboarding_failure_detail(
+            let diagnostic = diagnostic_by_id.get(failed_dependency);
+            record_onboarding_failure_detail_with_kind(
                 "deps",
                 failure_scope.as_ref(),
                 Some(failed_dependency),
-                setup_error_category(
-                    result,
-                    diagnostic_by_id.get(failed_dependency),
-                ),
+                setup_error_category(result, diagnostic),
+                setup_error_kind(diagnostic),
             );
         }
         Err(format!(
@@ -7683,6 +8001,94 @@ mod install_deps_planner_tests {
     }
 
     #[test]
+    fn qmd_planner_waits_for_git_before_running() {
+        let deps = dependency_defs();
+        let mut result_by_id = premark_optional_results(deps);
+        let mut ok_set = HashSet::new();
+
+        for dep_id in ["node", "yq", "jq"] {
+            let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
+            result_by_id.insert(dep.id, ok_result(dep));
+            ok_set.insert(dep.id);
+        }
+
+        assert!(
+            !ready_required_deps(deps, &result_by_id, &ok_set)
+                .iter()
+                .any(|dep| dep.id == "qmd"),
+            "qmd must stay blocked until Git is satisfied"
+        );
+
+        let git = deps.iter().find(|dep| dep.id == "git").unwrap();
+        result_by_id.insert(git.id, ok_result(git));
+        ok_set.insert(git.id);
+
+        assert!(
+            ready_required_deps(deps, &result_by_id, &ok_set)
+                .iter()
+                .any(|dep| dep.id == "qmd"),
+            "qmd becomes ready once Git is satisfied"
+        );
+    }
+
+    #[test]
+    fn winget_certificate_mismatch_accepts_git_when_present() {
+        let error = format_install_error(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE, &[]);
+        let probes = std::cell::Cell::new(0);
+
+        let result = resolve_git_winget_install_failure(error, || {
+            probes.set(probes.get() + 1);
+            true
+        });
+
+        assert_eq!(
+            result,
+            Ok("Git already available after WinGet certificate mismatch".to_string())
+        );
+        assert_eq!(
+            probes.get(),
+            1,
+            "the exact error must trigger one Git re-probe"
+        );
+    }
+
+    #[test]
+    fn winget_certificate_mismatch_keeps_error_when_git_is_absent() {
+        let error = format_install_error(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE, &[]);
+        let probes = std::cell::Cell::new(0);
+
+        let result = resolve_git_winget_install_failure(error.clone(), || {
+            probes.set(probes.get() + 1);
+            false
+        });
+
+        assert_eq!(
+            result,
+            Err(error),
+            "an absent Git must preserve the original WinGet exit code and error"
+        );
+        assert_eq!(
+            probes.get(),
+            1,
+            "the exact error must trigger one Git re-probe"
+        );
+    }
+
+    #[test]
+    fn other_winget_errors_do_not_reprobe_git() {
+        let error = format_install_error(-1, &[]);
+        let probes = std::cell::Cell::new(0);
+
+        let result = resolve_git_winget_install_failure(error.clone(), || {
+            probes.set(probes.get() + 1);
+            true
+        });
+
+        assert_eq!(result, Err(error));
+        assert_eq!(probes.get(), 0, "only the named WinGet code re-probes Git");
+    }
+
+    #[test]
     fn planner_propagates_parent_failure_to_dependents() {
         let deps = dependency_defs();
         let mut result_by_id = premark_optional_results(deps);
@@ -7814,6 +8220,209 @@ mod install_deps_planner_tests {
         assert!(!string_extra(event, "setup_os_version").is_empty());
         assert_eq!(event.extra["setup_blocked_dependents"], sentry::protocol::Value::Array(vec![sentry::protocol::Value::String("hq-cli".into())]));
         assert_eq!(string_extra(event, "setup_blocked_dependents_status"), "blocked_by_failed_prerequisite");
+    }
+
+    #[test]
+    fn winget_pinned_certificate_mismatch_has_a_stable_category_and_kind() {
+        let dependency = dependency_defs()
+            .into_iter()
+            .find(|dep| dep.id == "git")
+            .expect("git dependency is registered");
+        let result = DepInstallResult {
+            id: dependency.id,
+            label: dependency.label,
+            optional: dependency.optional,
+            status: DepInstallStatus::Failed,
+            error: Some("Process exited with code -1978335138".to_string()),
+        };
+        let diagnostic = SetupCommandDiagnostic {
+            command: "winget install --id Git.Git --source winget".to_string(),
+            exit_code: Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE),
+            stdout: String::new(),
+            stderr: String::new(),
+            error: "server certificate did not match pinned certificate".to_string(),
+        };
+
+        assert_eq!(
+            setup_error_kind(Some(&diagnostic)),
+            Some("winget_pinned_certificate_mismatch")
+        );
+        assert_eq!(
+            setup_error_category(&result, Some(&diagnostic)),
+            OnboardingErrorCategory::Network
+        );
+
+        let scope = failure_scope(
+            "11111111-1111-4111-8111-111111111111",
+            1,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        );
+        let category = setup_error_category(&result, Some(&diagnostic));
+        let error_kind = setup_error_kind(Some(&diagnostic));
+        record_onboarding_failure_detail_with_kind(
+            "deps",
+            Some(&scope),
+            Some("git"),
+            category,
+            error_kind,
+        );
+        let stored_detail = crate::commands::install_stages::take_onboarding_failure_detail(
+            "deps".to_string(),
+            scope.setup_run_id.clone(),
+            scope.attempt_count,
+            scope.flow.clone(),
+            scope.frontend_session_id.clone(),
+        )
+        .expect("classified detail is retained for the setup attempt");
+        assert_eq!(stored_detail.error_category, "network");
+        assert_eq!(
+            stored_detail.error_kind.as_deref(),
+            Some("winget_pinned_certificate_mismatch")
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            send_setup_dependency_failure(
+                &scope,
+                "git",
+                OnboardingErrorCategory::Network,
+                diagnostic,
+                &[],
+            );
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["setup_error_category"], "network");
+        assert_eq!(
+            events[0].tags["setup_error_kind"],
+            "winget_pinned_certificate_mismatch"
+        );
+
+        let other_command = SetupCommandDiagnostic {
+            command: "scoop install git".to_string(),
+            exit_code: Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE),
+            stdout: String::new(),
+            stderr: String::new(),
+            error: "server certificate did not match pinned certificate".to_string(),
+        };
+        assert_eq!(setup_error_kind(Some(&other_command)), None);
+        assert_eq!(
+            setup_error_category(&result, Some(&other_command)),
+            OnboardingErrorCategory::ExitNonzero
+        );
+    }
+
+    #[test]
+    fn qmd_post_install_failures_emit_closed_kinds_and_a_sanitized_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qmd_package_bin = tmp
+            .path()
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("bin")
+            .join("qmd");
+        std::fs::create_dir_all(qmd_package_bin.parent().unwrap()).unwrap();
+
+        let cases = [
+            (
+                DepStatus {
+                    installed: false,
+                    version: None,
+                    path: None,
+                },
+                QmdPostInstallFailure::NotResolved,
+                OnboardingErrorCategory::NotFound,
+                None,
+            ),
+            (
+                DepStatus {
+                    installed: true,
+                    version: Some("qmd v2.5.2 (C:\\Users\\Alice\\qmd)".to_string()),
+                    path: None,
+                },
+                QmdPostInstallFailure::VersionMismatch,
+                OnboardingErrorCategory::Unknown,
+                Some("v2.5.2"),
+            ),
+            (
+                DepStatus {
+                    installed: true,
+                    version: Some("qmd v2.5.3 (C:\\Users\\Alice\\qmd)".to_string()),
+                    path: Some(qmd_package_bin.clone()),
+                },
+                QmdPostInstallFailure::NativeAddonMismatch,
+                OnboardingErrorCategory::Unknown,
+                Some("v2.5.3"),
+            ),
+        ];
+
+        for (index, (status, expected_failure, expected_category, expected_version)) in
+            cases.into_iter().enumerate()
+        {
+            let failure = qmd_post_install_failure(&status)
+                .expect("each fixture should fail a distinct qmd post-install check");
+            assert_eq!(failure, expected_failure);
+            let diagnostic = qmd_post_install_diagnostic(failure, &status);
+            assert_eq!(
+                setup_error_kind(Some(&diagnostic)),
+                Some(expected_failure.as_str())
+            );
+            assert_eq!(diagnostic.stdout, expected_version.unwrap_or_default());
+            assert!(!diagnostic.stdout.contains("Users"));
+
+            let run_id = format!("11111111-1111-4111-8111-{:012}", index + 1);
+            let session_id = format!("aaaaaaaa-aaaa-4aaa-8aaa-{:012}", index + 1);
+            let scope = failure_scope(&run_id, 1, &session_id);
+            record_onboarding_failure_detail_with_kind(
+                "deps",
+                Some(&scope),
+                Some("qmd"),
+                expected_category,
+                setup_error_kind(Some(&diagnostic)),
+            );
+            let stored_detail = crate::commands::install_stages::take_onboarding_failure_detail(
+                "deps".to_string(),
+                scope.setup_run_id.clone(),
+                scope.attempt_count,
+                scope.flow.clone(),
+                scope.frontend_session_id.clone(),
+            )
+            .expect("classified qmd detail is retained for the setup attempt");
+            assert_eq!(stored_detail.error_kind.as_deref(), Some(expected_failure.as_str()));
+
+            let events = sentry::test::with_captured_events(|| {
+                send_setup_dependency_failure(
+                    &scope,
+                    "qmd",
+                    expected_category,
+                    diagnostic,
+                    &[],
+                );
+            });
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].tags["setup_error_kind"], expected_failure.as_str());
+            assert!(!events[0].extra.contains_key("setup_resolved_search_path"));
+            if let Some(version) = expected_version {
+                assert_eq!(
+                    events[0].extra.get("setup_resolved_version"),
+                    Some(&sentry::protocol::Value::String(version.to_string()))
+                );
+            } else {
+                assert!(!events[0].extra.contains_key("setup_resolved_version"));
+            }
+        }
+
+        let unrecognized = SetupCommandDiagnostic {
+            command: QMD_POST_INSTALL_PROBE_COMMAND.to_string(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: "qmd path included C:\\Users\\Alice".to_string(),
+        };
+        assert_eq!(setup_error_kind(Some(&unrecognized)), None);
+        assert_eq!(
+            qmd_resolved_version_token(Some("qmd C:\\Users\\Alice\\qmd")),
+            None
+        );
     }
 
     /// A failed node prerequisite blocks qmd and hq-cli, but only node is a
@@ -8557,6 +9166,15 @@ mod install_deps_tests {
     }
 
     #[test]
+    fn cancel_install_does_not_require_a_feature_flag_source() {
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+
+        assert!(cancel_install(handle.clone()));
+        assert!(cancel_registry().lock().unwrap()[&handle].cancelled);
+    }
+
+    #[test]
     fn test_check_dep_node_when_faked() {
         let dir = tempfile::TempDir::new().unwrap();
         make_fake_bin(&dir, "node");
@@ -8971,19 +9589,21 @@ mod windows_tests {
             .join("node_modules")
             .join("@tobilu")
             .join("qmd")
+            .join("bin")
             .join("qmd");
         std::fs::create_dir_all(qmd_bin.parent().unwrap()).unwrap();
         std::fs::write(&qmd_bin, b"").unwrap();
-        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd shim should write");
+        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        write_qmd_bash_shim_in(&qmd_prefix, Some(git_bash)).expect("qmd shim should write");
         let qmd_cmd = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
-        // The bash invocation is either an absolute Git Bash path (when one is
-        // installed on the test machine) or a bare `bash` fallback — both end
-        // with the same script-relative argument.
+        // Supplying an explicit Git Bash fixture verifies the launcher uses its
+        // absolute path and targets this package's script-relative entry point.
         assert!(
-            qmd_cmd.contains("\"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*"),
+            qmd_cmd.contains(
+                r#""C:\Program Files\Git\bin\bash.exe" "%~dp0node_modules\@tobilu\qmd\bin\qmd" %*"#,
+            ),
             "{qmd_cmd}"
         );
-        assert!(qmd_cmd.to_lowercase().contains("bash"), "{qmd_cmd}");
         assert!(
             !qmd_cmd.to_lowercase().contains("system32"),
             "shim must never invoke the WSL launcher: {qmd_cmd}"
@@ -9002,19 +9622,105 @@ mod windows_tests {
     }
 
     #[test]
-    fn qmd_postinstall_accepts_cmd_shim_from_npm() {
+    fn qmd_postinstall_replaces_a_resolving_npm_shim_with_the_verified_target() {
         let tmp = tempfile::tempdir().unwrap();
         let qmd_prefix = tmp.path().join("npm-prefix");
         std::fs::create_dir_all(&qmd_prefix).unwrap();
+        let package_bin = qmd_prefix
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("bin")
+            .join("qmd");
+        std::fs::create_dir_all(package_bin.parent().unwrap()).unwrap();
+        std::fs::write(&package_bin, b"#!/usr/bin/env node\n").unwrap();
         let npm_shim = "@echo off\r\necho qmd\r\n";
         std::fs::write(qmd_prefix.join("qmd.cmd"), npm_shim).unwrap();
 
-        assert!(qmd_resolves_in_prefix(&qmd_prefix));
-        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd.cmd should count as installed");
-        assert_eq!(
-            std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap(),
-            npm_shim
+        // Name resolution alone accepts npm's shim, even if it does not run
+        // the package entry point needed by this install's Bash launch path.
+        assert!(which::which_in(
+            "qmd",
+            Some(qmd_prefix.to_string_lossy().as_ref()),
+            &qmd_prefix,
+        )
+        .is_ok());
+        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        write_qmd_bash_shim_in(&qmd_prefix, Some(git_bash))
+            .expect("qmd shim should target the installed package");
+        let rewritten = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
+        assert_ne!(rewritten, npm_shim);
+        assert!(
+            rewritten.contains(
+                r#""C:\Program Files\Git\bin\bash.exe" "%~dp0node_modules\@tobilu\qmd\bin\qmd" %*"#,
+            ),
+            "{rewritten}"
         );
+    }
+
+    #[test]
+    fn qmd_postinstall_keeps_a_valid_npm_shim_when_git_bash_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qmd_prefix = tmp.path().join("npm-prefix");
+        let package_bin = qmd_prefix
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("bin")
+            .join("qmd");
+        std::fs::create_dir_all(package_bin.parent().unwrap()).unwrap();
+        std::fs::write(&package_bin, b"#!/usr/bin/env node\n").unwrap();
+        let npm_shim = "@ECHO off\r\nCALL \"%~dp0node_modules\\@tobilu\\qmd\\bin\\qmd\" %*\r\n";
+        let cmd_path = qmd_prefix.join("qmd.cmd");
+        std::fs::write(&cmd_path, npm_shim).unwrap();
+
+        write_qmd_bash_shim_in(&qmd_prefix, None).expect("valid npm shim should be preserved");
+
+        assert_eq!(std::fs::read_to_string(cmd_path).unwrap(), npm_shim);
+    }
+
+    #[test]
+    fn qmd_postinstall_without_git_bash_rejects_a_missing_or_unrelated_npm_shim() {
+        for create_unrelated_shim in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let qmd_prefix = tmp.path().join("npm-prefix");
+            let package_bin = qmd_prefix
+                .join("node_modules")
+                .join("@tobilu")
+                .join("qmd")
+                .join("bin")
+                .join("qmd");
+            std::fs::create_dir_all(package_bin.parent().unwrap()).unwrap();
+            std::fs::write(&package_bin, b"#!/usr/bin/env node\n").unwrap();
+            let cmd_path = qmd_prefix.join("qmd.cmd");
+            if create_unrelated_shim {
+                std::fs::write(&cmd_path, "@ECHO off\r\necho qmd\r\n").unwrap();
+            }
+
+            let error = write_qmd_bash_shim_in(&qmd_prefix, None)
+                .expect_err("missing or unrelated npm shim must not become a bare bash shim");
+
+            assert!(
+                error.contains("qmd.cmd does not reference the installed package entry point"),
+                "{error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&cmd_path).ok(),
+                create_unrelated_shim.then(|| "@ECHO off\r\necho qmd\r\n".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn winget_install_is_pinned_to_the_community_source() {
+        let args = winget_install_args("Git.Git");
+        assert_eq!(args[0], "install");
+        assert_eq!(args[1], "--id");
+        assert_eq!(args[2], "Git.Git");
+        assert_eq!(args[3], "--source");
+        assert_eq!(args[4], "winget");
+        assert!(args.contains(&"--accept-source-agreements"));
+        assert!(args.contains(&"--accept-package-agreements"));
     }
 
     #[test]
@@ -10679,6 +11385,163 @@ mod cancellation_reporting_tests {
     #[cfg(unix)]
     fn sigterm_eperm_cleanup_failure() -> CancellationCleanupFailure {
         CancellationCleanupFailure::from_unix_signal(Signal::SIGTERM, nix::errno::Errno::EPERM)
+    }
+
+    #[cfg(unix)]
+    struct ProcessGroupChild(std::process::Child);
+
+    #[cfg(unix)]
+    impl ProcessGroupChild {
+        fn spawn(program: &str, args: &[&str]) -> Self {
+            let child = Command::new(program)
+                .args(args)
+                .process_group(0)
+                .spawn()
+                .expect("process-group test child starts");
+            Self(child)
+        }
+
+        fn pgid(&self) -> i32 {
+            self.0.id() as i32
+        }
+
+        fn is_unreaped_zombie(&self) -> bool {
+            let pid = Pid::from_raw(self.pgid());
+            let deadline = Instant::now() + Duration::from_millis(800);
+            loop {
+                let still_exists = signal::kill(pid, None).is_ok();
+                let has_live_members = unix_process_group_has_live_members(self.pgid());
+                if still_exists && matches!(has_live_members, Ok(false)) {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn reap(&mut self) {
+            let _ = self.0.wait().expect("process-group test child reaps");
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ProcessGroupChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    fn report_if_cleanup_failed(
+        result: Result<(), CancellationCleanupFailure>,
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        sentry::test::with_captured_events(|| {
+            if let Err(cleanup) = result {
+                send_setup_cancellation_cleanup_failure(
+                    &scope(),
+                    "hq-cli",
+                    cleanup,
+                    diagnostic("cleanup failed"),
+                );
+            }
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaped_eperm_treats_an_unreaped_zombie_group_as_clean() {
+        let child = ProcessGroupChild::spawn("sh", &["-c", "exit 0"]);
+        let pgid = child.pgid();
+        let is_unreaped_zombie = child.is_unreaped_zombie();
+
+        let result = signal_process_group_with_probe(
+            pgid,
+            Signal::SIGTERM,
+            |target, signal_kind| {
+                assert_eq!(target.as_raw(), -pgid);
+                assert_eq!(signal_kind, Signal::SIGTERM);
+                Err(nix::errno::Errno::EPERM)
+            },
+            unix_process_group_has_live_members,
+        );
+        let events = report_if_cleanup_failed(result);
+
+        assert!(
+            is_unreaped_zombie,
+            "leader must remain an unreaped zombie during the probe"
+        );
+        assert!(
+            events.is_empty(),
+            "a dead process group must not emit cleanup failure"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_group_probe_treats_a_successfully_reaped_group_as_empty() {
+        let mut child = ProcessGroupChild::spawn("sh", &["-c", "exit 0"]);
+        let pgid = child.pgid();
+        child.reap();
+
+        assert!(matches!(
+            unix_process_group_has_live_members(pgid),
+            Ok(false)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_group_member_keeps_the_eperm_cleanup_report_and_tags() {
+        let child = ProcessGroupChild::spawn("sleep", &["30"]);
+        let pgid = child.pgid();
+        let result = signal_process_group_with_probe(
+            pgid,
+            Signal::SIGTERM,
+            |target, signal_kind| {
+                assert_eq!(target.as_raw(), -pgid);
+                assert_eq!(signal_kind, Signal::SIGTERM);
+                Err(nix::errno::Errno::EPERM)
+            },
+            unix_process_group_has_live_members,
+        );
+        let events = report_if_cleanup_failed(result);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(
+            events[0].fingerprint,
+            vec!["hq-cli", "cancel-cleanup-failed", "SIGTERM", "EPERM"]
+        );
+        assert_eq!(
+            events[0].message.as_deref(),
+            Some("Desktop setup cancellation cleanup could leave an install process running")
+        );
+        assert_eq!(
+            events[0].tags["setup_error_category"],
+            "cancel-cleanup-failed"
+        );
+        assert_eq!(events[0].tags["setup_cancel_signal"], "SIGTERM");
+        assert_eq!(events[0].tags["setup_cancel_os_error_kind"], "EPERM");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaped_eperm_does_not_change_sigkill_escalation() {
+        let result = signal_process_group_with_probe(
+            42,
+            Signal::SIGKILL,
+            |_, _| Err(nix::errno::Errno::EPERM),
+            |_| panic!("SIGKILL escalation must not run the reaped-group probe"),
+        );
+        let events = report_if_cleanup_failed(result);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(events[0].tags["setup_cancel_signal"], "SIGKILL");
+        assert_eq!(events[0].tags["setup_cancel_os_error_kind"], "EPERM");
     }
 
     fn diagnostic(error: &str) -> SetupCommandDiagnostic {

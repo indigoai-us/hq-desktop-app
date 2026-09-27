@@ -12,11 +12,23 @@
  * set up the whole time (customer report 2026-09-19, v0.10.296 -> v0.10.297).
  */
 
+import type { StartupSetupEvidence } from './unexpected-startup-surface';
+
+export type TokenPresence = 'present' | 'absent' | 'unknown';
+
+export function normalizeTokenPresence(value: unknown): TokenPresence {
+  return value === 'present' || value === 'absent' ? value : 'unknown';
+}
+
 export type StartupProbeResult = {
   /** `get_lifecycle_state` verdict, or null when the command is unavailable. */
   lifecycleState: string | null;
   /** Raw token-file presence hint, for reauth copy selection. */
   hadStoredToken: boolean;
+  /** Bounded observation used to diagnose startup auth restoration. */
+  tokenPresence: TokenPresence;
+  /** Setup evidence used only by the unexpected-surface reporter. */
+  setupEvidence?: StartupSetupEvidence | null;
   auth: { authenticated: boolean; expiresAt: string | null };
 };
 

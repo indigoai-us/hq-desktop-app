@@ -741,6 +741,16 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
 
     #[cfg(not(target_os = "windows"))]
     {
+        // Lifecycle readiness must agree with the PATH given to processes the
+        // app launches. That path includes the managed toolchain and installed
+        // nvm versions even when an updater relaunch inherits launchd's minimal
+        // environment and its login shell cannot be started.
+        if name == "node" {
+            if let Some(resolved) = resolve_bin_on_child_path(name) {
+                return resolved;
+            }
+        }
+
         // Child sync processes receive `child_path()`, whose settings-path
         // directories can intentionally select a foreign Git ahead of HQ's
         // managed shim. Resolve Git through that exact PATH so callers making
@@ -3907,6 +3917,51 @@ mod tests {
                 PathBuf::from("/usr/local/bin"),
             ]
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn launchagent_minimal_path_resolves_installed_managed_hq_and_node() {
+        const CHILD_ENV: &str = "HQ_DESKTOP_C107B_PATH_RESOLVER_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let hq = resolve_bin_with_kind("hq");
+            let node = resolve_bin_with_kind("node");
+            let home = home_dir().expect("isolated LaunchAgent HOME");
+            let toolchain = managed_toolchain_dir(&home);
+            assert_eq!(hq.kind, ResolvedProgramKind::Exe);
+            assert_eq!(Path::new(&hq.path), toolchain.join("npm-global/bin/hq"));
+            assert_eq!(node.kind, ResolvedProgramKind::Exe);
+            assert_eq!(Path::new(&node.path), toolchain.join("node/bin/node"));
+            return;
+        }
+
+        // launchd does not inherit an interactive user's PATH. Run the real
+        // resolver in a child with only the standard launchd PATH and an
+        // isolated HOME containing the installer's managed toolchain layout.
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let toolchain = managed_toolchain_dir(&home);
+        let hq_prefix = toolchain.join("npm-global");
+        write_unix_exec(&hq_prefix.join("bin/hq"));
+        write_hq_cli_manifest(
+            &hq_prefix.join("lib/node_modules/@indigoai-us/hq-cli"),
+            "5.103.30",
+        );
+        write_unix_exec(&toolchain.join("node/bin/node"));
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "paths::tests::launchagent_minimal_path_resolves_installed_managed_hq_and_node",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", "/usr/bin:/bin")
+            .env(CHILD_ENV, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "resolver child failed with {status}");
     }
 
     #[cfg(not(target_os = "windows"))]

@@ -306,6 +306,20 @@ describe("destination equality and labels", () => {
     ).not.toThrow();
   });
 
+  it("models the Projects page as a history destination per company", () => {
+    expect(destinationLabel({ kind: "projects" })).toBe("Projects");
+    expect(destinationLabel({ kind: "projects", company: "indigo" })).toBe("Projects · indigo");
+    expect(canonicalizeDestination({ kind: "projects", company: "  " })).toEqual({
+      kind: "projects",
+      company: null,
+    });
+    expect(destinationsEqual({ kind: "projects" }, { kind: "projects", company: null })).toBe(true);
+    expect(
+      destinationsEqual({ kind: "projects", company: "indigo" }, { kind: "projects", company: "ridge" }),
+    ).toBe(false);
+    expect(() => assertSerializableNavigationEntry(entry({ kind: "projects", company: "indigo" }))).not.toThrow();
+  });
+
   it("rejects component-like or presigned payloads", () => {
     expect(() =>
       assertSerializableNavigationEntry({

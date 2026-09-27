@@ -173,7 +173,6 @@
   // person explicitly takes over with a provider.
   const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
-
   let {
     initialStep,
     onfinish,
@@ -963,7 +962,9 @@
     const handles = [...activeInstallHandles];
     activeInstallHandles.clear();
     await Promise.allSettled(
-      handles.map((handle) => invoke('cancel_install', { handle })),
+      handles.map((handle) =>
+        invoke('cancel_install', { handle }),
+      ),
     );
   }
 
@@ -1182,6 +1183,9 @@
     failedDependency?: unknown;
     errorCategory?: unknown;
     errorKind?: unknown;
+    errorOperation?: unknown;
+    errorIoKind?: unknown;
+    errorCode?: unknown;
   };
 
   async function stageFailureTelemetryDetails(
@@ -1206,6 +1210,9 @@
       errorCategory: timeoutCategory ?? nativeDetail?.errorCategory,
       errorKind: timeoutKind ?? nativeDetail?.errorKind,
       failedDependency: nativeDetail?.failedDependency,
+      errorOperation: nativeDetail?.errorOperation,
+      errorIoKind: nativeDetail?.errorIoKind,
+      errorCode: nativeDetail?.errorCode,
     });
   }
 

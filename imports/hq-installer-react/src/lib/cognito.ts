@@ -18,6 +18,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import {
   writeFile,
+  readTextFile,
   rename,
   remove,
   mkdir,
@@ -163,6 +164,32 @@ async function deleteSharedTokenFile(): Promise<void> {
   }
 }
 
+async function readSharedTokenFile(): Promise<CognitoTokens | null> {
+  try {
+    const home = await getHomeDirPath();
+    const tokenPath = `${home}/${HQ_DIR_NAME}/${TOKEN_FILE_NAME}`;
+    if (!(await exists(tokenPath))) return null;
+    const raw = await readTextFile(tokenPath);
+    const parsed = JSON.parse(raw) as Partial<CognitoTokens>;
+    if (
+      typeof parsed.accessToken !== "string" ||
+      typeof parsed.idToken !== "string" ||
+      typeof parsed.refreshToken !== "string" ||
+      typeof parsed.expiresAt !== "number"
+    ) {
+      return null;
+    }
+    return {
+      accessToken: parsed.accessToken,
+      idToken: parsed.idToken,
+      refreshToken: parsed.refreshToken,
+      expiresAt: parsed.expiresAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // In-memory cache for the current session's tokens. On unsigned dev builds
 // macOS prompts the user on every keychain read, so callers like
 // getCurrentUser() — which can run on every mount, including React
@@ -231,38 +258,89 @@ async function loadTokens(): Promise<CognitoTokens | null> {
 
   pendingLoad = (async () => {
     try {
-      const raw = await invoke<string | null>("keychain_get", {
-        service: KC_SERVICE,
-        account: KC_ACCOUNT,
-      });
-      if (!raw) {
-        await deleteSharedTokenFile();
-        return markLoaded(null);
+      // --- Keychain read ---
+      let keychainTokens: CognitoTokens | null = null;
+
+      try {
+        const raw = await invoke<string | null>("keychain_get", {
+          service: KC_SERVICE,
+          account: KC_ACCOUNT,
+        });
+        if (raw) {
+          const parsed = JSON.parse(raw) as Partial<CognitoTokens>;
+          if (
+            typeof parsed.accessToken === "string" &&
+            typeof parsed.idToken === "string" &&
+            typeof parsed.refreshToken === "string" &&
+            typeof parsed.expiresAt === "number"
+          ) {
+            keychainTokens = {
+              accessToken: parsed.accessToken,
+              idToken: parsed.idToken,
+              refreshToken: parsed.refreshToken,
+              expiresAt: parsed.expiresAt,
+            };
+          } else {
+            console.warn("[cognito] keychain token payload is invalid; checking shared file");
+          }
+        }
+        // raw was null/empty: no keychain entry — fall through to file check
+      } catch (err) {
+        if (!isMissingKeychainEntry(err)) {
+          const errClass = err instanceof Error ? err.constructor.name : typeof err;
+          console.warn(`[cognito] keychain token read failed (${errClass}); checking shared file`);
+        }
+        // Fall through to file check below
       }
-      const parsed = JSON.parse(raw) as Partial<CognitoTokens>;
-      if (
-        typeof parsed.accessToken !== "string" ||
-        typeof parsed.idToken !== "string" ||
-        typeof parsed.refreshToken !== "string" ||
-        typeof parsed.expiresAt !== "number"
-      ) {
-        console.warn("[cognito] keychain token payload is invalid; ignoring it");
-        await deleteSharedTokenFile();
-        return markLoaded(null);
+
+      // --- Shared file read ---
+      const fileTokens = await readSharedTokenFile();
+
+      // --- Pick winner ---
+      if (keychainTokens && fileTokens) {
+        // Both valid: prefer the one with the later expiresAt.
+        const winner =
+          fileTokens.expiresAt > keychainTokens.expiresAt
+            ? fileTokens
+            : keychainTokens;
+        // Keep keychain and file in sync with the winner.
+        if (winner === fileTokens) {
+          try {
+            await invoke("keychain_set", {
+              service: KC_SERVICE,
+              account: KC_ACCOUNT,
+              secret: JSON.stringify(winner),
+            });
+          } catch {
+            // Best-effort
+          }
+        } else {
+          await writeSharedTokenFile(winner);
+        }
+        return markLoaded(winner);
       }
-      const tokens = {
-        accessToken: parsed.accessToken,
-        idToken: parsed.idToken,
-        refreshToken: parsed.refreshToken,
-        expiresAt: parsed.expiresAt,
-      };
-      await writeSharedTokenFile(tokens);
-      return markLoaded(tokens);
-    } catch (err) {
-      if (!isMissingKeychainEntry(err)) {
-        console.warn("[cognito] keychain token read failed:", err);
+
+      if (keychainTokens) {
+        await writeSharedTokenFile(keychainTokens);
+        return markLoaded(keychainTokens);
       }
-      await deleteSharedTokenFile();
+
+      if (fileTokens) {
+        // Keychain was missing, invalid, or read-errored (e.g. errSecAuthFailed
+        // after app re-sign). Use the file; write back to keychain best-effort.
+        try {
+          await invoke("keychain_set", {
+            service: KC_SERVICE,
+            account: KC_ACCOUNT,
+            secret: JSON.stringify(fileTokens),
+          });
+        } catch {
+          // Best-effort
+        }
+        return markLoaded(fileTokens);
+      }
+
+      // Neither source has valid tokens.
       return markLoaded(null);
     } finally {
       pendingLoad = null;

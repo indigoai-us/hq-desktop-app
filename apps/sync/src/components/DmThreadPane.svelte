@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../lib/listener-registry';
+  import { filterByAudience, countHiddenByAudience } from '../lib/botMessageFilter';
   import Conversation, { type ConversationMessage } from './messaging/Conversation.svelte';
   import { type ReactionEvent, dmScope } from '../lib/reactions';
   import { ReactionController } from '../lib/reactionController.svelte';
@@ -26,6 +27,8 @@
     createdAt: string;
     messageKind?: string | null;
     attachments?: MessageAttachment[] | null;
+    /** US-006: sender-declared audience ("human" | "agent" | "both"). Absent = human. */
+    audience?: string | null;
   }
 
   // Main thread + composer for a DM selected from the quick-window side pane.
@@ -34,14 +37,18 @@
 
   interface Props {
     event: DmEvent;
+    /** US-006 toggle: when false (default), agent-audience messages are hidden. */
+    showBotMessages?: boolean;
   }
 
-  let { event }: Props = $props();
+  let { event, showBotMessages = false }: Props = $props();
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it.
   interface ThreadMessage extends ConversationMessage {
     fromEmail: string;
+    /** US-006: sender-declared audience; absent = human. */
+    audience?: string | null;
   }
 
   interface ThreadResponse {
@@ -50,6 +57,9 @@
   }
 
   let messages = $state<ThreadMessage[]>([]);
+  // US-006: apply audience filter; when toggle is off, only human/both messages show.
+  const visibleMessages = $derived(filterByAudience(messages, showBotMessages));
+  const hiddenMessageCount = $derived(countHiddenByAudience(messages, showBotMessages));
   let loadingThread = $state(false);
   let threadError = $state<string | null>(null);
   let activePeerUid: string | null = null;
@@ -116,6 +126,7 @@
         direction: 'in',
         messageKind: live.messageKind ?? null,
         attachments: live.attachments ?? null,
+        audience: live.audience ?? null,
       });
     }
     return chrono;
@@ -181,6 +192,7 @@
         direction: 'in',
         messageKind: dm.messageKind ?? null,
         attachments: dm.attachments ?? null,
+        audience: dm.audience ?? null,
       },
     ];
   }
@@ -288,17 +300,41 @@
   });
 </script>
 
-<Conversation
-  {messages}
-  showAuthors={false}
-  loading={loadingThread}
-  error={threadError}
-  onretryload={retryThread}
-  {sending}
-  {sendError}
-  placeholder={`Reply to ${event.fromDisplayName}…`}
-  onsend={sendReply}
-  reactions={reactionsCtl?.map ?? {}}
-  ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
-  {companies}
-/>
+<div class="dm-thread-pane-wrap" data-testid="dm-thread-pane">
+  <Conversation
+    messages={visibleMessages}
+    showAuthors={false}
+    loading={loadingThread}
+    error={threadError}
+    onretryload={retryThread}
+    {sending}
+    {sendError}
+    placeholder={`Reply to ${event.fromDisplayName}…`}
+    onsend={sendReply}
+    reactions={reactionsCtl?.map ?? {}}
+    ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
+    {companies}
+  />
+  {#if hiddenMessageCount > 0}
+    <div class="dm-hidden-notice" data-testid="dm-hidden-bot-messages" data-count={hiddenMessageCount}>
+      {hiddenMessageCount} bot {hiddenMessageCount === 1 ? 'message' : 'messages'} hidden
+    </div>
+  {/if}
+</div>
+
+<style>
+  .dm-thread-pane-wrap {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .dm-hidden-notice {
+    flex-shrink: 0;
+    padding: 4px 12px;
+    font-size: 11px;
+    color: var(--v4-text-2, #9ca3af);
+    text-align: center;
+  }
+</style>

@@ -735,7 +735,7 @@ fn build_banner_window(
     WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
+        crate::ui_protocol::ui_url("index.html"),
     )
     .title("HQ Notification")
     .inner_size(BANNER_W, BANNER_H)
@@ -796,6 +796,7 @@ pub async fn preview_dm_banner(app: AppHandle) -> Result<(), String> {
         root_event_id: None,
         message_kind: None,
         attachments: None,
+        audience: None,
     };
     show_dm_banner(app, event).await
 }

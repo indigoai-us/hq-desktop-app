@@ -210,6 +210,13 @@ export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
           ? { brand: row.brand as Workspace["brand"] }
           : {}),
         ...(optStr(row.iconUrl) ? { iconUrl: optStr(row.iconUrl) } : {}),
+        // The company's single home-channel id, set server-side at company
+        // genesis. Dropping it here forced every real (`list_syncable_workspaces`)
+        // company row to look homeChannelId-less to the sidebar, which then
+        // rendered the row disabled and never logged an open attempt.
+        ...(optStr(row.homeChannelId)
+          ? { homeChannelId: optStr(row.homeChannelId) }
+          : {}),
       });
       continue;
     }
@@ -236,6 +243,9 @@ export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
         ? { brand: row.brand as Workspace["brand"] }
         : {}),
       ...(optStr(row.iconUrl) ? { iconUrl: optStr(row.iconUrl) } : {}),
+      ...(optStr(row.homeChannelId)
+        ? { homeChannelId: optStr(row.homeChannelId) }
+        : {}),
     });
   }
   return out;

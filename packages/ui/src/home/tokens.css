@@ -94,7 +94,7 @@
 
 /* Desktop hosts overlay native window controls on the HQ chrome. */
 .has-window-controls {
-  --titlebar-leading-inset: 78px;
+  --titlebar-leading-inset: 96px;
 }
 
 /* Windows: native decorated title bar, no overlay traffic lights. */

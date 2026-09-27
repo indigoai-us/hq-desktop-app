@@ -19,6 +19,7 @@
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
   import { onMount, untrack } from "svelte";
+  import type { Snippet } from "svelte";
   import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import {
     COMPOSER_DRAFT_CHANGED_EVENT,
@@ -133,6 +134,7 @@
     loadShowFilter,
     resolveCompanySectionRows,
     type CompanySectionRow,
+    migratePinnedCompanySelection,
     mergeContactActivity,
     isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
@@ -213,6 +215,11 @@
     /** Wake events (web: bridged from the MeshClient). */
     wakes?: ChatWakeBus | null;
     companies?: Workspace[] | null;
+    /** A company's home channel was just created/adopted by `ensureCompanyHomeChannel`
+     *  (roster row had no `homeChannelId` yet). Lets the host patch its own
+     *  roster copy and refresh from the server, so chrome elsewhere (and a
+     *  restart) stays correct without waiting on this sidebar's own local cache. */
+    onhomechannelresolved?: (companyUid: string, homeChannelId: string) => void;
     /** Verified signed-in principal — tags the matching person row "you". */
     self?: SelfIdentity | null;
     /** Explicit admin/owner override; else derived from membership roles. */
@@ -368,12 +375,19 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
+    /** US-006: when true, contacts whose last message is agent-only show their preview. */
+    showBotMessages?: boolean;
+    /** Optional content rendered above the account footer (e.g. UpdateAvailableCard). */
+    bottomContent?: Snippet;
+    /** Fires when the user clicks the bot-message toggle in the sidebar header. */
+    onshowbotmessageschange?: (value: boolean) => void;
   }
 
   let {
     api,
     wakes = null,
     companies = null,
+    onhomechannelresolved,
     self = null,
     isAdmin = null,
     accountLabel = null,
@@ -424,6 +438,9 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    showBotMessages = false,
+    bottomContent,
+    onshowbotmessageschange,
   }: Props = $props();
   // Host still reports load failures; the sidebar no longer paints them.
   void rowExtrasError;
@@ -484,10 +501,39 @@
     loadConversationCache(storage)?.contacts ?? [],
   );
   let pins = $state<string[]>(loadPins(storage));
-  /** "Companies" sidebar section selection — `null` until the user customizes
-   * it via the section's Edit affordance, meaning "show every company". */
-  let pinnedCompanySelection = $state<string[] | null>(loadPinnedCompanies(storage));
+  /**
+   * "Companies" sidebar section pins — companies the user explicitly pinned
+   * via the section's header submenu. Empty/absent = no pins yet, so the
+   * section falls back to the top-N most active companies (see
+   * `companySectionRows` below). Persisted data may still carry the OLD
+   * "which companies to show" shape from before this pin model existed
+   * (`null` = show all, an array = the exact visible set) — migrated once at
+   * load via `migratePinnedCompanySelection` (see that function's doc for the
+   * exact migration rule).
+   */
+  let pinnedCompanies = $state<string[]>(
+    migratePinnedCompanySelection(
+      loadPinnedCompanies(storage),
+      (companies ?? [])
+        .map((c) => (c.cloudUid ?? "").trim())
+        .filter(Boolean),
+    ) ?? [],
+  );
   let companiesSectionMenuOpen = $state(false);
+  /** companyUid → homeChannelId the client resolved this session via
+   * `ensureCompanyHomeChannel` (server didn't have it on the roster yet).
+   * Merged into `companySectionRows` ahead of the roster value so a click
+   * that just provisioned the channel doesn't wait for the next roster
+   * refresh to stop showing disabled. */
+  let resolvedHomeChannelIds = $state<Record<string, string>>({});
+  /** companyUid → true while an `ensureCompanyHomeChannel` call for that
+   * company is in flight (subtle loading state on the row). */
+  let companyHomeEnsuring = $state<Record<string, boolean>>({});
+  /** companyUid → true once `ensureCompanyHomeChannel` has exhausted its
+   * retries for that company. Never carries the raw error text — Corey's
+   * product rule is no raw red errors, always a heal path. The row stays
+   * clickable; a click re-runs the ensure attempt from scratch. */
+  let companyHomeFailed = $state<Record<string, boolean>>({});
   /** User unpinned #setup — sticky until they pin it again. */
   let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
   /** Rows with an unsent composer draft (Slack-style pencil marker). */
@@ -900,14 +946,15 @@
     savePins(pins, storage);
   }
 
-  /** companyUid → slug, the desktop fallback for `isCompanyHome` resolution
-   * while the backend flag rolls out (see channels.ts `isCompanyHomeChannel`). */
-  const companySlugByUid = $derived.by(() => {
+  /** companyUid → homeChannelId, from the roster (`Workspace.homeChannelId`) —
+   * resolves `isCompanyHome` by channel id (see channels.ts
+   * `isCompanyHomeChannel`). */
+  const homeChannelIdByUid = $derived.by(() => {
     const map = new Map<string, string>();
     for (const company of companies ?? []) {
       const uid = (company.cloudUid ?? "").trim();
-      const slug = (company.slug ?? "").trim();
-      if (uid && slug) map.set(uid, slug);
+      const homeChannelId = (company.homeChannelId ?? "").trim();
+      if (uid && homeChannelId) map.set(uid, homeChannelId);
     }
     return map;
   });
@@ -919,16 +966,19 @@
       recentDms,
       engagedAgentUids: engagedAgents,
       ownAgentUids,
-      companySlugByUid,
+      homeChannelIdByUid,
     }),
   );
 
   /**
-   * The sidebar's "Companies" section. Each pinned company shows its home
-   * channel; a company with no home channel yet is included with
-   * `homeRow: null` so the row can render disabled with a reason instead of
-   * silently vanishing (step 8's "your call" — disabled beats hidden here so
-   * a newly-provisioned company is still visible to the user).
+   * The sidebar's "Companies" section. When the user has pinned any
+   * companies (via the header submenu), only the pinned ones show, in
+   * `companies` order. Otherwise the section shows the
+   * `DEFAULT_COMPANY_SECTION_LIMIT` most active companies (see
+   * `companyActivityScore` / `rankCompaniesByActivity` in sidebar-model.ts).
+   * A company with no `homeChannelId` yet is included with `homeChannelId:
+   * null` so the row can render disabled ("No company channel yet") instead
+   * of silently vanishing.
    *
    * Home channels shown here are NOT removed from the regular channel list:
    * this section is additive, the same way the existing pin star only
@@ -943,23 +993,154 @@
         .map((c) => ({
           companyUid: (c.cloudUid as string).trim(),
           label: c.displayName || c.slug || c.cloudUid!,
+          slug: c.slug ?? null,
           iconUrl: companyIcons.get((c.cloudUid as string).trim()) ?? null,
+          homeChannelId:
+            c.homeChannelId ?? resolvedHomeChannelIds[(c.cloudUid as string).trim()] ?? null,
         })),
       allRows,
-      pinnedCompanySelection,
+      pinnedCompanies,
     ),
   );
 
-  function toggleCompanySectionSelection(companyUid: string): void {
-    const current =
-      pinnedCompanySelection ??
-      (companies ?? [])
-        .map((c) => (c.cloudUid ?? "").trim())
-        .filter(Boolean);
-    pinnedCompanySelection = current.includes(companyUid)
-      ? current.filter((uid) => uid !== companyUid)
-      : [...current, companyUid];
-    savePinnedCompanies(pinnedCompanySelection, storage);
+  /**
+   * DEBUG instrumentation (2026-09-25): proves, from `~/.hq/logs/hq-sync.log`,
+   * that the Companies section actually renders and that `homeChannelId`
+   * made it through the roster mapping — without requiring a click. Fires
+   * once per non-empty render of the section, not on every recompute.
+   */
+  let companySectionReadyLogged = false;
+  $effect(() => {
+    const rows = companySectionRows;
+    if (rows.length === 0 || companySectionReadyLogged) return;
+    companySectionReadyLogged = true;
+    const withHome = rows.filter((r) => Boolean(r.homeChannelId)).length;
+    companiesLog(`section ready count=${rows.length} withHome=${withHome}`);
+  });
+
+  function toggleCompanyPin(companyUid: string): void {
+    pinnedCompanies = pinnedCompanies.includes(companyUid)
+      ? pinnedCompanies.filter((uid) => uid !== companyUid)
+      : [...pinnedCompanies, companyUid];
+    savePinnedCompanies(pinnedCompanies, storage);
+  }
+
+  /**
+   * Writes one `[companies] …` line to the desktop support log
+   * (`~/.hq/logs/hq-sync.log`) via `api.logToFile` — the TS→Rust bridge onto
+   * `frontend_log` — so a company-home open (or disabled click) is greppable
+   * even with devtools closed. `logToFile` is a required seam now; a failed
+   * write (permission, IPC, disk) is logged to the console instead of being
+   * silently swallowed, so a broken bridge is itself diagnosable.
+   */
+  function companiesLog(line: string): void {
+    console.warn(`[companies] ${line}`);
+    void api.logToFile("companies", line).catch((err) => {
+      console.error("[companies] logToFile failed", err);
+    });
+  }
+
+  /**
+   * Companies section row click: the company's home channel id comes
+   * straight from the roster (`Workspace.homeChannelId`), so there's no
+   * client-side heuristic resolution needed to know WHICH channel to open.
+   * If it's already among this sidebar's loaded rows, open it the normal way
+   * (`openRow` — mark-read, draft clearing, etc.). Otherwise (e.g. the "All"
+   * scope hasn't loaded that company's channels yet) fall back to
+   * `requestChannelOpen`, the same generic "open a channel by id" path
+   * notifications and deep links use — the shell's navigation loads it by id
+   * the same way it would for any of those.
+   */
+  function openHomeChannelId(
+    homeChannelId: string,
+    company?: { slug?: string | null; label?: string | null; companyUid?: string | null },
+  ): void {
+    const loaded = allRows.find((r) => r.channelId === homeChannelId);
+    if (loaded) {
+      void openRow(loaded);
+    } else {
+      // Not in the loaded rows yet: the stub row would otherwise paint the
+      // raw `chn_…` id as the title/composer placeholder until the full
+      // directory catches up. Seed it with the company's slug — the same
+      // label the row itself will carry once loaded — so the header never
+      // shows a raw id.
+      requestChannelOpen(homeChannelId, {
+        title: company?.slug || company?.label || null,
+        companyUid: company?.companyUid ?? null,
+      });
+    }
+  }
+
+  /** Up to 3 tries total (the initial attempt plus 2 retries) before the row
+   * falls back to the quiet "tap to retry" heal state. */
+  const ENSURE_HOME_CHANNEL_MAX_ATTEMPTS = 3;
+  /** Backoff between attempts, indexed by the attempt that just failed
+   * (attempt 1 failing waits `[0]` before attempt 2, etc). An AUTH_REQUIRED
+   * failure reuses the same schedule — the wait gives the background token
+   * refresh a chance to land before the retry. */
+  const ENSURE_HOME_CHANNEL_RETRY_DELAYS_MS = [400, 1200];
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Companies section row click. The company's home channel id normally
+   * comes straight from the roster (`Workspace.homeChannelId`) — no
+   * client-side resolution needed to know which channel to open. When it's
+   * missing (a new/legacy company still provisioning server-side), the click
+   * calls the idempotent `ensureCompanyHomeChannel` endpoint, which creates
+   * the channel on the company's first call or adopts the existing one on
+   * any later call, then opens it.
+   *
+   * Corey's product rule: never show a raw red error, always have a heal
+   * path. So a failure here is never surfaced verbatim — it retries
+   * automatically (with backoff, up to `ENSURE_HOME_CHANNEL_MAX_ATTEMPTS`
+   * tries), and if it still fails the row falls back to a quiet "tap to
+   * retry" state that re-runs this same function on the next click. The raw
+   * reason only ever reaches the support log via `companiesLog`.
+   */
+  async function openCompanyHome(company: {
+    companyUid: string;
+    label: string;
+    slug?: string | null;
+    homeChannelId: string | null;
+  }): Promise<void> {
+    const label = company.slug || company.label;
+    const known = company.homeChannelId ?? resolvedHomeChannelIds[company.companyUid] ?? null;
+    if (known) {
+      companiesLog(`open company=${label} channel=${known}`);
+      openHomeChannelId(known, company);
+      return;
+    }
+    if (companyHomeEnsuring[company.companyUid]) return;
+    companyHomeEnsuring = { ...companyHomeEnsuring, [company.companyUid]: true };
+    const { [company.companyUid]: _drop, ...clearedFailed } = companyHomeFailed;
+    companyHomeFailed = clearedFailed;
+
+    for (let attempt = 1; attempt <= ENSURE_HOME_CHANNEL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const { homeChannelId } = await api.ensureCompanyHomeChannel(company.companyUid);
+        resolvedHomeChannelIds = { ...resolvedHomeChannelIds, [company.companyUid]: homeChannelId };
+        onhomechannelresolved?.(company.companyUid, homeChannelId);
+        companiesLog(`open company=${label} channel=${homeChannelId}`);
+        openHomeChannelId(homeChannelId, company);
+        const { [company.companyUid]: _clear, ...rest } = companyHomeEnsuring;
+        companyHomeEnsuring = rest;
+        return;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        companiesLog(
+          `open-failed company=${label} attempt=${attempt}/${ENSURE_HOME_CHANNEL_MAX_ATTEMPTS} reason=${reason}`,
+        );
+        if (attempt < ENSURE_HOME_CHANNEL_MAX_ATTEMPTS) {
+          await delay(ENSURE_HOME_CHANNEL_RETRY_DELAYS_MS[attempt - 1] ?? 1200);
+        }
+      }
+    }
+    companyHomeFailed = { ...companyHomeFailed, [company.companyUid]: true };
+    const { [company.companyUid]: _clear, ...rest } = companyHomeEnsuring;
+    companyHomeEnsuring = rest;
   }
 
   let lastEmittedRows: ConversationRow[] | null = null;
@@ -980,7 +1161,7 @@
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
-      companySlugByUid,
+      homeChannelIdByUid,
     }),
   );
 
@@ -995,7 +1176,7 @@
   const browseRows = $derived(
     browseOnlyCompanyProjectChannels(channels, companyProjectChannels).map(
       (c) => ({
-        ...normalizeChannel(c, { pinnedIds: pins, companySlugByUid }),
+        ...normalizeChannel(c, { pinnedIds: pins, homeChannelIdByUid }),
         browseOnly: true,
       }),
     ),
@@ -1766,7 +1947,7 @@
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
-        raceTimeout(api.listContacts(), bootTimeoutMs, "list_contacts").catch(
+        raceTimeout(api.listContacts({ showBotMessages }), bootTimeoutMs, "list_contacts").catch(
           (err) => {
             sidebarLog("boot-error", {
               source: "list_contacts",
@@ -1855,6 +2036,21 @@
     const seq = rosterWakeSeq;
     if (seq <= 0) return;
     untrack(() => {
+      void refreshLists();
+    });
+  });
+
+  // Re-fetch contacts when the bot-message toggle flips so list previews update.
+  // Skip the initial run: `onMount` already primes the roster with the current
+  // toggle value, so re-reading here would double the boot contacts fetch.
+  let botToggleSeen = false;
+  $effect(() => {
+    const _show = showBotMessages;
+    untrack(() => {
+      if (!botToggleSeen) {
+        botToggleSeen = true;
+        return;
+      }
       void refreshLists();
     });
   });
@@ -2543,6 +2739,26 @@
           />
         </svg>
       </button>
+      <!-- US-006: bot-message toggle -->
+      <button
+        type="button"
+        class="chat-icon-btn"
+        class:on={showBotMessages}
+        data-testid="chat-bot-toggle"
+        aria-label={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
+        aria-pressed={showBotMessages}
+        title={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
+        onclick={() => onshowbotmessageschange?.(!showBotMessages)}
+      >
+        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true" focusable="false">
+          <rect x="2" y="4" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.25" fill="none"/>
+          <rect x="4.5" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
+          <rect x="8" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
+          <line x1="7" y1="1" x2="7" y2="4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+          <circle cx="7" cy="1" r="0.75" fill="currentColor"/>
+          <line x1="4.5" y1="9.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+        </svg>
+      </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>
         <button
           type="button"
@@ -2832,9 +3048,15 @@
           data-testid="chat-companies-edit"
           aria-haspopup="true"
           aria-expanded={companiesSectionMenuOpen}
+          aria-label="More companies"
+          title="Pin companies"
           onclick={() => (companiesSectionMenuOpen = !companiesSectionMenuOpen)}
         >
-          Edit
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="4" cy="8" r="1.3" fill="currentColor" />
+            <circle cx="8" cy="8" r="1.3" fill="currentColor" />
+            <circle cx="12" cy="8" r="1.3" fill="currentColor" />
+          </svg>
         </button>
       </div>
       {#if companiesSectionMenuOpen}
@@ -2844,16 +3066,19 @@
           data-testid="chat-companies-menu"
           aria-labelledby="chat-companies-label"
         >
+          <p class="chat-companies-menu-hint">
+            Pin companies to keep them here — otherwise your 3 most active show.
+          </p>
           {#each companies ?? [] as company (company.cloudUid ?? company.slug)}
             {@const uid = (company.cloudUid ?? "").trim()}
             {#if uid}
-              {@const checked = pinnedCompanySelection === null || pinnedCompanySelection.includes(uid)}
+              {@const checked = pinnedCompanies.includes(uid)}
               <label class="chat-companies-menu-item">
                 <input
                   type="checkbox"
                   data-testid={`chat-companies-menu-item-${uid}`}
                   {checked}
-                  onchange={() => toggleCompanySectionSelection(uid)}
+                  onchange={() => toggleCompanyPin(uid)}
                 />
                 <span>{company.displayName || company.slug}</span>
               </label>
@@ -2869,23 +3094,64 @@
       >
         {#if companySectionRows.length === 0}
           <p class="chat-companies-empty" data-testid="chat-companies-empty">
-            No companies selected. Use Edit above to pin one.
+            No companies yet.
           </p>
         {:else}
           {#each companySectionRows as company (company.companyUid)}
-            {#if company.homeRow}
-              {@render conversationRow(company.homeRow)}
-            {:else}
-              <div
-                class="chat-row chat-row-disabled"
-                data-testid={`chat-companies-row-disabled-${company.companyUid}`}
-                aria-disabled="true"
-                title="This company doesn't have a home channel yet."
+            {#if company.homeChannelId}
+              <button
+                type="button"
+                class="chat-row chat-companies-row"
+                class:active={activeId === `ch:${company.homeChannelId}`}
+                data-testid={`chat-companies-row-${company.companyUid}`}
+                onclick={() => openCompanyHome(company)}
               >
-                <span class="chat-glyph" aria-hidden="true">·</span>
+                {#if company.iconUrl}
+                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
+                {:else}
+                  <span class="chat-glyph" aria-hidden="true">·</span>
+                {/if}
                 <span class="chat-row-title">{company.label}</span>
-                <span class="chat-companies-row-reason">No home channel yet</span>
-              </div>
+              </button>
+            {:else}
+              {@const ensuring = companyHomeEnsuring[company.companyUid] === true}
+              {@const failed = companyHomeFailed[company.companyUid] === true}
+              <button
+                type="button"
+                class="chat-row chat-row-disabled chat-companies-row"
+                data-testid={`chat-companies-row-disabled-${company.companyUid}`}
+                aria-busy={ensuring}
+                title={ensuring
+                  ? "Setting up…"
+                  : failed
+                    ? "Tap to retry"
+                    : "No company channel yet"}
+                onclick={() => openCompanyHome(company)}
+              >
+                {#if company.iconUrl}
+                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
+                {:else}
+                  <span class="chat-glyph" aria-hidden="true">·</span>
+                {/if}
+                <span class="chat-row-title">{company.label}</span>
+                {#if ensuring}
+                  <span
+                    class="chat-companies-row-status"
+                    data-testid={`chat-companies-row-status-${company.companyUid}`}
+                    aria-hidden="true"
+                  >
+                    Setting up…
+                  </span>
+                {:else if failed}
+                  <span
+                    class="chat-companies-row-status chat-companies-row-status-muted"
+                    data-testid={`chat-companies-row-status-${company.companyUid}`}
+                    aria-hidden="true"
+                  >
+                    Tap to retry
+                  </span>
+                {/if}
+              </button>
             {/if}
           {/each}
         {/if}
@@ -2997,6 +3263,8 @@
     {/if}
     {/if}
   </div>
+
+  {@render bottomContent?.()}
 
   <div class="chat-footer" bind:this={footerEl}>
     <button
@@ -4029,14 +4297,13 @@
 
   .chat-companies-edit {
     all: unset;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
     color: var(--ice-ink);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    padding: 2px 6px;
+    width: 18px;
+    height: 18px;
     border-radius: 6px;
   }
   .chat-companies-edit:hover,
@@ -4068,6 +4335,14 @@
     background: var(--hover);
   }
 
+  .chat-companies-menu-hint {
+    margin: 0 0 4px;
+    padding: 2px 6px;
+    color: var(--t2);
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
   .chat-companies-empty {
     margin: 0;
     padding: 6px 12px 10px;
@@ -4075,18 +4350,53 @@
     font-size: 12px;
   }
 
+  /* Companies section rows are intentionally minimal — name only, single
+   * line, no unread badge/dot/status text (requirement 1). */
+  .chat-companies-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+  }
+  .chat-companies-row .chat-row-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-companies-row-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    object-fit: cover;
+    flex: 0 0 auto;
+  }
+
   .chat-row-disabled {
     opacity: 0.55;
+    cursor: pointer;
+  }
+
+  .chat-row-disabled[aria-busy="true"] {
     cursor: default;
   }
 
-  .chat-companies-row-reason {
+  .chat-companies-row-status {
     margin-left: auto;
-    color: var(--t2);
-    font-size: 10px;
-    font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-size: 11px;
+    color: var(--ice-ink, inherit);
+    opacity: 0.8;
+  }
+
+  /* Quiet heal-path hint after ensure-home-channel exhausts its retries.
+     Never red, never the raw server/error text — Corey's product rule is no
+     raw red errors and always a heal path. The row stays clickable; a click
+     re-runs the ensure attempt. */
+  .chat-companies-row-status-muted {
+    color: var(--t3, inherit);
+    opacity: 0.65;
   }
 
   /* Day-group header: name left, date right-aligned (D-13). */

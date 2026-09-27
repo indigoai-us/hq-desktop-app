@@ -711,6 +711,16 @@ pub async fn poll_unattributed_once(app: AppHandle) {
     }
 }
 
+/// Whether "Record meetings automatically" is on (default OFF).
+///
+/// The popover's `meeting:detected` handler asks this before starting a
+/// recording on detection. Read fresh from `~/.hq/menubar.json` on every call
+/// so the Settings switch applies to the next meeting without a restart.
+#[tauri::command]
+pub async fn meetings_auto_record_enabled() -> Result<bool, String> {
+    Ok(hq_desktop_core::meeting_auto_record::auto_record_enabled())
+}
+
 /// Fire a macOS notification for a detected meeting, gated on:
 ///
 /// 1. `notifications` pref in `~/.hq/menubar.json` (read fresh on each call

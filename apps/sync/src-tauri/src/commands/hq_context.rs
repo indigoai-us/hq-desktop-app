@@ -183,7 +183,10 @@ pub async fn hq_share_to_channel_preflight(company: String) -> Result<SharePrefl
         })
         .collect();
 
-    let members = crate::commands::messages::list_company_members(company_uid)
+    // Preflight member roster is not a DM rail; the show-bot-messages preview
+    // filter only clears agent-only last-message previews (never members), so
+    // None (default off) yields the same complete roster the picker needs.
+    let members = crate::commands::messages::list_company_members(company_uid, None)
         .await?
         .contacts
         .into_iter()

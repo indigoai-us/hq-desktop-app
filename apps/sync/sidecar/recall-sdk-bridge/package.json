@@ -14,7 +14,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@recallai/desktop-sdk": "2.0.15"
+    "@recallai/desktop-sdk": "2.0.32"
   },
   "devDependencies": {
     "postject": "^1.0.0-alpha.6"

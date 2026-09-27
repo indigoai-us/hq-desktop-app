@@ -11,6 +11,7 @@
   interface Props {
     /** Already filtered to joinable + not-dismissed-this-session. Non-empty when rendered. */
     memberships: Workspace[];
+    emailVerificationRequired?: boolean;
     syncing?: boolean;
     /**
      * User-facing failure text. The popover's Sync surfaces reauth and runner
@@ -29,6 +30,7 @@
 
   let {
     memberships,
+    emailVerificationRequired = false,
     syncing = false,
     error = null,
     onsync,
@@ -41,18 +43,27 @@
   const allSlugs = $derived(memberships.map((w) => w.slug));
 </script>
 
-{#if first}
+{#if first || emailVerificationRequired}
   <div
     class="membership-banner"
     role="region"
-    aria-label="Company memberships to sync"
+    aria-label={emailVerificationRequired
+      ? "Email verification for company invites"
+      : "Company memberships to sync"}
     data-testid="membership-sync-banner"
   >
     <div class="membership-copy">
-      <strong>{title}{extra > 0 ? ` + ${extra} more` : ""}</strong>
-      <span>
-        Sync to pull {memberships.length > 1 ? "them" : "it"} onto this machine.
-      </span>
+      {#if first}
+        <strong>{title}{extra > 0 ? ` + ${extra} more` : ""}</strong>
+        <span>
+          Sync to pull {memberships.length > 1 ? "them" : "it"} onto this machine.
+        </span>
+      {/if}
+      {#if emailVerificationRequired}
+        <span data-testid="email-verification-notice">
+          Verify your email to see pending company invites.
+        </span>
+      {/if}
       <!--
         Own live region: the banner itself is a static region, so an error
         arriving after mount is only announced if it lands in something the
@@ -64,26 +75,28 @@
         {/if}
       </span>
     </div>
-    <div class="membership-actions">
-      <button
-        type="button"
-        class="membership-sync"
-        data-testid="membership-sync-now"
-        disabled={syncing}
-        aria-busy={syncing}
-        onclick={() => void onsync?.()}
-      >
-        {syncing ? "Syncing…" : error ? "Try again" : "Sync now"}
-      </button>
-      <button
-        type="button"
-        class="membership-dismiss"
-        data-testid="membership-sync-dismiss"
-        onclick={() => ondismiss?.(allSlugs)}
-      >
-        Dismiss
-      </button>
-    </div>
+    {#if first}
+      <div class="membership-actions">
+        <button
+          type="button"
+          class="membership-sync"
+          data-testid="membership-sync-now"
+          disabled={syncing}
+          aria-busy={syncing}
+          onclick={() => void onsync?.()}
+        >
+          {syncing ? "Syncing…" : error ? "Try again" : "Sync now"}
+        </button>
+        <button
+          type="button"
+          class="membership-dismiss"
+          data-testid="membership-sync-dismiss"
+          onclick={() => ondismiss?.(allSlugs)}
+        >
+          Dismiss
+        </button>
+      </div>
+    {/if}
   </div>
 {/if}
 

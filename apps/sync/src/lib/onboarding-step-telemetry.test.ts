@@ -109,6 +109,47 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 
+  it('keeps only bounded content symlink diagnostics on failed setup events', () => {
+    const contentFailure = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'content',
+        errorCategory: 'permission',
+        errorOperation: 'remove_existing_link',
+        errorIoKind: 'permission_denied',
+        errorCode: 5,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(contentFailure).toMatchObject({
+      errorOperation: 'remove_existing_link',
+      errorIoKind: 'permission_denied',
+      errorCode: 5,
+    });
+
+    const unsafeFailure = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'content',
+        errorOperation: 'C:\\Users\\sample\\HQ' as never,
+        errorIoKind: '/Users/sample/HQ' as never,
+        errorCode: 65_536,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(unsafeFailure).not.toHaveProperty('errorOperation');
+    expect(unsafeFailure).not.toHaveProperty('errorIoKind');
+    expect(unsafeFailure).not.toHaveProperty('errorCode');
+  });
+
   it('keeps failed-run dependency, category, stages, and run identifier in telemetry', () => {
     const depsFailure = desktopPropertiesForOnboardingStep({
       sessionId: '11111111-1111-4111-8111-111111111111',

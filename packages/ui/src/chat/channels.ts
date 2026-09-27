@@ -83,28 +83,27 @@ export interface Channel {
   /** US-009 channel fabric: server-computed subtitle label from the directory
    * row (e.g. "Project", "Company channel"). Absent on the legacy payload. */
   subtitle?: string | null;
-  /** True for the single channel created at company genesis (named after the
-   * company slug) — the ONLY `scope: "company"` channel that carries Office,
-   * CompanyHero, and company settings. Every other `scope: "company"` channel
-   * is a plain team channel. Optional/absent on older server payloads; use
-   * `isCompanyHomeChannel()` below rather than reading this field directly, so
-   * callers get the fallback behavior while the backend rolls the field out. */
+  /** True for the single channel created at company genesis — the ONLY
+   * `scope: "company"` channel that carries Office, CompanyHero, and company
+   * settings. Every other `scope: "company"` channel is a plain team channel.
+   * Optional/absent on older server payloads; use `isCompanyHomeChannel()`
+   * below rather than reading this field directly, so callers also get the
+   * `homeChannelId` match. */
   isCompanyHome?: boolean;
 }
 
-/** Resolves whether a channel is THE company home channel (one per company,
- * created at company genesis, named after the company slug). Prefers the
- * server-supplied `isCompanyHome` flag; falls back to
- * `scope === "company" && name === companySlug` while the backend lane that
- * populates `isCompanyHome` is still rolling out. Do not use `scope ===
- * "company"` alone to detect "the company channel" — many team channels share
- * that scope. */
+/** Resolves whether a channel is THE company home channel (exactly one per
+ * company, its id given by `homeChannelId` on the company/workspace record
+ * from the roster). True when either the server-supplied `isCompanyHome`
+ * flag is set on the channel, OR the channel's id matches the company's
+ * `homeChannelId`. No name/slug matching — the id is authoritative. */
 export function isCompanyHomeChannel(
-  channel: Pick<Channel, "scope" | "name" | "isCompanyHome">,
-  companySlug: string | null | undefined,
+  channel: Pick<Channel, "channelId" | "isCompanyHome">,
+  homeChannelId: string | null | undefined,
 ): boolean {
-  if (typeof channel.isCompanyHome === "boolean") return channel.isCompanyHome;
-  return channel.scope === "company" && !!companySlug && channel.name === companySlug;
+  if (channel.isCompanyHome === true) return true;
+  const home = (homeChannelId ?? "").trim();
+  return !!home && channel.channelId.trim() === home;
 }
 
 /** A group-DM participant as surfaced on the channels list payload — just enough

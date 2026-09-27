@@ -245,6 +245,8 @@ describe("US-004: type:thread wake refreshes an open reply panel", () => {
       sendChannelMessage: async () => {},
       sendDm: async () => {},
       searchMessages: async () => ({ results: [] }),
+      logToFile: async () => {},
+      ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     };
     const notificationsApi: NotificationsApi = {
       fetchNotifications: async () => ({ notifications: [], unreadCount: 0 }),

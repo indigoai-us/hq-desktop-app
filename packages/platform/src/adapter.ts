@@ -354,6 +354,8 @@ export type DmRequestAction = "accept" | "decline" | "block";
 export interface ListContactsOptions {
   /** Restrict the roster to one company (`GET /v1/notify/contacts?companyUid=`). */
   companyUid?: string | null;
+  /** US-006: when true, contacts with an agent-only last message show their preview. */
+  showBotMessages?: boolean;
 }
 
 /** Optional owner/admin scope for channel-directory listings. */
@@ -876,6 +878,14 @@ export interface CompanyApi {
   getSummary(slug: string): AdapterPromise<Json>;
   getBoard(slug: string): AdapterPromise<Json>;
   getActivity(slug: string): AdapterPromise<Json[]>;
+  /**
+   * Idempotent create-or-adopt of a company's single home channel
+   * (`POST /v1/companies/{uid}/home-channel`). The server creates the
+   * channel on the company's first call, or returns the existing one on any
+   * later call — never duplicates it. Takes the company's cloud uid (not
+   * slug) since callers already have it from the workspace roster.
+   */
+  ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
 }
 
 export interface ProjectsApi {
@@ -1179,9 +1189,24 @@ export interface AppShellApi {
     body: string;
     route?: string;
   }): AdapterPromise<void>;
+  /**
+   * Append one greppable, tagged line to the desktop support log
+   * (`~/.hq/logs/hq-sync.log` on the desktop host, `ui:{tag} {message}`).
+   * Diagnostic only — best-effort, never throws. Hosts without a real log
+   * file (e.g. web) fall back to console output.
+   */
+  logToFile(tag: string, message: string): AdapterPromise<void>;
 }
 
 /** Desktop-only group (capability: canSelfUpdate). */
+/** Gate status payload from update_gate_status command. */
+export interface UpdateGateStatus {
+  pendingVersion: string | null;
+  decision: unknown;
+  reasons: string[];
+  focused: boolean;
+}
+
 export interface UpdatesApi {
   getVersions(): AdapterPromise<VersionInfo>;
   checkForUpdates(): AdapterPromise<Json>;
@@ -1201,6 +1226,10 @@ export interface UpdatesApi {
   installCliUpdate(): AdapterPromise<void>;
   dismissCliUpdate(): AdapterPromise<void>;
   availableChannels(): AdapterPromise<string[]>;
+  /** Query the focus+hold gate state (and pending version). */
+  queryUpdateGate(): AdapterPromise<UpdateGateStatus>;
+  /** Install the deferred pending update (blocked while any hold is active). */
+  installPendingUpdate(): AdapterPromise<void>;
 }
 
 /** Explicit native install intent. Registry installs use a different CLI path. */
@@ -1715,6 +1744,8 @@ export interface CallsApi {
 export interface PlatformAdapter {
   /** Which host this adapter targets. */
   readonly kind: "web" | "desktop";
+  /** Release any host-owned process registrations when the adapter is torn down. */
+  readonly dispose?: () => Promise<void>;
   /** Capability flags for this platform. */
   readonly capabilities: Readonly<Capabilities>;
   /** Convenience helper over `capabilities`. */

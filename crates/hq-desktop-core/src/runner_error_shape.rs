@@ -242,7 +242,24 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// (`skill-registration-failed`), which this app already forwards opaquely.
 /// No new vocabulary arm is needed, but the source-version marker moves with
 /// the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.53";
+///
+/// The `~6.16.53` -> `~6.18.5` bump was re-derived from both published runner
+/// trees (`git diff v6.16.53..v6.18.5 -- src`, excluding tests). It adds five
+/// literal `this.name` identities and removes none, and no `readonly name`
+/// identity changes: `RealtimeAdmissionTimeout` and `RealtimeDrainBurst`
+/// (src/bin/sync-runner-watch-loop.ts, rejected from a queued realtime pass and
+/// rethrown by the coordinator), `ObjectLockChecksumRequired`
+/// (src/lib/s3-content-checksum.ts, rethrown from the upload PUT in
+/// src/object-io.ts), `ObjectBodyIdleTimeoutError` (src/object-io.ts, emitted
+/// by the pull leg in src/cli/sync.ts as a diagnostic `type: "error"` event
+/// through `describeError`), and `SyncDeviceLimitError`
+/// (src/sync/push-transport.ts, handled by event-sync like the already-listed
+/// `RealtimeUnavailableError`). Each gets a named cause arm, so
+/// `HQ_CLOUD_IDENTITIES` grows from 52 to 57 with the same
+/// `PushScopeForbiddenError` exclusion. `src/bin/sync-runner-events.ts` is
+/// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
+/// source-version marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.5";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -1377,6 +1394,19 @@ pub enum RunnerErrorCause {
     WindowsRenameBlocked,
     SessionManagerPluginLaunch,
     TerminalSessionTimeout,
+    // Added when the runner pin moved to ~6.18.5 — the five identities hq-cloud
+    // gained between 6.16.53 and 6.18.5: the realtime coordinator's admission
+    // deadline and drain-burst classes (`RealtimeAdmissionTimeout`,
+    // `RealtimeDrainBurst`, src/bin/sync-runner-watch-loop.ts), the Object Lock
+    // PUT checksum refusal (`ObjectLockChecksumRequired`,
+    // src/lib/s3-content-checksum.ts), the stalled download body
+    // (`ObjectBodyIdleTimeoutError`, src/object-io.ts), and the realtime device
+    // cap (`SyncDeviceLimitError`, src/sync/push-transport.ts).
+    RealtimeAdmissionTimeout,
+    RealtimeDrainBurst,
+    ObjectLockChecksumRequired,
+    ObjectBodyIdleTimeout,
+    SyncDeviceLimit,
     // ── AWS S3/STS error names ────────────────────────────────────────────────
     AccessDenied,
     NoSuchKey,
@@ -1459,7 +1489,7 @@ pub enum RunnerErrorCause {
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 99] = [
+    pub const ALL: [RunnerErrorCause; 104] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
@@ -1512,6 +1542,11 @@ impl RunnerErrorCause {
         Self::WindowsRenameBlocked,
         Self::SessionManagerPluginLaunch,
         Self::TerminalSessionTimeout,
+        Self::RealtimeAdmissionTimeout,
+        Self::RealtimeDrainBurst,
+        Self::ObjectLockChecksumRequired,
+        Self::ObjectBodyIdleTimeout,
+        Self::SyncDeviceLimit,
         Self::AccessDenied,
         Self::NoSuchKey,
         Self::NoSuchBucket,
@@ -1622,6 +1657,11 @@ impl RunnerErrorCause {
             // every emitted value below).
             Self::SessionManagerPluginLaunch => "terminal_plugin_launch",
             Self::TerminalSessionTimeout => "terminal_wait_timeout",
+            Self::RealtimeAdmissionTimeout => "realtime_admission_timeout",
+            Self::RealtimeDrainBurst => "realtime_drain_burst",
+            Self::ObjectLockChecksumRequired => "object_lock_checksum_required",
+            Self::ObjectBodyIdleTimeout => "object_body_idle_timeout",
+            Self::SyncDeviceLimit => "sync_device_limit",
             Self::AccessDenied => "access_denied",
             Self::NoSuchKey => "no_such_key",
             Self::NoSuchBucket => "no_such_bucket",
@@ -1751,6 +1791,16 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "WindowsRenameBlockedError" => RunnerErrorCause::WindowsRenameBlocked,
         "SessionManagerPluginLaunchError" => RunnerErrorCause::SessionManagerPluginLaunch,
         "TerminalSessionTimeoutError" => RunnerErrorCause::TerminalSessionTimeout,
+        // Added at the ~6.18.5 pin: realtime coordinator admission deadline and
+        // drain burst (src/bin/sync-runner-watch-loop.ts), the Object Lock PUT
+        // checksum refusal (src/lib/s3-content-checksum.ts), the stalled
+        // download body (src/object-io.ts), and the realtime device cap
+        // (src/sync/push-transport.ts).
+        "RealtimeAdmissionTimeout" => RunnerErrorCause::RealtimeAdmissionTimeout,
+        "RealtimeDrainBurst" => RunnerErrorCause::RealtimeDrainBurst,
+        "ObjectLockChecksumRequired" => RunnerErrorCause::ObjectLockChecksumRequired,
+        "ObjectBodyIdleTimeoutError" => RunnerErrorCause::ObjectBodyIdleTimeout,
+        "SyncDeviceLimitError" => RunnerErrorCause::SyncDeviceLimit,
         // AWS S3/STS error names (surfaced as `e.name` by the SDK, or as a
         // `code=`/`cause=` value by older wrappers). hq-cloud's own
         // `AccessDeniedError` class shares the `access_denied` identity.
@@ -3260,6 +3310,8 @@ mod tests {
         "JournalCheckpointError",
         "MultipartAbortError",
         "MultipartSourceChangedError",
+        "ObjectBodyIdleTimeoutError",
+        "ObjectLockChecksumRequired",
         "OperationLockUnwritableError",
         "OperationLockedError",
         "OutpostHttpError",
@@ -3267,7 +3319,9 @@ mod tests {
         "PresignPreconditionMissing",
         "PushEventDecodeError",
         "RateLimited",
+        "RealtimeAdmissionTimeout",
         "RealtimeConflictError",
+        "RealtimeDrainBurst",
         "RealtimeEnrollmentUnavailableError",
         "RealtimeUnavailableError",
         "RefreshLockTimeoutError",
@@ -3281,6 +3335,7 @@ mod tests {
         "StateStoreCorruptionError",
         "StateStoreLockError",
         "StateStoreReducerError",
+        "SyncDeviceLimitError",
         "SyncManifestContractError",
         "SyncMutationNotEnrolledError",
         "TerminalSessionTimeoutError",
@@ -3311,9 +3366,12 @@ mod tests {
         // RealtimeUnavailableError, WindowsRenameBlockedError, and the two
         // outposts terminal classes SessionManagerPluginLaunchError +
         // TerminalSessionTimeoutError), from 50 to 51 at ~6.16.11 (added
-        // VaultCredentialScopeError), and from 51 to 52 at ~6.16.23 (added
-        // SyncManifestContractError, the manifest-upload contract class).
-        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 52);
+        // VaultCredentialScopeError), from 51 to 52 at ~6.16.23 (added
+        // SyncManifestContractError, the manifest-upload contract class), and
+        // from 52 to 57 at ~6.18.5 (added RealtimeAdmissionTimeout,
+        // RealtimeDrainBurst, ObjectLockChecksumRequired,
+        // ObjectBodyIdleTimeoutError, and SyncDeviceLimitError).
+        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 57);
         let mut tokens = std::collections::BTreeSet::new();
         for name in HQ_CLOUD_IDENTITIES {
             // A realistic describeError rendering: the leading class name + prose.
@@ -3339,7 +3397,7 @@ mod tests {
                 cause.as_str()
             );
         }
-        assert_eq!(tokens.len(), 52, "expected 52 distinct cause tokens");
+        assert_eq!(tokens.len(), 57, "expected 57 distinct cause tokens");
     }
 
     #[test]

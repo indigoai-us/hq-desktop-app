@@ -333,6 +333,12 @@ export interface DmContactInput {
    * activity nor lights an unread badge.
    */
   agentJoinOnly?: boolean;
+  /**
+   * Audience of the last message: "human" | "agent" | "both". Absent on
+   * older servers. US-006 reads this to decide whether to show or suppress
+   * the preview in the DM rail (default: hide agent-only previews).
+   */
+  lastMessageAudience?: string | null;
 }
 
 export interface InboxEventInput {
@@ -589,12 +595,12 @@ function newerIso(
 export interface NormalizeOptions {
   pinnedIds?: ReadonlySet<string> | readonly string[];
   /**
-   * companyUid → slug, used only as the desktop fallback for resolving
-   * `isCompanyHome` on channels the server hasn't yet tagged (see
-   * `isCompanyHomeChannel()` in channels.ts). Absent/empty is safe — rows
+   * companyUid → homeChannelId, from the roster (`Workspace.homeChannelId`).
+   * Used to resolve `isCompanyHome` by channel id — see
+   * `isCompanyHomeChannel()` in channels.ts. Absent/empty is safe — rows
    * simply carry whatever `channel.isCompanyHome` the server sent (or none).
    */
-  companySlugByUid?: ReadonlyMap<string, string> | Record<string, string>;
+  homeChannelIdByUid?: ReadonlyMap<string, string> | Record<string, string>;
   /** Local DM activity dots (personUid set). Absent-safe. */
   dmDots?: ReadonlySet<string> | readonly string[];
   /** Recently opened pair threads — stay conversations after mark-read. */
@@ -642,15 +648,15 @@ export function normalizeChannel(
     parseActivityMs(channel.lastMessageAt),
   );
   const unread = Math.max(0, channel.unread ?? 0);
-  const companySlug = channel.companyUid
-    ? options.companySlugByUid instanceof Map
-      ? options.companySlugByUid.get(channel.companyUid)
-      : (options.companySlugByUid as Record<string, string> | undefined)?.[
+  const homeChannelId = channel.companyUid
+    ? options.homeChannelIdByUid instanceof Map
+      ? options.homeChannelIdByUid.get(channel.companyUid)
+      : (options.homeChannelIdByUid as Record<string, string> | undefined)?.[
           channel.companyUid
         ]
     : undefined;
   const isCompanyHome =
-    channel.scope === "company" ? isCompanyHomeChannel(channel, companySlug) : false;
+    channel.scope === "company" ? isCompanyHomeChannel(channel, homeChannelId) : false;
 
   return {
     id,
@@ -1055,15 +1061,38 @@ export function applyChannelNotifyLevel(
  * Apply a reconciled directory row list onto the sidebar channel state:
  * the row set is the full authoritative list (the reconciler already folded
  * snapshot/changed/removed), each row enriched from its previous channel.
+ *
+ * Company-home channels are the one exception to "the incoming set is
+ * authoritative": an intermittent server hiccup (see
+ * `~/.hq/logs/hq-sync.log` `MESSAGES_CHANNELS_BODY_READ_FAIL` /
+ * `DM_NOTIFY_CHAN_POLL_ERROR`) can make a SNAPSHOT refresh come back missing
+ * a channel the client already resolved, even though nothing actually
+ * changed server-side. For a normal channel that just means a stale row
+ * briefly lingers — for a company's home channel it means the sidebar's
+ * "Companies" section silently reverts to "still connecting" and clicking it
+ * stops working again after having worked a moment ago (reported by Jacob:
+ * companies flip to "no home channel" after a refresh). A previously-known
+ * home channel is carried forward when it's simply absent from `rows` —
+ * never dropped for a transient/incomplete fetch. It disappears for real
+ * once the caller learns (via a row that DOES arrive) that it stopped being
+ * the home channel, or via `removeChannel` on an explicit deletion — both
+ * unaffected by this carry-forward.
  */
 export function applyDirectoryRows(
   rows: ReadonlyArray<ChannelDirectoryRow>,
   prevChannels: ReadonlyArray<Channel>,
 ): Channel[] {
   const prevById = new Map(prevChannels.map((c) => [c.channelId, c]));
-  return rows.map((row) =>
+  const seenIds = new Set(rows.map((row) => row.channelId));
+  const next = rows.map((row) =>
     directoryRowToChannel(row, prevById.get(row.channelId)),
   );
+  const strandedHomeChannels = prevChannels.filter(
+    (c) => c.isCompanyHome === true && !seenIds.has(c.channelId),
+  );
+  return strandedHomeChannels.length > 0
+    ? [...next, ...strandedHomeChannels]
+    : next;
 }
 
 /**
@@ -1630,49 +1659,160 @@ export function findCompanyHomeRow(
 export interface CompanySectionRow {
   companyUid: string;
   label: string;
+  /** Company slug, for log lines (`[companies] open company=<slug> …`). */
+  slug?: string | null;
   iconUrl?: string | null;
-  /** The company's home-channel row, when one exists yet. Absent when the
-   * company has no home channel (new/legacy company still provisioning) —
-   * the section shows it disabled with a reason rather than hiding it, so a
-   * newly-joined company never silently disappears. */
-  homeRow: ConversationRow | null;
+  /** The company's home-channel id, straight from the roster
+   * (`Workspace.homeChannelId`) — clients open it directly by id, no
+   * client-side row lookup. `null` when the company has no home channel yet
+   * (new/legacy company still provisioning); the section shows it disabled
+   * with a reason rather than hiding it, so a newly-joined company never
+   * silently disappears. */
+  homeChannelId: string | null;
+}
+
+/** Default number of companies the "Companies" section shows when the user
+ * has not pinned any (ranked by `rankCompaniesByActivity`). */
+export const DEFAULT_COMPANY_SECTION_LIMIT = 3;
+
+/**
+ * Activity score for one company, used to rank the "Companies" section's
+ * default top-N view. Rule (documented per the brief):
+ *
+ *  1. Prefer the company's home channel's `messageActivityAt` — the latest
+ *     DURABLE MESSAGE timestamp (not `lastActivityAt`, which falls back to
+ *     `createdAt` for ordering and would rank a never-talked-in company
+ *     above a genuinely active one that merely lacks a resolved home row).
+ *  2. When the home channel isn't resolved yet, or has never carried a
+ *     message, fall back to the busiest OTHER `channelScope === "company"`
+ *     row for that company (team channels) — a company can be very active in
+ *     its team channels while its home channel sits quiet.
+ *  3. A company with no activity anywhere scores 0 and sorts last.
+ */
+export function companyActivityScore(
+  companyUid: string,
+  rows: ReadonlyArray<ConversationRow>,
+): number {
+  const home = findCompanyHomeRow(rows, companyUid);
+  const homeActivity = home?.messageActivityAt ?? 0;
+  if (homeActivity > 0) return homeActivity;
+  let best = 0;
+  for (const row of rows) {
+    if (row.kind !== "channel") continue;
+    if ((row.channelScope ?? "") !== "company") continue;
+    if ((row.companyUid ?? "").trim() !== companyUid.trim()) continue;
+    best = Math.max(best, row.messageActivityAt ?? 0);
+  }
+  return best;
 }
 
 /**
- * Resolves the sidebar's "Companies" section: one row per selected company,
- * each carrying its home-channel row (if any) so the caller can open it.
+ * Companies ordered by `companyActivityScore`, most active first. Ties break
+ * by label (then uid) so ordering is deterministic for tests and stable
+ * across renders when scores are equal (e.g. two companies with zero
+ * activity).
+ */
+export function rankCompaniesByActivity<
+  T extends { companyUid: string; label: string },
+>(companies: ReadonlyArray<T>, rows: ReadonlyArray<ConversationRow>): T[] {
+  return companies.slice().sort((a, b) => {
+    const diff =
+      companyActivityScore(b.companyUid, rows) -
+      companyActivityScore(a.companyUid, rows);
+    if (diff !== 0) return diff;
+    return (
+      a.label.localeCompare(b.label) || a.companyUid.localeCompare(b.companyUid)
+    );
+  });
+}
+
+/**
+ * Reinterpret the OLD `pinnedCompanySelection` persisted shape — "which
+ * companies to SHOW" (`null` = show every company; an array = the exact
+ * visible set, including a deliberate empty array for "hide all") — as the
+ * NEW true-pin semantics ("which companies the user explicitly pinned;
+ * absent/empty = no pins yet, so the section falls back to the top-N by
+ * activity").
  *
- * Selection semantics (product decision, step 8):
- * - `selection === null` (no persisted pref yet) → every company the user
- *   belongs to is shown. This also covers "newly joined companies show by
- *   default" since a fresh join has no pref to exclude it.
- * - `selection` is an array → only companies whose uid is listed are shown,
- *   in `companies` order. An empty array is a valid, deliberate "hide all".
- * - A company with no resolvable home-channel row is still included (with
- *   `homeRow: null`) so the section can render it disabled with a reason,
- *   per the brief's "hide or show disabled" choice — this implementation
- *   shows disabled so the user isn't left wondering where a company went.
+ * Migration decision (documented per the brief): a stored array that names
+ * EVERY company the caller belongs to, or an empty array, reads as the OLD
+ * default state ("nothing customized" / "hid everything") rather than
+ * deliberate intent to pin a narrow set — both are discarded (become `null`,
+ * "no pins", so the new top-N default takes over instead of pinning
+ * everything or showing nothing). A stored array that is a PROPER, NON-EMPTY
+ * subset of the caller's companies reads as genuine intent to narrow the
+ * list down to specific companies, and is carried forward as the initial
+ * pinned set — the closest available approximation of "the companies this
+ * user cares about," which is exactly what a pin now means.
+ */
+export function migratePinnedCompanySelection(
+  oldSelection: readonly string[] | null,
+  allCompanyUids: readonly string[],
+): string[] | null {
+  if (oldSelection === null) return null;
+  const selected = new Set(
+    oldSelection.map((uid) => uid.trim()).filter(Boolean),
+  );
+  if (selected.size === 0) return null;
+  const all = new Set(
+    allCompanyUids.map((uid) => uid.trim()).filter(Boolean),
+  );
+  if (all.size > 0) {
+    let coversAll = true;
+    for (const uid of all) {
+      if (!selected.has(uid)) {
+        coversAll = false;
+        break;
+      }
+    }
+    if (coversAll) return null;
+  }
+  return [...selected];
+}
+
+/**
+ * Resolves the sidebar's "Companies" section: one row per shown company, each
+ * carrying its home-channel row (if any) so the caller can open it.
+ *
+ * Selection semantics (step 8, revised per the follow-up brief):
+ * - `pinnedCompanyUids` non-empty → show ONLY the pinned companies, in
+ *   `companies` order — pins always win, never mixed with the top-N default.
+ * - `pinnedCompanyUids` absent/empty (`null` or `[]`, no true pins yet) →
+ *   show the `limit` most active companies, ranked by
+ *   `rankCompaniesByActivity`.
+ * - A company with no `homeChannelId` yet is still included (with
+ *   `homeChannelId: null`) so the section can render it disabled with a
+ *   reason, per the brief's "hide or show disabled" choice — this
+ *   implementation shows disabled so the user isn't left wondering where a
+ *   company went.
  */
 export function resolveCompanySectionRows(
   companies: ReadonlyArray<{
     companyUid: string;
     label: string;
+    slug?: string | null;
     iconUrl?: string | null;
+    homeChannelId?: string | null;
   }>,
   rows: ReadonlyArray<ConversationRow>,
-  selection: readonly string[] | null,
+  pinnedCompanyUids: readonly string[] | null,
+  limit: number = DEFAULT_COMPANY_SECTION_LIMIT,
 ): CompanySectionRow[] {
-  const wanted =
-    selection === null ? null : new Set(selection.map((s) => s.trim()).filter(Boolean));
-  return companies
-    .filter((c) => c.companyUid.trim())
-    .filter((c) => wanted === null || wanted.has(c.companyUid.trim()))
-    .map((c) => ({
-      companyUid: c.companyUid,
-      label: c.label,
-      iconUrl: c.iconUrl ?? null,
-      homeRow: findCompanyHomeRow(rows, c.companyUid),
-    }));
+  const cleaned = companies.filter((c) => c.companyUid.trim());
+  const pinned = new Set(
+    (pinnedCompanyUids ?? []).map((uid) => uid.trim()).filter(Boolean),
+  );
+  const chosen =
+    pinned.size > 0
+      ? cleaned.filter((c) => pinned.has(c.companyUid.trim()))
+      : rankCompaniesByActivity(cleaned, rows).slice(0, Math.max(0, limit));
+  return chosen.map((c) => ({
+    companyUid: c.companyUid,
+    label: c.label,
+    slug: c.slug ?? null,
+    iconUrl: c.iconUrl ?? null,
+    homeChannelId: (c.homeChannelId ?? "").trim() || null,
+  }));
 }
 
 /**

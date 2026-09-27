@@ -65,7 +65,7 @@ export const NAVIGATION_INVENTORY_FILES = [
 
 /** Assignments of `view` in DesktopApp.svelte. Comparisons (`view ===`) are excluded. */
 export const DESKTOP_APP_VIEW_ASSIGN_RE = /\bview = (?:view ===|"[^"]+")/g;
-export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 13;
+export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 14;
 
 /** Direct `navigation.navigate(` calls in HqWorkWorkShell (native/host seams). */
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
@@ -133,6 +133,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openExtraPage: "push",
   openDmRequests: "push",
   handleDmRequestResolved: "push",
+  // Patches the in-memory roster / notifies the host so chrome resolves
+  // immediately; the selected conversation doesn't change.
+  handleHomeChannelResolved: "none",
   closeSettings: "replace",
   closeFiles: "replace",
   applyEmbeddedNavigation: "push",
@@ -143,6 +146,11 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   onMessagePerson: "push",
   onOpenSettingsEvent: "push",
   onEmbeddedNavigation: "push",
+  handleShowBotMessagesChange: "none",
+  // Update-gate sidebar card: not navigation.
+  handleUpdateInstall: "none",
+  handleUpdateDismiss: "none",
+  applyUpdateGateStatus: "none",
 };
 
 export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
@@ -681,6 +689,16 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
   {
+    id: "projects-page",
+    file: SHARED_SHELL_FILE,
+    needle: '{#if view === "projects"}',
+    destinationKind: "projects",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Switching company on the Projects page is a history step.",
+  },
+  {
     id: "files-explorer",
     file: SHARED_SHELL_FILE,
     needle: '{:else if view === "explorer"}',
@@ -693,7 +711,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "shared-files-overlay",
     file: SHARED_SHELL_FILE,
-    needle: '{#if view === "shared-files"}',
+    needle: '{:else if view === "shared-files"}',
     destinationKind: "shared-files",
     history: "push",
     host: "shared-shell",

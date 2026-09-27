@@ -19,6 +19,221 @@ The release moves it under the version it ships in.
   and a very large note shows its first part with a button to open the rest.
 - Markdown documents of a few megabytes no longer crash the reading view.
 
+## [0.10.345] — 2026-09-27
+
+- Stable releases now keep their published notes out of Unreleased. The changelog
+  check also catches repeated notes before the next tag is cut.
+- On Windows, the CLI updater defers a busy target when no holder is found. It retries on
+  later launches and reports a persistent failure after three attempts.
+- Automatic Core updates wait for startup cache preparation. If it times out, the
+  update is deferred to a later automatic check. Manual updates remain unchanged.
+- Setup cancellation treats SIGTERM EPERM as clean only when a full process group
+  probe confirms no live members. Live groups and SIGKILL errors still surface.
+
+## [0.10.344] — 2026-09-27
+
+- On Windows, setup uses Winget for Git and checks qmd's launcher before marking setup complete.
+- Windows setup waits for Git before installing qmd and rechecks Git after a specific WinGet failure.
+- Updater restarts now find Node from the app-managed toolchain, preventing completed installations from reopening setup when Node is available.
+- Updated in-app help and docs links to point to docs.hq.computer (the new docs domain). The old docs.getindigo.ai address continues to work.
+
+## [0.10.342] — 2026-09-27
+
+- When enabled, cancelling setup treats an installer process group with no live
+  members as already cleaned up instead of reporting a cleanup error. The
+  rollout flag is off by default.
+
+## [0.10.341] — 2026-09-26
+
+- When enabled, automatic Core updates wait for startup cache preparation before
+  running the rescue. If the wait limit expires, the update moves to a later
+  automatic check; manual updates keep their current behavior. The rollout flag
+  defaults off.
+- Windows releases no longer fail to save the prebuilt native app, because it is now compressed and trimmed to stay under GitHub's 2 GiB file limit.
+
+## [0.10.340] — 2026-09-26
+- Update holds now apply to manual installs too, and a recording that ends with an error no longer blocks updates.
+- When sync moves unchanged company files into `.hq/scope-quarantine`, the Git mirror keeps them out of deletion commits. The `desktop.mirror-quarantine-move-not-deletion` flag controls this behavior and is off by default.
+- Release builds no longer recompile the native app every time. The job that
+  prepares the native pieces after each merge now installs its build targets
+  correctly and is no longer cancelled by the next merge, so a normal release
+  assembles from the prepared pieces instead of building them from scratch.
+- Core tests no longer start `npx` in the background or leave npm cache files
+  in temporary home folders.
+
+## [0.10.339] — 2026-09-26
+
+- HQ no longer restarts for an update while you are using it or while a meeting is being recorded. A card in the sidebar lets you choose when to apply pending updates.
+
+## [0.10.337] — 2026-09-26
+
+- When Windows blocks an HQ CLI update with EBUSY and HQ's lock check finds no
+  holder, HQ keeps the current CLI available and retries on later launches. It
+  reports a persistent failure after three attempts.
+
+## [0.10.336] — 2026-09-26
+
+- Interface fixes can now reach installed apps within a couple of minutes,
+  without a new installer or a restart. The app downloads a signed interface
+  update, checks it was built for this exact version of the app, and offers
+  "Interface updated — reload" (or reloads on its own when nothing would be
+  lost). If an update fails to start, the app goes back to the previous
+  interface by itself. Off by default for now; Settings shows which interface
+  version is running.
+- When the app shows sign-in or onboarding to someone who already finished
+  setup, its error report now records which setup checks passed or failed.
+  The report contains short fixed values only, with no file paths or account
+  details. This helps us find why some people are sent back to onboarding
+  after an update.
+
+## [0.10.334] — 2026-09-26
+
+- The sync engine moves to hq-cloud 6.18.5, the same version the `hq` command
+  line tool now uses, so Update / Restore and `hq rescue` keep running the same
+  engine. It brings the sync fixes released since 6.16.53.
+
+## [0.10.333] — 2026-09-26
+
+- On Windows, setup no longer fails when an old content folder link points
+  to a folder that has since been removed. Setup removes the old link and
+  creates it again. If linking still fails, the error report now says which
+  step failed and why.
+
+## [0.10.331] — 2026-09-26
+
+- New "Record meetings automatically" switch in Settings → Meetings. When it
+  is on, HQ starts recording as soon as it detects a call — Slack huddles,
+  Zoom, Google Meet, Teams and Webex — instead of waiting for you to click
+  Record. It is off by default. Calls a scheduled HQ bot is already recording
+  are not recorded twice, and you still get the "meeting detected" alert.
+- On Windows, the HQ CLI updater identifies the process holding its package
+  files, waits for HQ's own processes, and retries around short-lived scanners.
+  If you have the HQ CLI open in a terminal, the app leaves it running and
+  checks for the update again later.
+
+## [0.10.330] — 2026-09-26
+
+- Releases no longer rebuild the native app when only the interface changed.
+  The compiled app shell for macOS, Windows x64 and Windows arm64 is built
+  once per change to the native sources, cached, and reused across releases;
+  each release only builds the interface, stamps the release version into the
+  bundle (macOS Info.plist, Windows exe version and installer metadata, and a
+  `version.json` the app reads at runtime), then signs and packages. A release
+  with a warm cache takes about 8 minutes end to end instead of roughly 30.
+  Publishing fails if any bundle carries a shell that does not match the
+  tagged sources. If the new pipeline ever needs to be bypassed, dispatch the
+  release manually with `legacy_build: true` to use the old single-job build
+  on both platforms. No visible change for users.
+- The app now loads its interface from the installed bundle at runtime and
+  reports the installed release's version (update checks, tray menu,
+  telemetry, request headers) even when its shell was compiled for an earlier
+  release. No visible change for users.
+
+## [0.10.329] — 2026-09-25
+
+- The project board is back. A new Projects page (Cmd+6, or the board icon in
+  the title bar) shows one company's projects at a time as a board or a list.
+  Opening a project shows its tasks by status, with task details, files and
+  activity. Pick the company at the top of the page. It starts on the company
+  of the channel you have open.
+- A company's home channel now has a "Projects" tab next to Chat in the
+  header. Clicking it swaps the message feed for that company's project board
+  right there in the channel — the header (hero, title, gear, bell, member
+  pill, and the Chat | Projects pills) stays put and nothing shifts size.
+  Chat brings the feed and composer back.
+- Fixed the Library header's Back button still overlapping the green
+  traffic-light button on macOS — the shared gutter that keeps overlay
+  headers (Library, Settings, Meetings, Notifications, Shared Files, DM
+  requests) clear of the native window buttons was only 6px wider than the
+  button cluster itself, thin enough to overlap on some renders. Widened it
+  to a safer margin everywhere it's used, and added a test covering the DM
+  requests panel, which had the shared inset already but wasn't checked here.
+- Failed Windows Core updates now include a bounded rsync error class and
+  translated path shape in diagnostics, without adding local paths.
+
+## [0.10.328] — 2026-09-25
+
+- Fixed the "Setting up…" spinner some Companies rows got stuck on: the
+  company board, activity feed, and home-channel requests were missing the
+  server's `/v1` URL prefix, so those requests always failed. Added a build-time
+  check that fails CI if the app ever calls a server route hq-pro does not
+  register, so this class of bug cannot ship again silently.
+- Fixed layout shifts when opening a company's home channel — the wallpaper
+  hero, the member-count and mute controls, and the message skeleton now hold
+  their final size from the first frame, so nothing jumps as the company's
+  real name, member count, and messages arrive.
+- Fixed a bug where clicking a company in the sidebar's "Companies" section
+  before it had a home channel yet showed a raw server error
+  ("home-channel HTTP 404 Not Found: ...") under the row — the request was
+  missing `/v1` in its URL. Clicking now quietly retries in the background
+  (with a brief "Setting up…" state), and if it still can't connect, the row
+  shows a plain "Tap to retry" hint instead of any error text — clicking it
+  again always retries.
+- Fixed the company channel header's settings gear rendering with a heavy,
+  doubled outline (a malformed SVG path). Switched the mute control from a
+  speaker icon to a bell (bell-slash when muted), to match the rest of the
+  header icon set.
+
+## [0.10.327] — 2026-09-25
+
+- Simplified how the desktop app finds a company's main channel: it now opens
+  the exact channel the server names (`homeChannelId`), instead of guessing
+  from the channel's scope and name. This removes the old on-demand lookup,
+  retry state, and spinner in the sidebar's "Companies" section — a company's
+  home channel opens immediately, or the row shows "No company channel yet."
+
+## [0.10.326] — 2026-09-25
+
+- On Windows, HQ waits for its own command processes to finish before replacing
+  the HQ CLI package and retries once if npm still reports a locked install
+  directory.
+
+## [0.10.325] — 2026-09-25
+
+- Meeting detection now runs on the newest Recall recording engine, which officially supports Zoom and Teams meetings joined from Chrome, not only from the Zoom and Teams apps. Google Meet in a browser was already supported. Safari, Edge, and Firefox are still not supported for Zoom or Teams, so join from Chrome (or a Chromium browser like Arc or Brave) if you want HQ to notice the meeting.
+
+- Fixed a bug where running the HQ installer after the desktop app was re-signed
+  (or after any macOS keychain read error such as errSecAuthFailed) deleted the
+  sign-in token file at ~/.hq/cognito-tokens.json, logging users out even though
+  the desktop app and CLI had kept them signed in. The installer now treats the
+  token file as a fallback when the keychain entry is missing, invalid, or
+  unreadable; the file is deleted only on explicit sign-out. When both the
+  keychain and the file hold valid tokens, the newer token (by expiresAt) wins.
+
+## [0.10.324] — 2026-09-25
+
+- Channel @mention notifications now work on installs whose local settings file does not record your person ID, and the first mention in a channel after the app starts now notifies too.
+- The desktop app now asks for (and transparently decodes) compressed
+  responses from the server, so the same data moves over the wire faster —
+  most noticeable on the channel list for people in large companies.
+
+## [0.10.323] — 2026-09-24
+
+- Fixed the channel list failing to load for people in companies with a lot of
+  channels. The app was giving that request the same short timeout as every
+  other one, so once a company's channel roster got large enough, the response
+  legitimately took longer to arrive and the request aborted partway through
+  with a decode error. It now gets a longer timeout of its own.
+- HQ Sync tells you to verify your email before it can show pending company invites.
+- Fixed a bug where every company in the sidebar's "Companies" section showed
+  "no home channel yet," even companies with a working home channel. The
+  fallback check that resolves a home channel while the server catches up was
+  comparing the channel's raw name (which carries a leading "#", e.g.
+  "#indigo") against the bare company slug ("indigo") — they could never
+  match. The "Companies" section rows are now compact (name only, single
+  line) and default to your 3 most active companies by recent message
+  activity; pinning any company from the header's pin menu switches the
+  section to show only your pinned companies. A company whose home channel
+  isn't loaded yet is now resolved on demand instead of staying stuck.
+- Messages now separates people from bots. A new "Show bot messages" toggle at
+  the top of Messages is off by default, so your inbox, unread badge, and
+  notifications only carry messages meant for you. Agent-to-agent chatter is one
+  toggle away and never counts toward unread or fires a notification. A thread
+  whose recent messages are all from bots stays listed and shows how many are
+  hidden; turning the toggle on reveals them with a small "agent" label.
+
+## [0.10.322] — 2026-09-24
+
 - Each company now has exactly one "company home" channel (settings,
   wallpaper). Other channels created inside a company are plain team
   channels. A new "Companies" section in the sidebar pins each company's

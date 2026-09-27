@@ -16,6 +16,7 @@ import { setTheme } from '@tauri-apps/api/app';
 import { beforeSend } from "./sentry-before-send";
 import { installDesktopZoom } from './lib/desktopZoom';
 import { installAppearancePreferences } from './lib/appearancePreferences';
+import { signalUiBoot } from './lib/ui-hot';
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -67,5 +68,7 @@ const app = mount(GlobalErrorBoundary, {
   target: document.getElementById('app')!,
   props: { component: Component, windowLabel },
 });
+// UI hot updates: this window booted, so a freshly applied bundle is good.
+signalUiBoot(invoke);
 
 export default app;
