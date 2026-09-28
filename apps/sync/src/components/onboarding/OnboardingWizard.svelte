@@ -667,7 +667,7 @@
     }
   }
 
-  async function handleSignIn(provider: SignInProvider) {
+  async function handleSignIn(provider: SignInProvider, stateRecoveryAttempt = false) {
     const call = ++currentSignInCall;
     // Claim the provider path before any await. The continuation config can
     // settle while this click is being handled; it must not then arm a second
@@ -721,11 +721,17 @@
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
       console.error('[onboarding-signin] sign-in failed:', err);
+      const errorKind = classifyContinuationError(err);
+      if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
+        console.warn('[onboarding-signin] restarting once after an expired or mismatched attempt');
+        void handleSignIn(provider, true);
+        return;
+      }
       signInError = mapSignInError(errorMessage(err), provider);
       recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
         provider: telemetryProvider,
         outcome: 'oauth_failed',
-        errorKind: classifyContinuationError(err),
+        errorKind,
       });
     } finally {
       if (isCurrentSignInCall(call)) {

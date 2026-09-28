@@ -11,6 +11,10 @@ The release moves it under the version it ships in.
 - On Windows, setup can wait for the desktop CLI updater to finish before reporting a dependency failure. The default-off hq-flags rollout also gives selected-prefix rename locks more time to clear between retries.
 - Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
 
+- Desktop sign-in now retries once after an expired or mismatched browser
+  callback and uses another registered localhost callback port when the
+  default port is occupied. If the retry fails, the provider buttons stay
+  available.
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files
