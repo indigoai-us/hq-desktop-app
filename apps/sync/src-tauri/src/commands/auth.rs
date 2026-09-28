@@ -501,6 +501,7 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
         hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
     );
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
+    crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     clear_sentry_user();
     publish_auth_session(
         &app,
