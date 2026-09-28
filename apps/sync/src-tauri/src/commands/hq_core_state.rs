@@ -2505,6 +2505,7 @@ static CORE_UPDATE_BASELINE_WARNING_SIGNATURES: OnceLock<
 struct CoreUpdateBaselinePersistenceDiagnosticTags {
     write_path: &'static str,
     error_kind: &'static str,
+    fetch_failure_class: &'static str,
     directory_state: &'static str,
     target_state: &'static str,
     temp_state: &'static str,
@@ -2566,6 +2567,7 @@ impl CoreUpdateBaselinePersistenceDiagnosticTags {
                     "other",
                 ],
             ),
+            fetch_failure_class: github_fetch_failure_class_from_detail(detail),
             directory_state: bounded(
                 value("directory_state"),
                 &["file", "directory", "other", "missing", "unknown"],
@@ -2663,6 +2665,10 @@ fn send_core_update_baseline_persistence_warning(
                 sentry_scope.set_tag("source", report.source);
                 sentry_scope.set_tag("persistence_write_path", report.diagnostic_tags.write_path);
                 sentry_scope.set_tag("persistence_error_kind", report.diagnostic_tags.error_kind);
+                sentry_scope.set_tag(
+                    "persistence_fetch_failure_class",
+                    report.diagnostic_tags.fetch_failure_class,
+                );
                 sentry_scope.set_tag(
                     "persistence_directory_state",
                     report.diagnostic_tags.directory_state,
@@ -2962,24 +2968,89 @@ async fn fetch_main_head_sha(client: &reqwest::Client, repo: &str) -> Result<Str
 /// Fetch a tree at any ref (tag, branch, commit SHA). Returns
 /// `path → (blob_sha, size)`. Drops symlinks (mode `120000`) — their blob
 /// is the target-path string, not the target's content.
+const GITHUB_FETCH_FAILURE_CLASS_MARKER: &str = "[github_fetch_failure_class=";
+
+fn github_fetch_failure_class_from_detail(detail: &str) -> &'static str {
+    let value = detail
+        .rfind(GITHUB_FETCH_FAILURE_CLASS_MARKER)
+        .and_then(|start| {
+            detail[start + GITHUB_FETCH_FAILURE_CLASS_MARKER.len()..]
+                .split(']')
+                .next()
+        })
+        .unwrap_or("unknown");
+    match value {
+        "rate_limited" | "unauthorized" | "forbidden" | "not_found" | "server_error"
+        | "http_other" | "timeout" | "connection" | "transport_other" | "invalid_response" => value,
+        _ => "unknown",
+    }
+}
+
+fn github_fetch_failure(class: &'static str, detail: impl AsRef<str>) -> String {
+    format!(
+        "{} {GITHUB_FETCH_FAILURE_CLASS_MARKER}{class}]",
+        detail.as_ref()
+    )
+}
+
+fn github_http_fetch_failure_class(
+    status: reqwest::StatusCode,
+    rate_limit_remaining: Option<&str>,
+) -> &'static str {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status == reqwest::StatusCode::FORBIDDEN && rate_limit_remaining == Some("0"))
+    {
+        "rate_limited"
+    } else if status == reqwest::StatusCode::UNAUTHORIZED {
+        "unauthorized"
+    } else if status == reqwest::StatusCode::FORBIDDEN {
+        "forbidden"
+    } else if status == reqwest::StatusCode::NOT_FOUND {
+        "not_found"
+    } else if status.is_server_error() {
+        "server_error"
+    } else {
+        "http_other"
+    }
+}
+
+fn github_transport_fetch_failure_class(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connection"
+    } else {
+        "transport_other"
+    }
+}
+
 async fn fetch_tree(
     client: &reqwest::Client,
     repo: &str,
     git_ref: &str,
 ) -> Result<BTreeMap<String, (String, u64)>, String> {
     let url = format!("https://api.github.com/repos/{repo}/git/trees/{git_ref}?recursive=1");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
+    let resp = client.get(&url).send().await.map_err(|error| {
+        github_fetch_failure(
+            github_transport_fetch_failure_class(&error),
+            format!("GET {url}: {error}"),
+        )
+    })?;
     if !resp.status().is_success() {
-        return Err(format!("git/trees/{git_ref} HTTP {}", resp.status()));
+        let class = github_http_fetch_failure_class(
+            resp.status(),
+            resp.headers()
+                .get("x-ratelimit-remaining")
+                .and_then(|value| value.to_str().ok()),
+        );
+        return Err(github_fetch_failure(
+            class,
+            format!("git/trees/{git_ref} HTTP {}", resp.status()),
+        ));
     }
-    let parsed: GhTreesResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse trees JSON: {e}"))?;
+    let parsed: GhTreesResponse = resp.json().await.map_err(|error| {
+        github_fetch_failure("invalid_response", format!("parse trees JSON: {error}"))
+    })?;
     if parsed.truncated {
         log(
             "hq-core-state",
@@ -3104,6 +3175,7 @@ pub(crate) struct AppliedRescueBaseline {
     pub(crate) commit: String,
     pub(crate) baseline_persisted: bool,
     pub(crate) refresh_pending: bool,
+    pub(crate) fetch_failure_class: Option<&'static str>,
     pub(crate) persistence_diagnostic: Option<String>,
     pub(crate) stamp_key: &'static str,
 }
@@ -3111,6 +3183,12 @@ pub(crate) struct AppliedRescueBaseline {
 impl AppliedRescueBaseline {
     pub(crate) fn persistence_stamp_marker(&self) -> String {
         available_stamp_marker(self.stamp_key)
+    }
+
+    pub(crate) fn fetch_failure_class_marker(&self) -> String {
+        self.fetch_failure_class
+            .map(|class| format!("{GITHUB_FETCH_FAILURE_CLASS_MARKER}{class}]"))
+            .unwrap_or_default()
     }
 }
 
@@ -3199,6 +3277,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                     commit,
                     baseline_persisted: false,
                     refresh_pending: true,
+                    fetch_failure_class: None,
                     persistence_diagnostic: Some(error.to_string()),
                     stamp_key,
                 });
@@ -3228,6 +3307,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                 commit,
                 baseline_persisted: true,
                 refresh_pending,
+                fetch_failure_class: None,
                 persistence_diagnostic: None,
                 stamp_key,
             })
@@ -3289,6 +3369,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                 commit,
                 baseline_persisted,
                 refresh_pending: true,
+                fetch_failure_class: Some(github_fetch_failure_class_from_detail(&fetch_error)),
                 persistence_diagnostic,
                 stamp_key,
             })
@@ -5533,11 +5614,16 @@ mod tests {
             "",
             Channel::Release,
             Some(&menubar_path),
-            Err("HTTP 403".to_string()),
+            Err(github_fetch_failure("rate_limited", "HTTP 403")),
         )
         .unwrap();
         assert!(first.baseline_persisted);
         assert!(first.refresh_pending);
+        assert_eq!(first.fetch_failure_class, Some("rate_limited"));
+        assert_eq!(
+            first.fetch_failure_class_marker(),
+            "[github_fetch_failure_class=rate_limited]"
+        );
         assert_eq!(
             persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)),
             Some(BaselineRefreshTarget {
@@ -5556,15 +5642,15 @@ mod tests {
         let failed_fetch_calls = Arc::clone(&fetch_calls);
         assert!(
             retry_pending_baseline_refresh_at_with_path(
-            Channel::Release,
-            root.path(),
-            None,
-            Some(&menubar_path),
-            move |_, _, _| async move {
-                failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
-                Err("HTTP 403".to_string())
-            },
-        )
+                Channel::Release,
+                root.path(),
+                None,
+                Some(&menubar_path),
+                move |_, _, _| async move {
+                    failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
+                    Err(github_fetch_failure("rate_limited", "HTTP 403"))
+                },
+            )
             .await
         );
 
@@ -5598,15 +5684,15 @@ mod tests {
         let successful_fetch_calls = Arc::clone(&fetch_calls);
         assert!(
             retry_pending_baseline_refresh_at_with_path(
-            Channel::Release,
-            root.path(),
-            None,
-            Some(&menubar_path),
-            move |_, _, _| async move {
-                successful_fetch_calls.fetch_add(1, Ordering::AcqRel);
-                Ok(remote)
-            },
-        )
+                Channel::Release,
+                root.path(),
+                None,
+                Some(&menubar_path),
+                move |_, _, _| async move {
+                    successful_fetch_calls.fetch_add(1, Ordering::AcqRel);
+                    Ok(remote)
+                },
+            )
             .await
         );
         assert_eq!(fetch_calls.load(Ordering::Acquire), 2);
@@ -7692,6 +7778,7 @@ error: clone failed";
         assert_eq!(event.tags["operation"], "baseline_persistence");
         assert_eq!(event.tags["persistence_write_path"], "unknown");
         assert_eq!(event.tags["persistence_error_kind"], "unknown");
+        assert_eq!(event.tags["persistence_fetch_failure_class"], "unknown");
         assert_eq!(event.tags["persistence_directory_state"], "unknown");
         assert_eq!(event.tags["persistence_target_state"], "unknown");
         assert_eq!(event.tags["persistence_temp_state"], "unknown");
@@ -7733,7 +7820,10 @@ error: clone failed";
 
         assert_eq!(event.level, sentry::Level::Warning);
         assert_eq!(event.tags["persistence_outcome"], "refresh_pending");
-        assert_eq!(event.tags["persistence_fetch_failure_class"], "rate_limited");
+        assert_eq!(
+            event.tags["persistence_fetch_failure_class"],
+            "rate_limited"
+        );
         assert_eq!(
             event.message.as_deref(),
             Some("Desktop Core baseline refresh pending")
@@ -7745,6 +7835,37 @@ error: clone failed";
         assert!(event.extra["baselinePersistenceDetail"]
             .as_str()
             .is_some_and(|detail| detail.contains("baseline refresh pending")));
+    }
+
+    #[test]
+    fn github_tree_fetch_distinguishes_primary_rate_limit_from_other_forbidden() {
+        assert_eq!(
+            github_http_fetch_failure_class(reqwest::StatusCode::FORBIDDEN, Some("0")),
+            "rate_limited"
+        );
+        assert_eq!(
+            github_http_fetch_failure_class(reqwest::StatusCode::FORBIDDEN, Some("12")),
+            "forbidden"
+        );
+        assert_eq!(
+            github_http_fetch_failure_class(reqwest::StatusCode::TOO_MANY_REQUESTS, None),
+            "rate_limited"
+        );
+        assert_eq!(
+            github_http_fetch_failure_class(reqwest::StatusCode::INTERNAL_SERVER_ERROR, None),
+            "server_error"
+        );
+        assert_eq!(
+            github_fetch_failure_class_from_detail(&github_fetch_failure(
+                "rate_limited",
+                "HTTP 403"
+            )),
+            "rate_limited"
+        );
+        assert_eq!(
+            github_fetch_failure_class_from_detail("unclassified fetch failure"),
+            "unknown"
+        );
     }
 
     #[test]

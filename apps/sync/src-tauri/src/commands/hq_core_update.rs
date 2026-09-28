@@ -688,16 +688,18 @@ async fn install_hq_core_update_inner(
                         .as_ref()
                         .map(|diagnostic| {
                             format!(
-                                "{} {diagnostic} {}",
+                                "{} {diagnostic} {} {}",
                                 "core update applied but baseline persistence failed:",
                                 result.persistence_stamp_marker(),
+                                result.fetch_failure_class_marker(),
                             )
                         })
                         .unwrap_or_else(|| {
                             format!(
-                                "core update applied; baseline refresh pending at {} {}",
+                                "core update applied; baseline refresh pending at {} {} {}",
                                 result.commit,
                                 result.persistence_stamp_marker(),
+                                result.fetch_failure_class_marker(),
                             )
                         });
                     crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
