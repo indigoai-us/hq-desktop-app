@@ -6524,7 +6524,11 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                 if recovery_enabled {
                     // Control signal for the named question: is this setup install handle still waiting on the shared CLI lock?
                     // The frontend uses it only to keep the deps timeout alive; it is not funnel telemetry.
-                    let _ = app.emit("setup:cli-install-lock-wait", lock_wait_handle.clone());
+                    let _ = app.emit_to(
+                        "main",
+                        "setup:cli-install-lock-wait",
+                        lock_wait_handle.clone(),
+                    );
                 }
                 emit_progress(app, line);
             },
