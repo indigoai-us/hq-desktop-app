@@ -18,6 +18,7 @@ The release moves it under the version it ships in.
   reads "This PC only" instead of "This Mac only", and the create-form
   keyboard hint reads "Ctrl+Enter TO CREATE" instead of the Mac symbol on a
   PC.
+- Removed an unused internal script left over from the old installer. No change to how the app updates.
 
 ## [0.10.349] — 2026-09-28
 
