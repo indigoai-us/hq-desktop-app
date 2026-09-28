@@ -1152,6 +1152,15 @@ export interface SyncApi {
 export interface ShellApi {
   openInEditor(path: string): AdapterPromise<void>;
   openClaudeCodeLink(url: string): AdapterPromise<void>;
+  /**
+   * Open a validated `codex://` deep link (typically
+   * `codex://threads/new?prompt=…`) so the ChatGPT desktop app's Codex area
+   * receives an install prompt in its composer. Mirrors
+   * `openClaudeCodeLink`: the renderer builds a fixed URL from a pinned
+   * constant, the host validates byte-for-byte and dispatches via the OS
+   * URL opener.
+   */
+  openCodexDeepLink(url: string): AdapterPromise<void>;
   openFileInClaude(path: string): AdapterPromise<void>;
   launchClaudeCode(path: string): AdapterPromise<void>;
   /** Open the Codex desktop app (the ChatGPT app's Codex surface) with the

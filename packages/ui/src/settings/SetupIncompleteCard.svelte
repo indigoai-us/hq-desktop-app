@@ -30,7 +30,7 @@
     type AiTools,
   } from "./setup-launch";
   import { setupBotCopy, SETUP_BOT_GENERIC_FAILURE, type SetupBotLauncher } from "../chat/setup-bot";
-  import { hostComputerNoun } from "@hq/platform";
+  import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import SetupInstallGuide, {
     type CodingTool,
     type InstallOutcome,
@@ -67,6 +67,16 @@
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: CodingTool): string;
       onopen(url: string): Promise<InstallOutcome> | void;
+      /**
+       * Open one of the assistant desktop apps with a fixed install prompt
+       * pre-filled. Wired to `open_claude_code_link` /
+       * `open_codex_deep_link` via the install-guide adapter. Absent →
+       * the install guide falls back to the direct install path.
+       */
+      onopenassistant?(
+        assistant: "claude-desktop" | "chatgpt-desktop",
+        url: string,
+      ): Promise<InstallOutcome>;
     } | null;
   }
 
@@ -74,11 +84,14 @@
 
   /**
    * The plain-language name for the host machine ("Mac", "PC", or
-   * "computer"). Read once at mount from the shared Tauri probe - the copy
-   * a person reads must never suddenly rename their computer, and the
-   * neutral fallback covers a probe that has not landed yet.
+   * "computer"). The Windows persona saw "on this computer" here because
+   * `apps/sync`'s webview does not inject `__HQ_HOST_OS__` synchronously
+   * and the `tauri-plugin-os` fallback resolves a moment later; on that
+   * first render the probe is still empty. Subscribe to the shared helper
+   * so the copy flips once the OS plugin lands.
    */
-  const hostNoun = hostComputerNoun();
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
   const copy = $derived(setupBotCopy({ noun: hostNoun }));
 
   /** The bot path can act: open the one that exists, or make one. */
@@ -259,6 +272,8 @@
         }}
         downloadUrlFor={installGuide.downloadUrlFor}
         onopen={installGuide.onopen}
+        onopenassistant={installGuide.onopenassistant}
+        hqFolder={status?.hqFolderPath ?? ""}
       />
     {/if}
     <div class="setup-actions">

@@ -8,6 +8,40 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The New bot wizard and the setup assistant now offer "Set up with Claude"
+  and "Set up with ChatGPT" buttons when the app finds no coding tool on this
+  computer. Clicking one opens the person's assistant desktop app with a
+  short install prompt already in the composer; the assistant does the
+  install and tells the person to switch back to HQ. When neither assistant
+  app is on the computer, HQ still runs its own one-click installer, so the
+  panel never dead-ends. The main text no longer mentions `npm`, a terminal,
+  or a file path. The two places share one component and one adapter so they
+  cannot drift.
+- The "Install Claude Code" button now says what is happening while it
+  works. During the install the panel reads "Installing Claude Code on this
+  PC. This usually takes about a minute. No need to click anything.", and
+  as soon as the installer finishes HQ re-checks by itself. When the tool is
+  found on the second look, the panel confirms "Claude Code is installed.
+  Sign in to finish." and offers Sign in as the primary action. No more
+  "Working…" for 30-40 seconds followed by the panel snapping back to its
+  original state. The same behaviour applies to Codex.
+- If the install fails, HQ shows a plain-language reason instead of raw
+  installer output. Known signals (no internet, permission denied, an
+  antivirus block, a missing dependency, no disk space) become one-sentence
+  explanations that name the tool and the next step. Anything HQ does not
+  recognise falls back to "HQ couldn't finish installing Claude Code. You
+  can try again or install Claude Code yourself, then click Check again."
+  The raw error still goes to the app log for support.
+- The footer next to Next in the New bot wizard no longer contradicts the
+  panel above. When the panel shows the install path it now reads "Finish
+  setting up Claude Code above."; after installing and before signing in it
+  reads "Sign in to Claude Code above." The panel and the footer read as one
+  thought, never two competing sentences.
+- The setup assistant's top line no longer opens with "No coding tool is
+  signed in on this computer yet. Sign in to Claude Code, Codex, or Grok,
+  then retry.". It now reads "HQ needs a coding tool signed in on this
+  PC to finish setup. Sign in above, then Retry." Purpose first, and no
+  three-tool list right after the person installed one.
 - Windows template setup can reuse matching content links and use a gated copy or junction fallback for selected link errors.
 
 ## [0.10.350] — 2026-09-28

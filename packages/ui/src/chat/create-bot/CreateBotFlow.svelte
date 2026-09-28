@@ -106,6 +106,31 @@
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     /** Re-read runtime readiness from the host (Check again / Try again). */
     onrecheckruntimes?: (() => void | Promise<void>) | null;
+    /**
+     * Live AiTools payload for the install-choice panel that renders in the
+     * "coding tool · not installed" state. When missing the panel falls
+     * back to a neutral "Checking…" line. Null while the probe is running.
+     */
+    aiTools?: import("../../install-choice/install-choice.js").AiTools | null;
+    /** HQ folder path passed into `claude://code/new?folder=`. Optional. */
+    hqFolderPath?: string;
+    /**
+     * Open the assistant desktop app with the install prompt pre-filled.
+     * When provided, the "not installed" state offers "Set up with Claude"
+     * / "Set up with ChatGPT" buttons for whichever apps are detected.
+     */
+    onopenassistant?: (
+      assistant: import("../../install-choice/install-choice.js").AssistantId,
+      url: string,
+    ) => Promise<import("../../install-choice/install-choice.js").InstallOutcome>;
+    /**
+     * HQ's own one-click installer for a coding tool (fallback when no
+     * assistant app is available). Kept separate from the wizard's own
+     * `oncreate` — this only runs the installer, never creates a bot.
+     */
+    onassistedinstall?: (
+      tool: import("../../install-choice/install-choice.js").CodingTool,
+    ) => Promise<import("../../install-choice/install-choice.js").InstallOutcome>;
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /** Sign-in poll interval; tests shorten it. */
@@ -136,6 +161,10 @@
     loadAvatarPacks = null,
     pollMs = 1500,
     previewPlacement = null,
+    aiTools = null,
+    hqFolderPath = "",
+    onopenassistant,
+    onassistedinstall,
   }: Props = $props();
 
   const templates = $derived<readonly LocalBotWorkerOption[]>(companyTemplates(botWorkers ?? []));
@@ -476,6 +505,10 @@
           onsignedin={onsignedin ?? undefined}
           onrecheck={onrecheckruntimes ?? undefined}
           {pollMs}
+          {aiTools}
+          {hqFolderPath}
+          {onopenassistant}
+          {onassistedinstall}
         />
       {:else if draft.home === "cloud"}
         <CloudDetailsStep

@@ -844,7 +844,34 @@
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: "claude" | "codex"): string;
       onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
+      /**
+       * Open one of the assistant desktop apps with a fixed install prompt
+       * pre-filled. Wired to `open_claude_code_link` /
+       * `open_codex_deep_link` via the install-guide adapter. When present,
+       * the shared InstallChoice panel offers a "Set up with Claude" or
+       * "Set up with ChatGPT" button on both the New bot wizard and the
+       * setup assistant.
+       */
+      onopenassistant?(
+        assistant: "claude-desktop" | "chatgpt-desktop",
+        url: string,
+      ): Promise<{ ok: boolean; reason?: string }>;
     } | null;
+    /**
+     * Live AiTools payload. Passed through the New-bot wizard so the
+     * shared InstallChoice panel can decide which assistant buttons to
+     * offer without a per-open probe. Null while the initial probe runs.
+     */
+    aiTools?: import("../install-choice/install-choice.js").AiTools | null;
+    /** Open the assistant desktop app with a pre-filled install prompt. */
+    onopenassistant?: (
+      assistant: import("../install-choice/install-choice.js").AssistantId,
+      url: string,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** HQ's own one-click installer for a coding tool. */
+    onassistedinstall?: (
+      tool: import("../install-choice/install-choice.js").CodingTool,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
   }
 
   let {
@@ -908,6 +935,9 @@
     rowExtrasError = false,
     rowExtras = null,
     setupInstallGuide = null,
+    aiTools = null,
+    onopenassistant,
+    onassistedinstall,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -8522,6 +8552,10 @@
           botRuntimeReady={localBotRuntimeReady}
           botRuntimeStatus={localBotRuntimeStatus}
           onrecheckruntimes={recheckLocalBotRuntimes}
+          {aiTools}
+          hqFolderPath={hqFolderPath ?? ""}
+          {onopenassistant}
+          {onassistedinstall}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}
