@@ -308,19 +308,18 @@ pub enum SharePollAction {
     Pause,
 }
 
-/// Select a periodic poll action from the default-off rollout flag, transport
-/// state, and desktop visibility. Push delivery itself remains active while
-/// hidden so native notifications can still arrive.
+/// Select a periodic poll action from the default-off rollout flag and
+/// transport state. A disconnected transport keeps the five-minute fallback
+/// active even when every window is hidden, since tray/background launches
+/// still need a notification long-stop. A healthy push connection pauses
+/// scheduled polling while hidden or visible.
 pub fn share_poll_action(
     push_events_enabled: bool,
     push_connected: bool,
-    window_visible: bool,
+    _window_visible: bool,
 ) -> SharePollAction {
     if !push_events_enabled {
         return SharePollAction::FastPoll;
-    }
-    if !window_visible {
-        return SharePollAction::Pause;
     }
     if push_connected {
         SharePollAction::Pause
@@ -807,10 +806,13 @@ mod tests {
         use SharePollAction::{FastPoll, Pause, SlowFallback};
 
         assert_eq!(share_poll_action(true, true, true), Pause);
+        assert_eq!(share_poll_action(true, true, false), Pause);
         assert_eq!(share_poll_action(true, false, true), SlowFallback);
-        assert_eq!(share_poll_action(true, false, false), Pause);
+        assert_eq!(share_poll_action(true, false, false), SlowFallback);
         assert_eq!(share_poll_action(false, true, false), FastPoll);
         assert_eq!(share_poll_due(Pause, Some(600)), false);
+        assert_eq!(share_poll_due(SlowFallback, Some(299)), false);
+        assert_eq!(share_poll_due(SlowFallback, Some(300)), true);
         assert_eq!(share_poll_due(FastPoll, Some(0)), true);
     }
 
