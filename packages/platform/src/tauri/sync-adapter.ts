@@ -35,6 +35,7 @@ import {
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
+  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
@@ -504,6 +505,11 @@ export function createSyncPlatformAdapter(
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
       hasFeature: (flag) =>
         flags.resolve(flag, () => {
+          if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
+            // This rollout is opt-in. A missing registry value or unavailable
+            // registry stays off until the manager creates and enables it.
+            return Promise.resolve(ok(false));
+          }
           if (flag === CLAUDE_PROVIDER_FLAG) {
             return Promise.resolve(ok(false));
           }

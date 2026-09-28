@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  appendChildFolderPath,
   friendlyPath,
   homeDirFromDefaultHqPath,
   toUserFacingPath,
@@ -96,5 +97,21 @@ describe('homeDirFromDefaultHqPath', () => {
   it('returns null for non-default-looking paths', () => {
     expect(homeDirFromDefaultHqPath('/Users/ada/projects')).toBeNull();
     expect(homeDirFromDefaultHqPath('hq')).toBeNull();
+  });
+});
+
+describe('appendChildFolderPath', () => {
+  it.each([
+    ['/Users/test/Desktop', '/Users/test/Desktop/hq'],
+    [
+      '/Users/test/Library/Mobile Documents/com~apple~CloudDocs',
+      '/Users/test/Library/Mobile Documents/com~apple~CloudDocs/hq',
+    ],
+    ['C:\\Users\\test\\OneDrive - Personal', 'C:\\Users\\test\\OneDrive - Personal\\hq'],
+    ['C:\\Users\\test\\Documents\\', 'C:\\Users\\test\\Documents\\hq'],
+    ['/', '/hq'],
+    ['C:\\', 'C:\\hq'],
+  ])('appends a child with the parent platform separator: %s', (parent, expected) => {
+    expect(appendChildFolderPath(parent, 'hq')).toBe(expected);
   });
 });
