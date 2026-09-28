@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Windows template setup can reuse matching content links and use a gated copy or junction fallback for selected link errors.
+
+## [0.10.350] — 2026-09-28
+
 - With `desktop.setup-directory-parent-fallback` enabled, HQ uses a fresh `hq`
   subfolder when the chosen location already has files. Before setup, it checks
   the suggested `~/hq` folder too. If HQ cannot write to a location, the folder
@@ -16,7 +20,6 @@ The release moves it under the version it ships in.
 
 - On Windows, setup can wait for the desktop CLI updater to finish before reporting a dependency failure. The default-off hq-flags rollout also gives selected-prefix rename locks more time to clear between retries.
 
-- Windows template setup can reuse matching content links and use a gated copy or junction fallback for selected link errors.
 - Channel messages now keep mentions aligned with their person or agent IDs and within the 25-person limit.
 
 - Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
