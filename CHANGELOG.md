@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Removed an unused internal script left over from the old installer. No change to how the app updates.
+
 ## [0.10.349] — 2026-09-28
 
 - The returning-user setup welcome uses current HQ Desktop wording, and the
