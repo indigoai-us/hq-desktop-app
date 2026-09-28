@@ -13,6 +13,9 @@ The release moves it under the version it ships in.
   A watcher handoff no longer appears as a crash.
 
 - History search now requires 2 to 100 characters, matching the server limit.
+
+## [0.10.352] — 2026-09-28
+
 - After setup passes, people can start syncing their HQ folder right away. The optional first-folder step is off until its hq-flags rollout is enabled, and can be skipped.
 
 ## [0.10.351] — 2026-09-28
