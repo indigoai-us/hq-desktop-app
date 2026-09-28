@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
+
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files

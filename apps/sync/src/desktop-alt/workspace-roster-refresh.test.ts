@@ -149,7 +149,9 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     expect(upgrade?.textContent).toBe('Upgrade');
     upgrade?.click();
     await flush();
-    expect(openApprovedExternalUrl).toHaveBeenCalledWith(upgradeUrl);
+    expect(openApprovedExternalUrl).toHaveBeenCalledWith(
+      'https://hq.computer' + '/companies/' + 'acme' + '/billing?upgrade=team&entrySurface=desktop_limit',
+    );
   });
 
   it('clears a company plan notice when the authenticated account changes', async () => {
