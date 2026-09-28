@@ -255,11 +255,12 @@ describe('US-001 the question on the ready screen', () => {
     expect(signin).not.toBeNull();
     const checkboxes = signin!.querySelectorAll('input[type="checkbox"]');
     expect(checkboxes).toHaveLength(0);
-    // Native continuation is unavailable in this fixture. Its silent
-    // first-run fallback still offers the pre-existing provider buttons.
+    // The provider buttons render once the welcome animation reveals the
+    // sign-in block; Escape finishes the animation.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await flushUntil(
       () => (signin!.textContent ?? '').includes('Continue with Google'),
-      'the sign-in fallback',
+      'the provider buttons',
     );
     expect(signin!.textContent).toContain('Continue with Google');
   });

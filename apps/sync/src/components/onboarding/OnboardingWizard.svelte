@@ -61,15 +61,10 @@
     loadContinuationContext,
   } from '../../lib/desktop-continuation-tauri';
   import {
-    beginContinuation,
     classifyContinuationError,
-    confirmContinuation,
     flushReceipts,
     launchReceipt,
     recordReceipt,
-    resolveRollout,
-    type ContinuationDeps,
-    type ContinuationState,
   } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
@@ -210,10 +205,6 @@
     message?: string;
   };
   const MIN_VISIBLE_MS_FOR_ABANDON = 1500;
-  // Provider buttons remain available after this short head start. The native
-  // continuation attempt keeps running until it completes, expires, or a
-  // person explicitly takes over with a provider.
-  const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
   let {
     initialStep,
@@ -310,24 +301,12 @@
   let currentSignInCall = 0;
   let mounted = true;
 
-  // Browser session continuation belongs on the first screen someone sees
-  // after downloading HQ, not only on the returning-user sign-in surfaces.
-  // The first-run wizard activates an eligible session in the background, then
-  // waits for the person to press "Continue as {email}" before leaving the
-  // sign-in screen. It never renders an account choice.
-  let continuation = $state<ContinuationState>({ phase: 'idle' });
-  let continuationDepsRef: ContinuationDeps | null = null;
-  let continuationPrepared = false;
-  let manualSignInStarted = false;
-  let automaticContinuationRun = 0;
-  let automaticContinuationAttemptActive = false;
-  let automaticContinuationRevealTimer: number | null = null;
+  // The first-run sign-in screen opens nothing in the browser on its own. A
+  // browser opens only when the person clicks a provider button, and those
+  // buttons render only once the welcome animation has revealed the sign-in
+  // block (or the motion failed and the settled screen shows instead).
+  let launchRecorded = false;
   let signInActionsReady = $state(false);
-  // Set once automatic continuation has authenticated this app. The sign-in
-  // screen then offers one button instead of the providers; `email` is the
-  // verified browser identity, or null when it was not provided.
-  let continuedAccount = $state<{ email: string | null } | null>(null);
-  let continuedAccountConfirming = $state(false);
   let onboardingAppVersion =
     typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : 'unknown';
   let onboardingAppVersionResolution: Promise<void> | null = null;
@@ -589,20 +568,18 @@
   });
 
   $effect(() => {
-    // This is intentionally scoped to the first-run sign-in panel. Native
-    // eligibility independently refuses resumed and non-first-launch windows,
-    // but there is no reason to fetch rollout configuration after the wizard
-    // has already moved past authentication.
+    // Record the first-launch receipt when the first-run sign-in panel shows.
+    // This only sends telemetry; it never opens a browser.
     if (
       isReprompt ||
       replay ||
       currentStep !== WELCOME_SIGNIN_STEP_INDEX ||
-      continuationPrepared
+      launchRecorded
     ) {
       return;
     }
-    continuationPrepared = true;
-    void prepareContinuation();
+    launchRecorded = true;
+    void recordLaunch();
   });
 
   $effect(() => {
@@ -704,7 +681,6 @@
 
   onDestroy(() => {
     recordOnboardingAbandonment();
-    stopAutomaticContinuationAttempt();
     mounted = false;
     currentSignInCall += 1;
     cancelSetupRun();
@@ -760,15 +736,6 @@
 
   async function handleSignIn(provider: SignInProvider) {
     const call = ++currentSignInCall;
-    // Claim the provider path before any await. The continuation config can
-    // settle while this click is being handled; it must not then arm a second
-    // listener over the provider flow the person deliberately chose.
-    manualSignInStarted = true;
-    stopAutomaticContinuationAttempt();
-
-    // Preparation observes this claim and leaves continuation unarmed. Manual
-    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
-
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
@@ -825,139 +792,32 @@
     }
   }
 
-  async function prepareContinuation(): Promise<void> {
-    const run = ++automaticContinuationRun;
-    automaticContinuationAttemptActive = true;
-    automaticContinuationRevealTimer = window.setTimeout(() => {
-      if (!isAutomaticContinuationCurrent(run)) return;
-      signInActionsReady = true;
-      automaticContinuationRevealTimer = null;
-    }, AUTOMATIC_CONTINUATION_TIMEOUT_MS);
-
-    const finishWithProviderButtons = () => {
-      if (run !== automaticContinuationRun || currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
-      automaticContinuationAttemptActive = false;
-      if (automaticContinuationRevealTimer !== null) {
-        window.clearTimeout(automaticContinuationRevealTimer);
-        automaticContinuationRevealTimer = null;
-      }
-      signInActionsReady = true;
-    };
-
+  /**
+   * Record the once-per-installation launch receipt and replay any receipts
+   * still queued from an earlier launch. Best effort: it never blocks sign-in
+   * and never starts a browser session continuation.
+   */
+  async function recordLaunch(): Promise<void> {
     const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
     const context = await loadContinuationContext();
     if (!context) {
       if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
-      finishWithProviderButtons();
       return;
     }
     const deps = continuationDeps(context);
-    continuationDepsRef = deps;
-
-    // Receipt delivery is best effort and must never delay sign-in.
     void flushReceipts(deps).catch(() => undefined);
-
     // `firstLaunchRecorded` is the existing durable first-installation gate.
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
     if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
-
-    // Check before and after the config round trip. A provider click during
-    // that wait is a deliberate choice and must win without arming another
-    // OAuth listener.
-    if (!isAutomaticContinuationCurrent(run)) return;
-    const decision = await resolveRollout(deps);
-    if (!isAutomaticContinuationCurrent(run)) return;
-    if (!decision.enabled) {
-      finishWithProviderButtons();
-      return;
-    }
-
-    const next = await beginContinuation(
-      deps,
-      decision,
-      (next) => {
-        if (isAutomaticContinuationCurrent(run)) continuation = next;
-      },
-      () => isAutomaticContinuationCurrent(run),
-    );
-    if (!isAutomaticContinuationCurrent(run)) return;
-    if (next.phase !== 'confirming') {
-      finishWithProviderButtons();
-      return;
-    }
-
-    const activated = await confirmContinuation(deps, next, (state) => {
-      if (isAutomaticContinuationCurrent(run)) continuation = state;
-    });
-    if (!isAutomaticContinuationCurrent(run)) return;
-    if (activated.phase !== 'activated') {
-      finishWithProviderButtons();
-      return;
-    }
-
-    const auth = await invokeCommand<{ authenticated: boolean }>('get_auth_state').catch(() => null);
-    if (!isAutomaticContinuationCurrent(run)) return;
-    if (!auth?.authenticated) {
-      finishWithProviderButtons();
-      return;
-    }
-
-    automaticContinuationAttemptActive = false;
-    if (automaticContinuationRevealTimer !== null) {
-      window.clearTimeout(automaticContinuationRevealTimer);
-      automaticContinuationRevealTimer = null;
-    }
-    // The session is active, but the person still presses a button to leave
-    // the sign-in screen. The button replaces the providers in the same slot,
-    // so it appears only once the welcome animation has revealed that block.
-    const rawEmail: unknown = activated.identity?.email;
-    const email = typeof rawEmail === 'string' ? rawEmail.trim() : '';
-    continuedAccount = { email: email || null };
-    signInActionsReady = true;
-  }
-
-  async function handleContinuationConfirm(): Promise<void> {
-    if (!continuedAccount || continuedAccountConfirming) return;
-    if (currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
-    continuedAccountConfirming = true;
-    try {
-      await completeAuthenticatedSignIn(currentSignInCall);
-    } finally {
-      if (mounted) continuedAccountConfirming = false;
-    }
-  }
-
-  function stopAutomaticContinuationAttempt(): void {
-    automaticContinuationAttemptActive = false;
-    if (automaticContinuationRevealTimer !== null) {
-      window.clearTimeout(automaticContinuationRevealTimer);
-      automaticContinuationRevealTimer = null;
-    }
-    const attemptId = 'attemptId' in continuation ? continuation.attemptId : undefined;
-    if (attemptId && continuationDepsRef) {
-      void continuationDepsRef.bridge.cancel({ attemptId }).catch((error) => {
-        console.warn('[onboarding] could not cancel browser continuation attempt:', error);
-      });
-    }
-  }
-
-  function isAutomaticContinuationCurrent(run: number): boolean {
-    return (
-      mounted &&
-      run === automaticContinuationRun &&
-      automaticContinuationAttemptActive &&
-      !manualSignInStarted &&
-      currentStep === WELCOME_SIGNIN_STEP_INDEX
-    );
   }
 
   /**
-   * Both OAuth routes land here after native code has activated the same auth
-   * session. Keeping this as the one wizard completion preserves the normal
-   * post-auth transition, telemetry flush, person lookup, and refocus path.
+   * The provider OAuth flow lands here after native code has activated the
+   * auth session: the post-auth transition, telemetry flush, person lookup,
+   * and refocus.
    */
   async function completeAuthenticatedSignIn(
     call: number,
@@ -1910,9 +1770,6 @@
     }
     const previous = currentStep;
     if (exitAction) recordStep(previous, exitAction, exitDetails);
-    if (previous === WELCOME_SIGNIN_STEP_INDEX && next !== WELCOME_SIGNIN_STEP_INDEX) {
-      stopAutomaticContinuationAttempt();
-    }
     // ConnectorImportStep owns its entry so it can record detection outcomes
     // without a duplicate generic entry event.
     if (next !== CONNECTOR_IMPORT_STEP_INDEX) recordStep(next, 'entered');
@@ -2063,6 +1920,12 @@
     navRevealed = true;
   }
 
+  /** The welcome mark has settled and shown the sign-in block: offer the providers. */
+  function revealSignIn(): void {
+    navRevealed = true;
+    signInActionsReady = true;
+  }
+
   /**
    * Build the screen engines once the markup is in place, and keep the
    * controller in step with `scene`. Returns the teardown.
@@ -2078,6 +1941,7 @@
       onError: () => {
         motionFailed = true;
         navRevealed = true;
+        signInActionsReady = true;
       },
     });
     welcomeController = controller;
@@ -2094,7 +1958,7 @@
             signin: el('markSignin')!,
             nav: el('navWelcome'),
           },
-          { replay, onSettle: revealNav },
+          { replay, onSettle: revealSignIn },
         ),
       );
     }
@@ -2347,18 +2211,7 @@
         {#if !replay}
           <!-- The consent question is its own screen; nothing is asked here. -->
           <div class="btns-slot">
-            {#if signInActionsReady && continuedAccount}
-              <div class="btns">
-                <button
-                  class="btn btn-primary"
-                  type="button"
-                  data-testid="onboarding-continue-as"
-                  disabled={continuedAccountConfirming}
-                  aria-busy={continuedAccountConfirming}
-                  onclick={handleContinuationConfirm}
-                >{continuedAccount.email ? `Continue as ${continuedAccount.email}` : 'Continue'}</button>
-              </div>
-            {:else if signInActionsReady}
+            {#if signInActionsReady}
               <div class="btns">
                 <button
                   class="btn btn-primary"
