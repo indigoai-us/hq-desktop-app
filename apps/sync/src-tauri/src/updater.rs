@@ -634,8 +634,17 @@ fn automatic_install_gate_decision(
     }
 }
 
+/// Whether an install drains in-flight transfers after pausing new sync
+/// cycles. The install decision is made from a sync sample taken before the
+/// pause, so a cycle can register in between; draining after the pause catches
+/// it (the drain returns at once when sync is idle). Only a manual install,
+/// which a person explicitly asked to run now, skips the drain.
+fn drains_after_pause(trigger: InstallTrigger, decision: DeferralDecision) -> bool {
+    trigger != InstallTrigger::Manual || decision == DeferralDecision::PauseThenInstall
+}
+
 async fn pause_cycles_drain_then_install<P, Guard, Paused, Drain, Install, Output>(
-    decision: DeferralDecision,
+    drain_after_pause: bool,
     pause_new_cycles: P,
     on_paused: Paused,
     drain: Drain,
@@ -649,7 +658,7 @@ where
 {
     let _pause = pause_new_cycles();
     on_paused();
-    if decision == DeferralDecision::PauseThenInstall {
+    if drain_after_pause {
         drain.await;
     }
     install.await
@@ -1394,7 +1403,7 @@ async fn commit_staged_install_with_decision(
     }
     emit_update_install_started(app, &version);
     let result = pause_cycles_drain_then_install(
-        decision,
+        drains_after_pause(trigger, decision),
         crate::commands::process::pause_new_sync_cycles,
         || log_deferral_decision(trigger, decision, &version, remaining),
         drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT),
@@ -2664,6 +2673,62 @@ mod tests {
         assert_eq!(IN_FLIGHT_DRAIN_TIMEOUT, Duration::from_secs(60));
     }
 
+    #[test]
+    fn every_non_manual_install_drains_after_pausing_new_cycles() {
+        for decision in [
+            DeferralDecision::InstallNow,
+            DeferralDecision::PauseThenInstall,
+        ] {
+            assert!(drains_after_pause(InstallTrigger::Automatic, decision));
+            assert!(drains_after_pause(InstallTrigger::Forced, decision));
+        }
+        assert!(!drains_after_pause(
+            InstallTrigger::Manual,
+            DeferralDecision::InstallNow
+        ));
+    }
+
+    #[tokio::test]
+    async fn idle_gap_install_drains_a_cycle_that_started_before_the_pause() {
+        let (sync_is_active, decision) =
+            sample_automatic_sync_state(|| false, Duration::from_secs(5));
+        assert!(!sync_is_active);
+        assert_eq!(decision, DeferralDecision::InstallNow);
+
+        // A sync cycle registers after the idle sample but before
+        // pause_new_sync_cycles(); it finishes on the third drain probe.
+        let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let drain_probes = std::sync::Arc::clone(&probes);
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pause_events = std::sync::Arc::clone(&events);
+        let drain_events = std::sync::Arc::clone(&events);
+        let install_events = std::sync::Arc::clone(&events);
+
+        pause_cycles_drain_then_install(
+            drains_after_pause(InstallTrigger::Automatic, decision),
+            move || pause_events.lock().unwrap().push("paused"),
+            || {},
+            async move {
+                let drained = drain_in_flight_transfers_with(
+                    Duration::from_secs(5),
+                    || drain_probes.fetch_add(1, Ordering::SeqCst) < 2,
+                    |_| std::future::ready(()),
+                )
+                .await;
+                assert!(drained);
+                drain_events.lock().unwrap().push("drained");
+            },
+            async move { install_events.lock().unwrap().push("installed") },
+        )
+        .await;
+
+        assert_eq!(probes.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["paused", "drained", "installed"]
+        );
+    }
+
     #[tokio::test]
     async fn continuously_busy_waiter_pauses_drains_and_installs_after_cap() {
         let sync_samples = std::cell::Cell::new(0);
@@ -2691,7 +2756,7 @@ mod tests {
         let install_events = std::sync::Arc::clone(&events);
 
         let completed = pause_cycles_drain_then_install(
-            decision,
+            drains_after_pause(InstallTrigger::Automatic, decision),
             move || pause_events.lock().unwrap().push("paused"),
             move || paused_log_events.lock().unwrap().push("pause-logged"),
             async move {
