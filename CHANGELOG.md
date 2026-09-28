@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Work app API reads retry once after the generic Lambda-invoke 504 response when it has no function request ID.
+
+## [Unreleased]
+
 ## [0.10.351] — 2026-09-28
 
 - The New bot wizard and the setup assistant now offer "Set up with Claude"

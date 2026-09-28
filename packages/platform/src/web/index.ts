@@ -51,6 +51,7 @@ interface WebAttempt<T> {
   result: AdapterResult<T>;
   status: number | null;
   retryAfter?: string | null;
+  lambdaInvoke504?: boolean;
 }
 
 /** `Retry-After` off a Response, tolerating a header-less test double. */
@@ -59,6 +60,21 @@ function readRetryAfter(res: Response): string | null {
     return res.headers?.get?.("retry-after") ?? null;
   } catch {
     return null;
+  }
+}
+
+function isLambdaInvoke504(response: Response, bodyText: string): boolean {
+  if (response.status !== 504) return false;
+  if (["x-amzn-requestid", "x-amzn-request-id", "x-amz-request-id"].some(
+    (name) => response.headers.has(name),
+  )) return false;
+  try {
+    const payload: unknown = JSON.parse(bodyText);
+    return typeof payload === "object" && payload !== null && !Array.isArray(payload) &&
+      Object.keys(payload).length === 1 &&
+      (payload as { message?: unknown }).message === "Internal server error";
+  } catch {
+    return false;
   }
 }
 
@@ -505,14 +521,24 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Shared policy (R2): 429/503 are honoured — `Retry-After` when the server
     // sends one, jittered exponential backoff otherwise — and the result the
     // caller finally sees is the same AdapterResult it saw before.
+    const policy = {
+      ...this.requestPolicy,
+      maxAttempts: method === "GET" ? this.requestPolicy.maxAttempts : 1,
+    };
     const attempted = await retryThrottled<WebAttempt<T>>(
       () => this.attempt<T>(method, path, body),
       (outcome) => ({
         status: outcome.status,
         retryAfter: outcome.retryAfter,
       }),
-      this.requestPolicy,
+      policy,
     );
+    if (method === "GET" && attempted.lambdaInvoke504) {
+      const sleep = this.requestPolicy.sleep ?? ((ms: number) =>
+        new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      await sleep(25 + Math.floor(Math.random() * 51));
+      return (await this.attempt<T>(method, path, body)).result;
+    }
     return attempted.result;
   }
 
@@ -559,6 +585,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
           result: failure(code, message),
           status: res.status,
           retryAfter: readRetryAfter(res),
+          lambdaInvoke504: method === "GET" && isLambdaInvoke504(res, text),
         };
       }
       if (res.status === 204) {
