@@ -3,7 +3,7 @@
 // US-001 — Blocking consent step with no pre-ticked default.
 //
 // The onboarding wizard now asks the telemetry question as its own step AFTER
-// setup (index 3), with no pre-selected option and continue disabled until the
+// setup (index 4), with no pre-selected option and continue disabled until the
 // person answers. Declining is first-class. The recorded write carries the
 // surface and consent version. These tests mount the real OnboardingWizard
 // component and drive it through the DOM.
@@ -37,6 +37,7 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from '../../src/components/onboarding/OnboardingWizard.svelte';
 import {
   __resetWizardRouterCompletionForTests,
+  CONSENT_STEP_INDEX,
   WIZARD_STEPS,
   getStepValidity,
 } from '../../src/lib/onboarding-wizard';
@@ -143,23 +144,24 @@ afterEach(() => {
 
 describe('US-001 wizard step model', () => {
   it('inserts consent and connector import after setup before ready', () => {
-    expect(WIZARD_STEPS.slice(0, 6).map((s) => s.id)).toEqual([
+    expect(WIZARD_STEPS.slice(0, 7).map((s) => s.id)).toEqual([
       'welcome-signin',
       'directory',
       'setup',
+      'first-folder-sync',
       'consent',
       'connector-import',
       'ready',
     ]);
-    expect(WIZARD_STEPS.find((s) => s.id === 'consent')?.index).toBe(3);
-    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(4);
-    expect(WIZARD_STEPS.find((s) => s.id === 'ready')?.index).toBe(5);
+    expect(WIZARD_STEPS.find((s) => s.id === 'consent')?.index).toBe(CONSENT_STEP_INDEX);
+    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(5);
+    expect(WIZARD_STEPS.find((s) => s.id === 'ready')?.index).toBe(6);
   });
 
   it('gates the consent step until the question is answered', () => {
     const base = { installPath: '/tmp/hq' };
-    expect(getStepValidity(3, { ...base, consentAnswered: false })).toBe(false);
-    expect(getStepValidity(3, { ...base, consentAnswered: true })).toBe(true);
+    expect(getStepValidity(CONSENT_STEP_INDEX, { ...base, consentAnswered: false })).toBe(false);
+    expect(getStepValidity(CONSENT_STEP_INDEX, { ...base, consentAnswered: true })).toBe(true);
   });
 });
 
@@ -167,7 +169,7 @@ describe('US-001 consent step UI', () => {
   // Product decision (2026-09-27): the choice starts on Share; the person can
   // still pick "Don't share" before continuing.
   it('starts on Share and autofocuses nothing (AC 1)', async () => {
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
 
     const radios = consentRadios();
     expect(radios).toHaveLength(2);
@@ -180,7 +182,7 @@ describe('US-001 consent step UI', () => {
   });
 
   it('keeps continue enabled for BOTH options, starting from the Share default (AC 2)', async () => {
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     expect(consentContinue().disabled).toBe(false);
 
     // Share enables continue.
@@ -198,7 +200,7 @@ describe('US-001 consent step UI', () => {
   });
 
   it('states plainly what IS and is NOT collected (AC 3)', async () => {
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     const text = consentPanel().textContent ?? '';
 
     for (const collected of [
@@ -219,7 +221,7 @@ describe('US-001 consent step UI', () => {
   });
 
   it('links to a fuller description via the system browser (AC 4)', async () => {
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     const link = consentPanel().querySelector<HTMLButtonElement>('.consent-link');
     expect(link).not.toBeNull();
     link!.click();
@@ -243,7 +245,7 @@ describe('US-001 consent step UI', () => {
 
 describe('US-001 recording the answer', () => {
   it('records share with surface=onboarding and the consent version (AC 6)', async () => {
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     const [share] = consentRadios();
     share.checked = true;
     share.dispatchEvent(new Event('change', { bubbles: true }));
@@ -266,7 +268,7 @@ describe('US-001 recording the answer', () => {
   });
 
   it('records decline and reaches the ready step with nothing gated (AC 5)', async () => {
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     const [, decline] = consentRadios();
     decline.checked = true;
     decline.dispatchEvent(new Event('change', { bubbles: true }));
@@ -304,7 +306,7 @@ describe('US-001 recording the answer', () => {
   it('emits operational setup telemetry while declining and no skill telemetry (AC 5)', async () => {
     // A decline must not block the operational onboarding trace, but it must
     // not reach the consent-gated skill telemetry command.
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     const [, decline] = consentRadios();
     decline.checked = true;
     decline.dispatchEvent(new Event('change', { bubbles: true }));
