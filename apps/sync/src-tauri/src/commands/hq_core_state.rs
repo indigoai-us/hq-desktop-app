@@ -2642,7 +2642,17 @@ fn send_core_update_baseline_persistence_warning(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let category = report.error_category.label();
-        let fingerprint = ["desktop-core-update-baseline-persistence-failed"];
+        let (message, fingerprint) = if report.diagnostic_tags.outcome == "refresh_pending" {
+            (
+                "Desktop Core baseline refresh pending",
+                ["desktop-core-baseline-refresh-pending"],
+            )
+        } else {
+            (
+                "Desktop Core update applied but baseline persistence failed",
+                ["desktop-core-update-baseline-persistence-failed"],
+            )
+        };
         sentry::with_scope(
             |sentry_scope| {
                 sentry_scope.set_fingerprint(Some(&fingerprint));
@@ -2686,12 +2696,7 @@ fn send_core_update_baseline_persistence_warning(
                     sentry::protocol::Value::String(report.detail),
                 );
             },
-            || {
-                sentry::capture_message(
-                    "Desktop Core update applied but baseline persistence failed",
-                    sentry::Level::Warning,
-                )
-            },
+            || sentry::capture_message(message, sentry::Level::Warning),
         );
     }));
 }
