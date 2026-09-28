@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- With `desktop.setup-directory-parent-fallback` enabled, HQ uses a fresh `hq`
+  subfolder when the chosen location already has files. Before setup, it checks
+  the suggested `~/hq` folder too. If HQ cannot write to a location, the folder
+  step explains how to choose a different one or grant access. The flag
+  defaults off.
 - Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
 
 - The New bot wizard no longer replaces the app with a "Something went wrong"

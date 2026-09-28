@@ -13,6 +13,7 @@ import {
   normalizeErrorCategory,
   normalizeFailedDependency,
   normalizeFailedStageIds,
+  normalizeSetupErrorKind,
   CONNECTOR_IMPORT_OUTCOMES,
   CONNECTOR_IMPORT_SOURCE_SETS,
   SYMLINK_ERROR_IO_KINDS,
@@ -255,7 +256,6 @@ export function desktopPropertiesForOnboardingStep(
     'detectedToolCount',
     'failedStageCount',
     'failureStage',
-    'errorKind',
   ] as const) {
     const value = event.properties[key];
     if (value !== undefined) properties[key] = value;
@@ -275,6 +275,9 @@ export function desktopPropertiesForOnboardingStep(
   }
   if (event.properties.action === 'failed') {
     properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
+    if (event.properties.errorKind !== undefined) {
+      properties.errorKind = normalizeSetupErrorKind(event.properties.errorKind);
+    }
     if (event.properties.component === 'deps') {
       properties.failedDependency = normalizeFailedDependency(event.properties.failedDependency);
     } else if (event.properties.component === 'content') {
