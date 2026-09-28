@@ -19,6 +19,19 @@ import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
 import type { AgentStatusWake } from "./agent-thinking";
 import type { NotifyLevel } from "./notify-level";
 
+export const MESSAGE_SEARCH_MIN_QUERY_LENGTH = 2;
+export const MESSAGE_SEARCH_MAX_QUERY_LENGTH = 100;
+
+export type MessageSearchQueryProblem = "too-short" | "too-long" | null;
+
+/** Length limits shared with hq-pro's trimmed JavaScript String.length check. */
+export function messageSearchQueryProblem(query: string): MessageSearchQueryProblem {
+  const length = query.trim().length;
+  if (length < MESSAGE_SEARCH_MIN_QUERY_LENGTH) return "too-short";
+  if (length > MESSAGE_SEARCH_MAX_QUERY_LENGTH) return "too-long";
+  return null;
+}
+
 export interface ContactsResponse {
   contacts: DmContactInput[];
 }
