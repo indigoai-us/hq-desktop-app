@@ -7717,7 +7717,7 @@ error: clone failed";
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_baseline_warning_signatures_for_test();
         let detail = format!(
-            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable {}",
+            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable [github_fetch_failure_class=rate_limited] {}",
             available_stamp_marker("replaced_from_source")
         );
         let report =
@@ -7733,6 +7733,7 @@ error: clone failed";
 
         assert_eq!(event.level, sentry::Level::Warning);
         assert_eq!(event.tags["persistence_outcome"], "refresh_pending");
+        assert_eq!(event.tags["persistence_fetch_failure_class"], "rate_limited");
         assert_eq!(
             event.message.as_deref(),
             Some("Desktop Core baseline refresh pending")
