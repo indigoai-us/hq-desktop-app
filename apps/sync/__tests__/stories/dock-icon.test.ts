@@ -127,7 +127,7 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       expect(main).toMatch(/commands::lifecycle::launch_should_show_setup_card\(/);
       const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
       expect(lifecycle).toMatch(/pub fn launch_should_show_setup_card\(first_run: bool, state: Option<LifecycleState>\) -> bool/);
-      expect(lifecycle).toMatch(/first_run \|\| state\.is_some_and\(lifecycle_keeps_main_window_visible\)/);
+      expect(lifecycle).toMatch(/state\s*\.map\(lifecycle_keeps_main_window_visible\)\s*\.unwrap_or\(first_run\)/);
     });
 
     it('does not treat a bundled CLI version mismatch as missing tools at launch', () => {
