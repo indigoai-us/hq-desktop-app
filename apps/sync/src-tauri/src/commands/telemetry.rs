@@ -907,6 +907,7 @@ pub(crate) const ERROR_CATEGORY_VALUES: &[&str] = &[
     "directory-not-empty",
     "rsync-broken",
     "preserve-restore-failed",
+    "restore-symlink-race",
     "spawn-failed",
     "exit-nonzero",
     "unsupported-platform",
