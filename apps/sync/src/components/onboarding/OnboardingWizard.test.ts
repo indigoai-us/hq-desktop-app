@@ -2210,6 +2210,89 @@ describe('first-folder sync onboarding step', () => {
     expect(onboardingFlags.startSync).not.toHaveBeenCalled();
   });
 
+  it('does not record completion after a company sync aborts with conflicts', async () => {
+    await reachPostSetupStep(true);
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-start"]',
+    )?.click();
+    await flush();
+
+    emitTauriEvent('sync:complete', {
+      company: 'personal',
+      filesDownloaded: 0,
+      bytesDownloaded: 0,
+      filesSkipped: 0,
+      conflicts: 1,
+      aborted: true,
+    });
+    emitTauriEvent('sync:all-complete', {
+      companiesAttempted: 1,
+      filesDownloaded: 0,
+      bytesDownloaded: 0,
+      errors: [],
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started']);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      'could not sync this folder',
+    );
+    expect(
+      host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('does not record completion when a sync error precedes an empty aggregate summary', async () => {
+    await reachPostSetupStep(true);
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-start"]',
+    )?.click();
+    await flush();
+
+    emitTauriEvent('sync:error', {
+      company: 'personal',
+      path: 'README.md',
+      message: 'write failed',
+    });
+    emitTauriEvent('sync:all-complete', {
+      companiesAttempted: 1,
+      filesDownloaded: 0,
+      bytesDownloaded: 0,
+      errors: [],
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started']);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      'could not sync this folder',
+    );
+    expect(
+      host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('shows a retryable error when sync authentication fails without all-complete', async () => {
+    await reachPostSetupStep(true);
+    const syncButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-start"]',
+    );
+    syncButton?.click();
+    await flush();
+
+    emitTauriEvent('sync:auth-error', { message: 'session expired' });
+    await flush();
+
+    expect(syncButton?.disabled).toBe(false);
+    expect(syncButton?.getAttribute('aria-busy')).toBe('false');
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      'could not sync this folder',
+    );
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started']);
+    expect(onboardingFlags.startSync).toHaveBeenCalledTimes(1);
+  });
+
   it('starts one sync on repeated clicks and records done only after the runner completes', async () => {
     await reachPostSetupStep(true);
     const syncButton = host.querySelector<HTMLButtonElement>(
@@ -2231,7 +2314,6 @@ describe('first-folder sync onboarding step', () => {
       filesDownloaded: 1,
       bytesDownloaded: 1,
       errors: [],
-      aborted: false,
     });
     await vi.advanceTimersByTimeAsync(500);
     await flush();

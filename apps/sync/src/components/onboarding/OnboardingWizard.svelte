@@ -283,6 +283,7 @@
   let firstFolderSyncError = $state(false);
   let firstFolderSyncStarted = false;
   let firstFolderSyncAwaitingCompletion = false;
+  let firstFolderSyncObservedFailure = false;
   let firstFolderSyncCompleted = $state(false);
   let stageCreep = $state(0);
   // How long the stage that is running right now has been running. Drives both
@@ -618,24 +619,41 @@
 
   onMount(() => {
     let active = true;
-    let unlistenFirstFolderSync: UnlistenFn | null = null;
-    void listen<{ errors?: unknown; aborted?: unknown }>(
-      'sync:all-complete',
-      (event) => {
-        if (active) handleFirstFolderSyncComplete(event.payload);
-      },
-    )
-      .then((unlisten) => {
-        const cleanup = safeUnlisten(unlisten);
-        if (!active) cleanup();
-        else unlistenFirstFolderSync = cleanup;
+    const unlisteners: UnlistenFn[] = [];
+    function subscribeFirstFolderSyncEvent<Payload>(
+      eventName: string,
+      handler: (payload: Payload) => void,
+    ): void {
+      void listen<Payload>(eventName, (event) => {
+        if (active) handler(event.payload);
       })
-      .catch((error) => {
-        console.warn('onboarding: first-folder sync completion listener unavailable', error);
-      });
+        .then((unlisten) => {
+          const cleanup = safeUnlisten(unlisten);
+          if (!active) cleanup();
+          else unlisteners.push(cleanup);
+        })
+        .catch((error) => {
+          console.warn(`onboarding: ${eventName} listener unavailable`, error);
+        });
+    }
+
+    subscribeFirstFolderSyncEvent<{ errors?: unknown }>(
+      'sync:all-complete',
+      handleFirstFolderSyncComplete,
+    );
+    subscribeFirstFolderSyncEvent<{ aborted?: unknown }>('sync:complete', (payload) => {
+      if (firstFolderSyncAwaitingCompletion && payload.aborted === true) {
+        firstFolderSyncObservedFailure = true;
+      }
+    });
+    subscribeFirstFolderSyncEvent('sync:error', () => {
+      if (firstFolderSyncAwaitingCompletion) firstFolderSyncObservedFailure = true;
+    });
+    subscribeFirstFolderSyncEvent('sync:auth-error', handleFirstFolderSyncAuthError);
+
     return () => {
       active = false;
-      unlistenFirstFolderSync?.();
+      for (const unlisten of unlisteners) unlisten();
     };
   });
 
@@ -1619,24 +1637,30 @@
     });
   }
 
+  function failFirstFolderSyncAttempt(): void {
+    firstFolderSyncBusy = false;
+    firstFolderSyncAwaitingCompletion = false;
+    firstFolderSyncObservedFailure = false;
+    firstFolderSyncStarted = false;
+    firstFolderSyncError = true;
+  }
+
   function handleFirstFolderSyncComplete(payload: unknown): void {
     if (!firstFolderSyncAwaitingCompletion || firstFolderSyncCompleted) return;
-    const result = payload as { errors?: unknown; aborted?: unknown } | null;
+    const result = payload as { errors?: unknown } | null;
     if (
       !result ||
       !Array.isArray(result.errors) ||
       result.errors.length > 0 ||
-      result.aborted === true
+      firstFolderSyncObservedFailure
     ) {
-      firstFolderSyncBusy = false;
-      firstFolderSyncAwaitingCompletion = false;
-      firstFolderSyncStarted = false;
-      firstFolderSyncError = true;
+      failFirstFolderSyncAttempt();
       return;
     }
 
     firstFolderSyncBusy = false;
     firstFolderSyncAwaitingCompletion = false;
+    firstFolderSyncObservedFailure = false;
     firstFolderSyncCompleted = true;
     firstFolderSyncError = false;
     recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'completed');
@@ -1645,10 +1669,16 @@
     }
   }
 
+  function handleFirstFolderSyncAuthError(_payload: { message?: string }): void {
+    if (!firstFolderSyncAwaitingCompletion || firstFolderSyncCompleted) return;
+    failFirstFolderSyncAttempt();
+  }
+
   async function startFirstFolderSync(): Promise<void> {
     if (firstFolderSyncBusy || firstFolderSyncStarted || firstFolderSyncCompleted) return;
     firstFolderSyncStarted = true;
     firstFolderSyncAwaitingCompletion = true;
+    firstFolderSyncObservedFailure = false;
     firstFolderSyncBusy = true;
     firstFolderSyncError = false;
     recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'started');
@@ -2830,7 +2860,7 @@
             {#if firstFolderSyncBusy}
               <p class="inline-note" role="status" aria-live="polite">Syncing your first folder…</p>
             {:else if firstFolderSyncError}
-              <p class="inline-note warning" role="alert">HQ could not start syncing this folder. Try again or skip for now.</p>
+              <p class="inline-note warning" role="alert">HQ could not sync this folder. Try again or skip for now.</p>
             {/if}
             <div class="btns split">
               <button
