@@ -167,6 +167,22 @@ pub fn welcome_setup_owed(menubar: &Map<String, Value>, hq_root_valid: bool) -> 
     }
 }
 
+/// menubar.json key recording that the desktop window's first-run guided
+/// tour has been shown on this machine.
+pub const WELCOME_TOUR_SHOWN_KEY: &str = "welcomeTourShown";
+
+/// Has the first-run guided tour already been shown on this machine?
+///
+/// Written `true` (by `mark_welcome_tour_shown`) as soon as the tour starts
+/// showing, so a crash or quit mid-tour does not replay it on every launch.
+/// Absent or any non-boolean value reads as not shown.
+pub fn welcome_tour_shown(menubar: &Map<String, Value>) -> bool {
+    menubar
+        .get(WELCOME_TOUR_SHOWN_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Should finishing the installer (re)arm `welcomeSetupPending`?
 ///
 /// A brand-new install owes the welcome channel's guided run. Re-running the
@@ -877,6 +893,36 @@ mod tests {
         assert_eq!(steady_state.state, LifecycleState::SteadyState);
         assert!(!first_run.needs_install_backfill);
         assert!(!steady_state.needs_install_backfill);
+    }
+
+    #[test]
+    fn welcome_tour_is_not_shown_until_the_flag_is_written() {
+        assert!(!welcome_tour_shown(&map(json!({}))));
+        assert!(!welcome_tour_shown(&map(json!({ "welcomeTourShown": false }))));
+        assert!(!welcome_tour_shown(&map(json!({ "welcomeTourShown": "yes" }))));
+        assert!(welcome_tour_shown(&map(json!({ "welcomeTourShown": true }))));
+    }
+
+    #[test]
+    fn marking_the_welcome_tour_shown_merges_into_menubar_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        std::fs::write(
+            &path,
+            r#"{"machineId":"abc","welcomeSetupPending":true}"#,
+        )
+        .unwrap();
+        crate::first_run::merge_menubar_flags(
+            &path,
+            &[(WELCOME_TOUR_SHOWN_KEY, Value::Bool(true))],
+        )
+        .unwrap();
+        let obj = crate::first_run::read_menubar_obj(&path);
+        assert!(welcome_tour_shown(&obj));
+        // Existing keys survive the merge, and the tour flag does not settle
+        // the guided setup.
+        assert_eq!(obj.get("machineId").and_then(Value::as_str), Some("abc"));
+        assert!(welcome_setup_owed(&obj, true));
     }
 
     #[test]

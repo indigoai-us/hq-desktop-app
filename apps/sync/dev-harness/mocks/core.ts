@@ -656,7 +656,29 @@ const AGENT_SESSION_EVENTS: [number, unknown][] = [
 ];
 
 
+/**
+ * Guided-tour preview — `?tour=1`. The host answers as a fresh install that
+ * owes the guided setup and has never shown the tour, so the shell's real
+ * auto-start gate runs (Harness.svelte also clears the local "seen" key).
+ * Without the flag `get_setup_status` stays unhandled, as before.
+ */
+function tourPreviewEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('tour') === '1';
+}
+
 const handlers: Record<string, Handler> = {
+  get_setup_status: () =>
+    tourPreviewEnabled()
+      ? {
+          hqRootValid: true,
+          configured: true,
+          hqFolderPath: settings.hqPath,
+          welcomeSetupOwed: true,
+          welcomeTourShown: false,
+        }
+      : null,
+  mark_welcome_tour_shown: () => null,
   // Deterministic full-desktop route for visual QA:
   //   ?view=desktop&route=company:indigo:projects
   // Mirrors the native pending-route handoff consumed once on mount.

@@ -739,6 +739,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     updateSettings: (patch) => this.queueSettingsPatch(patch),
     getSetupStatus: () => this.call("get_setup_status"),
     markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
+    markWelcomeTourShown: () => this.call("mark_welcome_tour_shown"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };
 

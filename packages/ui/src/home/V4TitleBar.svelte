@@ -18,6 +18,7 @@
   import BrandLogoSlot from "../brand/BrandLogoSlot.svelte";
   import { isEntitledBrand, type CachedBrand } from "../brand/brand.js";
   import Caret from "../common/Caret.svelte";
+  import { untrack } from "svelte";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -132,6 +133,12 @@
     forwardLabel?: string;
     onback?: () => void;
     onforward?: () => void;
+    /**
+     * Host-held Launch menu (the guided tour's last step). While true the
+     * menu stays open: outside clicks, Escape and the pill do not close it.
+     * Going false closes a menu this prop opened.
+     */
+    launchMenuForcedOpen?: boolean;
   }
 
   let {
@@ -188,6 +195,7 @@
     forwardLabel = "",
     onback,
     onforward,
+    launchMenuForcedOpen = false,
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
@@ -346,7 +354,23 @@
     }
   }
 
+  /** The host is holding the menu open (see `launchMenuForcedOpen`). */
+  let launchHeldByHost = false;
+  $effect(() => {
+    if (launchMenuForcedOpen) {
+      launchHeldByHost = true;
+      launchOpen = true;
+      coreOpen = false;
+      launchErrors = {};
+      untrack(() => void ensureLaunchFolder());
+    } else if (launchHeldByHost) {
+      launchHeldByHost = false;
+      launchOpen = false;
+    }
+  });
+
   function toggleLaunch(): void {
+    if (launchMenuForcedOpen) return;
     launchOpen = !launchOpen;
     if (launchOpen) {
       coreOpen = false;
@@ -409,6 +433,10 @@
 
     function onMouseDown(event: MouseEvent) {
       if (!(event.target instanceof Node)) return;
+      if (launchMenuForcedOpen) return;
+      // The guided tour's card sits outside the wrapper; its buttons must not
+      // close the menu it is pointing at.
+      if (event.target instanceof Element && event.target.closest("[data-hq-tour]")) return;
       if (launchContainer && !launchContainer.contains(event.target)) {
         launchOpen = false;
       }
@@ -416,7 +444,7 @@
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        launchOpen = false;
+        if (!launchMenuForcedOpen) launchOpen = false;
         return;
       }
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
