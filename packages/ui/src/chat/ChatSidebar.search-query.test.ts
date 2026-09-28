@@ -60,7 +60,9 @@ afterEach(async () => {
 
 describe("ChatSidebar message search query length", () => {
   it("skips queries outside 2..=100 while sending a two-character query", async () => {
-    const searchMessages = vi.fn(async () => ({ results: [] }));
+    const searchMessages = vi.fn<ChatSidebarApi["searchMessages"]>(async () => ({
+      results: [],
+    }));
     component = mount(ChatSidebar, {
       target: host,
       props: { api: stubApi({ searchMessages }), seedDirectory: [seedRow] },
