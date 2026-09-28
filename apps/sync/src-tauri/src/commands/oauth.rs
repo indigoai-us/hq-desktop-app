@@ -392,6 +392,13 @@ const SUCCESS_HTML: &str = r#"<!doctype html>
   <h1>You are signed in</h1>
   <p>You can close this tab and return to HQ.</p>
 </div></div>
+<script>
+  // The authorization code is single-use and the app has already taken it
+  // from this request. Drop it from the address bar and session history, then
+  // close the tab where the browser allows a script-opened window to close.
+  try { history.replaceState(null, "", "/"); } catch (_) {}
+  setTimeout(function () { try { window.close(); } catch (_) {} }, 300);
+</script>
 </body>
 </html>"#;
 
@@ -404,7 +411,9 @@ text-align:center;padding-top:80px}}h1{{font-weight:500}}p{{color:#a1a1aa}}
 code{{color:#f87171;font-size:12px;display:block;margin-top:24px}}</style>
 </head><body><h1>Sign-in error</h1>
 <p>Return to HQ and try again.</p>
-<code>{reason}</code></body></html>"#,
+<code>{reason}</code>
+<script>try {{ history.replaceState(null, "", "/"); }} catch (_) {{}}</script>
+</body></html>"#,
         reason = reason
     )
 }
@@ -415,6 +424,8 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
     let payload = format!(
         "HTTP/1.1 {status}\r\n\
          Content-Type: text/html; charset=utf-8\r\n\
+         Cache-Control: no-store\r\n\
+         Referrer-Policy: no-referrer\r\n\
          Content-Length: {len}\r\n\
          Connection: close\r\n\
          \r\n\
@@ -956,5 +967,53 @@ mod tests {
             .expect("callback result");
         assert_eq!(result.unwrap().code, "test-code");
         pending.thread.take().unwrap().join().unwrap();
+    }
+
+    fn callback_response(request: &[u8], state: &str) -> String {
+        use std::io::Read;
+        let listeners = bind_loopback_listeners(0).expect("bind loopback listeners");
+        let port = listeners[0].local_addr().unwrap().port();
+        let mut pending = start_loopback_listener(listeners, state.to_string());
+        let mut callback = TcpStream::connect((LOOPBACK_HOST, port)).expect("connect");
+        callback.write_all(request).unwrap();
+        let mut response = String::new();
+        callback.read_to_string(&mut response).unwrap();
+        let _ = pending
+            .result
+            .take()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(1));
+        pending.thread.take().unwrap().join().unwrap();
+        response
+    }
+
+    #[test]
+    fn success_page_scrubs_the_code_from_the_address_bar_and_closes_the_tab() {
+        // Clean-room run 2026-09-27 (defect 6): after desktop sign-in the
+        // browser tab stayed open on /callback?code=… with the authorization
+        // code visible in the address bar and in session history.
+        let response = callback_response(
+            b"GET /callback?code=test-code&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "test-state",
+        );
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Cache-Control: no-store\r\n"));
+        assert!(response.contains("Referrer-Policy: no-referrer\r\n"));
+        assert!(response.contains(r#"history.replaceState(null, "", "/")"#));
+        assert!(response.contains("window.close()"));
+        assert!(response.contains("You can close this tab"));
+        assert!(!response.contains("test-code"));
+    }
+
+    #[test]
+    fn error_page_also_scrubs_the_callback_query() {
+        let response = callback_response(
+            b"GET /callback?code=test-code&state=other-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "test-state",
+        );
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("Cache-Control: no-store\r\n"));
+        assert!(response.contains(r#"history.replaceState(null, "", "/")"#));
+        assert!(!response.contains("test-code"));
     }
 }

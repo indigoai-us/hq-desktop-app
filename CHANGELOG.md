@@ -18,7 +18,9 @@ The release moves it under the version it ships in.
   reads "This PC only" instead of "This Mac only", and the create-form
   keyboard hint reads "Ctrl+Enter TO CREATE" instead of the Mac symbol on a
   PC.
+- Core updates now retry with the bundled Git when the system Git is too old for partial clone filtering.
 - Removed an unused internal script left over from the old installer. No change to how the app updates.
+- After desktop sign-in, the browser tab no longer leaves the one-time sign-in code in the address bar or history: the page clears it and closes itself where the browser allows.
 
 ## [0.10.349] — 2026-09-28
 

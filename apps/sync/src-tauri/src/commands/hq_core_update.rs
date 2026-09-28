@@ -46,6 +46,10 @@ use serde::Deserialize;
 
 use crate::util::logfile::log;
 
+#[path = "core_update_retry.rs"]
+mod core_update_retry;
+use core_update_retry::rescue_needs_managed_git_retry;
+
 pub use hq_desktop_core::hq_version::{get_local_version, strip_v_prefix};
 
 /// GitHub Releases API endpoint for the canonical hq-core repo. Returns
@@ -57,13 +61,6 @@ const RELEASES_URL: &str = "https://api.github.com/repos/indigoai-us/hq-core/rel
 /// HTTP request timeout — keep tight so a flaky network doesn't stall the
 /// `install_hq_core_update` handler.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-const RESCUE_CLONE_FAILED: &str = "error: clone failed";
-const APPLE_GIT_LICENSE_UNACCEPTED: &str = "you have not agreed to the xcode license agreements";
-const GIT_REMOTE_HTTPS_MISSING: &str = "git: 'remote-https' is not a git command";
-const GIT_REMOTE_HTTPS_ABORTED: &str = "fatal: remote helper 'https' aborted session";
-const GIT_CLONE_USAGE: &str = "usage: git clone";
-const GIT_CLONE_UNKNOWN_SHALLOW_EXCLUDE: &str = "error: unknown option 'shallow-exclude'";
 
 struct CoreUpdateRescueCommand {
     command: tokio::process::Command,
@@ -797,20 +794,6 @@ fn core_update_rescue_command(managed_git_first: bool) -> CoreUpdateRescueComman
     }
 }
 
-fn rescue_needs_managed_git_retry(exit_code: i32, rescue_stderr: &str) -> bool {
-    if exit_code == 0 {
-        return false;
-    }
-
-    let rescue_stderr = rescue_stderr.to_ascii_lowercase();
-    rescue_stderr.contains(RESCUE_CLONE_FAILED)
-        && (rescue_stderr.contains(APPLE_GIT_LICENSE_UNACCEPTED)
-            || (rescue_stderr.contains(GIT_REMOTE_HTTPS_MISSING)
-                && rescue_stderr.contains(GIT_REMOTE_HTTPS_ABORTED))
-            || (rescue_stderr.contains(GIT_CLONE_USAGE)
-                && rescue_stderr.contains(GIT_CLONE_UNKNOWN_SHALLOW_EXCLUDE)))
-}
-
 async fn retry_rescue_with_managed_git_if_needed<F, RetryFuture>(
     initial_exit_code: i32,
     initial_rescue_stderr: &str,
@@ -1223,6 +1206,37 @@ mod tests {
                 "a recognized clone failure must make exactly one retry"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_partial_clone_filter_retries_with_managed_git_once() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        // Captured from the fixed-build Sentry events: system Git 2.15 rejects
+        // the filter option, prints clone usage, and the rescue exits with 5.
+        let stderr = concat!(
+            "error: unknown option `filter=blob:none'\n",
+            "usage: git clone [<options>] [--] <repo> [<dir>]\n",
+            "    --depth <depth>       create a shallow clone of that depth\n",
+            "error: clone failed",
+        );
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempted = Arc::clone(&attempts);
+        let retry = retry_rescue_with_managed_git_if_needed(5, stderr, true, move || {
+            attempted.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<i32, String>(0) }
+        })
+        .await;
+
+        assert_eq!(
+            retry.outcome,
+            crate::commands::hq_core_state::ManagedGitRetryOutcome::Succeeded
+        );
+        assert_eq!(retry.exit_code, Some(0));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
