@@ -400,6 +400,27 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     }
 }
 
+/// Reconcile a stale consent-only verdict with stronger completed-install
+/// evidence before native window routing caches it for the process lifetime.
+pub fn reconcile_completed_first_run_state(
+    state: LifecycleState,
+    inputs: LifecycleInputs,
+    manifest_incomplete: bool,
+) -> LifecycleState {
+    if state == LifecycleState::InstalledFirstRun
+        && inputs.install_completed
+        && inputs.first_run_completed
+        && inputs.hq_root_valid
+        && !inputs.install_in_progress
+        && !manifest_incomplete
+        && !inputs.evidence_unreadable
+    {
+        LifecycleState::SteadyState
+    } else {
+        state
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,6 +744,42 @@ mod tests {
         assert!(
             verdict.needs_first_run_backfill,
             "the missing marker is written back"
+        );
+    }
+
+    #[test]
+    fn completed_install_evidence_reconciles_a_stale_first_run_verdict() {
+        let inputs = LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
+            evidence_unreadable: false,
+        };
+
+        assert_eq!(
+            reconcile_completed_first_run_state(
+                LifecycleState::InstalledFirstRun,
+                inputs,
+                false,
+            ),
+            LifecycleState::SteadyState
+        );
+        assert_eq!(
+            reconcile_completed_first_run_state(
+                LifecycleState::InstalledFirstRun,
+                inputs,
+                true,
+            ),
+            LifecycleState::InstalledFirstRun
+        );
+        assert_eq!(
+            reconcile_completed_first_run_state(LifecycleState::NeedsInstall, input(), false),
+            LifecycleState::NeedsInstall
         );
     }
 

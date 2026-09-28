@@ -267,6 +267,7 @@
   <OnboardingWizard
     {initialStep}
     {onboardingFlow}
+    recoveringMissingRoot={isMissingRootRecovery(lifecycleStateProp, setupEvidence)}
     mode={mode === 'replay' ? 'onboarding' : mode}
     {repromptPersonUid}
     onfinish={handleFinish}

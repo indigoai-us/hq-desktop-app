@@ -5,7 +5,8 @@ use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
 use hq_desktop_core::lifecycle::{
     hq_root_valid, menubar_flags, probe_hq_root_for_startup,
-    should_backfill_welcome_setup_pending, HqRootProbe, LifecycleInputs, LifecycleState,
+    reconcile_completed_first_run_state, should_backfill_welcome_setup_pending, HqRootProbe,
+    LifecycleInputs, LifecycleState,
 };
 use hq_desktop_core::paths::ResolvedProgramKind;
 use serde_json::{Map, Value};
@@ -303,6 +304,12 @@ pub fn setup_lifecycle(app: &AppHandle) {
         )
     };
 
+    // Keep the native routing state aligned with persisted setup evidence.
+    // The renderer also starts from this verdict, while Dock/tray/window
+    // routing reads LifecycleStateHandle directly.
+    let lifecycle_state =
+        reconcile_completed_first_run_state(verdict.state, inputs, manifest_incomplete);
+
     if verdict.needs_install_backfill {
         match menubar_path.as_ref() {
             Some(path) => {
@@ -404,7 +411,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         "lifecycle",
         &format!(
             "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} evidence_unreadable={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={} welcome_setup_backfill={}",
-            lifecycle_state_str(verdict.state),
+            lifecycle_state_str(lifecycle_state),
             install_completed,
             first_run_completed,
             had_machine_id,
@@ -422,7 +429,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         ),
     );
 
-    app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
+    app.manage(LifecycleStateHandle(RwLock::new(lifecycle_state)));
     app.manage(LifecycleInputsHandle {
         inputs,
         manifest_incomplete,
@@ -531,7 +538,9 @@ pub fn lifecycle_keeps_main_window_visible(state: LifecycleState) -> bool {
 /// tree underneath, and hits a dead end instead of the setup that would have
 /// fixed it.
 pub fn launch_should_show_setup_card(first_run: bool, state: Option<LifecycleState>) -> bool {
-    first_run || state.is_some_and(lifecycle_keeps_main_window_visible)
+    state
+        .map(lifecycle_keeps_main_window_visible)
+        .unwrap_or(first_run)
 }
 
 fn lifecycle_state_str(state: LifecycleState) -> &'static str {
@@ -729,11 +738,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_run_always_shows_the_setup_card() {
+    fn lifecycle_state_overrides_a_stale_first_run_launch_hint() {
         assert!(launch_should_show_setup_card(true, None));
-        assert!(launch_should_show_setup_card(
+        assert!(!launch_should_show_setup_card(
             true,
             Some(LifecycleState::SteadyState)
+        ));
+        assert!(launch_should_show_setup_card(
+            true,
+            Some(LifecycleState::NeedsInstall)
         ));
     }
 

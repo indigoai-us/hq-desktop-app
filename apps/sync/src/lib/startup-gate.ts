@@ -27,7 +27,7 @@ export type StartupProbeResult = {
   hadStoredToken: boolean;
   /** Bounded observation used to diagnose startup auth restoration. */
   tokenPresence: TokenPresence;
-  /** Persisted setup evidence used to reconcile startup routing and reporting. */
+  /** Persisted setup evidence used by unexpected-surface reporting and recovery. */
   setupEvidence?: StartupSetupEvidence | null;
   auth: { authenticated: boolean; expiresAt: string | null };
 };
@@ -38,7 +38,8 @@ export type StartupSurface = 'loading' | 'onboarding' | 'signed-in' | 'sign-in';
 
 /**
  * A completed first run is stronger evidence than a stale consent-only state.
- * Keep the onboarding route only when setup evidence is missing or incomplete.
+ * Native startup also reconciles LifecycleStateHandle before routing windows;
+ * keep the renderer fallback aligned if an older backend reports stale state.
  */
 export function lifecycleStateForStartup(
   lifecycleState: string | null,
