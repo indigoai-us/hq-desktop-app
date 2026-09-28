@@ -37,6 +37,15 @@ The release moves it under the version it ships in.
 - Core updates now retry with the bundled Git when the system Git is too old for partial clone filtering.
 - Removed an unused internal script left over from the old installer. No change to how the app updates.
 - After desktop sign-in, the browser tab no longer leaves the one-time sign-in code in the address bar or history: the page clears it and closes itself where the browser allows.
+- Behind the `desktop.hq-daemon` flag (off by default), the app runs
+  `hq daemon` as its own child process in place of its background sync
+  runner, sync supervisor, Work Mesh service and scheduled CLI updates. The
+  daemon handles sync, Work Mesh, bots, search indexing and its own updates,
+  and the app restarts it if it exits. Turning sync on or off in the app turns
+  the daemon's sync unit on or off. The app still shows conflicts, plan-limit
+  notices, errors and changed files from each sync pass. The flag is read at
+  launch and needs an installed `hq` new enough to be hosted; otherwise the
+  app keeps its own services.
 
 ## [0.10.349] — 2026-09-28
 
