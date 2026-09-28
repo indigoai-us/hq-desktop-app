@@ -128,7 +128,7 @@ describe("DesktopApp guided tour replay", () => {
       timeout: 2000,
       interval: 20,
     });
-    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 4");
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(markWelcomeTourShown).toHaveBeenCalledTimes(1);
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

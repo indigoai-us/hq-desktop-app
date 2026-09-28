@@ -128,6 +128,8 @@
       }
     };
     frame = requestAnimationFrame(loop);
+    // A step with nothing to point at (no company yet) centers at once.
+    if (step.targets.length === 0) timedOut = true;
     giveUpTimer = window.setTimeout(() => {
       if (!target) timedOut = true;
     }, TOUR_TARGET_TIMEOUT_MS);
@@ -149,10 +151,22 @@
     resizeObserver?.disconnect();
   });
 
-  // Focus Next on every step.
+  // Focus Next on every step. Surfaces a step opens (the create modal, the
+  // command palette) focus themselves on mount, so check again once they have.
+  const REFOCUS_MS = 80;
   $effect(() => {
     void index;
-    void tick().then(() => nextBtn?.focus({ preventScroll: true }));
+    let timer = 0;
+    void tick().then(() => {
+      nextBtn?.focus({ preventScroll: true });
+      timer = window.setTimeout(() => {
+        const active = document.activeElement;
+        if (!(active instanceof Node) || !cardEl?.contains(active)) {
+          nextBtn?.focus({ preventScroll: true });
+        }
+      }, REFOCUS_MS);
+    });
+    return () => clearTimeout(timer);
   });
 
   const cutout = $derived(target ? spotlightRect(target, viewport) : null);
@@ -167,27 +181,29 @@
   );
   const primaryLabel = $derived(tourPrimaryLabel(index, count));
 
+  // Registered on window in the capture phase when the tour mounts, so it
+  // runs before the listeners of surfaces a step opens later (the create
+  // modal's Escape and Tab trap); stopImmediatePropagation keeps those from
+  // also acting on a key the tour handled.
   function onKeyDown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       event.preventDefault();
-      event.stopPropagation();
+      event.stopImmediatePropagation();
       onskip();
       return;
     }
     if (event.key !== "Tab" || !cardEl) return;
     const active = document.activeElement;
-    if (!(active instanceof Node) || !cardEl.contains(active)) return;
+    if (!(active instanceof HTMLElement) || !cardEl.contains(active)) return;
     const buttons = Array.from(cardEl.querySelectorAll<HTMLButtonElement>("button"));
     if (buttons.length === 0) return;
-    const first = buttons[0];
-    const last = buttons[buttons.length - 1];
-    if (event.shiftKey && active === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    const at = buttons.indexOf(active as HTMLButtonElement);
+    const next = event.shiftKey
+      ? buttons[(at - 1 + buttons.length) % buttons.length]
+      : buttons[(at + 1) % buttons.length];
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    next.focus();
   }
 </script>
 

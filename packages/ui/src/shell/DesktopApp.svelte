@@ -238,6 +238,7 @@
     tourSteps,
     tourVault,
     writeTourSeenLocally,
+    type TourEnterAction,
     type TourState,
   } from "../tour/guided-tour.js";
   import { vaultsFor } from "../files/explorer/vault-model.js";
@@ -3216,7 +3217,7 @@
       nav.push({
         id: "command-take-tour",
         label: "Take the tour",
-        detail: "A four-step walk through HQ Desktop",
+        detail: "An eight-step walk through HQ Desktop",
         // Start after the palette has closed so it cannot take focus back.
         action: () => {
           window.setTimeout(startGuidedTour, 0);
@@ -5367,12 +5368,14 @@
   });
 
   /*
-   * FIRST-RUN GUIDED TOUR. A four-step spotlight (setup bot, company vault,
-   * web console, Launch menu) that starts by itself once on a fresh install,
+   * FIRST-RUN GUIDED TOUR. An eight-step spotlight (setup bot, company vault,
+   * create a bot, invite, meetings, web console, Launch menu, command palette)
+   * that starts by itself once on a fresh install,
    * after the shell is up and #welcome or the setup bot's DM is on screen,
    * and can be replayed from the command palette. Model and geometry live in
    * `tour/guided-tour.ts`; this block drives navigation for the vault step,
-   * holds the titlebar Launch menu open on the last step, persists "seen"
+   * opens (and closes) the create modal's Bot step, holds the titlebar Launch
+   * menu open, opens (and closes) the command palette, persists "seen"
    * the moment it starts showing, and returns the person to where they were.
    */
   /** The host's explicit setup-status answer; null until (or unless) it answers. */
@@ -5392,6 +5395,7 @@
       ),
       setupBotUid: tourSetupBotUid,
       hasCompanyVault: tourVaults.some((vault) => vault.kind === "company"),
+      hasCompany: (companies ?? []).some((company) => company.kind === "company"),
     }),
   );
   const tourIndex = $derived(tourState.status === "active" ? tourState.index : -1);
@@ -5426,11 +5430,32 @@
     markTourSeen();
   }
 
-  /** Done or Skip: close the layer and land back where the tour started. */
+  /** The create modal / command palette this tour opened, so it closes them. */
+  let tourOpenedCreate = false;
+  let tourOpenedPalette = false;
+  /** Step index the create modal was requested for (the sidebar may mount late). */
+  let tourCreateWantedAt = $state(-1);
+
+  function closeTourSurfaces(keep: TourEnterAction | null): void {
+    if (keep !== "open-create-bot") {
+      tourCreateWantedAt = -1;
+      if (tourOpenedCreate) {
+        tourOpenedCreate = false;
+        sidebarActions?.closeCreateModal();
+      }
+    }
+    if (keep !== "open-palette" && tourOpenedPalette) {
+      tourOpenedPalette = false;
+      paletteOpen = false;
+    }
+  }
+
+  /** Done or Skip: close what the tour opened and land back where it started. */
   function endGuidedTour(): void {
     const back = tourReturnTo;
     tourReturnTo = null;
     tourState = TOUR_IDLE;
+    closeTourSurfaces(null);
     if (back) void navigate(back);
   }
 
@@ -5473,19 +5498,52 @@
     tourReturnTo = untrack(() => currentShellDestination());
   });
 
-  // Entering a step: step 1 shows where the person was, step 2 opens Files.
+  // Entering a step (keyed on the index, so a re-derived step list does not
+  // re-run it): close what the previous step opened, then do this step's
+  // action. The conversation view is where the sidebar lives, so steps that
+  // point into it put it back first.
   $effect(() => {
-    const step = tourStep;
-    if (!step) return;
+    const index = tourIndex;
+    if (index < 0) return;
     untrack(() => {
-      if (step.onEnter === "restore") {
-        if (view !== "conversation" && tourReturnTo) void navigate(tourReturnTo);
-        return;
+      const step = tourStepList[index];
+      if (!step) return;
+      closeTourSurfaces(step.onEnter);
+      switch (step.onEnter) {
+        case "restore":
+        case "open-create-bot":
+          if (view !== "conversation" && tourReturnTo) void navigate(tourReturnTo);
+          if (step.onEnter === "open-create-bot") tourCreateWantedAt = index;
+          return;
+        case "open-vault": {
+          const vault = tourVault(tourVaults);
+          if (view === "explorer" && (!vault || explorerVault === vault.id)) return;
+          void navigate({ kind: "explorer", vault: vault?.id ?? null, path: null });
+          return;
+        }
+        case "open-palette":
+          if (!paletteOpen) {
+            cheatSheetOpen = false;
+            paletteOpen = true;
+            tourOpenedPalette = true;
+          }
+          return;
+        default:
+          return;
       }
-      if (step.onEnter !== "open-vault") return;
-      const vault = tourVault(tourVaults);
-      if (view === "explorer" && (!vault || explorerVault === vault.id)) return;
-      void navigate({ kind: "explorer", vault: vault?.id ?? null, path: null });
+    });
+  });
+
+  // The Bot step opens the create modal once the sidebar is on screen (after
+  // the vault step it remounts). A host that cannot create bots keeps the
+  // modal shut and the step points at the "+" button instead.
+  $effect(() => {
+    if (tourCreateWantedAt < 0 || tourCreateWantedAt !== tourIndex) return;
+    if (view !== "conversation" || !sidebarActions) return;
+    const actions = sidebarActions;
+    tourCreateWantedAt = -1;
+    untrack(() => {
+      if (actions.openCreateBot()) tourOpenedCreate = true;
     });
   });
 

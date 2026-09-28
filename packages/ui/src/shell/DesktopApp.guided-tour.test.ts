@@ -4,8 +4,11 @@
  * First-run guided tour, end to end through the real shell: on a fresh
  * install (the host says the guided setup is owed and the tour was never
  * shown) it starts by itself once #welcome is on screen, records "seen" at
- * once, opens the company vault on step 2, holds the titlebar Launch menu
- * open on step 4, and Done returns to #welcome with the menu closed.
+ * once, then walks all eight steps: the company vault, the create modal on
+ * its Bot step, the Companies section for invites, meetings, the console
+ * globe, the held-open Launch menu and the command palette. Done returns to
+ * #welcome with every surface the tour opened closed again and nothing
+ * created.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -16,7 +19,7 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 import { SETUP_ROW_ID } from "../chat/setup-channel.js";
-import { TOUR_SEEN_STORAGE_KEY } from "../tour/guided-tour.js";
+import { TOUR_SEEN_STORAGE_KEY, resolveTourTarget, tourSteps } from "../tour/guided-tour.js";
 import type { Workspace } from "../chat/workspaces.js";
 
 const memoryStorage = installMemoryLocalStorage();
@@ -57,10 +60,23 @@ async function settle(): Promise<void> {
 
 const q = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 
+const STEPS = tourSteps({ hasCompany: true, hasCompanyVault: true });
+
+/** Which of a step's target selectors is in the DOM (happy-dom has no layout). */
+function resolvedSelector(index: number): string | null {
+  return resolveTourTarget(STEPS[index].targets, (sel) => document.querySelector(sel))?.selector ?? null;
+}
+
+async function next(): Promise<void> {
+  q("guided-tour-next")!.click();
+  await settle();
+}
+
 // One mount per file: the sidebar's boot pick keeps module-level state.
 describe("DesktopApp first-run guided tour", () => {
-  it("auto-starts on a fresh install, walks the four steps and lands back on #welcome", async () => {
+  it("auto-starts on a fresh install, walks the eight steps and lands back on #welcome", async () => {
     const markWelcomeTourShown = vi.fn(async () => ok(undefined));
+    const createBot = vi.fn(async () => ok({ ok: true, name: "x", agentUid: "agt_x" }));
     const adapter = {
       kind: "desktop",
       isAvailable: () => false,
@@ -71,6 +87,15 @@ describe("DesktopApp first-run guided tour", () => {
         fetchChannel: async () => ({ ok: false as const, reason: "unavailable" }),
       },
       files: { listDir: async () => ok([]) },
+      identity: { hasFeature: async () => ok(false) },
+      bots: {
+        list: async () => ok({ bots: [] }),
+        create: createBot,
+        start: async () => ok({}),
+        stop: async () => ok({}),
+        remove: async () => ok({}),
+        workers: async () => ok({ workers: [] }),
+      },
       appShell: { setActiveCompany: async () => ok(undefined) },
       settings: {
         getSetupStatus: async () =>
@@ -112,39 +137,79 @@ describe("DesktopApp first-run guided tour", () => {
     expect(host.querySelector(`.chat-row[data-conversation-id="${SETUP_ROW_ID}"].active`)).toBeTruthy();
     expect(markWelcomeTourShown).toHaveBeenCalledTimes(1);
     expect(memoryStorage.getItem(TOUR_SEEN_STORAGE_KEY)).toBe("1");
-    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 4");
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
+    expect(resolvedSelector(0)).toBe('[data-testid="setup-hero"]');
 
     // Step 2: the Files explorer on the company vault.
-    q("guided-tour-next")!.click();
-    await settle();
+    await next();
     await vi.waitFor(() => expect(q("vault-explorer")).toBeTruthy(), { timeout: 2000, interval: 20 });
     expect(q("guided-tour-card")?.textContent).toContain("Your company's files");
 
-    // Step 3: the web console globe.
-    q("guided-tour-next")!.click();
+    // Step 3: back in the conversation view, the create modal on its Bot step.
+    await next();
+    await vi.waitFor(() => expect(q("chat-create-modal")).toBeTruthy(), { timeout: 2000, interval: 20 });
+    expect(q("guided-tour-card")?.textContent).toContain("Make your own bots");
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("3 of 8");
+    expect(resolvedSelector(2)).toBe('[data-testid="chat-create-modal"] .create-card');
+    expect(document.querySelector(".create-card--wide")).toBeTruthy();
+    // A click on the card neither closes nor submits the modal.
+    q("guided-tour-card")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    q("guided-tour-card")!.click();
     await settle();
+    expect(q("chat-create-modal")).toBeTruthy();
+
+    // Step 4: invites, pointed at the sidebar's Companies section; modal closed.
+    await next();
+    expect(q("chat-create-modal")).toBeNull();
+    expect(q("guided-tour-card")?.textContent).toContain("Bring in your team");
+    expect(resolvedSelector(3)).toBe('[data-testid="chat-companies-section"]');
+
+    // Back reopens the modal; Next closes it again.
+    q("guided-tour-back")!.click();
+    await settle();
+    await vi.waitFor(() => expect(q("chat-create-modal")).toBeTruthy(), { timeout: 2000, interval: 20 });
+    await next();
+    expect(q("chat-create-modal")).toBeNull();
+
+    // Step 5: meetings.
+    await next();
+    expect(q("guided-tour-card")?.textContent).toContain("HQ can take notes on your calls");
+    expect(resolvedSelector(4)).toBe('[data-testid="titlebar-meetings"]');
+
+    // Step 6: the web console globe.
+    await next();
     expect(q("guided-tour-card")?.textContent).toContain("Open HQ on the web");
+    expect(resolvedSelector(5)).toBe('[data-testid="titlebar-console"]');
     expect(q("titlebar-launch-menu")).toBeNull();
 
-    // Step 4: the Launch menu is held open; a click on the card keeps it.
-    q("guided-tour-next")!.click();
-    await settle();
+    // Step 7: the Launch menu is held open; a click on the card keeps it.
+    await next();
     expect(q("titlebar-launch-menu")).toBeTruthy();
     q("guided-tour-card")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     await settle();
     expect(q("titlebar-launch-menu")).toBeTruthy();
+
+    // Step 8: the command palette opens; the Launch menu closes.
+    await next();
+    expect(q("titlebar-launch-menu")).toBeNull();
+    expect(q("command-palette")).toBeTruthy();
+    expect(resolvedSelector(7)).toBe('[data-testid="command-palette"]');
+    expect(q("guided-tour-card")?.textContent).toContain("Find anything with");
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("8 of 8");
     expect(q("guided-tour-next")?.textContent?.trim()).toBe("Done");
 
-    // Done: the layer closes, the menu closes, and #welcome is back.
-    q("guided-tour-next")!.click();
-    await settle();
+    // Done: the layer and the palette close, and #welcome is back.
+    await next();
     await vi.waitFor(() => expect(q("setup-channel-intro")).toBeTruthy(), {
       timeout: 2000,
       interval: 20,
     });
     expect(q("vault-explorer")).toBeNull();
     expect(q("guided-tour-card")).toBeNull();
+    expect(q("command-palette")).toBeNull();
+    expect(q("chat-create-modal")).toBeNull();
     expect(q("titlebar-launch-menu")).toBeNull();
+    expect(createBot).not.toHaveBeenCalled();
     expect(markWelcomeTourShown).toHaveBeenCalledTimes(1);
   }, 20_000);
 });

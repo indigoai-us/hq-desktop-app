@@ -1,7 +1,8 @@
 /**
  * First-run guided tour for the desktop window: a spotlight that walks a new
- * person through four places (the setup bot, the company vault, the web
- * console, the Launch menu). This module is the pure part: step definitions,
+ * person through eight places (the setup bot, the company vault, creating a
+ * bot, inviting teammates, meetings, the web console, the Launch menu, the
+ * command palette). This module is the pure part: step definitions,
  * state transitions, target resolution, geometry for the cutout and the card,
  * and the auto-start gate. `GuidedTour.svelte` renders it; `DesktopApp.svelte`
  * drives navigation and persists the "seen" flag.
@@ -12,19 +13,40 @@
 import { SETUP_ROW_ID } from "../chat/setup-channel.js";
 import type { Vault } from "../files/explorer/vault-model.js";
 
-export type TourStepId = "setup-bot" | "company-vault" | "web-console" | "launch";
+export type TourStepId =
+  | "setup-bot"
+  | "company-vault"
+  | "create-bot"
+  | "invite"
+  | "meetings"
+  | "web-console"
+  | "launch"
+  | "command-palette";
 
 /** Preferred side of the target for the card. */
 export type TourPlacement = "top" | "bottom" | "left" | "right";
 
-/** What the host does when a step becomes current. */
-export type TourEnterAction = "restore" | "open-vault" | "none" | "open-launch-menu";
+/**
+ * What the host does when a step becomes current. `restore` puts the
+ * conversation view (and so the sidebar) back on screen; the `open-*` actions
+ * are undone by the host when the tour leaves the step.
+ */
+export type TourEnterAction =
+  | "restore"
+  | "open-vault"
+  | "open-create-bot"
+  | "none"
+  | "open-launch-menu"
+  | "open-palette";
 
 export interface TourStep {
   id: TourStepId;
   title: string;
   body: string;
-  /** Target selectors in priority order; the first visible match wins. */
+  /**
+   * Target selectors in priority order; the first visible match wins. Empty
+   * means the card is shown centered with no cutout straight away.
+   */
   targets: string[];
   /**
    * Extra selectors whose boxes are merged into the spotlight when present
@@ -42,6 +64,8 @@ export interface TourContext {
   setupBotUid?: string | null;
   /** A company vault exists on this Mac (else the tour shows Personal). */
   hasCompanyVault?: boolean;
+  /** The account belongs to at least one company (else invites wait for setup). */
+  hasCompany?: boolean;
 }
 
 /** localStorage fallback for hosts without `markWelcomeTourShown`. */
@@ -60,7 +84,7 @@ function attr(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-/** The four steps, in order, for the current shell. */
+/** The eight steps, in order, for the current shell. */
 export function tourSteps(ctx: TourContext = {}): TourStep[] {
   const botUid = ctx.setupBotUid?.trim() || null;
   const botRow = botUid ? `.chat-row[data-conversation-id="dm:${attr(botUid)}"]` : null;
@@ -72,6 +96,7 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
     `.chat-row[data-conversation-id="${SETUP_ROW_ID}"]`,
   ];
   const company = ctx.hasCompanyVault === true;
+  const hasCompany = ctx.hasCompany === true;
   return [
     {
       id: "setup-bot",
@@ -92,6 +117,38 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       onEnter: "open-vault",
     },
     {
+      id: "create-bot",
+      title: "Make your own bots",
+      body: "Start a bot here: give it a name and pick Claude Code or Codex to run it. It can take on a job for you or your team.",
+      // The create modal opened on its Bot step, else the sidebar button that opens it.
+      targets: ['[data-testid="chat-create-modal"] .create-card', '[data-testid="chat-new-message"]'],
+      placement: "right",
+      onEnter: "open-create-bot",
+    },
+    {
+      id: "invite",
+      title: "Bring in your team",
+      body: hasCompany
+        ? "Invite teammates so they share the same files, bots and knowledge. Invites are sent from your company's Team page on hq.computer."
+        : "Invite teammates so they share the same files, bots and knowledge. Invites open once setup creates your company.",
+      // No send-invite control is mounted in the desktop shell today; the
+      // Team panel's Invite button wins if one appears, else the sidebar's
+      // Companies section. With no company there is nothing to point at.
+      targets: hasCompany
+        ? ['[data-testid="team-invite"]', '[data-testid="chat-companies-section"]']
+        : [],
+      placement: "right",
+      onEnter: "restore",
+    },
+    {
+      id: "meetings",
+      title: "Meetings",
+      body: "HQ can take notes on your calls and turn them into summaries and action items.",
+      targets: ['[data-testid="titlebar-meetings"]'],
+      placement: "bottom",
+      onEnter: "none",
+    },
+    {
       id: "web-console",
       title: "Open HQ on the web",
       body: "This opens hq.computer, where you manage your team, billing and integrations.",
@@ -107,6 +164,14 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       include: ['[data-testid="titlebar-launch-menu"]'],
       placement: "bottom",
       onEnter: "open-launch-menu",
+    },
+    {
+      id: "command-palette",
+      title: "Find anything with ⌘K",
+      body: "Jump to files, people, bots and settings. You can replay this tour from here too.",
+      targets: ['[data-testid="command-palette"]'],
+      placement: "bottom",
+      onEnter: "open-palette",
     },
   ];
 }

@@ -138,6 +138,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   handleHomeChannelResolved: "none",
   closeSettings: "replace",
   closeFiles: "replace",
+  // Guided tour: shuts the create modal / command palette it opened; the
+  // tour's own return trip goes through navigate() in endGuidedTour.
+  closeTourSurfaces: "none",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
   applyCompanyDeepLink: "push",

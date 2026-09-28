@@ -16,8 +16,8 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function mountTour(index: number) {
-  const steps = tourSteps({ hasCompanyVault: true });
+function mountTour(index: number, ctx: Parameters<typeof tourSteps>[0] = { hasCompanyVault: true, hasCompany: true }) {
+  const steps = tourSteps(ctx);
   const handlers = { onnext: vi.fn(), onback: vi.fn(), onskip: vi.fn() };
   const props = $state({ step: steps[index], index, count: steps.length, ...handlers });
   host = document.createElement("div");
@@ -36,7 +36,7 @@ describe("GuidedTour", () => {
     expect(card?.getAttribute("role")).toBe("dialog");
     const titleId = card?.getAttribute("aria-labelledby");
     expect(titleId && document.getElementById(titleId)?.textContent).toBe("Talk to your setup bot");
-    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 4");
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(q("guided-tour-skip")).toBeTruthy();
     expect(q("guided-tour-back")).toBeNull();
     expect(q("guided-tour-next")?.textContent?.trim()).toBe("Next");
@@ -47,11 +47,11 @@ describe("GuidedTour", () => {
     const { props, steps } = mountTour(1);
     await tick();
     expect(q("guided-tour-back")).toBeTruthy();
-    props.step = steps[3];
-    props.index = 3;
+    props.step = steps[7];
+    props.index = 7;
     flushSync();
     expect(q("guided-tour-next")?.textContent?.trim()).toBe("Done");
-    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("4 of 4");
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("8 of 8");
   });
 
   it("routes the buttons and Escape to the host", async () => {
@@ -79,6 +79,31 @@ describe("GuidedTour", () => {
     await tick();
     await tick();
     expect(document.activeElement).toBe(q("guided-tour-next"));
+  });
+
+  it("centers a step with no target straight away (invite before a company exists)", async () => {
+    mountTour(3, { hasCompany: false });
+    await tick();
+    flushSync();
+    const card = q("guided-tour-card");
+    expect(card?.classList.contains("is-ready")).toBe(true);
+    expect(card?.dataset.placement).toBe("center");
+    expect(card?.textContent).toContain("once setup creates your company");
+    expect(q("guided-tour-cutout")).toBeNull();
+  });
+
+  it("keeps Tab inside the card and stops later window listeners from seeing it", async () => {
+    const { onskip } = mountTour(2);
+    await tick();
+    const later = vi.fn();
+    window.addEventListener("keydown", later, true);
+    q("guided-tour-next")!.focus();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    expect(document.activeElement).toBe(q("guided-tour-skip"));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(onskip).toHaveBeenCalledTimes(1);
+    expect(later).not.toHaveBeenCalled();
+    window.removeEventListener("keydown", later, true);
   });
 
   it("shows the card centered with no cutout when the target never appears", async () => {

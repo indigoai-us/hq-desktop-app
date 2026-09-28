@@ -33,12 +33,16 @@ const company: Vault = {
 };
 
 describe("tourSteps", () => {
-  it("has the four steps in order", () => {
+  it("has the eight steps in order", () => {
     expect(tourSteps().map((s) => s.id)).toEqual([
       "setup-bot",
       "company-vault",
+      "create-bot",
+      "invite",
+      "meetings",
       "web-console",
       "launch",
+      "command-palette",
     ]);
   });
 
@@ -67,12 +71,39 @@ describe("tourSteps", () => {
     expect(tourSteps().map((s) => s.onEnter)).toEqual([
       "restore",
       "open-vault",
+      "open-create-bot",
+      "restore",
+      "none",
       "none",
       "open-launch-menu",
+      "open-palette",
     ]);
-    const launch = tourSteps()[3];
+    const launch = tourSteps()[6];
     expect(launch.targets).toEqual([".v4-launch-wrap"]);
     expect(launch.include).toEqual(['[data-testid="titlebar-launch-menu"]']);
+  });
+
+  it("points the new steps at the create modal, companies, meetings and the palette", () => {
+    const steps = tourSteps({ hasCompany: true });
+    expect(steps[2].title).toBe("Make your own bots");
+    expect(steps[2].targets).toEqual([
+      '[data-testid="chat-create-modal"] .create-card',
+      '[data-testid="chat-new-message"]',
+    ]);
+    expect(steps[3].title).toBe("Bring in your team");
+    expect(steps[3].targets).toEqual([
+      '[data-testid="team-invite"]',
+      '[data-testid="chat-companies-section"]',
+    ]);
+    expect(steps[4].targets).toEqual(['[data-testid="titlebar-meetings"]']);
+    expect(steps[7].title).toBe("Find anything with ⌘K");
+    expect(steps[7].targets).toEqual(['[data-testid="command-palette"]']);
+  });
+
+  it("centers the invite step with no target until a company exists", () => {
+    const invite = tourSteps({ hasCompany: false })[3];
+    expect(invite.targets).toEqual([]);
+    expect(invite.body).toMatch(/once setup creates your company/);
   });
 });
 
@@ -80,11 +111,9 @@ describe("tour state", () => {
   it("walks forward and finishes on the last Next", () => {
     let state = startTourState();
     expect(state).toEqual({ status: "active", index: 0 });
-    state = nextTourState(state, 4);
-    state = nextTourState(state, 4);
-    state = nextTourState(state, 4);
-    expect(state).toEqual({ status: "active", index: 3 });
-    expect(nextTourState(state, 4)).toEqual({ status: "done" });
+    for (let i = 0; i < 7; i += 1) state = nextTourState(state, 8);
+    expect(state).toEqual({ status: "active", index: 7 });
+    expect(nextTourState(state, 8)).toEqual({ status: "done" });
   });
 
   it("goes back but not before the first step", () => {
@@ -100,9 +129,9 @@ describe("tour state", () => {
   });
 
   it("labels the card", () => {
-    expect(tourProgressLabel(0, 4)).toBe("1 of 4");
-    expect(tourPrimaryLabel(2, 4)).toBe("Next");
-    expect(tourPrimaryLabel(3, 4)).toBe("Done");
+    expect(tourProgressLabel(0, 8)).toBe("1 of 8");
+    expect(tourPrimaryLabel(6, 8)).toBe("Next");
+    expect(tourPrimaryLabel(7, 8)).toBe("Done");
     expect(tourCanGoBack(0)).toBe(false);
     expect(tourCanGoBack(1)).toBe(true);
   });
