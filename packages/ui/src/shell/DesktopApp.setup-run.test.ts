@@ -327,7 +327,7 @@ describe("DesktopApp native setup run wiring", () => {
     expect(api.start).toHaveBeenLastCalledWith("/setup --guided", "claude");
   });
 
-  it("finishing offers Continue in HQ Sessions, Claude Code, and Codex under the last message", async () => {
+  it("finishing offers Continue in HQ Desktop, Claude Code, and Codex under the last message", async () => {
     const api = fakeSetupRun();
     await mountApp(api, undefined, { companies: [ACME] });
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
@@ -344,7 +344,7 @@ describe("DesktopApp native setup run wiring", () => {
     expect(finish).toBeTruthy();
     expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-agent-finish"]')).toBe(finish);
     expect(finish!.textContent).toContain("You're set up");
-    expect(finish!.querySelector('[data-testid="setup-agent-open-sessions"]')?.textContent?.trim()).toBe("Continue in HQ Sessions");
+    expect(finish!.querySelector('[data-testid="setup-agent-open-sessions"]')?.textContent?.trim()).toBe("Continue in HQ Desktop");
     expect(finish!.querySelector('[data-testid="setup-agent-open-claude"]')?.textContent?.trim()).toBe("Continue in Claude Code");
     expect(finish!.querySelector('[data-testid="setup-agent-open-codex"]')?.textContent?.trim()).toBe("Continue in Codex");
     expect(finish!.querySelector('[data-testid="setup-run-again"]')).toBeTruthy();
@@ -370,7 +370,7 @@ describe("DesktopApp native setup run wiring", () => {
     expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=y");
   });
 
-  it("the session that starts from Continue in HQ Sessions stays on screen even without a company key", async () => {
+  it("the session that starts from Continue in HQ Desktop stays on screen even without a company key", async () => {
     const api = fakeSetupRun();
     await mountApp(api, undefined, { companies: [{ ...ACME, state: "synced", hasLocalFolder: true }] });
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
