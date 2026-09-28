@@ -51,7 +51,6 @@ export function runtimeStatusOf(
   return status;
 }
 
-/** Parse whatever the host command returned into a status, or null. */
 /**
  * Remove repeated directory strings while preserving first-seen order.
  *
@@ -79,6 +78,7 @@ export function dedupeSearchedDirs(dirs: readonly string[]): string[] {
   return out;
 }
 
+/** Parse whatever the host command returned into a status, or null. */
 export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
@@ -88,12 +88,12 @@ export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
     case "signedOut":
       return { state: "signedOut" };
     case "notInstalled": {
-      const raw = Array.isArray(rec.searched)
+      const listed = Array.isArray(rec.searched)
         ? rec.searched.filter((d): d is string => typeof d === "string")
         : [];
       return {
         state: "notInstalled",
-        searched: dedupeSearchedDirs(raw),
+        searched: dedupeSearchedDirs(listed),
       };
     }
     case "probeFailed":

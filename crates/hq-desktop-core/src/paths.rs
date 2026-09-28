@@ -1378,24 +1378,6 @@ fn unix_hq_search_dirs_in(settings: Vec<PathBuf>, home: Option<&Path>) -> Vec<Pa
     dirs
 }
 
-/// Remove repeated directory entries while preserving first-seen order.
-///
-/// Windows callers (see `extended_search_dirs`) union up to a dozen sources
-/// that legitimately point at the same folder: on 64-bit Windows the
-/// `ProgramFiles` and `ProgramW6432` env vars are the same path, a custom
-/// `PNPM_HOME` can equal the `%LOCALAPPDATA%\pnpm` default, and a machine
-/// upgraded from the legacy `Indigo HQ` layout can still see the modern
-/// `IndigoHQ` root resolve to the same directory. A UI that keys a Svelte
-/// `each` block by directory string throws on the repeat and blanks the app,
-/// so this is a correctness helper for both diagnostics AND the UI payload.
-///
-/// Comparison rules:
-///   * On Windows, case-insensitive and tolerant of a single trailing path
-///     separator (`\` or `/`) — a path that differs only by case or by that
-///     one character names the same folder.
-///   * On Unix, an exact byte match, because paths are case-sensitive and a
-///     trailing `/` is meaningless before comparison in every real caller.
-///
 /// The comparison rule to apply when deduplicating a search-dir list.
 ///
 /// * `WindowsInsensitive` — case-insensitive, tolerant of one trailing path
