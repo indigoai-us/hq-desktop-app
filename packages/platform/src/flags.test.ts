@@ -46,6 +46,12 @@ describe("registry key mapping", () => {
     expect(registryKeyFor("is_indigo_user")).toBeUndefined();
     expect(registryKeyFor("anything-else")).toBeUndefined();
   });
+
+  it("maps the setup directory fallback to its hq-flags registry key", () => {
+    expect(registryKeyFor("desktop.setup-directory-parent-fallback")).toBe(
+      "desktop.setup-directory-parent-fallback",
+    );
+  });
 });
 
 describe("createFeatureFlagGate", () => {

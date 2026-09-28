@@ -76,6 +76,19 @@ pub const CLI_INSTALL_LOCK_WAIT_BACKOFF: Duration = Duration::from_secs(3);
 /// which a dead holder's lock is reclaimed (asserted in tests).
 pub const CLI_INSTALL_LOCK_WAIT_BUDGET: Duration = Duration::from_secs(90);
 
+/// Expanded setup wait used only while the hq-flags rollout is enabled. It stays
+/// below the ten-minute stale-lock ceiling and gives a healthy npm writer time
+/// to finish without letting a dead holder pin setup indefinitely.
+pub const CLI_INSTALL_LOCK_RECOVERY_WAIT_BUDGET: Duration = Duration::from_secs(540);
+
+pub fn cli_install_lock_wait_budget_for_recovery(extended: bool) -> Duration {
+    if extended {
+        CLI_INSTALL_LOCK_RECOVERY_WAIT_BUDGET
+    } else {
+        CLI_INSTALL_LOCK_WAIT_BUDGET
+    }
+}
+
 /// The lock file's JSON body. Field names are the cross-repo contract —
 /// hq-cli parses these exact keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -711,6 +724,19 @@ mod tests {
             !CLI_INSTALL_LOCK_WAIT_BACKOFF.is_zero(),
             "the production backoff must be non-zero or the wait busy-loops"
         );
+    }
+
+    #[test]
+    fn extended_setup_wait_is_opt_in_and_stays_inside_the_stale_ceiling() {
+        assert_eq!(
+            cli_install_lock_wait_budget_for_recovery(false),
+            CLI_INSTALL_LOCK_WAIT_BUDGET
+        );
+        assert_eq!(
+            cli_install_lock_wait_budget_for_recovery(true),
+            std::time::Duration::from_secs(540)
+        );
+        assert!(cli_install_lock_wait_budget_for_recovery(true) < CLI_UPDATE_LOCK_STALE_AFTER);
     }
 
     #[test]

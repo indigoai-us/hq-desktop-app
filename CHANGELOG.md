@@ -32,10 +32,6 @@ The release moves it under the version it ships in.
   recognise falls back to "HQ couldn't finish installing Claude Code. You
   can try again or install Claude Code yourself, then click Check again."
   The raw error still goes to the app log for support.
-- The New bot wizard now says "this PC" on Windows even when the OS probe
-  lands after the panel first paints. The wording used to briefly read "on
-  this computer" and then never update; now it flips to "PC" as soon as the
-  probe answers.
 - The footer next to Next in the New bot wizard no longer contradicts the
   panel above. When the panel shows the install path it now reads "Finish
   setting up Claude Code above."; after installing and before signing in it
@@ -46,6 +42,26 @@ The release moves it under the version it ships in.
   then retry.". It now reads "HQ needs a coding tool signed in on this
   PC to finish setup. Sign in above, then Retry." Purpose first, and no
   three-tool list right after the person installed one.
+- Windows template setup can reuse matching content links and use a gated copy or junction fallback for selected link errors.
+
+## [0.10.350] — 2026-09-28
+
+- With `desktop.setup-directory-parent-fallback` enabled, HQ uses a fresh `hq`
+  subfolder when the chosen location already has files. Before setup, it checks
+  the suggested `~/hq` folder too. If HQ cannot write to a location, the folder
+  step explains how to choose a different one or grant access. The flag
+  defaults off.
+
+- On Windows, setup can wait for the desktop CLI updater to finish before reporting a dependency failure. The default-off hq-flags rollout also gives selected-prefix rename locks more time to clear between retries.
+
+- Channel messages now keep mentions aligned with their person or agent IDs and within the 25-person limit.
+
+- Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
+
+- Desktop sign-in now retries once after an expired or mismatched browser
+  callback and uses another registered localhost callback port when the
+  default port is occupied. If the retry fails, the provider buttons stay
+  available.
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files
@@ -59,6 +75,15 @@ The release moves it under the version it ships in.
 - Core updates now retry with the bundled Git when the system Git is too old for partial clone filtering.
 - Removed an unused internal script left over from the old installer. No change to how the app updates.
 - After desktop sign-in, the browser tab no longer leaves the one-time sign-in code in the address bar or history: the page clears it and closes itself where the browser allows.
+- Behind the `desktop.hq-daemon` flag (off by default), the app runs
+  `hq daemon` as its own child process in place of its background sync
+  runner, sync supervisor, Work Mesh service and scheduled CLI updates. The
+  daemon handles sync, Work Mesh, bots, search indexing and its own updates,
+  and the app restarts it if it exits. Turning sync on or off in the app turns
+  the daemon's sync unit on or off. The app still shows conflicts, plan-limit
+  notices, errors and changed files from each sync pass. The flag is read at
+  launch and needs an installed `hq` new enough to be hosted; otherwise the
+  app keeps its own services.
 
 ## [0.10.349] — 2026-09-28
 

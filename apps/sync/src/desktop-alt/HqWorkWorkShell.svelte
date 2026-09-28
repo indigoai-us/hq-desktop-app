@@ -669,7 +669,8 @@
       try {
         // The plan URL is server-selected. Keep the desktop's approved-host
         // boundary before rendering an action that can open it.
-        const approvedUrl = approvedExternalUrl(upgradeUrl);
+        const attributedUrl = withDesktopLimitEntrySurface(upgradeUrl);
+        const approvedUrl = approvedExternalUrl(attributedUrl);
         planLimitNotices = [
           ...planLimitNotices.filter(
             (notice) => notice.company !== company || notice.upgradeUrl !== approvedUrl,
@@ -836,6 +837,27 @@
       (current) =>
         current.company !== notice.company || current.upgradeUrl !== notice.upgradeUrl,
     );
+  }
+
+  function withDesktopLimitEntrySurface(value: string): string {
+    const url = new URL(value);
+    const callbackUrl = url.searchParams.get('callbackUrl');
+    if (callbackUrl) {
+      const callback = new URL(callbackUrl, url.origin);
+      const callbackParts = callback.pathname.split('/').filter(Boolean);
+      if (callbackParts.length === 5 && callbackParts[0] === 'api' && callbackParts[1] === 'companies' &&
+        /^cmp_[A-Za-z0-9_-]+$/.test(callbackParts[2]) && callbackParts[3] === 'billing' && callbackParts[4] === 'upgrade') {
+        callback.searchParams.set('entrySurface', 'desktop_limit');
+        url.searchParams.set('callbackUrl', `${callback.pathname}${callback.search}${callback.hash}`);
+        return url.toString();
+      }
+    }
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length === 3 && parts[0] === 'companies' && parts[2] === 'billing') {
+      url.searchParams.set('entrySurface', 'desktop_limit');
+      return url.toString();
+    }
+    return value;
   }
 
   async function openPlanLimitUpgrade(url: string): Promise<void> {

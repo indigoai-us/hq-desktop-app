@@ -9,6 +9,7 @@
 //!
 use std::time::Duration;
 
+use hq_desktop_core::hq_daemon::{default_last_pass_path, read_last_pass, LastPassTracker};
 use hq_desktop_core::sync_progress::{read_fresh_snapshot, SyncProgressSnapshot};
 use tauri::{AppHandle, Emitter};
 
@@ -51,6 +52,34 @@ pub fn setup_sync_progress_watch(app: &AppHandle) {
                     }
                 }
             }
+        }
+    });
+}
+
+/// When hq daemon runs sync, the app does not read the runner's stdout. Poll
+/// hq-cloud's end-of-pass record instead and run each finished pass through
+/// the same per-pass handling (journal, notices, client health, git mirror).
+pub fn setup_last_pass_watch(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(path) = default_last_pass_path() else {
+            return;
+        };
+        let mut tracker = LastPassTracker::starting_after(read_last_pass(&path));
+        loop {
+            tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+            let Some(pass) = tracker.take_new(read_last_pass(&path)) else {
+                continue;
+            };
+            let Ok(hq_folder) = hq_desktop_core::daemon::resolve_hq_folder_path() else {
+                continue;
+            };
+            let app = handle.clone();
+            // The handler writes the journal and starts the mirror; keep it off the async runtime.
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                crate::commands::hq_daemon_host::replay_last_pass(&app, &hq_folder, &pass);
+            })
+            .await;
         }
     });
 }

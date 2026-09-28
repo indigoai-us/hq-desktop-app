@@ -1451,34 +1451,17 @@ fn main() {
             // holder, which spawns a short-lived child process.
             std::thread::spawn(commands::git_mirror::reap_stale_index_lock_on_launch);
 
-            // Fire-and-forget: warm the npx cache for
-            // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's
-            // first click of "Sync Now" doesn't eat the 3–10s first-time
-            // download. No-ops if the cache is already warm. See
-            // `commands::prewarm` for the rationale.
-            commands::prewarm::spawn_prewarm();
-
             // US-004: silent HQ Work co-install after a Sync update. Canonical
             // path is next launch — macOS download_and_install often kills the
             // process before post-install hooks run.
             commands::hq_work::spawn_maybe_co_install_hq_work();
 
-            // Auto-start the watcher when either flag is on:
-            //   - `autostart_daemon` (V2-prep devtools flag, default OFF)
-            //   - `realtime_sync`   (user-facing Auto-sync toggle, default ON)
-            let dev_disable_auto_sync =
-                std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH").ok().as_deref() == Some("1");
-            if !dev_disable_auto_sync
-                && (commands::daemon::is_autostart_enabled()
-                    || commands::daemon::is_realtime_sync_enabled())
-            {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    // Small delay to let the app fully initialize
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    let _ = commands::daemon::start_daemon_for_app_launch(handle);
-                });
-            }
+            // Decide once whether hq daemon (flag `desktop.hq-daemon`) or the
+            // app itself runs background sync, then start that side. The app
+            // path warms the npx cache for `@indigoai-us/hq-cloud` and starts
+            // the watcher when Auto-sync (`realtime_sync`) or the
+            // `autostart_daemon` devtools flag is on, as before.
+            commands::hq_daemon_host::setup_sync_host(app.handle());
 
             // Bound the meeting-detect notify ledger on launch: drop entries
             // older than 14 days. Best-effort; failures never block setup.

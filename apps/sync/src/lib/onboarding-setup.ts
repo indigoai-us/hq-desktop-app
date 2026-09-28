@@ -76,6 +76,12 @@ export const SETUP_ERROR_KINDS = [
   'content_symlink_creation_failed',
   'content_symlink_helper_spawn_failed',
   'content_symlink_helper_exit_nonzero',
+  // Answers the Funnel Pulse triage question: which directory-validation
+  // branch is rejecting setup — non-HQ contents, write access, or a failed check?
+  'directory_nonempty_non_hq',
+  'directory_child_nonempty_non_hq',
+  'directory_not_writable',
+  'directory_check_failed',
   'unknown',
 ] as const;
 

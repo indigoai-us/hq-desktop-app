@@ -15,6 +15,7 @@
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
   import {
+    appendChildFolderPath,
     friendlyPath,
     homeDirFromDefaultHqPath,
     toUserFacingPath,
@@ -112,6 +113,10 @@
   } from '../../lib/onboarding-wizard';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
+  import {
+    createSyncPlatformAdapter,
+    SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+  } from '@hq/platform';
 
   interface Props {
     initialStep: number;
@@ -192,6 +197,9 @@
    */
   const consentOnly = $derived(mode !== 'onboarding');
   const onboardingTelemetry = createOnboardingStepTelemetry();
+  const onboardingFeatureFlags = createSyncPlatformAdapter({
+    invoke: (command, args) => invoke(command, args),
+  });
 
   let activeInitialStep = $state<number | null>(null);
   let router = $state(createWizardRouter());
@@ -256,6 +264,7 @@
   let onboardingCompleted = false;
 
   let installPath = $state<string | null>(null);
+  let validatedInstallPath = $state<string | null>(null);
   let resolvedPath = $state<string | null>(null);
   let homeDir = $state<string | null>(null);
   let directoryNotice = $state<Notice | null>(null);
@@ -299,6 +308,7 @@
   let unlistenPersonalFirstPushScan: UnlistenFn | null = null;
   let unlistenPersonalFirstPushProgress: UnlistenFn | null = null;
   let activeInitialSyncTimeoutProgress: (() => void) | null = null;
+  let activeDepsLockWaitTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -666,7 +676,7 @@
     }
   }
 
-  async function handleSignIn(provider: SignInProvider) {
+  async function handleSignIn(provider: SignInProvider, stateRecoveryAttempt = false) {
     const call = ++currentSignInCall;
     // Claim the provider path before any await. The continuation config can
     // settle while this click is being handled; it must not then arm a second
@@ -720,11 +730,17 @@
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
       console.error('[onboarding-signin] sign-in failed:', err);
+      const errorKind = classifyContinuationError(err);
+      if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
+        console.warn('[onboarding-signin] restarting once after an expired or mismatched attempt');
+        void handleSignIn(provider, true);
+        return;
+      }
       signInError = mapSignInError(errorMessage(err), provider);
       recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
         provider: telemetryProvider,
         outcome: 'oauth_failed',
-        errorKind: classifyContinuationError(err),
+        errorKind,
       });
     } finally {
       if (isCurrentSignInCall(call)) {
@@ -878,11 +894,12 @@
     return Boolean(result.nonEmpty ?? result.non_empty);
   }
 
-  function acceptPath(path: string) {
+  function acceptPath(path: string, validated = false) {
     resolvedPath = path;
     homeDir = homeDir ?? homeDirFromDefaultHqPath(path);
     directoryNotice = null;
     installPath = path;
+    validatedInstallPath = validated ? path : null;
     if (typeof invoke === 'function') {
       void invoke('set_hq_install_path', { path }).catch(() => {});
     }
@@ -890,6 +907,24 @@
 
   function rejectPath(text: string, tone: Notice['tone'] = 'error') {
     directoryNotice = { tone, text };
+  }
+
+  async function directoryParentFallbackEnabled(): Promise<boolean> {
+    try {
+      const result = await onboardingFeatureFlags.identity.hasFeature(
+        SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+      );
+      if (result.ok) return result.value === true;
+      console.warn(
+        'onboarding: directory parent fallback flag unavailable; leaving it off',
+        result.reason,
+        result.code,
+      );
+      return false;
+    } catch (err) {
+      console.warn('onboarding: directory parent fallback flag failed; leaving it off', err);
+      return false;
+    }
   }
 
   async function resolveDefaultPath() {
@@ -902,9 +937,10 @@
       acceptPath(path);
     } catch (err) {
       if (directoryCancelled) return;
+      console.warn('onboarding: default install directory could not be prepared', err);
       resolvedPath = null;
       installPath = null;
-      rejectPath(`HQ could not prepare ~/hq. ${errorMessage(err)}`);
+      rejectPath('HQ could not prepare the default folder. Choose a location to continue.', 'warning');
     } finally {
       if (!directoryCancelled) directoryBusy = false;
     }
@@ -923,33 +959,194 @@
         invokeCommand<boolean>('check_writable', { path: picked }),
       ]);
 
-      if (!writable) {
-        rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
-        recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'not_writable' });
-        return;
-      }
-
       if (detection.exists && !detectLooksLikeHq(detection) && detectNonEmpty(detection)) {
+        if (await directoryParentFallbackEnabled()) {
+          const installPath = appendChildFolderPath(picked, 'hq');
+          const [childDetection, childWritable] = await Promise.all([
+            invokeCommand<DetectHqResult>('detect_hq', { path: installPath }),
+            invokeCommand<boolean>('check_writable', { path: installPath }),
+          ]);
+          if (!childWritable) {
+            rejectPath(
+              'HQ cannot write to a new folder here. Choose another location, or allow HQ access to this folder in your system privacy settings, then try again.',
+              'warning',
+            );
+            recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+              outcome: 'not_writable',
+              errorKind: 'directory_not_writable',
+            });
+            return;
+          }
+          if (
+            childDetection.exists &&
+            !detectLooksLikeHq(childDetection) &&
+            detectNonEmpty(childDetection)
+          ) {
+            rejectPath(
+              'The hq subfolder already contains files. Choose another location or rename that subfolder before trying again.',
+              'warning',
+            );
+            recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+              outcome: 'invalid_directory',
+              errorKind: 'directory_child_nonempty_non_hq',
+            });
+            return;
+          }
+          acceptPath(installPath, true);
+          directoryNotice = {
+            tone: 'warning',
+            text: 'This location already has files. HQ will use the new hq folder inside it.',
+          };
+          return;
+        }
+
+        if (!writable) {
+          rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
+          recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+            outcome: 'not_writable',
+            errorKind: 'directory_not_writable',
+          });
+          return;
+        }
         rejectPath(
           `${friendlyPath(picked, homeDir)} already has files and does not look like an HQ folder.`,
           'warning',
         );
-        recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'invalid_directory' });
+        recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+          outcome: 'invalid_directory',
+          errorKind: 'directory_nonempty_non_hq',
+        });
         return;
       }
 
-      acceptPath(picked);
+      if (!writable) {
+        if (await directoryParentFallbackEnabled()) {
+          rejectPath(
+            'HQ cannot write to this folder. Choose another location, or allow HQ access to it in your system privacy settings, then try again.',
+            'warning',
+          );
+        } else {
+          rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
+        }
+        recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+          outcome: 'not_writable',
+          errorKind: 'directory_not_writable',
+        });
+        return;
+      }
+
+      acceptPath(picked, true);
     } catch (err) {
-      rejectPath(`The folder could not be checked. ${errorMessage(err)}`);
-      recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'directory_check_failed' });
+      console.warn('onboarding: selected directory could not be checked', err);
+      if (await directoryParentFallbackEnabled()) {
+        rejectPath(
+          'HQ could not check this folder. Choose another location or check its access settings, then try again.',
+          'warning',
+        );
+      } else {
+        rejectPath(
+          'The folder could not be checked. Choose another location or check its access settings, then try again.',
+          'warning',
+        );
+      }
+      recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+        outcome: 'directory_check_failed',
+        errorKind: 'directory_check_failed',
+      });
     } finally {
       directoryBusy = false;
     }
   }
 
-  function handleInstall() {
+  async function handleInstall() {
     if (!installPath || directoryBusy) return;
-    advanceTo(SETUP_STEP_INDEX, 'completed');
+    if (validatedInstallPath === installPath) {
+      advanceTo(SETUP_STEP_INDEX, 'completed');
+      return;
+    }
+
+    const selectedPath = installPath;
+    directoryBusy = true;
+    directoryNotice = null;
+    try {
+      // The default path is prepared natively before auth exists. Validate it
+      // here, after sign-in, through hq-flags before allowing setup to use it.
+      if (!(await directoryParentFallbackEnabled())) {
+        advanceTo(SETUP_STEP_INDEX, 'completed');
+        return;
+      }
+
+      const [detection, writable] = await Promise.all([
+        invokeCommand<DetectHqResult>('detect_hq', { path: selectedPath }),
+        invokeCommand<boolean>('check_writable', { path: selectedPath }),
+      ]);
+      if (detection.exists && !detectLooksLikeHq(detection) && detectNonEmpty(detection)) {
+        const installPath = appendChildFolderPath(selectedPath, 'hq');
+        const [childDetection, childWritable] = await Promise.all([
+          invokeCommand<DetectHqResult>('detect_hq', { path: installPath }),
+          invokeCommand<boolean>('check_writable', { path: installPath }),
+        ]);
+        if (!childWritable) {
+          rejectPath(
+            'HQ cannot write to a new folder here. Choose another location, or allow HQ access to this folder in your system privacy settings, then try again.',
+            'warning',
+          );
+          recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+            outcome: 'not_writable',
+            errorKind: 'directory_not_writable',
+          });
+          return;
+        }
+        if (
+          childDetection.exists &&
+          !detectLooksLikeHq(childDetection) &&
+          detectNonEmpty(childDetection)
+        ) {
+          rejectPath(
+            'The hq subfolder already contains files. Choose another location or rename that subfolder before trying again.',
+            'warning',
+          );
+          recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+            outcome: 'invalid_directory',
+            errorKind: 'directory_child_nonempty_non_hq',
+          });
+          return;
+        }
+        acceptPath(installPath, true);
+        directoryNotice = {
+          tone: 'warning',
+          text: 'This location already has files. HQ will use the new hq folder inside it.',
+        };
+        return;
+      }
+
+      if (!writable) {
+        rejectPath(
+          'HQ cannot write to this folder. Choose another location, or allow HQ access to it in your system privacy settings, then try again.',
+          'warning',
+        );
+        recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+          outcome: 'not_writable',
+          errorKind: 'directory_not_writable',
+        });
+        return;
+      }
+
+      validatedInstallPath = selectedPath;
+      advanceTo(SETUP_STEP_INDEX, 'completed');
+    } catch (err) {
+      console.warn('onboarding: final directory validation failed', err);
+      rejectPath(
+        'HQ could not check this folder. Choose another location or check its access settings, then try again.',
+        'warning',
+      );
+      recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+        outcome: 'directory_check_failed',
+        errorKind: 'directory_check_failed',
+      });
+    } finally {
+      directoryBusy = false;
+    }
   }
 
   function beginSetupRun(): number {
@@ -960,6 +1157,7 @@
     // Supersession: the previous run may have left a stage mid-retry. This
     // run owns the list now, so nothing may still be waiting on that retry.
     stages = resetRetryingStages(stages);
+    activeDepsLockWaitTimeoutProgress = null;
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
@@ -1035,11 +1233,28 @@
       'install:progress',
       (event) => trackInstallProgress(runId, event.payload),
     ));
+    const unlistenCliLockWait = safeUnlisten(await listen<string>(
+      'setup:cli-install-lock-wait',
+      (event) => {
+        const handle = event.payload;
+        if (
+          isCurrentRun(runId) &&
+          currentStageId === 'deps' &&
+          activeInstallHandles.has(handle)
+        ) {
+          activeDepsLockWaitTimeoutProgress?.();
+        }
+      },
+    ));
     if (!isCurrentRun(runId)) {
       unlisten();
+      unlistenCliLockWait();
       return;
     }
-    unlistenInstallProgress = unlisten;
+    unlistenInstallProgress = () => {
+      unlisten();
+      unlistenCliLockWait();
+    };
 
     const unlistenContent = safeUnlisten(await listen<ContentProgressPayload>(
       'content:progress',
@@ -1166,6 +1381,21 @@
               return () => {
                 if (activeInitialSyncTimeoutProgress === onProgress) {
                   activeInitialSyncTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+          );
+        } else if (id === 'deps') {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeDepsLockWaitTimeoutProgress = onProgress;
+              return () => {
+                if (activeDepsLockWaitTimeoutProgress === onProgress) {
+                  activeDepsLockWaitTimeoutProgress = null;
                 }
               };
             },
@@ -1572,6 +1802,7 @@
     unlistenPersonalFirstPushProgress?.();
     unlistenPersonalFirstPushProgress = null;
     activeInitialSyncTimeoutProgress = null;
+    activeDepsLockWaitTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once
     // its run stops being current, so `allSettled` would stay false forever
     // and the completion gate would never fire. Put it back to 'pending': the

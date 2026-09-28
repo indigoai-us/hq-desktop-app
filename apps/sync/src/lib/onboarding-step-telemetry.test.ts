@@ -13,6 +13,7 @@ import {
   type InstallerStepPingPayload,
   type OnboardingStepEvent,
 } from './onboarding-step-telemetry';
+import { normalizeSetupErrorKind } from './onboarding-setup';
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -84,6 +85,46 @@ describe('onboarding step telemetry', () => {
         properties: { step: 'directory', action: 'completed' },
       },
     ]);
+  });
+
+  it('keeps directory rejection reasons bounded and drops path-shaped values', () => {
+    expect(normalizeSetupErrorKind('directory_nonempty_non_hq')).toBe(
+      'directory_nonempty_non_hq',
+    );
+    expect(normalizeSetupErrorKind('directory_not_writable')).toBe(
+      'directory_not_writable',
+    );
+    expect(normalizeSetupErrorKind('/Users/alice/Documents')).toBe('unknown');
+
+    const properties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-28T10:00:00.000Z',
+      properties: {
+        step: 'directory',
+        action: 'failed',
+        outcome: 'invalid_directory',
+        errorKind: '/Users/alice/Documents' as never,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+
+    expect(properties.errorKind).toBe('unknown');
+    expect(JSON.stringify(properties)).not.toContain('/Users/alice');
+
+    const boundedProperties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-28T10:00:00.000Z',
+      properties: {
+        step: 'directory',
+        action: 'failed',
+        outcome: 'invalid_directory',
+        errorKind: 'directory_nonempty_non_hq',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(boundedProperties.errorKind).toBe('directory_nonempty_non_hq');
   });
 
   it('continues to emit operational setup after a person declines skill telemetry', async () => {

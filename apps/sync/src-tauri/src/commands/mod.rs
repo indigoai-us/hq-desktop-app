@@ -23,6 +23,7 @@ pub mod content;
 pub(crate) mod core_source_stamp;
 pub(crate) mod core_update_failure_diagnostics;
 pub mod daemon;
+pub mod hq_daemon_host;
 pub mod desktop_alt;
 pub mod desktop_auth;
 pub mod dm_mqtt;
@@ -93,6 +94,8 @@ pub mod watcher_exit_lifecycle;
 pub mod window_material;
 pub mod update_gate;
 pub mod workspaces;
+#[cfg(any(windows, test))]
+mod windows_symlink_fallback;
 
 pub mod meet_transcription;
 
