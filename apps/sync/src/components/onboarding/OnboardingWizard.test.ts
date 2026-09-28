@@ -48,6 +48,7 @@ import {
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 import { stageTimeoutMs } from '../../lib/onboarding-setup';
+import { appendChildFolderPath } from '../../lib/onboarding-path';
 
 const NO_AI_TOOLS = {
   claude_cli: false,
@@ -317,6 +318,213 @@ function expectedSetupDeepLink(folder: string): string {
   params.set('folder', folder);
   return `claude://code/new?${params.toString()}`;
 }
+
+describe('onboarding directory selection', () => {
+  it('moves a populated non-HQ default into a safe child before continuing', async () => {
+    const defaultPath = '/Users/test/hq';
+    const installPath = `${defaultPath}/hq`;
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return defaultPath;
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'check_writable':
+          return true;
+        case 'detect_hq':
+          return args?.path === defaultPath
+            ? { exists: true, isHq: false, nonEmpty: true }
+            : { exists: false, isHq: false, nonEmpty: false };
+        case 'hq_pro_fetch':
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { 'desktop.setup-directory-parent-fallback': true },
+            }),
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const install = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .btn-primary',
+      );
+      return directory?.classList.contains('on') === true && install !== null && !install.disabled;
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .btn-primary')
+      ?.click();
+    await flushUntil(
+      () =>
+        host
+          .querySelector('[data-testid="onboarding-directory"] .lb')
+          ?.getAttribute('title') === installPath,
+    );
+
+    expect(
+      host.querySelector('[data-testid="onboarding-directory"] .lb')?.getAttribute('title'),
+    ).toBe(installPath);
+    expect(host.textContent).toContain('This location already has files');
+    expect(host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'))
+      .toBe(true);
+  });
+
+  it('puts HQ in a new child folder when the selected Windows location already has files', async () => {
+    const selectedPath = 'C:\\Users\\test\\OneDrive - Personal';
+    const installPath = `${selectedPath}\\hq`;
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return 'C:\\Users\\test\\hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'pick_folder':
+          return selectedPath;
+        case 'check_writable':
+          return true;
+        case 'detect_hq':
+          return args?.path === selectedPath
+            ? { exists: true, isHq: false, nonEmpty: true }
+            : { exists: false, isHq: false, nonEmpty: false };
+        case 'hq_pro_fetch':
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { 'desktop.setup-directory-parent-fallback': true },
+            }),
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const choose = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .choose',
+      );
+      return directory?.classList.contains('on') === true && choose !== null && !choose.disabled;
+    });
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+      ?.click();
+    await flushUntil(
+      () =>
+        host
+          .querySelector('[data-testid="onboarding-directory"] .lb')
+          ?.getAttribute('title') === installPath,
+    );
+
+    const selectedFolder = host.querySelector('[data-testid="onboarding-directory"] .lb');
+    expect(selectedFolder?.getAttribute('title')).toBe(installPath);
+    expect(selectedFolder?.textContent).toContain('OneDrive - Personal\\hq');
+    expect(tauri.invoke).toHaveBeenCalledWith('check_writable', { path: installPath });
+    expect(tauri.invoke).toHaveBeenCalledWith('detect_hq', { path: installPath });
+    expect(host.textContent).toContain('This location already has files');
+  });
+
+  it('gives a next step when the selected folder cannot be written', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'pick_folder':
+          return '/Users/test/Documents';
+        case 'check_writable':
+          return false;
+        case 'detect_hq':
+          return { exists: true, isHq: false, nonEmpty: true };
+        case 'hq_pro_fetch':
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { 'desktop.setup-directory-parent-fallback': true },
+            }),
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const choose = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .choose',
+      );
+      return directory?.classList.contains('on') === true && choose !== null && !choose.disabled;
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+      ?.click();
+    await flushUntil(() => host.textContent?.includes('privacy settings') === true);
+
+    expect(host.textContent).toContain('Choose another location');
+    expect(host.textContent).toContain('privacy settings');
+    expect(host.textContent).not.toContain('Permission denied');
+    const directory = host.querySelector('[data-testid="onboarding-directory"]');
+    expect(directory?.querySelector('.inline-note')?.classList.contains('warning')).toBe(true);
+    expect(directory?.querySelector('.inline-note')?.classList.contains('error')).toBe(false);
+  });
+
+  it('keeps directory check details in the log and leaves a recovery choice', async () => {
+    const transportError = 'Permission denied: /private/Users/test/Documents';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'pick_folder':
+          return '/Users/test/Documents';
+        case 'detect_hq':
+          return { exists: true, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          throw new Error(transportError);
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const choose = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .choose',
+      );
+      return directory?.classList.contains('on') === true && choose !== null && !choose.disabled;
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+      ?.click();
+    await flushUntil(() => host.textContent?.includes('The folder could not be checked') === true);
+
+    expect(host.textContent).toContain('Choose another location');
+    expect(host.textContent).not.toContain(transportError);
+    expect(
+      host
+        .querySelector('[data-testid="onboarding-directory"] .inline-note')
+        ?.classList.contains('warning'),
+    ).toBe(true);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+        ?.disabled,
+    ).toBe(false);
+    expect(warn).toHaveBeenCalledWith('onboarding: selected directory could not be checked', expect.any(Error));
+  });
+});
 
 describe('first-run browser session continuation', () => {
   it('records one launch receipt and retries the same receipt after a resumed wizard', async () => {

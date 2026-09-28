@@ -6,6 +6,7 @@ export * from "./host-computer-noun.js";
 export * from "./library-shelf.js";
 export {
   CLAUDE_PROVIDER_FLAG,
+  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
 } from "./flags.js";
 
 // Shared 429 / Retry-After policy and the jittered background pollers (R2).

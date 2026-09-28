@@ -73,10 +73,14 @@ import {
 } from "@indigoai-us/hq-flags-client";
 import { ok, type AdapterPromise, type AdapterResult } from "./adapter.js";
 
+export const SETUP_DIRECTORY_PARENT_FALLBACK_FLAG =
+  "desktop.setup-directory-parent-fallback";
+
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
   "agents.claude-provider": "agents.claude-provider",
+  [SETUP_DIRECTORY_PARENT_FALLBACK_FLAG]: SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
 };
