@@ -236,7 +236,6 @@
     skipTourState,
     startTourState,
     tourSteps,
-    tourVault,
     writeTourSeenLocally,
     type TourEnterAction,
     type TourState,
@@ -5368,15 +5367,15 @@
   });
 
   /*
-   * FIRST-RUN GUIDED TOUR. An eight-step spotlight (setup bot, company vault,
-   * create a bot, invite, meetings, web console, Launch menu, command palette)
-   * that starts by itself once on a fresh install,
-   * after the shell is up and #welcome or the setup bot's DM is on screen,
-   * and can be replayed from the command palette. Model and geometry live in
-   * `tour/guided-tour.ts`; this block drives navigation for the vault step,
-   * opens (and closes) the create modal's Bot step, holds the titlebar Launch
-   * menu open, opens (and closes) the command palette, persists "seen"
-   * the moment it starts showing, and returns the person to where they were.
+   * FIRST-RUN GUIDED TOUR. An eight-step spotlight (setup bot, Files button,
+   * new-bot "+" button, invite, meetings, web console, Launch menu, command
+   * palette) that starts by itself once on a fresh install, after the shell
+   * is up and #welcome or the setup bot's DM is on screen, and can be
+   * replayed from the command palette. Model and geometry live in
+   * `tour/guided-tour.ts`; this block keeps the conversation view (and its
+   * sidebar) on screen for the steps that need it, holds the titlebar Launch
+   * menu open, opens (and closes) the command palette, persists "seen" the
+   * moment it starts showing, and returns the person to where they were.
    */
   /** The host's explicit setup-status answer; null until (or unless) it answers. */
   let tourHostStatus = $state<{ owed: boolean; shown: boolean } | null>(null);
@@ -5430,20 +5429,10 @@
     markTourSeen();
   }
 
-  /** The create modal / command palette this tour opened, so it closes them. */
-  let tourOpenedCreate = false;
+  /** The command palette was opened by this tour, so it closes it. */
   let tourOpenedPalette = false;
-  /** Step index the create modal was requested for (the sidebar may mount late). */
-  let tourCreateWantedAt = $state(-1);
 
   function closeTourSurfaces(keep: TourEnterAction | null): void {
-    if (keep !== "open-create-bot") {
-      tourCreateWantedAt = -1;
-      if (tourOpenedCreate) {
-        tourOpenedCreate = false;
-        sidebarActions?.closeCreateModal();
-      }
-    }
     if (keep !== "open-palette" && tourOpenedPalette) {
       tourOpenedPalette = false;
       paletteOpen = false;
@@ -5511,16 +5500,8 @@
       closeTourSurfaces(step.onEnter);
       switch (step.onEnter) {
         case "restore":
-        case "open-create-bot":
           if (view !== "conversation" && tourReturnTo) void navigate(tourReturnTo);
-          if (step.onEnter === "open-create-bot") tourCreateWantedAt = index;
           return;
-        case "open-vault": {
-          const vault = tourVault(tourVaults);
-          if (view === "explorer" && (!vault || explorerVault === vault.id)) return;
-          void navigate({ kind: "explorer", vault: vault?.id ?? null, path: null });
-          return;
-        }
         case "open-palette":
           if (!paletteOpen) {
             cheatSheetOpen = false;
@@ -5531,19 +5512,6 @@
         default:
           return;
       }
-    });
-  });
-
-  // The Bot step opens the create modal once the sidebar is on screen (after
-  // the vault step it remounts). A host that cannot create bots keeps the
-  // modal shut and the step points at the "+" button instead.
-  $effect(() => {
-    if (tourCreateWantedAt < 0 || tourCreateWantedAt !== tourIndex) return;
-    if (view !== "conversation" || !sidebarActions) return;
-    const actions = sidebarActions;
-    tourCreateWantedAt = -1;
-    untrack(() => {
-      if (actions.openCreateBot()) tourOpenedCreate = true;
     });
   });
 

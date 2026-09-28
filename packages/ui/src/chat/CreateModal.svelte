@@ -181,7 +181,7 @@
      * Which step to open on. "company" is the New company entry: the modal
      * opens straight on its second step, with no name typed yet.
      */
-    initialStep?: "find" | "company" | "bot";
+    initialStep?: "find" | "company";
   }
 
   let {
@@ -577,9 +577,6 @@
     if (initialStepApplied) return;
     initialStepApplied = true;
     if (initialStep === "company" && companyCreate) void enterCompanyStep("");
-    // The guided tour opens straight to New bot; a host that cannot create
-    // bots stays on the search step.
-    if (initialStep === "bot") newBot();
   });
   let query = $state("");
   let queryDebounced = $state("");

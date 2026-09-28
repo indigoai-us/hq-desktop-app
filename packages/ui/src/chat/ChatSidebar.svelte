@@ -207,13 +207,6 @@
     openCreate: () => void;
     openSearch: () => void;
     openHistory: () => void;
-    /**
-     * Open the create modal on its New bot step (the guided tour). Returns
-     * false, opening nothing, when this host cannot create bots.
-     */
-    openCreateBot: () => boolean;
-    /** Close the create modal without creating anything. */
-    closeCreateModal: () => void;
   }
 
   interface Props {
@@ -1445,7 +1438,7 @@
   $effect(() => {
     const emit = onactions;
     if (!emit) return;
-    emit({ openCreate, openSearch, openHistory, openCreateBot, closeCreateModal });
+    emit({ openCreate, openSearch, openHistory });
     return () => emit(null);
   });
   const historyHiddenCount = $derived(
@@ -1585,25 +1578,7 @@
   /** What the create modal makes inside a company when opened by the host. */
   let createKind = $state<"channel" | "project">("channel");
   /** Which step the create modal opens on — "company" for New company. */
-  let createStep = $state<"find" | "company" | "bot">("find");
-
-  function openCreateBot(): boolean {
-    if (!oncreatebot && !oncreateagent) return false;
-    createKind = "channel";
-    createStep = "bot";
-    openCreate();
-    return true;
-  }
-
-  function closeCreateModal(): void {
-    createOpen = false;
-  }
-
-  // The Bot step is a one-off for the tour: whichever way the modal closes,
-  // the next plain open (the host's New chat) starts on search again.
-  $effect(() => {
-    if (!createOpen && createStep === "bot") createStep = "find";
-  });
+  let createStep = $state<"find" | "company">("find");
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
   export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {

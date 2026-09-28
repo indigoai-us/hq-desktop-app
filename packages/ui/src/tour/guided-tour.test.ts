@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { PERSONAL_VAULT, type Vault } from "../files/explorer/vault-model.js";
 import {
   TOUR_IDLE,
   TOUR_SEEN_STORAGE_KEY,
@@ -18,19 +17,10 @@ import {
   tourPrimaryLabel,
   tourProgressLabel,
   tourSteps,
-  tourVault,
   unionTourRects,
   writeTourSeenLocally,
   type TourAutoStartInput,
 } from "./guided-tour.js";
-
-const company: Vault = {
-  id: "company:acme",
-  kind: "company",
-  label: "Acme",
-  root: "companies/acme",
-  slug: "acme",
-};
 
 describe("tourSteps", () => {
   it("has the eight steps in order", () => {
@@ -59,9 +49,10 @@ describe("tourSteps", () => {
     expect(closed.targets.at(-1)).toBe('.chat-row[data-conversation-id="ch:setup"]');
   });
 
-  it("words the vault step for a person with only Personal", () => {
+  it("words the files step for a person with only Personal", () => {
     const withCompany = tourSteps({ hasCompanyVault: true })[1];
     expect(withCompany.title).toBe("Your company's files");
+    expect(withCompany.body).toMatch(/^Click here to open your files\./);
     const personalOnly = tourSteps({ hasCompanyVault: false })[1];
     expect(personalOnly.title).toBe("Your files");
     expect(personalOnly.body).toMatch(/once setup creates it/);
@@ -70,8 +61,8 @@ describe("tourSteps", () => {
   it("wires the host actions to the right steps", () => {
     expect(tourSteps().map((s) => s.onEnter)).toEqual([
       "restore",
-      "open-vault",
-      "open-create-bot",
+      "none",
+      "restore",
       "restore",
       "none",
       "none",
@@ -83,13 +74,16 @@ describe("tourSteps", () => {
     expect(launch.include).toEqual(['[data-testid="titlebar-launch-menu"]']);
   });
 
-  it("points the new steps at the create modal, companies, meetings and the palette", () => {
+  it("points steps 2 and 3 at the buttons that get there, not the surfaces", () => {
     const steps = tourSteps({ hasCompany: true });
+    expect(steps[1].targets).toEqual(['[data-testid="titlebar-files"]']);
     expect(steps[2].title).toBe("Make your own bots");
-    expect(steps[2].targets).toEqual([
-      '[data-testid="chat-create-modal"] .create-card',
-      '[data-testid="chat-new-message"]',
-    ]);
+    expect(steps[2].body).toMatch(/^Click \+ to start a new bot/);
+    expect(steps[2].targets).toEqual(['[data-testid="chat-new-message"]']);
+  });
+
+  it("points the later steps at companies, meetings and the palette", () => {
+    const steps = tourSteps({ hasCompany: true });
     expect(steps[3].title).toBe("Bring in your team");
     expect(steps[3].targets).toEqual([
       '[data-testid="team-invite"]',
@@ -163,13 +157,7 @@ describe("shouldAutoStartTour", () => {
   });
 });
 
-describe("tourVault and isTourHomeRow", () => {
-  it("prefers the first company vault, else Personal", () => {
-    expect(tourVault([PERSONAL_VAULT, company])).toBe(company);
-    expect(tourVault([PERSONAL_VAULT])).toBe(PERSONAL_VAULT);
-    expect(tourVault([])).toBeNull();
-  });
-
+describe("isTourHomeRow", () => {
   it("recognises #welcome and the setup bot DM", () => {
     expect(isTourHomeRow("ch:setup")).toBe(true);
     expect(isTourHomeRow("dm:agt_1", "agt_1")).toBe(true);

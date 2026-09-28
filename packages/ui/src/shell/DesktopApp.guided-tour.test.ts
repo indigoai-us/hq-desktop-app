@@ -4,11 +4,11 @@
  * First-run guided tour, end to end through the real shell: on a fresh
  * install (the host says the guided setup is owed and the tour was never
  * shown) it starts by itself once #welcome is on screen, records "seen" at
- * once, then walks all eight steps: the company vault, the create modal on
- * its Bot step, the Companies section for invites, meetings, the console
- * globe, the held-open Launch menu and the command palette. Done returns to
- * #welcome with every surface the tour opened closed again and nothing
- * created.
+ * once, then walks all eight steps: the titlebar Files button and the
+ * sidebar "+" (pointed at, not opened: no explorer, no create modal), the
+ * Companies section for invites, meetings, the console globe, the held-open
+ * Launch menu and the command palette. Done returns to #welcome with every
+ * surface the tour opened closed again and nothing created.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -140,35 +140,34 @@ describe("DesktopApp first-run guided tour", () => {
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(resolvedSelector(0)).toBe('[data-testid="setup-hero"]');
 
-    // Step 2: the Files explorer on the company vault.
+    // Step 2: the titlebar Files button; the explorer does not open.
     await next();
-    await vi.waitFor(() => expect(q("vault-explorer")).toBeTruthy(), { timeout: 2000, interval: 20 });
     expect(q("guided-tour-card")?.textContent).toContain("Your company's files");
+    expect(resolvedSelector(1)).toBe('[data-testid="titlebar-files"]');
+    expect(q("vault-explorer")).toBeNull();
+    expect(q("setup-channel-intro")).toBeTruthy();
 
-    // Step 3: back in the conversation view, the create modal on its Bot step.
+    // Step 3: the sidebar "+" that leads to New bot; the create modal stays shut.
     await next();
-    await vi.waitFor(() => expect(q("chat-create-modal")).toBeTruthy(), { timeout: 2000, interval: 20 });
     expect(q("guided-tour-card")?.textContent).toContain("Make your own bots");
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("3 of 8");
-    expect(resolvedSelector(2)).toBe('[data-testid="chat-create-modal"] .create-card');
-    expect(document.querySelector(".create-card--wide")).toBeTruthy();
-    // A click on the card neither closes nor submits the modal.
-    q("guided-tour-card")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    q("guided-tour-card")!.click();
-    await settle();
-    expect(q("chat-create-modal")).toBeTruthy();
-
-    // Step 4: invites, pointed at the sidebar's Companies section; modal closed.
-    await next();
+    expect(resolvedSelector(2)).toBe('[data-testid="chat-new-message"]');
     expect(q("chat-create-modal")).toBeNull();
+
+    // Step 4: invites, pointed at the sidebar's Companies section.
+    await next();
     expect(q("guided-tour-card")?.textContent).toContain("Bring in your team");
     expect(resolvedSelector(3)).toBe('[data-testid="chat-companies-section"]');
 
-    // Back reopens the modal; Next closes it again.
+    // Back and forth over steps 2-4 never opens the explorer or the modal.
     q("guided-tour-back")!.click();
     await settle();
-    await vi.waitFor(() => expect(q("chat-create-modal")).toBeTruthy(), { timeout: 2000, interval: 20 });
+    q("guided-tour-back")!.click();
+    await settle();
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("2 of 8");
     await next();
+    await next();
+    expect(q("vault-explorer")).toBeNull();
     expect(q("chat-create-modal")).toBeNull();
 
     // Step 5: meetings.

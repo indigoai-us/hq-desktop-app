@@ -11,7 +11,6 @@
  */
 
 import { SETUP_ROW_ID } from "../chat/setup-channel.js";
-import type { Vault } from "../files/explorer/vault-model.js";
 
 export type TourStepId =
   | "setup-bot"
@@ -29,15 +28,10 @@ export type TourPlacement = "top" | "bottom" | "left" | "right";
 /**
  * What the host does when a step becomes current. `restore` puts the
  * conversation view (and so the sidebar) back on screen; the `open-*` actions
- * are undone by the host when the tour leaves the step.
+ * are undone by the host when the tour leaves the step. Steps otherwise point
+ * at the control a person clicks to get somewhere rather than going there.
  */
-export type TourEnterAction =
-  | "restore"
-  | "open-vault"
-  | "open-create-bot"
-  | "none"
-  | "open-launch-menu"
-  | "open-palette";
+export type TourEnterAction = "restore" | "none" | "open-launch-menu" | "open-palette";
 
 export interface TourStep {
   id: TourStepId;
@@ -110,20 +104,21 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       id: "company-vault",
       title: company ? "Your company's files" : "Your files",
       body: company
-        ? "Everything HQ knows about your company lives here, synced to this Mac and shared with your team."
-        : "Your notes and files live here, synced to this Mac. Your company's files appear here once setup creates it.",
-      targets: ['[data-testid="vault-explorer"]'],
-      placement: "left",
-      onEnter: "open-vault",
+        ? "Click here to open your files. Everything HQ knows about your company lives there, synced to this Mac and shared with your team."
+        : "Click here to open your files, synced to this Mac. Your company's files appear there once setup creates it.",
+      // Hidden on the web host: the card centers.
+      targets: ['[data-testid="titlebar-files"]'],
+      placement: "bottom",
+      onEnter: "none",
     },
     {
       id: "create-bot",
       title: "Make your own bots",
-      body: "Start a bot here: give it a name and pick Claude Code or Codex to run it. It can take on a job for you or your team.",
-      // The create modal opened on its Bot step, else the sidebar button that opens it.
-      targets: ['[data-testid="chat-create-modal"] .create-card', '[data-testid="chat-new-message"]'],
+      body: "Click + to start a new bot: give it a name and pick Claude Code or Codex to run it. It can take on a job for you or your team.",
+      // The sidebar "+" opens the create modal, whose picker has New bot.
+      targets: ['[data-testid="chat-new-message"]'],
       placement: "right",
-      onEnter: "open-create-bot",
+      onEnter: "restore",
     },
     {
       id: "invite",
@@ -250,11 +245,6 @@ export function shouldAutoStartTour(input: TourAutoStartInput): boolean {
     input.welcomeOnScreen &&
     !input.startedThisSession
   );
-}
-
-/** The vault step opens the first company vault, else Personal. */
-export function tourVault(vaults: readonly Vault[]): Vault | null {
-  return vaults.find((vault) => vault.kind === "company") ?? vaults[0] ?? null;
 }
 
 /** Is `rowId` the #welcome channel or the setup bot's DM? */
