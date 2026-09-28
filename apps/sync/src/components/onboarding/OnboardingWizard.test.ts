@@ -211,6 +211,35 @@ function providerButtons(): HTMLButtonElement[] {
   );
 }
 
+function stubOAuthAttempts(listenError?: string) {
+  const fallbackInvoke = tauri.invoke.getMockImplementation();
+  if (!fallbackInvoke) throw new Error('Expected the onboarding invoke stub to be installed.');
+  let starts = 0;
+  let listens = 0;
+  tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === 'start_oauth_login') {
+      starts += 1;
+      return {
+        authorizeUrl: `https://placeholder.test/authorize/${starts}`,
+        state: `oauth-state-${starts}`,
+      };
+    }
+    if (command === 'oauth_listen_for_code') {
+      listens += 1;
+      if (listenError) throw new Error(listenError);
+      return { code: 'placeholder-code' };
+    }
+    return fallbackInvoke(command, args);
+  });
+  return { starts: () => starts, listens: () => listens };
+}
+
+async function clickGoogleSignIn(): Promise<void> {
+  component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+  await flushUntil(() => providerButtons().length === 2);
+  providerButtons()[0]?.click();
+}
+
 function expectPreBranchProviderScreen(): void {
   expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
     'Log in with Google',
@@ -548,6 +577,64 @@ describe('first-run browser session continuation', () => {
     expect(host.textContent).toContain('A browser window opened for Google sign-in.');
 
     resolveConfig({ ...CONTINUATION_CONFIG, variant: 'control' });
+  });
+
+  it('restarts sign-in once after an expired OAuth attempt', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts('Timed out waiting for sign-in (5 minutes).');
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('Sign-in took too long. Choose a provider to try again.') === true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+
+    expect(attempts.starts()).toBe(2);
+    expect(attempts.listens()).toBe(2);
+    expect(tauri.open).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain('Sign-in took too long. Choose a provider to try again.');
+    expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('restarts sign-in once after an OAuth state mismatch', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts('OAuth state mismatch — possible CSRF, aborting.');
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('That sign-in attempt no longer matches. Choose a provider to start again.') ===
+          true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+
+    expect(attempts.starts()).toBe(2);
+    expect(attempts.listens()).toBe(2);
+    expect(tauri.open).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain(
+      'That sign-in attempt no longer matches. Choose a provider to start again.',
+    );
+    expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('keeps the successful provider sign-in path to one browser attempt', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts();
+
+    await clickGoogleSignIn();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'),
+    );
+
+    expect(attempts.starts()).toBe(1);
+    expect(attempts.listens()).toBe(1);
+    expect(tauri.open).toHaveBeenCalledTimes(1);
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_listen_for_code', {
+      state: 'oauth-state-1',
+    });
   });
 
   it('automatically signs in an eligible browser session without rendering a prompt or click', async () => {
@@ -2068,6 +2155,107 @@ describe('setup progress direction', () => {
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
     );
+  });
+
+  it('renews the deps timeout only for lock-wait progress from its installer handle', async () => {
+    let resolveInstall: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>((resolve) => {
+            resolveInstall = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress') &&
+      eventHarness.handlers.has('setup:cli-install-lock-wait'),
+    );
+    emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
+
+    const failureEvents = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string } }).properties
+            ?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps',
+      );
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('setup:cli-install-lock-wait', 'unrelated-installer');
+    emitTauriEvent('setup:cli-install-lock-wait', 'setup-installer-handle');
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    await flush();
+    expect(failureEvents()).toHaveLength(0);
+
+    emitTauriEvent('install:progress', {
+      handle: 'setup-installer-handle',
+      line: '',
+      finished: true,
+      error: null,
+    });
+    resolveInstall?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('does not renew the deps timeout for another installer handle', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress') &&
+      eventHarness.handlers.has('setup:cli-install-lock-wait'),
+    );
+    emitTauriEvent('install:progress', { handle: 'active-installer' });
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('setup:cli-install-lock-wait', 'different-installer');
+    await vi.advanceTimersByTimeAsync(1);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string } }).properties
+            ?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps',
+      ),
+    );
+
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string; failureStage?: string } }).properties
+          ?.action === 'failed' &&
+        (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+          'deps',
+    )?.[1] as { properties: Record<string, unknown> };
+    expect(failure.properties.errorKind).toBe('setup_stage_timeout');
   });
 
   function sampleProgress(): ProgressSample {
