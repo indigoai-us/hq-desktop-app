@@ -24,6 +24,7 @@ export type MentionParticipantType = "human" | "agent" | "broadcast";
  */
 export const HERE_MENTION_UID = "here";
 export const HERE_MENTION_NAME = "here";
+export const MAX_CHANNEL_MENTIONS = 25;
 
 /** The picker row / draft target for `@here`. */
 export function hereMentionTarget(): MentionTarget {
@@ -71,22 +72,46 @@ export function mentionTypeForUid(uid: string): MentionParticipantType {
 export function mentionPayloadTargets(
   mentions: readonly MentionTarget[],
 ): MentionTarget[] {
-  return mentions.map((mention) =>
-    // `@here` is a token, not an identity: it carries no display name and no
-    // email, and the server reads only the two fields below.
-    isHereMention(mention)
-      ? {
+  const payload: MentionTarget[] = [];
+  const seen = new Set<string>();
+  let namedCount = 0;
+  let hasHere = false;
+
+  for (const mention of mentions) {
+    // `@here` is a token, not an identity. The server expands this one token
+    // against the live roster and excludes it from the named-person cap.
+    if (isHereMention(mention)) {
+      if (!hasHere) {
+        payload.push({
           participantUid: HERE_MENTION_UID,
-          participantType: "broadcast" as const,
+          participantType: "broadcast",
           displayName: "",
-        }
-      : {
-          participantUid: mention.participantUid,
-          participantType: mention.participantType,
-          displayName: mention.displayName,
-          ...(mention.email ? { email: mention.email } : {}),
-        },
-  );
+        });
+        hasHere = true;
+      }
+      continue;
+    }
+
+    const participantUid = mention.participantUid.trim();
+    const participantType = participantUid.startsWith("agt_")
+      ? "agent"
+      : participantUid.startsWith("prs_")
+        ? "human"
+        : null;
+    if (!participantType || seen.has(participantUid)) continue;
+    if (namedCount >= MAX_CHANNEL_MENTIONS) continue;
+
+    seen.add(participantUid);
+    namedCount += 1;
+    payload.push({
+      participantUid,
+      participantType,
+      displayName: mention.displayName,
+      ...(mention.email ? { email: mention.email } : {}),
+    });
+  }
+
+  return payload;
 }
 
 /**
@@ -710,4 +735,3 @@ export function applyMentionMarkup(
   }
   return out;
 }
-

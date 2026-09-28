@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Channel messages now keep mentions aligned with their person or agent IDs and within the 25-person limit.
+
 - Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
 
 - Desktop sign-in now retries once after an expired or mismatched browser
