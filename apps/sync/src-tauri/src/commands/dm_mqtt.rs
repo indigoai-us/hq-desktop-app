@@ -9,14 +9,14 @@
 //! a five-minute fallback while MQTT is disconnected.
 //!
 //! The DM MQTT payload remains a wake signal: on DM-topic messages and each
-//! reconnect we call the existing `dm_notify::poll_dm_once(app)`. The one
-//! exception is a durable notification-topic event while `desktop.push-events`
-//! is enabled; its IDs trigger the existing shared-with-me refresh so the
-//! client reads full share data through the established API.
+//! reconnect we call the existing `dm_notify::poll_dm_once(app)`. Any
+//! notification-topic publish while `desktop.push-events` is enabled wakes
+//! the existing shared-with-me API; the payload is advisory and need not carry
+//! notification IDs or a particular shape.
 //!
-//! Dedupe against the 60s poll is automatic: `poll_dm_once` is singleton-guarded
-//! (`try_set_in_flight`) and advances the cursor, so a wake-poll and a
-//! near-simultaneous scheduled poll never double-deliver.
+//! Overlapping scheduled, sync-complete, and MQTT refreshes are coalesced by
+//! the share and DM poll gates. A wake arriving during an in-flight request
+//! causes one trailing refresh instead of being dropped.
 //!
 //! ## Auth + transport
 //!
@@ -34,8 +34,9 @@
 //!
 //! Every failure here is **non-fatal and silent to the user**. Creds fetch
 //! failed, presign failed, IoT unreachable, disconnect mid-stream — all just log
-//! and retry with backoff. The 60s poll keeps delivering meanwhile, so there is
-//! no regression: the worst case is we fall back to the old latency.
+//! and retry with backoff. With the rollout flag off, the legacy 60s cadence
+//! remains active. With it on, the scheduler uses a five-minute fallback while
+//! MQTT is disconnected.
 //!
 //! ## Gating
 //!
@@ -51,7 +52,7 @@
 //!   `DM_MQTT_DISCONNECT` / `DM_MQTT_FALLBACK`. No secrets are ever logged
 //!   (never the presigned URL, never the creds).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
@@ -64,10 +65,21 @@ use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "dm-mqtt";
-static DM_PUSH_CONNECTED: AtomicBool = AtomicBool::new(false);
+static AUTH_SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
+static DM_PUSH_CONNECTED_GENERATION: AtomicU64 = AtomicU64::new(0);
+static DM_AUTH_SESSION_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 pub(crate) fn dm_push_connected() -> bool {
-    DM_PUSH_CONNECTED.load(Ordering::Acquire)
+    hq_desktop_core::share_notify::push_connection_is_current_session(
+        DM_PUSH_CONNECTED_GENERATION.load(Ordering::Acquire),
+        AUTH_SESSION_GENERATION.load(Ordering::Acquire),
+    )
+}
+
+pub(crate) fn reset_dm_push_for_auth_session_change() {
+    AUTH_SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    DM_PUSH_CONNECTED_GENERATION.store(0, Ordering::Release);
+    DM_AUTH_SESSION_CHANGED.notify_one();
 }
 
 struct DmPushConnectionReset(bool);
@@ -75,7 +87,7 @@ struct DmPushConnectionReset(bool);
 impl DmPushConnectionReset {
     fn new(is_dm_connection: bool) -> Self {
         if is_dm_connection {
-            DM_PUSH_CONNECTED.store(false, Ordering::Release);
+            DM_PUSH_CONNECTED_GENERATION.store(0, Ordering::Release);
         }
         Self(is_dm_connection)
     }
@@ -84,7 +96,7 @@ impl DmPushConnectionReset {
 impl Drop for DmPushConnectionReset {
     fn drop(&mut self) {
         if self.0 {
-            DM_PUSH_CONNECTED.store(false, Ordering::Release);
+            DM_PUSH_CONNECTED_GENERATION.store(0, Ordering::Release);
         }
     }
 }
@@ -433,11 +445,12 @@ pub(crate) fn agent_status_event(payload: &[u8]) -> Option<serde_json::Value> {
 /// What an inbound wake (ConnAck offline catch-up, or any Publish) should do.
 /// Shared by the DM receiver and the US-007 client-health diagnostics wake
 /// receiver so both reuse the same credential-fetch/SigV4-presign/reconnect
-/// machinery instead of a second copy. The DM event dispatcher separately
-/// checks notification IDs to decide whether to refresh shares.
+/// machinery instead of a second copy. A notification-topic wake separately
+/// refreshes shares when the rollout flag is enabled; its payload is not needed
+/// for that decision.
 #[derive(Clone, Copy)]
 pub(crate) enum MqttWakeAction {
-    /// The original DM behavior: re-run the singleton-guarded DM poll.
+    /// The original DM behavior: re-run the coalesced DM poll.
     Dm,
     /// A plain synchronous notify — used by the client-health diagnostics
     /// poller, which owns its own polling/backoff logic and only needs an
@@ -460,7 +473,7 @@ impl MqttWakeAction {
 ///
 /// Fires `wake` once right after a successful connect (offline catch-up,
 /// US-006) and once per inbound Publish (the wake signal). Subscribes to
-/// `topic_override` when set, else `creds.topic` — the DM receiver relies on
+/// the derived topic set when no override is set — the DM receiver relies on
 /// the server-vended `creds.topic`; the diagnostics receiver subscribes to a
 /// sibling leaf under the SAME already-granted `hq/<personUid>/*` wildcard
 /// (see `setup_client_health_mqtt_receiver`), so no new IAM/session-policy
@@ -470,6 +483,7 @@ async fn run_once(
     creds: &RealtimeCredsResponse,
     topic_override: Option<fn(&str) -> String>,
     wake: MqttWakeAction,
+    auth_session_generation: u64,
 ) -> Result<(), String> {
     use rumqttc::{AsyncClient, MqttOptions};
 
@@ -532,7 +546,13 @@ async fn run_once(
     };
     let app = app.clone();
     let handle = tokio::task::spawn(drive_eventloop(
-        app, client, eventloop, topics, dm_topic, wake,
+        app,
+        client,
+        eventloop,
+        topics,
+        dm_topic,
+        wake,
+        auth_session_generation,
     ));
     match handle.await {
         Ok(result) => result,
@@ -560,25 +580,42 @@ async fn drive_eventloop(
     topics: Vec<String>,
     dm_topic: String,
     wake: MqttWakeAction,
+    auth_session_generation: u64,
 ) -> Result<(), String> {
-    use rumqttc::{Event, Packet, QoS};
+    use rumqttc::{Event, Packet, QoS, SubscribeFilter, SubscribeReasonCode};
     let has_notifications_topic = topics.iter().any(|topic| topic.ends_with("/notifications"));
+    let mut awaiting_notification_suback = false;
     loop {
-        match eventloop.poll().await {
+        if matches!(wake, MqttWakeAction::Dm)
+            && auth_session_generation != AUTH_SESSION_GENERATION.load(Ordering::Acquire)
+        {
+            return Err("auth session changed".to_string());
+        }
+        let next_event = if matches!(wake, MqttWakeAction::Dm) {
+            tokio::select! {
+                _ = DM_AUTH_SESSION_CHANGED.notified() => {
+                    return Err("auth session changed".to_string());
+                }
+                event = eventloop.poll() => event,
+            }
+        } else {
+            eventloop.poll().await
+        };
+        match next_event {
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
                 log(LOG_TAG, "DM_MQTT_CONNECT_OK");
-                // QoS 0: a dropped work push falls back to the existing poll.
-                // The DM connection also takes work + notifications (US-006).
-                for topic in &topics {
-                    if let Err(e) = client.subscribe(topic.clone(), QoS::AtMostOnce).await {
-                        return Err(format!("subscribe: {e}"));
-                    }
-                    log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBED topic={topic}"));
+                DM_PUSH_CONNECTED_GENERATION.store(0, Ordering::Release);
+                let filters = topics
+                    .iter()
+                    .cloned()
+                    .map(|topic| SubscribeFilter::new(topic, QoS::AtMostOnce));
+                if let Err(e) = client.subscribe_many(filters).await {
+                    return Err(format!("subscribe: {e}"));
                 }
-                if matches!(wake, MqttWakeAction::Dm) && has_notifications_topic {
-                    DM_PUSH_CONNECTED.store(true, Ordering::Release);
-                } else if matches!(wake, MqttWakeAction::Dm) {
-                    DM_PUSH_CONNECTED.store(false, Ordering::Release);
+                awaiting_notification_suback =
+                    matches!(wake, MqttWakeAction::Dm) && has_notifications_topic;
+                for topic in &topics {
+                    log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBE_SENT topic={topic}"));
                 }
                 // Offline catch-up (US-006): drain anything missed while we were
                 // disconnected, before the first push arrives.
@@ -587,6 +624,27 @@ async fn drive_eventloop(
                     && crate::commands::share_notify::desktop_push_events_enabled()
                 {
                     crate::commands::share_notify::poll_once(app.clone()).await;
+                }
+            }
+            Ok(Event::Incoming(Packet::SubAck(suback))) => {
+                if awaiting_notification_suback {
+                    let granted: Vec<bool> = suback
+                        .return_codes
+                        .iter()
+                        .map(|code| matches!(code, SubscribeReasonCode::Success(_)))
+                        .collect();
+                    if !hq_desktop_core::share_notify::all_realtime_subscriptions_granted(
+                        topics.len(),
+                        &granted,
+                    ) {
+                        return Err("realtime subscription rejected or incomplete".to_string());
+                    }
+                    if auth_session_generation != AUTH_SESSION_GENERATION.load(Ordering::Acquire) {
+                        return Err("auth session changed before SUBACK".to_string());
+                    }
+                    DM_PUSH_CONNECTED_GENERATION.store(auth_session_generation, Ordering::Release);
+                    log(LOG_TAG, "DM_MQTT_SUBSCRIBED");
+                    awaiting_notification_suback = false;
                 }
             }
             Ok(Event::Incoming(Packet::Publish(publish))) => {
@@ -604,7 +662,6 @@ async fn drive_eventloop(
                     if publish.topic != dm_topic {
                         if hq_desktop_core::share_notify::should_refresh_from_notification_push(
                             &publish.topic,
-                            &publish.payload,
                             crate::commands::share_notify::desktop_push_events_enabled(),
                         ) {
                             crate::commands::share_notify::poll_once(app.clone()).await;
@@ -624,7 +681,7 @@ async fn drive_eventloop(
                 log(LOG_TAG, "DM_MQTT_WAKE");
                 wake.fire(&app).await;
             }
-            Ok(_) => { /* SubAck, PingResp, Outgoing, etc. — ignore. */ }
+            Ok(_) => { /* PingResp, Outgoing, etc. — ignore. */ }
             Err(e) => {
                 // Any connection-level error ends this cycle; caller backs off.
                 return Err(format!("eventloop: {e}"));
@@ -693,6 +750,7 @@ async fn run_wake_receiver_loop(
 
     let mut backoff = BACKOFF_MIN;
     loop {
+        let auth_session_generation = AUTH_SESSION_GENERATION.load(Ordering::Acquire);
         // Re-fetch credentials before every (re)connect — they are short-lived
         // STS creds and will have expired across a long backoff.
         match fetch_realtime_credentials().await {
@@ -701,7 +759,7 @@ async fn run_wake_receiver_loop(
                 // then do we fall through to back off + reconnect. Reset the
                 // backoff after a connection that actually established.
                 let started = SystemTime::now();
-                match run_once(&app, &creds, topic_override, wake).await {
+                match run_once(&app, &creds, topic_override, wake, auth_session_generation).await {
                     Ok(()) => { /* unreachable in practice; treat as disconnect */ }
                     Err(e) => log(LOG_TAG, &format!("{log_prefix}_DISCONNECT {e}")),
                 }

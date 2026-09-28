@@ -107,6 +107,7 @@ let chatSidebar = "";
 let filesSidebar = "";
 let setupChannelIntro = "";
 let desktopAltBoot = "";
+let shareNotifyPoller = "";
 
 beforeAll(async () => {
   [uiStyleFiles, uiScriptFiles, coreScriptFiles] = await Promise.all([
@@ -125,6 +126,7 @@ beforeAll(async () => {
     filesSidebar,
     setupChannelIntro,
     desktopAltBoot,
+    shareNotifyPoller,
   ] = await Promise.all(
     [
       "apps/sync/src-tauri/src/commands/sync.rs",
@@ -136,6 +138,7 @@ beforeAll(async () => {
       "packages/ui/src/files/FilesModeSidebar.svelte",
       "packages/ui/src/chat/SetupChannelIntro.svelte",
       "apps/sync/src/desktop-alt/boot.ts",
+      "apps/sync/src-tauri/src/commands/share_notify.rs",
     ].map((p) => readFile(resolve(rootDir, p), "utf8")),
   );
 });
@@ -438,6 +441,14 @@ describe("poll-interval floors", () => {
         "add the file to FAST_POLLER_ALLOWLIST with the reason — and make the " +
         "poller pause on visibilitychange.",
     ).toEqual([]);
+  });
+
+  it("keeps the Rust fallback scheduler on fixed interval deadlines", () => {
+    expect(shareNotifyPoller).toMatch(/share_poll_interval\(\)/);
+    expect(shareNotifyPoller).toMatch(/poll_ticker\.tick\(\)/);
+    expect(shareNotifyPoller).not.toMatch(
+      /sleep\(Duration::from_secs\(SHARE_POLL_INTERVAL_SECS\)\)/,
+    );
   });
 
   it("the stores fixed in the perf pass still pause when hidden", () => {

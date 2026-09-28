@@ -8,10 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- When enabled, realtime events trigger share and direct-message refreshes. If the connection drops, the app checks every five minutes. Scheduled checks pause while all desktop windows are hidden. With the flag off, the existing 60-second cadence continues.
+- With `desktop.push-events` enabled, realtime events trigger share and direct-message refreshes. If the connection drops, the app checks every five minutes. Scheduled checks pause while all desktop windows are hidden. When the flag is off, the existing 60-second cadence continues.
 - History search now requires 2 to 100 characters, matching the server limit.
 
 ## [0.10.352] — 2026-09-28
+
 - After setup passes, people can start syncing their HQ folder right away. The optional first-folder step is off until its hq-flags rollout is enabled, and can be skipped.
 
 ## [0.10.351] — 2026-09-28
