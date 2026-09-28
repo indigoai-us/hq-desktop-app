@@ -1192,6 +1192,7 @@ export function createSyncPlatformAdapter(
     shell: {
       openInEditor: (path) => call('open_in_editor', { path }),
       openClaudeCodeLink: (url) => call('open_claude_code_link', { url }),
+      openCodexDeepLink: (url) => call('open_codex_deep_link', { url }),
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
       launchClaudeCode: (path) => call('launch_claude_code', { path }),

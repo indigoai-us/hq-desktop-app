@@ -25,6 +25,7 @@
  * runtime dependency on the Svelte component - just its callback contract.
  */
 export type CodingTool = "claude" | "codex";
+export type AssistantId = "claude-desktop" | "chatgpt-desktop";
 export interface InstallOutcome {
   ok: boolean;
   reason?: string;
@@ -53,6 +54,13 @@ const DOWNLOAD_URL: Record<CodingTool, string> = {
 /**
  * The four callbacks SetupInstallGuide expects, plus the download URL lookup.
  * Match the `installGuide` prop shape on SetupIncompleteCard exactly.
+ *
+ * `onopenassistant` is the install-via-assistant path: hand a validated
+ * `claude://` or `codex://` URL to the OS URL dispatcher through the
+ * scheme-scoped Tauri command. Every URL is built in the renderer from a
+ * fixed prompt constant (`INSTALL_VIA_CLAUDE_PROMPT` /
+ * `INSTALL_VIA_CHATGPT_PROMPT` in `packages/ui/src/install-choice`); no
+ * server text ever contributes.
  */
 export interface SetupInstallGuideCallbacks {
   oninstall(tool: CodingTool): Promise<InstallOutcome>;
@@ -60,6 +68,7 @@ export interface SetupInstallGuideCallbacks {
   onrefresh(): Promise<void>;
   downloadUrlFor(tool: CodingTool): string;
   onopen(url: string): Promise<InstallOutcome>;
+  onopenassistant(assistant: AssistantId, url: string): Promise<InstallOutcome>;
 }
 
 /**
@@ -162,6 +171,32 @@ export function createSetupInstallGuideCallbacks(
             err instanceof Error && err.message
               ? err.message
               : "HQ couldn't open the download page.",
+        };
+      }
+    },
+
+    async onopenassistant(
+      assistant: AssistantId,
+      url: string,
+    ): Promise<InstallOutcome> {
+      const command =
+        assistant === "claude-desktop"
+          ? "open_claude_code_link"
+          : "open_codex_deep_link";
+      const label =
+        assistant === "claude-desktop" ? "Claude" : "ChatGPT";
+      try {
+        await deps.invoke<void>(command, { url });
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          reason:
+            err instanceof Error && err.message
+              ? err.message
+              : typeof err === "string" && err.trim()
+                ? err.trim()
+                : `HQ couldn't open ${label} on this computer.`,
         };
       }
     },

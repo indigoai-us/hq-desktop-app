@@ -184,3 +184,49 @@ describe("createSetupInstallGuideCallbacks - downloadUrlFor + onopen", () => {
     expect(result.reason).toContain("shell open denied");
   });
 });
+
+describe("createSetupInstallGuideCallbacks - onopenassistant", () => {
+  it("routes claude-desktop to open_claude_code_link with the URL verbatim", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const cb = createSetupInstallGuideCallbacks({
+      invoke: invoke as unknown as InstallGuideDeps["invoke"],
+      openUrl: async () => undefined,
+    });
+    const url = "claude://code/new?q=install%20claude%20code";
+    const result = await cb.onopenassistant("claude-desktop", url);
+    expect(result).toEqual({ ok: true });
+    expect(invoke).toHaveBeenCalledWith("open_claude_code_link", { url });
+  });
+
+  it("routes chatgpt-desktop to open_codex_deep_link", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const cb = createSetupInstallGuideCallbacks({
+      invoke: invoke as unknown as InstallGuideDeps["invoke"],
+      openUrl: async () => undefined,
+    });
+    const url = "codex://threads/new?prompt=install%20codex";
+    const result = await cb.onopenassistant("chatgpt-desktop", url);
+    expect(result).toEqual({ ok: true });
+    expect(invoke).toHaveBeenCalledWith("open_codex_deep_link", { url });
+  });
+
+  it("surfaces a plain reason when dispatch fails, and never leaks a stack trace", async () => {
+    const invoke = vi.fn(async () => {
+      throw new Error(
+        "ShellExecuteW failed to open codex link: 2\n  at some/rust/frame.rs:99",
+      );
+    });
+    const cb = createSetupInstallGuideCallbacks({
+      invoke: invoke as unknown as InstallGuideDeps["invoke"],
+      openUrl: async () => undefined,
+    });
+    const result = await cb.onopenassistant(
+      "chatgpt-desktop",
+      "codex://threads/new?prompt=hello",
+    );
+    expect(result.ok).toBe(false);
+    // The error message is passed through; stacks are naturally elided by
+    // JS `err.message`, and no callback logs the whole `err` object.
+    expect(result.reason).toContain("ShellExecuteW");
+  });
+});

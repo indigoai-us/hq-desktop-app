@@ -152,6 +152,17 @@
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: CodingTool): string;
       onopen(url: string): Promise<InstallOutcome> | void;
+      /**
+       * Optional: open one of the assistant desktop apps with a fixed
+       * install prompt pre-filled — the operator-directed shortcut that
+       * lets a person set up their coding tool without opening a terminal.
+       * Wired via the install-guide adapter to `open_claude_code_link` /
+       * `open_codex_deep_link`.
+       */
+      onopenassistant?(
+        assistant: "claude-desktop" | "chatgpt-desktop",
+        url: string,
+      ): Promise<InstallOutcome>;
     } | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
@@ -515,6 +526,7 @@
                 }}
                 downloadUrlFor={installGuide.downloadUrlFor}
                 onopen={installGuide.onopen}
+                onopenassistant={installGuide.onopenassistant}
               />
             {/await}
           {/if}

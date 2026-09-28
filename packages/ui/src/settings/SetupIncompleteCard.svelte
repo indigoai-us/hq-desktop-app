@@ -67,6 +67,16 @@
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: CodingTool): string;
       onopen(url: string): Promise<InstallOutcome> | void;
+      /**
+       * Open one of the assistant desktop apps with a fixed install prompt
+       * pre-filled. Wired to `open_claude_code_link` /
+       * `open_codex_deep_link` via the install-guide adapter. Absent →
+       * the install guide falls back to the direct install path.
+       */
+      onopenassistant?(
+        assistant: "claude-desktop" | "chatgpt-desktop",
+        url: string,
+      ): Promise<InstallOutcome>;
     } | null;
   }
 
@@ -259,6 +269,8 @@
         }}
         downloadUrlFor={installGuide.downloadUrlFor}
         onopen={installGuide.onopen}
+        onopenassistant={installGuide.onopenassistant}
+        hqFolder={status?.hqFolderPath ?? ""}
       />
     {/if}
     <div class="setup-actions">

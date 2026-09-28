@@ -665,6 +665,7 @@ fn main() {
             commands::app::hide_main_window,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
+            commands::app::open_codex_deep_link,
             commands::ai_tools::detect_ai_tools,
             commands::ai_tools::detect_claude_ready,
             commands::ai_tools::detect_claude_desktop_connectors,

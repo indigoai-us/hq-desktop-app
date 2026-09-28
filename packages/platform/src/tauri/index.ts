@@ -595,6 +595,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly shell: PlatformAdapter["shell"] = {
     openInEditor: (path) => this.call("open_in_editor", { path }),
     openClaudeCodeLink: (url) => this.call("open_claude_code_link", { url }),
+    openCodexDeepLink: (url) => this.call("open_codex_deep_link", { url }),
     openFileInClaude: (path) => this.call("open_file_in_claude", { path }),
     launchClaudeCode: (path) => this.call("launch_claude_code", { path }),
     launchCodexWorkspace: (path, prompt) =>

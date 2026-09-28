@@ -8,6 +8,15 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The New bot wizard and the setup assistant now offer "Set up with Claude"
+  and "Set up with ChatGPT" buttons when the app finds no coding tool on this
+  computer. Clicking one opens the person's assistant desktop app with a
+  short install prompt already in the composer; the assistant does the
+  install and tells the person to switch back to HQ. When neither assistant
+  app is on the computer, HQ still runs its own one-click installer, so the
+  panel never dead-ends. The main text no longer mentions `npm`, a terminal,
+  or a file path. The two places share one component and one adapter so they
+  cannot drift.
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files

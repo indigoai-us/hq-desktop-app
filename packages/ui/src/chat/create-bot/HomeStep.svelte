@@ -21,6 +21,13 @@
     runtimeStatusOf,
     type RuntimeStatus,
   } from "./runtime-status.js";
+  import InstallChoice from "../../install-choice/InstallChoice.svelte";
+  import type {
+    AiTools,
+    AssistantId,
+    CodingTool,
+    InstallOutcome,
+  } from "../../install-choice/install-choice.js";
   import "./create-bot.css";
 
   interface Props {
@@ -47,6 +54,35 @@
     /** Re-run the runtime check (after installing, or a failed probe). */
     onrecheck?: () => void | Promise<void>;
     pollMs?: number;
+    /**
+     * Live AiTools payload (`detect_ai_tools` on the host). Needed by the
+     * install-choice panel to know whether Claude Desktop or the ChatGPT
+     * desktop app is available on this computer. `null` while the probe is
+     * in flight; the panel renders a neutral "Checking…" line then.
+     */
+    aiTools?: AiTools | null;
+    /**
+     * Fixed HQ folder path — passed to `claude://code/new?folder=` when the
+     * "Set up with Claude" button dispatches. Optional; the URL builder
+     * simply omits `folder` when not set.
+     */
+    hqFolderPath?: string;
+    /**
+     * Open one of the assistant desktop apps with the install prompt
+     * pre-filled. The URL is already a validated `claude://` or `codex://`
+     * deep link. The wizard host wires this to `open_claude_code_link` /
+     * `open_codex_deep_link` via the install-guide adapter.
+     */
+    onopenassistant?: (
+      assistant: AssistantId,
+      url: string,
+    ) => Promise<InstallOutcome>;
+    /**
+     * Run HQ's own one-click installer (fallback when neither assistant
+     * app is here). Wired to the same `install_claude_code` / `install_codex`
+     * commands the setup assistant uses.
+     */
+    onassistedinstall?: (tool: CodingTool) => Promise<InstallOutcome>;
   }
 
   let {
@@ -63,6 +99,10 @@
     onsignedin,
     onrecheck,
     pollMs = 1500,
+    aiTools = null,
+    hqFolderPath = "",
+    onopenassistant,
+    onassistedinstall,
   }: Props = $props();
 
   /** Runtime whose inline sign-in is open. */
@@ -215,6 +255,28 @@
       </div>
       {#if signingIn && signInApi}
         <RuntimeSignIn runtime={signingIn} api={signInApi} {pollMs} onconnected={connected} oncancel={() => (signingIn = null)} />
+      {:else if draftStatus && draftStatus.state === "notInstalled" && draft.runtime !== "grok" && onopenassistant && onassistedinstall && onrecheck}
+        <!--
+          Operator-directed replacement for the old "Install it from
+          claude.ai/download, or run npm i -g @anthropic-ai/claude-code"
+          footer. The person never sees a terminal command; instead, when a
+          coding assistant desktop app is on this computer, HQ offers a
+          button that opens it with an install prompt already pre-filled.
+          Falls back to HQ's own one-click installer when no assistant app
+          is here. Kept alongside "Check again" per repo policy
+          `hq-desktop-app-failed-state-assisted-recovery-preserve-retry`.
+        -->
+        <InstallChoice
+          tool={draft.runtime === "codex" ? "codex" : "claude"}
+          tools={aiTools}
+          noun={hostNoun}
+          hqFolder={hqFolderPath}
+          searched={draftStatus.searched}
+          disabled={disabled}
+          onopenassistant={onopenassistant}
+          oninstall={(tool) => onassistedinstall(tool)}
+          onrecheck={async () => void (await onrecheck())}
+        />
       {:else if draftStatus}
         <p
           class="cb-help"

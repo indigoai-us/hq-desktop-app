@@ -91,6 +91,29 @@
       invokeFn(command, args as never) as Promise<T>,
     openUrl: (url: string) => openBrowserUrl(url),
   });
+  /**
+   * Live AiTools state for the shared InstallChoice panel used by BOTH the
+   * setup assistant and the New bot wizard. Hydrated on mount and refreshed
+   * on every runtime re-check, so the wizard's "not installed" state
+   * renders assistant buttons the moment `detect_ai_tools` sees the
+   * Claude Desktop or ChatGPT app on disk. Kept null while the probe
+   * runs the first time — the panel renders a neutral "Checking…" line
+   * rather than making a false claim either way.
+   */
+  let installChoiceAiTools = $state<
+    import('@hq/ui').AiTools | null
+  >(null);
+  async function refreshInstallChoiceAiTools(): Promise<void> {
+    try {
+      const res = await adapter.shell.detectAiTools();
+      installChoiceAiTools = res.ok
+        ? (res.value as unknown as import('@hq/ui').AiTools)
+        : null;
+    } catch {
+      installChoiceAiTools = null;
+    }
+  }
+  void refreshInstallChoiceAiTools();
   onDestroy(() => {
     void adapter.dispose?.();
   });
@@ -937,6 +960,13 @@
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
         {setupInstallGuide}
+        aiTools={installChoiceAiTools}
+        onopenassistant={setupInstallGuide.onopenassistant}
+        onassistedinstall={async (tool) => {
+          const outcome = await setupInstallGuide.oninstall(tool);
+          if (outcome.ok) await refreshInstallChoiceAiTools();
+          return outcome;
+        }}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');
