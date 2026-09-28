@@ -11,6 +11,7 @@ import {
   createHqProFlagFetch,
   registryKeyFor,
 } from "./flags.js";
+import { createSyncPlatformAdapter } from "./tauri/sync-adapter.js";
 
 function fakeClient(
   overrides: Pick<FlagClient, "ready" | "snapshot" | "isEnabled"> &
@@ -52,9 +53,49 @@ describe("registry key mapping", () => {
       "desktop.setup-directory-parent-fallback",
     );
   });
+
+  it("maps the first-folder onboarding flag using the registry key format", () => {
+    const key = "desktop.first-folder-sync-step-v1";
+    expect(key).toMatch(/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/);
+    expect(registryKeyFor(key)).toBe(key);
+  });
 });
 
 describe("createFeatureFlagGate", () => {
+  it("uses the first-folder registry override when it is explicitly enabled", async () => {
+    const key = "desktop.first-folder-sync-step-v1";
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: { [key]: true } }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(key)).resolves.toEqual(ok(true));
+    expect(isEnabled).toHaveBeenCalledExactlyOnceWith(key);
+  });
+
+  it("keeps the first-folder gate off when the flag registry is unavailable", async () => {
+    const key = "desktop.first-folder-sync-step-v1";
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(key)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
   it("snapshot missing → legacy path used", async () => {
     const isEnabled = vi.fn(() => false);
     const fallback = vi.fn(async () => ok(true));

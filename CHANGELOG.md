@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Work app and platform API GET/HEAD requests retry once after the generic Lambda-invoke 504 response when its body has no function request ID; API Gateway's own response header does not suppress the retry.
+- After setup passes, people can start syncing their HQ folder right away. The optional first-folder step is off until its hq-flags rollout is enabled, and can be skipped.
 
 ## [0.10.351] — 2026-09-28
 

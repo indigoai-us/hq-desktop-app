@@ -75,12 +75,15 @@ import { ok, type AdapterPromise, type AdapterResult } from "./adapter.js";
 
 export const SETUP_DIRECTORY_PARENT_FALLBACK_FLAG =
   "desktop.setup-directory-parent-fallback";
+export const FIRST_FOLDER_SYNC_STEP_FLAG =
+  "desktop.first-folder-sync-step-v1";
 
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
   "agents.claude-provider": "agents.claude-provider",
   [SETUP_DIRECTORY_PARENT_FALLBACK_FLAG]: SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+  [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
 };

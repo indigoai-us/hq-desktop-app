@@ -18,20 +18,21 @@ export const WIZARD_STEPS = [
   { index: 0, id: 'welcome-signin', label: 'Welcome' },
   { index: 1, id: 'directory', label: 'Location' },
   { index: 2, id: 'setup', label: 'Setup' },
+  { index: 3, id: 'first-folder-sync', label: 'Sync your first folder' },
   // Consent is its own step, placed AFTER setup: the person entity is
   // provisioned during setup, so by the time we ask, the opt-in write has an
   // entity to land on (the old sign-in-panel checkbox posted before the entity
   // existed, so the answer 404'd and was silently dropped).
-  { index: 3, id: 'consent', label: 'Consent' },
+  { index: 4, id: 'consent', label: 'Consent' },
   // This runs after setup has made `hq` available, but before final handoff.
   // It auto-skips when Claude Desktop has no configured connectors.
-  { index: 4, id: 'connector-import', label: 'Import connectors' },
-  { index: 5, id: 'ready', label: 'Ready' },
-  { index: 6, id: 'trust', label: 'Trust workspace' },
-  { index: 7, id: 'settings', label: 'Settings' },
-  { index: 8, id: 'run-setup', label: 'Run setup' },
-  { index: 9, id: 'handoff', label: 'Handoff' },
-  { index: 10, id: 'build', label: 'Build' },
+  { index: 5, id: 'connector-import', label: 'Import connectors' },
+  { index: 6, id: 'ready', label: 'Ready' },
+  { index: 7, id: 'trust', label: 'Trust workspace' },
+  { index: 8, id: 'settings', label: 'Settings' },
+  { index: 9, id: 'run-setup', label: 'Run setup' },
+  { index: 10, id: 'handoff', label: 'Handoff' },
+  { index: 11, id: 'build', label: 'Build' },
 ] as const satisfies readonly WizardStep[];
 
 export type WizardStepId = (typeof WIZARD_STEPS)[number]['id'];
@@ -48,6 +49,7 @@ const FIRST_STEP_INDEX = WIZARD_STEPS[0].index;
 const WELCOME_SIGNIN_STEP_INDEX = WIZARD_STEP_INDEX['welcome-signin'];
 const DIRECTORY_STEP_INDEX = WIZARD_STEP_INDEX.directory;
 const SETUP_STEP_INDEX = WIZARD_STEP_INDEX.setup;
+const FIRST_FOLDER_SYNC_STEP_INDEX = WIZARD_STEP_INDEX['first-folder-sync'];
 const CONSENT_STEP_INDEX = WIZARD_STEP_INDEX.consent;
 const CONNECTOR_IMPORT_STEP_INDEX = WIZARD_STEP_INDEX['connector-import'];
 const READY_STEP_INDEX = WIZARD_STEP_INDEX.ready;
@@ -63,6 +65,7 @@ export {
   BUILD_STEP_INDEX,
   CONNECTOR_IMPORT_STEP_INDEX,
   CONSENT_STEP_INDEX,
+  FIRST_FOLDER_SYNC_STEP_INDEX,
   DIRECTORY_STEP_INDEX,
   HANDOFF_STEP_INDEX,
   READY_STEP_INDEX,
