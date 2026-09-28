@@ -46,7 +46,11 @@
   import type { Workspace } from "./workspaces";
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
-  import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
+  import {
+    messageSearchQueryProblem,
+    type ChatSidebarApi,
+    type ChatWakeBus,
+  } from "./chat-api";
   import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
   import type {
     AdapterPromise,
@@ -1510,6 +1514,7 @@
   );
   const historyCompanyUid = $derived(searchCompanyUidFromScope(scope));
   const historyHasQuery = $derived(historyQuery.trim().length > 0);
+  const historyQueryProblem = $derived(messageSearchQueryProblem(historyQuery));
   const scopeLabel = $derived(scopePillLabel(scope, scopeCompanies));
   const scopeOptions = $derived(buildScopeOptions(scopeCompanies));
   const displayName = $derived(accountLabel?.trim() || "Account");
@@ -1820,14 +1825,20 @@
   $effect(() => {
     if (!historyOpen) return;
     const q = historyQuery.trim();
+    const seq = ++messageSearchSeq;
     if (!q) {
       messageSearchHits = [];
       messageSearchError = null;
       messageSearchLoading = false;
       return;
     }
+    if (messageSearchQueryProblem(q)) {
+      messageSearchHits = [];
+      messageSearchError = null;
+      messageSearchLoading = false;
+      return;
+    }
     const companyUid = historyCompanyUid;
-    const seq = ++messageSearchSeq;
     messageSearchLoading = true;
     messageSearchError = null;
     const handle = setTimeout(() => {
@@ -3474,7 +3485,11 @@
           data-testid="chat-history-results"
         >
           {#if historyHasQuery}
-            {#if messageSearchLoading && messageSearchHits.length === 0}
+            {#if historyQueryProblem === "too-short"}
+              <div class="chat-empty" role="status">Type at least 2 characters</div>
+            {:else if historyQueryProblem === "too-long"}
+              <div class="chat-empty" role="status">Search is limited to 100 characters</div>
+            {:else if messageSearchLoading && messageSearchHits.length === 0}
               <div class="chat-empty" role="status">Searching…</div>
             {:else if messageSearchError}
               <div class="chat-empty" role="alert">{messageSearchError}</div>
