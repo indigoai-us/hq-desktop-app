@@ -1030,6 +1030,29 @@ fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
     start_daemon_with_origin(app, WatcherLaunchOrigin::SupervisorRespawn)
 }
 
+fn active_watch_owner_status(
+    hq_folder_path: &str,
+) -> Result<Option<hq_desktop_core::daemon::WatchOwnerLeaseStatus>, String> {
+    hq_desktop_core::daemon::active_watch_owner_status(Path::new(hq_folder_path))
+}
+
+/// Used by the hq-daemon host before enabling its sync service. The transition
+/// is complete only when the app's old process generation/PID and its public
+/// lease projection are both clear.
+pub(crate) fn watch_runner_handoff_ready() -> Result<bool, String> {
+    let hq_folder_path = resolve_hq_folder_path()?;
+    let app_child_or_start_active = is_registered(DAEMON_HANDLE)
+        || lookup_pid(DAEMON_HANDLE).map(is_pid_alive).unwrap_or(false)
+        || hq_desktop_core::daemon::read_pid_file(&hq_folder_path)
+            .map(is_pid_alive)
+            .unwrap_or(false);
+    let owner_lease_active = active_watch_owner_status(&hq_folder_path)?.is_some();
+    Ok(hq_desktop_core::daemon::watch_runner_handoff_complete(
+        app_child_or_start_active,
+        owner_lease_active,
+    ))
+}
+
 fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
@@ -1037,7 +1060,9 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     match crate::commands::hq_daemon_host::current_phase() {
         crate::commands::hq_daemon_host::HostPhase::Daemon => {
             // hq daemon runs sync; turn its sync service on instead of spawning a runner.
-            crate::commands::hq_daemon_host::set_sync_enabled(true)?;
+            if !crate::commands::hq_daemon_host::set_sync_enabled(true)? {
+                return Ok("Sync is waiting for the previous watch owner to release".to_string());
+            }
             return Ok("hq daemon runs sync".to_string());
         }
         crate::commands::hq_daemon_host::HostPhase::Pending => {
@@ -1054,6 +1079,30 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     // here pauses it too. Checked before taking the singleton guard so a
     // refusal never wedges a later, allowed start.
     hq_desktop_core::daemon::ensure_sync_spawn_allowed()?;
+    let hq_folder_path = match resolve_hq_folder_path() {
+        Ok(path) => path,
+        Err(error) => {
+            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
+            return Err(error);
+        }
+    };
+    match active_watch_owner_status(&hq_folder_path) {
+        Ok(Some(owner))
+            if !hq_desktop_core::daemon::watch_runner_start_allowed(true) =>
+        {
+            log(
+                "daemon",
+                &format!("watch lease is handled by owner={}", owner.owner),
+            );
+            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+            return Ok(format!("Sync is handled by {}", owner.owner));
+        }
+        Ok(_) => {}
+        Err(error) => log(
+            "daemon",
+            &format!("watch-owner status unavailable before start: {error}"),
+        ),
+    }
     // Generation-scoped registration: every later release/terminate/cancel this
     // start performs is bound to the generation it acquired here, so a stale
     // actor can never operate on a replacement watcher (HQ-DESKTOP-3J).
@@ -1084,15 +1133,6 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
             return Err(err);
         }
     }
-
-    let hq_folder_path = match resolve_hq_folder_path() {
-        Ok(p) => p,
-        Err(e) => {
-            release_daemon_guard(daemon_generation, guard_generation);
-            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
-            return Err(e);
-        }
-    };
 
     // Pre-flight: check if daemon is already running from a previous session
     if let Some(pid) = read_pid_file(&hq_folder_path) {
@@ -1197,6 +1237,30 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         return Err(hq_desktop_core::runner_target::runner_target_diagnosis(
             runner_target_outcome.state,
         ));
+    }
+
+    // Recheck after the bounded startup preflights. An external owner can
+    // acquire the lease while npm resolution and runner materialization run.
+    // The runner remains the final atomic authority; this read avoids a known
+    // duplicate spawn whenever the read-only projection is already current.
+    match active_watch_owner_status(&hq_folder_path) {
+        Ok(Some(owner))
+            if !hq_desktop_core::daemon::watch_runner_start_allowed(true) =>
+        {
+            finish_watcher_generation(&watcher_generation);
+            release_daemon_guard(daemon_generation, guard_generation);
+            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+            log(
+                "daemon",
+                &format!("watch lease is handled by owner={}", owner.owner),
+            );
+            return Ok(format!("Sync is handled by {}", owner.owner));
+        }
+        Ok(_) => {}
+        Err(error) => log(
+            "daemon",
+            &format!("watch-owner status unavailable before spawn: {error}"),
+        ),
     }
 
     // Create this generation's app-owned diagnostic-report directory so the runner
@@ -1387,7 +1451,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // RunTotals; deliberate stops (our cancel, bare SIGTERM at
                         // quit/logout) carry no health signal and must not persist
                         // a failure across an ordinary shutdown.
-                        if watch_exit_should_record_health(cancelled, signal) {
+                        if watch_exit_should_record_health(cancelled, code, signal) {
                             let final_totals =
                                 totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             crate::commands::client_health::record_auto_sync_watch_exited(
@@ -1653,9 +1717,16 @@ fn is_unexpected_watcher_exit(success: bool, signal: Option<i32>, cancelled: boo
 /// `sync_run_failed` across an ordinary shutdown and report a healthy
 /// install as broken until its next completed pass. Everything else —
 /// including an auth-expiry exit 0 with no AllComplete, and any crash —
-/// must reach the recorder (which itself ignores genuinely clean exits).
-fn watch_exit_should_record_health(cancelled: bool, signal: Option<i32>) -> bool {
-    !cancelled && signal != Some(SIGTERM)
+/// must reach the recorder (which itself ignores genuinely clean exits), except
+/// the explicit watch-owner handoff exits handled below.
+fn watch_exit_should_record_health(
+    cancelled: bool,
+    code: Option<i32>,
+    signal: Option<i32>,
+) -> bool {
+    !cancelled
+        && signal != Some(SIGTERM)
+        && !hq_desktop_core::daemon::is_watch_owner_lease_exit(code, signal)
 }
 
 /// Pure signal classifier for fault-style terminations that must still alert.
@@ -3900,6 +3971,19 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // recorded the lifecycle transition, so this is not a new event, not a
         // lifecycle change, and never references the stall in-flight flag.
         effects.reset_exec_not_runnable_failure_streak();
+        return RunnerReportDirDisposition::DeleteOnExitPath;
+    }
+
+    if hq_desktop_core::daemon::is_watch_owner_lease_exit(code, signal) {
+        effects.reset_exec_not_runnable_failure_streak();
+        effects.set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+        effects.log(
+            "daemon",
+            &format!(
+                "watch-owner lease handoff exit={:?}; supervisor will retry on its next lease check",
+                code
+            ),
+        );
         return RunnerReportDirDisposition::DeleteOnExitPath;
     }
 
@@ -6743,12 +6827,52 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // terminal sleep rather than sleeping the interval twice.
                 supervise_watcher_footprint_for_tick(sample_pid);
                 continue;
-            } else if should_respawn_daemon_gated(
-                is_realtime_sync_enabled(),
-                is_autostart_enabled(),
-                daemon_alive,
-                hq_desktop_core::daemon::is_cloud_paused(),
-            ) {
+            } else if {
+                let realtime = is_realtime_sync_enabled();
+                let autostart = is_autostart_enabled();
+                if !realtime && !autostart {
+                    false
+                } else {
+                    match resolve_hq_folder_path()
+                        .and_then(|root| active_watch_owner_status(&root))
+                    {
+                        Ok(Some(owner))
+                            if !hq_desktop_core::daemon::watch_runner_start_allowed(true) =>
+                        {
+                            set_lifecycle_state(
+                                WatchDaemonState::Stopped,
+                                DaemonFailureCategory::None,
+                            );
+                            log(
+                                "daemon.supervisor",
+                                &format!(
+                                    "watch lease is handled by owner={}; retrying on the next supervisor tick",
+                                    owner.owner
+                                ),
+                            );
+                            false
+                        }
+                        Ok(_) => should_respawn_daemon_gated(
+                            realtime,
+                            autostart,
+                            daemon_alive,
+                            hq_desktop_core::daemon::is_cloud_paused(),
+                        ),
+                        Err(error) => {
+                            log(
+                                "daemon.supervisor",
+                                &format!("watch-owner status unavailable before respawn: {error}"),
+                            );
+                            should_respawn_daemon_gated(
+                                realtime,
+                                autostart,
+                                daemon_alive,
+                                hq_desktop_core::daemon::is_cloud_paused(),
+                            )
+                        }
+                    }
+                }
+            } {
                 // Crash-loop dampening: hold off respawning a watcher that just
                 // crashed until its exponential backoff elapses, instead of
                 // hot-respawning every 30s (HQ-SYNC-4).
@@ -6934,16 +7058,78 @@ mod tests {
     /// (app quit / OS logout) must never persist a failure across an
     /// ordinary shutdown.
     #[test]
-    fn watch_exit_health_recording_skips_deliberate_stops_only() {
+    fn watch_exit_health_recording_skips_stops_and_lease_handoffs() {
         // Auth-expiry shape: exit 0, no signal, not cancelled — must record.
-        assert!(watch_exit_should_record_health(false, None));
+        assert!(watch_exit_should_record_health(false, Some(0), None));
         // Crash / fault shapes must record.
-        assert!(watch_exit_should_record_health(false, Some(SIGKILL)));
-        assert!(watch_exit_should_record_health(false, Some(SIGSEGV)));
+        assert!(watch_exit_should_record_health(false, None, Some(SIGKILL)));
+        assert!(watch_exit_should_record_health(false, None, Some(SIGSEGV)));
         // Deliberate stops must not.
-        assert!(!watch_exit_should_record_health(true, None));
-        assert!(!watch_exit_should_record_health(true, Some(SIGTERM)));
-        assert!(!watch_exit_should_record_health(false, Some(SIGTERM)));
+        assert!(!watch_exit_should_record_health(true, None, None));
+        assert!(!watch_exit_should_record_health(true, None, Some(SIGTERM)));
+        assert!(!watch_exit_should_record_health(false, None, Some(SIGTERM)));
+        // Lease contention/loss is a handled ownership transition, not a
+        // terminal health failure to persist across ordinary sync operation.
+        assert!(!watch_exit_should_record_health(false, Some(20), None));
+        assert!(!watch_exit_should_record_health(false, Some(21), None));
+    }
+
+    #[test]
+    fn watcher_lease_exit_does_not_capture_or_advance_crash_backoff() {
+        for code in [20, 21] {
+            let mut effects = RecordingWatcherEffects::default();
+            let disposition = handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(code),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                current_termination_host(),
+                &WatcherExitCaptureContext::default(),
+            );
+
+            assert_eq!(disposition, RunnerReportDirDisposition::DeleteOnExitPath);
+            assert_eq!(effects.consecutive, 0, "exit {code} must not count as a crash");
+            assert!(effects.captures.is_empty(), "exit {code} must not be reported");
+            assert!(effects.deferred.is_empty());
+            assert!(effects.deferred_watcher_fault.is_empty());
+            assert!(effects.deferred_runner_report.is_empty());
+            assert_eq!(
+                effects.lifecycle.last(),
+                Some(&(WatchDaemonState::Stopped, DaemonFailureCategory::None))
+            );
+        }
+        assert!(
+            !hq_desktop_core::daemon::watch_runner_start_allowed(true),
+            "a live owner keeps the next start deferred"
+        );
+    }
+
+    #[test]
+    fn real_watcher_crash_signal_still_uses_the_existing_report_path() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(SIGSEGV),
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("SIGSEGV remains reportable");
+        assert!(capture.message.starts_with("auto-sync watcher exited unexpectedly"));
+        assert_eq!(capture.fingerprint, vec!["sync-watcher-exit", "other"]);
+        assert_eq!(
+            effects.lifecycle,
+            vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)]
+        );
+        assert_eq!(effects.consecutive, 1);
     }
 
     #[test]

@@ -14,6 +14,7 @@ describe("parseLiveSyncStatus", () => {
         pendingFiles: 2,
         conflicts: 1,
         daemonRunning: true,
+        watchOwner: "desktop-app",
         source: "journal",
         hqFolderPath: "/Users/me/hq",
       }),
@@ -22,6 +23,7 @@ describe("parseLiveSyncStatus", () => {
       pendingFiles: 2,
       conflicts: 1,
       daemonRunning: true,
+      watchOwner: "desktop-app",
       source: "journal",
       hqFolderPath: "/Users/me/hq",
     });
@@ -30,6 +32,18 @@ describe("parseLiveSyncStatus", () => {
   it("treats junk as an empty observe-only status", () => {
     expect(parseLiveSyncStatus(null).source).toBe("none");
     expect(parseLiveSyncStatus({ running: true }).daemonRunning).toBe(true);
+  });
+
+  it("accepts only bounded owner labels from the lease projection", () => {
+    expect(parseLiveSyncStatus({ watchOwner: "hq-daemon" }).watchOwner).toBe(
+      "hq-daemon",
+    );
+    expect(
+      parseLiveSyncStatus({ watchOwner: "owner with spaces" }).watchOwner,
+    ).toBeNull();
+    expect(parseLiveSyncStatus({ watchOwner: "x".repeat(65) }).watchOwner).toBe(
+      null,
+    );
   });
 });
 
@@ -41,6 +55,7 @@ describe("syncStateFromLive", () => {
         pendingFiles: 0,
         conflicts: 2,
         daemonRunning: true,
+        watchOwner: null,
         source: "journal",
         hqFolderPath: null,
       }),
@@ -51,6 +66,7 @@ describe("syncStateFromLive", () => {
         pendingFiles: 0,
         conflicts: 0,
         daemonRunning: true,
+        watchOwner: null,
         source: "journal",
         hqFolderPath: null,
       }),
@@ -68,6 +84,7 @@ describe("lastSyncLabelFromLive", () => {
           pendingFiles: 0,
           conflicts: 0,
           daemonRunning: false,
+          watchOwner: null,
           source: "journal",
           hqFolderPath: null,
         },

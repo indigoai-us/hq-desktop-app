@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 
 use crate::config::MenubarPrefs;
 use crate::process_types::SpawnArgs;
@@ -39,6 +40,177 @@ pub struct DaemonJson {
     pub pid: Option<u32>,
     pub started_at: Option<String>,
     pub watch_path: Option<String>,
+}
+
+/// Read-only projection written by hq-cloud while a watch runner owns an HQ
+/// root. This mirrors `WatchOwnerLeaseStatus` in hq-cloud.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchOwnerLeaseStatus {
+    pub owner: String,
+    pub pid: u32,
+    pub version: String,
+    pub started_at: String,
+    pub heartbeat_at: String,
+}
+
+pub const WATCH_RUNNER_ALREADY_OWNED_EXIT: i32 = 20;
+pub const WATCH_OWNER_LEASE_LOST_EXIT: i32 = 21;
+const WATCH_OWNER_LABEL_MAX_CHARS: usize = 64;
+
+/// Exit 20 means another watch owner holds the root. Exit 21 means this runner
+/// lost its lease. Both are ownership handoffs, not watcher crashes.
+pub fn is_watch_owner_lease_exit(code: Option<i32>, signal: Option<i32>) -> bool {
+    signal.is_none()
+        && matches!(
+            code,
+            Some(WATCH_RUNNER_ALREADY_OWNED_EXIT | WATCH_OWNER_LEASE_LOST_EXIT)
+        )
+}
+
+/// Whether the desktop can start its runner without colliding with a live
+/// owner shown by hq-cloud's read-only status projection.
+pub fn watch_runner_start_allowed(owner_lease_active: bool) -> bool {
+    !owner_lease_active
+}
+
+/// A host-mode handoff is complete only after the prior app child has gone and
+/// its lease is no longer active.
+pub fn watch_runner_handoff_complete(
+    app_child_or_start_active: bool,
+    owner_lease_active: bool,
+) -> bool {
+    !app_child_or_start_active && !owner_lease_active
+}
+
+/// Poll a handoff predicate a finite number of times. The caller supplies the
+/// wait function so tests can verify ordering without sleeping in real time.
+pub fn poll_until_bounded(
+    max_waits: usize,
+    interval: Duration,
+    mut ready: impl FnMut() -> bool,
+    mut wait: impl FnMut(Duration),
+) -> bool {
+    for attempt in 0..=max_waits {
+        if ready() {
+            return true;
+        }
+        if attempt < max_waits {
+            wait(interval);
+        }
+    }
+    false
+}
+
+/// Path for hq-cloud's read-only watch-owner status projection for one HQ root.
+/// This matches `watchOwnerStatusPathFor()` / `lockPathFor(..., "watch-owner")`.
+pub fn watch_owner_status_path_for(hq_root: &Path) -> Result<PathBuf, String> {
+    let state_dir = std::env::var_os("HQ_STATE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| paths::home_dir().map(|home| home.join(".hq")))
+        .ok_or_else(|| "Cannot determine HQ state directory".to_string())?;
+    Ok(watch_owner_status_path_in(hq_root, &state_dir))
+}
+
+fn watch_owner_status_path_in(hq_root: &Path, state_dir: &Path) -> PathBuf {
+    let canonical_root = canonical_root_for_watch_owner(hq_root);
+    let digest = Sha1::digest(canonical_root.to_string_lossy().as_bytes());
+    let hash = format!("{digest:x}");
+    state_dir
+        .join("locks")
+        .join(format!("watch-owner-{}.json", &hash[..16]))
+}
+
+/// Read the current watch owner without acquiring, refreshing, or changing its
+/// lease. Missing status is distinct from malformed or unreadable status.
+pub fn read_watch_owner_status(hq_root: &Path) -> Result<Option<WatchOwnerLeaseStatus>, String> {
+    let status_path = watch_owner_status_path_for(hq_root)?;
+    read_watch_owner_status_from(&status_path)
+}
+
+fn read_watch_owner_status_from(
+    status_path: &Path,
+) -> Result<Option<WatchOwnerLeaseStatus>, String> {
+    let contents = match std::fs::read_to_string(&status_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("read watch-owner status: {error}")),
+    };
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|error| format!("parse watch-owner status: {error}"))
+}
+
+/// Read a valid status record only while its owner PID is alive. The owner
+/// label is bounded and content-safe before it can be shown in the UI/logs.
+pub fn active_watch_owner_status(hq_root: &Path) -> Result<Option<WatchOwnerLeaseStatus>, String> {
+    let Some(status) = read_watch_owner_status(hq_root)? else {
+        return Ok(None);
+    };
+    if !watch_owner_status_is_active(&status, is_pid_alive) {
+        return Ok(None);
+    }
+    Ok(Some(status))
+}
+
+fn watch_owner_status_is_active(
+    status: &WatchOwnerLeaseStatus,
+    pid_alive: impl FnOnce(u32) -> bool,
+) -> bool {
+    is_safe_watch_owner_label(&status.owner) && status.pid > 0 && pid_alive(status.pid)
+}
+
+fn is_safe_watch_owner_label(owner: &str) -> bool {
+    !owner.is_empty()
+        && owner.len() <= WATCH_OWNER_LABEL_MAX_CHARS
+        && owner.bytes().enumerate().all(|(index, byte)| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' => true,
+            b'.' | b'_' | b'-' => index > 0,
+            _ => false,
+        })
+}
+
+fn canonical_root_for_watch_owner(hq_root: &Path) -> PathBuf {
+    let resolved = if hq_root.is_absolute() {
+        hq_root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|current| current.join(hq_root))
+            .unwrap_or_else(|_| hq_root.to_path_buf())
+    };
+    let mut current = resolved.clone();
+    let mut missing_segments = Vec::new();
+    loop {
+        match std::fs::canonicalize(&current) {
+            Ok(real) => {
+                let mut canonical = real;
+                for segment in missing_segments.iter().rev() {
+                    canonical.push(segment);
+                }
+                return canonical;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                let Some(name) = current.file_name() else {
+                    return resolved;
+                };
+                missing_segments.push(name.to_os_string());
+                let Some(parent) = current.parent() else {
+                    return resolved;
+                };
+                if parent == current {
+                    return resolved;
+                }
+                current = parent.to_path_buf();
+            }
+            Err(_) => return resolved,
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -206,6 +378,8 @@ pub fn build_watch_runner_args_for_target(
         "--hq-root".to_string(),
         hq_folder_path.to_string(),
         "--watch".to_string(),
+        "--owner".to_string(),
+        "desktop-app".to_string(),
     ];
 
     // `--event-push` is a runner capability, never V2 enrollment. The
@@ -2349,6 +2523,106 @@ mod tests {
             "expected resolved {expected} path, got: {}",
             args.cmd
         );
+    }
+
+    #[test]
+    fn watch_runner_spawn_identifies_the_desktop_owner() {
+        let args = build_watch_runner_args("/Users/test/HQ");
+        let owner_idx = args
+            .args
+            .iter()
+            .position(|arg| arg == "--owner")
+            .expect("watch runner owner flag missing");
+        assert_eq!(
+            args.args.get(owner_idx + 1).map(String::as_str),
+            Some("desktop-app")
+        );
+    }
+
+    #[test]
+    fn watch_owner_exit_codes_are_contention_not_crashes() {
+        assert!(is_watch_owner_lease_exit(
+            Some(WATCH_RUNNER_ALREADY_OWNED_EXIT),
+            None
+        ));
+        assert!(is_watch_owner_lease_exit(
+            Some(WATCH_OWNER_LEASE_LOST_EXIT),
+            None
+        ));
+        assert!(!is_watch_owner_lease_exit(Some(1), None));
+        assert!(!is_watch_owner_lease_exit(None, Some(9)));
+    }
+
+    #[test]
+    fn watch_runner_starts_once_the_owner_lease_is_released() {
+        assert!(!watch_runner_start_allowed(true));
+        assert!(watch_runner_start_allowed(false));
+    }
+
+    #[test]
+    fn daemon_host_handoff_waits_for_the_child_and_its_lease() {
+        let observations = [
+            (true, true),  // The old app child still runs.
+            (true, false), // The lease is gone, but the old child still runs.
+            (false, true), // The child exited but is finishing lease release.
+            (false, false),
+        ];
+        let mut next = 0;
+        let mut waits = 0;
+        let complete = poll_until_bounded(
+            4,
+            Duration::from_millis(100),
+            || {
+                let (child_active, owner_active) = observations[next];
+                next += 1;
+                watch_runner_handoff_complete(child_active, owner_active)
+            },
+            |_| waits += 1,
+        );
+        assert!(
+            complete,
+            "the next host may start only after both owners clear"
+        );
+        assert_eq!(next, 4);
+        assert_eq!(waits, 3);
+    }
+
+    #[test]
+    fn watch_owner_status_reads_the_documented_read_only_shape() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("HQ");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = watch_owner_status_path_in(&root, &state);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "owner": "hq-daemon",
+                "pid": std::process::id(),
+                "version": "6.18.13",
+                "startedAt": "2026-09-28T00:00:00.000Z",
+                "heartbeatAt": "2026-09-28T00:00:15.000Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let status = read_watch_owner_status_from(&path)
+            .unwrap()
+            .expect("the status projection should be readable");
+        assert_eq!(status.owner, "hq-daemon");
+        assert_eq!(status.pid, std::process::id());
+        assert!(is_safe_watch_owner_label(&status.owner));
+        assert!(watch_owner_status_is_active(&status, |pid| pid == std::process::id()));
+        assert!(!watch_owner_status_is_active(&status, |_| false));
+        assert!(!is_safe_watch_owner_label("owner with spaces"));
+    }
+
+    #[test]
+    fn real_crashes_are_not_classified_as_watch_owner_handoffs() {
+        assert!(!is_watch_owner_lease_exit(Some(1), None));
+        assert!(!is_watch_owner_lease_exit(None, Some(11)));
     }
 
     #[test]

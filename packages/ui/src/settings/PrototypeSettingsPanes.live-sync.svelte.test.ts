@@ -50,12 +50,13 @@ function syncAdapter(getSyncStatus: PlatformAdapter["sync"]["getSyncStatus"]) {
   return adapter;
 }
 
-function daemonStatus(running: boolean) {
+function daemonStatus(running: boolean, watchOwner?: string) {
   return ok({
     lastSyncAt: running ? "2026-09-04T00:00:00Z" : null,
     pendingFiles: 0,
     conflicts: 0,
     daemonRunning: running,
+    watchOwner,
     source: running ? "journal" : "none",
     hqFolderPath: undefined,
   });
@@ -98,6 +99,18 @@ describe("PrototypeSettingsPanes live sync status refresh", () => {
     await tick();
     expect(getSyncStatus).toHaveBeenCalledTimes(2);
     expect(daemonLabel()).toBe("RUNNING");
+  });
+
+  it("shows which live lease owner is handling sync", async () => {
+    const adapter = syncAdapter(async () => daemonStatus(true, "hq-daemon"));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "sync", adapter },
+    });
+
+    await vi.waitFor(() => expect(daemonLabel()).toBe("HANDLED BY hq-daemon"));
   });
 
   it("clears the polling interval on unmount", async () => {

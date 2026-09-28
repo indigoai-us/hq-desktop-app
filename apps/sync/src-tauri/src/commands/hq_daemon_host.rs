@@ -48,6 +48,9 @@ const OTHER_DAEMON_RECHECK: Duration = Duration::from_secs(60);
 const HEALTHY_RUN: Duration = Duration::from_secs(600);
 /// How long to wait while the process registry refuses the daemon (a desktop update is in progress).
 const RESERVE_RETRY: Duration = Duration::from_secs(5);
+/// Bound the legacy watcher shutdown handoff before hq daemon sync is enabled.
+const WATCH_HANDOFF_MAX_WAITS: usize = 100;
+const WATCH_HANDOFF_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPhase {
@@ -64,6 +67,8 @@ static PHASE: AtomicU8 = AtomicU8::new(if cfg!(test) { 1 } else { 0 });
 static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 /// Set to relaunch the child at once (its environment changed).
 static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Set when a legacy watch child or its lease survived the initial bounded handoff.
+static WATCH_HANDOFF_PENDING: AtomicBool = AtomicBool::new(false);
 /// Environment the current child was started with.
 static CHILD_ENV: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
@@ -152,7 +157,9 @@ pub fn setup_sync_host(app: &AppHandle) {
             }
             SyncHostMode::Daemon => {
                 log(LOG_TAG, "hq daemon runs background services on this launch");
-                set_phase(HostPhase::Daemon);
+                // Keep start commands blocked while the old app-owned watcher
+                // is being stopped and its lease is being released.
+                set_phase(HostPhase::Pending);
                 std::thread::spawn(move || enter_daemon_mode(handle));
             }
         }
@@ -209,6 +216,15 @@ fn enter_daemon_mode(handle: AppHandle) {
             &format!("could not stop an earlier watch runner: {e}"),
         );
     }
+    let handoff_complete = wait_for_watch_runner_handoff();
+    WATCH_HANDOFF_PENDING.store(!handoff_complete, Ordering::Release);
+    set_phase(HostPhase::Daemon);
+    if !handoff_complete {
+        log(
+            LOG_TAG,
+            "watch-owner handoff remains pending; hq daemon sync stays disabled until the next release check",
+        );
+    }
     // The mesh LaunchAgent this app installed keeps the daemon's mesh waiting.
     if let Err(e) =
         tauri::async_runtime::block_on(crate::commands::install_stages::retire_work_mesh_unit())
@@ -218,7 +234,7 @@ fn enter_daemon_mode(handle: AppHandle) {
             &format!("could not remove the separate Work Mesh unit: {e}"),
         );
     }
-    if let Err(e) = set_daemon_sync(sync_wanted()) {
+    if let Err(e) = set_daemon_sync(sync_wanted() && handoff_complete) {
         log(
             LOG_TAG,
             &format!("could not apply the Auto-sync setting: {e}"),
@@ -227,6 +243,56 @@ fn enter_daemon_mode(handle: AppHandle) {
     std::thread::spawn(watch_env_changes);
     crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
     host_loop();
+}
+
+fn wait_for_watch_runner_handoff() -> bool {
+    let (complete, last_error) = poll_for_watch_runner_handoff(
+        crate::commands::daemon::watch_runner_handoff_ready,
+        std::thread::sleep,
+    );
+    if !complete {
+        let reason = last_error.unwrap_or_else(|| "handoff timed out".to_string());
+        log(
+            LOG_TAG,
+            &format!("watch-owner handoff has not completed: {reason}"),
+        );
+    }
+    complete
+}
+
+fn poll_for_watch_runner_handoff(
+    mut ready: impl FnMut() -> Result<bool, String>,
+    wait: impl FnMut(Duration),
+) -> (bool, Option<String>) {
+    let mut last_error = None;
+    let complete = hq_desktop_core::daemon::poll_until_bounded(
+        WATCH_HANDOFF_MAX_WAITS,
+        WATCH_HANDOFF_POLL_INTERVAL,
+        || match ready() {
+            Ok(complete) => complete,
+            Err(error) => {
+                last_error = Some(error);
+                false
+            }
+        },
+        wait,
+    );
+    (complete, last_error)
+}
+
+fn finish_watch_handoff(
+    pending: &AtomicBool,
+    sync_enabled: bool,
+    enable_sync: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    pending.store(false, Ordering::Release);
+    if sync_enabled {
+        if let Err(error) = enable_sync() {
+            pending.store(true, Ordering::Release);
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// Environment for the daemon; its services inherit it, sync included.
@@ -274,6 +340,9 @@ pub fn set_daemon_sync(enable: bool) -> Result<(), String> {
 
 /// `start_daemon` / `stop_daemon` in daemon mode.
 pub fn set_sync_enabled(enable: bool) -> Result<bool, String> {
+    if enable && WATCH_HANDOFF_PENDING.load(Ordering::Acquire) {
+        return Ok(false);
+    }
     if enable {
         hq_desktop_core::daemon::ensure_sync_spawn_allowed()?;
     }
@@ -298,6 +367,37 @@ fn watch_env_changes() {
         std::thread::sleep(ENV_CHECK_INTERVAL);
         if app_exit_requested() {
             return;
+        }
+        if WATCH_HANDOFF_PENDING.load(Ordering::Acquire) {
+            match crate::commands::daemon::watch_runner_handoff_ready() {
+                Ok(true) => {
+                    if let Err(error) =
+                        finish_watch_handoff(&WATCH_HANDOFF_PENDING, sync_wanted(), || {
+                            set_daemon_sync(true)
+                        })
+                    {
+                        log(
+                            LOG_TAG,
+                            &format!("could not enable sync after watch-owner release: {error}"),
+                        );
+                        continue;
+                    }
+                    log(
+                        LOG_TAG,
+                        "watch-owner handoff completed; daemon sync may start",
+                    );
+                }
+                Ok(false) => continue,
+                Err(error) => {
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "watch-owner release check failed; sync remains disabled: {error}"
+                        ),
+                    );
+                    continue;
+                }
+            }
         }
         let current = CHILD_ENV.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let Some(current) = current else { continue };
@@ -501,6 +601,49 @@ mod tests {
         let none = daemon_status_from_state(None, false);
         assert!(!none.running);
         assert_eq!(none.source, "hq_daemon");
+    }
+
+    #[test]
+    fn daemon_host_waits_for_the_previous_watch_child_and_lease() {
+        let observations = [(true, true), (true, false), (false, true), (false, false)];
+        let mut next = 0;
+        let mut waits = 0;
+        let (complete, error) = poll_for_watch_runner_handoff(
+            || {
+                let (child_or_start_active, lease_active) = observations[next];
+                next += 1;
+                Ok(hq_desktop_core::daemon::watch_runner_handoff_complete(
+                    child_or_start_active,
+                    lease_active,
+                ))
+            },
+            |_| waits += 1,
+        );
+
+        assert!(complete, "the next sync host must wait for both old owners");
+        assert_eq!(error, None);
+        assert_eq!(next, 4);
+        assert_eq!(waits, 3);
+    }
+
+    #[test]
+    fn daemon_host_lifts_the_gate_before_enabling_sync_and_retries_failures() {
+        let pending = AtomicBool::new(true);
+        finish_watch_handoff(&pending, true, || {
+            assert!(!pending.load(Ordering::Acquire));
+            Ok(())
+        })
+        .unwrap();
+        assert!(!pending.load(Ordering::Acquire));
+
+        pending.store(true, Ordering::Release);
+        let error = finish_watch_handoff(&pending, true, || {
+            assert!(!pending.load(Ordering::Acquire));
+            Err("enable failed".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "enable failed");
+        assert!(pending.load(Ordering::Acquire));
     }
 
     // ── per-pass work driven by hq-cloud's end-of-pass record ────────────

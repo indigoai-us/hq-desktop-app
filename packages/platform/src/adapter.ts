@@ -164,6 +164,7 @@ export interface SyncStatus {
   pendingFiles?: number;
   conflicts?: number;
   daemonRunning?: boolean;
+  watchOwner?: string | null;
   source?: string;
   hqFolderPath?: string;
   [k: string]: unknown;

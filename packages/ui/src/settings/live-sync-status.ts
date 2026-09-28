@@ -11,6 +11,7 @@ export interface LiveSyncStatus {
   pendingFiles: number;
   conflicts: number;
   daemonRunning: boolean;
+  watchOwner: string | null;
   source: string;
   hqFolderPath: string | null;
 }
@@ -20,6 +21,7 @@ export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
   pendingFiles: 0,
   conflicts: 0,
   daemonRunning: false,
+  watchOwner: null,
   source: "none",
   hqFolderPath: null,
 };
@@ -46,6 +48,11 @@ export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
       ? Math.max(0, rec.conflicts)
       : 0;
   const daemon = rec.daemonRunning === true || rec.running === true;
+  const watchOwner =
+    typeof rec.watchOwner === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(rec.watchOwner)
+      ? rec.watchOwner
+      : null;
   const source =
     typeof rec.source === "string" && rec.source.trim()
       ? rec.source.trim()
@@ -61,6 +68,7 @@ export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
     pendingFiles: pending,
     conflicts,
     daemonRunning: daemon,
+    watchOwner,
     source,
     hqFolderPath: folder,
   };

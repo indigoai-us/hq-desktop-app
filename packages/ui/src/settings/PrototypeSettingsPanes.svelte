@@ -1317,7 +1317,11 @@
         </div>
       </div>
       <span class="mono" class:ok={liveSync.daemonRunning}
-        >{liveSync.daemonRunning ? "RUNNING" : "STOPPED"}</span
+        >{liveSync.daemonRunning
+          ? liveSync.watchOwner
+            ? `HANDLED BY ${liveSync.watchOwner}`
+            : "RUNNING"
+          : "STOPPED"}</span
       >
     </div>
     <div class="set-row">

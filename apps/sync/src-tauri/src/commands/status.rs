@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use crate::commands::config::MenubarPrefs;
+use crate::util::logfile::log;
 use crate::util::paths;
 
 #[allow(unused_imports)]
@@ -141,10 +142,23 @@ pub async fn get_sync_status() -> Result<SyncStatus, String> {
         }
     };
 
-    Ok(hq_desktop_core::status::merge_engine_sync_at(
+    let mut status = hq_desktop_core::status::merge_engine_sync_at(
         status,
         hq_desktop_core::status::newest_engine_sync_at(),
-    ))
+    );
+    match hq_desktop_core::daemon::active_watch_owner_status(std::path::Path::new(&hq_folder_path))
+    {
+        Ok(Some(owner)) => {
+            status.daemon_running = true;
+            status.watch_owner = Some(owner.owner);
+        }
+        Ok(None) => {}
+        Err(error) => log(
+            "sync.status",
+            &format!("watch-owner status unavailable: {error}"),
+        ),
+    }
+    Ok(status)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

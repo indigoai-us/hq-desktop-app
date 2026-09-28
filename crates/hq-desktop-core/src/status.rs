@@ -17,6 +17,9 @@ pub struct SyncStatus {
     pub pending_files: u32,
     pub conflicts: u32,
     pub daemon_running: bool,
+    /// Live hq-cloud watch owner, read from its sidecar lease status file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_owner: Option<String>,
     pub source: String, // "cli", "journal", or "none"
 }
 
@@ -64,6 +67,7 @@ fn journal_to_status(journal: SyncJournal) -> SyncStatus {
         pending_files: journal.pending_files.unwrap_or(0),
         conflicts: journal.conflicts.unwrap_or(0),
         daemon_running: journal.daemon_running.unwrap_or(false),
+        watch_owner: None,
         source: "journal".to_string(),
     }
 }
@@ -206,6 +210,7 @@ pub fn default_status() -> SyncStatus {
         pending_files: 0,
         conflicts: 0,
         daemon_running: false,
+        watch_owner: None,
         source: "none".to_string(),
     }
 }
@@ -273,12 +278,14 @@ mod tests {
             pending_files: 3,
             conflicts: 1,
             daemon_running: true,
+            watch_owner: Some("desktop-app".to_string()),
             source: "cli".to_string(),
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"lastSyncAt\""));
         assert!(json.contains("\"pendingFiles\""));
         assert!(json.contains("\"daemonRunning\""));
+        assert!(json.contains("\"watchOwner\":\"desktop-app\""));
         assert!(!json.contains("\"last_sync_at\""));
         assert!(!json.contains("\"pending_files\""));
         assert!(!json.contains("\"daemon_running\""));
@@ -291,11 +298,22 @@ mod tests {
             pending_files: 5,
             conflicts: 2,
             daemon_running: true,
+            watch_owner: Some("hq-daemon".to_string()),
             source: "cli".to_string(),
         };
         let json = serde_json::to_string(&status).unwrap();
         let parsed: SyncStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(status, parsed);
+    }
+
+    #[test]
+    fn test_sync_status_deserializes_older_payload_without_watch_owner() {
+        let parsed: SyncStatus = serde_json::from_str(
+            r#"{"lastSyncAt":null,"pendingFiles":0,"conflicts":0,"daemonRunning":false,"source":"none"}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.watch_owner, None);
+        assert_eq!(parsed.source, "none");
     }
 
     #[test]
@@ -305,6 +323,7 @@ mod tests {
             pending_files: 0,
             conflicts: 0,
             daemon_running: false,
+            watch_owner: None,
             source: "none".to_string(),
         };
         let json = serde_json::to_string(&status).unwrap();
@@ -693,6 +712,7 @@ mod tests {
             pending_files: 2,
             conflicts: 1,
             daemon_running: true,
+            watch_owner: None,
             source: "journal".to_string(),
         };
         let merged = merge_engine_sync_at(status.clone(), Some("2026-07-30T18:04:11Z".to_string()));
@@ -706,6 +726,7 @@ mod tests {
             pending_files: 4,
             conflicts: 3,
             daemon_running: true,
+            watch_owner: None,
             source: "journal".to_string(),
         };
         let merged = merge_engine_sync_at(status, Some("2026-07-30T18:04:11Z".to_string()));
