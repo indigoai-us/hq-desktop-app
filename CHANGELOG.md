@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core update diagnostics now group deferred baseline refreshes separately from local
+  baseline read or write failures.
+
 - History search now requires 2 to 100 characters, matching the server limit.
 
 ## [0.10.352] — 2026-09-28
