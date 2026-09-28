@@ -1012,12 +1012,22 @@ async fn refresh_access_token_classified_at(
             return Err(failure);
         }
 
-        let result: InitiateAuthResponse =
-            response.json().await.map_err(|err| CognitoRefreshError {
-                message: format!("Failed to parse Cognito response: {err}"),
-                requires_reauth: false,
-                status_code: None,
-            })?;
+        let result: InitiateAuthResponse = match response.json().await {
+            Ok(result) => result,
+            Err(err) => {
+                let timed_out = err.is_timeout();
+                let failure = CognitoRefreshError {
+                    message: format!("Failed to parse Cognito response: {err}"),
+                    requires_reauth: false,
+                    status_code: None,
+                };
+                if timed_out && attempt + 1 < REFRESH_ATTEMPTS {
+                    wait_before_refresh_retry(attempt).await;
+                    continue;
+                }
+                return Err(failure);
+            }
+        };
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1055,6 +1065,49 @@ mod tests {
     };
     use std::time::{Duration, Instant};
     use tempfile;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn read_test_request(stream: &mut tokio::net::TcpStream) {
+        let read_request = async {
+            let mut received = Vec::new();
+            for _ in 0..16 {
+                let mut chunk = [0_u8; 1024];
+                let count = stream.read(&mut chunk).await.expect("read test request");
+                if count == 0 {
+                    return false;
+                }
+                received.extend_from_slice(&chunk[..count]);
+
+                let Some(headers_end) = received
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|index| index + 4)
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&received[..headers_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if received.len() >= headers_end + content_length {
+                    return true;
+                }
+            }
+            false
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), read_request)
+                .await
+                .expect("test request stays within its deadline"),
+            "test server receives the full request"
+        );
+    }
 
     struct TestHome(Option<std::ffi::OsString>);
 
@@ -1210,6 +1263,62 @@ mod tests {
             .expect("read preserved offline token")
             .is_some());
         unavailable.verify().await;
+
+        set_tokens(&expired_tokens)
+            .await
+            .expect("restore the expired generation for the response-body timeout case");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local Cognito response test server");
+        let endpoint = format!("http://{}", listener.local_addr().expect("local address"));
+        let body_timeout_server = tokio::spawn(async move {
+            let (mut stalled, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                .await
+                .expect("first refresh request arrives")
+                .expect("accept first refresh request");
+            read_test_request(&mut stalled).await;
+            stalled
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 128\r\nConnection: close\r\n\r\n{\"AuthenticationResult\":",
+                )
+                .await
+                .expect("send partial Cognito response");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            drop(stalled);
+
+            let (mut retry, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                .await
+                .expect("refresh retries after the response-body timeout")
+                .expect("accept retried refresh request");
+            read_test_request(&mut retry).await;
+            let body = serde_json::json!({
+                "AuthenticationResult": {
+                    "AccessToken": "body-timeout-refreshed-access-token",
+                    "ExpiresIn": 3600
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            retry
+                .write_all(response.as_bytes())
+                .await
+                .expect("send complete Cognito response");
+        });
+
+        let restored_after_body_timeout = resolve_tokens(false, &endpoint)
+            .await
+            .expect("response-body timeout retries the refresh request");
+        assert_eq!(
+            restored_after_body_timeout.access_token,
+            "body-timeout-refreshed-access-token"
+        );
+        body_timeout_server
+            .await
+            .expect("Cognito response test server completes");
     }
 
     #[test]
