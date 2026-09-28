@@ -123,47 +123,22 @@ mod tests {
     };
     use std::io::ErrorKind;
 
-    const HQ_CORE_STATE_SOURCE: &str = include_str!("hq_core_state.rs");
-    const HQ_CORE_UPDATE_SOURCE: &str = include_str!("hq_core_update.rs");
-    const HQ_CORE_STAGING_SOURCE: &str = include_str!("hq_core_staging.rs");
-    const TELEMETRY_SOURCE: &str = include_str!("telemetry.rs");
-
     #[test]
-    fn verify_settings_path_enoent_is_classified_as_not_found() {
+    fn verify_settings_path_enoent_is_classified_as_not_found_marker() {
         let stderr = "Error: ENOENT: no such file or directory, open '[Filtered]'";
         assert_eq!(
             classify_core_update_failure_marker(stderr),
             Some(CoreUpdateFailureMarker::NpmEnoent)
         );
-        let state_source = HQ_CORE_STATE_SOURCE
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-        assert!(state_source.contains("classify_core_update_failure_marker(stderr)"));
-        assert!(
-            state_source.contains(
-                "Some(CoreUpdateFailureMarker::NpmEnoent)=>returnRescueFailureCategory::NotFound"
-            ),
-            "the Core-update classifier must map npm ENOENT to the existing closed not-found category"
-        );
     }
 
     #[test]
-    fn restore_symlink_race_has_a_dedicated_class_without_restore_changes() {
+    fn restore_symlink_race_has_a_dedicated_marker() {
         let stderr = "Error: path changed from missing to symlink after classification; rescue stopped before mutation";
         assert_eq!(
             classify_core_update_failure_marker(stderr),
             Some(CoreUpdateFailureMarker::RestoreSymlinkRace)
         );
-        let state_source = HQ_CORE_STATE_SOURCE
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-        assert!(state_source.contains("classify_core_update_failure_marker(stderr)"));
-        assert!(state_source.contains(
-            "Some(CoreUpdateFailureMarker::RestoreSymlinkRace)=>{returnRescueFailureCategory::RestoreSymlinkRace}"
-        ));
-        assert!(TELEMETRY_SOURCE.contains("\"restore-symlink-race\""));
     }
 
     #[test]
@@ -190,33 +165,6 @@ mod tests {
             "not_started"
         );
         assert_eq!(core_update_sentry_exit_code_tag(Some(23), "rsync"), "23");
-
-        let update_source = HQ_CORE_UPDATE_SOURCE
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-        let staging_source = HQ_CORE_STAGING_SOURCE
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-        for source in [&update_source, &staging_source] {
-            assert!(source.contains("with_log_file_failure_diagnostic("));
-            assert!(source.contains("CoreUpdateLogFailureOperation::Create,error.kind(),"));
-            assert!(source.contains("CoreUpdateLogFailureOperation::Duplicate,error.kind(),"));
-        }
-        let state_source = HQ_CORE_STATE_SOURCE
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-        assert!(state_source.contains("rescueErrorReason"));
-        assert!(state_source.contains("telemetry.first_error_line=Some(self.message.clone())"));
-        assert!(state_source.contains("rescue_telemetry:error.rescue_telemetry.as_ref()"));
-        assert!(state_source.contains(
-            "core_update_sentry_exit_code_tag(report.exit_code,report.rescue_telemetry.rescue_step,)"
-        ));
-        assert!(state_source.contains("set_tag(\"exit_code\",exit_code)"));
-        assert!(state_source.contains("set_tag(\"rescue_step\""));
-        assert!(state_source.contains("set_tag(\"rescue_error_class\","));
     }
 
     #[test]

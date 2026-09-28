@@ -805,11 +805,6 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
 
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
     let lower = line.to_ascii_lowercase();
-    match classify_core_update_failure_marker(line) {
-        Some(CoreUpdateFailureMarker::NpmEnoent) => return Some("npm_enoent"),
-        Some(CoreUpdateFailureMarker::RestoreSymlinkRace) => return Some("restore_symlink_race"),
-        None => {}
-    }
     let trimmed = lower.trim_start();
     let diagnostic_line = trimmed.starts_with("error")
         || trimmed.starts_with("fatal")
@@ -844,6 +839,10 @@ fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
         || lower.contains("rsync is not installed")
     {
         Some("rsync_missing")
+    } else if classify_core_update_failure_marker(line)
+        == Some(CoreUpdateFailureMarker::RestoreSymlinkRace)
+    {
+        Some("restore_symlink_race")
     } else if lower.contains("enoent") || lower.contains("npm err! code enoent") {
         Some("npm_enoent")
     } else if lower.contains("eacces") || lower.contains("access is denied") {
@@ -1230,14 +1229,6 @@ const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
 ];
 
 fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
-    match classify_core_update_failure_marker(stderr) {
-        Some(CoreUpdateFailureMarker::NpmEnoent) => return RescueFailureCategory::NotFound,
-        Some(CoreUpdateFailureMarker::RestoreSymlinkRace) => {
-            return RescueFailureCategory::RestoreSymlinkRace
-        }
-        None => {}
-    }
-
     let stderr = stderr.to_ascii_lowercase();
     if let Some(category) = stderr.lines().find_map(|line| {
         match line.strip_prefix("hq_rescue_failure_kind=").map(str::trim) {
@@ -1268,6 +1259,14 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
         && stderr.contains("remote helper 'https' aborted session")
     {
         return RescueFailureCategory::MissingDependency;
+    }
+
+    match classify_core_update_failure_marker(&stderr) {
+        Some(CoreUpdateFailureMarker::NpmEnoent) => return RescueFailureCategory::NotFound,
+        Some(CoreUpdateFailureMarker::RestoreSymlinkRace) => {
+            return RescueFailureCategory::RestoreSymlinkRace
+        }
+        None => {}
     }
 
     RESCUE_STDERR_PATTERNS
@@ -6081,6 +6080,82 @@ error: clone failed";
         assert_eq!(
             classify_rescue_stderr_failure("error: clone failed"),
             RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn verify_enoent_stderr_is_classified_as_not_found() {
+        let stderr = "Error: ENOENT: no such file or directory, open '[Filtered]'";
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::NotFound
+        );
+    }
+
+    #[test]
+    fn restore_symlink_race_stderr_has_a_dedicated_classification() {
+        let stderr = "Error: path changed from missing to symlink after classification; rescue stopped before mutation";
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::RestoreSymlinkRace
+        );
+        assert_eq!(
+            core_update_rescue_error_class(stderr),
+            Some("restore_symlink_race")
+        );
+    }
+
+    #[test]
+    fn explicit_rescue_markers_keep_precedence_over_enoent() {
+        let cases = [
+            (
+                "HQ_RESCUE_FAILURE_KIND=rsync-failed\nerror: rsync: link_stat ENOENT",
+                RescueFailureCategory::RsyncBroken,
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed\nerror: restore failed: ENOENT",
+                RescueFailureCategory::PreserveRestoreFailed,
+            ),
+        ];
+        for (stderr, expected) in cases {
+            assert_eq!(
+                classify_rescue_stderr_failure(stderr),
+                expected,
+                "stderr={stderr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_error_class_keeps_specific_failures_before_enoent() {
+        assert_eq!(
+            core_update_rescue_error_class("error: npx failed: ENOENT"),
+            Some("npx_resolve_failed")
+        );
+        assert_eq!(
+            core_update_rescue_error_class("fatal: clone failed ENOENT"),
+            Some("clone_failed")
+        );
+    }
+
+    #[test]
+    fn pre_spawn_log_failure_diagnostic_reaches_failure_details_and_exit_tag() {
+        let error =
+            CoreUpdateError::new(CoreUpdateErrorKind::Internal, "could not create rescue log")
+                .with_log_file_failure_diagnostic(
+                    CoreUpdateLogFailureOperation::Create,
+                    std::io::ErrorKind::NotFound,
+                );
+        let details = core_update_failure_details(&error);
+        let telemetry = details
+            .rescue_telemetry
+            .expect("the log failure diagnostic is retained on the error");
+
+        assert_eq!(telemetry.rescue_step, "log-create");
+        assert_eq!(telemetry.rescue_error_class, "io_not_found");
+        assert_eq!(
+            core_update_sentry_exit_code_tag(None, telemetry.rescue_step),
+            "not_started"
         );
     }
 
