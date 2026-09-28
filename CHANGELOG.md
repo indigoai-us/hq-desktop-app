@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- After setup is complete, HQ skips the consent-only step at startup. If the HQ folder is missing, the folder picker opens so it can be located or installed again.
 - History search now requires 2 to 100 characters, matching the server limit.
 
 ## [0.10.352] — 2026-09-28
