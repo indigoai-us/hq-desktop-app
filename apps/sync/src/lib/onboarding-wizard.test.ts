@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   BUILD_STEP_INDEX,
+  CONSENT_STEP_INDEX,
+  FIRST_FOLDER_SYNC_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
   AUTH_GATED_STEPS,
   createWizardRouter,
@@ -26,14 +28,15 @@ describe('onboarding wizard step contract', () => {
       { index: 0, id: 'welcome-signin', label: 'Welcome' },
       { index: 1, id: 'directory', label: 'Location' },
       { index: 2, id: 'setup', label: 'Setup' },
-      { index: 3, id: 'consent', label: 'Consent' },
-      { index: 4, id: 'connector-import', label: 'Import connectors' },
-      { index: 5, id: 'ready', label: 'Ready' },
-      { index: 6, id: 'trust', label: 'Trust workspace' },
-      { index: 7, id: 'settings', label: 'Settings' },
-      { index: 8, id: 'run-setup', label: 'Run setup' },
-      { index: 9, id: 'handoff', label: 'Handoff' },
-      { index: 10, id: 'build', label: 'Build' },
+      { index: 3, id: 'first-folder-sync', label: 'Sync your first folder' },
+      { index: 4, id: 'consent', label: 'Consent' },
+      { index: 5, id: 'connector-import', label: 'Import connectors' },
+      { index: 6, id: 'ready', label: 'Ready' },
+      { index: 7, id: 'trust', label: 'Trust workspace' },
+      { index: 8, id: 'settings', label: 'Settings' },
+      { index: 9, id: 'run-setup', label: 'Run setup' },
+      { index: 10, id: 'handoff', label: 'Handoff' },
+      { index: 11, id: 'build', label: 'Build' },
     ]);
     expect(WIZARD_STEPS.find((step) => step.id === 'ready')?.index).toBe(
       WIZARD_STEPS.findIndex((step) => step.id === 'ready'),
@@ -160,13 +163,13 @@ describe('getStepValidity', () => {
   });
 
   it('blocks the consent step until the telemetry question is answered', () => {
-    expect(getStepValidity(3, makeState({ consentAnswered: false }))).toBe(false);
-    expect(getStepValidity(3, makeState({ consentAnswered: true }))).toBe(true);
+    expect(getStepValidity(CONSENT_STEP_INDEX, makeState({ consentAnswered: false }))).toBe(false);
+    expect(getStepValidity(CONSENT_STEP_INDEX, makeState({ consentAnswered: true }))).toBe(true);
   });
 
   it('defaults to valid for ungated steps', () => {
     expect(getStepValidity(0, makeState())).toBe(true);
-    expect(getStepValidity(4, makeState())).toBe(true);
+    expect(getStepValidity(FIRST_FOLDER_SYNC_STEP_INDEX, makeState())).toBe(true);
   });
 });
 
@@ -180,7 +183,7 @@ describe('initialStepForLifecycle', () => {
   });
 
   it('starts an installed machine that only lacks its consent answer at consent, in consent-only mode', () => {
-    expect(initialStepForLifecycle('InstalledFirstRun')).toBe(3);
+    expect(initialStepForLifecycle('InstalledFirstRun')).toBe(CONSENT_STEP_INDEX);
     expect(wizardModeForLifecycle('InstalledFirstRun')).toBe('consent');
     for (const state of ['NeedsInstall', 'NeedsAuthForInstall', 'InstallResume', 'SteadyState']) {
       expect(wizardModeForLifecycle(state)).toBe('onboarding');

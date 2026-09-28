@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- After setup passes, people can start syncing their HQ folder right away. The optional first-folder step is off until its hq-flags rollout is enabled, and can be skipped.
 - The New bot wizard and the setup assistant now offer "Set up with Claude"
   and "Set up with ChatGPT" buttons when the app finds no coding tool on this
   computer. Clicking one opens the person's assistant desktop app with a

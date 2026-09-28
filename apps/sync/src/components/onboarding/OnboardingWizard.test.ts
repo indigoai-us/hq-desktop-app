@@ -19,6 +19,11 @@ const eventHarness = vi.hoisted(() => ({
 const app = vi.hoisted(() => ({
   getVersion: vi.fn(),
 }));
+const onboardingFlags = vi.hoisted(() => ({
+  firstFolderSyncEnabled: false,
+  hasFeature: vi.fn(),
+  startSync: vi.fn(),
+}));
 
 const httpFetch = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -34,6 +39,50 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: eventHarness.listen }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
+vi.mock('@hq/platform', () => ({
+  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG: 'desktop.setup-directory-parent-fallback',
+  FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
+  createSyncPlatformAdapter: vi.fn(() => ({
+    identity: {
+      hasFeature: (flag: string) => {
+        if (flag === 'desktop.first-folder-sync-step-v1') {
+          return onboardingFlags.hasFeature(flag);
+        }
+        if (flag !== 'desktop.setup-directory-parent-fallback') {
+          return Promise.resolve({ ok: true, value: false });
+        }
+        return (async () => {
+          try {
+            const raw = await tauri.invoke('hq_pro_fetch', {
+              url: '/v1/flags/resolve',
+              method: 'GET',
+              body: null,
+            });
+            const response =
+              raw && typeof raw === 'object'
+                ? (raw as { body?: unknown })
+                : {};
+            const body =
+              typeof response.body === 'string' ? JSON.parse(response.body) : null;
+            return {
+              ok: true,
+              value: body?.flags?.[flag] === true,
+            };
+          } catch {
+            return {
+              ok: false,
+              reason: 'test flag transport unavailable',
+              code: 'test-transport-failed',
+            };
+          }
+        })();
+      },
+    },
+    sync: {
+      startSync: () => onboardingFlags.startSync(),
+    },
+  })),
+}));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 
@@ -42,6 +91,8 @@ import OnboardingWizard from './OnboardingWizard.svelte';
 import {
   BUILD_STEP_INDEX,
   CONNECTOR_IMPORT_STEP_INDEX,
+  CONSENT_STEP_INDEX,
+  SETUP_STEP_INDEX,
   TRUST_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
 } from '../../lib/onboarding-wizard';
@@ -105,7 +156,7 @@ async function flushUntil(predicate: () => boolean): Promise<void> {
 
 function mountWizard(
   onfinish = vi.fn(),
-  initialStep = 3,
+  initialStep = CONSENT_STEP_INDEX,
   aiTools = NO_AI_TOOLS,
 ): ReturnType<typeof vi.fn> {
   tauri.invoke.mockImplementation(async (command: string) => {
@@ -123,6 +174,17 @@ function mountWizard(
     props: { initialStep, onfinish },
   });
   return onfinish;
+}
+
+function firstFolderSyncActions(): string[] {
+  return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+    const args = rawArgs as { eventName?: string; properties?: { step?: string; action?: string } };
+    return command === 'emit_desktop_operational_telemetry' &&
+      args.eventName === 'desktop_onboarding_step' &&
+      args.properties?.step === 'first-folder-sync'
+      ? [args.properties.action ?? '']
+      : [];
+  });
 }
 
 const CONTINUATION_CONTEXT = {
@@ -291,6 +353,17 @@ beforeEach(() => {
     status: 200,
     json: async () => ({}),
     text: async () => '',
+  });
+  onboardingFlags.firstFolderSyncEnabled = false;
+  onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
+    ok: true,
+    value:
+      flag === 'desktop.first-folder-sync-step-v1' &&
+      onboardingFlags.firstFolderSyncEnabled,
+  }));
+  onboardingFlags.startSync.mockReset().mockResolvedValue({
+    ok: true,
+    value: 'hq-sync',
   });
   __resetInstallerStepTelemetryForTests();
   localStorage.clear();
@@ -1559,7 +1632,7 @@ describe('onboarding launch handoff', () => {
     });
     component = mount(OnboardingWizard, {
       target: host,
-      props: { initialStep: 3, mode: 'consent', onfinish },
+      props: { initialStep: CONSENT_STEP_INDEX, mode: 'consent', onfinish },
     });
 
     await flushUntil(() =>
@@ -2090,6 +2163,99 @@ describe('setup restart', () => {
     // The cancelled run's own retry never fires (it is no longer current), so
     // the second attempt is the restart's.
     expect(attempts).toBe(2);
+  });
+});
+
+describe('first-folder sync onboarding step', () => {
+  async function reachPostSetupStep(enabled: boolean): Promise<void> {
+    onboardingFlags.firstFolderSyncEnabled = enabled;
+    mountWizard(vi.fn(), SETUP_STEP_INDEX);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+  }
+
+  it('keeps the passed setup flow on consent when the flag is off', async () => {
+    await reachPostSetupStep(false);
+
+    expect(host.querySelector('[data-testid="onboarding-first-folder-sync"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(firstFolderSyncActions()).toEqual([]);
+    expect(onboardingFlags.startSync).not.toHaveBeenCalled();
+  });
+
+  it('shows the gated step once and lets the person skip to consent', async () => {
+    await reachPostSetupStep(true);
+
+    expect(
+      host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(firstFolderSyncActions()).toEqual(['entered']);
+
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-skip"]',
+    )?.click();
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(firstFolderSyncActions()).toEqual(['entered', 'skipped']);
+    expect(onboardingFlags.startSync).not.toHaveBeenCalled();
+  });
+
+  it('starts one sync on repeated clicks and records done only after the runner completes', async () => {
+    await reachPostSetupStep(true);
+    const syncButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-start"]',
+    );
+    expect(syncButton).not.toBeNull();
+
+    syncButton?.click();
+    syncButton?.click();
+    await flush();
+
+    expect(onboardingFlags.startSync).toHaveBeenCalledTimes(1);
+    expect(syncButton?.disabled).toBe(true);
+    expect(syncButton?.getAttribute('aria-busy')).toBe('true');
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started']);
+
+    emitTauriEvent('sync:all-complete', {
+      companiesAttempted: 1,
+      filesDownloaded: 1,
+      bytesDownloaded: 1,
+      errors: [],
+      aborted: false,
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started', 'completed']);
+    const firstFolderRow = tauri.invoke.mock.calls.find(([command, rawArgs]) => {
+      const args = rawArgs as { eventName?: string; properties?: { step?: string } };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.step === 'first-folder-sync';
+    });
+    const properties = (firstFolderRow?.[1] as { properties?: Record<string, unknown> })
+      .properties;
+    expect(Object.keys(properties ?? {}).sort()).toEqual([
+      'action',
+      'appVersion',
+      'flow',
+      'platform',
+      'step',
+      'surface',
+    ]);
   });
 });
 

@@ -32,6 +32,7 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  FIRST_FOLDER_SYNC_STEP_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -508,6 +509,11 @@ export function createSyncPlatformAdapter(
           if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
             // This rollout is opt-in. A missing registry value or unavailable
             // registry stays off until the manager creates and enables it.
+            return Promise.resolve(ok(false));
+          }
+          if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
+            // The first-folder onboarding step is a rollout; fail closed until
+            // a manager explicitly enables its hq-flags value.
             return Promise.resolve(ok(false));
           }
           if (flag === CLAUDE_PROVIDER_FLAG) {

@@ -98,6 +98,7 @@
     BUILD_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
+    FIRST_FOLDER_SYNC_STEP_INDEX,
     type WizardMode,
     createWizardRouter,
     DIRECTORY_STEP_INDEX,
@@ -112,9 +113,11 @@
     WIZARD_STEPS,
   } from '../../lib/onboarding-wizard';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
+  import { startTraySync } from '../../lib/traySync';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import {
     createSyncPlatformAdapter,
+    FIRST_FOLDER_SYNC_STEP_FLAG,
     SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
   } from '@hq/platform';
 
@@ -274,6 +277,13 @@
   let stages = $state<StageState[]>(buildInitialStages());
   let setupCompleted = $state(false);
   let setupStarted = $state(false);
+  let showFirstFolderSyncStep = $state(false);
+  let firstFolderSyncFlagResolution: Promise<boolean> | null = null;
+  let firstFolderSyncBusy = $state(false);
+  let firstFolderSyncError = $state(false);
+  let firstFolderSyncStarted = false;
+  let firstFolderSyncAwaitingCompletion = false;
+  let firstFolderSyncCompleted = $state(false);
   let stageCreep = $state(0);
   // How long the stage that is running right now has been running. Drives both
   // the ring's creep and the sub-status line under the active band, so a long
@@ -510,6 +520,11 @@
   });
 
   $effect(() => {
+    if (consentOnly || currentStep !== SETUP_STEP_INDEX) return;
+    void resolveFirstFolderSyncStepFlag();
+  });
+
+  $effect(() => {
     // In re-prompt mode there is no install/setup — only the consent step — so
     // the setup run must never start even if the step index momentarily reads 2.
     if (consentOnly || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
@@ -598,6 +613,29 @@
       directoryCancelled = true;
       window.removeEventListener('pagehide', recordOnboardingAbandonment);
       media.removeEventListener('change', updateMotion);
+    };
+  });
+
+  onMount(() => {
+    let active = true;
+    let unlistenFirstFolderSync: UnlistenFn | null = null;
+    void listen<{ errors?: unknown; aborted?: unknown }>(
+      'sync:all-complete',
+      (event) => {
+        if (active) handleFirstFolderSyncComplete(event.payload);
+      },
+    )
+      .then((unlisten) => {
+        const cleanup = safeUnlisten(unlisten);
+        if (!active) cleanup();
+        else unlistenFirstFolderSync = cleanup;
+      })
+      .catch((error) => {
+        console.warn('onboarding: first-folder sync completion listener unavailable', error);
+      });
+    return () => {
+      active = false;
+      unlistenFirstFolderSync?.();
     };
   });
 
@@ -925,6 +963,37 @@
       console.warn('onboarding: directory parent fallback flag failed; leaving it off', err);
       return false;
     }
+  }
+
+  function resolveFirstFolderSyncStepFlag(): Promise<boolean> {
+    if (!firstFolderSyncFlagResolution) {
+      firstFolderSyncFlagResolution = (async () => {
+        try {
+          const result = await onboardingFeatureFlags.identity.hasFeature(
+            FIRST_FOLDER_SYNC_STEP_FLAG,
+          );
+          if (!result.ok) {
+            console.warn(
+              'onboarding: first-folder sync rollout flag unavailable; leaving the step off',
+              result.reason,
+              result.code,
+            );
+            return false;
+          }
+          return result.value === true;
+        } catch (error) {
+          console.warn(
+            'onboarding: first-folder sync rollout flag failed; leaving the step off',
+            error,
+          );
+          return false;
+        }
+      })().then((enabled) => {
+        if (mounted) showFirstFolderSyncStep = enabled;
+        return enabled;
+      });
+    }
+    return firstFolderSyncFlagResolution;
   }
 
   async function resolveDefaultPath() {
@@ -1550,6 +1619,52 @@
     });
   }
 
+  function handleFirstFolderSyncComplete(payload: unknown): void {
+    if (!firstFolderSyncAwaitingCompletion || firstFolderSyncCompleted) return;
+    const result = payload as { errors?: unknown; aborted?: unknown } | null;
+    if (
+      !result ||
+      !Array.isArray(result.errors) ||
+      result.errors.length > 0 ||
+      result.aborted === true
+    ) {
+      firstFolderSyncBusy = false;
+      firstFolderSyncAwaitingCompletion = false;
+      firstFolderSyncStarted = false;
+      firstFolderSyncError = true;
+      return;
+    }
+
+    firstFolderSyncBusy = false;
+    firstFolderSyncAwaitingCompletion = false;
+    firstFolderSyncCompleted = true;
+    firstFolderSyncError = false;
+    recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'completed');
+    if (currentStep === FIRST_FOLDER_SYNC_STEP_INDEX) {
+      advanceTo(CONSENT_STEP_INDEX, null);
+    }
+  }
+
+  async function startFirstFolderSync(): Promise<void> {
+    if (firstFolderSyncBusy || firstFolderSyncStarted || firstFolderSyncCompleted) return;
+    firstFolderSyncStarted = true;
+    firstFolderSyncAwaitingCompletion = true;
+    firstFolderSyncBusy = true;
+    firstFolderSyncError = false;
+    recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'started');
+    try {
+      await startTraySync(onboardingFeatureFlags);
+    } catch (error) {
+      console.warn('onboarding: first-folder sync could not be started', error);
+      if (!firstFolderSyncCompleted) {
+        firstFolderSyncBusy = false;
+        firstFolderSyncAwaitingCompletion = false;
+        firstFolderSyncStarted = false;
+        firstFolderSyncError = true;
+      }
+    }
+  }
+
   async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
     const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
     const retryCounts = new Map<StageId, number>();
@@ -1601,8 +1716,14 @@
       });
       // Setup is what provisions the person entity; stitch the install session.
       void resolveInstallerPersonUid();
-      // Consent precedes the optional connector-import step and final handoff.
-      advanceTo(CONSENT_STEP_INDEX, 'completed', {
+      // The first-folder step is optional and manager-gated. A flag outage or
+      // missing registry value leaves the current consent flow unchanged.
+      const nextStep = (await resolveFirstFolderSyncStepFlag())
+        ? FIRST_FOLDER_SYNC_STEP_INDEX
+        : CONSENT_STEP_INDEX;
+      if (!isCurrentRun(runId)) return;
+      // Consent still precedes connector import and the final handoff.
+      advanceTo(nextStep, 'completed', {
         failedStageCount: result.failedStages.length,
         failedStages,
         setupRunId: currentSetupRunId,
@@ -2457,6 +2578,19 @@
           </div>
         </div>
 
+        {#if showFirstFolderSyncStep}
+          <div
+            class="gfx"
+            class:on={graphicIsOn(FIRST_FOLDER_SYNC_STEP_INDEX)}
+            data-g={FIRST_FOLDER_SYNC_STEP_INDEX}
+          >
+            <div class="finder-item">
+              <img class="macfolder-lg" src={folderIcon} alt="" />
+              <span class="flabel">Sync</span>
+            </div>
+          </div>
+        {/if}
+
         <div class="gfx" class:on={graphicIsOn(CONSENT_STEP_INDEX)} data-g={CONSENT_STEP_INDEX}>
           {@render ConsentShield()}
         </div>
@@ -2682,6 +2816,40 @@
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>
         </section>
+
+        {#if showFirstFolderSyncStep}
+          <section
+            class="panel"
+            class:on={panelStep === FIRST_FOLDER_SYNC_STEP_INDEX && panelOn}
+            data-p={FIRST_FOLDER_SYNC_STEP_INDEX}
+            data-testid="onboarding-first-folder-sync"
+            aria-labelledby="onboarding-title-first-folder-sync"
+          >
+            <h2 class="h first-folder-sync-title" id="onboarding-title-first-folder-sync">Sync your first folder</h2>
+            <p class="body">Start syncing {installDisplayPath} so it is available across your HQ devices.</p>
+            {#if firstFolderSyncBusy}
+              <p class="inline-note" role="status" aria-live="polite">Syncing your first folder…</p>
+            {:else if firstFolderSyncError}
+              <p class="inline-note warning" role="alert">HQ could not start syncing this folder. Try again or skip for now.</p>
+            {/if}
+            <div class="btns split">
+              <button
+                class="btn btn-primary first-folder-sync-action"
+                type="button"
+                data-testid="onboarding-first-folder-sync-start"
+                disabled={firstFolderSyncBusy || firstFolderSyncCompleted}
+                aria-busy={firstFolderSyncBusy}
+                onclick={() => void startFirstFolderSync()}
+              >{firstFolderSyncBusy ? 'Syncing…' : 'Sync this folder'}</button>
+              <button
+                class="btn btn-secondary first-folder-sync-action"
+                type="button"
+                data-testid="onboarding-first-folder-sync-skip"
+                onclick={() => advanceTo(CONSENT_STEP_INDEX, 'skipped')}
+              >Skip for now</button>
+            </div>
+          </section>
+        {/if}
 
         <section
           class="panel"
@@ -3290,6 +3458,7 @@
 
   .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
   .body { color:var(--c-muted); font-size:14px; font-weight:400; line-height:20px; margin:4px 0 0; max-width:592px; }
+  .first-folder-sync-title { font-family:Georgia, "Times New Roman", serif; font-weight:500; }
   .consent-facts { margin-top:12px; display:flex; flex-direction:column; gap:6px; }
   .consent-facts-line { margin:0; color:var(--c-muted); font-size:12.5px; line-height:17px; }
   .consent-facts-label { color:var(--c-text); font-weight:600; }
@@ -3318,6 +3487,7 @@
   .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:auto; }
   .btns.split { justify-content:space-between; }
   .btn { font-family:inherit; font-size:14px; font-weight:400; line-height:20px; padding:10px 16px; border-radius:8px; border:none; cursor:pointer; transition:opacity .15s, transform .1s; }
+  .first-folder-sync-action { border-radius:0; }
   .btn:active:not(:disabled) { transform:scale(.97); }
   .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
   .btn-secondary { background:var(--c-btn2-bg); color:var(--c-btn2-fg); }
