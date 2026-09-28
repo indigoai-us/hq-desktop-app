@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   BUILD_STEP_INDEX,
   CONSENT_STEP_INDEX,
+  DIRECTORY_STEP_INDEX,
   FIRST_FOLDER_SYNC_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
   AUTH_GATED_STEPS,
@@ -193,5 +194,18 @@ describe('initialStepForLifecycle', () => {
   it('starts NeedsInstall and unknown states at welcome', () => {
     expect(initialStepForLifecycle('NeedsInstall')).toBe(0);
     expect(initialStepForLifecycle('SteadyState')).toBe(0);
+  });
+
+  it('starts an installed machine with a missing HQ root at folder recovery', () => {
+    expect(
+      initialStepForLifecycle('NeedsInstall', {
+        installCompleted: true,
+        firstRunCompleted: true,
+        installInProgress: false,
+        manifestIncomplete: false,
+        hadMachineId: true,
+        hqRootValid: false,
+      }),
+    ).toBe(DIRECTORY_STEP_INDEX);
   });
 });

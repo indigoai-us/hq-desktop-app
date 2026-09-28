@@ -1,3 +1,5 @@
+import type { StartupSetupEvidence } from './unexpected-startup-surface';
+
 export interface WizardStep {
   index: number;
   id: string;
@@ -190,7 +192,25 @@ export function createWizardRouter(opts: { start?: number } = {}): WizardRouter 
   return router;
 }
 
-export function initialStepForLifecycle(state: string): number {
+export function isMissingRootRecovery(
+  state: string,
+  setupEvidence?: StartupSetupEvidence | null,
+): boolean {
+  return (
+    state === 'NeedsInstall' &&
+    setupEvidence != null &&
+    (setupEvidence.installCompleted || setupEvidence.firstRunCompleted) &&
+    !setupEvidence.hqRootValid &&
+    !setupEvidence.installInProgress &&
+    !setupEvidence.manifestIncomplete
+  );
+}
+
+export function initialStepForLifecycle(
+  state: string,
+  setupEvidence?: StartupSetupEvidence | null,
+): number {
+  if (isMissingRootRecovery(state, setupEvidence)) return DIRECTORY_STEP_INDEX;
   switch (state) {
     case 'NeedsAuthForInstall':
       return WELCOME_SIGNIN_STEP_INDEX;

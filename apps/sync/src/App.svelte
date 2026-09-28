@@ -28,6 +28,7 @@
     type StartupSetupEvidence,
   } from './lib/unexpected-startup-surface';
   import {
+    lifecycleStateForStartup,
     normalizeTokenPresence,
     resolveStartupState,
     startupSurface,
@@ -124,6 +125,7 @@
   let startupPhase = $state<StartupPhase>('loading');
   let startupReprobeTimer: ReturnType<typeof setTimeout> | null = null;
   let lifecycleState = $state<string | null>(null);
+  let startupSetupEvidence = $state<StartupSetupEvidence | null>(null);
   // US-005: when the server reports this person's recorded consent as stale
   // (pre-versioned, administrative, or below the current version), the blocking
   // consent step is shown once. `null` means no re-prompt is due; otherwise it
@@ -1835,7 +1837,12 @@
       return;
     }
 
-    const priorSurface = startupSurface({ phase: startupPhase, lifecycleState, authenticated });
+    const priorSurface = startupSurface({
+      phase: startupPhase,
+      lifecycleState,
+      authenticated,
+      setupEvidence: startupSetupEvidence,
+    });
     const {
       lifecycleState: probedLifecycle,
       hadStoredToken,
@@ -1843,7 +1850,8 @@
       setupEvidence,
       auth: state,
     } = outcome.result;
-    lifecycleState = probedLifecycle;
+    lifecycleState = lifecycleStateForStartup(probedLifecycle, setupEvidence);
+    startupSetupEvidence = setupEvidence ?? null;
     authenticated = shouldSkipSignIn(state);
     expiresAt = state.expiresAt ?? '';
     if (hadStoredToken && !state.authenticated) {
@@ -1980,6 +1988,7 @@
     <Onboarding
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
       mode={wizardModeForLifecycle(lifecycleState ?? 'NeedsInstall')}
+      setupEvidence={startupSetupEvidence}
       onfinish={handleOnboardingFinish}
     />
   {:else if authenticated && consentReprompt}

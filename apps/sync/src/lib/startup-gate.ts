@@ -27,7 +27,7 @@ export type StartupProbeResult = {
   hadStoredToken: boolean;
   /** Bounded observation used to diagnose startup auth restoration. */
   tokenPresence: TokenPresence;
-  /** Setup evidence used only by the unexpected-surface reporter. */
+  /** Persisted setup evidence used to reconcile startup routing and reporting. */
   setupEvidence?: StartupSetupEvidence | null;
   auth: { authenticated: boolean; expiresAt: string | null };
 };
@@ -35,6 +35,26 @@ export type StartupProbeResult = {
 export type StartupPhase = 'loading' | 'resolved';
 
 export type StartupSurface = 'loading' | 'onboarding' | 'signed-in' | 'sign-in';
+
+/**
+ * A completed first run is stronger evidence than a stale consent-only state.
+ * Keep the onboarding route only when setup evidence is missing or incomplete.
+ */
+export function lifecycleStateForStartup(
+  lifecycleState: string | null,
+  setupEvidence?: StartupSetupEvidence | null,
+): string | null {
+  if (
+    lifecycleState === 'InstalledFirstRun' &&
+    setupEvidence?.firstRunCompleted &&
+    setupEvidence.hqRootValid &&
+    !setupEvidence.installInProgress &&
+    !setupEvidence.manifestIncomplete
+  ) {
+    return 'SteadyState';
+  }
+  return lifecycleState;
+}
 
 export type StartupProbeOutcome =
   | { ok: true; result: StartupProbeResult; attempts: number }
@@ -96,9 +116,11 @@ export function startupSurface(input: {
   phase: StartupPhase;
   lifecycleState: string | null;
   authenticated: boolean;
+  setupEvidence?: StartupSetupEvidence | null;
 }): StartupSurface {
   if (input.phase !== 'resolved') return 'loading';
-  if (input.lifecycleState !== null && ONBOARDING_STATES.has(input.lifecycleState)) {
+  const lifecycleState = lifecycleStateForStartup(input.lifecycleState, input.setupEvidence);
+  if (lifecycleState !== null && ONBOARDING_STATES.has(lifecycleState)) {
     return 'onboarding';
   }
   return input.authenticated ? 'signed-in' : 'sign-in';
