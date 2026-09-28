@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Sync status now shows which watcher is handling an HQ folder. When another
+  watcher owns it, HQ waits for that lease to clear before starting its own.
+  A watcher handoff no longer appears as a crash.
 - After setup passes, people can start syncing their HQ folder right away. The optional first-folder step is off until its hq-flags rollout is enabled, and can be skipped.
 
 ## [0.10.351] — 2026-09-28
