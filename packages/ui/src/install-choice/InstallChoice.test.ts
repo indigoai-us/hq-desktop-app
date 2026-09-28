@@ -233,3 +233,79 @@ describe("InstallChoice — dispatch failure surfaces a plain error and keeps re
     expect(q('[data-testid="install-choice-recheck"]')).toBeTruthy();
   });
 });
+
+describe("InstallChoice — one-click install completes without a manual re-check", () => {
+  /**
+   * The Windows test persona (`verify-install-003`) reported the exact bug
+   * this test guards: clicking "Install Claude Code" sat on "Working…" for
+   * 30-40 s, then the button label snapped back to "Install Claude Code"
+   * with no confirmation. They only discovered the install had worked by
+   * pressing "Check again" — a step the panel now owns.
+   */
+  it("shows a plain 'about a minute' progress line while the installer runs", async () => {
+    // A slow install so the test can observe the intermediate state without
+    // relying on a debouncing timer.
+    let resolveInstall: ((v: { ok: boolean }) => void) | null = null;
+    const oninstall = vi.fn(
+      () =>
+        new Promise<{ ok: boolean }>((r) => {
+          resolveInstall = r;
+        }),
+    );
+    await render({ tools: NO_AI_TOOLS, oninstall });
+    q<HTMLButtonElement>('[data-testid="install-choice-install-claude"]')!.click();
+    await settle();
+    const status = q('[data-testid="install-choice-status"]');
+    expect(status).toBeTruthy();
+    expect(status!.textContent).toContain("Installing Claude Code");
+    // No CLI wording ever, in any state.
+    expect(status!.textContent).not.toMatch(/\bnpm\b/i);
+    expect(status!.textContent).not.toMatch(/\bCLI\b/);
+    expect(status!.textContent).not.toMatch(/\bterminal\b/i);
+    // Approximate-duration hint present, so the person does not conclude
+    // it has hung.
+    expect(status!.textContent!.toLowerCase()).toContain("about a minute");
+    // Button reads "Installing…", not the bare "Working…" the persona saw.
+    const btn = q<HTMLButtonElement>('[data-testid="install-choice-install-claude"]');
+    expect(btn!.textContent!.trim()).toBe("Installing…");
+    resolveInstall!({ ok: true });
+    await settle();
+  });
+
+  it("auto-runs the parent's re-check when the installer resolves ok", async () => {
+    const oninstall = vi.fn(async () => ({ ok: true }));
+    const onrecheck = vi.fn(async () => undefined);
+    await render({ tools: NO_AI_TOOLS, oninstall, onrecheck });
+    q<HTMLButtonElement>('[data-testid="install-choice-install-claude"]')!.click();
+    await settle();
+    expect(oninstall).toHaveBeenCalledTimes(1);
+    // The whole point: the panel calls `onrecheck` on its own, so the parent
+    // status flips to `signedOut` without a "Check again" click.
+    expect(onrecheck).toHaveBeenCalledTimes(1);
+    // And the person sees a confirmation line while the parent's status
+    // probe runs.
+    const status = q('[data-testid="install-choice-status"]');
+    expect(status?.textContent).toContain("Claude Code is installed");
+  });
+
+  it("on install failure, shows the plain reason AND keeps install + Check again", async () => {
+    const oninstall = vi.fn(async () => ({
+      ok: false,
+      reason:
+        "HQ couldn't reach the internet to install Claude Code. Check the network and try again.",
+    }));
+    const onrecheck = vi.fn(async () => undefined);
+    await render({ tools: NO_AI_TOOLS, oninstall, onrecheck });
+    q<HTMLButtonElement>('[data-testid="install-choice-install-claude"]')!.click();
+    await settle();
+    const err = q('[data-testid="install-choice-error"]');
+    expect(err).toBeTruthy();
+    expect(err!.textContent).toContain("Check the network");
+    // Install button + Check again both stayed. The panel never dead-ends.
+    expect(q('[data-testid="install-choice-install-claude"]')).toBeTruthy();
+    expect(q('[data-testid="install-choice-recheck"]')).toBeTruthy();
+    // A failed install must NOT auto-run re-check — a re-check would silently
+    // overwrite the error and the person would never learn why it failed.
+    expect(onrecheck).toHaveBeenCalledTimes(0);
+  });
+});

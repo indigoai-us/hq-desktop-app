@@ -65,7 +65,7 @@
     setupBotActionLabel,
     type SetupBotLauncher,
   } from "./setup-bot";
-  import { hostComputerNoun } from "@hq/platform";
+  import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
   import SetupInstallGuide, {
@@ -214,10 +214,15 @@
   const rosterFailed = $derived(rosterStatus === "failed" && !hasCompany);
   /**
    * The plain-language name for the host machine ("Mac", "PC", or
-   * "computer"). Read once at mount from the shared Tauri probe so the copy
-   * a person reads never suddenly renames their computer.
+   * "computer"). Subscribe to the shared helper: the first read still lands
+   * synchronously, and if the Tauri OS plugin resolves a moment later (the
+   * `apps/sync` webview does not inject `__HQ_HOST_OS__` inline the way
+   * `apps/work` does), the "no coding tool" prompt and setup-bot copy under
+   * this hero flip from "on this computer" to "on this PC" without any
+   * click.
    */
-  const hostNoun = hostComputerNoun();
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
   const hero = $derived(setupHeroFor(companies, rosterStatus, { noun: hostNoun }));
   const copy = $derived(setupBotCopy({ noun: hostNoun }));
 

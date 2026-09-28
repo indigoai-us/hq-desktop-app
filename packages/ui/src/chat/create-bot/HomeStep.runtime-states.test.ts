@@ -88,7 +88,12 @@ describe("a runtime that is not installed", () => {
 
     const help = q('[data-testid="chat-bot-runtime-help"]')!;
     expect(help.textContent).toContain("isn’t installed on this computer");
-    expect(help.textContent).toContain("claude.ai/download");
+    // The fallback hint must not send a non-technical person to a terminal.
+    // See the runtime-status INSTALL_HINT change (Problem 5 defence-in-depth).
+    expect(help.textContent).not.toMatch(/\bnpm\b/i);
+    expect(help.textContent).not.toMatch(/\bterminal\b/i);
+    expect(help.textContent).not.toMatch(/claude\.ai\/download/i);
+    expect(help.textContent).toContain("HQ can install it for you");
     // The dead end from the screenshot: a Sign in that cannot succeed.
     expect(q('[data-testid="chat-bot-runtime-signin"]')).toBeNull();
   });
@@ -109,10 +114,15 @@ describe("a runtime that is not installed", () => {
     expect(onrecheckruntimes).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks Next, and says which problem it is", async () => {
+  it("blocks Next, and points to the panel above instead of repeating its text", async () => {
+    // Problem 3 (verify-install-003 follow-up): the flow-issue footer used
+    // to repeat "Claude Code isn't installed on this computer." next to
+    // Next while the panel above already said the same in different words.
+    // Keep ONE message; the footer now points people to the panel.
     await openHome(MISSING);
     expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("isn’t installed on this computer");
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Finish setting up Claude Code above.");
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).not.toContain("isn’t installed on this computer");
   });
 });
 
@@ -140,22 +150,33 @@ describe("a runtime the app could not check", () => {
 });
 
 describe("a runtime that is installed and signed out", () => {
-  it("keeps the sign-in — this is the one state it can fix", async () => {
+  it("confirms the install and offers sign-in — this is the one state it can fix", async () => {
+    // After an install lands and the runtime status flips to `signedOut`,
+    // the panel must confirm what happened and point to the next step.
+    // Before the Problem 1 wording change the person read "is not signed
+    // in" and had no way to tell whether the install had worked.
     const onsignin = vi.fn(async () => undefined);
     await openHome({ state: "signedOut" }, { onsignin });
 
     expect(q('[data-testid="chat-bot-runtime-claude"]')!.textContent).toContain("not signed in");
-    expect(q('[data-testid="chat-bot-runtime-help"]')!.textContent).toContain("is not signed in on this computer");
+    const help = q('[data-testid="chat-bot-runtime-help"]')!;
+    expect(help.textContent).toContain("Claude Code is installed");
+    expect(help.textContent).toContain("Sign in to finish");
+    // Does NOT read as "not signed in" — the panel's job in this state is
+    // to look like progress, not like a fresh problem.
+    expect(help.textContent).not.toContain("is not signed in on this");
 
     click('[data-testid="chat-bot-runtime-signin"]');
     await settle();
     expect(onsignin).toHaveBeenCalledWith("claude");
   });
 
-  it("blocks Next", async () => {
+  it("blocks Next, and points to the panel above", async () => {
+    // The flow-issue footer must not contradict the panel above. See
+    // Problem 3.
     await openHome({ state: "signedOut" });
     expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("not signed in on this computer");
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Sign in to Claude Code above.");
   });
 });
 

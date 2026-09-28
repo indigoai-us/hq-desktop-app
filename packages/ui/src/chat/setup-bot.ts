@@ -193,12 +193,20 @@ export function setupBotCopy(opts: { noun?: string } = {}): typeof SETUP_BOT_COP
 }
 
 /**
- * No coding tool is signed in, so the CLI cannot start a bot. `noun` is
- * "Mac", "PC", or "computer"; neutral fallback when the probe is not ready.
+ * No coding tool is signed in, so the CLI cannot start a bot. The wording is
+ * purpose-first (why the person is stuck) and does NOT list three tool names
+ * to someone who has just installed one — the install-guide panel that
+ * renders below this line is the one place that names the specific tool.
+ * `noun` is "Mac", "PC", or "computer"; neutral fallback when the probe is
+ * not ready.
+ *
+ * Kept as an English string (rather than a string tag) so `isSetupBotNoRuntimeMessage`
+ * can still recognise a value returned by an older host without a protocol
+ * change; matching happens against a stable prefix, not the full sentence.
  */
 export function setupBotNoRuntime(opts: { noun?: string } = {}): string {
   const noun = opts.noun?.trim() || "computer";
-  return `No coding tool is signed in on this ${noun} yet. Sign in to Claude Code, Codex, or Grok, then retry.`;
+  return `HQ needs a coding tool signed in on this ${noun} to finish setup. Sign in above, then Retry.`;
 }
 
 /**
@@ -207,9 +215,17 @@ export function setupBotNoRuntime(opts: { noun?: string } = {}): string {
  * decide to show the guided install path use this instead of an exact match
  * against `SETUP_BOT_NO_RUNTIME`, so a Mac-noun message from
  * `setupBotNoRuntime({ noun })` still triggers the guide.
+ *
+ * Recognises both the new plain-language wording ("HQ needs a coding tool
+ * signed in on this …") and the legacy dead-end wording ("No coding tool is
+ * signed in on this …") so a host still running an older shell keeps working.
  */
 export function isSetupBotNoRuntimeMessage(msg: string | null | undefined): boolean {
-  return !!msg && msg.startsWith("No coding tool is signed in on this");
+  if (!msg) return false;
+  return (
+    msg.startsWith("HQ needs a coding tool signed in on this") ||
+    msg.startsWith("No coding tool is signed in on this")
+  );
 }
 
 /** The host has no bots group at all (web build). */

@@ -14,7 +14,9 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  classifyInstallFailure,
   createSetupInstallGuideCallbacks,
+  installFailureReason,
   type InstallGuideDeps,
 } from "./install-guide-adapter";
 
@@ -54,7 +56,11 @@ describe("createSetupInstallGuideCallbacks - oninstall", () => {
     expect(invoke).toHaveBeenCalledWith("install_codex");
   });
 
-  it("surfaces the Rust command's error string as a plain reason", async () => {
+  it("maps a permission-denied error into a plain sentence — never leaks the raw path or exit code", async () => {
+    // The Windows test persona report flagged raw error text as
+    // intimidating for a non-technical person. The adapter now translates
+    // known signals into plain sentences and drops the raw text into the
+    // console log; the returned `reason` never carries the path or code.
     const invoke = vi.fn(async () => {
       throw "npm install failed: EACCES on /usr/local/lib";
     });
@@ -64,7 +70,10 @@ describe("createSetupInstallGuideCallbacks - oninstall", () => {
     });
     const result = await cb.oninstall("claude");
     expect(result.ok).toBe(false);
-    expect(result.reason).toContain("EACCES");
+    expect(result.reason).not.toContain("EACCES");
+    expect(result.reason).not.toContain("/usr/local/lib");
+    expect(result.reason).toMatch(/permission/i);
+    expect(result.reason).toContain("Claude Code");
   });
 
   it("falls back to a generic reason when the error is empty", async () => {
@@ -78,6 +87,79 @@ describe("createSetupInstallGuideCallbacks - oninstall", () => {
     const result = await cb.oninstall("claude");
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("Claude Code");
+    // Falls back to the generic sentence, not any raw text.
+    expect(result.reason).toContain("try again");
+  });
+});
+
+describe("classifyInstallFailure — plain wording for each known signal", () => {
+  it("routes network / offline signals to a plain-language sentence", () => {
+    for (const raw of [
+      "ETIMEDOUT while fetching registry.npmjs.org",
+      "getaddrinfo ENOTFOUND registry.npmjs.org",
+      "connect ECONNREFUSED",
+      "network is unreachable",
+      "DNS lookup failed",
+    ]) {
+      const plain = classifyInstallFailure(raw, "Claude Code")!;
+      expect(plain).toContain("internet");
+      expect(plain).toContain("Claude Code");
+      expect(plain).not.toContain(raw);
+    }
+  });
+
+  it("routes admin / permission signals to a plain-language sentence", () => {
+    for (const raw of [
+      "EPERM: operation not permitted",
+      "EACCES: permission denied, mkdir …",
+      "Access is denied.",
+      "Requires administrator privileges to continue.",
+    ]) {
+      const plain = classifyInstallFailure(raw, "Claude Code")!;
+      expect(plain.toLowerCase()).toMatch(/permission/);
+      expect(plain).not.toContain(raw);
+    }
+  });
+
+  it("routes antivirus / SmartScreen signals to a plain-language sentence", () => {
+    const plain = classifyInstallFailure(
+      "The installer was blocked by Microsoft Defender SmartScreen.",
+      "Claude Code",
+    )!;
+    expect(plain.toLowerCase()).toContain("antivirus");
+  });
+
+  it("routes Node / npm bootstrap failures to a plain sentence that never says 'npm'", () => {
+    const plain = classifyInstallFailure(
+      "[claude] npm was not found after installing Node.js.",
+      "Claude Code",
+    )!;
+    expect(plain).not.toMatch(/\bnpm\b/i);
+    // "Node" as a bare word may still leak; the raw is the fallback trigger,
+    // not the surface. What the person reads is "a required tool is missing".
+    expect(plain).toContain("required tool is missing");
+  });
+
+  it("routes disk-full signals to a plain-language sentence", () => {
+    const plain = classifyInstallFailure(
+      "ENOSPC: no space left on device",
+      "Claude Code",
+    )!;
+    expect(plain.toLowerCase()).toContain("disk space");
+  });
+
+  it("returns null for a signal it does not know, so the caller falls back to the generic sentence", () => {
+    expect(classifyInstallFailure("who knows", "Claude Code")).toBeNull();
+    expect(classifyInstallFailure("", "Claude Code")).toBeNull();
+  });
+});
+
+describe("installFailureReason — the last line of defence", () => {
+  it("returns the generic plain sentence when the raw text is not recognised", () => {
+    const reason = installFailureReason(new Error("mysterious internal state"), "codex");
+    expect(reason).toContain("Codex");
+    expect(reason).not.toContain("mysterious internal state");
+    expect(reason).toContain("try again");
   });
 });
 

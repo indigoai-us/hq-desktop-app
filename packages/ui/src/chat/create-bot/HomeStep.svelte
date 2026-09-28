@@ -10,7 +10,8 @@
    */
   import { initialsFor } from "../sidebar-model.js";
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
-  import { hostComputerNoun } from "@hq/platform";
+  import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
+  import { onMount } from "svelte";
   import RuntimeSignIn, { type RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import { runtimeIsReady, type BotHome, type BotRuntime, type CreateBotDraft } from "./create-bot-model.js";
   import {
@@ -112,10 +113,16 @@
 
   /**
    * The plain-language name for the host machine ("Mac", "PC", or
-   * "computer"). Read once at mount from the shared Tauri probe so a slow
-   * OS-plugin land does not flash "PC" then "Mac".
+   * "computer"). The Windows test persona read "on this computer" here
+   * because `apps/sync` does not inject `__HQ_HOST_OS__` synchronously (the
+   * way `apps/work` does), so the first render sees an unresolved probe.
+   * Subscribe to the shared helper: the initial read still lands
+   * synchronously (so a resolved probe never flashes a neutral noun), and
+   * once the OS plugin lands the subscription flips this value from
+   * "computer" to "Mac" / "PC" and the whole panel updates.
    */
-  const hostNoun = hostComputerNoun();
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
   const draftStatus = $derived(runtimeStatusOf(runtimeStatus, draft.runtime));
   const draftLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
   const footer = $derived(runtimeFooter(draftStatus, draftLabel, draft.runtime, Boolean(signInApi || onsignin), hostNoun));

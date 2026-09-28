@@ -17,6 +17,35 @@ The release moves it under the version it ships in.
   panel never dead-ends. The main text no longer mentions `npm`, a terminal,
   or a file path. The two places share one component and one adapter so they
   cannot drift.
+- The "Install Claude Code" button now says what is happening while it
+  works. During the install the panel reads "Installing Claude Code on this
+  PC. This usually takes about a minute — no need to click anything.", and
+  as soon as the installer finishes HQ re-checks by itself. When the tool is
+  found on the second look, the panel confirms "Claude Code is installed.
+  Sign in to finish." and offers Sign in as the primary action. No more
+  "Working…" for 30-40 seconds followed by the panel snapping back to its
+  original state. The same behaviour applies to Codex.
+- If the install fails, HQ shows a plain-language reason instead of raw
+  installer output. Known signals (no internet, permission denied, an
+  antivirus block, a missing dependency, no disk space) become one-sentence
+  explanations that name the tool and the next step. Anything HQ does not
+  recognise falls back to "HQ couldn't finish installing Claude Code. You
+  can try again or install Claude Code yourself, then click Check again."
+  The raw error still goes to the app log for support.
+- The New bot wizard now says "this PC" on Windows even when the OS probe
+  lands after the panel first paints. The wording used to briefly read "on
+  this computer" and then never update; now it flips to "PC" as soon as the
+  probe answers.
+- The footer next to Next in the New bot wizard no longer contradicts the
+  panel above. When the panel shows the install path it now reads "Finish
+  setting up Claude Code above."; after installing and before signing in it
+  reads "Sign in to Claude Code above." The panel and the footer read as one
+  thought, never two competing sentences.
+- The setup assistant's top line no longer opens with "No coding tool is
+  signed in on this computer yet. Sign in to Claude Code, Codex, or Grok,
+  then retry.". It now reads "HQ needs a coding tool signed in on this
+  PC to finish setup. Sign in above, then Retry." Purpose first, and no
+  three-tool list right after the person installed one.
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files

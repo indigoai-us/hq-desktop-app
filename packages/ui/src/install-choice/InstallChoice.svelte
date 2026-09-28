@@ -16,7 +16,10 @@
    * component directly and inject fakes.
    */
   import {
+    installFailedPanelLede,
     installPanelLede,
+    installingPanelLede,
+    installSucceededPanelLede,
     resolveInstallChoices,
     type AiTools,
     type AssistantId,
@@ -121,6 +124,34 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let rechecking = $state(false);
+  /**
+   * Where the install action is in its lifecycle.
+   *
+   *   idle      → the person has not clicked Install yet, or has cleared the
+   *               last try; the panel reads its default lede.
+   *   installing→ the Rust installer is running. The Windows test persona
+   *               watched a bare "Working…" for 30-40 s and concluded nothing
+   *               was happening, so this state now surfaces plain-language
+   *               progress and an approximate wait time.
+   *   installed → the installer resolved OK. HQ has kicked its own re-check;
+   *               once the parent's runtime status flips (`notInstalled` →
+   *               `signedOut`), the whole panel unmounts. Until then the
+   *               person reads a plain "installed, checking sign-in…" line
+   *               instead of the panel snapping back to its original state.
+   *   failed    → the installer returned an error. `error` carries a plain
+   *               reason; the install button + Check again both stay visible
+   *               (repo policy `hq-desktop-app-failed-state-assisted-recovery-preserve-retry`).
+   */
+  type InstallPhase = "idle" | "installing" | "installed" | "failed";
+  let installPhase = $state<InstallPhase>("idle");
+  let installTool = $state<CodingTool>("claude");
+  const installStatusLede = $derived(
+    installPhase === "installing"
+      ? installingPanelLede(installTool, noun)
+      : installPhase === "installed"
+        ? installSucceededPanelLede(installTool)
+        : null,
+  );
 
   async function openAssistant(
     assistant: AssistantId,
@@ -147,11 +178,30 @@
     if (busy || disabled) return;
     busy = true;
     error = null;
+    installTool = chosenTool;
+    installPhase = "installing";
     try {
       const outcome = await oninstall(chosenTool);
       if (!outcome.ok) {
-        const label = chosenTool === "claude" ? "Claude Code" : "Codex";
-        error = outcome.reason ?? `HQ could not finish installing ${label}.`;
+        // The install command failed. Prefer the adapter's plain reason;
+        // fall back to a generic sentence rather than exposing a raw Rust
+        // string that could contain a path or an exit code.
+        error = outcome.reason ?? installFailedPanelLede(chosenTool);
+        installPhase = "failed";
+        return;
+      }
+      installPhase = "installed";
+      // Auto-recheck: the parent listens for its runtime-status probe to
+      // update, and once that lands (`notInstalled` → `signedOut`) the panel
+      // unmounts. Without this, the Windows persona had to click "Check
+      // again" to discover that the install had, in fact, worked — the
+      // failure mode the follow-up is asked to eliminate. Swallow errors so
+      // an unavailable probe never leaves the panel wedged; the person can
+      // still click Check again manually.
+      try {
+        await onrecheck();
+      } catch (probeErr) {
+        console.warn("[hq-desktop] auto re-check after install failed", probeErr);
       }
     } finally {
       busy = false;
@@ -195,6 +245,24 @@
     <p class="lede" data-testid="install-choice-lede">{lede}</p>
   {/if}
 
+  {#if installStatusLede}
+    <!--
+      Plain-language progress for the direct-install path. Shown ABOVE the
+      buttons so a person who clicked "Install Claude Code" reads "Installing…
+      about a minute" instead of the bare "Working…" the Windows persona saw.
+      Once the install lands, this flips to the "installed, checking sign-in"
+      line until the parent's runtime status flips and the whole panel
+      unmounts.
+    -->
+    <p
+      class="status"
+      role="status"
+      aria-live="polite"
+      data-testid="install-choice-status"
+      data-phase={installPhase}
+    >{installStatusLede}</p>
+  {/if}
+
   {#if error}
     <p class="error" role="alert" data-testid="install-choice-error">{error}</p>
   {/if}
@@ -226,7 +294,15 @@
           data-testid={choice.tool === "claude" ? "install-choice-install-claude" : "install-choice-install-codex"}
           data-tool={choice.tool}
           onclick={() => void runInstall(choice.tool)}
-        >{busy ? "Working…" : choice.buttonLabel}</button>
+        >{
+          busy && installPhase === "installing"
+            ? "Installing…"
+            : busy && installPhase === "installed"
+              ? "Checking…"
+              : busy
+                ? "Working…"
+                : choice.buttonLabel
+        }</button>
       {/if}
     {/each}
 
@@ -272,6 +348,12 @@
   .lede {
     margin: 0;
     color: var(--muted-2, currentColor);
+    font-size: var(--text-base, 14px);
+    line-height: 1.4;
+  }
+  .status {
+    margin: 0;
+    color: var(--fg, currentColor);
     font-size: var(--text-base, 14px);
     line-height: 1.4;
   }

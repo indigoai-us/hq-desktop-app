@@ -87,15 +87,81 @@ interface LoginStateWire {
 }
 
 /**
- * Best-effort user-friendly reason from the Rust command's error string.
- * The commands return plain `Err(String)` today; we surface it verbatim when
- * present, otherwise a short generic explanation.
+ * Turn a Rust install failure into a plain-language reason. The install-deps
+ * commands return `Err(String)` today, and that string sometimes contains an
+ * npm exit code, a Windows path, or a shell fragment. Surface those verbatim
+ * and a non-technical person reads them as gibberish — the Windows test
+ * persona had already flagged the raw wording as intimidating. Prefer a
+ * plain sentence per known signal, fall back to a generic sentence
+ * otherwise, and log the raw text so support can still find it.
+ *
+ * Kept exported for the pure test in `install-guide-adapter.test.ts`.
  */
-function installFailureReason(err: unknown, tool: CodingTool): string {
+export function installFailureReason(err: unknown, tool: CodingTool): string {
   const label = tool === "codex" ? "Codex" : "Claude Code";
-  if (err instanceof Error && err.message) return err.message;
-  if (typeof err === "string" && err.trim()) return err.trim();
-  return `HQ couldn't finish installing ${label}.`;
+  const raw = normalizeErrString(err);
+  if (raw) console.warn(`[hq-desktop] install ${tool} failed:`, raw);
+  const plain = classifyInstallFailure(raw, label);
+  if (plain) return plain;
+  return `HQ couldn't finish installing ${label}. You can try again or install ${label} yourself, then click Check again.`;
+}
+
+function normalizeErrString(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message.trim();
+  if (typeof err === "string") return err.trim();
+  return "";
+}
+
+/**
+ * Recognise a few known failure modes and map them to plain sentences. The
+ * point is defence, not exhaustive coverage: anything not recognised falls
+ * back to the generic sentence in `installFailureReason` rather than leaking
+ * raw text. Kept as a pure function so a unit test can pin each mapping.
+ */
+export function classifyInstallFailure(
+  raw: string,
+  label: string,
+): string | null {
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  // Network / offline
+  if (
+    lower.includes("network") ||
+    lower.includes("etimedout") ||
+    lower.includes("econnrefused") ||
+    lower.includes("enotfound") ||
+    lower.includes("dns")
+  ) {
+    return `HQ couldn't reach the internet to install ${label}. Check the network and try again.`;
+  }
+  // Permission / admin
+  if (
+    lower.includes("eperm") ||
+    lower.includes("eacces") ||
+    lower.includes("permission denied") ||
+    lower.includes("access is denied") ||
+    lower.includes("administrator")
+  ) {
+    return `HQ needs permission to install ${label} on this computer. Try again — if a Windows prompt appears, click Yes.`;
+  }
+  // Antivirus / SmartScreen blocks the installer
+  if (lower.includes("virus") || lower.includes("smartscreen") || lower.includes("defender")) {
+    return `Antivirus on this computer blocked the ${label} installer. Allow the download, then try again.`;
+  }
+  // Node / npm bootstrap failure
+  if (
+    lower.includes("npm was not found") ||
+    lower.includes("node.js") ||
+    lower.includes("nodejs") ||
+    lower.includes("enoent")
+  ) {
+    return `HQ couldn't finish installing ${label} because a required tool is missing. Try again — HQ will fetch what it needs, or you can install ${label} yourself.`;
+  }
+  // Disk full
+  if (lower.includes("enospc") || lower.includes("no space")) {
+    return `HQ ran out of disk space installing ${label}. Free up a little space and try again.`;
+  }
+  return null;
 }
 
 function signInFailureReason(state: LoginStateWire, tool: CodingTool): string {

@@ -227,3 +227,45 @@ export function installPanelLede(noun: string): string {
   const host = noun.trim() || "computer";
   return `HQ runs on your Claude or ChatGPT account. Connect it on this ${host} to continue.`;
 }
+
+/** Plain-language label for a coding tool. Reused by the progress ledes. */
+export function codingToolLabel(tool: CodingTool): string {
+  return tool === "claude" ? "Claude Code" : "Codex";
+}
+
+/**
+ * "Installing …" progress lede. Written so a person who has never installed a
+ * developer tool understands that a) something is happening, b) it will take a
+ * moment, and c) they should wait. Reused by both the wizard panel and (via
+ * the same source) the setup-assistant guide. Never repeats "npm", "CLI", or
+ * "terminal".
+ */
+export function installingPanelLede(tool: CodingTool, noun: string): string {
+  const host = noun.trim() || "computer";
+  return `Installing ${codingToolLabel(tool)} on this ${host}. This usually takes about a minute — no need to click anything.`;
+}
+
+/**
+ * Lede for the moment the install command has returned success and HQ is
+ * re-checking the tool. The re-check itself is fast, but the person's read
+ * of the panel must not read as "back to the start" — they see this line for
+ * a moment, then the panel unmounts as the parent's runtime status flips.
+ */
+export function installSucceededPanelLede(tool: CodingTool): string {
+  return `${codingToolLabel(tool)} is installed. HQ is checking sign-in…`;
+}
+
+/**
+ * Lede when the install command failed. Deliberately short and plain: the
+ * panel keeps both the install button and "Check again" visible so the
+ * person is never stuck (repo policy
+ * `hq-desktop-app-failed-state-assisted-recovery-preserve-retry`).
+ *
+ * `rawReason` may be present, but the panel prefers this generic sentence
+ * over anything that could contain a shell path or exit code; the raw text is
+ * logged separately by the adapter caller.
+ */
+export function installFailedPanelLede(tool: CodingTool): string {
+  const label = codingToolLabel(tool);
+  return `HQ couldn’t finish installing ${label}. You can try again or install ${label} yourself, then click Check again.`;
+}

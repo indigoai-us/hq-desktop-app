@@ -24,7 +24,11 @@ import {
   assistantOnlyChoices,
   buildChatGptCodexInstallUrl,
   buildClaudeDesktopInstallUrl,
+  codingToolLabel,
+  installFailedPanelLede,
   installPanelLede,
+  installSucceededPanelLede,
+  installingPanelLede,
   resolveInstallChoices,
 } from "./install-choice.js";
 
@@ -219,5 +223,44 @@ describe("copy pinning", () => {
     expect(installPanelLede("PC")).toContain("this PC");
     expect(installPanelLede("computer")).toContain("this computer");
     expect(installPanelLede("")).toContain("this computer");
+  });
+});
+
+describe("progress ledes (verify-install-003 follow-up)", () => {
+  it("codingToolLabel is the plain name a non-technical reader sees", () => {
+    expect(codingToolLabel("claude")).toBe("Claude Code");
+    expect(codingToolLabel("codex")).toBe("Codex");
+  });
+
+  it("installingPanelLede names the tool, the host, and the expected wait", () => {
+    const line = installingPanelLede("claude", "PC");
+    expect(line).toContain("Installing Claude Code");
+    expect(line).toContain("this PC");
+    expect(line.toLowerCase()).toContain("about a minute");
+    // Never sends a person to a terminal.
+    expect(line).not.toMatch(/\bnpm\b/i);
+    expect(line).not.toMatch(/\bCLI\b/);
+    expect(line).not.toMatch(/\bterminal\b/i);
+  });
+
+  it("installingPanelLede falls back to the neutral host word when the probe is not ready", () => {
+    // Both an empty string and whitespace resolve to the neutral "computer"
+    // wording so a Windows user never briefly reads "Mac".
+    expect(installingPanelLede("codex", "")).toContain("this computer");
+    expect(installingPanelLede("codex", "   ")).toContain("this computer");
+  });
+
+  it("installSucceededPanelLede confirms the install and points to sign-in", () => {
+    expect(installSucceededPanelLede("claude")).toBe(
+      "Claude Code is installed. HQ is checking sign-in…",
+    );
+  });
+
+  it("installFailedPanelLede is plain, blame-free, and never names raw error text", () => {
+    const line = installFailedPanelLede("claude");
+    expect(line).toContain("Claude Code");
+    expect(line).toMatch(/try again|install .* yourself/i);
+    expect(line).not.toMatch(/\bnpm\b/i);
+    expect(line).not.toMatch(/\bCLI\b/);
   });
 });

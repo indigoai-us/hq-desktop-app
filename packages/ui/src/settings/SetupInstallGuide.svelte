@@ -18,7 +18,12 @@
    * (no tool, tool present + not signed in, install fails, signed in).
    */
   import type { AiTools } from "./setup-launch";
-  import { thisComputerNoun, hostComputerNoun } from "@hq/platform";
+  import {
+    hostComputerNoun,
+    subscribeHostComputerNoun,
+    thisComputerNoun,
+  } from "@hq/platform";
+  import { onMount } from "svelte";
   import InstallChoice from "../install-choice/InstallChoice.svelte";
   import type { AssistantId } from "../install-choice/install-choice.js";
 
@@ -113,11 +118,19 @@
   const toolLabel = $derived(TOOL_LABEL[activeTool]);
   /**
    * "this Mac" / "this PC" / "this computer" - the plain-language name for
-   * the host machine. Read once from the shared Tauri probe; the neutral
-   * fallback covers a probe that has not landed yet, so a Windows user never
-   * briefly reads "on this Mac".
+   * the host machine. Kept reactive: on `apps/sync`, `__HQ_HOST_OS__` is not
+   * injected synchronously and the OS plugin lands a moment later, so a
+   * Windows person's first render used to read "this computer" and never
+   * update. Subscribing to the noun helper flips it as soon as the probe
+   * lands. Kept as `thisComputerNoun`-shaped phrase so downstream copy that
+   * reads "on this ${machinePhrase}" continues to compose grammatically.
    */
-  const machinePhrase = thisComputerNoun();
+  let hostNounValue = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNounValue = next)));
+  const machinePhrase = $derived(`this ${hostNounValue}`);
+  // Kept-alive import: the neutral snapshot is still useful for tests + as a
+  // clear signal of what this file used to depend on before it went reactive.
+  void thisComputerNoun;
 
   const primaryLabel = $derived.by(() => {
     if (phase === "installing") return `Installing ${toolLabel}…`;
@@ -242,7 +255,7 @@
     <InstallChoice
       tool={activeTool}
       tools={tools}
-      noun={hostComputerNoun()}
+      noun={hostNounValue}
       hqFolder={hqFolder}
       showDirectInstall={false}
       showRecheck={false}
