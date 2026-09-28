@@ -45,11 +45,13 @@ fn cache() -> &'static Mutex<Option<CachedTokens>> {
 const COGNITO_ENDPOINT: &str = "https://cognito-idp.us-east-1.amazonaws.com/";
 /// 2-minute buffer before expiry (in milliseconds)
 const EXPIRY_BUFFER_MS: i64 = 120_000;
-const REFRESH_ATTEMPTS: usize = 2;
+const REFRESH_ATTEMPTS: usize = 3;
+const REFRESH_RETRY_DELAY_BASE_MS: u64 = 150;
+const REFRESH_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const VALID_TOKEN_RESOLUTION_ATTEMPTS: usize = 3;
 
 /// Positive, user-facing copy shared by startup and sync surfaces after the
-/// one automatic refresh retry has been exhausted.
+/// bounded automatic refresh attempts have been exhausted.
 pub const REAUTH_MESSAGE: &str =
     "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
 
@@ -69,6 +71,11 @@ impl fmt::Display for CognitoRefreshError {
 }
 
 impl std::error::Error for CognitoRefreshError {}
+
+async fn wait_before_refresh_retry(attempt: usize) {
+    let delay_ms = REFRESH_RETRY_DELAY_BASE_MS.saturating_mul(attempt as u64 + 1);
+    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+}
 
 fn refresh_status_is_retryable(status: u16) -> bool {
     status == 401 || status == 408 || status == 429 || status >= 500
@@ -961,6 +968,7 @@ async fn refresh_access_token_classified_at(
     for attempt in 0..REFRESH_ATTEMPTS {
         let response = match client
             .post(cognito_endpoint)
+            .timeout(REFRESH_REQUEST_TIMEOUT)
             .header("Content-Type", "application/x-amz-json-1.1")
             .header(
                 "X-Amz-Target",
@@ -978,6 +986,7 @@ async fn refresh_access_token_classified_at(
                     status_code: None,
                 };
                 if attempt + 1 < REFRESH_ATTEMPTS {
+                    wait_before_refresh_retry(attempt).await;
                     continue;
                 }
                 return Err(failure);
@@ -997,6 +1006,7 @@ async fn refresh_access_token_classified_at(
                 status_code: Some(status),
             };
             if retryable && attempt + 1 < REFRESH_ATTEMPTS {
+                wait_before_refresh_retry(attempt).await;
                 continue;
             }
             return Err(failure);
@@ -1039,7 +1049,11 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, 
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+    use std::time::{Duration, Instant};
     use tempfile;
 
     struct TestHome(Option<std::ffi::OsString>);
@@ -1089,7 +1103,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_tokens_force_refreshes_valid_cached_token_once() {
+    async fn resolve_tokens_force_refreshes_and_recovers_from_transient_unavailability() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1128,6 +1142,74 @@ mod tests {
             .expect("unexpired token is reused without refresh");
         assert_eq!(reused, refreshed);
         cognito.verify().await;
+
+        let expired_tokens = CognitoTokens {
+            access_token: "expired-access-token".into(),
+            id_token: None,
+            refresh_token: "refresh-token".into(),
+            expires_at: 1,
+        };
+        set_tokens(&expired_tokens)
+            .await
+            .expect("store expired tokens for launch refresh");
+
+        let warming = MockServer::start().await;
+        let retry_count = Arc::new(AtomicUsize::new(0));
+        let retry_times = Arc::new(Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with({
+                let retry_count = Arc::clone(&retry_count);
+                let retry_times = Arc::clone(&retry_times);
+                move |_request: &wiremock::Request| {
+                    retry_times
+                        .lock()
+                        .expect("retry timestamps lock")
+                        .push(Instant::now());
+                    if retry_count.fetch_add(1, Ordering::SeqCst) < 2 {
+                        ResponseTemplate::new(503)
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                            "AuthenticationResult": {
+                                "AccessToken": "startup-refreshed-access-token",
+                                "ExpiresIn": 3600
+                            }
+                        }))
+                    }
+                }
+            })
+            .expect(3)
+            .mount(&warming)
+            .await;
+
+        let restored = resolve_tokens(false, &warming.uri())
+            .await
+            .expect("expired access token is restored after Cognito becomes available");
+        assert_eq!(restored.access_token, "startup-refreshed-access-token");
+        let retry_times = retry_times.lock().expect("retry timestamps lock");
+        assert_eq!(retry_times.len(), 3);
+        assert!(retry_times[1].duration_since(retry_times[0]) >= Duration::from_millis(100));
+        assert!(retry_times[2].duration_since(retry_times[1]) >= Duration::from_millis(250));
+        drop(retry_times);
+        warming.verify().await;
+
+        set_tokens(&expired_tokens)
+            .await
+            .expect("restore the expired generation for the offline case");
+        let unavailable = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(3)
+            .mount(&unavailable)
+            .await;
+
+        assert!(resolve_tokens(false, &unavailable.uri()).await.is_err());
+        assert!(get_tokens()
+            .await
+            .expect("read preserved offline token")
+            .is_some());
+        unavailable.verify().await;
     }
 
     #[test]
