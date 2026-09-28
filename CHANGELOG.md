@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.349] — 2026-09-28
+
 - The returning-user setup welcome uses current HQ Desktop wording, and the
   retired `g a` shortcut no longer opens a stale Atlas destination.
 
