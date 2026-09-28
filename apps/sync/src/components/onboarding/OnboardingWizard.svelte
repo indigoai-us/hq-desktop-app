@@ -299,6 +299,7 @@
   let unlistenPersonalFirstPushScan: UnlistenFn | null = null;
   let unlistenPersonalFirstPushProgress: UnlistenFn | null = null;
   let activeInitialSyncTimeoutProgress: (() => void) | null = null;
+  let activeDepsLockWaitTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -960,6 +961,7 @@
     // Supersession: the previous run may have left a stage mid-retry. This
     // run owns the list now, so nothing may still be waiting on that retry.
     stages = resetRetryingStages(stages);
+    activeDepsLockWaitTimeoutProgress = null;
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
@@ -1035,11 +1037,28 @@
       'install:progress',
       (event) => trackInstallProgress(runId, event.payload),
     ));
+    const unlistenCliLockWait = safeUnlisten(await listen<string>(
+      'setup:cli-install-lock-wait',
+      (event) => {
+        const handle = event.payload;
+        if (
+          isCurrentRun(runId) &&
+          currentStageId === 'deps' &&
+          activeInstallHandles.has(handle)
+        ) {
+          activeDepsLockWaitTimeoutProgress?.();
+        }
+      },
+    ));
     if (!isCurrentRun(runId)) {
       unlisten();
+      unlistenCliLockWait();
       return;
     }
-    unlistenInstallProgress = unlisten;
+    unlistenInstallProgress = () => {
+      unlisten();
+      unlistenCliLockWait();
+    };
 
     const unlistenContent = safeUnlisten(await listen<ContentProgressPayload>(
       'content:progress',
@@ -1166,6 +1185,21 @@
               return () => {
                 if (activeInitialSyncTimeoutProgress === onProgress) {
                   activeInitialSyncTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+          );
+        } else if (id === 'deps') {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeDepsLockWaitTimeoutProgress = onProgress;
+              return () => {
+                if (activeDepsLockWaitTimeoutProgress === onProgress) {
+                  activeDepsLockWaitTimeoutProgress = null;
                 }
               };
             },
@@ -1572,6 +1606,7 @@
     unlistenPersonalFirstPushProgress?.();
     unlistenPersonalFirstPushProgress = null;
     activeInitialSyncTimeoutProgress = null;
+    activeDepsLockWaitTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once
     // its run stops being current, so `allSettled` would stay false forever
     // and the completion gate would never fire. Put it back to 'pending': the

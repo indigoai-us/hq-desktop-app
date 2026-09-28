@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On Windows, setup can wait for the desktop CLI updater to finish before reporting a dependency failure. The default-off hq-flags rollout also gives selected-prefix rename locks more time to clear between retries.
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files

@@ -572,13 +572,28 @@ async fn acquire_cli_install_lock_for_setup(
     cancellation: &InstallCancellationRegistration,
     on_wait: impl Fn(&AppHandle, &str) + Send + 'static,
 ) -> Result<hq_desktop_core::cli_update_lock::CliUpdateLockGuard, String> {
+    acquire_cli_install_lock_for_setup_with_budget(
+        app,
+        cancellation,
+        hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET,
+        on_wait,
+    )
+    .await
+}
+
+async fn acquire_cli_install_lock_for_setup_with_budget(
+    app: &AppHandle,
+    cancellation: &InstallCancellationRegistration,
+    budget: Duration,
+    on_wait: impl Fn(&AppHandle, &str) + Send + 'static,
+) -> Result<hq_desktop_core::cli_update_lock::CliUpdateLockGuard, String> {
     let lock_app = app.clone();
     let cancel_handle = cancellation.handle.clone();
     let install_lock = tokio::task::spawn_blocking(move || {
         crate::commands::hq_cli_update::acquire_cli_install_lock_waiting(
             &lock_app,
             "hq-desktop-app-install-deps",
-            hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET,
+            budget,
             || is_cancelled(&cancel_handle),
             |line| on_wait(&lock_app, line),
         )
@@ -6491,11 +6506,28 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
     // budget (HQ-DESKTOP-6J) instead of failing the deps stage, off the async
     // worker via spawn_blocking; the guard is held through the streamed install.
     let cancellation = InstallCancellationRegistration::new(&app);
+    let recovery_enabled = crate::commands::hq_pro::feature_flag_enabled(
+        crate::commands::hq_cli_update::WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG,
+    )
+    .await;
+    let lock_wait_budget =
+        hq_desktop_core::cli_update_lock::cli_install_lock_wait_budget_for_recovery(
+            recovery_enabled,
+        );
+    let lock_wait_handle = cancellation.handle.clone();
     let result = async {
-        let _install_lock = acquire_cli_install_lock_for_setup(
+        let _install_lock = acquire_cli_install_lock_for_setup_with_budget(
             &app,
             &cancellation,
-            |app, line| emit_progress(app, line),
+            lock_wait_budget,
+            move |app, line| {
+                if recovery_enabled {
+                    // Control signal for the named question: is this setup install handle still waiting on the shared CLI lock?
+                    // The frontend uses it only to keep the deps timeout alive; it is not funnel telemetry.
+                    let _ = app.emit("setup:cli-install-lock-wait", lock_wait_handle.clone());
+                }
+                emit_progress(app, line);
+            },
         )
         .await?;
         install_hq_cli_after_lock(
