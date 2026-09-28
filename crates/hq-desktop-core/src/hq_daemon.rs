@@ -33,7 +33,9 @@ pub enum LegacyReason {
     FlagOff,
     /// `hq` would run through npx; that copy is neither kept nor updated, so it cannot host a daemon.
     CliNotInstalled,
-    CliTooOld { found: String },
+    CliTooOld {
+        found: String,
+    },
 }
 
 impl LegacyReason {
@@ -101,8 +103,12 @@ pub fn after_daemon_exit(
     if another_daemon_running {
         return HostAction::GiveUp("another hq daemon is already running on this machine".into());
     }
-    let factor = 1u64.checked_shl(consecutive_failures.min(16)).unwrap_or(u64::MAX);
-    let secs = RELAUNCH_BASE_SECS.saturating_mul(factor).min(RELAUNCH_MAX_SECS);
+    let factor = 1u64
+        .checked_shl(consecutive_failures.min(16))
+        .unwrap_or(u64::MAX);
+    let secs = RELAUNCH_BASE_SECS
+        .saturating_mul(factor)
+        .min(RELAUNCH_MAX_SECS);
     HostAction::RelaunchAfter(Duration::from_secs(secs))
 }
 
@@ -225,8 +231,24 @@ pub struct LastPass {
     pub events: Vec<serde_json::Value>,
 }
 
+/// hq-cloud's state folder: `HQ_STATE_DIR` when set and non-empty, else `~/.hq`
+/// (`stateDir()` in hq-cloud's `sync-progress.ts`).
+pub fn sync_state_dir(home: &Path, state_dir_env: Option<&str>) -> PathBuf {
+    match state_dir_env.filter(|d| !d.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => home.join(".hq"),
+    }
+}
+
 pub fn last_pass_path(state_dir: &Path) -> PathBuf {
     state_dir.join("sync-last-pass.json")
+}
+
+/// Where the daemon's sync runner writes its record, given the app's environment.
+pub fn default_last_pass_path() -> Option<PathBuf> {
+    let home = crate::paths::home_dir()?;
+    let dir = std::env::var("HQ_STATE_DIR").ok();
+    Some(last_pass_path(&sync_state_dir(&home, dir.as_deref())))
 }
 
 pub fn read_last_pass(path: &Path) -> Option<LastPass> {

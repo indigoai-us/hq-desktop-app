@@ -9,9 +9,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use hq_desktop_core::hq_daemon::{
-    after_daemon_exit, choose_sync_host, daemon_paths, daemon_run_args, read_daemon_state,
-    read_last_pass, running_daemon_pid, write_control_request, ControlRequest, HostAction,
-    LastPassTracker, LegacyReason, SyncHostMode, HQ_DAEMON_FLAG, HQ_DAEMON_HOST_MIN_CLI,
+    after_daemon_exit, choose_sync_host, daemon_paths, daemon_run_args, last_pass_path,
+    read_daemon_state, read_last_pass, running_daemon_pid, sync_state_dir, write_control_request,
+    ControlRequest, HostAction, LastPassTracker, LegacyReason, SyncHostMode, HQ_DAEMON_FLAG,
+    HQ_DAEMON_HOST_MIN_CLI,
 };
 use tempfile::TempDir;
 
@@ -58,7 +59,10 @@ fn flag_on_with_a_new_enough_installed_cli_uses_the_daemon() {
         choose_sync_host(true, true, Some(HQ_DAEMON_HOST_MIN_CLI)),
         SyncHostMode::Daemon
     );
-    assert_eq!(choose_sync_host(true, true, Some("99.0.0")), SyncHostMode::Daemon);
+    assert_eq!(
+        choose_sync_host(true, true, Some("99.0.0")),
+        SyncHostMode::Daemon
+    );
 }
 
 // ── starting and relaunching ─────────────────────────────────────────────
@@ -73,7 +77,10 @@ fn the_daemon_runs_managed_and_hosted_by_the_desktop_app() {
 
 #[test]
 fn exit_75_is_the_daemons_restart_request_and_relaunches_at_once() {
-    assert_eq!(after_daemon_exit(Some(75), 3, false), HostAction::RelaunchNow);
+    assert_eq!(
+        after_daemon_exit(Some(75), 3, false),
+        HostAction::RelaunchNow
+    );
 }
 
 #[test]
@@ -164,11 +171,20 @@ fn control_requests_use_the_daemons_file_format_and_sort_oldest_first() {
     let dir = TempDir::new().unwrap();
     let requests = dir.path().join("requests");
 
-    let first = write_control_request(&requests, &ControlRequest::Stop { unit: "sync".into() })
-        .unwrap();
-    let second =
-        write_control_request(&requests, &ControlRequest::Restart { unit: "sync".into() })
-            .unwrap();
+    let first = write_control_request(
+        &requests,
+        &ControlRequest::Stop {
+            unit: "sync".into(),
+        },
+    )
+    .unwrap();
+    let second = write_control_request(
+        &requests,
+        &ControlRequest::Restart {
+            unit: "sync".into(),
+        },
+    )
+    .unwrap();
 
     let name = first.file_name().unwrap().to_str().unwrap().to_string();
     let parts: Vec<&str> = name.trim_end_matches(".json").split('-').collect();
@@ -179,7 +195,9 @@ fn control_requests_use_the_daemons_file_format_and_sort_oldest_first() {
         && parts[1].len() == 6
         && parts[1].chars().all(|c| c.is_ascii_digit())
         && !parts[2].is_empty()
-        && parts[2].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+        && parts[2]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
     assert!(well_formed, "unexpected request file name {name}");
     assert!(first.file_name() < second.file_name());
 
@@ -188,7 +206,10 @@ fn control_requests_use_the_daemons_file_format_and_sort_oldest_first() {
     assert_eq!(body, serde_json::json!({"action": "stop", "unit": "sync"}));
     let body: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();
-    assert_eq!(body, serde_json::json!({"action": "restart", "unit": "sync"}));
+    assert_eq!(
+        body,
+        serde_json::json!({"action": "restart", "unit": "sync"})
+    );
 
     let leftovers: Vec<_> = fs::read_dir(&requests)
         .unwrap()
@@ -203,6 +224,23 @@ fn control_requests_use_the_daemons_file_format_and_sort_oldest_first() {
 const PASS: &str = r#"{"schema":1,"pid":4300,"passId":"p-1","completedAt":"2026-09-28T00:00:00.000Z","droppedProgress":2,
   "events":[{"type":"conflict","company":"acme","path":"c.md","direction":"pull"},
             {"type":"all-complete","companiesAttempted":1,"filesDownloaded":0,"bytesDownloaded":0,"filesUploaded":0,"bytesUploaded":0,"conflictPaths":[],"errors":[]}]}"#;
+
+#[test]
+fn the_end_of_pass_record_is_read_from_hq_clouds_state_dir() {
+    // hq-cloud writes it under `HQ_STATE_DIR || ~/.hq`; the daemon inherits the
+    // app's environment, so the app must look in the same place.
+    let home = Path::new("/Users/someone");
+    assert_eq!(sync_state_dir(home, None), home.join(".hq"));
+    assert_eq!(sync_state_dir(home, Some("")), home.join(".hq"));
+    assert_eq!(
+        sync_state_dir(home, Some("/tmp/hq-state")),
+        Path::new("/tmp/hq-state")
+    );
+    assert_eq!(
+        last_pass_path(&sync_state_dir(home, Some("/tmp/hq-state"))),
+        Path::new("/tmp/hq-state/sync-last-pass.json")
+    );
+}
 
 #[test]
 fn reads_hq_clouds_end_of_pass_record() {
@@ -241,5 +279,8 @@ fn each_pass_is_handled_once_and_a_pass_from_before_launch_is_not_replayed() {
 fn the_first_pass_after_a_clean_launch_is_handled() {
     let mut tracker = LastPassTracker::starting_after(None);
     let pass: hq_desktop_core::hq_daemon::LastPass = serde_json::from_str(PASS).unwrap();
-    assert_eq!(tracker.take_new(Some(pass)).map(|p| p.pass_id), Some("p-1".to_string()));
+    assert_eq!(
+        tracker.take_new(Some(pass)).map(|p| p.pass_id),
+        Some("p-1".to_string())
+    );
 }

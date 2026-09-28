@@ -20,19 +20,20 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use hq_desktop_core::daemon::{
-    compose_runner_spawn_flags, effective_runner_heap_ceiling, is_autostart_enabled,
-    is_pid_alive, is_realtime_sync_enabled, resolve_hq_folder_path, sync_child_env, DaemonStatus,
+    compose_runner_spawn_flags, effective_runner_heap_ceiling, is_autostart_enabled, is_pid_alive,
+    is_realtime_sync_enabled, resolve_hq_folder_path, sync_child_env, DaemonStatus,
 };
 use hq_desktop_core::hq_daemon::{
-    after_daemon_exit, choose_sync_host, daemon_run_args, default_daemon_paths,
-    read_daemon_state, running_daemon_pid, DaemonState, HostAction, LastPass, SyncHostMode,
-    HQ_DAEMON_FLAG,
+    after_daemon_exit, choose_sync_host, daemon_run_args, default_daemon_paths, read_daemon_state,
+    running_daemon_pid, DaemonState, HostAction, LastPass, SyncHostMode, HQ_DAEMON_FLAG,
 };
 use hq_desktop_core::hq_resolver::{resolve_hq, HqInvocation};
 use tauri::{AppHandle, Runtime};
 
 use crate::commands::daemon::{handle_watch_stdout_line, WatcherPhaseContext};
-use crate::commands::process::{app_exit_requested, deregister_process, register_process};
+use crate::commands::process::{
+    app_exit_requested, attach_hosted_child, deregister_generation, try_register_handle_gen,
+};
 use crate::commands::sync::RunTotals;
 use crate::util::logfile::log;
 
@@ -45,6 +46,8 @@ const ENV_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const OTHER_DAEMON_RECHECK: Duration = Duration::from_secs(60);
 /// A run this long resets the crash backoff.
 const HEALTHY_RUN: Duration = Duration::from_secs(600);
+/// How long to wait while the process registry refuses the daemon (a desktop update is in progress).
+const RESERVE_RETRY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPhase {
@@ -140,7 +143,10 @@ pub fn setup_sync_host(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         match resolve_mode().await {
             SyncHostMode::Legacy(reason) => {
-                log(LOG_TAG, &format!("running the app's own sync services: {}", reason.describe()));
+                log(
+                    LOG_TAG,
+                    &format!("running the app's own sync services: {}", reason.describe()),
+                );
                 set_phase(HostPhase::Legacy);
                 start_legacy_services(handle);
             }
@@ -171,8 +177,10 @@ async fn resolve_mode() -> SyncHostMode {
 /// Today's launch behaviour: warm the npx cache and start the watch runner.
 fn start_legacy_services(handle: AppHandle) {
     crate::commands::prewarm::spawn_prewarm();
-    let dev_disable_auto_sync =
-        std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH").ok().as_deref() == Some("1");
+    let dev_disable_auto_sync = std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH")
+        .ok()
+        .as_deref()
+        == Some("1");
     if !dev_disable_auto_sync && (is_autostart_enabled() || is_realtime_sync_enabled()) {
         std::thread::spawn(move || {
             // Small delay to let the app fully initialize
@@ -184,8 +192,10 @@ fn start_legacy_services(handle: AppHandle) {
 
 /// Sync should run: Auto-sync on, cloud not paused, and no dev kill switch.
 fn sync_wanted() -> bool {
-    let dev_disable_auto_sync =
-        std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH").ok().as_deref() == Some("1");
+    let dev_disable_auto_sync = std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH")
+        .ok()
+        .as_deref()
+        == Some("1");
     !dev_disable_auto_sync
         && hq_desktop_core::daemon::ensure_sync_spawn_allowed().is_ok()
         && (is_autostart_enabled() || is_realtime_sync_enabled())
@@ -194,16 +204,25 @@ fn sync_wanted() -> bool {
 fn enter_daemon_mode(handle: AppHandle) {
     // A watch runner from an earlier session would sync the same folder twice.
     if let Err(e) = crate::commands::daemon::stop_watch_runner() {
-        log(LOG_TAG, &format!("could not stop an earlier watch runner: {e}"));
+        log(
+            LOG_TAG,
+            &format!("could not stop an earlier watch runner: {e}"),
+        );
     }
     // The mesh LaunchAgent this app installed keeps the daemon's mesh waiting.
     if let Err(e) =
         tauri::async_runtime::block_on(crate::commands::install_stages::retire_work_mesh_unit())
     {
-        log(LOG_TAG, &format!("could not remove the separate Work Mesh unit: {e}"));
+        log(
+            LOG_TAG,
+            &format!("could not remove the separate Work Mesh unit: {e}"),
+        );
     }
     if let Err(e) = set_daemon_sync(sync_wanted()) {
-        log(LOG_TAG, &format!("could not apply the Auto-sync setting: {e}"));
+        log(
+            LOG_TAG,
+            &format!("could not apply the Auto-sync setting: {e}"),
+        );
     }
     std::thread::spawn(watch_env_changes);
     crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
@@ -339,10 +358,18 @@ fn host_loop() {
         }
         reported_other = None;
         let Some(hq) = local_hq() else {
-            log(LOG_TAG, "hq is no longer installed locally; hq daemon cannot run");
+            log(
+                LOG_TAG,
+                "hq is no longer installed locally; hq daemon cannot run",
+            );
             return;
         };
 
+        // The registry refuses new children while a desktop update is stopping HQ processes.
+        let Some(generation) = try_register_handle_gen(HQ_DAEMON_HANDLE) else {
+            std::thread::sleep(RESERVE_RETRY);
+            continue;
+        };
         let env = daemon_env();
         let mut command = hq_desktop_core::paths::spawn_command(&hq, &daemon_run_args());
         command
@@ -357,10 +384,16 @@ fn host_loop() {
             command.process_group(0);
         }
         let started = Instant::now();
-        let mut child = match command.spawn() {
+        let spawned = command.spawn().map_err(|e| {
+            deregister_generation(HQ_DAEMON_HANDLE, generation);
+            format!("could not start hq daemon: {e}")
+        });
+        let mut child = match spawned
+            .and_then(|child| attach_hosted_child(HQ_DAEMON_HANDLE, generation, child))
+        {
             Ok(child) => child,
             Err(e) => {
-                log(LOG_TAG, &format!("could not start hq daemon: {e}"));
+                log(LOG_TAG, &e);
                 let HostAction::RelaunchAfter(delay) = after_daemon_exit(None, failures, false)
                 else {
                     unreachable!("a failed start is never a restart request")
@@ -373,17 +406,19 @@ fn host_loop() {
         let pid = child.id();
         CHILD_PID.store(pid, Ordering::Release);
         *CHILD_ENV.lock().unwrap_or_else(|e| e.into_inner()) = Some(env);
-        register_process(HQ_DAEMON_HANDLE, pid);
         log(LOG_TAG, &format!("started hq daemon (pid {pid})"));
 
         let status = child.wait();
         CHILD_PID.store(0, Ordering::Release);
-        deregister_process(HQ_DAEMON_HANDLE);
+        deregister_generation(HQ_DAEMON_HANDLE, generation);
         if app_exit_requested() {
             return;
         }
         let code = status.as_ref().ok().and_then(|s| s.code());
-        log(LOG_TAG, &format!("hq daemon (pid {pid}) exited with {code:?}"));
+        log(
+            LOG_TAG,
+            &format!("hq daemon (pid {pid}) exited with {code:?}"),
+        );
         if RESTART_REQUESTED.swap(false, Ordering::AcqRel) {
             failures = 0;
             continue;
@@ -402,7 +437,6 @@ fn host_loop() {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

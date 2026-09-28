@@ -9,7 +9,7 @@
 //!
 use std::time::Duration;
 
-use hq_desktop_core::hq_daemon::{last_pass_path, read_last_pass, LastPassTracker};
+use hq_desktop_core::hq_daemon::{default_last_pass_path, read_last_pass, LastPassTracker};
 use hq_desktop_core::sync_progress::{read_fresh_snapshot, SyncProgressSnapshot};
 use tauri::{AppHandle, Emitter};
 
@@ -62,10 +62,9 @@ pub fn setup_sync_progress_watch(app: &AppHandle) {
 pub fn setup_last_pass_watch(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        let Ok(state_dir) = hq_desktop_core::paths::hq_config_dir() else {
+        let Some(path) = default_last_pass_path() else {
             return;
         };
-        let path = last_pass_path(&state_dir);
         let mut tracker = LastPassTracker::starting_after(read_last_pass(&path));
         loop {
             tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
