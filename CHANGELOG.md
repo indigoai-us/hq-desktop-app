@@ -10,6 +10,11 @@ The release moves it under the version it ships in.
 
 - Removed an unused internal script left over from the old installer. No change to how the app updates.
 
+## [0.10.349] — 2026-09-28
+
+- The returning-user setup welcome uses current HQ Desktop wording, and the
+  retired `g a` shortcut no longer opens a stale Atlas destination.
+
 ## [0.10.348] — 2026-09-27
 
 - When an update restarts the app before the HQ folder is available, people
