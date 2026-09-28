@@ -210,6 +210,35 @@ function providerButtons(): HTMLButtonElement[] {
   );
 }
 
+function stubOAuthAttempts(listenError?: string) {
+  const fallbackInvoke = tauri.invoke.getMockImplementation();
+  if (!fallbackInvoke) throw new Error('Expected the onboarding invoke stub to be installed.');
+  let starts = 0;
+  let listens = 0;
+  tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === 'start_oauth_login') {
+      starts += 1;
+      return {
+        authorizeUrl: `https://placeholder.test/authorize/${starts}`,
+        state: `oauth-state-${starts}`,
+      };
+    }
+    if (command === 'oauth_listen_for_code') {
+      listens += 1;
+      if (listenError) throw new Error(listenError);
+      return { code: 'placeholder-code' };
+    }
+    return fallbackInvoke(command, args);
+  });
+  return { starts: () => starts, listens: () => listens };
+}
+
+async function clickGoogleSignIn(): Promise<void> {
+  component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+  await flushUntil(() => providerButtons().length === 2);
+  providerButtons()[0]?.click();
+}
+
 function expectPreBranchProviderScreen(): void {
   expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
     'Log in with Google',
@@ -340,6 +369,64 @@ describe('first-run browser session continuation', () => {
     expect(host.textContent).toContain('A browser window opened for Google sign-in.');
 
     resolveConfig({ ...CONTINUATION_CONFIG, variant: 'control' });
+  });
+
+  it('restarts sign-in once after an expired OAuth attempt', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts('Timed out waiting for sign-in (5 minutes).');
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('Sign-in took too long. Choose a provider to try again.') === true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+
+    expect(attempts.starts()).toBe(2);
+    expect(attempts.listens()).toBe(2);
+    expect(tauri.open).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain('Sign-in took too long. Choose a provider to try again.');
+    expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('restarts sign-in once after an OAuth state mismatch', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts('OAuth state mismatch — possible CSRF, aborting.');
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('That sign-in attempt no longer matches. Choose a provider to start again.') ===
+          true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+
+    expect(attempts.starts()).toBe(2);
+    expect(attempts.listens()).toBe(2);
+    expect(tauri.open).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain(
+      'That sign-in attempt no longer matches. Choose a provider to start again.',
+    );
+    expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('keeps the successful provider sign-in path to one browser attempt', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts();
+
+    await clickGoogleSignIn();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'),
+    );
+
+    expect(attempts.starts()).toBe(1);
+    expect(attempts.listens()).toBe(1);
+    expect(tauri.open).toHaveBeenCalledTimes(1);
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_listen_for_code', {
+      state: 'oauth-state-1',
+    });
   });
 
   it('automatically signs in an eligible browser session without rendering a prompt or click', async () => {
