@@ -242,7 +242,7 @@ export function codingToolLabel(tool: CodingTool): string {
  */
 export function installingPanelLede(tool: CodingTool, noun: string): string {
   const host = noun.trim() || "computer";
-  return `Installing ${codingToolLabel(tool)} on this ${host}. This usually takes about a minute — no need to click anything.`;
+  return `Installing ${codingToolLabel(tool)} on this ${host}. This usually takes about a minute. No need to click anything.`;
 }
 
 /**

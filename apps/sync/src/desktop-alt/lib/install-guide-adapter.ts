@@ -142,7 +142,7 @@ export function classifyInstallFailure(
     lower.includes("access is denied") ||
     lower.includes("administrator")
   ) {
-    return `HQ needs permission to install ${label} on this computer. Try again — if a Windows prompt appears, click Yes.`;
+    return `HQ needs permission to install ${label} on this computer. Try again. If a Windows prompt appears, click Yes.`;
   }
   // Antivirus / SmartScreen blocks the installer
   if (lower.includes("virus") || lower.includes("smartscreen") || lower.includes("defender")) {
@@ -155,7 +155,7 @@ export function classifyInstallFailure(
     lower.includes("nodejs") ||
     lower.includes("enoent")
   ) {
-    return `HQ couldn't finish installing ${label} because a required tool is missing. Try again — HQ will fetch what it needs, or you can install ${label} yourself.`;
+    return `HQ couldn't finish installing ${label} because a required tool is missing. Try again and HQ will fetch what it needs, or you can install ${label} yourself.`;
   }
   // Disk full
   if (lower.includes("enospc") || lower.includes("no space")) {

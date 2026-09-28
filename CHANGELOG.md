@@ -19,7 +19,7 @@ The release moves it under the version it ships in.
   cannot drift.
 - The "Install Claude Code" button now says what is happening while it
   works. During the install the panel reads "Installing Claude Code on this
-  PC. This usually takes about a minute — no need to click anything.", and
+  PC. This usually takes about a minute. No need to click anything.", and
   as soon as the installer finishes HQ re-checks by itself. When the tool is
   found on the second look, the panel confirms "Claude Code is installed.
   Sign in to finish." and offers Sign in as the primary action. No more
