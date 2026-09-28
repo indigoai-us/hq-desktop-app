@@ -125,21 +125,11 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     build_watch_runner_args_for_target(hq_folder_path, &target, None)
 }
 
-/// Build the watcher command for a source selected before startup preflight.
-///
-/// The same [`crate::runner_target::RunnerSpawnTarget`] is retained by the
-/// caller for runner-target repair and crash provenance. Only a cache root npm
-/// or the environment positively established is bound into the child; an
-/// assumed default must not change where npx installs packages.
-pub fn build_watch_runner_args_for_target(
-    hq_folder_path: &str,
-    target: &crate::runner_target::RunnerSpawnTarget,
-    report_dir: Option<&Path>,
-) -> SpawnArgs {
-    use crate::hq_cloud::{
-        HQ_CLOUD_PACKAGE, HQ_CLOUD_RUNNER_CAPABILITIES, HQ_CLOUD_VERSION, RUNNER_BIN,
-    };
-
+/// Environment a sync process inherits from the app: the HQ folder, a PATH
+/// that finds node, and the user's sync settings (paused companies, Personal
+/// Off, bandwidth). Shared by the app's own watch runner and the hosted
+/// `hq daemon`, whose sync service inherits the daemon's environment.
+pub fn sync_child_env(hq_folder_path: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
     // GUI-launched Tauri apps inherit a minimal launchd PATH and otherwise
@@ -164,6 +154,26 @@ pub fn build_watch_runner_args_for_target(
     }
     // Bandwidth governor: tell the runner what share of the link it may use.
     crate::bandwidth::apply_bandwidth_env(&mut env, crate::bandwidth::prefs_bandwidth_percent());
+    env
+}
+
+/// Build the watcher command for a source selected before startup preflight.
+///
+/// The same [`crate::runner_target::RunnerSpawnTarget`] is retained by the
+/// caller for runner-target repair and crash provenance. Only a cache root npm
+/// or the environment positively established is bound into the child; an
+/// assumed default must not change where npx installs packages.
+pub fn build_watch_runner_args_for_target(
+    hq_folder_path: &str,
+    target: &crate::runner_target::RunnerSpawnTarget,
+    report_dir: Option<&Path>,
+) -> SpawnArgs {
+    use crate::hq_cloud::{
+        HQ_CLOUD_PACKAGE, HQ_CLOUD_RUNNER_CAPABILITIES, HQ_CLOUD_VERSION, RUNNER_BIN,
+    };
+
+    let mut env = sync_child_env(hq_folder_path);
+    let personal_sync_enabled = is_personal_sync_enabled();
 
     // Declare a V8 old-space ceiling for the runner child so its mid-pull heap
     // growth is bounded at an app-DECLARED point rather than one derived from
