@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- History search now requires 2 to 100 characters, matching the server limit.
+
 ## [0.10.351] — 2026-09-28
 
 - The New bot wizard and the setup assistant now offer "Set up with Claude"
