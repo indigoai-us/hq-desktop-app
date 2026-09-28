@@ -7708,6 +7708,40 @@ error: clone failed";
     }
 
     #[test]
+    fn pending_baseline_refresh_keeps_warning_visibility_in_its_own_group() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_baseline_warning_signatures_for_test();
+        let detail = format!(
+            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable {}",
+            available_stamp_marker("replaced_from_source")
+        );
+        let report =
+            core_update_baseline_persistence_warning_report("automatic", Channel::Release, &detail);
+        let events = sentry::test::with_captured_events_options(
+            || send_core_update_baseline_persistence_warning(report),
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+        let event = hq_telemetry::before_send(events.into_iter().next().unwrap()).unwrap();
+
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(event.tags["persistence_outcome"], "refresh_pending");
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Desktop Core baseline refresh pending")
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec!["desktop-core-baseline-refresh-pending"]
+        );
+        assert!(event.extra["baselinePersistenceDetail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("baseline refresh pending")));
+    }
+
+    #[test]
     fn baseline_persistence_warning_emits_bounded_write_diagnostics() {
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_baseline_warning_signatures_for_test();
