@@ -8,6 +8,15 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Behind the `desktop.hq-daemon` flag (off by default), the app runs
+  `hq daemon` as its own child process in place of its background sync
+  runner, sync supervisor, Work Mesh service and scheduled CLI updates. The
+  daemon handles sync, Work Mesh, bots, search indexing and its own updates,
+  and the app restarts it if it exits. Turning sync on or off in the app turns
+  the daemon's sync unit on or off. The app still shows conflicts, plan-limit
+  notices, errors and changed files from each sync pass. The flag is read at
+  launch and needs an installed `hq` new enough to be hosted; otherwise the
+  app keeps its own services.
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files
