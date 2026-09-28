@@ -201,13 +201,17 @@ describe("copy pinning", () => {
     // gets flagged here — never in production.
     expect(INSTALL_VIA_CLAUDE_PROMPT).toContain("HQ");
     expect(INSTALL_VIA_CLAUDE_PROMPT).toContain("Claude Code");
-    expect(INSTALL_VIA_CLAUDE_PROMPT).toContain("switch back to HQ");
+    expect(INSTALL_VIA_CLAUDE_PROMPT).toContain("go back to HQ and click Check again");
+    expect(INSTALL_VIA_CLAUDE_PROMPT).toContain("official installer");
+    expect(INSTALL_VIA_CLAUDE_PROMPT).not.toMatch(/npm|\u2014/);
   });
 
   it("pins the ChatGPT install prompt so no server can change it", () => {
     expect(INSTALL_VIA_CHATGPT_PROMPT).toContain("HQ");
     expect(INSTALL_VIA_CHATGPT_PROMPT).toContain("Codex");
-    expect(INSTALL_VIA_CHATGPT_PROMPT).toContain("switch back to HQ");
+    expect(INSTALL_VIA_CHATGPT_PROMPT).toContain("go back to HQ and click Check again");
+    expect(INSTALL_VIA_CHATGPT_PROMPT).toContain("official installer");
+    expect(INSTALL_VIA_CHATGPT_PROMPT).not.toMatch(/npm|\u2014/);
   });
 
   it("names the machine 'Mac' on macOS, 'PC' on Windows, 'computer' otherwise", () => {

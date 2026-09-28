@@ -73,7 +73,7 @@ export type InstallChoice =
  * so no server can alter the text.
  */
 export const INSTALL_VIA_CLAUDE_PROMPT =
-  "HQ (a shared workspace app) is trying to set up Claude Code on this computer so it can chat with you as an assistant. Please install the Claude Code CLI here for the account I am signed in to, and then tell me to switch back to HQ. If anything about that is unclear, ask before running commands.";
+  "I am setting up HQ on this computer. HQ needs Claude Code installed here so my HQ bots can work. Please install Claude Code with Anthropic's official installer for this operating system, check that it runs, and help me sign in with my Claude account. Ask me before you run anything you are unsure about. When it is done, tell me to go back to HQ and click Check again.";
 
 /**
  * The install prompt HQ hands to the ChatGPT desktop app's Codex area. Codex
@@ -82,7 +82,7 @@ export const INSTALL_VIA_CLAUDE_PROMPT =
  * pin it and so no server can alter the text.
  */
 export const INSTALL_VIA_CHATGPT_PROMPT =
-  "HQ (a shared workspace app) is trying to set up the Codex CLI on this computer so it can chat with you as an assistant. Please install the Codex CLI here for the account I am signed in to (npm i -g @openai/codex, or the platform installer if that is not available), then tell me to switch back to HQ. If anything about that is unclear, ask before running commands.";
+  "I am setting up HQ on this computer. HQ needs Codex installed here so my HQ bots can work. Please install Codex with OpenAI's official installer for this operating system, check that it runs, and help me sign in with my ChatGPT account. Ask me before you run anything you are unsure about. When it is done, tell me to go back to HQ and click Check again.";
 
 /**
  * Build the `claude://code/new?q=…&folder=…` URL that opens Claude Code with
