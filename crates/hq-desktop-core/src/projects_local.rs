@@ -3417,6 +3417,78 @@ mod tests {
     }
 
     #[test]
+    fn read_company_goals_parses_goals_skill_v2_objective_and_key_result() {
+        let root = std::env::temp_dir().join(format!(
+            "hq-projects-local-goals-skill-v2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let sample = root.join("companies").join("sample");
+        fs::create_dir_all(&sample).unwrap();
+
+        // The fields below are the board-v2 root plus the fields written by
+        // /goals add-objective and add-kr. /goals does not create initiatives;
+        // this board starts with the empty initiatives/projects from /idea.
+        let board = r#"{
+            "company": "sample",
+            "schema_version": 2,
+            "updated_at": "2026-09-28T14:00:00Z",
+            "initiatives": [],
+            "projects": [],
+            "objectives": [
+                {
+                    "id": "sample-obj-001",
+                    "title": "Improve onboarding outcomes",
+                    "description": "Increase successful first-week activation",
+                    "timeframe": "2026-Q4",
+                    "owner": "sample-owner",
+                    "key_results": [
+                        {
+                            "id": "sample-obj-001-kr-1",
+                            "title": "Increase activated teams",
+                            "metric": "activated_teams",
+                            "target": 10,
+                            "current": 5,
+                            "unit": "teams",
+                            "direction": "up",
+                            "source": "manual",
+                            "status": "at_risk",
+                            "project_ids": []
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        fs::write(sample.join("board.json"), board).unwrap();
+
+        let goals = read_company_goals(&root, "sample").expect("skill-shaped board parses");
+        assert_eq!(goals.objectives.len(), 1);
+        assert!(goals.initiatives.is_empty());
+
+        let objective = &goals.objectives[0];
+        assert_eq!(objective.id, "sample-obj-001");
+        assert_eq!(objective.title, "Improve onboarding outcomes");
+        assert_eq!(objective.description, "Increase successful first-week activation");
+        assert_eq!(objective.timeframe, "2026-Q4");
+        assert_eq!(objective.owner.as_deref(), Some("sample-owner"));
+        assert_eq!(objective.key_results.len(), 1);
+
+        let key_result = &objective.key_results[0];
+        assert_eq!(key_result.id.as_deref(), Some("sample-obj-001-kr-1"));
+        assert_eq!(key_result.title.as_deref(), Some("Increase activated teams"));
+        assert_eq!(key_result.metric.as_deref(), Some("activated_teams"));
+        assert_eq!(key_result.target, Some(serde_json::json!(10)));
+        assert_eq!(key_result.current, Some(serde_json::json!(5)));
+        assert_eq!(key_result.unit.as_deref(), Some("teams"));
+        assert_eq!(key_result.status.as_deref(), Some("at_risk"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn read_company_goals_missing_board_is_empty_not_panic() {
         let root = make_goals_fixture_tree();
         // A company with no board.json at all → empty goals, no error/panic.
