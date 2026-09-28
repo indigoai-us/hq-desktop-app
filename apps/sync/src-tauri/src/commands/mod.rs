@@ -93,6 +93,8 @@ pub mod watcher_exit_lifecycle;
 pub mod window_material;
 pub mod update_gate;
 pub mod workspaces;
+#[cfg(any(windows, test))]
+mod windows_symlink_fallback;
 
 pub mod meet_transcription;
 

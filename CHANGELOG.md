@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Windows template setup can reuse matching content links and use a gated copy or junction fallback for selected link errors.
+
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files
