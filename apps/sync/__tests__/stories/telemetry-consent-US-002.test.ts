@@ -2,7 +2,7 @@
 //
 // US-002 — The consent write cannot silently fail.
 //
-// US-001 moved consent to its own blocking step (index 3) AFTER setup. US-002
+// US-001 moved consent to its own blocking step (index 4) AFTER setup. US-002
 // makes the remote write a FOREGROUND operation whose failure is visible:
 //
 //   - AC1: the caller's person entity is guaranteed to exist before the POST
@@ -43,7 +43,10 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from '../../src/components/onboarding/OnboardingWizard.svelte';
-import { __resetWizardRouterCompletionForTests } from '../../src/lib/onboarding-wizard';
+import {
+  CONSENT_STEP_INDEX,
+  __resetWizardRouterCompletionForTests,
+} from '../../src/lib/onboarding-wizard';
 import { TELEMETRY_CONSENT_VERSION } from '../../src/lib/consent-version';
 
 let host: HTMLDivElement;
@@ -183,7 +186,7 @@ afterEach(() => {
 describe('US-002 a failed remote write is visible and blocks advance', () => {
   it('opt-in 500 shows a retry affordance and does NOT advance as successful (e2e)', async () => {
     postResult = { mode: 'reject', error: 'HTTP 500: internal server error' };
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
 
@@ -209,7 +212,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
 
   it('retry after a failure re-attempts the upload and, on success, advances', async () => {
     postResult = { mode: 'reject', error: 'HTTP 503: service unavailable' };
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
 
@@ -237,7 +240,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
 
   it('surfaces the remote result rather than swallowing it', async () => {
     // On a clean success the step advances (the result said uploaded:true).
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
     primaryContinue().click();
@@ -252,7 +255,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
 describe('US-002 deliberate cache-before-upload ordering (regression)', () => {
   it('caches locally BEFORE the remote POST, even when the POST fails', async () => {
     postResult = { mode: 'reject', error: 'HTTP 500' };
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
     primaryContinue().click();
@@ -271,7 +274,7 @@ describe('US-002 deliberate cache-before-upload ordering (regression)', () => {
 
 describe('US-002 AC1 — person entity exists before the POST', () => {
   it('ensures the person entity before firing the consent POST', async () => {
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
     primaryContinue().click();
@@ -295,7 +298,7 @@ describe('US-002 AC4 — offline does not trap the user', () => {
     // A locally configured connector keeps the optional panel visible instead
     // of auto-skipping to ready, so this proves the offline route itself.
     detectedConnectorCount = 1;
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
 
@@ -344,7 +347,7 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
       error: 'error sending request: connection refused (offline)',
     };
     cacheWriteFails = false;
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
     primaryContinue().click();
@@ -364,7 +367,7 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
       error: 'error sending request: connection refused (offline)',
     };
     cacheWriteFails = true;
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
     primaryContinue().click();
@@ -385,7 +388,7 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
 
 describe('US-002 provenance travels with the write', () => {
   it('sends surface=onboarding and the consent version', async () => {
-    await mountAt(3);
+    await mountAt(CONSENT_STEP_INDEX);
     chooseShare();
     await flush();
     primaryContinue().click();

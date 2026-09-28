@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- After setup passes, people can start syncing their HQ folder right away. The optional first-folder step is off until its hq-flags rollout is enabled, and can be skipped.
+
 ## [0.10.351] — 2026-09-28
 
 - The New bot wizard and the setup assistant now offer "Set up with Claude"

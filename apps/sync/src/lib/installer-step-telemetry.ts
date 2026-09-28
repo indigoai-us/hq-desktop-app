@@ -69,6 +69,7 @@ export const INSTALLER_STEP_BY_WIZARD_STEP = {
   'welcome-signin': 'signin',
   directory: 'install',
   setup: 'setup',
+  'first-folder-sync': null,
   consent: 'consent',
   'connector-import': 'connector-import',
   ready: 'done',
