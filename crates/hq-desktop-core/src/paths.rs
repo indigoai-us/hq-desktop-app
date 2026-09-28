@@ -1378,8 +1378,104 @@ fn unix_hq_search_dirs_in(settings: Vec<PathBuf>, home: Option<&Path>) -> Vec<Pa
     dirs
 }
 
+/// Remove repeated directory entries while preserving first-seen order.
+///
+/// Windows callers (see `extended_search_dirs`) union up to a dozen sources
+/// that legitimately point at the same folder: on 64-bit Windows the
+/// `ProgramFiles` and `ProgramW6432` env vars are the same path, a custom
+/// `PNPM_HOME` can equal the `%LOCALAPPDATA%\pnpm` default, and a machine
+/// upgraded from the legacy `Indigo HQ` layout can still see the modern
+/// `IndigoHQ` root resolve to the same directory. A UI that keys a Svelte
+/// `each` block by directory string throws on the repeat and blanks the app,
+/// so this is a correctness helper for both diagnostics AND the UI payload.
+///
+/// Comparison rules:
+///   * On Windows, case-insensitive and tolerant of a single trailing path
+///     separator (`\` or `/`) — a path that differs only by case or by that
+///     one character names the same folder.
+///   * On Unix, an exact byte match, because paths are case-sensitive and a
+///     trailing `/` is meaningless before comparison in every real caller.
+///
+/// The comparison rule to apply when deduplicating a search-dir list.
+///
+/// * `WindowsInsensitive` — case-insensitive, tolerant of one trailing path
+///   separator. This is the rule the Windows list needs and the rule the
+///   crash was fixed with.
+/// * `UnixSensitive` — exact byte match after one optional trailing `/` is
+///   trimmed. This is what the Unix list already effectively wanted.
+///
+/// Made a runtime argument (rather than a `cfg`) so both rules can be unit
+/// tested on any host — including this Mac.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // one variant is unused on the platform this build targets
+pub(crate) enum PathDedupRule {
+    WindowsInsensitive,
+    UnixSensitive,
+}
+
+/// Remove repeated directory entries while preserving first-seen order.
+///
+/// Windows callers (see `extended_search_dirs`) union up to a dozen sources
+/// that legitimately point at the same folder: on 64-bit Windows the
+/// `ProgramFiles` and `ProgramW6432` env vars are the same path, a custom
+/// `PNPM_HOME` can equal the `%LOCALAPPDATA%\pnpm` default, and a machine
+/// upgraded from the legacy `Indigo HQ` layout can still see the modern
+/// `IndigoHQ` root resolve to the same directory. A UI that keys a Svelte
+/// `each` block by directory string throws on the repeat and blanks the app,
+/// so this is a correctness helper for both diagnostics AND the UI payload.
+#[allow(dead_code)] // the Unix build calls the wrapper below, not the raw form
+pub(crate) fn dedup_search_dirs_with(dirs: Vec<PathBuf>, rule: PathDedupRule) -> Vec<PathBuf> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<PathBuf> = Vec::with_capacity(dirs.len());
+    for dir in dirs {
+        let key = search_dir_dedup_key(&dir, rule);
+        if seen.insert(key) {
+            out.push(dir);
+        }
+    }
+    out
+}
+
+/// Platform-picked dedup rule for the current build.
+#[allow(dead_code)] // only wired into the Windows list; kept for future callers
+pub(crate) fn dedup_search_dirs(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        dedup_search_dirs_with(dirs, PathDedupRule::WindowsInsensitive)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        dedup_search_dirs_with(dirs, PathDedupRule::UnixSensitive)
+    }
+}
+
+/// The canonical string a `dedup_search_dirs_with` comparison uses for one path.
+fn search_dir_dedup_key(dir: &Path, rule: PathDedupRule) -> String {
+    let raw = dir.to_string_lossy();
+    let trimmed = trim_one_trailing_separator(&raw);
+    match rule {
+        PathDedupRule::WindowsInsensitive => trimmed.to_ascii_lowercase(),
+        PathDedupRule::UnixSensitive => trimmed.to_string(),
+    }
+}
+
+fn trim_one_trailing_separator(s: &str) -> &str {
+    if let Some(rest) = s.strip_suffix('\\') {
+        return rest;
+    }
+    if let Some(rest) = s.strip_suffix('/') {
+        return rest;
+    }
+    s
+}
+
 #[cfg(target_os = "windows")]
 fn extended_search_dirs() -> Vec<PathBuf> {
+    dedup_search_dirs(extended_search_dirs_raw())
+}
+
+#[cfg(target_os = "windows")]
+fn extended_search_dirs_raw() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
     if let Some(toolchain) = managed_toolchain_dir() {
@@ -4723,6 +4819,96 @@ printf '%s' '{"name":"@indigoai-us/hq-cli","version":"5.2.0"}' > "$HQ_CLI_UPDATE
             ResolutionSource::SettingsPath
         );
     }
+
+    // ---- dedup_search_dirs_with: crash-fix helper for the Windows list -----
+
+    #[test]
+    fn dedup_windows_drops_case_only_repeat_keeping_first() {
+        // The Windows list can legitimately hold two entries that name the
+        // same folder in different case: on 64-bit Windows the
+        // `ProgramFiles` and `ProgramW6432` env vars are the same path, and
+        // a machine upgraded from the legacy `Indigo HQ` layout resolves to
+        // the modern `IndigoHQ` root by case-insensitive filename equality.
+        let dirs = vec![
+            PathBuf::from("C:\\Program Files\\nodejs"),
+            PathBuf::from("C:\\program files\\nodejs"),
+        ];
+        let out = dedup_search_dirs_with(dirs, PathDedupRule::WindowsInsensitive);
+        assert_eq!(out, vec![PathBuf::from("C:\\Program Files\\nodejs")]);
+    }
+
+    #[test]
+    fn dedup_windows_drops_trailing_separator_repeat() {
+        let dirs = vec![
+            PathBuf::from("C:\\Program Files\\nodejs"),
+            PathBuf::from("C:\\Program Files\\nodejs\\"),
+        ];
+        let out = dedup_search_dirs_with(dirs, PathDedupRule::WindowsInsensitive);
+        assert_eq!(out, vec![PathBuf::from("C:\\Program Files\\nodejs")]);
+    }
+
+    #[test]
+    fn dedup_windows_keeps_distinct_folders_in_order() {
+        let dirs = vec![
+            PathBuf::from("C:\\Program Files\\nodejs"),
+            PathBuf::from("C:\\Program Files (x86)\\nodejs"),
+            PathBuf::from("C:\\Program Files\\nodejs"), // real repeat
+            PathBuf::from("C:\\Users\\me\\AppData\\Roaming\\npm"),
+        ];
+        let out = dedup_search_dirs_with(dirs, PathDedupRule::WindowsInsensitive);
+        assert_eq!(
+            out,
+            vec![
+                PathBuf::from("C:\\Program Files\\nodejs"),
+                PathBuf::from("C:\\Program Files (x86)\\nodejs"),
+                PathBuf::from("C:\\Users\\me\\AppData\\Roaming\\npm"),
+            ]
+        );
+    }
+
+    #[test]
+    fn dedup_windows_reproduces_new_bot_wizard_crash_input() {
+        // The exact shape a 64-bit Windows machine produced before the fix:
+        // ProgramFiles == ProgramW6432 lands two identical entries into the
+        // search list, and the wizard's keyed each block threw
+        // `each_key_duplicate` on this. After dedup the list is unique.
+        let dirs = vec![
+            PathBuf::from("C:\\Program Files\\nodejs"),   // ProgramFiles
+            PathBuf::from("C:\\Program Files\\nodejs"),   // ProgramW6432 (same)
+            PathBuf::from("C:\\Program Files (x86)\\nodejs"),
+        ];
+        let out = dedup_search_dirs_with(dirs, PathDedupRule::WindowsInsensitive);
+        let mut seen = std::collections::HashSet::new();
+        for dir in &out {
+            let key = dir.to_string_lossy().to_ascii_lowercase();
+            assert!(seen.insert(key), "list still contained a repeat: {out:?}");
+        }
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn dedup_unix_is_case_sensitive_and_preserves_order() {
+        let dirs = vec![
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/opt/Homebrew/bin"),         // different folder on Unix
+            PathBuf::from("/opt/homebrew/bin"),         // real repeat
+            PathBuf::from("/opt/homebrew/bin/"),        // trailing-slash repeat
+        ];
+        let out = dedup_search_dirs_with(dirs, PathDedupRule::UnixSensitive);
+        assert_eq!(
+            out,
+            vec![
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/opt/Homebrew/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn dedup_returns_empty_when_input_is_empty() {
+        let out = dedup_search_dirs_with(Vec::new(), PathDedupRule::WindowsInsensitive);
+        assert!(out.is_empty());
+    }
 }
 
 #[cfg(all(test, not(target_os = "windows")))]
@@ -4962,4 +5148,5 @@ mod managed_git_shim_resolution_tests {
         );
         assert!(MANAGED_TOOLCHAIN_BIN_SUBDIRS.contains(&"git-shim"));
     }
+
 }

@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  dedupeSearchedDirs,
   parseRuntimeStatus,
   runtimeBlocksNext,
   runtimeCanSignIn,
@@ -131,6 +132,50 @@ describe("reading the host's payload", () => {
     expect(runtimeStatusOf(map, "claude")).toEqual(SIGNED_OUT);
     expect(runtimeStatusOf(map, "codex")).toBeNull();
     expect(runtimeStatusOf(null, "claude")).toBeNull();
+  });
+
+  it("strips repeats out of the searched list so the keyed list can never crash", () => {
+    // The exact shape a 64-bit Windows machine produced before this fix:
+    // ProgramFiles and ProgramW6432 both resolved to the same folder, so
+    // `searched` came out with an identical entry twice and the Home step
+    // threw `svelte.dev/e/each_key_duplicate`.
+    const parsed = parseRuntimeStatus({
+      state: "notInstalled",
+      searched: [
+        "C:\\Program Files\\nodejs",
+        "C:\\Program Files\\nodejs",
+        "C:\\program files\\nodejs",
+        "C:\\Program Files\\nodejs\\",
+        "C:\\Program Files (x86)\\nodejs",
+      ],
+    });
+    expect(parsed?.state).toBe("notInstalled");
+    expect((parsed as unknown as { searched: string[] }).searched).toEqual([
+      "C:\\Program Files\\nodejs",
+      "C:\\Program Files (x86)\\nodejs",
+    ]);
+  });
+});
+
+describe("dedupeSearchedDirs (belt-and-braces for the keyed each block)", () => {
+  it("drops case-only and trailing-separator repeats but keeps distinct folders in order", () => {
+    expect(
+      dedupeSearchedDirs([
+        "C:\\Program Files\\nodejs",
+        "C:\\program files\\nodejs",
+        "C:\\Program Files\\nodejs\\",
+        "C:\\Program Files (x86)\\nodejs",
+      ]),
+    ).toEqual(["C:\\Program Files\\nodejs", "C:\\Program Files (x86)\\nodejs"]);
+  });
+
+  it("returns the same list when there are no repeats", () => {
+    const dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/Users/me/.local/bin"];
+    expect(dedupeSearchedDirs(dirs)).toEqual(dirs);
+  });
+
+  it("returns an empty array for an empty input", () => {
+    expect(dedupeSearchedDirs([])).toEqual([]);
   });
 });
 

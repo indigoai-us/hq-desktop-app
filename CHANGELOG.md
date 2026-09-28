@@ -8,6 +8,17 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The New bot wizard no longer replaces the app with a "Something went wrong"
+  screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
+  list could hold the same folder twice (on 64-bit Windows the Program Files
+  and ProgramW6432 env vars point at the same place), and the wizard's list
+  rendering crashed on the repeat. The list is now deduplicated before it is
+  shown, and the folder appears once.
+- Small copy fixes in the New bot wizard for Windows: the Memory choice now
+  reads "This PC only" instead of "This Mac only", and the create-form
+  keyboard hint reads "Ctrl+Enter TO CREATE" instead of the Mac symbol on a
+  PC.
+
 ## [0.10.349] — 2026-09-28
 
 - The returning-user setup welcome uses current HQ Desktop wording, and the

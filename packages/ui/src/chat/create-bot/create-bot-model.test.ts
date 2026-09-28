@@ -244,6 +244,27 @@ describe("templates", () => {
     expect(templateBringsLine(templateCard(WORKERS[3]!))).toBe("Brings its instructions and Indigo policies.");
     expect(templateBringsLine(null)).toBe("");
   });
+
+  it("collapses repeated ids inside a group, keeping first-seen (crash-key defence)", () => {
+    // `group.templates` renders a keyed `each` block; a repeated id would
+    // throw `svelte.dev/e/each_key_duplicate` and blank the wizard.
+    const groups = groupTemplates([
+      { id: "iris-cx", path: "companies/indigo/workers/iris-cx", source: "company", company: "indigo", name: "Iris CX (v1)" },
+      { id: "iris-cx", path: "companies/indigo/workers/iris-cx", source: "company", company: "indigo", name: "Iris CX (v2)" },
+      { id: "ads-analyst", path: "companies/acme/workers/ads-analyst", source: "company", company: "acme" },
+    ]);
+    const seen = new Set<string>();
+    for (const g of groups) {
+      for (const t of g.templates) {
+        const key = `${g.company}::${t.id}`;
+        expect(seen.has(key)).toBe(false);
+        seen.add(key);
+      }
+    }
+    const indigoIds = groups.find((g) => g.company === "indigo")?.templates.map((t) => t.id) ?? [];
+    expect(indigoIds).toEqual(["iris-cx"]);
+    expect(groups.find((g) => g.company === "indigo")?.templates[0]?.name).toBe("Iris CX (v1)");
+  });
 });
 
 describe("steps", () => {
