@@ -2855,7 +2855,7 @@
             data-testid="onboarding-first-folder-sync"
             aria-labelledby="onboarding-title-first-folder-sync"
           >
-            <h2 class="h first-folder-sync-title" id="onboarding-title-first-folder-sync">Sync your first folder</h2>
+            <h2 class="h" id="onboarding-title-first-folder-sync">Sync your first folder</h2>
             <p class="body">Start syncing {installDisplayPath} so it is available across your HQ devices.</p>
             {#if firstFolderSyncBusy}
               <p class="inline-note" role="status" aria-live="polite">Syncing your first folder…</p>
@@ -2864,7 +2864,7 @@
             {/if}
             <div class="btns split">
               <button
-                class="btn btn-primary first-folder-sync-action"
+                class="btn btn-primary"
                 type="button"
                 data-testid="onboarding-first-folder-sync-start"
                 disabled={firstFolderSyncBusy || firstFolderSyncCompleted}
@@ -2872,7 +2872,7 @@
                 onclick={() => void startFirstFolderSync()}
               >{firstFolderSyncBusy ? 'Syncing…' : 'Sync this folder'}</button>
               <button
-                class="btn btn-secondary first-folder-sync-action"
+                class="btn btn-secondary"
                 type="button"
                 data-testid="onboarding-first-folder-sync-skip"
                 onclick={() => advanceTo(CONSENT_STEP_INDEX, 'skipped')}
@@ -3488,7 +3488,6 @@
 
   .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
   .body { color:var(--c-muted); font-size:14px; font-weight:400; line-height:20px; margin:4px 0 0; max-width:592px; }
-  .first-folder-sync-title { font-family:Georgia, "Times New Roman", serif; font-weight:500; }
   .consent-facts { margin-top:12px; display:flex; flex-direction:column; gap:6px; }
   .consent-facts-line { margin:0; color:var(--c-muted); font-size:12.5px; line-height:17px; }
   .consent-facts-label { color:var(--c-text); font-weight:600; }
@@ -3517,7 +3516,6 @@
   .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:auto; }
   .btns.split { justify-content:space-between; }
   .btn { font-family:inherit; font-size:14px; font-weight:400; line-height:20px; padding:10px 16px; border-radius:8px; border:none; cursor:pointer; transition:opacity .15s, transform .1s; }
-  .first-folder-sync-action { border-radius:0; }
   .btn:active:not(:disabled) { transform:scale(.97); }
   .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
   .btn-secondary { background:var(--c-btn2-bg); color:var(--c-btn2-fg); }
