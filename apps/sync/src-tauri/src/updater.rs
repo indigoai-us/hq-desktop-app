@@ -24,6 +24,8 @@
 //! continues to use it via `app.updater()` because hard-yank always pulls
 //! the newest stable, regardless of channel preference.
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -35,15 +37,18 @@ use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
 use crate::commands::config::MenubarPrefs;
+use crate::commands::update_gate::{AppFocusState, UpdateHoldsState};
 use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
-use crate::commands::update_gate::{AppFocusState, UpdateHoldsState};
-use hq_desktop_core::update_gate::{decide, DeferredEmitKey, HoldReason, should_emit_deferred, UpdateDecision, UpdateTrigger};
 use crate::util::release_channel::{
     effective_channel, fetch_update_feed_policy, resolve_channel_endpoint, should_offer_update,
     should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
     UpdateFeedPolicy,
+};
+use hq_desktop_core::update_gate::{
+    decide, should_emit_deferred, AppFocus, DeferReason, DeferredEmitKey, HoldReason,
+    UpdateDecision, UpdateHolds, UpdateTrigger,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -462,6 +467,20 @@ pub(crate) fn idle_wait_remaining(elapsed: Duration, cap: Duration) -> Duration 
     cap.saturating_sub(elapsed)
 }
 
+fn sample_automatic_sync_state(
+    sample_sync_in_progress: impl FnOnce() -> bool,
+    elapsed_since_download: Duration,
+) -> (bool, DeferralDecision) {
+    let sync_is_active = sample_sync_in_progress();
+    let decision = deferral_decision(
+        InstallTrigger::Automatic,
+        sync_is_active,
+        elapsed_since_download,
+        AUTO_INSTALL_DEFER_CAP,
+    );
+    (sync_is_active, decision)
+}
+
 fn log_deferral_decision(
     trigger: InstallTrigger,
     decision: DeferralDecision,
@@ -485,7 +504,7 @@ fn log_deferral_decision(
             log(
                 "updater",
                 &format!(
-                    "forced update v{version} bypassing idle wait; pausing new sync cycles then installing"
+                    "forced update v{version} bypassing idle wait; new sync cycles paused, draining in-flight transfers, then installing"
                 ),
             );
         }
@@ -508,7 +527,7 @@ fn log_deferral_decision(
             log(
                 "updater",
                 &format!(
-                    "automatic update v{version} deferral cap reached; pausing new sync cycles for up to {}s, then installing",
+                    "automatic update v{version} deferral cap reached; new sync cycles paused, draining in-flight transfers for up to {}s, then installing",
                     IN_FLIGHT_DRAIN_TIMEOUT.as_secs()
                 ),
             );
@@ -520,6 +539,120 @@ fn log_deferral_decision(
             );
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum DeferredLogReason {
+    Focused,
+    Held(HoldReason),
+}
+
+impl std::fmt::Display for DeferredLogReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Focused => write!(f, "Focused"),
+            Self::Held(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct DeferralLogLimiter {
+    last_emitted: HashMap<DeferredLogReason, Instant>,
+}
+
+impl DeferralLogLimiter {
+    const INTERVAL: Duration = Duration::from_secs(60);
+
+    fn eligible_reasons(
+        &mut self,
+        decision: &UpdateDecision,
+        now: Instant,
+    ) -> Vec<DeferredLogReason> {
+        let reasons = match decision {
+            UpdateDecision::Defer {
+                reason: DeferReason::Focused,
+            } => vec![DeferredLogReason::Focused],
+            UpdateDecision::Defer {
+                reason: DeferReason::Held { reasons },
+            } => reasons
+                .iter()
+                .cloned()
+                .map(DeferredLogReason::Held)
+                .collect(),
+            UpdateDecision::InstallNow => Vec::new(),
+        };
+
+        reasons
+            .into_iter()
+            .filter(|reason| match self.last_emitted.get_mut(reason) {
+                Some(last) if now.duration_since(*last) < Self::INTERVAL => false,
+                Some(last) => {
+                    *last = now;
+                    true
+                }
+                None => {
+                    self.last_emitted.insert(reason.clone(), now);
+                    true
+                }
+            })
+            .collect()
+    }
+}
+
+struct AutomaticInstallGate {
+    decision: UpdateDecision,
+    reasons: Vec<HoldReason>,
+}
+
+fn automatic_install_gate_decision(
+    sync_decision: DeferralDecision,
+    focus: AppFocus,
+    holds: &UpdateHolds,
+) -> AutomaticInstallGate {
+    let after_cap = sync_decision == DeferralDecision::PauseThenInstall;
+    let relevant_holds = UpdateHolds::new();
+    for reason in holds.active() {
+        if after_cap && reason == HoldReason::UploadInFlight {
+            continue;
+        }
+        relevant_holds.acquire(reason);
+    }
+
+    // The ten-minute cap promises a bounded restart. App focus may defer during
+    // the natural idle-gap window, but cannot extend that bound; explicit
+    // meeting, transcript, and Core update holds remain authoritative.
+    let gate_focus = if after_cap {
+        AppFocus::Unfocused
+    } else {
+        focus
+    };
+    let decision = decide(UpdateTrigger::Automatic, gate_focus, &relevant_holds);
+    AutomaticInstallGate {
+        decision,
+        reasons: relevant_holds.active(),
+    }
+}
+
+async fn pause_cycles_drain_then_install<P, Guard, Paused, Drain, Install, Output>(
+    decision: DeferralDecision,
+    pause_new_cycles: P,
+    on_paused: Paused,
+    drain: Drain,
+    install: Install,
+) -> Output
+where
+    P: FnOnce() -> Guard,
+    Paused: FnOnce(),
+    Drain: Future<Output = ()>,
+    Install: Future<Output = Output>,
+{
+    let _pause = pause_new_cycles();
+    on_paused();
+    if decision == DeferralDecision::PauseThenInstall {
+        drain.await;
+    }
+    install.await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -628,12 +761,19 @@ fn discovered_update(version: String, body: Option<String>, date: Option<String>
 /// decision time on every manual install path. Mirrors the inline probe block
 /// in the automatic waiter loop.
 pub(crate) fn sync_probed_holds(holds: &crate::commands::update_gate::UpdateHoldsState) {
+    sync_probed_holds_with_sync_state(holds, sync_in_progress());
+}
+
+fn sync_probed_holds_with_sync_state(
+    holds: &crate::commands::update_gate::UpdateHoldsState,
+    sync_is_active: bool,
+) {
     if crate::commands::hq_core_state::is_core_update_in_progress() {
         holds.0.acquire(HoldReason::CoreUpdateInProgress);
     } else {
         holds.0.release(HoldReason::CoreUpdateInProgress);
     }
-    if sync_in_progress() {
+    if sync_is_active {
         holds.0.acquire(HoldReason::UploadInFlight);
     } else {
         holds.0.release(HoldReason::UploadInFlight);
@@ -1170,12 +1310,30 @@ async fn stage_plugin_update(
     Ok(info)
 }
 
-async fn drain_in_flight_transfers(timeout: Duration) {
+async fn drain_in_flight_transfers_with<F, S, Fut>(
+    timeout: Duration,
+    mut sync_is_active: F,
+    mut sleep: S,
+) -> bool
+where
+    F: FnMut() -> bool,
+    S: FnMut(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let started = Instant::now();
-    while sync_in_progress() && started.elapsed() < timeout {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    loop {
+        if !sync_is_active() {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        sleep(Duration::from_millis(250)).await;
     }
-    if sync_in_progress() {
+}
+
+async fn drain_in_flight_transfers(timeout: Duration) {
+    if !drain_in_flight_transfers_with(timeout, sync_in_progress, tokio::time::sleep).await {
         log(
             "updater",
             &format!(
@@ -1196,25 +1354,53 @@ async fn commit_staged_install_unguarded(
         .state::<DownloadedUpdate>()
         .take()
         .ok_or_else(|| "No downloaded update to install".to_string())?;
-    let version = staged.info.version.clone();
     let elapsed = staged.downloaded_at.elapsed();
-    let decision = deferral_decision(trigger, sync_in_progress(), elapsed, AUTO_INSTALL_DEFER_CAP);
-    log_deferral_decision(
+    let sync_is_active = sync_in_progress();
+    let decision = deferral_decision(trigger, sync_is_active, elapsed, AUTO_INSTALL_DEFER_CAP);
+    commit_staged_install_with_decision(
+        app,
+        staged,
         trigger,
         decision,
-        &version,
         idle_wait_remaining(elapsed, AUTO_INSTALL_DEFER_CAP),
-    );
+    )
+    .await
+}
+
+async fn commit_staged_install_from_waiter(
+    app: &AppHandle,
+    trigger: InstallTrigger,
+    decision: DeferralDecision,
+    remaining: Duration,
+) -> Result<(), String> {
+    let staged = app
+        .state::<DownloadedUpdate>()
+        .take()
+        .ok_or_else(|| "No downloaded update to install".to_string())?;
+    commit_staged_install_with_decision(app, staged, trigger, decision, remaining).await
+}
+
+async fn commit_staged_install_with_decision(
+    app: &AppHandle,
+    staged: StagedDownload,
+    trigger: InstallTrigger,
+    decision: DeferralDecision,
+    remaining: Duration,
+) -> Result<(), String> {
+    let version = staged.info.version.clone();
     if decision == DeferralDecision::WaitForIdle {
         app.state::<DownloadedUpdate>().put(staged);
         return Err(UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
-    let _pause = crate::commands::process::pause_new_sync_cycles();
-    if decision == DeferralDecision::PauseThenInstall {
-        drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT).await;
-    }
     emit_update_install_started(app, &version);
-    let result = install_staged_update(app, &staged).await;
+    let result = pause_cycles_drain_then_install(
+        decision,
+        crate::commands::process::pause_new_sync_cycles,
+        || log_deferral_decision(trigger, decision, &version, remaining),
+        drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT),
+        install_staged_update(app, &staged),
+    )
+    .await;
     if let Err(message) = &result {
         emit_update_install_failed(app, &version, message);
         app.state::<DownloadedUpdate>().put(staged);
@@ -1230,9 +1416,8 @@ fn spawn_auto_install_waiter(app: AppHandle) {
     let generation = AUTO_INSTALL_WAITER_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     tauri::async_runtime::spawn(async move {
         let _active = AutoInstallWaiterGuard::arm(generation);
-        let mut last_wait_log: Option<Instant> = None;
         let mut last_deferred_emit: Option<DeferredEmitKey> = None;
-        let mut last_gate_log: Option<Instant> = None;
+        let mut deferral_log_limiter = DeferralLogLimiter::default();
         loop {
             if AUTO_INSTALL_WAITER_GENERATION.load(Ordering::Acquire) != generation {
                 return;
@@ -1242,72 +1427,61 @@ fn spawn_auto_install_waiter(app: AppHandle) {
             }
             let elapsed = downloaded_at.elapsed();
             let remaining = idle_wait_remaining(elapsed, AUTO_INSTALL_DEFER_CAP);
-            let decision = deferral_decision(
-                InstallTrigger::Automatic,
-                sync_in_progress(),
-                elapsed,
-                AUTO_INSTALL_DEFER_CAP,
-            );
+            let (sync_is_active, decision) = sample_automatic_sync_state(sync_in_progress, elapsed);
             match decision {
                 DeferralDecision::WaitForIdle => {
                     emit_update_waiting_for_idle(&app, &version, remaining);
-                    let should_log = match last_wait_log {
-                        None => true,
-                        Some(at) => at.elapsed() >= Duration::from_secs(30),
+                    let wait_reason = UpdateDecision::Defer {
+                        reason: DeferReason::Held {
+                            reasons: vec![HoldReason::UploadInFlight],
+                        },
                     };
-                    if should_log {
+                    if !deferral_log_limiter
+                        .eligible_reasons(&wait_reason, Instant::now())
+                        .is_empty()
+                    {
                         log_deferral_decision(
                             InstallTrigger::Automatic,
                             decision,
                             &version,
                             remaining,
                         );
-                        last_wait_log = Some(Instant::now());
                     }
                     tokio::time::sleep(IDLE_POLL_INTERVAL).await;
                 }
                 DeferralDecision::InstallNow | DeferralDecision::PauseThenInstall => {
-                    log_deferral_decision(InstallTrigger::Automatic, decision, &version, remaining);
                     // Focus + hold gate. Sync external-signal holds into the
-                    // registry so it is the single source of truth, then
-                    // decide once and act on the outcome.
+                    // registry using the exact sync sample already used for
+                    // the idle-gap/cap decision. This prevents a fresh sync
+                    // cycle from vetoing an idle sample a moment later.
                     if let (Some(holds), Some(focus)) = (
                         app.try_state::<UpdateHoldsState>(),
                         app.try_state::<AppFocusState>(),
                     ) {
-                        // Sync externally-probed holds before deciding.
-                        sync_probed_holds(&holds);
-                        let gate = decide(UpdateTrigger::Automatic, focus.app_focus(), &holds.0);
-                        if let UpdateDecision::Defer { ref reason } = gate {
-                            // Log at most once per minute.
-                            let should_log = match last_gate_log {
-                                None => true,
-                                Some(at) => at.elapsed() >= Duration::from_secs(60),
-                            };
-                            if should_log {
-                                log(
-                                    "updater",
-                                    &format!("[updater] deferred: {:?}", reason),
-                                );
-                                last_gate_log = Some(Instant::now());
+                        sync_probed_holds_with_sync_state(&holds, sync_is_active);
+                        let gate =
+                            automatic_install_gate_decision(decision, focus.app_focus(), &holds.0);
+                        if let UpdateDecision::Defer { .. } = &gate.decision {
+                            for reason in deferral_log_limiter
+                                .eligible_reasons(&gate.decision, Instant::now())
+                            {
+                                log("updater", &format!("[updater] deferred: {reason}"));
                             }
                             // Emit only when (version, decision, reasons) changes.
-                            let status = crate::commands::update_gate::current_gate_status(
-                                &holds,
-                                &focus,
-                                Some(version.clone()),
-                                UpdateTrigger::Automatic,
-                            );
+                            let status = crate::commands::update_gate::UpdateGateStatus {
+                                pending_version: Some(version.clone()),
+                                decision: gate.decision.clone(),
+                                reasons: gate.reasons.clone(),
+                                focused: focus.is_focused(),
+                            };
                             let emit_key = DeferredEmitKey::new(
                                 status.pending_version.clone(),
-                                gate,
+                                gate.decision,
                                 status.reasons.clone(),
                             );
-                            if should_emit_deferred(
-                                last_deferred_emit.as_ref(),
-                                &emit_key,
-                            ) {
-                                let _ = app.emit_to("desktop-alt", UPDATE_GATE_DEFERRED_EVENT, &status);
+                            if should_emit_deferred(last_deferred_emit.as_ref(), &emit_key) {
+                                let _ =
+                                    app.emit_to("desktop-alt", UPDATE_GATE_DEFERRED_EVENT, &status);
                                 last_deferred_emit = Some(emit_key);
                             }
                             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
@@ -1326,7 +1500,14 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                         );
                         return;
                     };
-                    match commit_staged_install_unguarded(&app, InstallTrigger::Automatic).await {
+                    match commit_staged_install_from_waiter(
+                        &app,
+                        InstallTrigger::Automatic,
+                        decision,
+                        remaining,
+                    )
+                    .await
+                    {
                         Ok(()) => {
                             log("updater", "automatic update handed off successfully");
                         }
@@ -1780,7 +1961,10 @@ fn emit_shortcut_invoke(app: &AppHandle, id: &'static str) {
         return;
     };
     if let Err(e) = app.emit_to(&target, EVENT_SHORTCUT_INVOKE, ShortcutInvokePayload { id }) {
-        log("updater", &format!("shortcut:invoke emit failed ({id}): {e}"));
+        log(
+            "updater",
+            &format!("shortcut:invoke emit failed ({id}): {e}"),
+        );
     }
 }
 
@@ -2124,7 +2308,10 @@ mod tests {
             pick_shortcut_target(Some("recovery"), &all).as_deref(),
             Some("desktop-alt")
         );
-        assert_eq!(pick_shortcut_target(None, &all).as_deref(), Some("desktop-alt"));
+        assert_eq!(
+            pick_shortcut_target(None, &all).as_deref(),
+            Some("desktop-alt")
+        );
 
         // desktop-alt closed: never emit into the void when another shell
         // window is open and focused.
@@ -2142,7 +2329,10 @@ mod tests {
         );
 
         // No shell window at all → the caller logs instead of emitting.
-        assert_eq!(pick_shortcut_target(Some("recovery"), &labels(&["recovery"])), None);
+        assert_eq!(
+            pick_shortcut_target(Some("recovery"), &labels(&["recovery"])),
+            None
+        );
         assert_eq!(pick_shortcut_target(None, &[]), None);
     }
 
@@ -2472,6 +2662,168 @@ mod tests {
             DeferralDecision::PauseThenInstall
         );
         assert_eq!(IN_FLIGHT_DRAIN_TIMEOUT, Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn continuously_busy_waiter_pauses_drains_and_installs_after_cap() {
+        let sync_samples = std::cell::Cell::new(0);
+        let (sync_is_active, decision) = sample_automatic_sync_state(
+            || {
+                sync_samples.set(sync_samples.get() + 1);
+                true
+            },
+            AUTO_INSTALL_DEFER_CAP,
+        );
+        assert!(sync_is_active);
+        assert_eq!(sync_samples.get(), 1);
+        assert_eq!(decision, DeferralDecision::PauseThenInstall);
+
+        let holds = UpdateHolds::new();
+        holds.acquire(HoldReason::UploadInFlight);
+        let gate = automatic_install_gate_decision(decision, AppFocus::Focused, &holds);
+        assert_eq!(gate.decision, UpdateDecision::InstallNow);
+        assert!(gate.reasons.is_empty());
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pause_events = std::sync::Arc::clone(&events);
+        let paused_log_events = std::sync::Arc::clone(&events);
+        let drain_events = std::sync::Arc::clone(&events);
+        let install_events = std::sync::Arc::clone(&events);
+
+        let completed = pause_cycles_drain_then_install(
+            decision,
+            move || pause_events.lock().unwrap().push("paused"),
+            move || paused_log_events.lock().unwrap().push("pause-logged"),
+            async move {
+                let drained = drain_in_flight_transfers_with(
+                    Duration::from_millis(5),
+                    || sync_is_active,
+                    |_| tokio::time::sleep(Duration::from_millis(1)),
+                )
+                .await;
+                assert!(
+                    !drained,
+                    "the watch sync remains busy through the drain timeout"
+                );
+                drain_events.lock().unwrap().push("drained");
+            },
+            async move {
+                install_events.lock().unwrap().push("installed");
+                true
+            },
+        )
+        .await;
+
+        assert!(completed);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["paused", "pause-logged", "drained", "installed"]
+        );
+    }
+
+    #[test]
+    fn meeting_transcript_and_core_update_holds_still_defer_after_cap() {
+        for reason in [
+            HoldReason::MeetingRecording,
+            HoldReason::TranscriptFinishing,
+            HoldReason::CoreUpdateInProgress,
+        ] {
+            let holds = UpdateHolds::new();
+            holds.acquire(reason.clone());
+
+            let gate = automatic_install_gate_decision(
+                DeferralDecision::PauseThenInstall,
+                AppFocus::Focused,
+                &holds,
+            );
+
+            assert_eq!(
+                gate.decision,
+                UpdateDecision::Defer {
+                    reason: DeferReason::Held {
+                        reasons: vec![reason.clone()],
+                    },
+                },
+                "{reason} remains a blocker after the sync deferral cap"
+            );
+            assert_eq!(gate.reasons, vec![reason]);
+        }
+    }
+
+    #[test]
+    fn focus_defers_during_idle_wait_but_not_after_the_cap() {
+        let holds = UpdateHolds::new();
+        assert_eq!(
+            automatic_install_gate_decision(
+                DeferralDecision::InstallNow,
+                AppFocus::Focused,
+                &holds
+            )
+            .decision,
+            UpdateDecision::Defer {
+                reason: DeferReason::Focused,
+            }
+        );
+        assert_eq!(
+            automatic_install_gate_decision(
+                DeferralDecision::PauseThenInstall,
+                AppFocus::Focused,
+                &holds,
+            )
+            .decision,
+            UpdateDecision::InstallNow
+        );
+    }
+
+    #[test]
+    fn idle_gap_uses_one_sync_sample_for_decision_and_gate() {
+        let sync_samples = std::cell::Cell::new(0);
+        let (sync_is_active, decision) = sample_automatic_sync_state(
+            || {
+                sync_samples.set(sync_samples.get() + 1);
+                false
+            },
+            Duration::from_secs(5),
+        );
+        let holds = UpdateHolds::new();
+        let gate = automatic_install_gate_decision(decision, AppFocus::Unfocused, &holds);
+
+        assert!(!sync_is_active);
+        assert_eq!(decision, DeferralDecision::InstallNow);
+        assert_eq!(gate.decision, UpdateDecision::InstallNow);
+        assert_eq!(sync_samples.get(), 1);
+    }
+
+    #[test]
+    fn repeated_deferral_logs_are_bounded_per_reason() {
+        let mut limiter = DeferralLogLimiter::default();
+        let sync_defer = UpdateDecision::Defer {
+            reason: DeferReason::Held {
+                reasons: vec![HoldReason::UploadInFlight],
+            },
+        };
+        let started = Instant::now();
+        let mut emitted = 0;
+
+        for attempt in 0..4_609 {
+            let now = started + Duration::from_secs(attempt * 2);
+            emitted += limiter.eligible_reasons(&sync_defer, now).len();
+        }
+
+        assert!(
+            emitted <= 155,
+            "4,609 two-second retries emitted {emitted} lines for one reason"
+        );
+        let another_reason = UpdateDecision::Defer {
+            reason: DeferReason::Held {
+                reasons: vec![HoldReason::UploadInFlight, HoldReason::MeetingRecording],
+            },
+        };
+        let next = limiter.eligible_reasons(&another_reason, started + Duration::from_secs(9_217));
+        assert_eq!(
+            next,
+            vec![DeferredLogReason::Held(HoldReason::MeetingRecording)]
+        );
     }
 
     #[test]
