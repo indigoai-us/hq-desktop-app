@@ -813,11 +813,19 @@ async fn run_replace_from_staging_inner(
             crate::commands::hq_core_state::CoreUpdateErrorKind::Internal,
             format!("create log file {}: {error}", log_path.display()),
         )
+        .with_log_file_failure_diagnostic(
+            crate::commands::core_update_failure_diagnostics::CoreUpdateLogFailureOperation::Create,
+            error.kind(),
+        )
     })?;
     let log_file_for_stderr = log_file_for_stdout.try_clone().map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
             crate::commands::hq_core_state::CoreUpdateErrorKind::Internal,
             format!("dup log file fd: {error}"),
+        )
+        .with_log_file_failure_diagnostic(
+            crate::commands::core_update_failure_diagnostics::CoreUpdateLogFailureOperation::Duplicate,
+            error.kind(),
         )
     })?;
 

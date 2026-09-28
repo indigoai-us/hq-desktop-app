@@ -48,6 +48,10 @@ use super::core_source_stamp::{
     available_stamp_marker, local_source_stamp, persistence_stamp_tags_from_detail,
     read_local_source_stamp, ReadableLocalSourceStamp,
 };
+use super::core_update_failure_diagnostics::{
+    classify_core_update_failure_marker, core_update_log_failure_diagnostic,
+    core_update_sentry_exit_code_tag, CoreUpdateFailureMarker, CoreUpdateLogFailureOperation,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Listener, Manager};
@@ -213,6 +217,7 @@ pub(crate) struct CoreUpdateError {
     npx_resolution: Option<CoreUpdateNpxResolution>,
     managed_git_retry: ManagedGitRetryOutcome,
     pre_rescue_materialization: bool,
+    rescue_telemetry: Option<CoreUpdateRescueTelemetry>,
 }
 
 impl CoreUpdateError {
@@ -223,6 +228,7 @@ impl CoreUpdateError {
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             pre_rescue_materialization: false,
+            rescue_telemetry: None,
         }
     }
 
@@ -241,6 +247,20 @@ impl CoreUpdateError {
 
     pub(crate) fn with_pre_rescue_materialization(mut self) -> Self {
         self.pre_rescue_materialization = true;
+        self
+    }
+
+    pub(crate) fn with_log_file_failure_diagnostic(
+        mut self,
+        operation: CoreUpdateLogFailureOperation,
+        error_kind: std::io::ErrorKind,
+    ) -> Self {
+        let diagnostic = core_update_log_failure_diagnostic(operation, error_kind);
+        let mut telemetry = CoreUpdateRescueTelemetry::default();
+        telemetry.rescue_step = diagnostic.rescue_step;
+        telemetry.rescue_error_class = diagnostic.rescue_error_class;
+        telemetry.first_error_line = Some(self.message.clone());
+        self.rescue_telemetry = Some(telemetry);
         self
     }
 
@@ -323,6 +343,7 @@ pub(crate) enum RescueFailureCategory {
     DirectoryNotEmpty,
     RsyncBroken,
     PreserveRestoreFailed,
+    RestoreSymlinkRace,
     Unknown,
 }
 
@@ -348,6 +369,7 @@ impl RescueFailureCategory {
         Self::DirectoryNotEmpty,
         Self::RsyncBroken,
         Self::PreserveRestoreFailed,
+        Self::RestoreSymlinkRace,
         Self::Unknown,
     ];
 
@@ -373,6 +395,7 @@ impl RescueFailureCategory {
             Self::DirectoryNotEmpty => "directory-not-empty",
             Self::RsyncBroken => "rsync-broken",
             Self::PreserveRestoreFailed => "preserve-restore-failed",
+            Self::RestoreSymlinkRace => "restore-symlink-race",
             Self::Unknown => "unknown",
         }
     }
@@ -753,6 +776,7 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
     match error_class {
         "rsync_missing" | "rsync_failed" | "rsync_partial" => return "rsync",
         "npx_resolve_failed" | "npm_enoent" => return "npm-install",
+        "restore_symlink_race" => return "restore",
         _ => {}
     }
     if raw.lines().any(|line| {
@@ -781,6 +805,11 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
 
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
     let lower = line.to_ascii_lowercase();
+    match classify_core_update_failure_marker(line) {
+        Some(CoreUpdateFailureMarker::NpmEnoent) => return Some("npm_enoent"),
+        Some(CoreUpdateFailureMarker::RestoreSymlinkRace) => return Some("restore_symlink_race"),
+        None => {}
+    }
     let trimmed = lower.trim_start();
     let diagnostic_line = trimmed.starts_with("error")
         || trimmed.starts_with("fatal")
@@ -1201,6 +1230,14 @@ const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
 ];
 
 fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
+    match classify_core_update_failure_marker(stderr) {
+        Some(CoreUpdateFailureMarker::NpmEnoent) => return RescueFailureCategory::NotFound,
+        Some(CoreUpdateFailureMarker::RestoreSymlinkRace) => {
+            return RescueFailureCategory::RestoreSymlinkRace
+        }
+        None => {}
+    }
+
     let stderr = stderr.to_ascii_lowercase();
     if let Some(category) = stderr.lines().find_map(|line| {
         match line.strip_prefix("hq_rescue_failure_kind=").map(str::trim) {
@@ -1353,7 +1390,7 @@ pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdate
 
     CoreUpdateFailureDetails {
         rescue_stderr_tail,
-        rescue_telemetry: None,
+        rescue_telemetry: error.rescue_telemetry.as_ref(),
         rescue_failure_category: classify_core_update_error(
             error.kind(),
             detail,
@@ -2232,8 +2269,12 @@ fn send_core_update_failure_report(
                 sentry_scope.set_tag("channel", channel_label(report.channel));
                 sentry_scope.set_tag("platform", core_update_sentry_platform());
                 sentry_scope.set_tag("source", core_update_sentry_source(report.source));
-                sentry_scope.set_tag("exitCode", core_update_sentry_exit_code(report.exit_code));
-                sentry_scope.set_tag("exit_code", core_update_sentry_exit_code(report.exit_code));
+                let exit_code = core_update_sentry_exit_code_tag(
+                    report.exit_code,
+                    report.rescue_telemetry.rescue_step,
+                );
+                sentry_scope.set_tag("exitCode", exit_code);
+                sentry_scope.set_tag("exit_code", exit_code);
                 sentry_scope.set_tag("managedGitRetryOutcome", report.managed_git_retry.label());
                 sentry_scope.set_tag("rescue_step", report.rescue_telemetry.rescue_step);
                 sentry_scope.set_tag(
@@ -2354,7 +2395,8 @@ fn core_update_rescue_step_for_category(category: RescueFailureCategory) -> &'st
         RescueFailureCategory::LockContention => "npm-cache",
         RescueFailureCategory::RsyncBroken | RescueFailureCategory::RsyncPartialTransfer => "rsync",
         RescueFailureCategory::NpxResolveFailed => "npm-install",
-        RescueFailureCategory::PreserveRestoreFailed => "restore",
+        RescueFailureCategory::PreserveRestoreFailed
+        | RescueFailureCategory::RestoreSymlinkRace => "restore",
         _ => "unknown",
     }
 }
@@ -2364,6 +2406,7 @@ fn core_update_rescue_error_class_for_category(category: RescueFailureCategory) 
         RescueFailureCategory::RsyncBroken => "rsync_failed",
         RescueFailureCategory::RsyncPartialTransfer => "rsync_partial",
         RescueFailureCategory::NpxResolveFailed => "npx_resolve_failed",
+        RescueFailureCategory::RestoreSymlinkRace => "restore_symlink_race",
         _ => "unknown",
     }
 }

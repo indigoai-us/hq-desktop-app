@@ -21,6 +21,7 @@ pub mod config;
 pub mod conflicts;
 pub mod content;
 pub(crate) mod core_source_stamp;
+pub(crate) mod core_update_failure_diagnostics;
 pub mod daemon;
 pub mod desktop_alt;
 pub mod desktop_auth;
