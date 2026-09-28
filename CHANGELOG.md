@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- HQ retries a temporary session refresh failure at launch before showing the sign-in screen.
+- If HQ cannot refresh saved credentials at launch, it keeps the loading screen up and checks again every five seconds. It shows sign-in after Cognito confirms the credentials are invalid.
 - History search now requires 2 to 100 characters, matching the server limit.
 
 ## [0.10.352] — 2026-09-28

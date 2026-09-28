@@ -54,11 +54,10 @@ pub use hq_desktop_core::dm_notify::{
     build_threads_url, classify_send_response, clear_in_flight, diff_requests,
     dm_notifications_enabled, effective_reply_count, enqueue_mention_fetches, esc_thread_seg,
     filter_human_visible_events, filter_mentions_by_age, is_agent_audience, is_mention_of_me,
-    mention_cursor_after_fetch,
-    mention_notification_body, mention_notification_title, mention_route, mention_summary_title,
-    normalize_scope, partition_unnotified, plan_mention_cap, read_cursor_entry_for_account,
-    requeue_failed_mention_fetches, respond_action_path, respond_action_state,
-    should_spawn_mention_detect, should_suppress_duplicate_event,
+    mention_cursor_after_fetch, mention_notification_body, mention_notification_title,
+    mention_route, mention_summary_title, normalize_scope, partition_unnotified, plan_mention_cap,
+    read_cursor_entry_for_account, requeue_failed_mention_fetches, respond_action_path,
+    respond_action_state, should_spawn_mention_detect, should_suppress_duplicate_event,
     should_suppress_mention_for_open_channel, take_mention_fetch_batch, take_unseen_message_ids,
     try_set_in_flight, write_cursor_entry_for_account, ActiveConversationInner,
     ActiveConversationState, ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent,
@@ -821,10 +820,23 @@ pub(crate) async fn resolve_notification_auth_snapshot<R: Runtime>(
 pub(crate) async fn resolve_notification_credentials<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(cognito::CognitoTokens, NotificationAuthSnapshot), String> {
-    let started_generation = notification_session_generation(app)
+    resolve_notification_credentials_classified(app)
         .await
-        .ok_or_else(|| "Notification session state is unavailable".to_string())?;
-    let tokens = match cognito::get_valid_tokens().await {
+        .map_err(|error| error.message)
+}
+
+pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(cognito::CognitoTokens, NotificationAuthSnapshot), cognito::CognitoTokenResolutionError>
+{
+    let started_generation = notification_session_generation(app).await.ok_or_else(|| {
+        cognito::CognitoTokenResolutionError {
+            message: "Notification session state is unavailable".to_string(),
+            refresh_failure_class: None,
+            requires_reauth: false,
+        }
+    })?;
+    let tokens = match cognito::get_valid_tokens_classified().await {
         Ok(tokens) => tokens,
         Err(error) => {
             // A refresh transport failure is recoverable and must keep its
@@ -844,7 +856,11 @@ pub(crate) async fn resolve_notification_credentials<R: Runtime>(
         tokens.access_token.clone(),
     )
     .await
-    .ok_or_else(|| "Authentication changed while resolving credentials".to_string())?;
+    .ok_or_else(|| cognito::CognitoTokenResolutionError {
+        message: "Authentication changed while resolving credentials".to_string(),
+        refresh_failure_class: None,
+        requires_reauth: false,
+    })?;
     Ok((tokens, snapshot))
 }
 

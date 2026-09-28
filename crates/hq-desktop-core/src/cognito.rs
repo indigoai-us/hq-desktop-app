@@ -62,6 +62,62 @@ pub struct CognitoRefreshError {
     pub message: String,
     pub requires_reauth: bool,
     pub status_code: Option<u16>,
+    pub failure_class: CognitoRefreshFailureClass,
+}
+
+/// Stable, low-cardinality classification for refresh diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CognitoRefreshFailureClass {
+    Network,
+    Timeout,
+    Http4xx,
+    Http5xx,
+    HttpOther,
+    ResponseDecode,
+    Unknown,
+}
+
+impl CognitoRefreshFailureClass {
+    pub const fn as_tag(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Timeout => "timeout",
+            Self::Http4xx => "http_4xx",
+            Self::Http5xx => "http_5xx",
+            Self::HttpOther => "http_other",
+            Self::ResponseDecode => "response_decode",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CognitoTokenResolutionError {
+    pub message: String,
+    pub refresh_failure_class: Option<CognitoRefreshFailureClass>,
+    pub requires_reauth: bool,
+}
+
+impl CognitoTokenResolutionError {
+    fn plain(message: String) -> Self {
+        Self {
+            message,
+            refresh_failure_class: None,
+            requires_reauth: false,
+        }
+    }
+
+    fn refresh(
+        message: String,
+        failure_class: CognitoRefreshFailureClass,
+        requires_reauth: bool,
+    ) -> Self {
+        Self {
+            message,
+            refresh_failure_class: Some(failure_class),
+            requires_reauth,
+        }
+    }
 }
 
 impl fmt::Display for CognitoRefreshError {
@@ -83,6 +139,14 @@ fn refresh_status_is_retryable(status: u16) -> bool {
 
 fn refresh_status_requires_reauth(status: u16) -> bool {
     (400..500).contains(&status) && status != 408 && status != 429
+}
+
+fn refresh_failure_class_from_status(status: u16) -> CognitoRefreshFailureClass {
+    match status {
+        400..=499 => CognitoRefreshFailureClass::Http4xx,
+        500..=599 => CognitoRefreshFailureClass::Http5xx,
+        _ => CognitoRefreshFailureClass::HttpOther,
+    }
 }
 
 fn cognito_error_code(body: &str) -> Option<String> {
@@ -164,6 +228,31 @@ pub struct AuthState {
     pub email: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
+}
+
+/// Native auth classification shared by startup routing and diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthSessionStatus {
+    Active,
+    CredentialsAbsent,
+    CredentialsInvalid,
+    RefreshTemporarilyUnavailable,
+    /// Usable credentials that belong to a fleet agent or outpost, not a person.
+    NonHumanPrincipal,
+}
+
+/// Convert the authoritative native session classification into the startup
+/// command result. Only a transient refresh failure is unresolved; a
+/// definitively invalid credential remains a signed-out verdict.
+pub fn startup_auth_state_result(
+    state: AuthState,
+    status: &AuthSessionStatus,
+) -> Result<AuthState, String> {
+    if *status == AuthSessionStatus::RefreshTemporarilyUnavailable {
+        return Err("HQ Work could not refresh credentials while offline or unavailable.".into());
+    }
+    Ok(state)
 }
 
 #[derive(Debug)]
@@ -682,6 +771,12 @@ pub async fn get_valid_tokens() -> Result<CognitoTokens, String> {
     resolve_tokens(false, COGNITO_ENDPOINT).await
 }
 
+/// Return the same validated tokens as `get_valid_tokens`, preserving only a
+/// bounded refresh-failure class for startup diagnostics.
+pub async fn get_valid_tokens_classified() -> Result<CognitoTokens, CognitoTokenResolutionError> {
+    resolve_tokens_classified(false, COGNITO_ENDPOINT).await
+}
+
 /// Refresh Cognito tokens even when the current access token has not expired.
 /// Use this when a token claim may have changed after a server-side account
 /// update, such as email verification.
@@ -693,10 +788,20 @@ async fn resolve_tokens(
     force_refresh: bool,
     cognito_endpoint: &str,
 ) -> Result<CognitoTokens, String> {
+    resolve_tokens_classified(force_refresh, cognito_endpoint)
+        .await
+        .map_err(|error| error.message)
+}
+
+async fn resolve_tokens_classified(
+    force_refresh: bool,
+    cognito_endpoint: &str,
+) -> Result<CognitoTokens, CognitoTokenResolutionError> {
     for _ in 0..VALID_TOKEN_RESOLUTION_ATTEMPTS {
         let tokens = get_tokens()
-            .await?
-            .ok_or_else(|| "Not signed in".to_string())?;
+            .await
+            .map_err(CognitoTokenResolutionError::plain)?
+            .ok_or_else(|| CognitoTokenResolutionError::plain("Not signed in".to_string()))?;
         if !force_refresh && !is_expired(&tokens) {
             return Ok(tokens);
         }
@@ -706,32 +811,59 @@ async fn resolve_tokens(
             {
                 Ok(tokens) => tokens,
                 Err(err) => {
+                    let failure_class = err.failure_class;
+                    let requires_reauth = err.requires_reauth;
                     if err.requires_reauth {
-                        invalidate_tokens(&tokens).await?;
+                        invalidate_tokens(&tokens).await.map_err(|message| {
+                            CognitoTokenResolutionError::refresh(
+                                message,
+                                failure_class,
+                                requires_reauth,
+                            )
+                        })?;
                     }
-                    match get_tokens().await? {
+                    match get_tokens().await.map_err(|message| {
+                        CognitoTokenResolutionError::refresh(
+                            message,
+                            failure_class,
+                            requires_reauth,
+                        )
+                    })? {
                         Some(current) if current != tokens => {
                             if !is_expired(&current) {
                                 return Ok(current);
                             }
                             continue;
                         }
-                        _ => return Err(REAUTH_MESSAGE.to_string()),
+                        _ => {
+                            return Err(CognitoTokenResolutionError::refresh(
+                                REAUTH_MESSAGE.to_string(),
+                                failure_class,
+                                requires_reauth,
+                            ))
+                        }
                     }
                 }
             };
 
         match persist_refreshed_tokens_if_current(&tokens, &refreshed)
-            .await?
+            .await
+            .map_err(CognitoTokenResolutionError::plain)?
             .into_current_tokens()
         {
             Some(current) if !is_expired(&current) => return Ok(current),
             Some(_) => continue,
-            None => return Err("Not signed in".to_string()),
+            None => {
+                return Err(CognitoTokenResolutionError::plain(
+                    "Not signed in".to_string(),
+                ))
+            }
         }
     }
 
-    Err(REAUTH_MESSAGE.to_string())
+    Err(CognitoTokenResolutionError::plain(
+        REAUTH_MESSAGE.to_string(),
+    ))
 }
 
 /// Get a non-expired access token, refreshing with CAS-safe persistence if
@@ -984,6 +1116,11 @@ async fn refresh_access_token_classified_at(
                     message: format!("Cognito refresh request failed: {err}"),
                     requires_reauth: false,
                     status_code: None,
+                    failure_class: if err.is_timeout() {
+                        CognitoRefreshFailureClass::Timeout
+                    } else {
+                        CognitoRefreshFailureClass::Network
+                    },
                 };
                 if attempt + 1 < REFRESH_ATTEMPTS {
                     wait_before_refresh_retry(attempt).await;
@@ -1004,6 +1141,7 @@ async fn refresh_access_token_classified_at(
                 message: format!("Cognito refresh failed ({status}): {body_text}"),
                 requires_reauth,
                 status_code: Some(status),
+                failure_class: refresh_failure_class_from_status(status),
             };
             if retryable && attempt + 1 < REFRESH_ATTEMPTS {
                 wait_before_refresh_retry(attempt).await;
@@ -1020,6 +1158,11 @@ async fn refresh_access_token_classified_at(
                     message: format!("Failed to parse Cognito response: {err}"),
                     requires_reauth: false,
                     status_code: None,
+                    failure_class: if timed_out {
+                        CognitoRefreshFailureClass::Timeout
+                    } else {
+                        CognitoRefreshFailureClass::ResponseDecode
+                    },
                 };
                 if timed_out && attempt + 1 < REFRESH_ATTEMPTS {
                     wait_before_refresh_retry(attempt).await;
@@ -1046,6 +1189,7 @@ async fn refresh_access_token_classified_at(
         message: REAUTH_MESSAGE.to_string(),
         requires_reauth: false,
         status_code: None,
+        failure_class: CognitoRefreshFailureClass::Unknown,
     })
 }
 
@@ -1058,6 +1202,50 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporary_refresh_failure_is_not_a_signed_out_startup_verdict() {
+        let result = startup_auth_state_result(
+            AuthState {
+                authenticated: false,
+                expires_at: None,
+                account_id: None,
+                email: None,
+                display_name: None,
+            },
+            &AuthSessionStatus::RefreshTemporarilyUnavailable,
+        );
+
+        assert!(
+            result.is_err(),
+            "temporary refresh failure with saved credentials must stay unresolved"
+        );
+    }
+
+    #[test]
+    fn invalid_credentials_remain_a_signed_out_startup_verdict() {
+        let result = startup_auth_state_result(
+            AuthState {
+                authenticated: false,
+                expires_at: None,
+                account_id: None,
+                email: None,
+                display_name: None,
+            },
+            &AuthSessionStatus::CredentialsInvalid,
+        )
+        .expect("invalid credentials must route to sign-in");
+
+        assert!(!result.authenticated);
+    }
+
+    #[test]
+    fn refresh_failure_statuses_map_to_low_cardinality_buckets() {
+        assert_eq!(refresh_failure_class_from_status(401).as_tag(), "http_4xx");
+        assert_eq!(refresh_failure_class_from_status(503).as_tag(), "http_5xx");
+        assert_eq!(CognitoRefreshFailureClass::Timeout.as_tag(), "timeout");
+        assert_eq!(CognitoRefreshFailureClass::Network.as_tag(), "network");
+    }
     use std::sync::mpsc;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -1257,7 +1445,13 @@ mod tests {
             .mount(&unavailable)
             .await;
 
-        assert!(resolve_tokens(false, &unavailable.uri()).await.is_err());
+        let failure = resolve_tokens_classified(false, &unavailable.uri())
+            .await
+            .expect_err("offline refresh exhaustion stays classified");
+        assert_eq!(
+            failure.refresh_failure_class,
+            Some(CognitoRefreshFailureClass::Http5xx)
+        );
         assert!(get_tokens()
             .await
             .expect("read preserved offline token")
