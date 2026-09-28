@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.351] — 2026-09-28
+
 - The New bot wizard and the setup assistant now offer "Set up with Claude"
   and "Set up with ChatGPT" buttons when the app finds no coding tool on this
   computer. Clicking one opens the person's assistant desktop app with a
