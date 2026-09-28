@@ -8,6 +8,14 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When a company is over a Starter plan limit, a refused action now says why
+  in plain words and offers an "Upgrade plan" link. A chat attachment that
+  goes over the storage limit reads, for example, "Could not upload
+  report.pdf: New files are paused while Acme is over its Starter limits.
+  Storage: 10.2 GB of 10 GB used." Accepting an invite to a company that is
+  at its member limit shows the same kind of sentence instead of raw server
+  JSON. Plan-limit refusals are no longer reported as crashes.
+
 - With `desktop.push-events` enabled, realtime events trigger share and direct-message refreshes. If the connection drops, the app checks every five minutes, including while all windows are hidden, so tray launches retain a notification long-stop. Scheduled checks pause while push is connected. When the flag is off, the existing 60-second cadence continues.
 - Core update diagnostics now group deferred baseline refreshes separately from local
   baseline read or write failures.

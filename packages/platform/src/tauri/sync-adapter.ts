@@ -46,6 +46,7 @@ import {
   retryThrottled,
   type RequestPolicyOptions,
 } from '../request-policy.js';
+import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -318,23 +319,14 @@ export function createSyncPlatformAdapter(
       const retryAfter =
         typeof rec.retryAfter === 'string' ? rec.retryAfter : null;
       if (rec.status < 200 || rec.status >= 300) {
-        let code = `http-${rec.status}`;
-        let message = `${method} ${path} failed`;
-        try {
-          const parsed = text ? JSON.parse(text) : null;
-          const err = asRecord(parsed);
-          if (err) {
-            if (typeof err.code === 'string' && err.code.trim()) {
-              code = err.code.trim();
-            }
-            if (typeof err.error === 'string' && err.error.trim()) {
-              message = err.error.trim();
-            }
-          }
-        } catch {
-          /* keep http-status defaults */
-        }
-        return { result: failure(code, message), status: rec.status, retryAfter };
+        // A plan-limit 402 keeps the server's sentence and upgrade link; it is
+        // an expected refusal, so it is returned, never reported to Sentry.
+        const details = parseHqProErrorBody(
+          rec.status,
+          text,
+          `${method} ${path} failed`,
+        );
+        return { result: hqProFailure(details), status: rec.status, retryAfter };
       }
       if (rec.status === 204 || !text.trim()) {
         return { result: ok(undefined as T), status: rec.status };

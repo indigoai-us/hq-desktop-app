@@ -4,6 +4,8 @@ export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./host-computer-noun.js";
 export * from "./library-shelf.js";
+// Plan-limit refusal parsing + upgrade-link allowlist (hard-stop-readiness).
+export * from "./plan-limit.js";
 export {
   CLAUDE_PROVIDER_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,

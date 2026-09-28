@@ -89,6 +89,7 @@ pub mod notify_authz;
 pub mod notify_prefs;
 pub mod oauth;
 pub mod paths;
+pub mod plan_limit;
 pub mod prewarm;
 pub mod process_stdio;
 pub mod process_types;

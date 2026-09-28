@@ -3532,6 +3532,12 @@ pub fn is_fatal_runner_signature(line: &str) -> bool {
 ///   - expected per-file ACL-scope skips (`is_expected_acl_scope_skip`): a
 ///     `403 SCOPE_EXCEEDS_PARENT` the user resolves by granting the path, not a
 ///     server fault — the dominant HQ-SYNC-WEB-6 noise source.
+///   - plan-limit refusals (`plan_limit::is_plan_limit_refusal_message`): a 402
+///     `plan_limit_reached` / `PLAN_LIMIT_EXCEEDED` from hq-pro's hard stop is
+///     the product telling a Starter company it is over a limit. The user fixes
+///     it by upgrading or trimming, so it is shown, never reported to Sentry
+///     (hard-stop-readiness US-018). Runners before hq-cloud US-012 surface the
+///     refusal as an error event; this keeps those out of the alert path too.
 ///
 /// Everything else (EISDIR, other 403/404 auth, 5xx-after-retries,
 /// `UnknownError`, anything unrecognised) is treated as a real defect and keeps
@@ -3539,7 +3545,8 @@ pub fn is_fatal_runner_signature(line: &str) -> bool {
 pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
     !(is_entity_not_yet_provisioned(err)
         || is_transient_network_error(&err.message)
-        || is_expected_acl_scope_skip(&err.message))
+        || is_expected_acl_scope_skip(&err.message)
+        || crate::plan_limit::is_plan_limit_refusal_message(&err.message))
 }
 
 /// Pure policy: how should a *non-zero* runner exit finish?
@@ -9402,6 +9409,43 @@ mod tests {
         // A conventional small exit code is Ordinary, not a fault → suppressible.
         assert!(!is_windows_fault_exit(Some(2)));
         assert!(runner_exit_is_file_lock(Some(2), None, false, &ebusy));
+    }
+
+    #[test]
+    fn plan_limit_refusals_are_not_alertable() {
+        // hard-stop-readiness US-018: hq-cloud `describeError` output for a
+        // hard-stop 402, before and after US-004 adds `code` to the body.
+        for message in [
+            "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 New files are paused while Acme is over its Starter limits.",
+            "VaultClientError http=402 New files are paused while Acme is over its Starter limits.",
+            "VaultClientError code=PLAN_LIMIT_REACHED New files are paused while your personal HQ is over its limits.",
+        ] {
+            for path in ["(company)", "knowledge/notes.md"] {
+                let err = SyncErrorEvent {
+                    company: Some("acme".to_string()),
+                    path: path.to_string(),
+                    message: message.to_string(),
+                };
+                assert!(!is_alertable_error(&err), "{path}: {message}");
+            }
+        }
+        // A plain 403 is still a defect.
+        let forbidden = SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "VaultClientError http=403 Forbidden".to_string(),
+        };
+        assert!(is_alertable_error(&forbidden));
+
+        // A run whose only errors were plan-limit refusals never alerts.
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "knowledge/notes.md".to_string(),
+            message: "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 New files are paused while Acme is over its Starter limits.".to_string(),
+        });
+        assert!(totals.saw_error);
+        assert!(!totals.saw_alertable_error);
     }
 
     #[test]
