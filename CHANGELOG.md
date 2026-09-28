@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Automatic updates now install after the idle cap even when sync stays busy.
+  HQ pauses new sync cycles and waits up to a minute for active transfers before
+  installing. A meeting recording, transcript processing, or another core
+  update can still delay installation.
 - The New bot wizard no longer replaces the app with a "Something went wrong"
   screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
   list could hold the same folder twice (on 64-bit Windows the Program Files
