@@ -17,7 +17,7 @@
    * is reached, so a company bot is never made under a name nobody has seen.
    */
   import { onMount, untrack } from "svelte";
-  import { hostComputerNoun } from "@hq/platform";
+  import { hostComputerNoun, primaryEnterKeyHint } from "@hq/platform";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -146,6 +146,12 @@
    * mid-flow.
    */
   const hostNoun = hostComputerNoun();
+  /**
+   * The "submit form with primary modifier + Enter" hint on the footer. Reads
+   * "⌘↵" on macOS and "Ctrl+Enter" on Windows / Linux so a person on a PC
+   * never sees a Mac key symbol they cannot press.
+   */
+  const primaryEnterHint = primaryEnterKeyHint();
   const companies = $derived(agentTargets ?? []);
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
@@ -509,7 +515,7 @@
         {prevStep(step, draft) ? "Back" : "Cancel"}
       </button>
       <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>
-      <span class="flow-hint" aria-hidden="true">⌘↵ TO CREATE</span>
+      <span class="flow-hint" aria-hidden="true">{primaryEnterHint} TO CREATE</span>
       <button
         type="button"
         class="flow-primary"

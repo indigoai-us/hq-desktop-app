@@ -181,3 +181,35 @@ describe("a host that reports no status at all", () => {
     expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
   });
 });
+
+describe("a searched list that carries repeated folders (Windows crash regression)", () => {
+  // The exact shape a 64-bit Windows machine produced when the persona hit
+  // the crash: `ProgramFiles` and `ProgramW6432` resolved to the same folder
+  // and landed identical entries in `searched`. The wizard's keyed each
+  // block used to throw `svelte.dev/e/each_key_duplicate` and replace the
+  // whole app with the "Something went wrong" boundary. Any regression
+  // shows up here as either a thrown error during mount or two rendered
+  // <li> for the same folder.
+  const REPEATED: RuntimeStatus = {
+    state: "notInstalled",
+    searched: [
+      "C:\\Program Files\\nodejs",
+      "C:\\Program Files\\nodejs",         // exact repeat
+      "C:\\program files\\nodejs",         // case-only repeat
+      "C:\\Program Files\\nodejs\\",       // trailing-slash repeat
+      "C:\\Program Files (x86)\\nodejs",
+    ],
+  };
+
+  it("renders the step and shows each folder exactly once", async () => {
+    await openHome(REPEATED);
+
+    const searched = q('[data-testid="chat-bot-runtime-searched"]');
+    expect(searched).toBeTruthy();
+    const items = Array.from(searched!.querySelectorAll("li")).map((li) => li.textContent ?? "");
+    expect(items).toEqual([
+      "C:\\Program Files\\nodejs",
+      "C:\\Program Files (x86)\\nodejs",
+    ]);
+  });
+});

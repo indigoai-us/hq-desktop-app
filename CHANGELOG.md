@@ -10,6 +10,20 @@ The release moves it under the version it ships in.
 
 - Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
 
+- The New bot wizard no longer replaces the app with a "Something went wrong"
+  screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
+  list could hold the same folder twice (on 64-bit Windows the Program Files
+  and ProgramW6432 env vars point at the same place), and the wizard's list
+  rendering crashed on the repeat. The list is now deduplicated before it is
+  shown, and the folder appears once.
+- Small copy fixes in the New bot wizard for Windows: the Memory choice now
+  reads "This PC only" instead of "This Mac only", and the create-form
+  keyboard hint reads "Ctrl+Enter TO CREATE" instead of the Mac symbol on a
+  PC.
+- Core updates now retry with the bundled Git when the system Git is too old for partial clone filtering.
+- Removed an unused internal script left over from the old installer. No change to how the app updates.
+- After desktop sign-in, the browser tab no longer leaves the one-time sign-in code in the address bar or history: the page clears it and closes itself where the browser allows.
+
 ## [0.10.349] — 2026-09-28
 
 - The returning-user setup welcome uses current HQ Desktop wording, and the

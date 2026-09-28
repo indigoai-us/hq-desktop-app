@@ -51,6 +51,33 @@ export function runtimeStatusOf(
   return status;
 }
 
+/**
+ * Remove repeated directory strings while preserving first-seen order.
+ *
+ * The "Where HQ looked" list is rendered as a keyed Svelte `each` block: a
+ * repeated key throws `svelte.dev/e/each_key_duplicate` and blanks the wizard
+ * to the error boundary. The Rust source now dedupes too, but the UI must
+ * never rely on a caller — a stale host, an older build, or a future third
+ * source of the payload could still hand us repeats. Comparison is
+ * case-insensitive with one optional trailing separator trimmed, which is
+ * how Windows names the same folder in two shapes.
+ *
+ * Exported so tests can pin the crash-fix.
+ */
+export function dedupeSearchedDirs(dirs: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const dir of dirs) {
+    if (typeof dir !== "string") continue;
+    const trimmed = dir.replace(/[\\/]$/, "");
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(dir);
+  }
+  return out;
+}
+
 /** Parse whatever the host command returned into a status, or null. */
 export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
   if (!raw || typeof raw !== "object") return null;
@@ -60,11 +87,15 @@ export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
       return { state: "signedIn" };
     case "signedOut":
       return { state: "signedOut" };
-    case "notInstalled":
+    case "notInstalled": {
+      const listed = Array.isArray(rec.searched)
+        ? rec.searched.filter((d): d is string => typeof d === "string")
+        : [];
       return {
         state: "notInstalled",
-        searched: Array.isArray(rec.searched) ? rec.searched.filter((d): d is string => typeof d === "string") : [],
+        searched: dedupeSearchedDirs(listed),
       };
+    }
     case "probeFailed":
       return { state: "probeFailed", reason: typeof rec.reason === "string" ? rec.reason : "" };
     default:
