@@ -60,10 +60,10 @@ describe("tourSteps", () => {
 
   it("wires the host actions to the right steps", () => {
     expect(tourSteps().map((s) => s.onEnter)).toEqual([
-      "restore",
       "none",
-      "restore",
-      "restore",
+      "none",
+      "none",
+      "none",
       "none",
       "none",
       "open-launch-menu",

@@ -5372,10 +5372,10 @@
    * palette) that starts by itself once on a fresh install, after the shell
    * is up and #welcome or the setup bot's DM is on screen, and can be
    * replayed from the command palette. Model and geometry live in
-   * `tour/guided-tour.ts`; this block keeps the conversation view (and its
-   * sidebar) on screen for the steps that need it, holds the titlebar Launch
-   * menu open, opens (and closes) the command palette, persists "seen" the
-   * moment it starts showing, and returns the person to where they were.
+   * `tour/guided-tour.ts`; this block holds the titlebar Launch menu open,
+   * opens (and closes) the command palette and persists "seen" the moment it
+   * starts showing. It never navigates: starting, Done and Skip leave the
+   * route and the selected conversation exactly as they are.
    */
   /** The host's explicit setup-status answer; null until (or unless) it answers. */
   let tourHostStatus = $state<{ owed: boolean; shown: boolean } | null>(null);
@@ -5383,8 +5383,6 @@
   let tourState = $state<TourState>(TOUR_IDLE);
   let tourStartedThisSession = false;
   let tourAutoTimer = 0;
-  /** Where the person was when the tour started (tracked while on step 1). */
-  let tourReturnTo: NavigationDestination | null = null;
   const tourSetupBotUid = $derived(existingSetupBot?.agentUid ?? null);
   const tourVaults = $derived(vaultsFor(companies));
   const tourStepList = $derived(
@@ -5424,7 +5422,6 @@
   function startGuidedTour(): void {
     if (adapter.kind === "web" || tourState.status === "active") return;
     tourStartedThisSession = true;
-    tourReturnTo = currentShellDestination();
     tourState = startTourState();
     markTourSeen();
   }
@@ -5439,13 +5436,10 @@
     }
   }
 
-  /** Done or Skip: close what the tour opened and land back where it started. */
+  /** Done or Skip: close the layer and what the tour opened; stay put. */
   function endGuidedTour(): void {
-    const back = tourReturnTo;
-    tourReturnTo = null;
     tourState = TOUR_IDLE;
     closeTourSurfaces(null);
-    if (back) void navigate(back);
   }
 
   function tourNext(): void {
@@ -5479,18 +5473,9 @@
     return () => clearTimeout(tourAutoTimer);
   });
 
-  // While on step 1, keep the return point current: the setup bot may open
-  // its DM by itself after the tour started, and that is where to land.
-  $effect(() => {
-    if (tourIndex !== 0 || view !== "conversation") return;
-    void selectedRow?.id;
-    tourReturnTo = untrack(() => currentShellDestination());
-  });
-
   // Entering a step (keyed on the index, so a re-derived step list does not
   // re-run it): close what the previous step opened, then do this step's
-  // action. The conversation view is where the sidebar lives, so steps that
-  // point into it put it back first.
+  // action.
   $effect(() => {
     const index = tourIndex;
     if (index < 0) return;
@@ -5498,19 +5483,10 @@
       const step = tourStepList[index];
       if (!step) return;
       closeTourSurfaces(step.onEnter);
-      switch (step.onEnter) {
-        case "restore":
-          if (view !== "conversation" && tourReturnTo) void navigate(tourReturnTo);
-          return;
-        case "open-palette":
-          if (!paletteOpen) {
-            cheatSheetOpen = false;
-            paletteOpen = true;
-            tourOpenedPalette = true;
-          }
-          return;
-        default:
-          return;
+      if (step.onEnter === "open-palette" && !paletteOpen) {
+        cheatSheetOpen = false;
+        paletteOpen = true;
+        tourOpenedPalette = true;
       }
     });
   });

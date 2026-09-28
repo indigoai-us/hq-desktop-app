@@ -61,8 +61,9 @@ const q = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${i
 
 // One mount per file: the sidebar's boot pick keeps module-level state.
 describe("DesktopApp guided tour replay", () => {
-  it("does not auto-start once shown, and the palette replays it", async () => {
+  it("does not auto-start once shown; the palette replays it without moving the person", async () => {
     const markWelcomeTourShown = vi.fn(async () => ok(undefined));
+    const onselectrow = vi.fn();
     const adapter = {
       kind: "desktop",
       isAvailable: () => false,
@@ -71,6 +72,7 @@ describe("DesktopApp guided tour replay", () => {
         listContacts: async () => ok({ contacts: [] }),
         listChannelMembers: async () => ok({ members: [] }),
         fetchChannel: async () => ({ ok: false as const, reason: "unavailable" }),
+        fetchDmThread: async () => ({ ok: false as const, reason: "unavailable" }),
       },
       files: { listDir: async () => ok([]) },
       appShell: { setActiveCompany: async () => ok(undefined) },
@@ -101,6 +103,7 @@ describe("DesktopApp guided tour replay", () => {
         self: { uid: "prs_test", displayName: "Ada Lovelace", email: "ada@example.com" },
         coreFixtures: false,
         companies: [ACME],
+        onselectrow,
       },
     });
     await settle();
@@ -111,6 +114,16 @@ describe("DesktopApp guided tour replay", () => {
     await new Promise((r) => setTimeout(r, TOUR_AUTO_START_DELAY_MS + 200));
     await settle();
     expect(q("guided-tour-card")).toBeNull();
+
+    // The person is on a DM, not #welcome, when they replay the tour.
+    const dm = host.querySelector<HTMLButtonElement>('.chat-row[data-conversation-id^="dm:person-"]')!;
+    const dmId = dm.getAttribute("data-conversation-id")!;
+    dm.click();
+    await settle();
+    const onDm = () => host.querySelector(`.chat-row[data-conversation-id="${dmId}"].active`);
+    await vi.waitFor(() => expect(onDm()).toBeTruthy(), { timeout: 2000, interval: 20 });
+    const selections = onselectrow.mock.calls.length;
+    const backBefore = q("titlebar-back")?.outerHTML;
 
     window.dispatchEvent(
       new KeyboardEvent("keydown", {
@@ -130,10 +143,19 @@ describe("DesktopApp guided tour replay", () => {
     });
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(markWelcomeTourShown).toHaveBeenCalledTimes(1);
+    // Starting did not navigate.
+    expect(onDm()).toBeTruthy();
+    expect(onselectrow.mock.calls.length).toBe(selections);
 
+    // Escape skips; the DM stays selected and nothing navigates.
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await settle();
+    await new Promise((r) => setTimeout(r, 100));
+    await settle();
     expect(q("guided-tour-card")).toBeNull();
-    expect(q("setup-channel-intro")).toBeTruthy();
+    expect(onDm()).toBeTruthy();
+    expect(q("setup-channel-intro")).toBeNull();
+    expect(onselectrow.mock.calls.length).toBe(selections);
+    expect(q("titlebar-back")?.outerHTML).toBe(backBefore);
   }, 20_000);
 });

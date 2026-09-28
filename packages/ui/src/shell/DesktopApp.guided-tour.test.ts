@@ -7,12 +7,14 @@
  * once, then walks all eight steps: the titlebar Files button and the
  * sidebar "+" (pointed at, not opened: no explorer, no create modal), the
  * Companies section for invites, meetings, the console globe, the held-open
- * Launch menu and the command palette. Done returns to #welcome with every
- * surface the tour opened closed again and nothing created.
+ * Launch menu and the command palette. The setup bot's DM opens mid-tour
+ * (as the auto-started bot does on a real install): step 1 re-points at its
+ * composer, and Done leaves the person on that conversation, with every
+ * surface the tour opened closed, nothing created and no navigation.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type PlatformAdapter } from "@hq/platform";
+import { ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -60,6 +62,24 @@ async function settle(): Promise<void> {
 
 const q = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 
+const SETUP_BOT_UID = "agt_setup_tour";
+
+const SETUP_BOT: LocalBotRow = {
+  name: "setup",
+  agentUid: SETUP_BOT_UID,
+  ownerUid: "prs_test",
+  runtime: "claude",
+  state: "running",
+  pid: 11,
+  processAlive: true,
+  online: false,
+  lastHeartbeatAt: null,
+  daemonInstalled: true,
+  daemonLoaded: true,
+  dir: "/tmp/HQ/personal/workers/setup",
+  workerId: "setup",
+};
+
 const STEPS = tourSteps({ hasCompany: true, hasCompanyVault: true });
 
 /** Which of a step's target selectors is in the DOM (happy-dom has no layout). */
@@ -74,9 +94,10 @@ async function next(): Promise<void> {
 
 // One mount per file: the sidebar's boot pick keeps module-level state.
 describe("DesktopApp first-run guided tour", () => {
-  it("auto-starts on a fresh install, walks the eight steps and lands back on #welcome", async () => {
+  it("auto-starts on a fresh install, walks the eight steps and leaves the person where they are", async () => {
     const markWelcomeTourShown = vi.fn(async () => ok(undefined));
     const createBot = vi.fn(async () => ok({ ok: true, name: "x", agentUid: "agt_x" }));
+    const onselectrow = vi.fn();
     const adapter = {
       kind: "desktop",
       isAvailable: () => false,
@@ -85,11 +106,12 @@ describe("DesktopApp first-run guided tour", () => {
         listContacts: async () => ok({ contacts: [] }),
         listChannelMembers: async () => ok({ members: [] }),
         fetchChannel: async () => ({ ok: false as const, reason: "unavailable" }),
+        fetchDmThread: async () => ({ ok: false as const, reason: "unavailable" }),
       },
       files: { listDir: async () => ok([]) },
       identity: { hasFeature: async () => ok(false) },
       bots: {
-        list: async () => ok({ bots: [] }),
+        list: async () => ok({ bots: [SETUP_BOT] }),
         create: createBot,
         start: async () => ok({}),
         stop: async () => ok({}),
@@ -124,6 +146,7 @@ describe("DesktopApp first-run guided tour", () => {
         self: { uid: "prs_test", displayName: "Ada Lovelace", email: "ada@example.com" },
         coreFixtures: false,
         companies: [ACME],
+        onselectrow,
       },
     });
     await settle();
@@ -140,12 +163,26 @@ describe("DesktopApp first-run guided tour", () => {
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(resolvedSelector(0)).toBe('[data-testid="setup-hero"]');
 
+    // Mid-tour the setup bot's DM opens (on a real install the bot does this
+    // by itself). Step 1 now points at its composer.
+    q("setup-run")!.click();
+    await settle();
+    await vi.waitFor(() => expect(q("channel-name")?.textContent).toContain("setup"), {
+      timeout: 2000,
+      interval: 20,
+    });
+    const dmStep = tourSteps({ setupBotDmOpen: true, setupBotUid: SETUP_BOT_UID })[0];
+    expect(
+      resolveTourTarget(dmStep.targets, (sel) => document.querySelector(sel))?.selector,
+    ).toBe(".dm-reply-composer");
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
+    expect(createBot).not.toHaveBeenCalled();
+
     // Step 2: the titlebar Files button; the explorer does not open.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("Your company's files");
     expect(resolvedSelector(1)).toBe('[data-testid="titlebar-files"]');
     expect(q("vault-explorer")).toBeNull();
-    expect(q("setup-channel-intro")).toBeTruthy();
 
     // Step 3: the sidebar "+" that leads to New bot; the create modal stays shut.
     await next();
@@ -175,6 +212,17 @@ describe("DesktopApp first-run guided tour", () => {
     expect(q("guided-tour-card")?.textContent).toContain("HQ can take notes on your calls");
     expect(resolvedSelector(4)).toBe('[data-testid="titlebar-meetings"]');
 
+    // The person opens another conversation themselves mid-tour.
+    const other = host.querySelector<HTMLButtonElement>('.chat-row[data-conversation-id^="dm:person-"]')!;
+    const otherId = other.getAttribute("data-conversation-id")!;
+    other.click();
+    await settle();
+    await vi.waitFor(
+      () => expect(host.querySelector(`.chat-row[data-conversation-id="${otherId}"].active`)).toBeTruthy(),
+      { timeout: 2000, interval: 20 },
+    );
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("5 of 8");
+
     // Step 6: the web console globe.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("Open HQ on the web");
@@ -197,12 +245,19 @@ describe("DesktopApp first-run guided tour", () => {
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("8 of 8");
     expect(q("guided-tour-next")?.textContent?.trim()).toBe("Done");
 
-    // Done: the layer and the palette close, and #welcome is back.
+    // Done: the layer and the palette close, and nothing navigates: the
+    // conversation picked mid-tour stays selected (not #welcome, not the
+    // setup DM), no row is selected again, and the history is untouched.
+    const selectionsBefore = onselectrow.mock.calls.length;
+    const backBefore = q("titlebar-back")?.outerHTML;
     await next();
-    await vi.waitFor(() => expect(q("setup-channel-intro")).toBeTruthy(), {
-      timeout: 2000,
-      interval: 20,
-    });
+    await settle();
+    await new Promise((r) => setTimeout(r, 100));
+    await settle();
+    expect(host.querySelector(`.chat-row[data-conversation-id="${otherId}"].active`)).toBeTruthy();
+    expect(q("setup-channel-intro")).toBeNull();
+    expect(onselectrow.mock.calls.length).toBe(selectionsBefore);
+    expect(q("titlebar-back")?.outerHTML).toBe(backBefore);
     expect(q("vault-explorer")).toBeNull();
     expect(q("guided-tour-card")).toBeNull();
     expect(q("command-palette")).toBeNull();

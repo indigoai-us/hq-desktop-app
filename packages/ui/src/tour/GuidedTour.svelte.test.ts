@@ -106,6 +106,34 @@ describe("GuidedTour", () => {
     window.removeEventListener("keydown", later, true);
   });
 
+  it("re-points step 1 at the DM composer when the setup bot's DM opens mid-step", async () => {
+    const stubRect = (el: HTMLElement, x: number, y: number, w: number, h: number) => {
+      el.getBoundingClientRect = () =>
+        ({ x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h, toJSON() {} }) as DOMRect;
+    };
+    const hero = document.createElement("div");
+    hero.setAttribute("data-testid", "setup-hero");
+    stubRect(hero, 300, 100, 600, 300);
+    document.body.appendChild(hero);
+    const { props } = mountTour(0, { setupBotDmOpen: false });
+    const cutoutX = () => Number(q("guided-tour-cutout")?.getAttribute("x"));
+    await vi.waitFor(() => expect(cutoutX()).toBe(292), { timeout: 1000, interval: 20 });
+
+    // Past the first-frames polling window, the DM replaces #welcome.
+    await new Promise((r) => setTimeout(r, TOUR_TARGET_TIMEOUT_MS + 100));
+    hero.remove();
+    const composer = document.createElement("div");
+    composer.className = "dm-reply-composer";
+    stubRect(composer, 320, 600, 700, 80);
+    document.body.appendChild(composer);
+    props.step = tourSteps({ setupBotDmOpen: true, setupBotUid: "agt_1" })[0];
+    flushSync();
+
+    await vi.waitFor(() => expect(cutoutX()).toBe(312), { timeout: 1000, interval: 20 });
+    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
+    composer.remove();
+  }, 10_000);
+
   it("shows the card centered with no cutout when the target never appears", async () => {
     vi.useFakeTimers();
     mountTour(2);

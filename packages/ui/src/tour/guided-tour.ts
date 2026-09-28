@@ -26,12 +26,11 @@ export type TourStepId =
 export type TourPlacement = "top" | "bottom" | "left" | "right";
 
 /**
- * What the host does when a step becomes current. `restore` puts the
- * conversation view (and so the sidebar) back on screen; the `open-*` actions
- * are undone by the host when the tour leaves the step. Steps otherwise point
- * at the control a person clicks to get somewhere rather than going there.
+ * What the host does when a step becomes current. The tour never navigates:
+ * steps point at the control a person clicks to get somewhere, and the only
+ * surfaces it opens (`open-*`) are closed again when it leaves the step.
  */
-export type TourEnterAction = "restore" | "none" | "open-launch-menu" | "open-palette";
+export type TourEnterAction = "none" | "open-launch-menu" | "open-palette";
 
 export interface TourStep {
   id: TourStepId;
@@ -98,7 +97,7 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       body: "It asks a few questions about your company and sets up HQ for you. Reply here any time.",
       targets: setupTargets,
       placement: "top",
-      onEnter: "restore",
+      onEnter: "none",
     },
     {
       id: "company-vault",
@@ -118,7 +117,7 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       // The sidebar "+" opens the create modal, whose picker has New bot.
       targets: ['[data-testid="chat-new-message"]'],
       placement: "right",
-      onEnter: "restore",
+      onEnter: "none",
     },
     {
       id: "invite",
@@ -133,7 +132,7 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
         ? ['[data-testid="team-invite"]', '[data-testid="chat-companies-section"]']
         : [],
       placement: "right",
-      onEnter: "restore",
+      onEnter: "none",
     },
     {
       id: "meetings",
