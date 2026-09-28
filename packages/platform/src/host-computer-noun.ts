@@ -51,3 +51,15 @@ export function yourComputerNoun(
 ): string {
   return `your ${hostComputerNoun(probe)}`;
 }
+
+/**
+ * Platform-appropriate label for the "primary modifier + Enter" shortcut a
+ * form's submit affordance advertises. "⌘↵" on macOS, "Ctrl+Enter" on Windows
+ * and Linux. Kept as a single helper so a wizard's hint never renames the key
+ * on the machine it is running on.
+ */
+export function primaryEnterKeyHint(
+  probe: HostProbe = readHostProbe(),
+): string {
+  return probe.osPlatform === "macos" ? "⌘↵" : "Ctrl+Enter";
+}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   hostComputerNoun,
+  primaryEnterKeyHint,
   thisComputerNoun,
   yourComputerNoun,
 } from "./host-computer-noun.js";
@@ -40,5 +41,21 @@ describe("hostComputerNoun", () => {
     expect(thisComputerNoun({ tauri: true, osPlatform: "linux" })).toBe(
       "this computer",
     );
+  });
+});
+
+describe("primaryEnterKeyHint", () => {
+  it("shows the Mac symbol on macOS", () => {
+    expect(primaryEnterKeyHint({ tauri: true, osPlatform: "macos" })).toBe("⌘↵");
+  });
+
+  it("names Ctrl+Enter on Windows so a PC user sees a key they can press", () => {
+    expect(primaryEnterKeyHint({ tauri: true, osPlatform: "windows" })).toBe("Ctrl+Enter");
+  });
+
+  it("falls back to Ctrl+Enter on Linux and unknown platforms", () => {
+    expect(primaryEnterKeyHint({ tauri: true, osPlatform: "linux" })).toBe("Ctrl+Enter");
+    expect(primaryEnterKeyHint({ tauri: true, osPlatform: null })).toBe("Ctrl+Enter");
+    expect(primaryEnterKeyHint({ tauri: false, osPlatform: null })).toBe("Ctrl+Enter");
   });
 });

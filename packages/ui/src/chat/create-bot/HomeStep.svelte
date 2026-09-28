@@ -14,6 +14,7 @@
   import RuntimeSignIn, { type RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import { runtimeIsReady, type BotHome, type BotRuntime, type CreateBotDraft } from "./create-bot-model.js";
   import {
+    dedupeSearchedDirs,
     runtimeCanSignIn,
     runtimeChipSuffix,
     runtimeFooter,
@@ -230,10 +231,19 @@
           {/if}
         </p>
         {#if draftStatus.state === "notInstalled" && draftStatus.searched && draftStatus.searched.length > 0}
+          <!--
+            Defence in depth: dedupe again at render time. A repeated key in
+            this each block throws `svelte.dev/e/each_key_duplicate` and
+            replaces the wizard with the app's error boundary — the exact
+            crash a Windows persona hit on this screen. The Rust side
+            already dedupes and `parseRuntimeStatus` dedupes at the parse
+            boundary, but a UI list of plain strings must not be able to
+            crash the app no matter where a repeat comes from.
+          -->
           <details class="cb-help searched" data-testid="chat-bot-runtime-searched">
             <summary>Where HQ looked</summary>
             <ul>
-              {#each draftStatus.searched as dir (dir)}
+              {#each dedupeSearchedDirs(draftStatus.searched) as dir (dir)}
                 <li>{dir}</li>
               {/each}
             </ul>
