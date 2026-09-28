@@ -69,7 +69,8 @@ describe('master automatic-updates switch', () => {
     );
     expect(appUpdater).toContain('InstallTrigger::Forced');
     expect(appUpdater).toContain('InstallTrigger::Manual');
-    expect(appUpdater).toContain('pause_new_sync_cycles()');
+    expect(appUpdater).toContain('pause_cycles_drain_then_install(');
+    expect(appUpdater).toContain('crate::commands::process::pause_new_sync_cycles,');
     expect(appUpdater).toContain(
       'crate::windows_update::install_verified_update(app, update).await',
     );
