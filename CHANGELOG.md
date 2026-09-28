@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - On Windows, setup can wait for the desktop CLI updater to finish before reporting a dependency failure. The default-off hq-flags rollout also gives selected-prefix rename locks more time to clear between retries.
+
+- Channel messages now keep mentions aligned with their person or agent IDs and within the 25-person limit.
+
 - Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
 
 - Desktop sign-in now retries once after an expired or mismatched browser
