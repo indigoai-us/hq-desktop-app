@@ -2,19 +2,17 @@
 //!
 //! ## What this does (and deliberately does NOT do)
 //!
-//! This is the "instant" half of DM delivery. The slow half — the 60s poll in
-//! `share_notify::setup_share_notify_poller` (one timer, two fetches, calls
-//! `dm_notify::poll_dm_once`) — is untouched and remains the long-stop. This
-//! module adds a push channel that collapses delivery latency from ~60s to
-//! near-real-time.
+//! This is the push half of desktop notification delivery. With
+//! `desktop.push-events` disabled, `share_notify::setup_share_notify_poller`
+//! retains its legacy 60s share and DM fetches. When enabled, notification
+//! pushes refresh shares and DM pushes refresh messages; the timer keeps only
+//! a five-minute fallback while MQTT is disconnected.
 //!
-//! **The MQTT message is ONLY a wake signal.** On ANY message received on the
-//! subscribed topic — and also once on every (re)connect for offline catch-up
-//! (US-006) — we call the EXISTING `dm_notify::poll_dm_once(app)`. That function
-//! already fetches unread DMs since the persisted cursor, fires the macOS
-//! notifications, acks them, and advances the cursor. So we do NOT parse the
-//! MQTT payload, do NOT implement get-by-id, and do NOT duplicate the
-//! notification loop. Wake → poll. That's the whole design.
+//! The DM MQTT payload remains a wake signal: on DM-topic messages and each
+//! reconnect we call the existing `dm_notify::poll_dm_once(app)`. The one
+//! exception is a durable notification-topic event while `desktop.push-events`
+//! is enabled; its IDs trigger the existing shared-with-me refresh so the
+//! client reads full share data through the established API.
 //!
 //! Dedupe against the 60s poll is automatic: `poll_dm_once` is singleton-guarded
 //! (`try_set_in_flight`) and advances the cursor, so a wake-poll and a
@@ -53,6 +51,7 @@
 //!   `DM_MQTT_DISCONNECT` / `DM_MQTT_FALLBACK`. No secrets are ever logged
 //!   (never the presigned URL, never the creds).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
@@ -65,6 +64,30 @@ use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "dm-mqtt";
+static DM_PUSH_CONNECTED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn dm_push_connected() -> bool {
+    DM_PUSH_CONNECTED.load(Ordering::Acquire)
+}
+
+struct DmPushConnectionReset(bool);
+
+impl DmPushConnectionReset {
+    fn new(is_dm_connection: bool) -> Self {
+        if is_dm_connection {
+            DM_PUSH_CONNECTED.store(false, Ordering::Release);
+        }
+        Self(is_dm_connection)
+    }
+}
+
+impl Drop for DmPushConnectionReset {
+    fn drop(&mut self) {
+        if self.0 {
+            DM_PUSH_CONNECTED.store(false, Ordering::Release);
+        }
+    }
+}
 
 /// AWS service name for the IoT MQTT broker SigV4 signature. Fixed by AWS.
 const IOT_SERVICE: &str = "iotdevicegateway";
@@ -408,11 +431,10 @@ pub(crate) fn agent_status_event(payload: &[u8]) -> Option<serde_json::Value> {
 }
 
 /// What an inbound wake (ConnAck offline catch-up, or any Publish) should do.
-/// The MQTT payload is NEVER inspected either way — only its arrival matters
-/// ("the MQTT message is ONLY a wake signal", per the module docs). Shared by
-/// the DM receiver and the US-007 client-health diagnostics wake receiver so
-/// both reuse the exact same credential-fetch/SigV4-presign/reconnect
-/// machinery instead of a second copy.
+/// Shared by the DM receiver and the US-007 client-health diagnostics wake
+/// receiver so both reuse the same credential-fetch/SigV4-presign/reconnect
+/// machinery instead of a second copy. The DM event dispatcher separately
+/// checks notification IDs to decide whether to refresh shares.
 #[derive(Clone, Copy)]
 pub(crate) enum MqttWakeAction {
     /// The original DM behavior: re-run the singleton-guarded DM poll.
@@ -450,6 +472,8 @@ async fn run_once(
     wake: MqttWakeAction,
 ) -> Result<(), String> {
     use rumqttc::{AsyncClient, MqttOptions};
+
+    let _connection_reset = DmPushConnectionReset::new(matches!(wake, MqttWakeAction::Dm));
 
     let now = SystemTime::now();
     let url = build_signed_wss_url(
@@ -538,6 +562,7 @@ async fn drive_eventloop(
     wake: MqttWakeAction,
 ) -> Result<(), String> {
     use rumqttc::{Event, Packet, QoS};
+    let has_notifications_topic = topics.iter().any(|topic| topic.ends_with("/notifications"));
     loop {
         match eventloop.poll().await {
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
@@ -550,9 +575,19 @@ async fn drive_eventloop(
                     }
                     log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBED topic={topic}"));
                 }
+                if matches!(wake, MqttWakeAction::Dm) && has_notifications_topic {
+                    DM_PUSH_CONNECTED.store(true, Ordering::Release);
+                } else if matches!(wake, MqttWakeAction::Dm) {
+                    DM_PUSH_CONNECTED.store(false, Ordering::Release);
+                }
                 // Offline catch-up (US-006): drain anything missed while we were
                 // disconnected, before the first push arrives.
                 wake.fire(&app).await;
+                if matches!(wake, MqttWakeAction::Dm)
+                    && crate::commands::share_notify::desktop_push_events_enabled()
+                {
+                    crate::commands::share_notify::poll_once(app.clone()).await;
+                }
             }
             Ok(Event::Incoming(Packet::Publish(publish))) => {
                 // The one payload we read: an agent's live "working" status.
@@ -567,6 +602,13 @@ async fn drive_eventloop(
                     // the three pushes the projects page applies, and ignore
                     // the rest so a board wake does not poll the DM inbox.
                     if publish.topic != dm_topic {
+                        if hq_desktop_core::share_notify::should_refresh_from_notification_push(
+                            &publish.topic,
+                            &publish.payload,
+                            crate::commands::share_notify::desktop_push_events_enabled(),
+                        ) {
+                            crate::commands::share_notify::poll_once(app.clone()).await;
+                        }
                         if let Some(forward) = classify_work_push(&publish.payload) {
                             let _ = app.emit(forward.event, &forward.payload);
                         }
@@ -696,9 +738,14 @@ async fn run_wake_receiver_loop(
 /// Runs for ALL signed-in users — instant DM is GA, no @getindigo.ai gate
 /// (the per-identity STS scoping on the server is the real isolation boundary).
 /// On any failure the task logs and retries with capped exponential backoff — it
-/// never surfaces an error to the user and never blocks the 60s poll.
+/// never surfaces an error to the user or blocks the legacy poll and fallback.
 pub fn setup_dm_mqtt_receiver(app: AppHandle) {
-    tauri::async_runtime::spawn(run_wake_receiver_loop(app, None, MqttWakeAction::Dm, "DM_MQTT"));
+    tauri::async_runtime::spawn(run_wake_receiver_loop(
+        app,
+        None,
+        MqttWakeAction::Dm,
+        "DM_MQTT",
+    ));
 }
 
 /// Derive the client-health wake topic from the server-vended DM topic by
@@ -826,10 +873,15 @@ mod tests {
         assert_eq!(event["ts"], "2026-09-15T10:00:00.000Z");
 
         let no_root = br#"{"type":"agent_status","channelId":"chn_1","agentUid":"agt_c","status":"","ts":"t"}"#;
-        assert!(agent_status_event(no_root).unwrap().get("threadRoot").is_none());
+        assert!(agent_status_event(no_root)
+            .unwrap()
+            .get("threadRoot")
+            .is_none());
 
         assert!(agent_status_event(br#"{"type":"channel","channelId":"chn_1"}"#).is_none());
-        assert!(agent_status_event(br#"{"type":"agent_status","agentUid":"agt_c","ts":"t"}"#).is_none());
+        assert!(
+            agent_status_event(br#"{"type":"agent_status","agentUid":"agt_c","ts":"t"}"#).is_none()
+        );
         assert!(agent_status_event(b"not json").is_none());
     }
 

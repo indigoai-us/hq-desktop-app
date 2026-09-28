@@ -5,6 +5,9 @@
 //! `share:new-events` Tauri event to the Svelte renderer when new events
 //! are found, which US-005 will consume to fire macOS notifications and open
 //! the ShareDetail window.
+//! When `desktop.push-events` is enabled, the existing realtime notifications
+//! topic wakes share refreshes and periodic polling stops while MQTT is
+//! connected. A five-minute fallback runs only while MQTT is disconnected.
 //!
 //! ## Feature gating
 //!
@@ -42,6 +45,9 @@
 //!   `SHARE_NOTIFY_POLL_NETWORK_FAIL`  — reqwest transport error
 //!   `SHARE_NOTIFY_POLL_ERROR`         — 4xx/5xx other than auth, or parse fail
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
@@ -53,11 +59,19 @@ pub use hq_desktop_core::share_notify::{
     clear_in_flight, cursor_path, notification_body, notification_title, partition_unnotified,
     poll_lock, read_cursor_entry, read_cursor_store, share_notifications_enabled, share_path_title,
     share_represented_by_dm, try_set_in_flight, write_cursor_entry, BlockingNotifyGuard,
-    CursorEntry, CursorEntryCompat,
-    CursorStore, NotificationShareActionEvent, PendingShareEvents, ShareEvent,
-    SharedWithMeResponse, EVENT_NOTIFICATION_SHARE_ACTION, EVENT_SHARE_EVENTS_LIST,
-    EVENT_SHARE_NEW_EVENTS, LOG_TAG, NOTIFIED_CAP, SHARE_DETAIL_LABEL, SHARE_POLL_INTERVAL_SECS,
+    CursorEntry, CursorEntryCompat, CursorStore, NotificationShareActionEvent, PendingShareEvents,
+    ShareEvent, SharePollAction, SharedWithMeResponse, EVENT_NOTIFICATION_SHARE_ACTION,
+    EVENT_SHARE_EVENTS_LIST, EVENT_SHARE_NEW_EVENTS, LOG_TAG, NOTIFIED_CAP, SHARE_DETAIL_LABEL,
+    SHARE_POLL_INTERVAL_SECS, SHARE_PUSH_FALLBACK_INTERVAL_SECS,
 };
+
+pub(crate) const DESKTOP_PUSH_EVENTS_FLAG: &str = "desktop.push-events";
+const DESKTOP_PUSH_FLAG_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+static DESKTOP_PUSH_EVENTS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn desktop_push_events_enabled() -> bool {
+    DESKTOP_PUSH_EVENTS_ENABLED.load(Ordering::Acquire)
+}
 
 // ── Gate check ───────────────────────────────────────────────────────────────
 
@@ -84,30 +98,56 @@ async fn should_poll() -> bool {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Spawn the share-notify poller. Called from `main.rs` setup. Runs a launch
-/// poll after a 5-second delay (matches the updater pattern — gives the app
-/// time to fully initialize and the Cognito token to be loaded from disk),
-/// then polls on an independent `SHARE_POLL_INTERVAL_SECS` timer so delivery
-/// is decoupled from sync completion. `poll_once` is singleton-guarded
-/// (`POLL_IN_FLIGHT`) so this composes safely with the post-sync poll.
+/// Spawn the share-notify poller. Called from `main.rs` setup. After the
+/// startup delay, it refreshes the default-off flag at most every five
+/// minutes. With the flag off, the legacy 60-second cadence is preserved. With
+/// the flag on, the existing MQTT channel owns refreshes while connected and a
+/// five-minute fallback runs only while disconnected. Periodic fetches pause
+/// when every desktop window is hidden. `poll_once` remains singleton-guarded
+/// and composes safely with push and post-sync wakes.
 pub fn setup_share_notify_poller(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        // Launch poll: shares + DM inbox (one timer, two fetches — the DM
-        // channel rides this same independent timer so it can never inherit
-        // the sync-coupling flaw that broke share notifications).
-        poll_once(app.clone()).await;
-        crate::commands::dm_notify::poll_dm_once(app.clone()).await;
-
-        let mut ticker =
-            tokio::time::interval(tokio::time::Duration::from_secs(SHARE_POLL_INTERVAL_SECS));
-        // The first tick fires immediately; consume it so the launch poll
-        // above isn't double-counted, then poll once per interval thereafter.
-        ticker.tick().await;
+        let mut last_flag_check: Option<Instant> = None;
+        let mut last_poll: Option<Instant> = None;
+        let mut needs_catch_up = true;
         loop {
-            ticker.tick().await;
-            poll_once(app.clone()).await;
-            crate::commands::dm_notify::poll_dm_once(app.clone()).await;
+            if last_flag_check
+                .map(|checked| checked.elapsed() >= DESKTOP_PUSH_FLAG_REFRESH_INTERVAL)
+                .unwrap_or(true)
+            {
+                let enabled =
+                    crate::commands::hq_pro::feature_flag_enabled(DESKTOP_PUSH_EVENTS_FLAG).await;
+                let previously_enabled =
+                    DESKTOP_PUSH_EVENTS_ENABLED.swap(enabled, Ordering::AcqRel);
+                if enabled && !previously_enabled {
+                    needs_catch_up = true;
+                }
+                last_flag_check = Some(Instant::now());
+            }
+
+            let visible = app
+                .webview_windows()
+                .values()
+                .any(|window| window.is_visible().unwrap_or(true));
+            let push_connected = crate::commands::dm_mqtt::dm_push_connected();
+            let action = hq_desktop_core::share_notify::share_poll_action(
+                desktop_push_events_enabled(),
+                push_connected,
+                visible,
+            );
+            let elapsed_since_last_poll = last_poll.map(|last| last.elapsed().as_secs());
+            let cadence_due =
+                hq_desktop_core::share_notify::share_poll_due(action, elapsed_since_last_poll);
+
+            if visible && (needs_catch_up || cadence_due) {
+                poll_once(app.clone()).await;
+                crate::commands::dm_notify::poll_dm_once(app.clone()).await;
+                last_poll = Some(Instant::now());
+                needs_catch_up = false;
+            }
+
+            tokio::time::sleep(Duration::from_secs(SHARE_POLL_INTERVAL_SECS)).await;
         }
     });
 }
@@ -310,7 +350,10 @@ async fn do_poll(app: &AppHandle) {
                         if crate::commands::banner::custom_banner_enabled() {
                             log(
                                 LOG_TAG,
-                                &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", notify_events.len()),
+                                &format!(
+                                    "SHARE_NOTIFY_CUSTOM_BANNER {} event(s)",
+                                    notify_events.len()
+                                ),
                             );
                             for evt in &notify_events {
                                 if let Err(e) = crate::commands::banner::show_share_banner(

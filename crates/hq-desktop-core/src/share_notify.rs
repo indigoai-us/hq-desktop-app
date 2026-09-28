@@ -278,14 +278,78 @@ pub fn share_notifications_enabled(share_notifications: Option<bool>) -> bool {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Interval between independent share-notify polls once the launch poll has
-/// run. Delivery MUST NOT depend on `sync:all-complete` firing — see the
-/// 2026-05-28 incident (`workspace/reports/hq-sync-notifications-debug.md`):
-/// the sync daemon was down ~34h, so the poller never ran and 7 incoming
-/// shares sat unacked, then drained in a single cursor jump (≤1 banner for 7
-/// events). The post-sync poll in `main.rs` is now a latency optimization on
-/// top of this timer, not the sole delivery mechanism.
+/// Interval between scheduler decisions. With the rollout flag off, it keeps
+/// the legacy 60-second fetch cadence. With the flag on, it checks visibility
+/// and push state and only runs fetches when the five-minute fallback is due.
+/// Delivery MUST NOT depend on `sync:all-complete` firing — see the 2026-05-28
+/// incident (`workspace/reports/hq-sync-notifications-debug.md`): the sync
+/// daemon was down ~34h, so the poller never ran and 7 incoming shares sat
+/// unacked, then drained in a single cursor jump (≤1 banner for 7 events). The
+/// post-sync poll in `main.rs` remains an extra latency optimization.
 pub const SHARE_POLL_INTERVAL_SECS: u64 = 60;
+
+/// Slow fallback while desktop push is enabled but its MQTT connection is down.
+/// A healthy push connection removes periodic share and DM fetches entirely.
+pub const SHARE_PUSH_FALLBACK_INTERVAL_SECS: u64 = 300;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharePollAction {
+    FastPoll,
+    SlowFallback,
+    Pause,
+}
+
+/// Select a periodic poll action from the default-off rollout flag, transport
+/// state, and desktop visibility. Push delivery itself remains active while
+/// hidden so native notifications can still arrive.
+pub fn share_poll_action(
+    push_events_enabled: bool,
+    push_connected: bool,
+    window_visible: bool,
+) -> SharePollAction {
+    if !window_visible {
+        return SharePollAction::Pause;
+    }
+    if !push_events_enabled {
+        return SharePollAction::FastPoll;
+    }
+    if push_connected {
+        SharePollAction::Pause
+    } else {
+        SharePollAction::SlowFallback
+    }
+}
+
+/// Whether the selected periodic action is due, based on the last scheduler
+/// poll. Notification-triggered refreshes do not reset this timer.
+pub fn share_poll_due(action: SharePollAction, elapsed_since_last_poll_secs: Option<u64>) -> bool {
+    match action {
+        SharePollAction::FastPoll => true,
+        SharePollAction::SlowFallback => elapsed_since_last_poll_secs
+            .map(|elapsed| elapsed >= SHARE_PUSH_FALLBACK_INTERVAL_SECS)
+            .unwrap_or(true),
+        SharePollAction::Pause => false,
+    }
+}
+
+/// Decide whether an ID-only notification push should refresh shared-with-me.
+/// The source API remains responsible for returning file details.
+pub fn should_refresh_from_notification_push(topic: &str, payload: &[u8], enabled: bool) -> bool {
+    if !enabled || !topic.ends_with("/notifications") {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(payload) else {
+        return false;
+    };
+    value.get("type").and_then(|v| v.as_str()) == Some("notification")
+        && value
+            .get("ids")
+            .and_then(|v| v.as_array())
+            .is_some_and(|ids| {
+                ids.iter()
+                    .any(|id| id.as_str().is_some_and(|s| !s.is_empty()))
+            })
+}
 
 // ── Notification content helpers ──────────────────────────────────────────────
 
@@ -723,6 +787,68 @@ mod tests {
         // the regression guard for dropping the `@getindigo.ai` gate: a
         // non-getindigo recipient (None / Some(true) pref) must still poll.
         assert!(!share_notifications_enabled(Some(false)));
+    }
+
+    #[test]
+    fn test_push_poll_action_pauses_on_connected_push_and_hidden_window() {
+        use SharePollAction::{FastPoll, Pause, SlowFallback};
+
+        assert_eq!(share_poll_action(true, true, true), Pause);
+        assert_eq!(share_poll_action(true, false, true), SlowFallback);
+        assert_eq!(share_poll_action(true, false, false), Pause);
+        assert_eq!(share_poll_due(Pause, Some(600)), false);
+        assert_eq!(share_poll_due(FastPoll, Some(0)), true);
+    }
+
+    #[test]
+    fn test_flag_off_keeps_legacy_fast_poll() {
+        assert_eq!(
+            share_poll_action(false, true, true),
+            SharePollAction::FastPoll
+        );
+        assert_eq!(
+            share_poll_action(false, false, true),
+            SharePollAction::FastPoll
+        );
+    }
+
+    #[test]
+    fn test_disconnected_push_fallback_waits_five_minutes() {
+        use SharePollAction::SlowFallback;
+
+        assert!(share_poll_due(SlowFallback, None));
+        assert!(!share_poll_due(SlowFallback, Some(299)));
+        assert!(share_poll_due(SlowFallback, Some(300)));
+    }
+
+    #[test]
+    fn test_notification_push_refreshes_shares_only_when_enabled_and_well_formed() {
+        let wake = br#"{"type":"notification","ids":["ntf_123"]}"#;
+        assert!(should_refresh_from_notification_push(
+            "hq/prs_abc/notifications",
+            wake,
+            true
+        ));
+        assert!(!should_refresh_from_notification_push(
+            "hq/prs_abc/notifications",
+            wake,
+            false
+        ));
+        assert!(!should_refresh_from_notification_push(
+            "hq/prs_abc/work",
+            wake,
+            true
+        ));
+        assert!(!should_refresh_from_notification_push(
+            "hq/prs_abc/notifications",
+            br#"{"type":"notification","ids":[]}"#,
+            true
+        ));
+        assert!(!should_refresh_from_notification_push(
+            "hq/prs_abc/notifications",
+            b"not json",
+            true
+        ));
     }
 
     // ── BlockingNotifyGuard cap-to-1 (CPU spin regression, 2026-05-28) ─────────
