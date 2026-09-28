@@ -184,6 +184,8 @@ export interface AttemptClassification {
   status: number | null;
   /** Raw `Retry-After` header value, when the transport exposes one. */
   retryAfter?: string | null;
+  /** Optional short delay for a recognized transient response. */
+  retryDelayMs?: number;
 }
 
 export interface RequestPolicyOptions {
@@ -232,6 +234,7 @@ export async function retryThrottled<T>(
     const headerMs = parseRetryAfterMs(verdict.retryAfter, now());
     const delayMs =
       headerMs ??
+      verdict.retryDelayMs ??
       fullJitterBackoffMs(index, {
         baseMs: opts.baseMs,
         capMs,

@@ -65,9 +65,6 @@ function readRetryAfter(res: Response): string | null {
 
 function isLambdaInvoke504(response: Response, bodyText: string): boolean {
   if (response.status !== 504) return false;
-  if (["x-amzn-requestid", "x-amzn-request-id", "x-amz-request-id"].some(
-    (name) => response.headers.has(name),
-  )) return false;
   try {
     const payload: unknown = JSON.parse(bodyText);
     return typeof payload === "object" && payload !== null && !Array.isArray(payload) &&
@@ -266,6 +263,8 @@ export interface WebPlatformAdapterConfig {
    * `sleep` and a deterministic `random`; production uses the defaults.
    */
   requestPolicy?: RequestPolicyOptions;
+  /** Disable this retry when the injected fetch already retries at its own layer. */
+  retryLambdaInvoke504?: boolean;
 }
 
 function defaultOnUnauthorized(): void {
@@ -473,6 +472,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly onUnauthorized: () => void;
   private readonly flags: FeatureFlagGate;
   private readonly requestPolicy: RequestPolicyOptions;
+  private readonly retryLambdaInvoke504: boolean;
   private activeCompany: string | null = null;
 
   constructor(config: WebPlatformAdapterConfig) {
@@ -485,6 +485,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
     this.requestPolicy = config.requestPolicy ?? {};
+    this.retryLambdaInvoke504 = config.retryLambdaInvoke504 ?? true;
     this.flags = createFeatureFlagGate({
       endpoint: this.baseUrl,
       getToken: () => bearerTokenFromHeaders(this.headers),
@@ -521,24 +522,27 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Shared policy (R2): 429/503 are honoured — `Retry-After` when the server
     // sends one, jittered exponential backoff otherwise — and the result the
     // caller finally sees is the same AdapterResult it saw before.
-    const policy = {
-      ...this.requestPolicy,
-      maxAttempts: method === "GET" ? this.requestPolicy.maxAttempts : 1,
-    };
+    let lambdaInvokeRetried = false;
     const attempted = await retryThrottled<WebAttempt<T>>(
       () => this.attempt<T>(method, path, body),
-      (outcome) => ({
-        status: outcome.status,
-        retryAfter: outcome.retryAfter,
-      }),
-      policy,
+      (outcome) => {
+        if (
+          this.retryLambdaInvoke504 &&
+          method === "GET" &&
+          !lambdaInvokeRetried &&
+          outcome.lambdaInvoke504
+        ) {
+          lambdaInvokeRetried = true;
+          const random = this.requestPolicy.random ?? Math.random;
+          return {
+            status: 503,
+            retryDelayMs: 25 + Math.floor(random() * 51),
+          };
+        }
+        return { status: outcome.status, retryAfter: outcome.retryAfter };
+      },
+      this.requestPolicy,
     );
-    if (method === "GET" && attempted.lambdaInvoke504) {
-      const sleep = this.requestPolicy.sleep ?? ((ms: number) =>
-        new Promise<void>((resolve) => setTimeout(resolve, ms)));
-      await sleep(25 + Math.floor(Math.random() * 51));
-      return (await this.attempt<T>(method, path, body)).result;
-    }
     return attempted.result;
   }
 

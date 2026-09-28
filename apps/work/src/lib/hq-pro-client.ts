@@ -52,13 +52,6 @@ function isLambdaInvokeServiceError(response: Response, bodyText: string): boole
   if (response.status !== 504) {
     return false;
   }
-  if (
-    response.headers.has("x-amzn-requestid") ||
-    response.headers.has("x-amzn-request-id") ||
-    response.headers.has("x-amz-request-id")
-  ) {
-    return false;
-  }
   try {
     const body: unknown = JSON.parse(bodyText);
     return (
@@ -194,6 +187,31 @@ export function createHqProFetch(options: {
       });
     };
 
+    const request = input instanceof Request ? input : null;
+    const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+    const requestBody = init?.body ?? request?.body;
+    const signal = init?.signal ?? request?.signal;
+    let lambdaInvokeRetried = false;
+    const retryLambdaInvoke = async (response: Response): Promise<Response> => {
+      if (
+        lambdaInvokeRetried ||
+        (method !== "GET" && method !== "HEAD") ||
+        requestBody != null ||
+        response.status !== 504
+      ) return response;
+      const bodyText = await response.text();
+      if (!isLambdaInvokeServiceError(response, bodyText)) {
+        return new Response(bodyText, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
+      lambdaInvokeRetried = true;
+      await delayWithAbort(25 + Math.floor(Math.random() * (LAMBDA_INVOKE_RETRY_MAX_DELAY_MS - 24)), signal);
+      return (await requestWithCurrentToken()) ?? response;
+    };
+
     let response = await requestWithCurrentToken();
     if (!response) {
       onUnauthorized();
@@ -202,31 +220,15 @@ export function createHqProFetch(options: {
         { status: 401, headers: { "content-type": "application/json" } },
       );
     }
-    if (response.status !== 401) {
-      const request = input instanceof Request ? input : null;
-      const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
-      const requestBody = init?.body ?? request?.body;
-      const signal = init?.signal ?? request?.signal;
-      if (
-        (method === "GET" || method === "HEAD") &&
-        requestBody == null &&
-        response.status === 504
-      ) {
-        const bodyText = await response.clone().text();
-        if (isLambdaInvokeServiceError(response, bodyText)) {
-          await delayWithAbort(25 + Math.floor(Math.random() * (LAMBDA_INVOKE_RETRY_MAX_DELAY_MS - 24)), signal);
-          const retry = await requestWithCurrentToken();
-          if (retry) response = retry;
-        }
-      }
-      return response;
-    }
+    response = await retryLambdaInvoke(response);
+    if (response.status !== 401) return response;
 
     // A 401 can be an expired id token while the same-origin refresh cookie is
     // still valid. Clear once, obtain a fresh token, and retry this request
     // exactly once before falling back to the normal sign-in flow.
     tokenProvider.clear();
-    const retry = await requestWithCurrentToken();
+    let retry = await requestWithCurrentToken();
+    if (retry) retry = await retryLambdaInvoke(retry);
     if (retry && retry.status !== 401) return retry;
 
     onUnauthorized();

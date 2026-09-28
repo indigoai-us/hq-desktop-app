@@ -268,8 +268,55 @@ describe("direct hq-pro browser transport", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retry a 504 with the Lambda request id response header", async () => {
-    const fetchImpl = vi.fn(async () => lambdaInvokeError(504, { "x-amzn-requestid": "invoke-id" }));
+  it("retries a generic 504 carrying API Gateway's request id header", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(lambdaInvokeError(504, { "x-amzn-requestid": "gateway-id" }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/entities/me");
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("routes a 401 returned by the 504 retry through token refresh", async () => {
+    const onUnauthorized = vi.fn();
+    const provider: BrowserTokenProvider = {
+      getToken: vi.fn()
+        .mockResolvedValueOnce("initial-token")
+        .mockResolvedValueOnce("initial-token")
+        .mockResolvedValueOnce("refreshed-token"),
+      clear: vi.fn(),
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(lambdaInvokeError(504))
+      .mockResolvedValueOnce(new Response("expired", { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: provider,
+      onUnauthorized,
+    });
+
+    const response = await direct("/v1/work-mesh/threads");
+
+    expect(response.status).toBe(200);
+    expect(provider.clear).toHaveBeenCalledTimes(1);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry a 504 whose body carries a function request id", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ message: "Internal server error", requestId: "function-id" }),
+      { status: 504, headers: { "content-type": "application/json" } },
+    ));
     const direct = createHqProFetch({
       baseUrl: "https://hqapi.example.test",
       fetchImpl,
@@ -279,6 +326,7 @@ describe("direct hq-pro browser transport", () => {
     const response = await direct("/v1/entities/me");
 
     expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toEqual({ message: "Internal server error", requestId: "function-id" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

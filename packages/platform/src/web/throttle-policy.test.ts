@@ -31,6 +31,7 @@ function response(
 function adapterWith(
   responses: Response[],
   slept: number[],
+  retryLambdaInvoke504 = true,
 ): { adapter: WebPlatformAdapter; fetchFn: ReturnType<typeof vi.fn> } {
   let index = 0;
   const fetchFn = vi.fn(async () => responses[Math.min(index++, responses.length - 1)]!);
@@ -40,10 +41,12 @@ function adapterWith(
     onUnauthorized: () => {},
     requestPolicy: {
       throttle: null,
+      random: () => 0,
       sleep: async (ms: number) => {
         slept.push(ms);
       },
     },
+    retryLambdaInvoke504,
   });
   return { adapter, fetchFn };
 }
@@ -155,9 +158,10 @@ describe("WebPlatformAdapter throttle policy", () => {
     expect(slept).toHaveLength(attempts - 1);
   });
 
-  it("does not retry a function response carrying a request id or JSON error body", async () => {
+  it("retries a gateway request-id header but not a function request id in the body", async () => {
     const idCase = adapterWith([
       response(504, { message: "Internal server error" }, { "x-amzn-requestid": "request-id" }),
+      response(200, { ok: true }),
     ], []);
     const bodyCase = adapterWith([
       response(504, { message: "Internal server error", requestId: "request-id" }),
@@ -166,8 +170,57 @@ describe("WebPlatformAdapter throttle policy", () => {
     await idCase.adapter.identity.whoami();
     await bodyCase.adapter.identity.whoami();
 
-    expect(idCase.fetchFn).toHaveBeenCalledTimes(1);
+    expect(idCase.fetchFn).toHaveBeenCalledTimes(2);
     expect(bodyCase.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("feeds a retry response back into the normal throttle policy", async () => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith(
+      [
+        response(504, { message: "Internal server error" }),
+        response(429, { error: "Too many requests" }, { "retry-after": "2" }),
+        response(200, { personUid: "prs_1" }),
+      ],
+      slept,
+    );
+
+    const result = await adapter.identity.whoami();
+
+    expect(result.ok).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(slept).toEqual([25, 2_000]);
+  });
+
+  it("keeps the existing retry budget for non-GET throttles", async () => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith(
+      [
+        response(429, { error: "Too many requests" }),
+        response(200, { updated: true }),
+      ],
+      slept,
+    );
+
+    const result = await adapter.identity.updateProfile({ displayName: "Ada" });
+
+    expect(result.ok).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(slept).toHaveLength(1);
+  });
+
+  it("does not retry a generic 504 when the injected fetch owns that retry", async () => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith(
+      [response(504, { message: "Internal server error" })],
+      slept,
+      false,
+    );
+
+    const result = await adapter.identity.whoami();
+
+    expect(result.ok).toBe(false);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry a POST on 504", async () => {
