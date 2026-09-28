@@ -47,7 +47,7 @@ use tauri::{AppHandle, Emitter};
 #[cfg(windows)]
 use super::windows_symlink_fallback::{
     choose_windows_symlink_fallback, should_reuse_existing_symlink, SymlinkTargetKind,
-    WindowsSymlinkFallback, WINDOWS_ERROR_ALREADY_EXISTS,
+    WindowsSymlinkFallback, WINDOWS_CONTENT_SYMLINK_FALLBACK_FLAG, WINDOWS_ERROR_ALREADY_EXISTS,
 };
 #[cfg(all(test, not(windows)))]
 use super::windows_symlink_fallback::{
@@ -70,8 +70,6 @@ const DEFAULT_TEMPLATE_REPO: &str = "indigoai-us/hq-core";
 const STAGING_TEMPLATE_REPO: &str = "indigoai-us/hq-core-staging";
 const STAGING_TEMPLATE_REF: &str = "main";
 const STAGING_SOURCE_KEY: &str = "stagingSource";
-#[cfg(windows)]
-const WINDOWS_CONTENT_SYMLINK_FALLBACK_FLAG: &str = "desktop_windows_content_symlink_fallback_v1";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-chunk stall budget while streaming the tarball. Mirrors the old
 /// installer's `DOWNLOAD_HARD_STALL_MS` (25s) — long enough to ride out a

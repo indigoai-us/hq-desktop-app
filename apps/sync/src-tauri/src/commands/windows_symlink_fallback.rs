@@ -5,6 +5,9 @@
 
 use std::path::Path;
 
+pub(crate) const WINDOWS_CONTENT_SYMLINK_FALLBACK_FLAG: &str =
+    "desktop.windows-content-symlink-fallback-v1";
+
 pub(crate) const WINDOWS_ERROR_INVALID_FUNCTION: i32 = 1;
 pub(crate) const WINDOWS_ERROR_ALREADY_EXISTS: i32 = 183;
 pub(crate) const WINDOWS_ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
@@ -83,6 +86,31 @@ pub(crate) fn should_reuse_existing_symlink(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn matches_hq_flags_key_pattern(key: &str) -> bool {
+        let mut segments = key.split('.');
+        let is_segment = |segment: &str| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+        };
+
+        matches!(segments.next(), Some(segment) if is_segment(segment))
+            && matches!(segments.next(), Some(segment) if is_segment(segment))
+            && segments.all(is_segment)
+    }
+
+    #[test]
+    fn hq_flags_key_matches_registry_regex() {
+        const REGISTRY_KEY_PATTERN: &str = r"^[a-z0-9-]+(\.[a-z0-9-]+)+$";
+        assert!(
+            matches_hq_flags_key_pattern(WINDOWS_CONTENT_SYMLINK_FALLBACK_FLAG),
+            "hq-flags key {:?} must match {}",
+            WINDOWS_CONTENT_SYMLINK_FALLBACK_FLAG,
+            REGISTRY_KEY_PATTERN,
+        );
+    }
 
     #[test]
     fn privilege_failure_keeps_the_existing_copy_and_junction_fallbacks() {
