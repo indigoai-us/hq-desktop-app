@@ -149,6 +149,10 @@ const HEARTBEAT_WALL_BACKSTOP: f32 = 8.0;
 /// starting"). Recovery lands within one guard deadline instead of never.
 const DAEMON_START_DEADLINE: Duration = Duration::from_secs(2 * 60);
 const WATCHER_STDERR_TAIL_CAP: usize = 8;
+/// Wait for a stopped generation to release its process registration before a
+/// settings flow issues the paired replacement start.
+const WATCHER_STOP_MAX_WAITS: usize = 100;
+const WATCHER_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Slack added after the generation's exit instant when time-bounding a Windows
 /// Error Reporting record. WER writes the "Application Error" entry shortly AFTER
@@ -6952,6 +6956,9 @@ pub(crate) fn stop_watch_runner() -> Result<bool, String> {
     // Job Object teardown for this generation.
     let cancelled = terminate_daemon_once(DaemonFailureCategory::Cancelled);
     if cancelled {
+        if !wait_for_watch_child_stop(|| is_registered(DAEMON_HANDLE), thread::sleep) {
+            return Err("Watch runner is still shutting down; wait before restarting".to_string());
+        }
         return Ok(true);
     }
 
@@ -6983,11 +6990,29 @@ pub(crate) fn stop_watch_runner() -> Result<bool, String> {
             {
                 let _ = pid;
             }
+            if !wait_for_watch_child_stop(|| is_pid_alive(pid), thread::sleep) {
+                return Err(
+                    "Previous watch runner is still shutting down; wait before restarting"
+                        .to_string(),
+                );
+            }
             return Ok(true);
         }
     }
 
     Ok(false)
+}
+
+fn wait_for_watch_child_stop(
+    mut child_active: impl FnMut() -> bool,
+    wait: impl FnMut(Duration),
+) -> bool {
+    hq_desktop_core::daemon::poll_until_bounded(
+        WATCHER_STOP_MAX_WAITS,
+        WATCHER_STOP_POLL_INTERVAL,
+        || !child_active(),
+        wait,
+    )
 }
 
 /// Get daemon status by reading .hq-sync.pid and .hq-sync-daemon.json.
@@ -7105,6 +7130,30 @@ mod tests {
             !hq_desktop_core::daemon::watch_runner_start_allowed(true),
             "a live owner keeps the next start deferred"
         );
+    }
+
+    #[test]
+    fn replacement_start_waits_until_the_previous_child_has_exited() {
+        let child_states = [true, true, false];
+        let mut observed = 0;
+        let mut waits = 0;
+        let stopped = wait_for_watch_child_stop(
+            || {
+                let active = child_states[observed];
+                observed += 1;
+                active
+            },
+            |_| waits += 1,
+        );
+        let mut replacement_started = false;
+        if stopped {
+            replacement_started = true;
+        }
+
+        assert!(stopped, "start must wait for the old generation to release");
+        assert!(replacement_started);
+        assert_eq!(observed, 3);
+        assert_eq!(waits, 2);
     }
 
     #[test]

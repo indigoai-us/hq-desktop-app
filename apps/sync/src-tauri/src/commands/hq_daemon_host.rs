@@ -69,6 +69,10 @@ static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Set when a legacy watch child or its lease survived the initial bounded handoff.
 static WATCH_HANDOFF_PENDING: AtomicBool = AtomicBool::new(false);
+/// Serializes user sync toggles with the transition that completes a watch handoff.
+static WATCH_SYNC_TRANSITION: Mutex<()> = Mutex::new(());
+/// Latest explicit toggle received while the old watch owner is still releasing.
+static DEFERRED_WATCH_SYNC_REQUEST: Mutex<Option<bool>> = Mutex::new(None);
 /// Environment the current child was started with.
 static CHILD_ENV: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
@@ -209,6 +213,7 @@ fn sync_wanted() -> bool {
 }
 
 fn enter_daemon_mode(handle: AppHandle) {
+    WATCH_HANDOFF_PENDING.store(true, Ordering::Release);
     // A watch runner from an earlier session would sync the same folder twice.
     if let Err(e) = crate::commands::daemon::stop_watch_runner() {
         log(
@@ -217,8 +222,6 @@ fn enter_daemon_mode(handle: AppHandle) {
         );
     }
     let handoff_complete = wait_for_watch_runner_handoff();
-    WATCH_HANDOFF_PENDING.store(!handoff_complete, Ordering::Release);
-    set_phase(HostPhase::Daemon);
     if !handoff_complete {
         log(
             LOG_TAG,
@@ -234,15 +237,43 @@ fn enter_daemon_mode(handle: AppHandle) {
             &format!("could not remove the separate Work Mesh unit: {e}"),
         );
     }
-    if let Err(e) = set_daemon_sync(sync_wanted() && handoff_complete) {
+    if let Err(error) = disable_sync_before_host_launch(
+        || set_daemon_sync(false),
+        || {
+            set_phase(HostPhase::Daemon);
+            if handoff_complete {
+                if let Err(error) = finish_watch_handoff(
+                    &WATCH_HANDOFF_PENDING,
+                    &DEFERRED_WATCH_SYNC_REQUEST,
+                    &WATCH_SYNC_TRANSITION,
+                    sync_wanted,
+                    set_daemon_sync,
+                ) {
+                    log(
+                        LOG_TAG,
+                        &format!("could not apply the Auto-sync setting: {error}"),
+                    );
+                }
+            }
+            std::thread::spawn(watch_env_changes);
+            crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
+            host_loop();
+        },
+    ) {
         log(
             LOG_TAG,
-            &format!("could not apply the Auto-sync setting: {e}"),
+            &format!("hq daemon host not launched because sync could not be disabled: {error}"),
         );
     }
-    std::thread::spawn(watch_env_changes);
-    crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
-    host_loop();
+}
+
+fn disable_sync_before_host_launch(
+    disable_sync: impl FnOnce() -> Result<(), String>,
+    launch_host: impl FnOnce(),
+) -> Result<(), String> {
+    disable_sync()?;
+    launch_host();
+    Ok(())
 }
 
 fn wait_for_watch_runner_handoff() -> bool {
@@ -282,17 +313,49 @@ fn poll_for_watch_runner_handoff(
 
 fn finish_watch_handoff(
     pending: &AtomicBool,
-    sync_enabled: bool,
-    enable_sync: impl FnOnce() -> Result<(), String>,
+    deferred_request: &Mutex<Option<bool>>,
+    transition: &Mutex<()>,
+    sync_enabled: impl FnOnce() -> bool,
+    apply_sync: impl FnOnce(bool) -> Result<(), String>,
 ) -> Result<(), String> {
-    pending.store(false, Ordering::Release);
-    if sync_enabled {
-        if let Err(error) = enable_sync() {
-            pending.store(true, Ordering::Release);
-            return Err(error);
-        }
+    let _transition = transition.lock().unwrap_or_else(|e| e.into_inner());
+    if !pending.load(Ordering::Acquire) {
+        return Ok(());
     }
+    let mut deferred_request = deferred_request.lock().unwrap_or_else(|e| e.into_inner());
+    let enabled = (*deferred_request).unwrap_or_else(sync_enabled);
+    apply_sync(enabled)?;
+    *deferred_request = None;
+    pending.store(false, Ordering::Release);
     Ok(())
+}
+
+fn set_sync_enabled_during_handoff(
+    enable: bool,
+    pending: &AtomicBool,
+    deferred_request: &Mutex<Option<bool>>,
+    transition: &Mutex<()>,
+    apply_sync: impl FnOnce(bool) -> Result<(), String>,
+) -> Result<bool, String> {
+    let _transition = transition.lock().unwrap_or_else(|e| e.into_inner());
+    if pending.load(Ordering::Acquire) {
+        if enable {
+            *deferred_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(true);
+            return Ok(false);
+        }
+        apply_sync(false)?;
+        *deferred_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(false);
+        return Ok(true);
+    }
+    apply_sync(enable)?;
+    Ok(true)
+}
+
+fn daemon_env_matches_child(
+    child_env: Option<&HashMap<String, String>>,
+    current_env: &HashMap<String, String>,
+) -> bool {
+    child_env.is_some_and(|child| child == current_env)
 }
 
 /// Environment for the daemon; its services inherit it, sync included.
@@ -340,14 +403,21 @@ pub fn set_daemon_sync(enable: bool) -> Result<(), String> {
 
 /// `start_daemon` / `stop_daemon` in daemon mode.
 pub fn set_sync_enabled(enable: bool) -> Result<bool, String> {
-    if enable && WATCH_HANDOFF_PENDING.load(Ordering::Acquire) {
-        return Ok(false);
-    }
     if enable {
         hq_desktop_core::daemon::ensure_sync_spawn_allowed()?;
     }
-    set_daemon_sync(enable)?;
-    Ok(true)
+    set_sync_enabled_during_handoff(
+        enable,
+        &WATCH_HANDOFF_PENDING,
+        &DEFERRED_WATCH_SYNC_REQUEST,
+        &WATCH_SYNC_TRANSITION,
+        |enabled| {
+            if enabled {
+                hq_desktop_core::daemon::ensure_sync_spawn_allowed()?;
+            }
+            set_daemon_sync(enabled)
+        },
+    )
 }
 
 /// `daemon_status` in daemon mode.
@@ -369,16 +439,29 @@ fn watch_env_changes() {
             return;
         }
         if WATCH_HANDOFF_PENDING.load(Ordering::Acquire) {
+            let current = CHILD_ENV.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let Some(current) = current else { continue };
+            if !daemon_env_matches_child(Some(&current), &daemon_env()) {
+                log(
+                    LOG_TAG,
+                    "sync settings changed during watch-owner handoff; restarting hq daemon before enabling sync",
+                );
+                RESTART_REQUESTED.store(true, Ordering::Release);
+                terminate_child();
+                continue;
+            }
             match crate::commands::daemon::watch_runner_handoff_ready() {
                 Ok(true) => {
-                    if let Err(error) =
-                        finish_watch_handoff(&WATCH_HANDOFF_PENDING, sync_wanted(), || {
-                            set_daemon_sync(true)
-                        })
-                    {
+                    if let Err(error) = finish_watch_handoff(
+                        &WATCH_HANDOFF_PENDING,
+                        &DEFERRED_WATCH_SYNC_REQUEST,
+                        &WATCH_SYNC_TRANSITION,
+                        sync_wanted,
+                        set_daemon_sync,
+                    ) {
                         log(
                             LOG_TAG,
-                            &format!("could not enable sync after watch-owner release: {error}"),
+                            &format!("could not reconcile sync after watch-owner release: {error}"),
                         );
                         continue;
                     }
@@ -627,23 +710,112 @@ mod tests {
     }
 
     #[test]
-    fn daemon_host_lifts_the_gate_before_enabling_sync_and_retries_failures() {
+    fn daemon_host_reconciles_latest_sync_request_before_lifting_the_gate() {
         let pending = AtomicBool::new(true);
-        finish_watch_handoff(&pending, true, || {
-            assert!(!pending.load(Ordering::Acquire));
-            Ok(())
-        })
+        let deferred = Mutex::new(None);
+        let transition = Mutex::new(());
+        let mut applied = None;
+        assert!(!set_sync_enabled_during_handoff(
+            true,
+            &pending,
+            &deferred,
+            &transition,
+            |_| panic!("a deferred enable must not run before release"),
+        )
+        .unwrap());
+        finish_watch_handoff(
+            &pending,
+            &deferred,
+            &transition,
+            || false,
+            |enabled| {
+                applied = Some(enabled);
+                Ok(())
+            },
+        )
         .unwrap();
+        assert_eq!(
+            applied,
+            Some(true),
+            "the deferred enable beats the stale preference"
+        );
         assert!(!pending.load(Ordering::Acquire));
+        assert_eq!(*deferred.lock().unwrap(), None);
 
         pending.store(true, Ordering::Release);
-        let error = finish_watch_handoff(&pending, true, || {
-            assert!(!pending.load(Ordering::Acquire));
-            Err("enable failed".to_string())
-        })
+        let error = finish_watch_handoff(
+            &pending,
+            &deferred,
+            &transition,
+            || true,
+            |_| Err("enable failed".to_string()),
+        )
         .unwrap_err();
         assert_eq!(error, "enable failed");
         assert!(pending.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn daemon_host_does_not_launch_when_sync_cannot_be_disabled() {
+        let mut launches = 0;
+        let error =
+            disable_sync_before_host_launch(|| Err("disable failed".to_string()), || launches += 1)
+                .unwrap_err();
+
+        assert_eq!(error, "disable failed");
+        assert_eq!(launches, 0, "unsafe host launch must be aborted");
+
+        disable_sync_before_host_launch(|| Ok(()), || launches += 1).unwrap();
+        assert_eq!(launches, 1);
+    }
+
+    #[test]
+    fn a_sync_toggle_during_handoff_is_applied_before_the_pending_gate_clears() {
+        let pending = AtomicBool::new(true);
+        let deferred = Mutex::new(None);
+        let transition = Mutex::new(());
+        let mut applied = None;
+
+        assert!(set_sync_enabled_during_handoff(
+            false,
+            &pending,
+            &deferred,
+            &transition,
+            |enabled| {
+                applied = Some(enabled);
+                Ok(())
+            },
+        )
+        .unwrap());
+        assert_eq!(applied, Some(false));
+        finish_watch_handoff(
+            &pending,
+            &deferred,
+            &transition,
+            || true,
+            |enabled| {
+                applied = Some(enabled);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            applied,
+            Some(false),
+            "an explicit disable wins over old settings"
+        );
+        assert!(!pending.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn daemon_host_refreshes_environment_before_finishing_a_pending_handoff() {
+        let child_env = HashMap::from([("HQ_ROOT".to_string(), "/old/HQ".to_string())]);
+        let changed_env = HashMap::from([("HQ_ROOT".to_string(), "/new/HQ".to_string())]);
+
+        assert!(daemon_env_matches_child(Some(&child_env), &child_env));
+        assert!(!daemon_env_matches_child(Some(&child_env), &changed_env));
+        assert!(!daemon_env_matches_child(None, &child_env));
     }
 
     // ── per-pass work driven by hq-cloud's end-of-pass record ────────────

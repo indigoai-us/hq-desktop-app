@@ -57,6 +57,9 @@ pub struct WatchOwnerLeaseStatus {
 pub const WATCH_RUNNER_ALREADY_OWNED_EXIT: i32 = 20;
 pub const WATCH_OWNER_LEASE_LOST_EXIT: i32 = 21;
 const WATCH_OWNER_LABEL_MAX_CHARS: usize = 64;
+/// hq-cloud refreshes the public owner projection every 15 seconds. Allow four
+/// intervals so a delayed timer does not make a healthy owner look absent.
+pub const WATCH_OWNER_HEARTBEAT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Exit 20 means another watch owner holds the root. Exit 21 means this runner
 /// lost its lease. Both are ownership handoffs, not watcher crashes.
@@ -148,17 +151,28 @@ pub fn active_watch_owner_status(hq_root: &Path) -> Result<Option<WatchOwnerLeas
     let Some(status) = read_watch_owner_status(hq_root)? else {
         return Ok(None);
     };
-    if !watch_owner_status_is_active(&status, is_pid_alive) {
+    if !watch_owner_status_is_active_at(&status, is_pid_alive, chrono::Utc::now()) {
         return Ok(None);
     }
     Ok(Some(status))
 }
 
-fn watch_owner_status_is_active(
+fn watch_owner_status_is_active_at(
     status: &WatchOwnerLeaseStatus,
     pid_alive: impl FnOnce(u32) -> bool,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> bool {
-    is_safe_watch_owner_label(&status.owner) && status.pid > 0 && pid_alive(status.pid)
+    if !is_safe_watch_owner_label(&status.owner) || status.pid == 0 || !pid_alive(status.pid) {
+        return false;
+    }
+    let Ok(heartbeat_at) = chrono::DateTime::parse_from_rfc3339(&status.heartbeat_at) else {
+        return false;
+    };
+    let age = now.signed_duration_since(heartbeat_at);
+    age >= chrono::Duration::zero()
+        && age
+            <= chrono::Duration::from_std(WATCH_OWNER_HEARTBEAT_MAX_AGE)
+                .unwrap_or_else(|_| chrono::Duration::seconds(60))
 }
 
 fn is_safe_watch_owner_label(owner: &str) -> bool {
@@ -184,11 +198,11 @@ fn canonical_root_for_watch_owner(hq_root: &Path) -> PathBuf {
     loop {
         match std::fs::canonicalize(&current) {
             Ok(real) => {
-                let mut canonical = real;
+                let mut canonical = normalize_windows_extended_path(real);
                 for segment in missing_segments.iter().rev() {
                     canonical.push(segment);
                 }
-                return canonical;
+                return normalize_windows_extended_path(canonical);
             }
             Err(error)
                 if matches!(
@@ -197,20 +211,34 @@ fn canonical_root_for_watch_owner(hq_root: &Path) -> PathBuf {
                 ) =>
             {
                 let Some(name) = current.file_name() else {
-                    return resolved;
+                    return normalize_windows_extended_path(resolved);
                 };
                 missing_segments.push(name.to_os_string());
                 let Some(parent) = current.parent() else {
-                    return resolved;
+                    return normalize_windows_extended_path(resolved);
                 };
                 if parent == current {
-                    return resolved;
+                    return normalize_windows_extended_path(resolved);
                 }
                 current = parent.to_path_buf();
             }
-            Err(_) => return resolved,
+            Err(_) => return normalize_windows_extended_path(resolved),
         }
     }
+}
+
+/// Rust's Windows `canonicalize` returns verbatim paths (`\\?\\C:\\...`),
+/// while hq-cloud hashes the normal path returned by Node's path resolution.
+/// Remove only the Win32 extended-length marker so both clients hash one key.
+fn normalize_windows_extended_path(path: PathBuf) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    if let Some(normal) = value.strip_prefix(r"\\?\") {
+        return PathBuf::from(normal);
+    }
+    path
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2592,6 +2620,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let root = temp.path().join("HQ");
         let state = temp.path().join("state");
+        let now = chrono::Utc::now();
         std::fs::create_dir_all(&root).unwrap();
         let path = watch_owner_status_path_in(&root, &state);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -2602,7 +2631,7 @@ mod tests {
                 "pid": std::process::id(),
                 "version": "6.18.13",
                 "startedAt": "2026-09-28T00:00:00.000Z",
-                "heartbeatAt": "2026-09-28T00:00:15.000Z"
+                "heartbeatAt": now.to_rfc3339()
             })
             .to_string(),
         )
@@ -2614,9 +2643,59 @@ mod tests {
         assert_eq!(status.owner, "hq-daemon");
         assert_eq!(status.pid, std::process::id());
         assert!(is_safe_watch_owner_label(&status.owner));
-        assert!(watch_owner_status_is_active(&status, |pid| pid == std::process::id()));
-        assert!(!watch_owner_status_is_active(&status, |_| false));
+        assert!(watch_owner_status_is_active_at(
+            &status,
+            |pid| pid == std::process::id(),
+            now
+        ));
+        assert!(!watch_owner_status_is_active_at(&status, |_| false, now));
         assert!(!is_safe_watch_owner_label("owner with spaces"));
+    }
+
+    #[test]
+    fn watch_owner_status_stops_deferring_after_its_heartbeat_expires() {
+        let now = chrono::Utc::now();
+        let status = WatchOwnerLeaseStatus {
+            owner: "hq-daemon".to_string(),
+            pid: 4242,
+            version: "6.18.13".to_string(),
+            started_at: (now - chrono::Duration::minutes(5)).to_rfc3339(),
+            heartbeat_at: (now
+                - chrono::Duration::from_std(WATCH_OWNER_HEARTBEAT_MAX_AGE).unwrap()
+                - chrono::Duration::seconds(1))
+            .to_rfc3339(),
+        };
+
+        assert!(
+            !watch_owner_status_is_active_at(&status, |_| true, now),
+            "a recycled or stale owner record must not defer desktop retries forever"
+        );
+    }
+
+    #[test]
+    fn watch_owner_status_rejects_a_malformed_heartbeat_as_inactive() {
+        let now = chrono::Utc::now();
+        let status = WatchOwnerLeaseStatus {
+            owner: "hq-daemon".to_string(),
+            pid: 4242,
+            version: "6.18.13".to_string(),
+            started_at: now.to_rfc3339(),
+            heartbeat_at: "not-a-timestamp".to_string(),
+        };
+
+        assert!(!watch_owner_status_is_active_at(&status, |_| true, now));
+    }
+
+    #[test]
+    fn watch_owner_path_normalizes_windows_extended_drive_and_unc_paths() {
+        assert_eq!(
+            normalize_windows_extended_path(PathBuf::from(r"\\?\C:\HQ\Team")),
+            PathBuf::from(r"C:\HQ\Team")
+        );
+        assert_eq!(
+            normalize_windows_extended_path(PathBuf::from(r"\\?\UNC\server\share\HQ")),
+            PathBuf::from(r"\\server\share\HQ")
+        );
     }
 
     #[test]
