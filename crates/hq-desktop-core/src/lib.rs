@@ -68,6 +68,7 @@ pub mod first_run;
 pub mod git_mirror;
 pub mod hq_cli_update;
 pub mod hq_cloud;
+pub mod hq_daemon;
 pub mod hq_context;
 pub mod hq_resolver;
 pub mod hq_version;

@@ -4459,7 +4459,12 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
         }
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
-            run_check_cycle(&handle, /* floor_repair */ false).await;
+            // hq daemon's updater keeps the CLI current when it hosts
+            // background services; two installers would race on one prefix.
+            // The floor repair above still runs.
+            if !crate::commands::hq_daemon_host::daemon_mode_active() {
+                run_check_cycle(&handle, /* floor_repair */ false).await;
+            }
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
