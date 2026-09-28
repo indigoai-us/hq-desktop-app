@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The returning-user setup welcome uses current HQ Desktop wording, and the
+  retired `g a` shortcut no longer opens a stale Atlas destination.
+
 ## [0.10.348] — 2026-09-27
 
 - When an update restarts the app before the HQ folder is available, people

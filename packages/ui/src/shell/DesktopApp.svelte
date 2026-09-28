@@ -45,7 +45,6 @@
     registerShortcuts,
     type ShortcutBinding,
   } from "../common/keyboard-shortcuts.js";
-  import { createGoChord } from "../common/go-chord.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -7852,16 +7851,6 @@
     void navigate(destination);
   }
 
-  // `g a` used to flip a standalone Atlas view. Main moved Atlas into a chat
-  // tab, so the chord hands the destination to the navigation controller and
-  // the history/back-forward stack stays correct.
-  const goChord = createGoChord((letter: string) => {
-    if (letter !== "a") return false;
-    meetingFocusRequest = null;
-    void navigate({ kind: "atlas" });
-    return true;
-  });
-
   /** Run a sidebar entry point, mounting the rail first if it is collapsed. */
   function withSidebar(fn: (actions: ChatSidebarActions) => void): void {
     if (sidebarActions) {
@@ -7901,7 +7890,6 @@
       run: () => {
         cheatSheetOpen = false;
         paletteOpen = !paletteOpen;
-        goChord.reset();
       },
     },
     {
@@ -8148,13 +8136,6 @@
         return;
       }
 
-      // US-016: `g a` opens Atlas (Slack-style go chord). Unmodified chords
-      // are not a registry concern, so they keep a bubble-phase listener.
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (paletteOpen || cheatSheetOpen) return;
-      if (goChord.handleKeydown(event)) {
-        event.preventDefault();
-      }
     }
     window.addEventListener("keydown", onKey);
 
