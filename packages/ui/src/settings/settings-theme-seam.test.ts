@@ -7,7 +7,7 @@ import {
   type AppearancePreferences,
 } from "./appearance-seam.js";
 import { createShellAppearanceSeam } from "./settings-theme-seam.js";
-import { SETTINGS_PREFS_KEY } from "./settings-prefs.js";
+import { APPEARANCE_STORAGE_KEY } from "./appearance-seam.js";
 
 function memoryStorage(): Pick<Storage, "getItem" | "setItem"> {
   const map = new Map<string, string>();
@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("createShellAppearanceSeam window transparency", () => {
-  it("round-trips a requested transparency instead of snapping back to 65", () => {
+  it("round-trips a requested transparency instead of snapping back to the default", () => {
     const storage = memoryStorage();
     const target = new EventTarget();
     const seam = createShellAppearanceSeam({
@@ -35,8 +35,11 @@ describe("createShellAppearanceSeam window transparency", () => {
     const result = seam.request({ windowTransparency: 20 });
     expect(result.windowTransparency).toBe(20);
     expect(seam.read().windowTransparency).toBe(20);
-    // Persisted for the next launch.
-    expect(JSON.parse(storage.getItem(SETTINGS_PREFS_KEY) ?? "{}").windowOpacity).toBe(80);
+    // Persisted for the next launch, in the one Appearance record.
+    expect(JSON.parse(storage.getItem(APPEARANCE_STORAGE_KEY) ?? "{}")).toMatchObject({
+      windowTransparency: 20,
+      windowTransparencySet: true,
+    });
     // No host installed: the surface-alpha vars are written directly.
     expect(
       document.documentElement.style.getPropertyValue("--hq-window-transparency-factor"),

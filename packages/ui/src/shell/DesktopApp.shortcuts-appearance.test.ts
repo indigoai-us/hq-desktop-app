@@ -123,7 +123,20 @@ describe("appearance host guard on mount", () => {
   });
 
   it("still drives the vars itself when no host is installed", async () => {
-    const requests: unknown[] = [];
+    mountApp();
+    await settle();
+
+    // No host: the shell writes the surface vars from the shared Appearance
+    // record — a fresh profile is fully solid.
+    expect(root().style.getPropertyValue("--hq-window-transparency-factor")).toBe("0.00");
+    expect(root().style.getPropertyValue("--hq-window-alpha-light")).toBe("1.00");
+    expect(root().style.getPropertyValue("--hq-window-opacity")).toBe("100%");
+  });
+
+  it("adopts a theme chosen before the stores were unified, once", async () => {
+    root().dataset.windowTransparency = "0";
+    localStorage.setItem("hq-work-color-theme", "light");
+    const requests: Array<{ colorTheme: string; windowTransparency: number }> = [];
     const onRequest = (event: Event) =>
       requests.push((event as CustomEvent).detail);
     window.addEventListener("hq:appearance-request", onRequest);
@@ -132,7 +145,9 @@ describe("appearance host guard on mount", () => {
     await settle();
     window.removeEventListener("hq:appearance-request", onRequest);
 
-    expect(requests.length).toBeGreaterThan(0);
+    // Whole preference, carrying the host's applied transparency unchanged.
+    expect(requests).toEqual([{ colorTheme: "light", windowTransparency: 0 }]);
+    expect(localStorage.getItem("hq-work-color-theme")).toBeNull();
   });
 });
 

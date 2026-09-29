@@ -151,6 +151,7 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
                 }
             };
             log(LOG_TAG, message);
+            apply_requested_backdrop_visibility(window);
             return;
         }
     }
@@ -174,6 +175,7 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
             // `apply_vibrancy` inserts an untagged NSVisualEffectView; tag it so
             // the idempotency guard above also covers the fallback path.
             unsafe { tag_untagged_visual_effect_subview(content) };
+            apply_requested_backdrop_visibility(window);
             let message = match role {
                 GlassWindowRole::LargeWindow => {
                     "liquid-glass: vibrancy fallback applied (UnderWindowBackground)"
@@ -188,6 +190,17 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
             LOG_TAG,
             &format!("liquid-glass: vibrancy fallback FAILED: {e}"),
         ),
+    }
+}
+
+/// Honour a backdrop-visibility request the web layer made before this
+/// backing view existed (Appearance at 100% opacity hides the material).
+#[cfg(target_os = "macos")]
+fn apply_requested_backdrop_visibility(window: &tauri::WebviewWindow) {
+    if let Some(visible) =
+        crate::commands::window_material::requested_backdrop_visible(window.label())
+    {
+        set_liquid_glass_backing_visible(window, visible);
     }
 }
 

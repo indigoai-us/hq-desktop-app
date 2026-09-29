@@ -51,15 +51,18 @@
   import {
     APPEARANCE_SIZES,
     APPEARANCE_THEMES,
-    applyColorTheme,
     applyUiSize,
-    applyWindowOpacity,
     calendarAccountLabel,
-    hasAppearanceHost,
-    readHostWindowOpacity,
-    readStoredTheme,
     settingsCompanyLists,
   } from "./shell-settings-model.js";
+  import {
+    bootAppearance,
+    readAppearanceState,
+    setAppearanceColorTheme,
+    setAppearanceWindowOpacity,
+    subscribeAppearance,
+    type AppearanceState,
+  } from "./appearance-store.js";
   import {
     readSettingsPrefs,
     writeSettingsPrefs,
@@ -74,7 +77,6 @@
     type LiveSyncStatus,
   } from "./live-sync-status.js";
   import {
-    APPEARANCE_CHANGE_EVENT,
     MAX_SLIDER_WINDOW_OPACITY,
     MIN_SLIDER_WINDOW_OPACITY,
     type ColorTheme,
@@ -131,16 +133,12 @@
     uiVersion = null,
   }: Props = $props();
 
-  // When the desktop host's appearance installer is present it has already
-  // applied its persisted transparency to <html>; seed the slider from that
-  // instead of the local pref so the two never disagree on first paint.
-  const hostOpacity = readHostWindowOpacity();
-  let prefs = $state<ShellSettingsPrefs>(
-    hostOpacity == null
-      ? readSettingsPrefs(storage)
-      : { ...readSettingsPrefs(storage), windowOpacity: hostOpacity },
-  );
-  let theme = $state<ColorTheme>(readStoredTheme());
+  let prefs = $state<ShellSettingsPrefs>(readSettingsPrefs(storage));
+  // Theme + opacity come from the ONE Appearance store: with the desktop host
+  // installed that is the value it applied to <html>, so the slider can only
+  // ever show what the window is using (also on first paint after upgrade).
+  let appearance = $state<AppearanceState>(readAppearanceState());
+  const theme = $derived<ColorTheme>(appearance.colorTheme);
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
   let notifPermissionError = $state<string | null>(null);
@@ -317,7 +315,7 @@
   }
 
   function setTheme(next: ColorTheme): void {
-    theme = applyColorTheme(next);
+    appearance = setAppearanceColorTheme(next);
   }
 
   function setUiSize(next: SettingsUiSize): void {
@@ -325,7 +323,7 @@
   }
 
   function setOpacity(next: number): void {
-    patch({ windowOpacity: applyWindowOpacity(next) });
+    appearance = setAppearanceWindowOpacity(next);
   }
 
   function toggleSidebarScopeLabels(): void {
@@ -1133,24 +1131,18 @@
   });
 
   onMount(() => {
-    // Keep the slider in sync when transparency changes elsewhere (another
-    // window, storage event, native menu) — the host announces every apply.
-    const onAppearanceChange = () => {
-      const next = readHostWindowOpacity();
-      if (next != null && next !== prefs.windowOpacity) {
-        prefs = writeSettingsPrefs({ windowOpacity: next }, storage);
-      }
-    };
-    window.addEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
-    return () =>
-      window.removeEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
+    // Keep both controls in sync when Appearance changes elsewhere (the
+    // title-bar menu, another window, storage) — every apply is announced.
+    return subscribeAppearance((next) => {
+      appearance = next;
+    });
   });
 
   onMount(() => {
     applyUiSize(prefs.uiSize);
-    // With a host present, its persisted value is already live; re-applying
-    // the local pref here would clobber it with a stale copy.
-    if (!hasAppearanceHost()) applyWindowOpacity(prefs.windowOpacity);
+    // With a host present its persisted value is already live; without one,
+    // apply the shared record (never a second copy).
+    appearance = bootAppearance();
     if (!adapter) return;
     void refreshNotifPermission();
     // Re-read after returning from System Settings (v1 SettingsPage pattern).
@@ -1226,7 +1218,7 @@
     {#if canTray}
       <div class="set-row">
         <div><div class="sn">Window opacity</div><div class="sd">Visual treatment for this embedded Work view</div></div>
-        <div class="range-wrap"><input type="range" min={MIN_SLIDER_WINDOW_OPACITY} max={MAX_SLIDER_WINDOW_OPACITY} value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="mono range-val">{prefs.windowOpacity}%</span></div>
+        <div class="range-wrap"><input type="range" min={MIN_SLIDER_WINDOW_OPACITY} max={MAX_SLIDER_WINDOW_OPACITY} value={appearance.windowOpacity} aria-label="Window opacity" aria-valuetext={`${appearance.windowOpacity}%`} oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="mono range-val">{appearance.windowOpacity}%</span></div>
       </div>
     {/if}
     <div class="set-row">

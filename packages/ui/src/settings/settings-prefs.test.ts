@@ -20,11 +20,6 @@ function memoryStorage(seed: Record<string, string> = {}) {
 describe("settings prefs", () => {
   it("fills defaults for junk payloads", () => {
     expect(parseSettingsPrefs(null).showInDock).toBe(true);
-    // The floor is the shipped default (transparency 65 → opacity 35), not 50:
-    // a 50 floor could not represent the default the app actually ships with.
-    expect(parseSettingsPrefs({ windowOpacity: 20 }).windowOpacity).toBe(35);
-    expect(parseSettingsPrefs({ windowOpacity: 35 }).windowOpacity).toBe(35);
-    expect(parseSettingsPrefs({ windowOpacity: 140 }).windowOpacity).toBe(100);
     expect(parseSettingsPrefs({ uiSize: "large" }).uiSize).toBe("large");
     expect(parseSettingsPrefs(null).showSidebarScopeLabels).toBe(true);
     expect(parseSettingsPrefs({ showSidebarScopeLabels: false }).showSidebarScopeLabels).toBe(
@@ -35,10 +30,10 @@ describe("settings prefs", () => {
   it("round-trips a patch through storage", () => {
     const storage = memoryStorage();
     const next = writeSettingsPrefs(
-      { windowOpacity: 77, uiSize: "compact" },
+      { uiSize: "compact" },
       storage,
     );
-    expect(next.windowOpacity).toBe(77);
+    expect(next.uiSize).toBe("compact");
     expect(readSettingsPrefs(storage).uiSize).toBe("compact");
     expect(readSettingsPrefs(storage).showInDock).toBe(
       DEFAULT_SETTINGS_PREFS.showInDock,
@@ -56,7 +51,16 @@ describe("settings prefs", () => {
     });
     expect(parsed.showInDock).toBe(true);
     expect(parsed.uiSize).toBe("default");
-    expect(parsed.windowOpacity).toBe(80);
+  });
+
+  // Regression: window opacity used to live here too (default 80) while the
+  // window was driven by the host's Appearance record (default 65 → 35%).
+  // Two stores, two defaults — the slider showed one value, the window used
+  // another. Opacity now lives only in the Appearance record.
+  it("does not keep a second copy of window opacity", () => {
+    const parsed = parseSettingsPrefs({ windowOpacity: 90 });
+    expect("windowOpacity" in parsed).toBe(false);
+    expect("windowOpacity" in DEFAULT_SETTINGS_PREFS).toBe(false);
   });
 
   it("tolerates an empty getSettings-shaped payload without throwing", () => {

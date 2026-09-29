@@ -285,13 +285,8 @@
     untrack,
     type Component,
   } from "svelte";
-  import {
-    applyColorTheme,
-    applyUiSize,
-    applyWindowOpacity,
-    hasAppearanceHost,
-    readStoredTheme,
-  } from "../settings/shell-settings-model.js";
+  import { applyUiSize } from "../settings/shell-settings-model.js";
+  import { bootAppearance } from "../settings/appearance-store.js";
   import { readSettingsPrefs } from "../settings/settings-prefs.js";
   import {
     EMPTY_LIVE_SYNC,
@@ -8082,17 +8077,15 @@
     sweepStaleAttachmentTrays("mount");
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
-    applyColorTheme(readStoredTheme());
-    // Re-apply on boot, not just on toggle: the attribute lives on <html> and
-    // does not survive a reload, so without this the glass returns on every
-    // restart and the setting looks like it silently forgot itself.
+    // Theme + window opacity: one shared Appearance store. With the desktop
+    // host installed it already applied the persisted value before first
+    // paint; bootAppearance only adopts the retired Work-only theme key once
+    // and, without a host, applies the stored record.
+    bootAppearance();
+    // Re-apply density on boot: the attribute lives on <html> and does not
+    // survive a reload.
     const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
-    // With the desktop appearance host installed, its persisted preference is
-    // already live; re-applying the local pref would round-trip a stale copy
-    // through the host and clobber the user's theme. Same guard as
-    // PrototypeSettingsPanes' onMount.
-    if (!hasAppearanceHost()) applyWindowOpacity(prefs.windowOpacity);
     const overlayQuery = window.matchMedia(
       `(max-width: ${REPLY_OVERLAY_MAX_PX}px)`,
     );

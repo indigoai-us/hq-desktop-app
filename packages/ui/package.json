@@ -17,6 +17,14 @@
     "./brand": {
       "svelte": "./src/brand/index.ts",
       "default": "./src/brand/index.ts"
+    },
+    "./appearance": {
+      "svelte": "./src/settings/appearance-seam.ts",
+      "default": "./src/settings/appearance-seam.ts"
+    },
+    "./appearance-store": {
+      "svelte": "./src/settings/appearance-store.ts",
+      "default": "./src/settings/appearance-store.ts"
     }
   },
   "scripts": {

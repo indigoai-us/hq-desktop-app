@@ -1,19 +1,40 @@
-export const APPEARANCE_STORAGE_KEY = 'hq-sync.appearance.v1';
-export const APPEARANCE_CHANGE_EVENT = 'hq:appearance-change';
-export const APPEARANCE_REQUEST_EVENT = 'hq:appearance-request';
+/**
+ * Desktop host for the ONE Appearance store (theme + window transparency).
+ *
+ * Value contract, defaults, storage key, and the legacy-upgrade rule live in
+ * `@hq/ui/appearance` so the Settings slider, the title-bar Appearance menu,
+ * and this host can never disagree about a default or a range again.
+ */
+import {
+  APPEARANCE_CHANGE_EVENT,
+  APPEARANCE_REQUEST_EVENT,
+  APPEARANCE_STORAGE_KEY,
+  DEFAULT_STORED_APPEARANCE,
+  normalizeColorTheme,
+  normalizeWindowTransparency,
+  parseStoredAppearance,
+  serializeStoredAppearance,
+  type AppearancePreferences,
+  type ColorTheme,
+  type StoredAppearance,
+} from '@hq/ui/appearance';
 
-export const DEFAULT_WINDOW_TRANSPARENCY = 65;
-export const MIN_WINDOW_TRANSPARENCY = 0;
-export const MAX_WINDOW_TRANSPARENCY = 100;
-export const MIN_WINDOW_OPACITY = 0;
-export const MAX_WINDOW_OPACITY = 100;
-
-export type ColorTheme = 'system' | 'light' | 'dark';
-
-export interface AppearancePreferences {
-  colorTheme: ColorTheme;
-  windowTransparency: number;
-}
+export {
+  APPEARANCE_CHANGE_EVENT,
+  APPEARANCE_REQUEST_EVENT,
+  APPEARANCE_STORAGE_KEY,
+  DEFAULT_WINDOW_TRANSPARENCY,
+  LEGACY_DEFAULT_WINDOW_TRANSPARENCY,
+  MAX_WINDOW_OPACITY,
+  MAX_WINDOW_TRANSPARENCY,
+  MIN_WINDOW_OPACITY,
+  MIN_WINDOW_TRANSPARENCY,
+  normalizeColorTheme,
+  normalizeWindowTransparency,
+  windowOpacityFromTransparency,
+  windowTransparencyFromOpacity,
+} from '@hq/ui/appearance';
+export type { AppearancePreferences, ColorTheme } from '@hq/ui/appearance';
 
 type AppearanceStorage = Pick<Storage, 'getItem' | 'setItem'>;
 type NativeTheme = 'light' | 'dark' | null;
@@ -69,35 +90,6 @@ function browserStorage(): Storage | null {
   }
 }
 
-export function normalizeColorTheme(value: unknown): ColorTheme {
-  return value === 'light' || value === 'dark' ? value : 'system';
-}
-
-export function normalizeWindowTransparency(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(numeric)) return DEFAULT_WINDOW_TRANSPARENCY;
-  return Math.round(
-    Math.min(
-      MAX_WINDOW_TRANSPARENCY,
-      Math.max(MIN_WINDOW_TRANSPARENCY, numeric),
-    ),
-  );
-}
-
-export function windowOpacityFromTransparency(value: unknown): number {
-  return MAX_WINDOW_OPACITY - normalizeWindowTransparency(value);
-}
-
-export function windowTransparencyFromOpacity(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : Number(value);
-  const opacity = Number.isFinite(numeric)
-    ? Math.round(
-        Math.min(MAX_WINDOW_OPACITY, Math.max(MIN_WINDOW_OPACITY, numeric)),
-      )
-    : windowOpacityFromTransparency(DEFAULT_WINDOW_TRANSPARENCY);
-  return normalizeWindowTransparency(MAX_WINDOW_OPACITY - opacity);
-}
-
 export function normalizeAppearancePreferences(
   value: Partial<AppearancePreferences> | null | undefined,
 ): AppearancePreferences {
@@ -107,36 +99,57 @@ export function normalizeAppearancePreferences(
   };
 }
 
+function readStoredRecord(storage: AppearanceStorage | null): {
+  record: StoredAppearance;
+  migrated: boolean;
+} {
+  if (!storage) return { record: { ...DEFAULT_STORED_APPEARANCE }, migrated: false };
+  try {
+    return parseStoredAppearance(storage.getItem(APPEARANCE_STORAGE_KEY));
+  } catch {
+    return { record: { ...DEFAULT_STORED_APPEARANCE }, migrated: false };
+  }
+}
+
+function writeStoredRecord(storage: AppearanceStorage | null, record: StoredAppearance): void {
+  if (!storage) return;
+  try {
+    storage.setItem(APPEARANCE_STORAGE_KEY, serializeStoredAppearance(record));
+  } catch {
+    // The current window still applies the preference when storage is blocked.
+  }
+}
+
+function toPreferences(record: StoredAppearance): AppearancePreferences {
+  return normalizeAppearancePreferences(record);
+}
+
 export function readAppearancePreferences(
   storage: AppearanceStorage | null,
 ): AppearancePreferences {
-  if (!storage) return normalizeAppearancePreferences(null);
-  try {
-    const raw = storage.getItem(APPEARANCE_STORAGE_KEY);
-    if (!raw) return normalizeAppearancePreferences(null);
-    return normalizeAppearancePreferences(JSON.parse(raw));
-  } catch {
-    return normalizeAppearancePreferences(null);
-  }
+  return toPreferences(readStoredRecord(storage).record);
 }
 
 export function readBrowserAppearancePreferences(): AppearancePreferences {
   return readAppearancePreferences(browserStorage());
 }
 
+/**
+ * Persist a preference. `windowTransparencySet` stays true once the user has
+ * chosen a transparency, and becomes true when this write changes it.
+ */
 export function writeAppearancePreferences(
   storage: AppearanceStorage | null,
   preferences: AppearancePreferences,
 ): void {
-  if (!storage) return;
-  try {
-    storage.setItem(
-      APPEARANCE_STORAGE_KEY,
-      JSON.stringify(normalizeAppearancePreferences(preferences)),
-    );
-  } catch {
-    // The current window still applies the preference when storage is blocked.
-  }
+  const previous = readStoredRecord(storage).record;
+  const next = normalizeAppearancePreferences(preferences);
+  writeStoredRecord(storage, {
+    ...next,
+    windowTransparencySet:
+      previous.windowTransparencySet ||
+      next.windowTransparency !== previous.windowTransparency,
+  });
 }
 
 /**
@@ -216,7 +229,11 @@ export function installAppearancePreferences(
     ((error: unknown) => {
       console.warn('appearance preference failed:', error);
     });
-  let current = readAppearancePreferences(storage);
+  const initial = readStoredRecord(storage);
+  // Upgrade a legacy record once (see parseStoredAppearance), so the reset of
+  // an app-written default is durable and every window reads the same value.
+  if (initial.migrated) writeStoredRecord(storage, initial.record);
+  let current = toPreferences(initial.record);
   let desiredNativeTheme: NativeTheme =
     current.colorTheme === 'system' ? null : current.colorTheme;
   let appliedNativeTheme: NativeTheme | undefined;

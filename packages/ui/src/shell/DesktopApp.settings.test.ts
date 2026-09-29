@@ -138,12 +138,12 @@ describe("DesktopApp settings on web", () => {
   });
 
   it("applies interface preferences from the active tenant storage at startup", async () => {
-    writeSettingsPrefs({ uiSize: "large", windowOpacity: 96 });
+    writeSettingsPrefs({ uiSize: "large" });
     const storage = createTenantStorage(memoryStorage, {
       accountId: "acct_stefan",
       companyId: "all",
     });
-    writeSettingsPrefs({ uiSize: "compact", windowOpacity: 64 }, storage);
+    writeSettingsPrefs({ uiSize: "compact" }, storage);
 
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -166,6 +166,8 @@ describe("DesktopApp settings on web", () => {
     await tick();
 
     expect(document.documentElement.getAttribute("data-ui-size")).toBe("compact");
-    expect(document.documentElement.style.getPropertyValue("--hq-window-opacity")).toBe("64%");
+    // Window opacity is not a tenant pref: with nothing stored in the one
+    // Appearance record, a fresh profile boots fully solid.
+    expect(document.documentElement.style.getPropertyValue("--hq-window-opacity")).toBe("100%");
   });
 });
