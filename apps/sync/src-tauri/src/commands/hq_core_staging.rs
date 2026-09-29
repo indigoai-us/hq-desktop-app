@@ -244,18 +244,18 @@ async fn fetch_main_tree(
     repo: &str,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
     let url = format!("https://api.github.com/repos/{repo}/git/trees/main?recursive=1");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
+    let resp = crate::commands::github_api::get(
+        client,
+        &url,
+        crate::commands::github_api::ApiScope::Authenticated,
+    )
+    .await
+    .map_err(|e| format!("GET {url}: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("staging main tree HTTP {}", resp.status()));
     }
-    let parsed: GhTreesResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse staging tree JSON: {e}"))?;
+    let parsed: GhTreesResponse =
+        serde_json::from_slice(&resp.body).map_err(|e| format!("parse staging tree JSON: {e}"))?;
     if parsed.truncated {
         log(
             "hq-core-staging",
@@ -279,18 +279,18 @@ async fn fetch_open_pr_numbers(client: &reqwest::Client, repo: &str) -> Result<V
         let url = format!(
             "https://api.github.com/repos/{repo}/pulls?state=open&per_page=100&page={page}"
         );
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("GET {url}: {e}"))?;
+        let resp = crate::commands::github_api::get(
+            client,
+            &url,
+            crate::commands::github_api::ApiScope::Authenticated,
+        )
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("staging pulls list HTTP {}", resp.status()));
         }
-        let pulls: Vec<GhPull> = resp
-            .json()
-            .await
-            .map_err(|e| format!("parse pulls JSON: {e}"))?;
+        let pulls: Vec<GhPull> =
+            serde_json::from_slice(&resp.body).map_err(|e| format!("parse pulls JSON: {e}"))?;
         let n = pulls.len();
         numbers.extend(pulls.into_iter().map(|p| p.number));
         if n < 100 {
@@ -313,17 +313,17 @@ async fn fetch_pr_files(
         let url = format!(
             "https://api.github.com/repos/{repo}/pulls/{pr}/files?per_page=100&page={page}"
         );
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("GET {url}: {e}"))?;
+        let resp = crate::commands::github_api::get(
+            client,
+            &url,
+            crate::commands::github_api::ApiScope::Authenticated,
+        )
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("staging PR #{pr} files HTTP {}", resp.status()));
         }
-        let files: Vec<GhPullFile> = resp
-            .json()
-            .await
+        let files: Vec<GhPullFile> = serde_json::from_slice(&resp.body)
             .map_err(|e| format!("parse PR #{pr} files JSON: {e}"))?;
         let n = files.len();
         for f in files {
@@ -938,16 +938,18 @@ async fn run_replace_from_staging_inner(
                         .as_ref()
                         .map(|diagnostic| {
                             format!(
-                                "{} {diagnostic} {}",
+                                "{} {diagnostic} {} {}",
                                 "staging update applied but baseline persistence failed:",
                                 result.persistence_stamp_marker(),
+                                result.fetch_failure_class_marker(),
                             )
                         })
                         .unwrap_or_else(|| {
                             format!(
-                                "staging update applied; baseline refresh pending for {repo}@{} {}",
+                                "staging update applied; baseline refresh pending for {repo}@{} {} {}",
                                 result.commit,
                                 result.persistence_stamp_marker(),
+                                result.fetch_failure_class_marker(),
                             )
                         });
                     crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
