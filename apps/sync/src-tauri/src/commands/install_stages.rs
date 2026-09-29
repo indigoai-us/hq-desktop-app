@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Runtime};
+use tokio::io::AsyncReadExt;
 
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
@@ -409,6 +411,88 @@ async fn run_hq_output(
     }
 }
 
+async fn read_reindex_stream<R: Runtime>(
+    mut stream: impl tokio::io::AsyncRead + Unpin,
+    app: AppHandle<R>,
+    setup_run_id: String,
+) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let length = stream.read(&mut buffer).await?;
+        if length == 0 {
+            return Ok(output);
+        }
+        output.extend_from_slice(&buffer[..length]);
+        if let Err(error) = app.emit("setup:reindex-progress", &setup_run_id) {
+            crate::util::logfile::log(
+                "setup",
+                &format!("could not deliver reindex activity event: {error}"),
+            );
+        }
+    }
+}
+
+async fn run_hq_output_with_reindex_progress<R: Runtime>(
+    app: &AppHandle<R>,
+    args: &[&str],
+    hq_root: &Path,
+    setup_run_id: &str,
+) -> Result<Output, StageCommandFailure> {
+    let invocation = hq_resolver::resolve_hq();
+    let path_env = paths::child_path();
+    let _npx_guard = invocation.npx_serial_guard().await;
+    let mut cmd = invocation.command();
+    let mut child = cmd
+        .args(args)
+        .current_dir(hq_root)
+        .env("PATH", &path_env)
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            StageCommandFailure::from_spawn_error(
+                &format!("hq ({})", invocation.label()),
+                error,
+            )
+        })?;
+    let stdout = child.stdout.take().ok_or_else(|| StageCommandFailure {
+        message: "hq reindex stdout was not piped".to_string(),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| StageCommandFailure {
+        message: "hq reindex stderr was not piped".to_string(),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let (stdout, stderr) = tokio::join!(
+        read_reindex_stream(stdout, app.clone(), setup_run_id.to_string()),
+        read_reindex_stream(stderr, app.clone(), setup_run_id.to_string()),
+    );
+    let status = child.wait().await.map_err(|error| {
+        StageCommandFailure::from_spawn_error(&format!("hq ({})", invocation.label()), error)
+    })?;
+    let stdout = stdout.map_err(|error| StageCommandFailure {
+        message: format!("could not read hq reindex stdout: {error}"),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let stderr = stderr.map_err(|error| StageCommandFailure {
+        message: format!("could not read hq reindex stderr: {error}"),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(StageCommandFailure::from_output("hq", args, &output))
+    }
+}
+
 async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), StageCommandFailure> {
     run_hq_output(args, hq_root).await.map(|_| ())
 }
@@ -584,11 +668,21 @@ pub fn git_probe_user() -> Result<Option<GitUser>, String> {
 /// Build the local search index and refresh CLI-generated registries.
 #[tauri::command]
 pub async fn register_search_index(
+    app: AppHandle,
     failure_scope: Option<OnboardingFailureScope>,
+    activity_timeout_enabled: Option<bool>,
 ) -> Result<(), String> {
     clear_onboarding_failure_detail("indexing", failure_scope.as_ref());
     let hq_root = PathBuf::from(resolve_hq_path()?);
-    match run_hq(&["reindex"], &hq_root).await {
+    let result = match (activity_timeout_enabled.unwrap_or(false), failure_scope.as_ref()) {
+        (true, Some(scope)) => {
+            run_hq_output_with_reindex_progress(&app, &["reindex"], &hq_root, &scope.setup_run_id)
+                .await
+                .map(|_| ())
+        }
+        _ => run_hq(&["reindex"], &hq_root).await,
+    };
+    match result {
         Ok(()) => Ok(()),
         Err(error) => {
             record_onboarding_failure_detail(
