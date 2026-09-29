@@ -20,6 +20,8 @@ The release moves it under the version it ships in.
   controls this and is on by default; turning it off restores the previous
   one-file-at-a-time upload.
 
+- Behind a flag (`desktop.human-only-conversations`, off by default): conversations can hide work-mesh and automated messages, and the sidebar can order by the latest message from a person.
+
 - First-time setup is now one five-screen welcome flow that fills the screen
   (everything below the menu bar and beside the Dock) with no window
   shadow. On macOS the background is your own desktop wallpaper, blurred

@@ -216,6 +216,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
           ? Promise.resolve(ok(false))
           : this.call("has_feature", { flag }),
       ),
+    subscribeFeature: (flag, onChange) =>
+      this.flags.subscribe(
+        flag,
+        () =>
+          flag === CLAUDE_PROVIDER_FLAG
+            ? Promise.resolve(ok(false))
+            : this.call("has_feature", { flag }),
+        onChange,
+      ),
     listWorkspaces: async () => {
       const result = await this.hqProJson<Json>("GET", "/membership/me");
       if (!result.ok) return result;
