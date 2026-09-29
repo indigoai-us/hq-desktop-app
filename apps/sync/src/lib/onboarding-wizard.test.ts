@@ -200,6 +200,7 @@ describe('initialStepForLifecycle', () => {
     const evidence = {
       installInProgress: false,
       manifestIncomplete: false,
+      hadMachineId: false,
       hqRootValid: false,
     };
 
