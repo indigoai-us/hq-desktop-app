@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Personal workspaces with a cloud vault can show their board when the
+  `desktop.personal-workspace-board-v1` hq-flags rollout is enabled; it stays
+  off until explicitly enabled.
 - In a DM with a bot, the "is thinking" / "working on it" line now
   disappears as soon as the bot's reply appears, instead of staying under
   the reply for a few more seconds. It shows again when you send another
