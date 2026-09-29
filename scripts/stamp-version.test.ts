@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   assertValidVersion,
-  isCliEntrypoint,
+  runCliIfEntrypoint,
   patchInfoPlist,
   renderVersionJson,
   stampBundle,
@@ -78,7 +78,9 @@ describe("stamp-version", () => {
     expect(await readFile(join(dir, "version.json"), "utf8")).toBe('{"version":"3.4.5"}\n');
   });
 
-  it("recognizes a Windows CLI path by its canonical file URL", () => {
+  it("runs the CLI for a Windows path after canonical file URL comparison", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "stamp-version-windows-path-"));
+    cleanup.push(dir);
     const windowsPath = String.raw`C:\actions\_work\stamp-version.mjs`;
     const windowsFileUrl = "file:///C:/actions/_work/stamp-version.mjs";
     const toWindowsFileUrl = (path: string) => {
@@ -86,12 +88,28 @@ describe("stamp-version", () => {
       return new URL(windowsFileUrl);
     };
 
+    const windowsRun = runCliIfEntrypoint(
+      windowsFileUrl,
+      windowsPath,
+      ["--version", "4.5.6", "--resources-dir", dir],
+      toWindowsFileUrl,
+    );
+    expect(windowsRun).not.toBeNull();
+    if (!windowsRun) throw new Error("Windows CLI entrypoint was not run");
+    await expect(windowsRun).resolves.toBe(0);
+    expect(await readFile(join(dir, "version.json"), "utf8")).toBe(
+      '{"version":"4.5.6"}\n',
+    );
     expect(
-      isCliEntrypoint(windowsFileUrl, windowsPath, toWindowsFileUrl),
-    ).toBe(true);
+      runCliIfEntrypoint(
+        "file:///C:/other.mjs",
+        windowsPath,
+        ["--version", "4.5.6", "--resources-dir", dir],
+        toWindowsFileUrl,
+      ),
+    ).toBeNull();
     expect(
-      isCliEntrypoint("file:///C:/other.mjs", windowsPath, toWindowsFileUrl),
-    ).toBe(false);
-    expect(isCliEntrypoint(windowsFileUrl, undefined, toWindowsFileUrl)).toBe(false);
+      runCliIfEntrypoint(windowsFileUrl, undefined, [], toWindowsFileUrl),
+    ).toBeNull();
   });
 });
