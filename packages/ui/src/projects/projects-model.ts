@@ -87,7 +87,7 @@ export interface Project {
   title?: string;
   /** Project description. */
   description: string;
-  /** Owning company slug. */
+  /** Owning company slug or the `personal` workspace grouping key. */
   company: string;
   /** Raw status from board.json (e.g. "active", "archived", "planned"). */
   status: string;

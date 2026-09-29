@@ -1,7 +1,7 @@
 //! Local-PRD reader commands for the Projects surface (US-003).
 //!
 //! The Projects surface needs to list projects + read stories straight from the
-//! local HQ tree — fast, offline, and cross-company — instead of round-tripping
+//! local HQ tree — fast, offline, and cross-workspace — instead of round-tripping
 //! to the vault for every render. These two commands scan the resolved HQ folder
 //! and parse the on-disk `board.json` + `prd.json` files directly.
 //!
@@ -13,6 +13,8 @@
 //!     branchName, userStories[], metadata{} }`. Each story: `id, title,
 //!     description, acceptanceCriteria[], passes, priority, labels[], dependsOn[],
 //!     notes`.
+//!   * `personal/board.json` and root `board.json` use the same project shape,
+//!     with their PRDs kept outside company-owned paths.
 //!
 //! Both commands are gated by `feature_gate::desktop_features_enabled()`
 //! (GA — any signed-in user) like the other desktop-alt commands, and both
@@ -22,7 +24,7 @@
 //! ## Empty local state
 //!
 //! These commands are the *local* fast path. When the HQ folder cannot be
-//! resolved to a real directory on disk, or no `companies/*/projects/*/prd.json`
+//! resolved to a real directory on disk, or no scoped `projects/*/prd.json`
 //! exist, `get_local_projects` returns an **empty list** rather than erroring.
 //! This module deliberately has no vault/network fallback: keeping the local
 //! reader pure (filesystem only, no network, no auth) makes it testable and
@@ -77,7 +79,8 @@ pub struct LocalProject {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    /// Company slug the project belongs to (the `companies/<slug>/` dir).
+    /// Workspace grouping key: a company slug, or `personal` for Personal/root
+    /// project files. Non-company paths still resolve with no company slug.
     pub company: String,
     #[serde(default)]
     pub status: String,
@@ -1218,22 +1221,24 @@ fn apply_git_creator_fallbacks(hq_root: &Path, projects: &mut [LocalProject]) {
     apply_creator_fallback_map(projects, &creators);
 }
 
-/// List projects across every company by scanning the local HQ tree.
+/// List projects across every company plus the local Personal and root project trees.
 ///
-/// Reads `companies/<slug>/board.json` for project metadata and
-/// `companies/<slug>/projects/<name>/prd.json` for story data, merging the two
-/// where a board project's `prd_path` points at a real prd. Projects that exist
-/// only as a `prd.json` (no board entry) are still listed.
+/// Reads each `companies/<slug>/board.json` for project metadata and its
+/// `projects/<name>/prd.json` files for story data, merging the two where a
+/// board project's `prd_path` points at a real PRD. Personal projects are read
+/// from `personal/` and root `projects/`; their grouping key is `personal`, but
+/// their resolved paths never carry a company slug. Projects that exist only as
+/// a `prd.json` (no board entry) are still listed.
 ///
 /// Returns an **empty list** (not an error) when the HQ folder doesn't resolve
-/// to a directory or has no companies. Individual malformed `board.json` files
-/// and unlinked malformed `prd.json` files are skipped, never fatal. A board
-/// row with an existing but malformed PRD remains visible with 0/0 counts so
-/// diagnostics can still identify the damaged project file.
+/// to a directory or has no readable project trees. Individual malformed
+/// `board.json` files and unlinked malformed `prd.json` files are skipped,
+/// never fatal. A board row with an existing but malformed PRD remains visible
+/// with 0/0 counts so diagnostics can still identify the damaged project file.
 /// Pure, testable scanner — takes an explicit HQ root so tests can point it at a
 /// fixture tree. Never panics: unreadable dirs/files are skipped.
 pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
-    scan_local_projects_scoped(hq_root, None)
+    scan_local_projects_scoped(hq_root, None, true)
 }
 
 /// Scan only the explicitly authorized canonical company slugs.
@@ -1245,28 +1250,44 @@ pub fn scan_local_projects_for_companies(
     hq_root: &Path,
     authorized_companies: &HashSet<String>,
 ) -> Vec<LocalProject> {
-    scan_local_projects_scoped(hq_root, Some(authorized_companies))
+    scan_local_projects_scoped(hq_root, Some(authorized_companies), false)
+}
+
+/// Scan authorized company workspaces plus Personal/root projects when the
+/// caller has independently authorized the Personal workspace. The Personal
+/// authorization is separate from the company slug set so `personal` cannot
+/// grant access to `companies/personal`.
+pub fn scan_local_projects_for_authorized_scopes(
+    hq_root: &Path,
+    authorized_companies: &HashSet<String>,
+    personal_scope_authorized: bool,
+) -> Vec<LocalProject> {
+    scan_local_projects_scoped(
+        hq_root,
+        Some(authorized_companies),
+        personal_scope_authorized,
+    )
 }
 
 fn scan_local_projects_scoped(
     hq_root: &Path,
     authorized_companies: Option<&HashSet<String>>,
+    include_personal: bool,
 ) -> Vec<LocalProject> {
     let companies_dir = hq_root.join("companies");
-    let entries = match std::fs::read_dir(&companies_dir) {
-        Ok(e) => e,
-        // No companies dir (HQ folder unresolved or empty) → empty local list.
-        Err(_) => return Vec::new(),
-    };
-
     let mut out: Vec<LocalProject> = Vec::new();
 
-    for entry in entries.flatten() {
+    let entries = std::fs::read_dir(&companies_dir).ok();
+    for entry in entries.into_iter().flatten().flatten() {
         let company_path = entry.path();
         let slug = match company_path.file_name().and_then(|n| n.to_str()) {
             Some(s) if !s.starts_with('.') => s.to_string(),
             _ => continue,
         };
+        // `personal` is a workspace sentinel, never a company directory.
+        if slug == "personal" {
+            continue;
+        }
         if authorized_companies.is_some_and(|allowed| !allowed.contains(&slug)) {
             continue;
         }
@@ -1414,8 +1435,201 @@ fn scan_local_projects_scoped(
         }
     }
 
+    if include_personal {
+        scan_non_company_project_tree(hq_root, "personal", &mut out);
+        scan_non_company_project_tree(hq_root, "", &mut out);
+    }
+
     apply_git_creator_fallbacks(hq_root, &mut out);
     out
+}
+
+fn scan_non_company_project_tree(hq_root: &Path, tree_root: &str, out: &mut Vec<LocalProject>) {
+    let root_path = if tree_root.is_empty() {
+        hq_root.to_path_buf()
+    } else {
+        hq_root.join(tree_root)
+    };
+    let Ok(root_metadata) = std::fs::symlink_metadata(&root_path) else {
+        return;
+    };
+    if !root_metadata.file_type().is_dir() {
+        return;
+    }
+    if !tree_root.is_empty()
+        && canonical_hq_relative_path(hq_root, tree_root, false).as_deref() != Ok(tree_root)
+    {
+        return;
+    }
+
+    let projects_rel = if tree_root.is_empty() {
+        "projects".to_string()
+    } else {
+        format!("{tree_root}/projects")
+    };
+    if canonical_hq_relative_path(hq_root, &projects_rel, false).as_deref()
+        != Ok(projects_rel.as_str())
+    {
+        return;
+    }
+
+    let board_rel = if tree_root.is_empty() {
+        "board.json".to_string()
+    } else {
+        format!("{tree_root}/board.json")
+    };
+    let board = resolve_project_path(hq_root, &board_rel, "board.json")
+        .ok()
+        .filter(|target| target.company_slug.is_none() && target.relative_path == board_rel)
+        .and_then(|target| read_project_target_json::<BoardFile>(&target));
+    let mut linked_prds = HashSet::new();
+    if let Some(board) = board {
+        for project in board.projects {
+            let BoardProject {
+                id,
+                title,
+                description,
+                status,
+                prd_path,
+                created_at,
+                updated_at,
+                attribution,
+                provenance,
+            } = project;
+            let Some(prd_path) = prd_path.as_deref().and_then(|path| {
+                validated_non_company_board_prd_path(hq_root, &projects_rel, path)
+            }) else {
+                continue;
+            };
+            let prd_details = resolve_project_path(hq_root, &prd_path, "prd.json")
+                .ok()
+                .filter(|target| {
+                    target.company_slug.is_none()
+                        && target
+                            .relative_path
+                            .starts_with(&format!("{projects_rel}/"))
+                })
+                .and_then(|target| {
+                    read_project_target_json::<PrdFile>(&target).map(|prd| {
+                        let (story_count, stories_complete) = story_counts(&prd);
+                        (
+                            story_count,
+                            stories_complete,
+                            prd_created_at(&prd),
+                            prd_updated_at(&prd),
+                            prd_provenance(&prd),
+                        )
+                    })
+                });
+            linked_prds.insert(prd_path.clone());
+            let (story_count, stories_complete, prd_created, prd_updated, prd_provenance) =
+                prd_details.unwrap_or((0, 0, None, None, WorkProvenance::default()));
+            let board_provenance = normalize_work_provenance(&[(&attribution, &provenance)]);
+            let id = if id.trim().is_empty() {
+                title.clone()
+            } else {
+                id
+            };
+            out.push(LocalProject {
+                id,
+                title: if title.trim().is_empty() {
+                    prd_path.clone()
+                } else {
+                    title
+                },
+                description,
+                company: "personal".to_string(),
+                status,
+                prd_path: Some(prd_path),
+                created_at: created_at.or(prd_created),
+                updated_at: updated_at.or(prd_updated),
+                story_count,
+                stories_complete,
+                provenance: with_origin_fallback(
+                    merge_work_provenance(board_provenance, prd_provenance),
+                    &board_rel,
+                ),
+                creator_fallback: None,
+            });
+        }
+    }
+
+    for prd_file in find_prd_files(&root_path.join("projects")) {
+        let Ok(relative) = prd_file.strip_prefix(hq_root) else {
+            continue;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if linked_prds.contains(&normalize_rel(&relative)) {
+            continue;
+        }
+        let Ok(target) = resolve_project_path(hq_root, &relative, "prd.json") else {
+            continue;
+        };
+        if target.company_slug.is_some()
+            || !target
+                .relative_path
+                .starts_with(&format!("{projects_rel}/"))
+        {
+            continue;
+        }
+        let Some(prd) = read_project_target_json::<PrdFile>(&target) else {
+            continue;
+        };
+        let (story_count, stories_complete) = story_counts(&prd);
+        let created_at = prd_created_at(&prd);
+        let updated_at = prd_updated_at(&prd);
+        let provenance = with_origin_fallback(prd_provenance(&prd), &target.relative_path);
+        let dir_name = prd_file
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_string();
+        out.push(LocalProject {
+            id: dir_name.clone(),
+            title: if prd.name.trim().is_empty() {
+                dir_name
+            } else {
+                prd.name
+            },
+            description: prd.description,
+            company: "personal".to_string(),
+            status: String::new(),
+            prd_path: Some(target.relative_path.clone()),
+            created_at,
+            updated_at,
+            story_count,
+            stories_complete,
+            provenance,
+            creator_fallback: None,
+        });
+    }
+}
+
+fn validated_non_company_board_prd_path(
+    hq_root: &Path,
+    projects_rel: &str,
+    raw_path: &str,
+) -> Option<String> {
+    let normalized = validate_hq_relative_path(raw_path, false).ok()?;
+    if Path::new(&normalized)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("prd.json")
+    {
+        return None;
+    }
+    let project_prefix = format!("{projects_rel}/");
+    let project_relative = normalized.strip_prefix(&project_prefix)?;
+    if project_relative == "prd.json" || !project_relative.ends_with("/prd.json") {
+        return None;
+    }
+    if !hq_root.join(&normalized).exists() {
+        return None;
+    }
+    let target = resolve_project_path(hq_root, &normalized, "prd.json").ok()?;
+    (target.company_slug.is_none() && target.relative_path.starts_with(&project_prefix))
+        .then_some(target.relative_path)
 }
 
 #[cfg(test)]
@@ -3471,14 +3685,20 @@ mod tests {
         let objective = &goals.objectives[0];
         assert_eq!(objective.id, "sample-obj-001");
         assert_eq!(objective.title, "Improve onboarding outcomes");
-        assert_eq!(objective.description, "Increase successful first-week activation");
+        assert_eq!(
+            objective.description,
+            "Increase successful first-week activation"
+        );
         assert_eq!(objective.timeframe, "2026-Q4");
         assert_eq!(objective.owner.as_deref(), Some("sample-owner"));
         assert_eq!(objective.key_results.len(), 1);
 
         let key_result = &objective.key_results[0];
         assert_eq!(key_result.id.as_deref(), Some("sample-obj-001-kr-1"));
-        assert_eq!(key_result.title.as_deref(), Some("Increase activated teams"));
+        assert_eq!(
+            key_result.title.as_deref(),
+            Some("Increase activated teams")
+        );
         assert_eq!(key_result.metric.as_deref(), Some("activated_teams"));
         assert_eq!(key_result.target, Some(serde_json::json!(10)));
         assert_eq!(key_result.current, Some(serde_json::json!(5)));

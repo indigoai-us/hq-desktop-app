@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Home portfolio now lists local Personal projects from the Personal and
+  root project trees.
 - After an updater restart, HQ checks local tools again before reopening setup for an existing installation. If the HQ folder is missing, the folder picker opens so it can be found or installed again. An unanswered consent question still appears at startup.
 - After setup, people in a single-member company can optionally invite a
   teammate. The step is off until its hq-flags rollout is enabled and can be

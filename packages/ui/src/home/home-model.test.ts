@@ -653,6 +653,12 @@ describe("getHomeCompanyRows", () => {
           storiesTotal: 4,
           storiesComplete: 4,
         }),
+        project({
+          id: "personal-project",
+          company: "personal",
+          storiesTotal: 2,
+          storiesComplete: 1,
+        }),
       ],
     });
     const indigo = rows.find((r) => r.slug === "indigo")!;
@@ -664,8 +670,8 @@ describe("getHomeCompanyRows", () => {
 
     const personal = rows.find((r) => r.slug === "personal")!;
     expect(personal.sub).toBe("Personal vault");
-    expect(personal.projects).toBe("No local projects");
-    expect(personal.stories).toBe("No tracked tasks");
+    expect(personal.projects).toBe("1 active");
+    expect(personal.stories).toBe("1 / 2 tasks");
     expect(personal.lastChange).toBe("Not synced");
   });
 

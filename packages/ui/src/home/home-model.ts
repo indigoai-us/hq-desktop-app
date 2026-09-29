@@ -819,7 +819,7 @@ export interface HomeCompanyRow {
 }
 
 /**
- * Per-company portfolio rows for the Home table. Project + story counts come
+ * Per-workspace portfolio rows for the Home table. Project + story counts come
  * from the single `get_local_projects` scan grouped by company slug; role,
  * tone, and last-change come from the (deduped) workspace union. Goals,
  * members, and activity sparklines are intentionally absent — no real source.

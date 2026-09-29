@@ -12,7 +12,7 @@ use hq_desktop_core::desktop_alt::{
 };
 use hq_desktop_core::projects_local::{
     read_company_goals, read_crm_projection, read_project_prd, read_project_readme,
-    resolve_project_path, resolve_project_write_path, scan_local_projects_for_companies,
+    resolve_project_path, resolve_project_write_path, scan_local_projects_for_authorized_scopes,
     write_project_status, write_story_passes,
 };
 #[allow(unused_imports)]
@@ -20,14 +20,26 @@ pub use hq_desktop_core::projects_local::{
     CompanyGoals, Initiative, KeyResult, LocalProject, LocalProjectPrd, LocalStory, Objective,
     ResolvedProjectPath, WorkProvenance,
 };
-use hq_desktop_core::workspaces::Workspace;
+use hq_desktop_core::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
 
 fn authorized_company_slugs(workspaces: &[Workspace]) -> HashSet<String> {
     workspaces
         .iter()
-        .filter(|workspace| workspace_grants_company_file_access(workspaces, &workspace.slug))
+        .filter(|workspace| {
+            workspace.kind == WorkspaceKind::Company
+                && workspace.slug != "personal"
+                && workspace_grants_company_file_access(workspaces, &workspace.slug)
+        })
         .map(|workspace| workspace.slug.clone())
         .collect()
+}
+
+fn personal_scope_authorized(workspaces: &[Workspace]) -> bool {
+    workspaces.iter().any(|workspace| {
+        workspace.slug == "personal"
+            && workspace.kind == WorkspaceKind::Personal
+            && workspace.state == WorkspaceState::Personal
+    })
 }
 
 fn authorize_project_target(
@@ -141,8 +153,9 @@ pub async fn get_local_projects() -> Result<Vec<LocalProject>, String> {
     }
     let (hq, workspaces) = hydrated_project_context().await?;
     let authorized = authorized_company_slugs(&workspaces);
+    let personal_authorized = personal_scope_authorized(&workspaces);
     tauri::async_runtime::spawn_blocking(move || {
-        scan_local_projects_for_companies(&hq, &authorized)
+        scan_local_projects_for_authorized_scopes(&hq, &authorized, personal_authorized)
     })
     .await
     .map_err(|error| format!("projects scan task join: {error}"))
@@ -264,6 +277,42 @@ mod tests {
             brand: None,
             home_channel_id: None,
         }
+    }
+
+    #[test]
+    fn personal_scope_is_not_added_to_company_authorization() {
+        let mut personal = project_workspace(
+            "personal",
+            WorkspaceState::Personal,
+            None,
+            Some("prs_personal_fixture"),
+        );
+        personal.kind = WorkspaceKind::Personal;
+        let company = project_workspace(
+            "indigo",
+            WorkspaceState::Synced,
+            Some("active"),
+            Some("cmp_indigo_fixture"),
+        );
+
+        assert_eq!(
+            authorized_company_slugs(&[personal, company]),
+            HashSet::from(["indigo".to_string()]),
+        );
+        let mut personal_workspace = project_workspace(
+            "personal",
+            WorkspaceState::Personal,
+            None,
+            Some("prs_personal_fixture"),
+        );
+        personal_workspace.kind = WorkspaceKind::Personal;
+        assert!(personal_scope_authorized(&[personal_workspace]));
+        assert!(!personal_scope_authorized(&[project_workspace(
+            "indigo",
+            WorkspaceState::Synced,
+            Some("active"),
+            Some("cmp_indigo_fixture"),
+        )]));
     }
 
     #[test]
