@@ -279,7 +279,18 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// source-version marker moves with the runner pin. v6.18.16 also adds a
 /// `secret-excluded` runner event, which `parse_sync_line` skips as an unknown
 /// additive type.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.16";
+///
+/// The `~6.18.16` -> `~6.18.17` bump was re-derived from both published runner
+/// trees (`git diff v6.18.16..v6.18.17 -- src`, excluding tests). It adds no
+/// literal `this.name` identity and no `readonly name` identity, so
+/// `HQ_CLOUD_IDENTITIES` remains 57 with the same exclusions.
+/// `src/bin/sync-runner-events.ts` is untouched, so `ERROR_TYPES` remains
+/// (`error`, `auth-error`). Plan-limit refusals now ride the existing
+/// `plan-limit` event (with added `paths`, `count` and related fields) and the
+/// `complete` event's new optional `filesPlanLimited` counter instead of
+/// per-file `error` events. The source-version marker moves with the runner
+/// pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.17";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new

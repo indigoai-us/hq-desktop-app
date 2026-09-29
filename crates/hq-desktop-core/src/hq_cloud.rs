@@ -701,7 +701,21 @@
 /// A desktop holding a cached 6.18.x below 6.18.16 satisfies `~6.18.5`
 /// forever; changing this requested spec is what moves npm's cache key and
 /// delivers the fix.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.16";
+///
+/// `~6.18.16` -> `~6.18.17`: floors the runner at the hard-stop readiness
+/// release (hq-cloud#709, US-012). The runner recognises every plan-limit
+/// refusal body, treats a refused upload as a skipped file instead of a sync
+/// error (the company stays `complete` and a plan-limit-only pass exits 0),
+/// reports the refused paths once per pass on the `plan-limit` event, adds
+/// `filesPlanLimited` to the `complete` event, and pauses refused keys for up
+/// to an hour. The desktop side (US-019) already handled both the older runner
+/// (plan-limit errors are non-alertable) and this one (`plan-limit` notices
+/// drive the uploads-paused state), so this bump adds no `*_MIN_HQ_CLOUD`
+/// floor. The runner adds no flag and no runner-error identity. It stays on
+/// the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the
+/// lower bound moves npm's cache key so installed copies refresh their cached
+/// runner.
+pub const HQ_CLOUD_VERSION: &str = "~6.18.17";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -829,7 +843,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.16");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.17");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

@@ -6,8 +6,9 @@
 //! item lives in a tiny separate AppKit helper. The helper writes one-word
 //! commands to `~/.hq/.tray-cmd`; we poll that file and act on them. The app
 //! publishes its aggregate unread snapshot in `~/.hq/.tray-badge` for the
-//! helper to render beside the HQ mark. Trivial, robust IPC — no
-//! sockets/signals/entitlements and no second message poller.
+//! helper to render beside the HQ mark, and the companies whose uploads a plan
+//! limit paused in `~/.hq/.tray-status` (hard-stop-readiness US-019). Trivial,
+//! robust IPC — no sockets/signals/entitlements and no second message poller.
 
 #[cfg(target_os = "macos")]
 use std::io::Write;
@@ -36,6 +37,81 @@ fn cmd_file() -> Option<PathBuf> {
 fn badge_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".hq").join(".tray-badge"))
+}
+
+#[cfg(target_os = "macos")]
+fn status_file() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".hq").join(".tray-status"))
+}
+
+/// The helper's view of the plan-limit upload pause. Carries only what the
+/// menu shows: the company label and whether an upgrade row is offered. The
+/// upgrade link itself stays in the app; the helper asks for it by name.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn tray_status_json(
+    paused: &[hq_desktop_core::uploads_paused::UploadsPaused],
+) -> String {
+    let rows: Vec<serde_json::Value> = paused
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "company": entry.company,
+                "canUpgrade": entry.upgrade_url.is_some(),
+            })
+        })
+        .collect();
+    serde_json::json!({ "uploadsPaused": rows }).to_string()
+}
+
+#[cfg(target_os = "macos")]
+fn write_private_atomic(path: &Path, tmp_name: &str, contents: &str) -> std::io::Result<()> {
+    let _write_guard = badge_write_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_file_name(format!("{tmp_name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp_path);
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true).mode(0o600);
+    let mut file = options.open(&tmp_path)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+    std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// Publish the plan-limit upload pause for the native helper's menu. Other
+/// platforms render it in the tao tray menu instead (see `tray.rs`).
+pub fn publish_uploads_paused(paused: &[hq_desktop_core::uploads_paused::UploadsPaused]) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(path) = status_file() {
+            if let Err(error) =
+                write_private_atomic(&path, ".tray-status", &tray_status_json(paused))
+            {
+                log(
+                    "tray",
+                    &format!("could not publish uploads-paused status: {error}"),
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = paused;
+    }
+}
+
+/// Company named by a helper `upgrade <company>` command, if that is what the
+/// command is.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn upgrade_command_company(cmd: &str) -> Option<&str> {
+    let company = cmd.strip_prefix("upgrade ")?.trim();
+    (!company.is_empty()).then_some(company)
 }
 
 #[cfg(target_os = "macos")]
@@ -108,6 +184,9 @@ pub fn spawn_and_poll(app: &AppHandle) {
         // the authenticated aggregate as soon as its auth verdict resolves.
         let _ = write_badge_file(&path, 0);
     }
+    // Start the paused-uploads menu empty; the app republishes the journal's
+    // snapshot at startup (`uploads_paused::publish_current`).
+    publish_uploads_paused(&[]);
     let pid = std::process::id();
     match helper_path() {
         Some(hp) => match std::process::Command::new(&hp).arg(pid.to_string()).spawn() {
@@ -147,6 +226,10 @@ pub fn spawn_and_poll(app: &AppHandle) {
                 let _ = app.run_on_main_thread(move || {
                     crate::tray::activate_primary_surface(&app_main);
                 });
+            } else if let Some(company) = upgrade_command_company(cmd) {
+                // "Upgrade plan for <company>…" in the helper's menu: open the
+                // approved upgrade link the app recorded for that company.
+                crate::commands::uploads_paused::open_upgrade_for_company(&app, company);
             } else {
                 match cmd {
                     "sync" => {
@@ -186,6 +269,52 @@ pub fn spawn_and_poll(app: &AppHandle) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod uploads_paused_tests {
+    use super::*;
+    use hq_desktop_core::uploads_paused::UploadsPaused;
+
+    #[test]
+    fn status_json_carries_names_and_upgrade_availability_only() {
+        let json = tray_status_json(&[
+            UploadsPaused {
+                company: "Acme".into(),
+                upgrade_url: Some("https://hq.computer/companies/acme/billing?upgrade=1".into()),
+                last_notice_at_ms: 1,
+            },
+            UploadsPaused {
+                company: "Beta".into(),
+                upgrade_url: None,
+                last_notice_at_ms: 2,
+            },
+        ]);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "uploadsPaused": [
+                    { "company": "Acme", "canUpgrade": true },
+                    { "company": "Beta", "canUpgrade": false },
+                ]
+            })
+        );
+        assert!(!json.contains("hq.computer"));
+        assert_eq!(tray_status_json(&[]), r#"{"uploadsPaused":[]}"#);
+    }
+
+    #[test]
+    fn upgrade_command_names_the_company() {
+        assert_eq!(upgrade_command_company("upgrade Acme"), Some("Acme"));
+        assert_eq!(
+            upgrade_command_company("upgrade Acme Corp "),
+            Some("Acme Corp")
+        );
+        assert_eq!(upgrade_command_company("upgrade "), None);
+        assert_eq!(upgrade_command_company("upgrades"), None);
+        assert_eq!(upgrade_command_company("sync"), None);
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
