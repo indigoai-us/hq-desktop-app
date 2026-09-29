@@ -404,7 +404,10 @@ async fn run_login(
         SessionTool::Grok => &["login"],
     };
     if cancel.try_recv().is_ok() {
-        *status.lock().unwrap() = state("disconnected", Some("Sign-in cancelled."));
+        *status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            state("disconnected", Some("Sign-in cancelled."));
         return;
     }
     if force && tool == SessionTool::Claude {
@@ -418,13 +421,17 @@ async fn run_login(
     let mut login = match command(&program, args).await {
         Ok(login) => login,
         Err(()) => {
-            *status.lock().unwrap() =
+            *status
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                 state("error", Some("Provider lookup timed out. Please retry."));
             return;
         }
     };
     let Ok(mut child) = login.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
-        *status.lock().unwrap() = state(
+        *status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state(
             "error",
             Some("Could not start sign-in. Check that the provider is installed and retry."),
         );
@@ -439,7 +446,9 @@ async fn run_login(
             } else { state("error", Some("Sign-in did not complete. Please retry.")) }
         }
     };
-    *status.lock().unwrap() = result;
+    *status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = result;
 }
 async fn start_with(
     attempts: &Attempts,
@@ -452,7 +461,11 @@ async fn start_with(
     let mut attempts = attempts.lock().await;
     if let Some(attempt) = attempts.get(key(tool)) {
         if !attempt.task.is_finished() {
-            return attempt.state.lock().unwrap().clone();
+            return attempt
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
         }
     }
     match probe(tool, &program).await {
@@ -481,7 +494,10 @@ async fn start_with(
         deadline,
         force,
     ));
-    let result = status.lock().unwrap().clone();
+    let result = status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     attempts.insert(
         key(tool),
         Attempt {
@@ -510,7 +526,11 @@ pub async fn agent_provider_login_start(
 pub async fn agent_provider_login_status(tool: SessionTool) -> Result<LoginState, String> {
     let attempts = attempts().lock().await;
     let previous = if let Some(attempt) = attempts.get(key(tool)) {
-        let previous = attempt.state.lock().unwrap().clone();
+        let previous = attempt
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         if !attempt.task.is_finished() {
             return Ok(previous);
         }
@@ -533,7 +553,11 @@ async fn cancel_with(attempts: &Attempts, tool: SessionTool) -> LoginState {
             let _ = cancel.send(());
         }
         let _ = attempt.task.await;
-        return attempt.state.lock().unwrap().clone();
+        return attempt
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
     }
     state("disconnected", None)
 }
@@ -981,6 +1005,37 @@ mod tests {
         .await;
         assert_eq!(status.lock().unwrap().state, "disconnected");
         assert!(!dir.path().join("calls").exists());
+    }
+
+    #[tokio::test]
+    async fn cancelled_login_recovers_a_poisoned_status_mutex() {
+        let status = Arc::new(SyncMutex::new(state("waiting", None)));
+        let poisoned_status = status.clone();
+        let panic = std::thread::spawn(move || {
+            let _guard = poisoned_status.lock().unwrap();
+            panic!("poison login state");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        let (cancel, receiver) = oneshot::channel();
+        cancel.send(()).unwrap();
+        run_login(
+            SessionTool::Claude,
+            String::new(),
+            status.clone(),
+            receiver,
+            LOGIN_TIMEOUT,
+            false,
+        )
+        .await;
+
+        let recovered = status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(recovered.state, "disconnected");
+        assert_eq!(recovered.message, Some("Sign-in cancelled."));
     }
 
     #[tokio::test]

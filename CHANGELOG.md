@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop sync commands now recover their valid state after a mutex is poisoned.
 - Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 
 - Auto-sync memory-ceiling reports now include the active sync phase and its
