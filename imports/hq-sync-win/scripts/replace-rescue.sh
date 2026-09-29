@@ -459,6 +459,9 @@ classify_clone_failure() {
     *"authentication failed"*|*"could not read username"*|*"could not ask for username"*|*"cannot prompt because user interactivity has been disabled"*|*"http basic: access denied"*|*"support for password authentication was removed"*|*"invalid username or password"*|*"repository not found"*|*"credential helper"*)
       printf 'auth'
       ;;
+    *"you have not agreed to the xcode license agreements"*|*"remote-https"*"is not a git command"*|*"remote helper 'https' aborted session"*|*"unknown option"*shallow-exclude*)
+      printf 'git_unusable'
+      ;;
     *"unknown option"*filter*|*"filter"*"not supported"*|*"filter"*"not recognized"*|*"server does not support filtering"*|*"server does not support filter"*)
       printf 'filter_unsupported'
       ;;
@@ -468,7 +471,7 @@ classify_clone_failure() {
     *"destination path"*"already exists"*|*"already exists and is not an empty directory"*|*"file exists"*)
       printf 'exists'
       ;;
-    *"could not resolve host"*|*"could not resolve proxy"*|*"name or service not known"*|*"temporary failure in name resolution"*|*"failed to connect"*|*"connection timed out"*|*"operation timed out"*|*"connection reset"*|*"connection refused"*|*"network is unreachable"*|*"remote end hung up unexpectedly"*|*"early eof"*|*"http 5"[0-9][0-9]*)
+    *"could not resolve host"*|*"could not resolve proxy"*|*"name or service not known"*|*"temporary failure in name resolution"*|*"failed to connect"*|*"connection timed out"*|*"operation timed out"*|*"connection reset"*|*"connection refused"*|*"network is unreachable"*|*"remote end hung up unexpectedly"*|*"early eof"*|*"http 5"[0-9][0-9]*|*"returned error: 5"[0-9][0-9]*)
       printf 'network'
       ;;
     *)
@@ -528,6 +531,8 @@ else
   echo "==> Cloning $CLONE_URL_DISPLAY @$REF (shallow) ..."
   if ! run_clone --depth 1 --branch "$REF" "$CLONE_URL" "$TMPDIR/src"; then
     echo "    (shallow branch clone failed; trying full clone + checkout)"
+    # If both attempts fail, report only the full-clone attempt's class; a
+    # shallow-only diagnostic is intentionally discarded after fallback.
     if ! run_clone "$CLONE_URL" "$TMPDIR/src"; then
       report_clone_failure
       exit 5

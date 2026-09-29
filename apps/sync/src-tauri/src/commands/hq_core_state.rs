@@ -817,6 +817,7 @@ fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
             "network" => Some("clone_network"),
             "auth" => Some("clone_auth"),
             "filter_unsupported" => Some("clone_filter_unsupported"),
+            "git_unusable" => Some("clone_git_unusable"),
             "path" => Some("clone_path"),
             "exists" => Some("clone_exists"),
             "unknown" => Some("clone_unknown"),
@@ -7476,6 +7477,11 @@ error: clone failed";
                 "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=filter_unsupported\nerror: clone failed",
                 "clone",
                 "clone_filter_unsupported",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable\nerror: clone failed",
+                "clone",
+                "clone_git_unusable",
             ),
             (
                 "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=path\nerror: clone failed",

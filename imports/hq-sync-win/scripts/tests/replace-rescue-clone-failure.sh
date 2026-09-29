@@ -52,8 +52,17 @@ assert_class() {
 
 assert_class network \
   "fatal: unable to access 'https://x-access-token:${TOKEN}@github.com/indigoai-us/hq-core.git': Could not resolve host: github.com"
+assert_class network "fatal: unable to access 'https://github.com/indigoai-us/hq-core.git': The requested URL returned error: 500"
+assert_class network "fatal: unable to access 'https://github.com/indigoai-us/hq-core.git': The requested URL returned error: 502"
+assert_class network "fatal: unable to access 'https://github.com/indigoai-us/hq-core.git': The requested URL returned error: 503"
+assert_class unknown "fatal: unable to access 'https://github.com/indigoai-us/hq-core.git': The requested URL returned error: 403"
+assert_class unknown "fatal: unable to access 'https://github.com/indigoai-us/hq-core.git': The requested URL returned error: 404"
 assert_class auth "fatal: Authentication failed for 'https://github.com/indigoai-us/hq-core.git'"
 assert_class filter_unsupported "fatal: filter 'blob:none' is not supported by this server"
+assert_class git_unusable "You have not agreed to the Xcode license agreements."
+assert_class git_unusable "git: 'remote-https' is not a git command. See 'git --help'."
+assert_class git_unusable "fatal: remote helper 'https' aborted session"
+assert_class git_unusable "error: unknown option 'shallow-exclude'\nusage: git clone [<options>]"
 assert_class path "error: unable to create file core/docs/a-very-long-file: Filename too long"
 assert_class exists "fatal: destination path 'src' already exists and is not an empty directory"
 assert_class unknown "fatal: remote returned an unclassified response"
