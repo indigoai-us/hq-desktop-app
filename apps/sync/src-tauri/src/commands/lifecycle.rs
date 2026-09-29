@@ -615,7 +615,7 @@ pub fn report_unexpected_startup_surface(
         .unwrap_or(0);
     let (auth_session_status, refresh_failure_class) =
         crate::commands::auth::startup_auth_diagnostic_tags();
-    let diagnostic_tags =
+    let mut diagnostic_tags =
         hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
             authenticated,
             &token_presence,
@@ -631,6 +631,24 @@ pub fn report_unexpected_startup_surface(
             auth_session_status,
             refresh_failure_class,
         );
+    if surface == "sign-in" && token_presence == "present" {
+        let token_diagnostics = hq_desktop_core::cognito::startup_token_store_diagnostics_after_first(
+            crate::commands::auth::startup_first_token_read_result(),
+        );
+        diagnostic_tags.invalidation_marker_present = token_diagnostics.invalidation_marker_present;
+        diagnostic_tags.first_read_result = token_diagnostics.first_read_result;
+        diagnostic_tags.recheck_read_result = token_diagnostics.recheck_read_result;
+    } else {
+        diagnostic_tags.invalidation_marker_present = false;
+        diagnostic_tags.first_read_result = "not_checked";
+        diagnostic_tags.recheck_read_result = "not_checked";
+    }
+    let (last_auth_transition, last_auth_transition_age_seconds) =
+        if surface == "sign-in" && token_presence == "present" {
+            crate::commands::auth::last_auth_transition_diagnostic()
+        } else {
+            ("none", 0)
+        };
 
     let prior_setup = inputs.evidence_unreadable
         || hq_desktop_core::unexpected_surface::prior_setup_detected(
@@ -654,7 +672,7 @@ pub fn report_unexpected_startup_surface(
 
     // Always write the log line so diagnostics can find it.
     let log_line = format!(
-        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={}",
+        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={} invalidation_marker_present={} first_read_result={} recheck_read_result={} last_auth_transition={} last_auth_transition_age_seconds={}",
         surface,
         lc_state_str,
         inputs.install_completed,
@@ -677,6 +695,11 @@ pub fn report_unexpected_startup_surface(
         diagnostic_tags.prior_surface,
         std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
         crate::app_version::current(),
+        diagnostic_tags.invalidation_marker_present,
+        diagnostic_tags.first_read_result,
+        diagnostic_tags.recheck_read_result,
+        last_auth_transition,
+        last_auth_transition_age_seconds,
     );
 
     if !should_report {
@@ -724,6 +747,15 @@ pub fn report_unexpected_startup_surface(
             for (key, value) in diagnostic_tags.as_pairs() {
                 scope.set_tag(key, value);
             }
+            scope.set_tag("last_auth_transition", last_auth_transition);
+            scope.set_extra(
+                "invalidation_marker_present",
+                serde_json::json!(diagnostic_tags.invalidation_marker_present).into(),
+            );
+            scope.set_extra(
+                "last_auth_transition_age_seconds",
+                serde_json::json!(last_auth_transition_age_seconds).into(),
+            );
             scope.set_extra("install_completed", serde_json::json!(payload.install_completed).into());
             scope.set_extra("first_run_completed", serde_json::json!(payload.first_run_completed).into());
             scope.set_extra("config_valid", serde_json::json!(payload.config_valid).into());

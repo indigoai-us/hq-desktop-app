@@ -2,6 +2,7 @@ pub use super::cognito::AuthSessionStatus;
 use super::cognito::{self, AuthState, CognitoRefreshFailureClass, CognitoTokens};
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use tauri::{AppHandle, Emitter};
 
 pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
@@ -35,6 +36,33 @@ static AUTH_SESSION_ENVELOPE: OnceLock<Mutex<Option<AuthSessionEnvelope>>> = Onc
 static AUTH_SESSION_DIAGNOSTIC: OnceLock<
     Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>>,
 > = OnceLock::new();
+static LAST_AUTH_TRANSITION: OnceLock<Mutex<Option<(&'static str, SystemTime)>>> = OnceLock::new();
+static STARTUP_FIRST_TOKEN_READ: OnceLock<Mutex<&'static str>> = OnceLock::new();
+
+fn record_startup_first_token_read(result: &'static str) {
+    let cell = STARTUP_FIRST_TOKEN_READ.get_or_init(|| Mutex::new("not_observed"));
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = result;
+}
+
+pub(crate) fn startup_first_token_read_result() -> &'static str {
+    let cell = STARTUP_FIRST_TOKEN_READ.get_or_init(|| Mutex::new("not_observed"));
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn record_last_auth_transition(class: &'static str) {
+    let cell = LAST_AUTH_TRANSITION.get_or_init(|| Mutex::new(None));
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some((class, SystemTime::now()));
+}
+
+pub(crate) fn last_auth_transition_diagnostic() -> (&'static str, u64) {
+    let cell = LAST_AUTH_TRANSITION.get_or_init(|| Mutex::new(None));
+    cell.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|(class, at)| (*class, at.elapsed().unwrap_or_default().as_secs()))
+        .unwrap_or(("none", 0))
+}
 
 fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
     AUTH_SESSION_ENVELOPE.get_or_init(|| Mutex::new(None))
@@ -299,6 +327,7 @@ pub(crate) async fn complete_auth_session(
     }
 
     crate::commands::dm_notify::replace_notification_credentials(app, tokens).await?;
+    record_last_auth_transition("sign_in");
 
     let state = authenticated_state_from_tokens(tokens);
     publish_auth_session(
@@ -404,7 +433,15 @@ fn startup_auth_state_result(
 /// refresh is observed after Cognito has invalidated its file and becomes a
 /// fail-closed signed-out state.
 async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, AuthSessionEnvelope) {
-    let before = cognito::get_tokens().await.ok().flatten();
+    let first_token_read = cognito::get_tokens().await;
+    let first_token_read_result = match &first_token_read {
+        Ok(Some(_)) => "ok_some",
+        Ok(None) => "ok_none",
+        Err(error) if error.to_ascii_lowercase().contains("parse") => "err_parse",
+        Err(_) => "err_io",
+    };
+    record_startup_first_token_read(first_token_read_result);
+    let before = first_token_read.ok().flatten();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
     let (state, status, account_id, reason, refresh_failure_class) = match outcome {
@@ -453,6 +490,9 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
             error.refresh_failure_class,
         ),
         Err(error) => {
+            if error.requires_reauth {
+                record_last_auth_transition("refresh_rejected_requires_reauth");
+            }
             let after = cognito::get_tokens().await.ok().flatten();
             let refresh_failure_class = error.refresh_failure_class;
             let preserved_account = before
@@ -545,6 +585,7 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     crate::commands::desktop_auth::note_auth_transition(
         hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
     );
+    record_last_auth_transition("sign_out");
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
     crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     clear_sentry_user();
@@ -563,6 +604,7 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn refresh_tokens(app: AppHandle) -> Result<AuthState, String> {
     let current_tokens = crate::commands::dm_notify::refresh_notification_credentials(&app).await?;
+    record_last_auth_transition("refresh_ok");
     set_sentry_user_from_tokens(&current_tokens);
     let state = authenticated_state_from_tokens(&current_tokens);
     publish_auth_session(

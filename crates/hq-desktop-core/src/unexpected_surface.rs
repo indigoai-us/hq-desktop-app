@@ -223,11 +223,14 @@ pub struct StartupDiagnosticTags {
     pub require_local_toolchain_demoted: &'static str,
     pub auth_session_status: &'static str,
     pub refresh_failure_class: &'static str,
+    pub invalidation_marker_present: bool,
+    pub first_read_result: &'static str,
+    pub recheck_read_result: &'static str,
 }
 
 impl StartupDiagnosticTags {
     /// Keep the Sentry keys and values together so tests cover the reporter contract.
-    pub fn as_pairs(self) -> [(&'static str, &'static str); 22] {
+    pub fn as_pairs(self) -> [(&'static str, &'static str); 25] {
         [
             ("session_restore_state", self.session_restore_state),
             ("token_present", self.token_present),
@@ -257,6 +260,12 @@ impl StartupDiagnosticTags {
             ),
             ("auth_session_status", self.auth_session_status),
             ("refresh_failure_class", self.refresh_failure_class),
+            (
+                "invalidation_marker_present",
+                bool_tag(self.invalidation_marker_present),
+            ),
+            ("first_read_result", self.first_read_result),
+            ("recheck_read_result", self.recheck_read_result),
         ]
     }
 }
@@ -291,6 +300,22 @@ pub fn startup_diagnostic_tags_with_auth_session(
     refresh_failure_class: &str,
 ) -> StartupDiagnosticTags {
     let inputs = lifecycle.inputs;
+    #[cfg(test)]
+    let token_diagnostics = if !authenticated && token_presence_tag(token_presence) == "present" {
+        crate::cognito::startup_token_store_diagnostics()
+    } else {
+        crate::cognito::StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            first_read_result: "not_checked",
+            recheck_read_result: "not_checked",
+        }
+    };
+    #[cfg(not(test))]
+    let token_diagnostics = crate::cognito::StartupTokenStoreDiagnostics {
+        invalidation_marker_present: false,
+        first_read_result: "not_checked",
+        recheck_read_result: "not_checked",
+    };
     StartupDiagnosticTags {
         session_restore_state: session_restore_state_tag(authenticated, token_presence),
         token_present: token_presence_tag(token_presence),
@@ -317,6 +342,9 @@ pub fn startup_diagnostic_tags_with_auth_session(
             auth_session_status,
             refresh_failure_class,
         ),
+        invalidation_marker_present: token_diagnostics.invalidation_marker_present,
+        first_read_result: token_diagnostics.first_read_result,
+        recheck_read_result: token_diagnostics.recheck_read_result,
     }
 }
 
@@ -582,6 +610,11 @@ mod tests {
 
     #[test]
     fn startup_diagnostic_tags_are_bounded_and_explain_restore_state() {
+        let _home_lock = crate::cognito::HQ_TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let isolated_home = tempfile::tempdir().expect("isolated test home");
+        std::env::set_var("HQ_TEST_HOME", isolated_home.path());
         let tags = startup_diagnostic_tags_with_auth_session(
             false,
             "present",
@@ -650,6 +683,9 @@ mod tests {
                 ("require_local_toolchain_demoted", "false"),
                 ("auth_session_status", "credentials_invalid"),
                 ("refresh_failure_class", "http_4xx"),
+                ("invalidation_marker_present", "false"),
+                ("first_read_result", "ok_none"),
+                ("recheck_read_result", "ok_none"),
             ]
         );
         assert_eq!(
@@ -657,6 +693,7 @@ mod tests {
             "unknown",
             "free-form identity values must never become tags"
         );
+        std::env::remove_var("HQ_TEST_HOME");
         for (status, tag) in [
             ("active", "active"),
             ("credentials_absent", "credentials_absent"),
@@ -702,6 +739,92 @@ mod tests {
         assert_eq!(prior_surface_tag("onboarding"), "onboarding");
         assert_eq!(prior_surface_tag("arbitrary-user-data"), "unknown");
         assert_eq!(KEYCHAIN_STATUS_TAG, "not_used_token_file");
+    }
+
+    fn token_store_tags(home: &std::path::Path) -> serde_json::Value {
+        std::env::set_var("HQ_TEST_HOME", home);
+        let tags = startup_diagnostic_tags_with_auth_session(
+            false,
+            "present",
+            None,
+            "sign-in",
+            StartupLifecycleInputs {
+                inputs: LifecycleInputs {
+                    install_completed: true,
+                    first_run_completed: true,
+                    had_machine_id: true,
+                    config_valid: true,
+                    hq_root_valid: true,
+                    has_auth: false,
+                    install_in_progress: false,
+                    consent_answered: true,
+                    evidence_unreadable: false,
+                },
+                hq_root_probe: Some(HqRootProbe::Valid),
+                hq_program_kind: None,
+                node_program_kind: None,
+                require_local_toolchain_demoted: false,
+            },
+            "credentials_invalid",
+            "http_4xx",
+        );
+        serde_json::Value::Object(
+            tags.as_pairs()
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = if key == "invalidation_marker_present" {
+                        serde_json::json!(value == "true")
+                    } else {
+                        serde_json::json!(value)
+                    };
+                    (key.to_string(), value)
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn startup_diagnostics_distinguish_invalidated_token_from_readable_token() {
+        let _home_lock = crate::cognito::HQ_TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().expect("temp home");
+        let token_dir = home.path().join(".hq");
+        std::fs::create_dir_all(&token_dir).expect("token dir");
+        let path = token_dir.join("cognito-tokens.json");
+        let access_token = "test-access-token";
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "accessToken": access_token,
+                "idToken": null,
+                "refreshToken": "test-refresh-token",
+                "expiresAt": 1
+            })
+            .to_string(),
+        )
+        .expect("token fixture");
+        let marker = token_dir.join(format!(
+            "cognito-tokens.json.invalid.{}",
+            crate::cognito::access_token_fingerprint(access_token)
+        ));
+        std::fs::write(marker, "").expect("invalidation marker");
+
+        let invalidated = token_store_tags(home.path());
+        assert_eq!(invalidated["invalidation_marker_present"], true);
+        assert_eq!(invalidated["first_read_result"], "ok_none");
+        assert_eq!(invalidated["recheck_read_result"], "ok_none");
+
+        std::fs::remove_file(token_dir.join(format!(
+            "cognito-tokens.json.invalid.{}",
+            crate::cognito::access_token_fingerprint(access_token)
+        )))
+        .expect("remove marker");
+        let readable = token_store_tags(home.path());
+        assert_eq!(readable["invalidation_marker_present"], false);
+        assert_eq!(readable["first_read_result"], "ok_some");
+        assert_eq!(readable["recheck_read_result"], "ok_some");
+        std::env::remove_var("HQ_TEST_HOME");
     }
 
     #[test]

@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
+#[cfg(test)]
+pub(crate) static HQ_TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 mod expires_at_flexible {
     use serde::{self, Deserialize, Deserializer, Serializer};
 
@@ -381,6 +384,75 @@ fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, Token
 fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     let tokens = read_tokens_from_path_raw(path)?;
     Ok(tokens.filter(|tokens| !token_is_invalidated_at(path, &tokens.access_token)))
+}
+
+/// Bounded, non-secret observations used by the unexpected startup surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupTokenStoreDiagnostics {
+    pub invalidation_marker_present: bool,
+    pub first_read_result: &'static str,
+    pub recheck_read_result: &'static str,
+}
+
+fn token_read_result_label(result: Result<Option<CognitoTokens>, TokenReadError>) -> &'static str {
+    match result {
+        Ok(Some(_)) => "ok_some",
+        Ok(None) => "ok_none",
+        Err(TokenReadError::Io(_)) => "err_io",
+        Err(TokenReadError::Parse(_)) => "err_parse",
+    }
+}
+
+fn startup_token_store_diagnostics_at(path: &Path) -> StartupTokenStoreDiagnostics {
+    let first_read_result = token_read_result_label(read_tokens_from_path(path));
+    startup_token_store_diagnostics_after_first_at(path, first_read_result)
+}
+
+fn startup_token_store_diagnostics_after_first_at(
+    path: &Path,
+    first_read_result: &'static str,
+) -> StartupTokenStoreDiagnostics {
+    let raw_tokens = read_tokens_from_path_raw(path);
+    let invalidation_marker_present = raw_tokens
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .filter(|tokens| !tokens.access_token.is_empty())
+        .is_some_and(|tokens| token_is_invalidated_at(path, &tokens.access_token));
+    let recheck_read_result = token_read_result_label(read_tokens_from_path(path));
+    StartupTokenStoreDiagnostics {
+        invalidation_marker_present,
+        first_read_result,
+        recheck_read_result,
+    }
+}
+
+/// Read the token store twice for startup diagnostics without returning token
+/// contents or free-form filesystem errors. This does not affect auth state.
+pub fn startup_token_store_diagnostics() -> StartupTokenStoreDiagnostics {
+    match tokens_file_path() {
+        Ok(path) => startup_token_store_diagnostics_at(&path),
+        Err(_) => StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            first_read_result: "err_io",
+            recheck_read_result: "err_io",
+        },
+    }
+}
+
+/// Pair the auth resolver's original token-read result with one immediate
+/// filtered reread and a raw-token invalidation-marker check.
+pub fn startup_token_store_diagnostics_after_first(
+    first_read_result: &'static str,
+) -> StartupTokenStoreDiagnostics {
+    match tokens_file_path() {
+        Ok(path) => startup_token_store_diagnostics_after_first_at(&path, first_read_result),
+        Err(_) => StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            first_read_result,
+            recheck_read_result: "err_io",
+        },
+    }
 }
 
 pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
@@ -1297,19 +1369,28 @@ mod tests {
         );
     }
 
-    struct TestHome(Option<std::ffi::OsString>);
+    struct TestHome {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TestHome {
         fn set(path: &std::path::Path) -> Self {
+            let lock = HQ_TEST_HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous = std::env::var_os("HQ_TEST_HOME");
             std::env::set_var("HQ_TEST_HOME", path);
-            Self(previous)
+            Self {
+                previous,
+                _lock: lock,
+            }
         }
     }
 
     impl Drop for TestHome {
         fn drop(&mut self) {
-            if let Some(previous) = self.0.take() {
+            if let Some(previous) = self.previous.take() {
                 std::env::set_var("HQ_TEST_HOME", previous);
             } else {
                 std::env::remove_var("HQ_TEST_HOME");
