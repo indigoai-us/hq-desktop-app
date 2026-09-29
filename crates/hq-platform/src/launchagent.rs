@@ -292,7 +292,9 @@ pub fn reconcile_with(request: ReconcileRequest<'_>) -> ReconcileReport {
     if let PlistAction::Repointed { old_path, new_path } = &action {
         report.repointed = Some((old_path.clone(), new_path.clone()));
         if request.run_launchctl {
-            reload_launch_agent(request.uid, request.label, request.plist_path);
+            if let Err(err) = reload_launch_agent(request.uid, request.label, request.plist_path) {
+                log_la(&format!("reload after plist repoint failed: {err}"));
+            }
         }
     }
 
@@ -423,6 +425,17 @@ pub fn plist_path_for_label(label: &str) -> Option<PathBuf> {
 /// Path to the real user LaunchAgent. Tests must not write this file.
 pub fn installed_plist_path() -> Option<PathBuf> {
     plist_path_for_label(LAUNCH_AGENT_LABEL)
+}
+
+/// Reload the installed LaunchAgent after a caller rewrites its plist.
+///
+/// The caller must write the plist first; launchd keeps the loaded definition
+/// until it is booted out and bootstrapped again.
+#[cfg(target_os = "macos")]
+pub fn reload_installed_launch_agent() -> Result<(), String> {
+    let plist_path = installed_plist_path()
+        .ok_or_else(|| "cannot determine home directory for LaunchAgent reload".to_string())?;
+    reload_launch_agent(current_uid(), LAUNCH_AGENT_LABEL, &plist_path)
 }
 
 /// `CFBundleIdentifier` from an `Info.plist` body. Pure so every platform's CI
@@ -880,7 +893,7 @@ fn spawn_handoff_waiter(self_pid: u32, uid: u32, label: &str, plist_path: &Path)
     }
 }
 
-fn reload_launch_agent(uid: u32, label: &str, plist_path: &Path) {
+fn reload_launch_agent(uid: u32, label: &str, plist_path: &Path) -> Result<(), String> {
     let steps = launchctl_reload_args(uid, label, plist_path);
     let mut bootstrap_ok = false;
     for args in &steps {
@@ -902,18 +915,26 @@ fn reload_launch_agent(uid: u32, label: &str, plist_path: &Path) {
             Err(err) => log_la(&format!("launchctl {} error: {err}", args.join(" "))),
         }
     }
-    if !bootstrap_ok {
-        let plist = plist_path.to_string_lossy();
-        let _ = std::process::Command::new("launchctl")
-            .args(["unload", plist.as_ref()])
-            .status();
-        match std::process::Command::new("launchctl")
-            .args(["load", plist.as_ref()])
-            .status()
-        {
-            Ok(status) if status.success() => {}
-            Ok(status) => log_la(&format!("launchctl load fallback exited {status}")),
-            Err(err) => log_la(&format!("launchctl load fallback error: {err}")),
+    if bootstrap_ok {
+        return Ok(());
+    }
+
+    let plist = plist_path.to_string_lossy();
+    let _ = std::process::Command::new("launchctl")
+        .args(["unload", plist.as_ref()])
+        .status();
+    match std::process::Command::new("launchctl")
+        .args(["load", plist.as_ref()])
+        .status()
+    {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => {
+            log_la(&format!("launchctl load fallback exited {status}"));
+            Err(format!("launchctl load fallback exited {status}"))
+        }
+        Err(err) => {
+            log_la(&format!("launchctl load fallback error: {err}"));
+            Err(format!("launchctl load fallback error: {err}"))
         }
     }
 }

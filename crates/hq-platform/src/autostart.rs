@@ -162,9 +162,9 @@ pub enum ReconcileAction {
 /// Pure decision for `ensure_autostart_on_launch`: given the desired state,
 /// whether autostart is currently registered, and whether that registration
 /// matches the current executable and required policy, decide what to do. Both
-/// `Enable` and `Refresh` are satisfied by writing a fresh registration
-/// (`set_enabled(true)`);
-/// `Disable` by removing it. `registration_is_current` is only meaningful when
+/// `Enable` writes a registration, while `Refresh` also reloads the existing
+/// agent after writing. `Disable` removes the registration.
+/// `registration_is_current` is only meaningful when
 /// `currently_enabled` is true (callers pass `true` otherwise).
 pub fn reconcile_action(
     want_enabled: bool,
@@ -177,6 +177,28 @@ pub fn reconcile_action(
         (true, true) => ReconcileAction::None,
         (false, true) => ReconcileAction::Disable,
         (false, false) => ReconcileAction::None,
+    }
+}
+
+/// Apply a launch-time autostart decision. Refresh writes the new registration
+/// before asking the platform to reload it, so launchd reads the updated plist.
+pub fn apply_reconcile_action<W, R>(
+    action: ReconcileAction,
+    set_enabled: W,
+    reload: R,
+) -> Result<(), String>
+where
+    W: FnOnce(bool) -> Result<(), String>,
+    R: FnOnce() -> Result<(), String>,
+{
+    match action {
+        ReconcileAction::None => Ok(()),
+        ReconcileAction::Enable => set_enabled(true),
+        ReconcileAction::Refresh => {
+            set_enabled(true)?;
+            reload()
+        }
+        ReconcileAction::Disable => set_enabled(false),
     }
 }
 
@@ -438,6 +460,24 @@ mod pure_tests {
     }
 
     #[test]
+    fn refresh_does_not_reload_when_writing_the_new_plist_fails() {
+        use std::cell::Cell;
+
+        let reloaded = Cell::new(false);
+        let result = apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |_| Err("write failed".to_string()),
+            || {
+                reloaded.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("write failed".to_string()));
+        assert!(!reloaded.get());
+    }
+
+    #[test]
     fn old_registration_is_stale_until_restart_policy_is_present() {
         let current = generate_plist(REAL_EXE);
         assert!(registration_is_current(&current, REAL_EXE));
@@ -507,5 +547,26 @@ mod pure_tests {
     #[test]
     fn reconcile_noop_when_off_and_unwanted() {
         assert_eq!(reconcile_action(false, false, true), ReconcileAction::None);
+    }
+
+    #[test]
+    fn refresh_writes_updated_plist_before_reloading_launchagent() {
+        use std::cell::RefCell;
+
+        let calls = RefCell::new(Vec::new());
+        apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |enabled| {
+                calls.borrow_mut().push(format!("write:{enabled}"));
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("reload".to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(*calls.borrow(), vec!["write:true", "reload"]);
     }
 }

@@ -135,9 +135,9 @@ pub fn take_launch_agent_repoint_notice() -> Option<String> {
 /// the effective `startAtLogin` preference so a fresh install autostarts by
 /// default without the user having to open Settings — while still honouring
 /// an explicit `"startAtLogin": false` opt-out (in which case a stale plist
-/// is removed). It ALSO self-heals an existing registration with a stale
-/// executable path or missing managed restart policy. On upgrade we detect
-/// either mismatch and rewrite the plist from the current generator.
+/// is removed). It also self-heals an existing registration with a stale
+/// executable path or missing restart policy. On upgrade, a stale LaunchAgent
+/// plist is rewritten and reloaded so launchd uses the current definition.
 /// Best-effort: every IO error is logged and swallowed so a failure here can
 /// never abort app launch.
 pub fn ensure_autostart_on_launch() {
@@ -193,27 +193,30 @@ pub fn ensure_autostart_on_launch() {
         ) {
             ReconcileAction::None => {}
             action @ (ReconcileAction::Enable | ReconcileAction::Refresh) => {
-                match hq_platform::autostart::set_enabled(true) {
-                    Ok(()) => {
-                        let created = if action == ReconcileAction::Refresh {
-                            "rewrote stale LaunchAgent registration"
-                        } else {
-                            "created LaunchAgent plist (default-on)"
-                        };
+                let result = hq_platform::autostart::apply_reconcile_action(
+                    action,
+                    hq_platform::autostart::set_enabled,
+                    || {
                         #[cfg(target_os = "macos")]
-                        log("autostart", &format!("ensure: {created}"));
-                        #[cfg(target_os = "windows")]
-                        log(
-                            "autostart",
-                            &format!(
-                                "ensure: {}",
-                                created
-                                    .replace("LaunchAgent plist", "Run value")
-                                    .replace("LaunchAgent", "Run value")
-                            ),
-                        );
+                        {
+                            hq_platform::launchagent::reload_installed_launch_agent()
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            Ok(())
+                        }
+                    },
+                );
+                match result {
+                    Ok(()) => {
+                        let outcome = if action == ReconcileAction::Refresh {
+                            "refreshed stale autostart registration"
+                        } else {
+                            "created autostart registration (default-on)"
+                        };
+                        log("autostart", &format!("ensure: {outcome}"));
                     }
-                    Err(e) => log("autostart", &format!("ensure: set autostart failed: {e}")),
+                    Err(e) => log("autostart", &format!("ensure: reconciliation failed: {e}")),
                 }
             }
             ReconcileAction::Disable => match hq_platform::autostart::set_enabled(false) {
