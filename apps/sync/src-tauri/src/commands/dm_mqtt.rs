@@ -2,23 +2,21 @@
 //!
 //! ## What this does (and deliberately does NOT do)
 //!
-//! This is the "instant" half of DM delivery. The slow half — the 60s poll in
-//! `share_notify::setup_share_notify_poller` (one timer, two fetches, calls
-//! `dm_notify::poll_dm_once`) — is untouched and remains the long-stop. This
-//! module adds a push channel that collapses delivery latency from ~60s to
-//! near-real-time.
+//! This is the push half of desktop notification delivery. With
+//! `desktop.push-events` disabled, `share_notify::setup_share_notify_poller`
+//! retains its legacy 60s share and DM fetches. When enabled, notification
+//! pushes refresh shares and DM pushes refresh messages; the timer keeps only
+//! a five-minute fallback while MQTT is disconnected.
 //!
-//! **The MQTT message is ONLY a wake signal.** On ANY message received on the
-//! subscribed topic — and also once on every (re)connect for offline catch-up
-//! (US-006) — we call the EXISTING `dm_notify::poll_dm_once(app)`. That function
-//! already fetches unread DMs since the persisted cursor, fires the macOS
-//! notifications, acks them, and advances the cursor. So we do NOT parse the
-//! MQTT payload, do NOT implement get-by-id, and do NOT duplicate the
-//! notification loop. Wake → poll. That's the whole design.
+//! The DM MQTT payload remains a wake signal: on DM-topic messages and each
+//! reconnect we call the existing `dm_notify::poll_dm_once(app)`. Any
+//! notification-topic publish while `desktop.push-events` is enabled wakes
+//! the existing shared-with-me API; the payload is advisory and need not carry
+//! notification IDs or a particular shape.
 //!
-//! Dedupe against the 60s poll is automatic: `poll_dm_once` is singleton-guarded
-//! (`try_set_in_flight`) and advances the cursor, so a wake-poll and a
-//! near-simultaneous scheduled poll never double-deliver.
+//! Overlapping scheduled, sync-complete, and MQTT refreshes are coalesced by
+//! the share and DM poll gates. A wake arriving during an in-flight request
+//! causes one trailing refresh instead of being dropped.
 //!
 //! ## Auth + transport
 //!
@@ -36,8 +34,9 @@
 //!
 //! Every failure here is **non-fatal and silent to the user**. Creds fetch
 //! failed, presign failed, IoT unreachable, disconnect mid-stream — all just log
-//! and retry with backoff. The 60s poll keeps delivering meanwhile, so there is
-//! no regression: the worst case is we fall back to the old latency.
+//! and retry with backoff. With the rollout flag off, the legacy 60s cadence
+//! remains active. With it on, the scheduler uses a five-minute fallback while
+//! MQTT is disconnected.
 //!
 //! ## Gating
 //!
@@ -53,6 +52,7 @@
 //!   `DM_MQTT_DISCONNECT` / `DM_MQTT_FALLBACK`. No secrets are ever logged
 //!   (never the presigned URL, never the creds).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
@@ -65,6 +65,41 @@ use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "dm-mqtt";
+static AUTH_SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
+static DM_PUSH_CONNECTED_GENERATION: AtomicU64 = AtomicU64::new(0);
+static DM_AUTH_SESSION_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub(crate) fn dm_push_connected() -> bool {
+    hq_desktop_core::share_notify::push_connection_is_current_session(
+        DM_PUSH_CONNECTED_GENERATION.load(Ordering::Acquire),
+        AUTH_SESSION_GENERATION.load(Ordering::Acquire),
+    )
+}
+
+pub(crate) fn reset_dm_push_for_auth_session_change() {
+    AUTH_SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    DM_PUSH_CONNECTED_GENERATION.store(0, Ordering::Release);
+    DM_AUTH_SESSION_CHANGED.notify_one();
+}
+
+struct DmPushConnectionReset(bool);
+
+impl DmPushConnectionReset {
+    fn new(is_dm_connection: bool) -> Self {
+        if is_dm_connection {
+            DM_PUSH_CONNECTED_GENERATION.store(0, Ordering::Release);
+        }
+        Self(is_dm_connection)
+    }
+}
+
+impl Drop for DmPushConnectionReset {
+    fn drop(&mut self) {
+        if self.0 {
+            DM_PUSH_CONNECTED_GENERATION.store(0, Ordering::Release);
+        }
+    }
+}
 
 /// AWS service name for the IoT MQTT broker SigV4 signature. Fixed by AWS.
 const IOT_SERVICE: &str = "iotdevicegateway";
@@ -408,14 +443,14 @@ pub(crate) fn agent_status_event(payload: &[u8]) -> Option<serde_json::Value> {
 }
 
 /// What an inbound wake (ConnAck offline catch-up, or any Publish) should do.
-/// The MQTT payload is NEVER inspected either way — only its arrival matters
-/// ("the MQTT message is ONLY a wake signal", per the module docs). Shared by
-/// the DM receiver and the US-007 client-health diagnostics wake receiver so
-/// both reuse the exact same credential-fetch/SigV4-presign/reconnect
-/// machinery instead of a second copy.
+/// Shared by the DM receiver and the US-007 client-health diagnostics wake
+/// receiver so both reuse the same credential-fetch/SigV4-presign/reconnect
+/// machinery instead of a second copy. A notification-topic wake separately
+/// refreshes shares when the rollout flag is enabled; its payload is not needed
+/// for that decision.
 #[derive(Clone, Copy)]
 pub(crate) enum MqttWakeAction {
-    /// The original DM behavior: re-run the singleton-guarded DM poll.
+    /// The original DM behavior: re-run the coalesced DM poll.
     Dm,
     /// A plain synchronous notify — used by the client-health diagnostics
     /// poller, which owns its own polling/backoff logic and only needs an
@@ -438,7 +473,7 @@ impl MqttWakeAction {
 ///
 /// Fires `wake` once right after a successful connect (offline catch-up,
 /// US-006) and once per inbound Publish (the wake signal). Subscribes to
-/// `topic_override` when set, else `creds.topic` — the DM receiver relies on
+/// the derived topic set when no override is set — the DM receiver relies on
 /// the server-vended `creds.topic`; the diagnostics receiver subscribes to a
 /// sibling leaf under the SAME already-granted `hq/<personUid>/*` wildcard
 /// (see `setup_client_health_mqtt_receiver`), so no new IAM/session-policy
@@ -448,8 +483,11 @@ async fn run_once(
     creds: &RealtimeCredsResponse,
     topic_override: Option<fn(&str) -> String>,
     wake: MqttWakeAction,
+    auth_session_generation: u64,
 ) -> Result<(), String> {
     use rumqttc::{AsyncClient, MqttOptions};
+
+    let _connection_reset = DmPushConnectionReset::new(matches!(wake, MqttWakeAction::Dm));
 
     let now = SystemTime::now();
     let url = build_signed_wss_url(
@@ -508,7 +546,13 @@ async fn run_once(
     };
     let app = app.clone();
     let handle = tokio::task::spawn(drive_eventloop(
-        app, client, eventloop, topics, dm_topic, wake,
+        app,
+        client,
+        eventloop,
+        topics,
+        dm_topic,
+        wake,
+        auth_session_generation,
     ));
     match handle.await {
         Ok(result) => result,
@@ -536,23 +580,72 @@ async fn drive_eventloop(
     topics: Vec<String>,
     dm_topic: String,
     wake: MqttWakeAction,
+    auth_session_generation: u64,
 ) -> Result<(), String> {
-    use rumqttc::{Event, Packet, QoS};
+    use rumqttc::{Event, Packet, QoS, SubscribeFilter, SubscribeReasonCode};
+    let has_notifications_topic = topics.iter().any(|topic| topic.ends_with("/notifications"));
+    let mut awaiting_notification_suback = false;
     loop {
-        match eventloop.poll().await {
+        if matches!(wake, MqttWakeAction::Dm)
+            && auth_session_generation != AUTH_SESSION_GENERATION.load(Ordering::Acquire)
+        {
+            return Err("auth session changed".to_string());
+        }
+        let next_event = if matches!(wake, MqttWakeAction::Dm) {
+            tokio::select! {
+                _ = DM_AUTH_SESSION_CHANGED.notified() => {
+                    return Err("auth session changed".to_string());
+                }
+                event = eventloop.poll() => event,
+            }
+        } else {
+            eventloop.poll().await
+        };
+        match next_event {
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
                 log(LOG_TAG, "DM_MQTT_CONNECT_OK");
-                // QoS 0: a dropped work push falls back to the existing poll.
-                // The DM connection also takes work + notifications (US-006).
+                DM_PUSH_CONNECTED_GENERATION.store(0, Ordering::Release);
+                let filters = topics
+                    .iter()
+                    .cloned()
+                    .map(|topic| SubscribeFilter::new(topic, QoS::AtMostOnce));
+                if let Err(e) = client.subscribe_many(filters).await {
+                    return Err(format!("subscribe: {e}"));
+                }
+                awaiting_notification_suback =
+                    matches!(wake, MqttWakeAction::Dm) && has_notifications_topic;
                 for topic in &topics {
-                    if let Err(e) = client.subscribe(topic.clone(), QoS::AtMostOnce).await {
-                        return Err(format!("subscribe: {e}"));
-                    }
-                    log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBED topic={topic}"));
+                    log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBE_SENT topic={topic}"));
                 }
                 // Offline catch-up (US-006): drain anything missed while we were
                 // disconnected, before the first push arrives.
                 wake.fire(&app).await;
+                if matches!(wake, MqttWakeAction::Dm)
+                    && crate::commands::share_notify::desktop_push_events_enabled()
+                {
+                    crate::commands::share_notify::poll_once(app.clone()).await;
+                }
+            }
+            Ok(Event::Incoming(Packet::SubAck(suback))) => {
+                if awaiting_notification_suback {
+                    let granted: Vec<bool> = suback
+                        .return_codes
+                        .iter()
+                        .map(|code| matches!(code, SubscribeReasonCode::Success(_)))
+                        .collect();
+                    if !hq_desktop_core::share_notify::all_realtime_subscriptions_granted(
+                        topics.len(),
+                        &granted,
+                    ) {
+                        return Err("realtime subscription rejected or incomplete".to_string());
+                    }
+                    if auth_session_generation != AUTH_SESSION_GENERATION.load(Ordering::Acquire) {
+                        return Err("auth session changed before SUBACK".to_string());
+                    }
+                    DM_PUSH_CONNECTED_GENERATION.store(auth_session_generation, Ordering::Release);
+                    log(LOG_TAG, "DM_MQTT_SUBSCRIBED");
+                    awaiting_notification_suback = false;
+                }
             }
             Ok(Event::Incoming(Packet::Publish(publish))) => {
                 // The one payload we read: an agent's live "working" status.
@@ -567,6 +660,12 @@ async fn drive_eventloop(
                     // the three pushes the projects page applies, and ignore
                     // the rest so a board wake does not poll the DM inbox.
                     if publish.topic != dm_topic {
+                        if hq_desktop_core::share_notify::should_refresh_from_notification_push(
+                            &publish.topic,
+                            crate::commands::share_notify::desktop_push_events_enabled(),
+                        ) {
+                            crate::commands::share_notify::poll_once(app.clone()).await;
+                        }
                         if let Some(forward) = classify_work_push(&publish.payload) {
                             let _ = app.emit(forward.event, &forward.payload);
                         }
@@ -582,7 +681,7 @@ async fn drive_eventloop(
                 log(LOG_TAG, "DM_MQTT_WAKE");
                 wake.fire(&app).await;
             }
-            Ok(_) => { /* SubAck, PingResp, Outgoing, etc. — ignore. */ }
+            Ok(_) => { /* PingResp, Outgoing, etc. — ignore. */ }
             Err(e) => {
                 // Any connection-level error ends this cycle; caller backs off.
                 return Err(format!("eventloop: {e}"));
@@ -651,6 +750,7 @@ async fn run_wake_receiver_loop(
 
     let mut backoff = BACKOFF_MIN;
     loop {
+        let auth_session_generation = AUTH_SESSION_GENERATION.load(Ordering::Acquire);
         // Re-fetch credentials before every (re)connect — they are short-lived
         // STS creds and will have expired across a long backoff.
         match fetch_realtime_credentials().await {
@@ -659,7 +759,7 @@ async fn run_wake_receiver_loop(
                 // then do we fall through to back off + reconnect. Reset the
                 // backoff after a connection that actually established.
                 let started = SystemTime::now();
-                match run_once(&app, &creds, topic_override, wake).await {
+                match run_once(&app, &creds, topic_override, wake, auth_session_generation).await {
                     Ok(()) => { /* unreachable in practice; treat as disconnect */ }
                     Err(e) => log(LOG_TAG, &format!("{log_prefix}_DISCONNECT {e}")),
                 }
@@ -696,9 +796,14 @@ async fn run_wake_receiver_loop(
 /// Runs for ALL signed-in users — instant DM is GA, no @getindigo.ai gate
 /// (the per-identity STS scoping on the server is the real isolation boundary).
 /// On any failure the task logs and retries with capped exponential backoff — it
-/// never surfaces an error to the user and never blocks the 60s poll.
+/// never surfaces an error to the user or blocks the legacy poll and fallback.
 pub fn setup_dm_mqtt_receiver(app: AppHandle) {
-    tauri::async_runtime::spawn(run_wake_receiver_loop(app, None, MqttWakeAction::Dm, "DM_MQTT"));
+    tauri::async_runtime::spawn(run_wake_receiver_loop(
+        app,
+        None,
+        MqttWakeAction::Dm,
+        "DM_MQTT",
+    ));
 }
 
 /// Derive the client-health wake topic from the server-vended DM topic by
@@ -826,10 +931,15 @@ mod tests {
         assert_eq!(event["ts"], "2026-09-15T10:00:00.000Z");
 
         let no_root = br#"{"type":"agent_status","channelId":"chn_1","agentUid":"agt_c","status":"","ts":"t"}"#;
-        assert!(agent_status_event(no_root).unwrap().get("threadRoot").is_none());
+        assert!(agent_status_event(no_root)
+            .unwrap()
+            .get("threadRoot")
+            .is_none());
 
         assert!(agent_status_event(br#"{"type":"channel","channelId":"chn_1"}"#).is_none());
-        assert!(agent_status_event(br#"{"type":"agent_status","agentUid":"agt_c","ts":"t"}"#).is_none());
+        assert!(
+            agent_status_event(br#"{"type":"agent_status","agentUid":"agt_c","ts":"t"}"#).is_none()
+        );
         assert!(agent_status_event(b"not json").is_none());
     }
 

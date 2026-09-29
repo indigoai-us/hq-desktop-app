@@ -48,6 +48,7 @@ use crate::commands::messages::Channel;
 use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::{build_client, describe_error_chain, HYDRATE_REQUEST_TIMEOUT};
 use crate::util::logfile::log;
+use hq_desktop_core::coalesced_poll::CoalescedPoll;
 
 pub use hq_desktop_core::dm_notify::{
     build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
@@ -67,6 +68,7 @@ pub use hq_desktop_core::dm_notify::{
 };
 
 const LOG_TAG: &str = "dm-notify";
+static DM_POLL_GATE: OnceLock<CoalescedPoll> = OnceLock::new();
 
 // ── Fine-grained notification prefs (GET /v1/notify/prefs) ──────────────────
 //
@@ -1083,27 +1085,28 @@ fn clear_pair_unread_local(app: &AppHandle, with_person_uid: &str) {
 
 // ── Public API ───────────────────────────────────────────────────────────────────
 
-/// Fire one DM inbox poll. Singleton-guarded; safe to call from the shared
-/// interval timer. Called from `share_notify::setup_share_notify_poller`'s
-/// loop (one timer, two fetches) — NOT from a sync event.
+/// Fire one DM inbox poll. Overlapping timer and push wakes coalesce into one
+/// trailing pass so a wake cannot be lost while another inbox request runs.
 pub async fn poll_dm_once(app: AppHandle) {
-    if !try_set_in_flight() {
-        log(LOG_TAG, "DM_NOTIFY_POLL_SKIP poll already in-flight");
-        return;
-    }
-    let auth = match resolve_notification_auth_snapshot(&app).await {
-        Ok(auth) => auth,
-        Err(error) => {
-            log(LOG_TAG, &format!("DM_NOTIFY_POLL_AUTH_FAIL {error}"));
-            // Credential resolution already performs a generation-conditional
-            // clear. An unconditional clear here could erase a newer account
-            // that signed in while an older resolver was failing.
-            clear_in_flight();
-            return;
-        }
-    };
-    do_poll(&app, &auth).await;
-    clear_in_flight();
+    DM_POLL_GATE
+        .get_or_init(CoalescedPoll::new)
+        .run(|| {
+            let app = app.clone();
+            async move {
+                let auth = match resolve_notification_auth_snapshot(&app).await {
+                    Ok(auth) => auth,
+                    Err(error) => {
+                        log(LOG_TAG, &format!("DM_NOTIFY_POLL_AUTH_FAIL {error}"));
+                        // Credential resolution already performs a generation-conditional
+                        // clear. An unconditional clear here could erase a newer account
+                        // that signed in while an older resolver was failing.
+                        return;
+                    }
+                };
+                do_poll(&app, &auth).await;
+            }
+        })
+        .await;
 }
 
 /// Tauri command: manual poll trigger (frontend / tests).
