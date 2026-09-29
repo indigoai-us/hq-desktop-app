@@ -424,7 +424,7 @@ async fn read_reindex_stream<R: Runtime>(
             return Ok(output);
         }
         output.extend_from_slice(&buffer[..length]);
-        if let Err(error) = app.emit("setup:reindex-progress", &setup_run_id) {
+        if let Err(error) = app.emit_to("main", "setup:reindex-progress", &setup_run_id) {
             crate::util::logfile::log(
                 "setup",
                 &format!("could not deliver reindex activity event: {error}"),
