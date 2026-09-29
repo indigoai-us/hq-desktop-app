@@ -5,10 +5,30 @@ const GIT_REMOTE_HTTPS_ABORTED: &str = "fatal: remote helper 'https' aborted ses
 const GIT_CLONE_USAGE: &str = "usage: git clone";
 const GIT_CLONE_UNKNOWN_SHALLOW_EXCLUDE: &str = "error: unknown option 'shallow-exclude'";
 const GIT_CLONE_UNKNOWN_PARTIAL_FILTER: &str = "unknown option `filter=blob:none'";
+const RESCUE_CLONE_FAILURE_CLASS: &str = "HQ_RESCUE_CLONE_FAILURE_CLASS=";
+
+pub(crate) fn rescue_clone_failure_class(rescue_stderr: &str) -> Option<&'static str> {
+    rescue_stderr.lines().find_map(|line| {
+        let class = line.trim().strip_prefix(RESCUE_CLONE_FAILURE_CLASS)?;
+        match class {
+            "network" => Some("network"),
+            "auth" => Some("auth"),
+            "filter_unsupported" => Some("filter_unsupported"),
+            "path" => Some("path"),
+            "exists" => Some("exists"),
+            "unknown" => Some("unknown"),
+            _ => None,
+        }
+    })
+}
 
 pub(crate) fn rescue_needs_managed_git_retry(exit_code: i32, rescue_stderr: &str) -> bool {
     if exit_code == 0 {
         return false;
+    }
+
+    if let Some(class) = rescue_clone_failure_class(rescue_stderr) {
+        return matches!(class, "filter_unsupported" | "network");
     }
 
     let rescue_stderr = rescue_stderr.to_ascii_lowercase();
@@ -47,5 +67,46 @@ mod tests {
         );
 
         assert!(!rescue_needs_managed_git_retry(5, stderr));
+    }
+
+    #[test]
+    fn classified_network_and_partial_filter_clone_failures_request_managed_git_retry() {
+        for class in ["network", "filter_unsupported"] {
+            let stderr = format!("error: clone failed\nHQ_RESCUE_CLONE_FAILURE_CLASS={class}");
+            assert!(
+                rescue_needs_managed_git_retry(5, &stderr),
+                "clone failure class {class} must request one managed Git retry"
+            );
+        }
+    }
+
+    #[test]
+    fn classified_auth_and_existing_target_failures_do_not_retry() {
+        for class in ["auth", "exists"] {
+            let stderr = format!("error: clone failed\nHQ_RESCUE_CLONE_FAILURE_CLASS={class}");
+            assert!(
+                !rescue_needs_managed_git_retry(5, &stderr),
+                "clone failure class {class} must not request a managed Git retry"
+            );
+        }
+    }
+
+    #[test]
+    fn only_known_clone_failure_classes_are_accepted() {
+        for class in [
+            "network",
+            "auth",
+            "filter_unsupported",
+            "path",
+            "exists",
+            "unknown",
+        ] {
+            let stderr = format!("HQ_RESCUE_CLONE_FAILURE_CLASS={class}");
+            assert_eq!(super::rescue_clone_failure_class(&stderr), Some(class));
+        }
+        assert_eq!(
+            super::rescue_clone_failure_class("HQ_RESCUE_CLONE_FAILURE_CLASS=anything-else"),
+            None
+        );
     }
 }
