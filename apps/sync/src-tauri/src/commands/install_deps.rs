@@ -530,7 +530,7 @@ struct InstallCancellationRegistration {
 }
 
 impl InstallCancellationRegistration {
-    fn new(app: &AppHandle) -> Self {
+    fn new<R: tauri::Runtime>(app: &AppHandle<R>) -> Self {
         let handle = Uuid::new_v4().to_string();
         register_cancel_handle(handle.clone());
         emit_install_handle_started(app, &handle);
@@ -553,7 +553,7 @@ impl InstallCancellationRegistration {
         Ok(())
     }
 
-    fn finish(&self, app: &AppHandle, error: Option<&str>) {
+    fn finish<R: tauri::Runtime>(&self, app: &AppHandle<R>, error: Option<&str>) {
         deregister_handle(&self.handle);
         let _ = app.emit(
             "install:progress",
@@ -3644,6 +3644,25 @@ pub(crate) fn npm_args_with_public_registry(args: &[String]) -> Vec<String> {
 }
 
 const NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS: [u64; 3] = [30, 45, 75];
+const NPM_RETRY_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+async fn sleep_for_npm_retry_or_cancelled<CheckCancelled>(
+    delay: Duration,
+    check_cancelled: &mut CheckCancelled,
+) -> Result<(), String>
+where
+    CheckCancelled: FnMut() -> Result<(), String>,
+{
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        check_cancelled()?;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        tokio::time::sleep(remaining.min(NPM_RETRY_CANCELLATION_POLL_INTERVAL)).await;
+    }
+}
 
 /// Read npm's machine-stable resolution code from its output. The package name
 /// is checked separately so a missing transitive or unrelated package cannot
@@ -3660,7 +3679,7 @@ fn npm_package_lookup_error_code(detail: &str) -> Option<&'static str> {
                 _ => None,
             });
         code.or_else(|| {
-            let npm_error_line = line.starts_with("npm error ") || line.starts_with("npm err! ");
+            let npm_error_line = line.contains("npm error ") || line.contains("npm err! ");
             let http_not_found = tokens
                 .windows(2)
                 .any(|pair| pair[0] == "404" && pair[1] == "not");
@@ -3698,11 +3717,19 @@ fn is_package_lookup_failure(detail: &str, package_name: &str) -> bool {
 /// Run one setup-path npm install and apply its narrowly classified recovery
 /// policy. The runner and side effects are injected so retries can be tested
 /// without a Tauri runtime or a real npm registry.
-async fn run_setup_npm_install_with_retries<Run, RunFuture, Cleanup, Preflight, Clear>(
+async fn run_setup_npm_install_with_retries<
+    Run,
+    RunFuture,
+    Cleanup,
+    Preflight,
+    Clear,
+    CheckCancelled,
+>(
     run: &mut Run,
     cleanup: &mut Cleanup,
     preflight: &mut Preflight,
     clear_failure: &mut Clear,
+    check_cancelled: &mut CheckCancelled,
     prefix: &str,
     windows_layout: bool,
     spec: &str,
@@ -3717,7 +3744,9 @@ where
     Cleanup: FnMut(&Path, &str),
     Preflight: FnMut(String),
     Clear: FnMut(),
+    CheckCancelled: FnMut() -> Result<(), String>,
 {
+    check_cancelled()?;
     let first_error = match run(base_args.clone()).await {
         Ok(output) => return Ok(output),
         Err(error) => error,
@@ -3756,7 +3785,12 @@ where
                 retry_index + 1,
                 NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.len()
             ));
-            tokio::time::sleep(std::time::Duration::from_secs(*delay_seconds)).await;
+            sleep_for_npm_retry_or_cancelled(
+                Duration::from_secs(*delay_seconds),
+                check_cancelled,
+            )
+            .await?;
+            check_cancelled()?;
             clear_failure();
 
             let retry_args = if retry_index == 0 && code == "ETARGET" {
@@ -3845,6 +3879,34 @@ async fn run_managed_npm_install<R: tauri::Runtime>(
     extra_args: &[&str],
     retry_public_registry: bool,
 ) -> Result<String, String> {
+    let cancellation = InstallCancellationRegistration::new(app);
+    let result = run_managed_npm_install_with_cancellation(
+        app,
+        npm,
+        prefix,
+        spec,
+        package_name,
+        tag,
+        extra_args,
+        retry_public_registry,
+        &cancellation,
+    )
+    .await;
+    cancellation.finish(app, result.as_ref().err().map(String::as_str));
+    result
+}
+
+async fn run_managed_npm_install_with_cancellation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    npm: &str,
+    prefix: &str,
+    spec: &str,
+    package_name: &str,
+    tag: &str,
+    extra_args: &[&str],
+    retry_public_registry: bool,
+    cancellation: &InstallCancellationRegistration,
+) -> Result<String, String> {
     let npm_cache = crate::commands::hq_cli_update::app_npm_cache(app).map_err(|(_, error)| {
         emit_install_line(
             app,
@@ -3865,12 +3927,14 @@ async fn run_managed_npm_install<R: tauri::Runtime>(
     };
     let mut preflight = |line: String| emit_install_line(app, &line);
     let mut clear_failure = || clear_recovered_setup_command_failure();
+    let mut check_cancelled = || cancellation.reject_if_cancelled();
 
     run_setup_npm_install_with_retries(
         &mut run,
         &mut cleanup,
         &mut preflight,
         &mut clear_failure,
+        &mut check_cancelled,
         prefix,
         cfg!(target_os = "windows"),
         spec,
@@ -4051,13 +4115,16 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
                 if install_spec != HQ_CLI_REGISTRY_SPEC {
                     emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
                 }
-                npm_install_global_managed(
+                run_managed_npm_install_with_cancellation(
                     &app,
                     npm.to_str().unwrap_or("npm"),
                     &prefix,
                     &install_spec,
                     "@indigoai-us/hq-cli",
                     "hq",
+                    &[],
+                    true,
+                    &cancellation,
                 )
                 .await
             },
@@ -6702,7 +6769,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                 emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
                 let prefix = managed_npm_prefix();
                 let prefix = prefix.to_string_lossy().into_owned();
-                let result_inner = run_managed_npm_install(
+                let result_inner = run_managed_npm_install_with_cancellation(
                     &app,
                     "npm",
                     &prefix,
@@ -6714,6 +6781,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                         "--registry=https://registry.npmjs.org/",
                     ],
                     false,
+                    &cancellation,
                 )
                 .await?;
                 append_user_path(&managed_npm_bin())?;
@@ -11051,6 +11119,28 @@ mod npm_setup_recovery_tests {
         outcomes: Vec<Result<String, String>>,
         public_registry_args: Option<Vec<String>>,
     ) -> FakeNpmRun {
+        run_fake_npm_with_cancellation_check(
+            prefix,
+            windows_layout,
+            spec,
+            outcomes,
+            public_registry_args,
+            || Ok(()),
+        )
+        .await
+    }
+
+    async fn run_fake_npm_with_cancellation_check<CheckCancelled>(
+        prefix: &str,
+        windows_layout: bool,
+        spec: &str,
+        outcomes: Vec<Result<String, String>>,
+        public_registry_args: Option<Vec<String>>,
+        mut check_cancelled: CheckCancelled,
+    ) -> FakeNpmRun
+    where
+        CheckCancelled: FnMut() -> Result<(), String>,
+    {
         let attempts = Rc::new(RefCell::new(Vec::new()));
         let cleanup_scopes = Rc::new(RefCell::new(Vec::new()));
         let preflight = Rc::new(RefCell::new(Vec::new()));
@@ -11097,6 +11187,7 @@ mod npm_setup_recovery_tests {
             &mut cleanup,
             &mut emit_preflight,
             &mut clear_failure,
+            &mut check_cancelled,
             prefix,
             windows_layout,
             spec,
@@ -11267,6 +11358,87 @@ mod npm_setup_recovery_tests {
             std::time::Duration::from_secs(75),
             "the two retries must respect the first two backoff intervals"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_404_survives_stderr_tail_formatting() {
+        let lines = vec![
+            "npm error code E404".to_string(),
+            "npm stack preamble".to_string(),
+            "npm stack detail".to_string(),
+            "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz".to_string(),
+            "npm error registry response detail".to_string(),
+            "npm error troubleshooting detail".to_string(),
+            "npm error end of report".to_string(),
+        ];
+        let formatted = format_install_error(1, &lines);
+        assert!(!formatted.contains("code E404"), "the formatter must discard the early machine-code line");
+        assert!(formatted.contains("npm error 404 Not Found"));
+
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![
+                Err(formatted.clone()),
+                Err(formatted.clone()),
+                Ok("installed after propagation".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("installed after propagation".into()));
+        assert_eq!(
+            run.attempts.len(),
+            3,
+            "formatted package 404 output must still enter the retry ladder"
+        );
+        assert_eq!(run.preflight.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_cancellation_during_backoff_stops_retry() {
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_after_five_seconds = std::sync::Arc::clone(&cancelled);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            cancel_after_five_seconds.store(true, Ordering::SeqCst);
+        });
+
+        let check_cancelled = {
+            let cancelled = std::sync::Arc::clone(&cancelled);
+            move || {
+                if cancelled.load(Ordering::SeqCst) {
+                    Err(InstallCancellation::UserCancelled.user_message())
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        let started = tokio::time::Instant::now();
+        let missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let run = run_fake_npm_with_cancellation_check(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![Err(missing.into()), Ok("must not run after cancellation".into())],
+            None,
+            check_cancelled,
+        )
+        .await;
+
+        assert_eq!(run.result, Err(InstallCancellation::UserCancelled.user_message()));
+        assert_eq!(
+            run.attempts.len(),
+            1,
+            "cancellation during backoff must prevent another npm process"
+        );
+        assert_eq!(
+            run.cleared_failures, 0,
+            "cancellation must not clear or replace the failure before returning"
+        );
+        assert!(tokio::time::Instant::now() - started < std::time::Duration::from_secs(30));
     }
 
     #[tokio::test(start_paused = true)]
