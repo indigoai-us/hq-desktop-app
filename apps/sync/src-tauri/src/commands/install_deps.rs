@@ -8246,6 +8246,56 @@ mod install_deps_planner_tests {
         assert!(collector.take().is_none());
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn setup_fails_closed_when_only_system_npm_is_available() {
+        const CHILD_ENV: &str = "HQ_SC014_NPM_SELECTION_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let error = preferred_npm_binary()
+                .expect_err("system npm must not replace the managed Node/npm pair");
+            assert!(error.contains("managed Node.js"), "unexpected error: {error}");
+            return;
+        }
+
+        // Isolate HOME and PATH in a child test process. The baseline selector
+        // falls through to this fake system npm; the fixed selector reports
+        // that HQ's managed Node/npm toolchain must be provisioned first.
+        let home = tempfile::tempdir().expect("fixture home");
+        let system_bin = tempfile::tempdir().expect("fixture system bin");
+        let system_npm = system_bin.path().join("npm");
+        std::fs::write(&system_npm, "#!/bin/sh\nexit 0\n").expect("write fake system npm");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&system_npm)
+                .expect("stat fake system npm")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&system_npm, permissions).expect("make fake npm executable");
+        }
+
+        let test_binary = std::env::current_exe().expect("current test binary");
+        let output = std::process::Command::new(test_binary)
+            .arg("setup_fails_closed_when_only_system_npm_is_available")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .env("HOME", home.path())
+            .env("PATH", system_bin.path())
+            .env("SHELL", "/bin/sh")
+            .output()
+            .expect("run isolated selector test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("running 1 test"),
+            "child did not run the test:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            output.status.success(),
+            "child rejected the invariant:\n{stdout}\n{stderr}"
+        );
+    }
+
     fn string_extra<'a>(event: &'a sentry::protocol::Event<'static>, key: &str) -> &'a str {
         let Some(sentry::protocol::Value::String(value)) = event.extra.get(key) else {
             panic!("{key} must be a string extra");
