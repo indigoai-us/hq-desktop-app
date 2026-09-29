@@ -9,6 +9,11 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
+- In a DM with a bot, the "is thinking" / "working on it" line now
+  disappears as soon as the bot's reply appears, instead of staying under
+  the reply for a few more seconds. It shows again when you send another
+  message or the bot reports new work.
+
 - Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
 - Desktop sync commands now recover their valid state after a mutex is poisoned.
 
