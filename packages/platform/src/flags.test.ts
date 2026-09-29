@@ -4,6 +4,7 @@ import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
+  INVITE_TEAMMATE_STEP_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
   bearerTokenFromHeaders,
@@ -59,6 +60,11 @@ describe("registry key mapping", () => {
     expect(key).toMatch(/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/);
     expect(registryKeyFor(key)).toBe(key);
   });
+
+  it("maps the invite-teammate onboarding flag through the registry", () => {
+    expect(INVITE_TEAMMATE_STEP_FLAG).toBe("desktop.invite-teammate-step-v1");
+    expect(registryKeyFor(INVITE_TEAMMATE_STEP_FLAG)).toBe(INVITE_TEAMMATE_STEP_FLAG);
+  });
 });
 
 describe("createFeatureFlagGate", () => {
@@ -93,6 +99,42 @@ describe("createFeatureFlagGate", () => {
     });
 
     await expect(adapter.identity.hasFeature(key)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps invite-teammate off when the flag registry is unavailable", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(INVITE_TEAMMATE_STEP_FLAG)).resolves.toEqual(
+      ok(false),
+    );
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps invite-teammate off when the registry has no configured value", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(INVITE_TEAMMATE_STEP_FLAG)).resolves.toEqual(
+      ok(false),
+    );
     expect(isEnabled).not.toHaveBeenCalled();
   });
 

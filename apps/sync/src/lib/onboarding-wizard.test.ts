@@ -3,6 +3,7 @@ import {
   BUILD_STEP_INDEX,
   CONSENT_STEP_INDEX,
   FIRST_FOLDER_SYNC_STEP_INDEX,
+  INVITE_TEAMMATE_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
   AUTH_GATED_STEPS,
   createWizardRouter,
@@ -29,14 +30,15 @@ describe('onboarding wizard step contract', () => {
       { index: 1, id: 'directory', label: 'Location' },
       { index: 2, id: 'setup', label: 'Setup' },
       { index: 3, id: 'first-folder-sync', label: 'Sync your first folder' },
-      { index: 4, id: 'consent', label: 'Consent' },
-      { index: 5, id: 'connector-import', label: 'Import connectors' },
-      { index: 6, id: 'ready', label: 'Ready' },
-      { index: 7, id: 'trust', label: 'Trust workspace' },
-      { index: 8, id: 'settings', label: 'Settings' },
-      { index: 9, id: 'run-setup', label: 'Run setup' },
-      { index: 10, id: 'handoff', label: 'Handoff' },
-      { index: 11, id: 'build', label: 'Build' },
+      { index: 4, id: 'invite-teammate', label: 'Invite a teammate' },
+      { index: 5, id: 'consent', label: 'Consent' },
+      { index: 6, id: 'connector-import', label: 'Import connectors' },
+      { index: 7, id: 'ready', label: 'Ready' },
+      { index: 8, id: 'trust', label: 'Trust workspace' },
+      { index: 9, id: 'settings', label: 'Settings' },
+      { index: 10, id: 'run-setup', label: 'Run setup' },
+      { index: 11, id: 'handoff', label: 'Handoff' },
+      { index: 12, id: 'build', label: 'Build' },
     ]);
     expect(WIZARD_STEPS.find((step) => step.id === 'ready')?.index).toBe(
       WIZARD_STEPS.findIndex((step) => step.id === 'ready'),
@@ -45,6 +47,7 @@ describe('onboarding wizard step contract', () => {
       WIZARD_STEPS.length,
     );
     expect(AUTH_GATED_STEPS).toEqual([2]);
+    expect(INVITE_TEAMMATE_STEP_INDEX).toBe(4);
   });
 });
 
@@ -123,7 +126,8 @@ describe('createWizardRouter', () => {
     markSetupStepCompleted();
     const router = createWizardRouter({ start: 4 });
 
-    // The consent step (3) sits AFTER the setup gate, so it stays reachable.
+    // The optional post-setup steps sit AFTER the setup gate, so they stay
+    // reachable.
     expect(router.canNavigateTo(3)).toBe(true);
     expect(router.canNavigateTo(2)).toBe(false);
     expect(router.canNavigateTo(1)).toBe(false);

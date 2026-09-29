@@ -21,6 +21,7 @@ const app = vi.hoisted(() => ({
 }));
 const onboardingFlags = vi.hoisted(() => ({
   firstFolderSyncEnabled: false,
+  inviteTeammateEnabled: false,
   hasFeature: vi.fn(),
   startSync: vi.fn(),
 }));
@@ -42,10 +43,14 @@ vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG: 'desktop.setup-directory-parent-fallback',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
+  INVITE_TEAMMATE_STEP_FLAG: 'desktop.invite-teammate-step-v1',
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
       hasFeature: (flag: string) => {
-        if (flag === 'desktop.first-folder-sync-step-v1') {
+        if (
+          flag === 'desktop.first-folder-sync-step-v1' ||
+          flag === 'desktop.invite-teammate-step-v1'
+        ) {
           return onboardingFlags.hasFeature(flag);
         }
         if (flag !== 'desktop.setup-directory-parent-fallback') {
@@ -355,11 +360,14 @@ beforeEach(() => {
     text: async () => '',
   });
   onboardingFlags.firstFolderSyncEnabled = false;
+  onboardingFlags.inviteTeammateEnabled = false;
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value:
-      flag === 'desktop.first-folder-sync-step-v1' &&
-      onboardingFlags.firstFolderSyncEnabled,
+      (flag === 'desktop.first-folder-sync-step-v1' &&
+        onboardingFlags.firstFolderSyncEnabled) ||
+      (flag === 'desktop.invite-teammate-step-v1' &&
+        onboardingFlags.inviteTeammateEnabled),
   }));
   onboardingFlags.startSync.mockReset().mockResolvedValue({
     ok: true,
@@ -2338,6 +2346,266 @@ describe('first-folder sync onboarding step', () => {
       'step',
       'surface',
     ]);
+  });
+});
+
+describe('invite teammate onboarding step', () => {
+  const inviteEmail = 'teammate@example.com';
+  const ownerMembership = {
+    companyUid: 'cmp_demo',
+    personUid: 'prs_owner',
+    status: 'active',
+    role: 'owner',
+  };
+
+  async function reachInviteScenario(options: {
+    flagEnabled?: boolean;
+    firstFolderEnabled?: boolean;
+    companyMembers?: Array<Record<string, unknown>>;
+    inviteResponse?: { status: number; body: unknown };
+    inviteResponses?: Array<{ status: number; body: unknown }>;
+  } = {}): Promise<void> {
+    onboardingFlags.firstFolderSyncEnabled = options.firstFolderEnabled ?? false;
+    onboardingFlags.inviteTeammateEnabled = options.flagEnabled ?? true;
+    let inviteResponseIndex = 0;
+    mountWizard(vi.fn(), SETUP_STEP_INDEX);
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'hq_pro_fetch': {
+          const url = args?.url;
+          if (url === '/membership/me') {
+            return {
+              status: 200,
+              body: JSON.stringify({ memberships: [ownerMembership] }),
+            };
+          }
+          if (url === '/membership/company/cmp_demo') {
+            return {
+              status: 200,
+              body: JSON.stringify({ members: options.companyMembers ?? [ownerMembership] }),
+            };
+          }
+          if (url === '/membership/invite') {
+            const response =
+              options.inviteResponses?.[inviteResponseIndex] ??
+              options.inviteResponse ?? {
+                status: 201,
+                body: { membership: { status: 'pending' }, emailSent: true },
+              };
+            inviteResponseIndex += 1;
+            return {
+              status: response.status,
+              body: JSON.stringify(response.body),
+            };
+          }
+          return { status: 200, body: '{}' };
+        }
+        default:
+          return undefined;
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+  }
+
+  function inviteStepRows(): Array<Record<string, unknown>> {
+    return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+      const args = rawArgs as {
+        eventName?: string;
+        properties?: Record<string, unknown>;
+      };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.step === 'invite-teammate'
+        ? [args.properties]
+        : [];
+    });
+  }
+
+  function clickInviteControl(testId: string): void {
+    const button = host.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+    if (!button) throw new Error(`Expected ${testId} to render.`);
+    if (button.disabled) throw new Error(`${testId} is disabled.`);
+    button.click();
+  }
+
+  it('fails closed with the flag off and does not read memberships', async () => {
+    await reachInviteScenario({ flagEnabled: false });
+
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
+      'desktop.invite-teammate-step-v1',
+    );
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          (args as { url?: string })?.url?.startsWith('/membership/'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not show the step when the company has multiple active members', async () => {
+    await reachInviteScenario({
+      companyMembers: [
+        ownerMembership,
+        { companyUid: 'cmp_demo', personUid: 'prs_teammate', status: 'active' },
+      ],
+    });
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          (args as { url?: string })?.url === '/membership/company/cmp_demo',
+      ),
+    ).toBe(true);
+  });
+
+  it('shows after the first-folder step for a single-member company', async () => {
+    await reachInviteScenario({ firstFolderEnabled: true });
+
+    expect(
+      host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(
+      host.querySelector('[data-testid="onboarding-invite-teammate"]')?.classList.contains('on'),
+    ).toBe(false);
+
+    clickInviteControl('onboarding-first-folder-sync-skip');
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-invite-teammate"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(false);
+  });
+
+  it('lets Skip continue to consent immediately', async () => {
+    await reachInviteScenario();
+
+    clickInviteControl('onboarding-invite-skip');
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(inviteStepRows().map((row) => row.action)).toContain('skipped');
+  });
+
+  it('sends an invite and shows the success state', async () => {
+    await reachInviteScenario();
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+
+    const request = tauri.invoke.mock.calls.find(([command, args]) =>
+      command === 'hq_pro_fetch' &&
+      (args as { url?: string })?.url === '/membership/invite',
+    );
+    expect(request?.[1]).toMatchObject({ method: 'POST' });
+    expect(JSON.parse((request?.[1] as { body: string }).body)).toEqual({
+      companyUid: 'cmp_demo',
+      role: 'member',
+      invitedBy: 'prs_owner',
+      inviteeEmail: inviteEmail,
+      sendEmail: true,
+    });
+  });
+
+  it('shows a safe send error state and keeps Skip available', async () => {
+    await reachInviteScenario({
+      inviteResponses: [
+        {
+          status: 201,
+          body: {
+            membership: { status: 'pending' },
+            emailSent: false,
+            emailError: 'secret server detail',
+          },
+        },
+        { status: 200, body: { resent: true, emailSent: true } },
+      ],
+    });
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() =>
+      host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
+    );
+
+    expect(host.textContent).toContain(
+      'HQ could not confirm that the invitation email was sent. You can try again or skip for now.',
+    );
+    expect(host.textContent).not.toContain('secret server detail');
+    expect(
+      inviteStepRows().some(
+        (row) =>
+          row.action === 'failed' && row.inviteErrorKind === 'email_delivery_failed',
+      ),
+    ).toBe(true);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-skip"]')?.disabled,
+    ).toBe(false);
+
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+    const requests = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'hq_pro_fetch' &&
+        (args as { url?: string })?.url === '/membership/invite',
+    );
+    expect(JSON.parse((requests[1]?.[1] as { body: string }).body)).toMatchObject({
+      companyUid: 'cmp_demo',
+      inviteeEmail: inviteEmail,
+      resend: true,
+    });
+  });
+
+  it('records invite shown, sent, and skipped with companyUid and no email', async () => {
+    await reachInviteScenario();
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+    clickInviteControl('onboarding-invite-skip');
+    await flush();
+
+    const rows = inviteStepRows();
+    expect(rows.map((row) => row.action)).toEqual(['entered', 'completed', 'skipped']);
+    expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
+    expect(rows.some((row) => 'email' in row || 'inviteeEmail' in row)).toBe(false);
+    expect(JSON.stringify(rows)).not.toContain(inviteEmail);
   });
 });
 
