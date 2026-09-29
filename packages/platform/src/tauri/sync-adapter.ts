@@ -33,6 +33,7 @@ import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  INVITE_TEAMMATE_STEP_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -514,6 +515,11 @@ export function createSyncPlatformAdapter(
           if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
             // The first-folder onboarding step is a rollout; fail closed until
             // a manager explicitly enables its hq-flags value.
+            return Promise.resolve(ok(false));
+          }
+          if (flag === INVITE_TEAMMATE_STEP_FLAG) {
+            // This optional onboarding step stays off on missing or unreadable
+            // registry values until a manager explicitly enables it.
             return Promise.resolve(ok(false));
           }
           if (flag === CLAUDE_PROVIDER_FLAG) {
