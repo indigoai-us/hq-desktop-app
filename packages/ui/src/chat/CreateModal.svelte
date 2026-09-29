@@ -156,6 +156,22 @@
     botRuntimeStatus?: Record<string, RuntimeStatus> | null;
     /** Re-read runtime readiness from the host. */
     onrecheckruntimes?: (() => void | Promise<void>) | null;
+    /**
+     * Live AiTools payload for the install-choice panel on the Home step's
+     * "coding tool · not installed" state. Passes through to `CreateBotFlow`.
+     */
+    aiTools?: import("../install-choice/install-choice.js").AiTools | null;
+    /** HQ folder path for the `claude://code/new?folder=` deep link. */
+    hqFolderPath?: string;
+    /** Open the assistant desktop app with a pre-filled install prompt. */
+    onopenassistant?: (
+      assistant: import("../install-choice/install-choice.js").AssistantId,
+      url: string,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** HQ's own one-click installer for a coding tool. */
+    onassistedinstall?: (
+      tool: import("../install-choice/install-choice.js").CodingTool,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
     /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** Names the user's local bots already use (availability check). */
@@ -205,6 +221,10 @@
     botRuntimeReady = null,
     botRuntimeStatus = null,
     onrecheckruntimes = null,
+    aiTools = null,
+    hqFolderPath = "",
+    onopenassistant,
+    onassistedinstall,
     botWorkers = null,
     existingBotNames = null,
     botCompanies = null,
@@ -2514,6 +2534,10 @@
         {botRuntimeReady}
         {botRuntimeStatus}
         {onrecheckruntimes}
+        {aiTools}
+        {hqFolderPath}
+        {onopenassistant}
+        {onassistedinstall}
         {botWorkers}
         existingNames={existingBotNames}
         {botCompanies}

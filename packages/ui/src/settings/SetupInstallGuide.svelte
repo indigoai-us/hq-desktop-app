@@ -18,7 +18,14 @@
    * (no tool, tool present + not signed in, install fails, signed in).
    */
   import type { AiTools } from "./setup-launch";
-  import { thisComputerNoun } from "@hq/platform";
+  import {
+    hostComputerNoun,
+    subscribeHostComputerNoun,
+    thisComputerNoun,
+  } from "@hq/platform";
+  import { onMount } from "svelte";
+  import InstallChoice from "../install-choice/InstallChoice.svelte";
+  import type { AssistantId } from "../install-choice/install-choice.js";
 
   export type CodingTool = "claude" | "codex";
 
@@ -58,6 +65,18 @@
     downloadUrlFor(tool: CodingTool): string;
     /** Open a URL in the system browser. Kept opaque; no direct DOM link. */
     onopen(url: string): Promise<InstallOutcome> | void;
+    /**
+     * Optional: open one of the assistant desktop apps (Claude Desktop or
+     * the ChatGPT desktop app) with a fixed install prompt pre-filled in
+     * its composer. When provided AND one of those apps is detected in
+     * `tools`, the guide renders a "Set up with Claude" / "Set up with
+     * ChatGPT" button above its own Install button. The URL is a validated
+     * `claude://` or `codex://` deep link built in the renderer from a
+     * pinned prompt constant; no server-supplied text ever contributes.
+     */
+    onopenassistant?(assistant: AssistantId, url: string): Promise<InstallOutcome>;
+    /** Optional HQ folder passed into `claude://code/new?folder=`. */
+    hqFolder?: string;
   }
 
   const TOOL_LABEL: Record<CodingTool, string> = {
@@ -73,6 +92,8 @@
     onrefresh,
     downloadUrlFor,
     onopen,
+    onopenassistant,
+    hqFolder = "",
   }: Props = $props();
 
   const installed = $derived<Record<CodingTool, boolean>>({
@@ -97,11 +118,19 @@
   const toolLabel = $derived(TOOL_LABEL[activeTool]);
   /**
    * "this Mac" / "this PC" / "this computer" - the plain-language name for
-   * the host machine. Read once from the shared Tauri probe; the neutral
-   * fallback covers a probe that has not landed yet, so a Windows user never
-   * briefly reads "on this Mac".
+   * the host machine. Kept reactive: on `apps/sync`, `__HQ_HOST_OS__` is not
+   * injected synchronously and the OS plugin lands a moment later, so a
+   * Windows person's first render used to read "this computer" and never
+   * update. Subscribing to the noun helper flips it as soon as the probe
+   * lands. Kept as `thisComputerNoun`-shaped phrase so downstream copy that
+   * reads "on this ${machinePhrase}" continues to compose grammatically.
    */
-  const machinePhrase = thisComputerNoun();
+  let hostNounValue = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNounValue = next)));
+  const machinePhrase = $derived(`this ${hostNounValue}`);
+  // Kept-alive import: the neutral snapshot is still useful for tests + as a
+  // clear signal of what this file used to depend on before it went reactive.
+  void thisComputerNoun;
 
   const primaryLabel = $derived.by(() => {
     if (phase === "installing") return `Installing ${toolLabel}…`;
@@ -214,6 +243,32 @@
 
   {#if failureReason}
     <p class="error" role="alert" data-testid="setup-install-guide-error">{failureReason}</p>
+  {/if}
+
+  {#if onopenassistant && (phase === "idle" || phase === "install-failed") && !installed[activeTool] && tools}
+    <!--
+      Assistant-app buttons ("Set up with Claude" / "Set up with ChatGPT")
+      when one of those apps is on this computer. The panel omits its own
+      direct-install button and re-check here — the guide's own primary
+      handles the direct-install fallback, so the two never duplicate.
+    -->
+    <InstallChoice
+      tool={activeTool}
+      tools={tools}
+      noun={hostNounValue}
+      hqFolder={hqFolder}
+      showDirectInstall={false}
+      showRecheck={false}
+      showLede={false}
+      disabled={busy}
+      onopenassistant={onopenassistant}
+      oninstall={async (tool) => {
+        const outcome = await oninstall(tool);
+        if (outcome.ok) await onrefresh();
+        return outcome;
+      }}
+      onrecheck={async () => { await onrefresh(); }}
+    />
   {/if}
 
   <div class="actions">

@@ -13,6 +13,7 @@ import {
   normalizeErrorCategory,
   normalizeFailedDependency,
   normalizeFailedStageIds,
+  normalizeSetupErrorKind,
   CONNECTOR_IMPORT_OUTCOMES,
   CONNECTOR_IMPORT_SOURCE_SETS,
   SYMLINK_ERROR_IO_KINDS,
@@ -69,6 +70,9 @@ export interface OnboardingStepProperties {
   errorIoKind?: SymlinkErrorIoKind;
   errorCode?: number;
   setupRunId?: string;
+  /** Company scope for the gated invite step; never attach invitee data here. */
+  companyUid?: string;
+  inviteErrorKind?: 'request_failed' | 'email_delivery_failed';
 }
 
 export interface OnboardingStepEvent {
@@ -255,13 +259,26 @@ export function desktopPropertiesForOnboardingStep(
     'detectedToolCount',
     'failedStageCount',
     'failureStage',
-    'errorKind',
   ] as const) {
     const value = event.properties[key];
     if (value !== undefined) properties[key] = value;
   }
   if (event.properties.setupRunId !== undefined) {
     properties.setupRunId = event.properties.setupRunId;
+  }
+  if (
+    event.properties.step === 'invite-teammate' &&
+    typeof event.properties.companyUid === 'string' &&
+    event.properties.companyUid.startsWith('cmp_')
+  ) {
+    properties.companyUid = event.properties.companyUid;
+  }
+  if (
+    event.properties.step === 'invite-teammate' &&
+    (event.properties.inviteErrorKind === 'request_failed' ||
+      event.properties.inviteErrorKind === 'email_delivery_failed')
+  ) {
+    properties.inviteErrorKind = event.properties.inviteErrorKind;
   }
   if (event.properties.step === 'connector-import') {
     if (event.properties.outcome !== undefined) {
@@ -275,6 +292,9 @@ export function desktopPropertiesForOnboardingStep(
   }
   if (event.properties.action === 'failed') {
     properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
+    if (event.properties.errorKind !== undefined) {
+      properties.errorKind = normalizeSetupErrorKind(event.properties.errorKind);
+    }
     if (event.properties.component === 'deps') {
       properties.failedDependency = normalizeFailedDependency(event.properties.failedDependency);
     } else if (event.properties.component === 'content') {

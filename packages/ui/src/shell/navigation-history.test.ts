@@ -168,6 +168,11 @@ describe("navigation handler coverage matrix", () => {
 });
 
 describe("destination equality and labels", () => {
+  it("routes a legacy Atlas destination to the current messages surface", () => {
+    expect(canonicalizeDestination({ kind: "atlas" })).toEqual({ kind: "messages" });
+    expect(destinationLabel({ kind: "atlas" })).toBe("Messages");
+  });
+
   it("treats equal stable IDs as equal and unequal IDs as not", () => {
     const a: NavigationDestination = {
       kind: "channel",

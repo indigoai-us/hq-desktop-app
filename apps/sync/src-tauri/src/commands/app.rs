@@ -144,6 +144,83 @@ fn open_claude_code_link_windows(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a Codex deep link (`codex://threads/new?prompt=…`). The renderer
+/// cannot call `@tauri-apps/plugin-shell` `open()` for a non-http(s) scheme
+/// without widening `shell:allow-open`, so HQ ships this scheme-scoped
+/// command that hands only validated `codex://` URLs to the OS URL
+/// dispatcher. Byte validation is identical to `open_claude_code_link`.
+///
+/// Used by the InstallChoice panel when the ChatGPT desktop app is present
+/// and the person clicks "Set up with ChatGPT" — the URL carries a fixed
+/// install prompt built in the renderer from a pinned constant, never from
+/// server or third-party text.
+#[tauri::command]
+pub fn open_codex_deep_link(url: String) -> Result<(), String> {
+    crate::commands::launch::validate_codex_deep_link(&url)?;
+
+    #[cfg(not(windows))]
+    {
+        return open_codex_deep_link_macos(&url);
+    }
+
+    #[cfg(windows)]
+    {
+        return open_codex_deep_link_windows(&url);
+    }
+}
+
+#[cfg(not(windows))]
+fn open_codex_deep_link_macos(url: &str) -> Result<(), String> {
+    let output = std::process::Command::new("open")
+        .arg(url)
+        .output()
+        .map_err(|e| format!("Failed to run open: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "open exited {}: {}",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_codex_deep_link_windows(url: &str) -> Result<(), String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let wide_url: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            HWND::default(),
+            None,
+            PCWSTR(wide_url.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    let result = result.0 as isize;
+    if !shell_execute_succeeded(result) {
+        return Err(format!(
+            "ShellExecuteW failed to open codex link: {}",
+            result
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]

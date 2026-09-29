@@ -244,9 +244,12 @@ export function canonicalizeDestination(
   switch (destination.kind) {
     case "messages":
     case "notifications":
-    case "atlas":
     case "shared-files":
       return { kind: destination.kind };
+    case "atlas":
+      // Older history/deep links point at Atlas, which is no longer a desktop
+      // destination. Keep those links usable by landing on the messages view.
+      return { kind: "messages" };
     case "channel": {
       const tab = asChannelTab(destination.tab);
       return {

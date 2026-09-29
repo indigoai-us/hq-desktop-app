@@ -15,6 +15,7 @@
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
   import {
+    appendChildFolderPath,
     friendlyPath,
     homeDirFromDefaultHqPath,
     toUserFacingPath,
@@ -97,6 +98,8 @@
     BUILD_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
+    FIRST_FOLDER_SYNC_STEP_INDEX,
+    INVITE_TEAMMATE_STEP_INDEX,
     type WizardMode,
     createWizardRouter,
     DIRECTORY_STEP_INDEX,
@@ -111,7 +114,16 @@
     WIZARD_STEPS,
   } from '../../lib/onboarding-wizard';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
+  import { startTraySync } from '../../lib/traySync';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
+  import {
+    createSyncPlatformAdapter,
+    FIRST_FOLDER_SYNC_STEP_FLAG,
+    INVITE_TEAMMATE_STEP_FLAG,
+    retryThrottled,
+    SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+    SETUP_STAGE_TIMEOUT_FIX_FLAG,
+  } from '@hq/platform';
 
   interface Props {
     initialStep: number;
@@ -127,6 +139,8 @@
      */
     mode?: WizardMode;
     onboardingFlow?: OnboardingFlow;
+    /** A completed install with a missing root must not resume its old manifest. */
+    recoveringMissingRoot?: boolean;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
   }
@@ -146,9 +160,13 @@
     text: string;
   };
 
+  type InviteTeammateErrorKind = 'request_failed' | 'email_delivery_failed';
+
   type InstallProgressPayload = {
     handle?: string;
+    line?: string;
     finished?: boolean;
+    setupRunId?: string;
   };
 
   type ContentProgressPayload = {
@@ -182,6 +200,7 @@
     onfinish,
     mode = 'onboarding',
     onboardingFlow = 'first_install',
+    recoveringMissingRoot = false,
     repromptPersonUid = null,
   }: Props = $props();
 
@@ -192,6 +211,9 @@
    */
   const consentOnly = $derived(mode !== 'onboarding');
   const onboardingTelemetry = createOnboardingStepTelemetry();
+  const onboardingFeatureFlags = createSyncPlatformAdapter({
+    invoke: (command, args) => invoke(command, args),
+  });
 
   let activeInitialStep = $state<number | null>(null);
   let router = $state(createWizardRouter());
@@ -256,6 +278,7 @@
   let onboardingCompleted = false;
 
   let installPath = $state<string | null>(null);
+  let validatedInstallPath = $state<string | null>(null);
   let resolvedPath = $state<string | null>(null);
   let homeDir = $state<string | null>(null);
   let directoryNotice = $state<Notice | null>(null);
@@ -265,6 +288,21 @@
   let stages = $state<StageState[]>(buildInitialStages());
   let setupCompleted = $state(false);
   let setupStarted = $state(false);
+  let showFirstFolderSyncStep = $state(false);
+  let showInviteTeammateStep = $state(false);
+  let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
+  let inviteCreatedForEmail: string | null = null;
+  let inviteEmail = $state('');
+  let inviteSending = $state(false);
+  let inviteSent = $state(false);
+  let inviteErrorKind = $state<InviteTeammateErrorKind | null>(null);
+  let firstFolderSyncFlagResolution: Promise<boolean> | null = null;
+  let firstFolderSyncBusy = $state(false);
+  let firstFolderSyncError = $state(false);
+  let firstFolderSyncStarted = false;
+  let firstFolderSyncAwaitingCompletion = false;
+  let firstFolderSyncObservedFailure = false;
+  let firstFolderSyncCompleted = $state(false);
   let stageCreep = $state(0);
   // How long the stage that is running right now has been running. Drives both
   // the ring's creep and the sub-status line under the active band, so a long
@@ -299,8 +337,13 @@
   let unlistenPersonalFirstPushScan: UnlistenFn | null = null;
   let unlistenPersonalFirstPushProgress: UnlistenFn | null = null;
   let activeInitialSyncTimeoutProgress: (() => void) | null = null;
+  let activeDepsLockWaitTimeoutProgress: (() => void) | null = null;
+  let activeDepsOutputTimeoutProgress: (() => void) | null = null;
+  let activeContentTimeoutProgress: (() => void) | null = null;
+  let activeIndexingOutputTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
+  const SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER = 3;
 
   let aiTools = $state<AiTools | null>(null);
   let detectionFailed = $state(false);
@@ -360,11 +403,16 @@
     flow?: OnboardingFlow,
   ): void {
     if (consentOnly) return;
+    const companyUid =
+      stepIdFor(step) === 'invite-teammate'
+        ? inviteTeammateContext?.companyUid
+        : undefined;
     onboardingTelemetry.record({
       properties: {
         step: stepIdFor(step),
         action,
         ...details,
+        ...(companyUid ? { companyUid } : {}),
         appVersion: onboardingAppVersion,
         flow: flow ?? onboardingFlow,
       },
@@ -500,6 +548,11 @@
   });
 
   $effect(() => {
+    if (consentOnly || currentStep !== SETUP_STEP_INDEX) return;
+    void resolveFirstFolderSyncStepFlag();
+  });
+
+  $effect(() => {
     // In re-prompt mode there is no install/setup — only the consent step — so
     // the setup run must never start even if the step index momentarily reads 2.
     if (consentOnly || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
@@ -591,6 +644,46 @@
     };
   });
 
+  onMount(() => {
+    let active = true;
+    const unlisteners: UnlistenFn[] = [];
+    function subscribeFirstFolderSyncEvent<Payload>(
+      eventName: string,
+      handler: (payload: Payload) => void,
+    ): void {
+      void listen<Payload>(eventName, (event) => {
+        if (active) handler(event.payload);
+      })
+        .then((unlisten) => {
+          const cleanup = safeUnlisten(unlisten);
+          if (!active) cleanup();
+          else unlisteners.push(cleanup);
+        })
+        .catch((error) => {
+          console.warn(`onboarding: ${eventName} listener unavailable`, error);
+        });
+    }
+
+    subscribeFirstFolderSyncEvent<{ errors?: unknown }>(
+      'sync:all-complete',
+      handleFirstFolderSyncComplete,
+    );
+    subscribeFirstFolderSyncEvent<{ aborted?: unknown }>('sync:complete', (payload) => {
+      if (firstFolderSyncAwaitingCompletion && payload.aborted === true) {
+        firstFolderSyncObservedFailure = true;
+      }
+    });
+    subscribeFirstFolderSyncEvent('sync:error', () => {
+      if (firstFolderSyncAwaitingCompletion) firstFolderSyncObservedFailure = true;
+    });
+    subscribeFirstFolderSyncEvent('sync:auth-error', handleFirstFolderSyncAuthError);
+
+    return () => {
+      active = false;
+      for (const unlisten of unlisteners) unlisten();
+    };
+  });
+
   onDestroy(() => {
     recordOnboardingAbandonment();
     stopAutomaticContinuationAttempt();
@@ -666,7 +759,7 @@
     }
   }
 
-  async function handleSignIn(provider: SignInProvider) {
+  async function handleSignIn(provider: SignInProvider, stateRecoveryAttempt = false) {
     const call = ++currentSignInCall;
     // Claim the provider path before any await. The continuation config can
     // settle while this click is being handled; it must not then arm a second
@@ -720,11 +813,17 @@
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
       console.error('[onboarding-signin] sign-in failed:', err);
+      const errorKind = classifyContinuationError(err);
+      if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
+        console.warn('[onboarding-signin] restarting once after an expired or mismatched attempt');
+        void handleSignIn(provider, true);
+        return;
+      }
       signInError = mapSignInError(errorMessage(err), provider);
       recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
         provider: telemetryProvider,
         outcome: 'oauth_failed',
-        errorKind: classifyContinuationError(err),
+        errorKind,
       });
     } finally {
       if (isCurrentSignInCall(call)) {
@@ -878,11 +977,12 @@
     return Boolean(result.nonEmpty ?? result.non_empty);
   }
 
-  function acceptPath(path: string) {
+  function acceptPath(path: string, validated = false) {
     resolvedPath = path;
     homeDir = homeDir ?? homeDirFromDefaultHqPath(path);
     directoryNotice = null;
     installPath = path;
+    validatedInstallPath = validated ? path : null;
     if (typeof invoke === 'function') {
       void invoke('set_hq_install_path', { path }).catch(() => {});
     }
@@ -890,6 +990,231 @@
 
   function rejectPath(text: string, tone: Notice['tone'] = 'error') {
     directoryNotice = { tone, text };
+  }
+
+  async function directoryParentFallbackEnabled(): Promise<boolean> {
+    try {
+      const result = await onboardingFeatureFlags.identity.hasFeature(
+        SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+      );
+      if (result.ok) return result.value === true;
+      console.warn(
+        'onboarding: directory parent fallback flag unavailable; leaving it off',
+        result.reason,
+        result.code,
+      );
+      return false;
+    } catch (err) {
+      console.warn('onboarding: directory parent fallback flag failed; leaving it off', err);
+      return false;
+    }
+  }
+
+  async function resolveSetupStageTimeoutFixFlag(): Promise<boolean> {
+    try {
+      const result = await onboardingFeatureFlags.identity.hasFeature(
+        SETUP_STAGE_TIMEOUT_FIX_FLAG,
+      );
+      if (!result.ok) {
+        console.warn(
+          'onboarding: setup stage timeout flag unavailable; leaving it off',
+          result.reason,
+          result.code,
+        );
+        return false;
+      }
+      return result.value === true;
+    } catch (error) {
+      console.warn(
+        'onboarding: setup stage timeout flag failed; leaving it off',
+        error,
+      );
+      return false;
+    }
+  }
+
+  function resolveFirstFolderSyncStepFlag(): Promise<boolean> {
+    if (!firstFolderSyncFlagResolution) {
+      firstFolderSyncFlagResolution = (async () => {
+        try {
+          const result = await onboardingFeatureFlags.identity.hasFeature(
+            FIRST_FOLDER_SYNC_STEP_FLAG,
+          );
+          if (!result.ok) {
+            console.warn(
+              'onboarding: first-folder sync rollout flag unavailable; leaving the step off',
+              result.reason,
+              result.code,
+            );
+            return false;
+          }
+          return result.value === true;
+        } catch (error) {
+          console.warn(
+            'onboarding: first-folder sync rollout flag failed; leaving the step off',
+            error,
+          );
+          return false;
+        }
+      })().then((enabled) => {
+        if (mounted) showFirstFolderSyncStep = enabled;
+        return enabled;
+      });
+    }
+    return firstFolderSyncFlagResolution;
+  }
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  async function onboardingHqProJson(
+    method: 'GET' | 'POST',
+    url: string,
+    body?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await retryThrottled(
+      () =>
+        invokeCommand<unknown>('hq_pro_fetch', {
+          url,
+          method,
+          body: body === undefined ? null : JSON.stringify(body),
+        }),
+      (attempt) => {
+        if (!isRecord(attempt) || typeof attempt.status !== 'number') {
+          return { status: null };
+        }
+        return {
+          status: attempt.status,
+          retryAfter:
+            typeof attempt.retryAfter === 'string' ? attempt.retryAfter : null,
+        };
+      },
+    );
+    if (!isRecord(response) || typeof response.status !== 'number') {
+      throw new Error('hq-pro returned an invalid response');
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`hq-pro request failed with status ${response.status}`);
+    }
+    const payload =
+      typeof response.body === 'string' && response.body.trim()
+        ? JSON.parse(response.body)
+        : null;
+    if (!isRecord(payload)) throw new Error('hq-pro returned an invalid JSON body');
+    return payload;
+  }
+
+  async function resolveInviteTeammateContext(): Promise<{
+    companyUid: string;
+    personUid: string;
+  } | null> {
+    try {
+      // Gate before the membership reads so the default-off path stays dormant.
+      const flag = await onboardingFeatureFlags.identity.hasFeature(
+        INVITE_TEAMMATE_STEP_FLAG,
+      );
+      if (!flag.ok || flag.value !== true) return null;
+
+      const membershipPayload = await onboardingHqProJson('GET', '/membership/me');
+      const rawMemberships = membershipPayload.memberships;
+      if (!Array.isArray(rawMemberships) || !rawMemberships.every(isRecord)) {
+        return null;
+      }
+      const activeCompanyMemberships = rawMemberships.filter(
+        (membership) =>
+          membership.status === 'active' &&
+          typeof membership.companyUid === 'string' &&
+          membership.companyUid.startsWith('cmp_'),
+      );
+      const activeCompanyUids = [
+        ...new Set(
+          activeCompanyMemberships.map(
+            (membership) => membership.companyUid as string,
+          ),
+        ),
+      ];
+      if (activeCompanyUids.length !== 1) return null;
+
+      const companyUid = activeCompanyUids[0]!;
+      const ownMemberships = activeCompanyMemberships.filter(
+        (membership) => membership.companyUid === companyUid,
+      );
+      if (
+        ownMemberships.length !== 1 ||
+        typeof ownMemberships[0]?.personUid !== 'string' ||
+        !ownMemberships[0].personUid.startsWith('prs_')
+      ) {
+        return null;
+      }
+      const personUid = ownMemberships[0].personUid;
+
+      const rosterPayload = await onboardingHqProJson(
+        'GET',
+        `/membership/company/${encodeURIComponent(companyUid)}`,
+      );
+      const rawMembers = rosterPayload.members;
+      if (!Array.isArray(rawMembers) || !rawMembers.every(isRecord)) return null;
+      const activeMembers = rawMembers.filter((member) => member.status === 'active');
+      if (
+        activeMembers.length !== 1 ||
+        activeMembers[0]?.personUid !== personUid ||
+        (typeof activeMembers[0]?.companyUid === 'string' &&
+          activeMembers[0].companyUid !== companyUid)
+      ) {
+        return null;
+      }
+      return { companyUid, personUid };
+    } catch (error) {
+      console.warn('onboarding: invite teammate eligibility lookup failed', error);
+      return null;
+    }
+  }
+
+  async function sendTeammateInvite(): Promise<void> {
+    const context = inviteTeammateContext;
+    const inviteeEmail = inviteEmail.trim();
+    if (!context || !inviteeEmail || inviteSending || inviteSent) return;
+
+    inviteSending = true;
+    inviteErrorKind = null;
+    try {
+      const resend = inviteCreatedForEmail === inviteeEmail;
+      const response = await onboardingHqProJson('POST', '/membership/invite', {
+        companyUid: context.companyUid,
+        role: 'member',
+        invitedBy: context.personUid,
+        inviteeEmail,
+        ...(resend ? { resend: true } : { sendEmail: true }),
+      });
+      const inviteExists =
+        isRecord(response.membership) || (resend && response.resent === true);
+      if (!inviteExists) {
+        inviteErrorKind = 'request_failed';
+        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
+          inviteErrorKind,
+        });
+        return;
+      }
+      inviteCreatedForEmail = inviteeEmail;
+      if (response.emailSent !== true) {
+        inviteErrorKind = 'email_delivery_failed';
+        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
+          inviteErrorKind,
+        });
+        return;
+      }
+      inviteSent = true;
+      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', { outcome: 'ok' });
+    } catch (error) {
+      console.warn('onboarding: invite teammate request failed', error);
+      inviteErrorKind = 'request_failed';
+      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
+        inviteErrorKind,
+      });
+    } finally {
+      inviteSending = false;
+    }
   }
 
   async function resolveDefaultPath() {
@@ -902,9 +1227,10 @@
       acceptPath(path);
     } catch (err) {
       if (directoryCancelled) return;
+      console.warn('onboarding: default install directory could not be prepared', err);
       resolvedPath = null;
       installPath = null;
-      rejectPath(`HQ could not prepare ~/hq. ${errorMessage(err)}`);
+      rejectPath('HQ could not prepare the default folder. Choose a location to continue.', 'warning');
     } finally {
       if (!directoryCancelled) directoryBusy = false;
     }
@@ -923,33 +1249,194 @@
         invokeCommand<boolean>('check_writable', { path: picked }),
       ]);
 
-      if (!writable) {
-        rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
-        recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'not_writable' });
-        return;
-      }
-
       if (detection.exists && !detectLooksLikeHq(detection) && detectNonEmpty(detection)) {
+        if (await directoryParentFallbackEnabled()) {
+          const installPath = appendChildFolderPath(picked, 'hq');
+          const [childDetection, childWritable] = await Promise.all([
+            invokeCommand<DetectHqResult>('detect_hq', { path: installPath }),
+            invokeCommand<boolean>('check_writable', { path: installPath }),
+          ]);
+          if (!childWritable) {
+            rejectPath(
+              'HQ cannot write to a new folder here. Choose another location, or allow HQ access to this folder in your system privacy settings, then try again.',
+              'warning',
+            );
+            recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+              outcome: 'not_writable',
+              errorKind: 'directory_not_writable',
+            });
+            return;
+          }
+          if (
+            childDetection.exists &&
+            !detectLooksLikeHq(childDetection) &&
+            detectNonEmpty(childDetection)
+          ) {
+            rejectPath(
+              'The hq subfolder already contains files. Choose another location or rename that subfolder before trying again.',
+              'warning',
+            );
+            recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+              outcome: 'invalid_directory',
+              errorKind: 'directory_child_nonempty_non_hq',
+            });
+            return;
+          }
+          acceptPath(installPath, true);
+          directoryNotice = {
+            tone: 'warning',
+            text: 'This location already has files. HQ will use the new hq folder inside it.',
+          };
+          return;
+        }
+
+        if (!writable) {
+          rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
+          recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+            outcome: 'not_writable',
+            errorKind: 'directory_not_writable',
+          });
+          return;
+        }
         rejectPath(
           `${friendlyPath(picked, homeDir)} already has files and does not look like an HQ folder.`,
           'warning',
         );
-        recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'invalid_directory' });
+        recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+          outcome: 'invalid_directory',
+          errorKind: 'directory_nonempty_non_hq',
+        });
         return;
       }
 
-      acceptPath(picked);
+      if (!writable) {
+        if (await directoryParentFallbackEnabled()) {
+          rejectPath(
+            'HQ cannot write to this folder. Choose another location, or allow HQ access to it in your system privacy settings, then try again.',
+            'warning',
+          );
+        } else {
+          rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
+        }
+        recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+          outcome: 'not_writable',
+          errorKind: 'directory_not_writable',
+        });
+        return;
+      }
+
+      acceptPath(picked, true);
     } catch (err) {
-      rejectPath(`The folder could not be checked. ${errorMessage(err)}`);
-      recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'directory_check_failed' });
+      console.warn('onboarding: selected directory could not be checked', err);
+      if (await directoryParentFallbackEnabled()) {
+        rejectPath(
+          'HQ could not check this folder. Choose another location or check its access settings, then try again.',
+          'warning',
+        );
+      } else {
+        rejectPath(
+          'The folder could not be checked. Choose another location or check its access settings, then try again.',
+          'warning',
+        );
+      }
+      recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+        outcome: 'directory_check_failed',
+        errorKind: 'directory_check_failed',
+      });
     } finally {
       directoryBusy = false;
     }
   }
 
-  function handleInstall() {
+  async function handleInstall() {
     if (!installPath || directoryBusy) return;
-    advanceTo(SETUP_STEP_INDEX, 'completed');
+    if (validatedInstallPath === installPath) {
+      advanceTo(SETUP_STEP_INDEX, 'completed');
+      return;
+    }
+
+    const selectedPath = installPath;
+    directoryBusy = true;
+    directoryNotice = null;
+    try {
+      // The default path is prepared natively before auth exists. Validate it
+      // here, after sign-in, through hq-flags before allowing setup to use it.
+      if (!(await directoryParentFallbackEnabled())) {
+        advanceTo(SETUP_STEP_INDEX, 'completed');
+        return;
+      }
+
+      const [detection, writable] = await Promise.all([
+        invokeCommand<DetectHqResult>('detect_hq', { path: selectedPath }),
+        invokeCommand<boolean>('check_writable', { path: selectedPath }),
+      ]);
+      if (detection.exists && !detectLooksLikeHq(detection) && detectNonEmpty(detection)) {
+        const installPath = appendChildFolderPath(selectedPath, 'hq');
+        const [childDetection, childWritable] = await Promise.all([
+          invokeCommand<DetectHqResult>('detect_hq', { path: installPath }),
+          invokeCommand<boolean>('check_writable', { path: installPath }),
+        ]);
+        if (!childWritable) {
+          rejectPath(
+            'HQ cannot write to a new folder here. Choose another location, or allow HQ access to this folder in your system privacy settings, then try again.',
+            'warning',
+          );
+          recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+            outcome: 'not_writable',
+            errorKind: 'directory_not_writable',
+          });
+          return;
+        }
+        if (
+          childDetection.exists &&
+          !detectLooksLikeHq(childDetection) &&
+          detectNonEmpty(childDetection)
+        ) {
+          rejectPath(
+            'The hq subfolder already contains files. Choose another location or rename that subfolder before trying again.',
+            'warning',
+          );
+          recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+            outcome: 'invalid_directory',
+            errorKind: 'directory_child_nonempty_non_hq',
+          });
+          return;
+        }
+        acceptPath(installPath, true);
+        directoryNotice = {
+          tone: 'warning',
+          text: 'This location already has files. HQ will use the new hq folder inside it.',
+        };
+        return;
+      }
+
+      if (!writable) {
+        rejectPath(
+          'HQ cannot write to this folder. Choose another location, or allow HQ access to it in your system privacy settings, then try again.',
+          'warning',
+        );
+        recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+          outcome: 'not_writable',
+          errorKind: 'directory_not_writable',
+        });
+        return;
+      }
+
+      validatedInstallPath = selectedPath;
+      advanceTo(SETUP_STEP_INDEX, 'completed');
+    } catch (err) {
+      console.warn('onboarding: final directory validation failed', err);
+      rejectPath(
+        'HQ could not check this folder. Choose another location or check its access settings, then try again.',
+        'warning',
+      );
+      recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+        outcome: 'directory_check_failed',
+        errorKind: 'directory_check_failed',
+      });
+    } finally {
+      directoryBusy = false;
+    }
   }
 
   function beginSetupRun(): number {
@@ -960,6 +1447,10 @@
     // Supersession: the previous run may have left a stage mid-retry. This
     // run owns the list now, so nothing may still be waiting on that retry.
     stages = resetRetryingStages(stages);
+    activeDepsLockWaitTimeoutProgress = null;
+    activeDepsOutputTimeoutProgress = null;
+    activeContentTimeoutProgress = null;
+    activeIndexingOutputTimeoutProgress = null;
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
@@ -999,13 +1490,20 @@
   function trackInstallProgress(runId: number, payload: InstallProgressPayload): void {
     if (!isCurrentRun(runId)) return;
     const handle = payload.handle;
-    if (!handle || handle === 'preflight') return;
+    if (!handle) return;
 
     if (payload.finished) {
-      activeInstallHandles.delete(handle);
+      if (handle !== 'preflight') activeInstallHandles.delete(handle);
       return;
     }
-    activeInstallHandles.add(handle);
+    if (handle !== 'preflight') activeInstallHandles.add(handle);
+    if (
+      currentStageId === 'deps' &&
+      payload.setupRunId === currentSetupRunId &&
+      payload.line?.trim()
+    ) {
+      activeDepsOutputTimeoutProgress?.();
+    }
   }
 
   function trackContentProgress(runId: number, payload: ContentProgressPayload): void {
@@ -1017,6 +1515,18 @@
       !activeContentHandles.has(handle)
     ) {
       return;
+    }
+
+    if (
+      currentStageId === 'content' &&
+      handle &&
+      activeContentHandles.has(handle) &&
+      !payload.stalled &&
+      (payload.phase === 'download' ||
+        payload.phase === 'extract' ||
+        payload.phase === 'complete')
+    ) {
+      activeContentTimeoutProgress?.();
     }
 
     if (handle && payload.phase === 'complete') {
@@ -1035,11 +1545,28 @@
       'install:progress',
       (event) => trackInstallProgress(runId, event.payload),
     ));
+    const unlistenCliLockWait = safeUnlisten(await listen<string>(
+      'setup:cli-install-lock-wait',
+      (event) => {
+        const handle = event.payload;
+        if (
+          isCurrentRun(runId) &&
+          currentStageId === 'deps' &&
+          activeInstallHandles.has(handle)
+        ) {
+          activeDepsLockWaitTimeoutProgress?.();
+        }
+      },
+    ));
     if (!isCurrentRun(runId)) {
       unlisten();
+      unlistenCliLockWait();
       return;
     }
-    unlistenInstallProgress = unlisten;
+    unlistenInstallProgress = () => {
+      unlisten();
+      unlistenCliLockWait();
+    };
 
     const unlistenContent = safeUnlisten(await listen<ContentProgressPayload>(
       'content:progress',
@@ -1050,6 +1577,30 @@
       return;
     }
     unlistenContentProgress = unlistenContent;
+
+    const unlistenReindex = safeUnlisten(await listen<string>(
+      'setup:reindex-progress',
+      (event) => {
+        if (
+          isCurrentRun(runId) &&
+          currentStageId === 'indexing' &&
+          event.payload === currentSetupRunId
+        ) {
+          activeIndexingOutputTimeoutProgress?.();
+        }
+      },
+    ));
+    if (!isCurrentRun(runId)) {
+      unlistenReindex();
+      return;
+    }
+    unlistenInstallProgress = (() => {
+      const previousUnlisten = unlistenInstallProgress;
+      return () => {
+        previousUnlisten?.();
+        unlistenReindex();
+      };
+    })();
 
     const notifyInitialSyncActivity = () => {
       if (isCurrentRun(runId) && currentStageId === 'initial-sync') {
@@ -1134,10 +1685,18 @@
     }
 
     const ms = stageTimeoutMs(id);
+    const activityTimeoutEnabled =
+      id === 'deps' || id === 'content' || id === 'indexing'
+        ? await resolveSetupStageTimeoutFixFlag()
+        : false;
+    if (!isCurrentRun(runId)) return;
     for (const invocation of invocations) {
       let args = invocation.args;
       if (['content', 'deps', 'git-init', 'indexing'].includes(id)) {
         args = { ...(args ?? {}), failureScope };
+      }
+      if (id === 'indexing' && activityTimeoutEnabled) {
+        args = { ...(args ?? {}), activityTimeoutEnabled: true };
       }
       let handle: string | null = null;
       if (invocation.command === 'fetch_and_extract_template') {
@@ -1152,7 +1711,8 @@
                 Promise.resolve(invokeDesktopCommand(invocation.command, args)),
               )
             : Promise.resolve(invokeDesktopCommand(invocation.command, args));
-        const onTimeout = () => new StageTimeoutError(id, ms);
+        const onTimeout = (timeoutMs = ms) =>
+          new StageTimeoutError(id, timeoutMs);
         const cancel = () => {
           void cancelForegroundWork(runId);
         };
@@ -1170,6 +1730,62 @@
               };
             },
             cancel,
+          );
+        } else if (id === 'deps') {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeDepsLockWaitTimeoutProgress = onProgress;
+              if (activityTimeoutEnabled) {
+                activeDepsOutputTimeoutProgress = onProgress;
+              }
+              return () => {
+                if (activeDepsLockWaitTimeoutProgress === onProgress) {
+                  activeDepsLockWaitTimeoutProgress = null;
+                }
+                if (activeDepsOutputTimeoutProgress === onProgress) {
+                  activeDepsOutputTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+            activityTimeoutEnabled
+              ? ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER
+              : undefined,
+          );
+        } else if (id === 'content' && activityTimeoutEnabled) {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeContentTimeoutProgress = onProgress;
+              return () => {
+                if (activeContentTimeoutProgress === onProgress) {
+                  activeContentTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+            ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER,
+          );
+        } else if (id === 'indexing' && activityTimeoutEnabled) {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeIndexingOutputTimeoutProgress = onProgress;
+              return () => {
+                if (activeIndexingOutputTimeoutProgress === onProgress) {
+                  activeIndexingOutputTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+            ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER,
           );
         } else {
           await withTimeout(operation, ms, onTimeout, cancel);
@@ -1320,6 +1936,64 @@
     });
   }
 
+  function failFirstFolderSyncAttempt(): void {
+    firstFolderSyncBusy = false;
+    firstFolderSyncAwaitingCompletion = false;
+    firstFolderSyncObservedFailure = false;
+    firstFolderSyncStarted = false;
+    firstFolderSyncError = true;
+  }
+
+  function handleFirstFolderSyncComplete(payload: unknown): void {
+    if (!firstFolderSyncAwaitingCompletion || firstFolderSyncCompleted) return;
+    const result = payload as { errors?: unknown } | null;
+    if (
+      !result ||
+      !Array.isArray(result.errors) ||
+      result.errors.length > 0 ||
+      firstFolderSyncObservedFailure
+    ) {
+      failFirstFolderSyncAttempt();
+      return;
+    }
+
+    firstFolderSyncBusy = false;
+    firstFolderSyncAwaitingCompletion = false;
+    firstFolderSyncObservedFailure = false;
+    firstFolderSyncCompleted = true;
+    firstFolderSyncError = false;
+    recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'completed');
+    if (currentStep === FIRST_FOLDER_SYNC_STEP_INDEX) {
+      advanceTo(nextAfterFirstFolderSync(), null);
+    }
+  }
+
+  function handleFirstFolderSyncAuthError(_payload: { message?: string }): void {
+    if (!firstFolderSyncAwaitingCompletion || firstFolderSyncCompleted) return;
+    failFirstFolderSyncAttempt();
+  }
+
+  async function startFirstFolderSync(): Promise<void> {
+    if (firstFolderSyncBusy || firstFolderSyncStarted || firstFolderSyncCompleted) return;
+    firstFolderSyncStarted = true;
+    firstFolderSyncAwaitingCompletion = true;
+    firstFolderSyncObservedFailure = false;
+    firstFolderSyncBusy = true;
+    firstFolderSyncError = false;
+    recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'started');
+    try {
+      await startTraySync(onboardingFeatureFlags);
+    } catch (error) {
+      console.warn('onboarding: first-folder sync could not be started', error);
+      if (!firstFolderSyncCompleted) {
+        firstFolderSyncBusy = false;
+        firstFolderSyncAwaitingCompletion = false;
+        firstFolderSyncStarted = false;
+        firstFolderSyncError = true;
+      }
+    }
+  }
+
   async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
     const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
     const retryCounts = new Map<StageId, number>();
@@ -1371,8 +2045,20 @@
       });
       // Setup is what provisions the person entity; stitch the install session.
       void resolveInstallerPersonUid();
-      // Consent precedes the optional connector-import step and final handoff.
-      advanceTo(CONSENT_STEP_INDEX, 'completed', {
+      // Both follow-on steps are optional and manager-gated. The invite path
+      // checks its flag before reading memberships, and every lookup fails closed.
+      const [firstFolderEnabled, inviteContext] = await Promise.all([
+        resolveFirstFolderSyncStepFlag(),
+        resolveInviteTeammateContext(),
+      ]);
+      if (!isCurrentRun(runId)) return;
+      inviteTeammateContext = inviteContext;
+      showInviteTeammateStep = inviteContext !== null;
+      const nextStep = firstFolderEnabled
+        ? FIRST_FOLDER_SYNC_STEP_INDEX
+        : nextAfterFirstFolderSync();
+      // Consent still precedes connector import and the final handoff.
+      advanceTo(nextStep, 'completed', {
         failedStageCount: result.failedStages.length,
         failedStages,
         setupRunId: currentSetupRunId,
@@ -1541,15 +2227,17 @@
       if (installPath) effectiveInstallPath = installPath;
       await listenForProgress(runId);
       let startStage: StageId = STAGE_ORDER[0];
-      try {
-        const manifest = await invoke<InstallManifest>('read_install_manifest');
-        if (!isCurrentRun(runId)) return;
-        effectiveInstallPath = manifest.installPath || effectiveInstallPath;
-        if (manifest.installPath) installPath = manifest.installPath;
-        startStage = resumeStartStageFromManifest(manifest);
-        stages = buildStagesFromManifest(manifest, startStage);
-      } catch {
-        // Missing/corrupt manifests fall back to a fresh run.
+      if (!recoveringMissingRoot) {
+        try {
+          const manifest = await invoke<InstallManifest>('read_install_manifest');
+          if (!isCurrentRun(runId)) return;
+          effectiveInstallPath = manifest.installPath || effectiveInstallPath;
+          if (manifest.installPath) installPath = manifest.installPath;
+          startStage = resumeStartStageFromManifest(manifest);
+          stages = buildStagesFromManifest(manifest, startStage);
+        } catch {
+          // Missing/corrupt manifests fall back to a fresh run.
+        }
       }
       if (!isCurrentRun(runId)) return;
       await runSetup(runId, startStage);
@@ -1572,6 +2260,10 @@
     unlistenPersonalFirstPushProgress?.();
     unlistenPersonalFirstPushProgress = null;
     activeInitialSyncTimeoutProgress = null;
+    activeDepsLockWaitTimeoutProgress = null;
+    activeDepsOutputTimeoutProgress = null;
+    activeContentTimeoutProgress = null;
+    activeIndexingOutputTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once
     // its run stops being current, so `allSettled` would stay false forever
     // and the completion gate would never fire. Put it back to 'pending': the
@@ -1972,6 +2664,12 @@
     transitionTo(router.currentStep, exitAction, exitDetails);
   }
 
+  function nextAfterFirstFolderSync(): number {
+    return showInviteTeammateStep && inviteTeammateContext
+      ? INVITE_TEAMMATE_STEP_INDEX
+      : CONSENT_STEP_INDEX;
+  }
+
   function goBackTo(step: number) {
     router.goTo(step);
     transitionTo(router.currentStep, 'back');
@@ -2226,6 +2924,19 @@
           </div>
         </div>
 
+        {#if showFirstFolderSyncStep}
+          <div
+            class="gfx"
+            class:on={graphicIsOn(FIRST_FOLDER_SYNC_STEP_INDEX)}
+            data-g={FIRST_FOLDER_SYNC_STEP_INDEX}
+          >
+            <div class="finder-item">
+              <img class="macfolder-lg" src={folderIcon} alt="" />
+              <span class="flabel">Sync</span>
+            </div>
+          </div>
+        {/if}
+
         <div class="gfx" class:on={graphicIsOn(CONSENT_STEP_INDEX)} data-g={CONSENT_STEP_INDEX}>
           {@render ConsentShield()}
         </div>
@@ -2451,6 +3162,105 @@
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>
         </section>
+
+        {#if showFirstFolderSyncStep}
+          <section
+            class="panel"
+            class:on={panelStep === FIRST_FOLDER_SYNC_STEP_INDEX && panelOn}
+            data-p={FIRST_FOLDER_SYNC_STEP_INDEX}
+            data-testid="onboarding-first-folder-sync"
+            aria-labelledby="onboarding-title-first-folder-sync"
+          >
+            <h2 class="h" id="onboarding-title-first-folder-sync">Sync your first folder</h2>
+            <p class="body">Start syncing {installDisplayPath} so it is available across your HQ devices.</p>
+            {#if firstFolderSyncBusy}
+              <p class="inline-note" role="status" aria-live="polite">Syncing your first folder…</p>
+            {:else if firstFolderSyncError}
+              <p class="inline-note warning" role="alert">HQ could not sync this folder. Try again or skip for now.</p>
+            {/if}
+            <div class="btns split">
+              <button
+                class="btn btn-primary"
+                type="button"
+                data-testid="onboarding-first-folder-sync-start"
+                disabled={firstFolderSyncBusy || firstFolderSyncCompleted}
+                aria-busy={firstFolderSyncBusy}
+                onclick={() => void startFirstFolderSync()}
+              >{firstFolderSyncBusy ? 'Syncing…' : 'Sync this folder'}</button>
+              <button
+                class="btn btn-secondary"
+                type="button"
+                data-testid="onboarding-first-folder-sync-skip"
+                onclick={() => advanceTo(nextAfterFirstFolderSync(), 'skipped')}
+              >Skip for now</button>
+            </div>
+          </section>
+        {/if}
+
+        {#if showInviteTeammateStep}
+          <section
+            class="panel"
+            class:on={panelStep === INVITE_TEAMMATE_STEP_INDEX && panelOn}
+            data-p={INVITE_TEAMMATE_STEP_INDEX}
+            data-testid="onboarding-invite-teammate"
+            aria-labelledby="onboarding-title-invite-teammate"
+          >
+            <h2 class="h" id="onboarding-title-invite-teammate">Invite a teammate</h2>
+            <p class="body">
+              Invite someone to work with you in HQ. This is optional, and you can
+              invite people later.
+            </p>
+            {#if inviteSent}
+              <p class="inline-note" role="status" aria-live="polite">Invitation sent.</p>
+            {:else if inviteErrorKind === 'email_delivery_failed'}
+              <p
+                class="inline-note"
+                data-testid="onboarding-invite-error"
+                role="alert"
+              >HQ could not confirm that the invitation email was sent. You can try again or skip for now.</p>
+            {:else if inviteErrorKind === 'request_failed'}
+              <p
+                class="inline-note"
+                data-testid="onboarding-invite-error"
+                role="alert"
+              >HQ could not send the invitation. You can try again or skip for now.</p>
+            {/if}
+            <form
+              class="invite-form"
+              onsubmit={(event) => {
+                event.preventDefault();
+                void sendTeammateInvite();
+              }}
+            >
+              <label for="onboarding-invite-email">Teammate’s email</label>
+              <input
+                id="onboarding-invite-email"
+                data-testid="onboarding-invite-email"
+                type="email"
+                bind:value={inviteEmail}
+                autocomplete="email"
+                maxlength="254"
+                required
+                disabled={inviteSending || inviteSent}
+              />
+              <div class="btns split">
+                <button
+                  class="btn btn-primary"
+                  type="submit"
+                  data-testid="onboarding-invite-send"
+                  disabled={inviteSending || inviteSent || !inviteEmail.trim()}
+                  aria-busy={inviteSending}
+                >{inviteSending ? 'Sending…' : 'Send'}</button>
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="onboarding-invite-skip"
+                  onclick={() => advanceTo(CONSENT_STEP_INDEX, inviteSent ? null : 'skipped')}
+                >{inviteSent ? 'Continue' : 'Skip'}</button>
+              </div>
+            </form>
+          </section>
+        {/if}
 
         <section
           class="panel"
@@ -3087,6 +3897,11 @@
   .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:auto; }
   .btns.split { justify-content:space-between; }
   .btn { font-family:inherit; font-size:14px; font-weight:400; line-height:20px; padding:10px 16px; border-radius:8px; border:none; cursor:pointer; transition:opacity .15s, transform .1s; }
+  .invite-form { display:flex; flex-direction:column; gap:8px; margin-top:18px; }
+  .invite-form label { color:var(--c-text); font-size:13px; line-height:18px; }
+  .invite-form input { width:100%; min-height:40px; padding:9px 11px; border:1px solid var(--c-field-border); border-radius:0; background:var(--c-field-bg); color:var(--c-text); font:inherit; }
+  .invite-form input:focus-visible { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; }
+  .invite-form .btns { margin-top:8px; }
   .btn:active:not(:disabled) { transform:scale(.97); }
   .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
   .btn-secondary { background:var(--c-btn2-bg); color:var(--c-btn2-fg); }

@@ -319,7 +319,7 @@ fn finish_watcher_generation(generation: &WatcherGeneration) {
 /// Failing to parse a line is non-fatal: blank lines arrive at runner
 /// teardown, and any unknown variant the runner adds in the future
 /// should not kill the watcher.
-fn handle_watch_stdout_line<R: tauri::Runtime>(
+pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     app: &AppHandle<R>,
     hq_folder: &str,
     totals: &Mutex<RunTotals>,
@@ -1062,6 +1062,17 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
+    match crate::commands::hq_daemon_host::current_phase() {
+        crate::commands::hq_daemon_host::HostPhase::Daemon => {
+            // hq daemon runs sync; turn its sync service on instead of spawning a runner.
+            crate::commands::hq_daemon_host::set_sync_enabled(true)?;
+            return Ok("hq daemon runs sync".to_string());
+        }
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            return Err("Background sync is still starting".to_string());
+        }
+        crate::commands::hq_daemon_host::HostPhase::Legacy => {}
+    }
     // Spawn preflight for all three watch-daemon origins (renderer request,
     // app-launch autostart, supervisor respawn), which all funnel through this
     // function. Refuses when the dev kill switch `HQ_DEV_NO_SYNC` is set (a dev
@@ -2068,7 +2079,7 @@ impl Default for WatcherExitCaptureContext {
 }
 
 #[derive(Debug, Clone)]
-struct WatcherPhaseContext {
+pub(crate) struct WatcherPhaseContext {
     phase: &'static str,
     observed_at: Instant,
 }
@@ -6709,6 +6720,14 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
     thread::spawn(move || {
         thread::sleep(SUPERVISOR_SETTLE);
         loop {
+            // hq daemon supervises sync when it hosts it; before the launch
+            // choice is made nothing may start.
+            if !crate::commands::hq_daemon_host::legacy_services_enabled(
+                crate::commands::hq_daemon_host::current_phase(),
+            ) {
+                thread::sleep(SUPERVISOR_INTERVAL);
+                continue;
+            }
             let (app_owned, registered_child_alive, daemon_alive, sample_pid) =
                 observe_daemon_liveness();
             let within_backoff = within_respawn_backoff();
@@ -6822,6 +6841,14 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
 /// pid-file lifecycle; we don't shell out to a separate stop CLI here.
 #[tauri::command]
 pub fn stop_daemon() -> Result<bool, String> {
+    if crate::commands::hq_daemon_host::daemon_mode_active() {
+        return crate::commands::hq_daemon_host::set_sync_enabled(false);
+    }
+    stop_watch_runner()
+}
+
+/// Stop the app's own watch runner, including one left by an earlier session.
+pub(crate) fn stop_watch_runner() -> Result<bool, String> {
     let hq_folder_path = resolve_hq_folder_path()?;
 
     // Cancel via the process registry first — this signals the spawned
@@ -6872,6 +6899,9 @@ pub fn stop_daemon() -> Result<bool, String> {
 /// Does NOT shell out to `hq` — reads filesystem state directly for speed.
 #[tauri::command]
 pub fn daemon_status() -> Result<DaemonStatus, String> {
+    if crate::commands::hq_daemon_host::daemon_mode_active() {
+        return Ok(crate::commands::hq_daemon_host::hosted_daemon_status());
+    }
     let hq_folder_path = resolve_hq_folder_path()?;
     // The reason behind the last lifecycle transition this process observed, so a
     // stopped watcher reports WHY (e.g. runner_memory after a footprint pre-empt).

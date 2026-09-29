@@ -18,7 +18,7 @@
   const SETUP_FINALE_LEAD = "Pick where to keep going. Each opens a fresh chat with your first task ready.";
 
   interface Props {
-    /** Continue in HQ Sessions; the button is hidden when the host has no Sessions page. */
+    /** Continue in the host's in-app workspace; hidden when that destination is unavailable. */
     onsessions?: () => void;
     onclaude: () => void;
     oncodex: () => void;
@@ -72,7 +72,7 @@
       <div class="actions" role="group" aria-label="Keep going">
         {#if onsessions}
           <SetupButton variant="primary" data-testid="setup-agent-open-sessions" onclick={() => onsessions?.()}>
-            Continue in HQ Sessions
+            Continue in HQ Desktop
           </SetupButton>
         {/if}
         <SetupButton variant="primary" data-testid="setup-agent-open-claude" onclick={() => onclaude()}>
