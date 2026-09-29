@@ -2963,7 +2963,7 @@ fn github_api_fetch_failure(error: crate::commands::github_api::ApiError) -> Str
         .as_ref()
         .map(github_transport_fetch_failure_class)
         .unwrap_or(error.class);
-    github_fetch_failure(class, error)
+    github_fetch_failure(class, error.to_string())
 }
 
 fn github_http_fetch_failure_class(
