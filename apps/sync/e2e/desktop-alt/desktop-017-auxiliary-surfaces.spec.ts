@@ -30,6 +30,7 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   const onboarding = readRepoFile(
     'src/components/onboarding/OnboardingWizard.svelte',
   );
+  const welcomeCss = readRepoFile('src/components/onboarding/welcome/welcome.css');
   const globalError = readRepoFile(
     'src/components/GlobalErrorBoundary.svelte',
   );
@@ -85,36 +86,30 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(harness).toContain('<GlobalErrorBoundary');
   });
 
-  it('keeps onboarding artwork in color and every panel reachable on short displays', () => {
-    const hero = rule(onboarding, '.grad');
-    expect(hero, 'onboarding hero selector should exist').not.toBe('');
-    expect(hero).toContain('filter:none');
-
-    expect(rule(onboarding, '.macfolder-lg')).not.toContain('grayscale');
-    expect(rule(onboarding, '.loc .mf')).toContain('filter:none');
-
-    const page = rule(onboarding, '.onboarding-page');
-    expect(page).toContain('height:100dvh');
-    expect(page).toContain('overflow:auto');
-
-    const panel = rule(onboarding, '.panel');
-    expect(panel).toContain('overflow-y:auto');
-    expect(panel).toContain('overscroll-behavior:contain');
+  // The welcome flow (onboarding) is styled in plain CSS so its motion
+  // engines can toggle classes Svelte cannot see; the contract moved with it.
+  it('keeps onboarding artwork in color and every screen reachable on short displays', () => {
+    // (`-moz-osx-font-smoothing: grayscale` is type rendering, not a filter.)
+    expect(welcomeCss).not.toMatch(/filter:[^;]*grayscale/);
+    // The folder keeps its blues.
+    expect(rule(welcomeCss, '.hq-welcome .ffront')).toContain('#8fc8fa');
+    // Screens are laid out to fit the window and scroll when it is too short.
+    const scene = rule(welcomeCss, '.hq-welcome .scene');
+    expect(scene).toContain('overflow-y: auto');
+    expect(scene).toContain('overscroll-behavior: contain');
   });
 
   it('keeps the ready-step caution open and neutral while retaining its compact warning cue', () => {
-    expectOpenSection(onboarding, '.setup-caution', 'onboarding setup caution');
-    expect(rule(onboarding, '.setup-caution')).toContain(
-      'border-top:1px solid var(--c-divider)',
+    expectOpenSection(welcomeCss, '.hq-welcome .setup-caution', 'onboarding setup caution');
+    expect(onboarding).toContain('class="setup-caution-icon"');
+    expect(rule(welcomeCss, '.hq-welcome .setup-caution-icon')).toContain(
+      'stroke: var(--w-muted)',
     );
-    expect(rule(onboarding, '.setup-caution-icon')).toContain(
-      'stroke:var(--c-muted)',
-    );
-    expect(rule(onboarding, '.setup-caution-icon')).not.toMatch(
+    expect(rule(welcomeCss, '.hq-welcome .setup-caution-icon')).not.toMatch(
       /(?:#a66b00|v4-warn|amber|yellow)/i,
     );
-    expect(rule(onboarding, '.setup-caution-copy span')).toContain(
-      'color:var(--c-muted)',
+    expect(rule(welcomeCss, '.hq-welcome .setup-caution-copy span')).toContain(
+      'color: var(--w-muted)',
     );
   });
 

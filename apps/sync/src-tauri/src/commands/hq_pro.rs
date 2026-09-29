@@ -172,20 +172,47 @@ where
     Fetch: FnOnce() -> FetchFuture,
     FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
 {
+    feature_flag_value_with_fetch(flag, fetch)
+        .await
+        .unwrap_or(false)
+}
+
+/// Resolve a hq-flags value and report whether it was configured at all.
+///
+/// `Some(value)` only when the registry answered and carries a boolean for
+/// `flag`; `None` for a missing row, an unreadable response, a transport
+/// failure, or a timeout. Kill switches whose default is ON use this so an
+/// operator's explicit `false` turns the behaviour off while a registry
+/// outage keeps the shipped default.
+pub(crate) async fn feature_flag_value(flag: &str) -> Option<bool> {
+    feature_flag_value_with_fetch(flag, || {
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+    })
+    .await
+}
+
+async fn feature_flag_value_with_fetch<Fetch, FetchFuture>(
+    flag: &str,
+    fetch: Fetch,
+) -> Option<bool>
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
     match tokio::time::timeout(FLAG_REQUEST_TIMEOUT, fetch()).await {
         Ok(Ok(response)) => match parse_feature_flag_response(response.status, &response.body) {
-            Some(values) => values.get(flag).copied().unwrap_or(false),
+            Some(values) => values.get(flag).copied(),
             None => {
                 if response.status == 200 {
                     log(LOG_TAG, "HQ_FLAGS_RESOLVE_INVALID_RESPONSE");
                 }
-                false
+                None
             }
         },
-        Ok(Err(_)) => false,
+        Ok(Err(_)) => None,
         Err(_) => {
             log(LOG_TAG, "HQ_FLAGS_RESOLVE_TIMEOUT");
-            false
+            None
         }
     }
 }
@@ -341,6 +368,56 @@ mod tests {
         })
         .await;
         assert!(valid);
+    }
+
+    #[tokio::test]
+    async fn feature_flag_value_distinguishes_configured_false_from_unknown() {
+        let flag = "desktop.test-kill-switch";
+        let configured_false = feature_flag_value_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":false}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(configured_false, Some(false));
+
+        let configured_true = feature_flag_value_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(configured_true, Some(true));
+
+        let unconfigured = feature_flag_value_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: r#"{"version":1,"flags":{}}"#.to_string(),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(unconfigured, None);
+
+        let outage = feature_flag_value_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 503,
+                body: String::new(),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(outage, None);
+
+        let transport = feature_flag_value_with_fetch(flag, || async {
+            Err::<HqProHttpResponse, String>("offline".to_string())
+        })
+        .await;
+        assert_eq!(transport, None);
     }
 
     #[test]
