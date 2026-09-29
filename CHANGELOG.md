@@ -8,7 +8,6 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 - The "Syncing initial cloud data" step of a new install now finishes in
   seconds instead of about two minutes. Once your personal vault is set up,
   the step hands the upload to HQ's background sync, which was already
@@ -20,6 +19,16 @@ The release moves it under the version it ships in.
   itself if it did not. The `desktop.install-initial-sync-handoff` flag
   controls this and is on by default; turning it off restores the previous
   one-file-at-a-time upload.
+
+- Desktop sync commands now recover their valid state after a mutex is poisoned.
+
+- Auto-sync memory-ceiling reports now include the active sync phase and its
+  elapsed-time bucket, so recurring memory failures can be compared across scan,
+  pull, and push work.
+
+## [0.10.357] — 2026-09-29
+
+- Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 
 ## [0.10.356] — 2026-09-29
 
