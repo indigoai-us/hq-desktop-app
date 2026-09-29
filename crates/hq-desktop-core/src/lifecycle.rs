@@ -859,7 +859,7 @@ mod tests {
             had_machine_id: true,
             config_valid: false,
             hq_root_valid: true,
-            has_auth: false,
+            has_auth: true,
             install_in_progress: false,
             consent_answered: false,
             evidence_unreadable: false,
