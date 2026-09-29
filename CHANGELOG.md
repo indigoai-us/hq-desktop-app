@@ -20,6 +20,7 @@ The release moves it under the version it ships in.
   controls this and is on by default; turning it off restores the previous
   one-file-at-a-time upload.
 
+- Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
 - Desktop sync commands now recover their valid state after a mutex is poisoned.
 
 - Auto-sync memory-ceiling reports now include the active sync phase and its
