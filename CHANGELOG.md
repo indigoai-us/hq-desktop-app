@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Pin the third-party actions used by the release monitor and UI-only publish workflow to their resolved commits.
+
 ## [0.10.355] — 2026-09-29
 
 - After an updater restart, HQ checks local tools again before reopening setup for an existing installation. If the HQ folder is missing, the folder picker opens so it can be found or installed again. An unanswered consent question still appears at startup.
