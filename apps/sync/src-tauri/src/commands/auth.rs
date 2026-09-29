@@ -455,33 +455,41 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
         // The tokens are deliberately left on disk. They may belong to an agent
         // that is legitimately running on this machine, and deleting another
         // process's credentials to fix our own display is not ours to do.
-        Ok((tokens, _)) => match cognito::non_human_principal_from_tokens(&tokens) {
-            Some(principal) => (
-                signed_out_state(),
-                AuthSessionStatus::NonHumanPrincipal,
-                Some(notification_identity_from_tokens(&tokens)),
-                Some(match principal {
-                    cognito::NonHumanPrincipal::Outpost => {
-                        "The HQ credentials saved on this device belong to an outpost, not to a person."
-                    }
-                    cognito::NonHumanPrincipal::Agent => {
-                        "The HQ credentials saved on this device belong to a fleet agent, not to a person."
-                    }
-                }),
-                None,
-            ),
-            None => {
-                set_sentry_user_from_tokens(&tokens);
-                let state = authenticated_state_from_tokens(&tokens);
-                (
-                    state,
-                    AuthSessionStatus::Active,
-                    Some(notification_identity_from_tokens(&tokens)),
-                    None,
-                    None,
-                )
+        Ok((tokens, _)) => {
+            if before
+                .as_ref()
+                .is_some_and(|previous| previous.access_token != tokens.access_token)
+            {
+                record_last_auth_transition("refresh_ok");
             }
-        },
+            match cognito::non_human_principal_from_tokens(&tokens) {
+                Some(principal) => (
+                    signed_out_state(),
+                    AuthSessionStatus::NonHumanPrincipal,
+                    Some(notification_identity_from_tokens(&tokens)),
+                    Some(match principal {
+                        cognito::NonHumanPrincipal::Outpost => {
+                            "The HQ credentials saved on this device belong to an outpost, not to a person."
+                        }
+                        cognito::NonHumanPrincipal::Agent => {
+                            "The HQ credentials saved on this device belong to a fleet agent, not to a person."
+                        }
+                    }),
+                    None,
+                ),
+                None => {
+                    set_sentry_user_from_tokens(&tokens);
+                    let state = authenticated_state_from_tokens(&tokens);
+                    (
+                        state,
+                        AuthSessionStatus::Active,
+                        Some(notification_identity_from_tokens(&tokens)),
+                        None,
+                        None,
+                    )
+                }
+            }
+        }
         Err(error) if before.is_none() => (
             signed_out_state(),
             AuthSessionStatus::CredentialsAbsent,
