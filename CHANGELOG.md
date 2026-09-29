@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First-run setup now retries a just-published npm package when the registry
+  briefly returns E404 or ETARGET, while keeping setup progress active.
 - First-time setup is now one five-screen welcome flow that fills the screen
   (everything below the menu bar and beside the Dock) with no window
   shadow. On macOS the background is your own desktop wallpaper, blurred
