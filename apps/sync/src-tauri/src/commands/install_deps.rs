@@ -3772,58 +3772,69 @@ where
     }
 
     if let Some(code) = npm_package_lookup_error_code(&first_error) {
-        if !npm_error_mentions_package(&first_error, package_name) {
-            return Err(first_error);
-        }
+        if npm_error_mentions_package(&first_error, package_name) {
+            let mut attempt_errors = vec![first_error.clone()];
+            for (retry_index, delay_seconds) in
+                NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.iter().enumerate()
+            {
+                preflight(format!(
+                    "[{tag}] npm reported {code} while resolving {package_name}; continuing dependency setup and retrying in {delay_seconds}s ({}/{})",
+                    retry_index + 1,
+                    NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.len()
+                ));
+                sleep_for_npm_retry_or_cancelled(
+                    Duration::from_secs(*delay_seconds),
+                    check_cancelled,
+                )
+                .await?;
+                check_cancelled()?;
+                clear_failure();
 
-        let mut attempt_errors = vec![first_error];
-        for (retry_index, delay_seconds) in
-            NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.iter().enumerate()
-        {
-            preflight(format!(
-                "[{tag}] npm reported {code} while resolving {package_name}; continuing dependency setup and retrying in {delay_seconds}s ({}/{})",
-                retry_index + 1,
-                NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.len()
-            ));
-            sleep_for_npm_retry_or_cancelled(
-                Duration::from_secs(*delay_seconds),
-                check_cancelled,
-            )
-            .await?;
-            check_cancelled()?;
-            clear_failure();
-
-            let retry_args = if retry_index == 0 && code == "ETARGET" {
-                npm_args_with_option(&base_args, spec, "--prefer-online")
-            } else {
-                base_args.clone()
-            };
-            match run(retry_args).await {
-                Ok(output) => return Ok(output),
-                Err(error) => {
-                    if !is_package_lookup_failure(&error, package_name) {
-                        return Err(error);
+                let retry_args = if retry_index == 0 && code == "ETARGET" {
+                    npm_args_with_option(&base_args, spec, "--prefer-online")
+                } else {
+                    base_args.clone()
+                };
+                match run(retry_args).await {
+                    Ok(output) => return Ok(output),
+                    Err(error) => {
+                        if !is_package_lookup_failure(&error, package_name) {
+                            if let Some(public_registry_args) = public_registry_args.clone() {
+                                attempt_errors.push(error);
+                                preflight(format!(
+                                    "[{tag}] npm install retry failed; trying the public registry https://registry.npmjs.org/ once"
+                                ));
+                                clear_failure();
+                                return run(public_registry_args).await.map_err(|fallback_error| {
+                                    format!(
+                                        "{}\n[{tag}] retry with the public registry also failed: {fallback_error}",
+                                        attempt_errors.join("\n")
+                                    )
+                                });
+                            }
+                            return Err(error);
+                        }
+                        attempt_errors.push(error);
                     }
-                    attempt_errors.push(error);
                 }
             }
-        }
 
-        if let Some(public_registry_args) = public_registry_args {
-            preflight(format!(
-                "[{tag}] npm package lookup retries were exhausted; trying the public registry https://registry.npmjs.org/ once"
-            ));
-            clear_failure();
-            return run(public_registry_args).await.map_err(|fallback_error| {
-                attempt_errors.push(fallback_error.clone());
-                format!(
-                    "{}\n[{tag}] final public-registry attempt also failed: {fallback_error}",
-                    attempt_errors.join("\n")
-                )
-            });
-        }
+            if let Some(public_registry_args) = public_registry_args.clone() {
+                preflight(format!(
+                    "[{tag}] npm package lookup retries were exhausted; trying the public registry https://registry.npmjs.org/ once"
+                ));
+                clear_failure();
+                return run(public_registry_args).await.map_err(|fallback_error| {
+                    attempt_errors.push(fallback_error.clone());
+                    format!(
+                        "{}\n[{tag}] final public-registry attempt also failed: {fallback_error}",
+                        attempt_errors.join("\n")
+                    )
+                });
+            }
 
-        return Err(attempt_errors.join("\n"));
+            return Err(attempt_errors.join("\n"));
+        }
     }
 
     if let Some(public_registry_args) = public_registry_args {
@@ -11439,6 +11450,59 @@ mod npm_setup_recovery_tests {
             "cancellation must not clear or replace the failure before returning"
         );
         assert!(tokio::time::Instant::now() - started < std::time::Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transitive_package_404_falls_back_to_public_registry_without_backoff() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let transitive_missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@another-team%2fother-cli/-/other-cli-1.0.0.tgz";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![Err(transitive_missing.into()), Ok("installed via public registry".into())],
+            Some(public_registry_args.clone()),
+        )
+        .await;
+
+        assert_eq!(
+            run.result,
+            Ok("installed via public registry".into()),
+            "an unrelated package lookup failure must retain the existing public-registry fallback"
+        );
+        assert_eq!(run.attempts.len(), 2, "skip backoff and try public registry once");
+        assert_eq!(run.attempts[1], public_registry_args);
+        assert_eq!(run.preflight.len(), 1);
+        assert_eq!(run.cleared_failures, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn package_lookup_retry_non_lookup_failure_falls_back_to_public_registry() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let requested_package_missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let retry_failure = "npm error code EACCES\nnpm error syscall mkdir";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![
+                Err(requested_package_missing.into()),
+                Err(retry_failure.into()),
+                Ok("installed via public registry".into()),
+            ],
+            Some(public_registry_args.clone()),
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("installed via public registry".into()));
+        assert_eq!(run.attempts.len(), 3, "a terminal retry error must go to the public registry once");
+        assert_eq!(run.attempts[2], public_registry_args);
+        assert_eq!(run.preflight.len(), 2);
+        assert_eq!(run.cleared_failures, 2);
     }
 
     #[tokio::test(start_paused = true)]
