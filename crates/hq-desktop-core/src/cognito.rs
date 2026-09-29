@@ -231,6 +231,10 @@ pub struct AuthState {
     pub email: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
+    /// The initial native token read for this auth probe, forwarded only to
+    /// the matching startup diagnostic command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_token_read_result: Option<String>,
 }
 
 /// Native auth classification shared by startup routing and diagnostics.
@@ -1284,6 +1288,7 @@ mod tests {
                 account_id: None,
                 email: None,
                 display_name: None,
+                startup_token_read_result: None,
             },
             &AuthSessionStatus::RefreshTemporarilyUnavailable,
         );
@@ -1303,6 +1308,7 @@ mod tests {
                 account_id: None,
                 email: None,
                 display_name: None,
+                startup_token_read_result: None,
             },
             &AuthSessionStatus::CredentialsInvalid,
         )
@@ -1964,6 +1970,7 @@ mod tests {
             account_id: Some("sub-a".to_string()),
             email: Some("a@b.c".to_string()),
             display_name: Some("Ada".to_string()),
+            startup_token_read_result: Some("ok_none".to_string()),
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":true"));
@@ -1971,6 +1978,7 @@ mod tests {
         assert!(json.contains("\"accountId\":\"sub-a\""));
         assert!(json.contains("\"email\":\"a@b.c\""));
         assert!(json.contains("\"displayName\":\"Ada\""));
+        assert!(json.contains("\"startupTokenReadResult\":\"ok_none\""));
     }
 
     #[test]
@@ -1981,6 +1989,7 @@ mod tests {
             account_id: None,
             email: None,
             display_name: None,
+            startup_token_read_result: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":false"));

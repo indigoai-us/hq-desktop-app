@@ -1773,7 +1773,11 @@
   async function probeStartupState(): Promise<StartupProbeResult> {
     // `get_auth_state` validates freshness and performs the one silent
     // refresh retry.
-    const auth = await invoke<{ authenticated: boolean; expiresAt: string | null }>(
+    const auth = await invoke<{
+      authenticated: boolean;
+      expiresAt: string | null;
+      startupTokenReadResult?: string;
+    }>(
       'get_auth_state',
     );
     // Raw token-file presence must not override a failed verdict; it is
@@ -1875,6 +1879,7 @@
           probeAttempts: outcome.attempts,
           authenticated,
           tokenPresence,
+          firstReadResult: state.startupTokenReadResult ?? null,
           priorSurface,
         }).catch((err) => {
           console.warn('failed to report unexpected startup surface:', err);

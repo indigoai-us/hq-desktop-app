@@ -37,17 +37,6 @@ static AUTH_SESSION_DIAGNOSTIC: OnceLock<
     Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>>,
 > = OnceLock::new();
 static LAST_AUTH_TRANSITION: OnceLock<Mutex<Option<(&'static str, SystemTime)>>> = OnceLock::new();
-static STARTUP_FIRST_TOKEN_READ: OnceLock<Mutex<&'static str>> = OnceLock::new();
-
-fn record_startup_first_token_read(result: &'static str) {
-    let cell = STARTUP_FIRST_TOKEN_READ.get_or_init(|| Mutex::new("not_observed"));
-    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = result;
-}
-
-pub(crate) fn startup_first_token_read_result() -> &'static str {
-    let cell = STARTUP_FIRST_TOKEN_READ.get_or_init(|| Mutex::new("not_observed"));
-    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 fn record_last_auth_transition(class: &'static str) {
     let cell = LAST_AUTH_TRANSITION.get_or_init(|| Mutex::new(None));
@@ -288,6 +277,7 @@ pub(crate) fn authenticated_state_from_tokens(tokens: &CognitoTokens) -> AuthSta
         account_id: Some(notification_identity_from_tokens(tokens)),
         email,
         display_name,
+        startup_token_read_result: None,
     }
 }
 
@@ -417,6 +407,7 @@ fn signed_out_state() -> AuthState {
         account_id: None,
         email: None,
         display_name: None,
+        startup_token_read_result: None,
     }
 }
 
@@ -440,7 +431,6 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
         Err(error) if error.to_ascii_lowercase().contains("parse") => "err_parse",
         Err(_) => "err_io",
     };
-    record_startup_first_token_read(first_token_read_result);
     let before = first_token_read.ok().flatten();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
@@ -526,6 +516,8 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
             }
         }
     };
+    let mut state = state;
+    state.startup_token_read_result = Some(first_token_read_result.to_string());
     if !state.authenticated {
         clear_sentry_user();
     }

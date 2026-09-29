@@ -584,6 +584,7 @@ pub fn report_unexpected_startup_surface(
     probe_attempts: u32,
     authenticated: bool,
     token_presence: String,
+    first_read_result: Option<String>,
     prior_surface: String,
 ) {
     // Read token file metadata without reading its contents.
@@ -632,8 +633,15 @@ pub fn report_unexpected_startup_surface(
             refresh_failure_class,
         );
     if surface == "sign-in" && token_presence == "present" {
+        let first_read_result = match first_read_result.as_deref() {
+            Some("ok_some") => "ok_some",
+            Some("ok_none") => "ok_none",
+            Some("err_io") => "err_io",
+            Some("err_parse") => "err_parse",
+            _ => "unknown",
+        };
         let token_diagnostics = hq_desktop_core::cognito::startup_token_store_diagnostics_after_first(
-            crate::commands::auth::startup_first_token_read_result(),
+            first_read_result,
         );
         diagnostic_tags.invalidation_marker_present = token_diagnostics.invalidation_marker_present;
         diagnostic_tags.first_read_result = token_diagnostics.first_read_result;
