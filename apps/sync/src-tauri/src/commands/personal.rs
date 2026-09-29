@@ -97,6 +97,23 @@ pub(crate) const PERSONAL_VAULT_EXCLUDED_TOP_LEVEL: &[&str] =
 /// makes the skip-unchanged decision correct again.
 pub(crate) const PERSONAL_VAULT_JOURNAL_SLUG: &str = "__hq_personal_vault__";
 
+/// COMPLETE with zero uploads, for the two paths where this call walks
+/// nothing: the runner already owns steady-state personal sync, or the install
+/// stage handed the upload to the running sync daemon. One emit site for both.
+fn emit_first_push_complete_without_uploading<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    person_uid: &str,
+) {
+    let _ = app.emit(
+        EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE,
+        SyncPersonalFirstPushCompleteEvent {
+            person_uid: person_uid.to_string(),
+            files_uploaded: 0,
+            files_skipped: 0,
+        },
+    );
+}
+
 /// Steady-state gate predicate: true once the hq-cloud runner's personal
 /// journal (`sync-journal.__hq_personal_vault__.json`) exists, meaning the
 /// runner owns bidirectional personal sync. The warm-up first-push only seeds
@@ -1583,14 +1600,7 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
             "personal",
             "personal first-push skipped — engine journal exists, runner owns steady-state personal sync",
         );
-        let _ = app.emit(
-            EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE,
-            SyncPersonalFirstPushCompleteEvent {
-                person_uid: person_uid.clone(),
-                files_uploaded: 0,
-                files_skipped: 0,
-            },
-        );
+        emit_first_push_complete_without_uploading(app, &person_uid);
         return Ok(PersonalFirstPushOutcome::EngineOwnsSteadyState);
     }
 
@@ -1610,26 +1620,12 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
                 "personal",
                 "personal first-push handed to the sync daemon — vault provisioned, daemon running and will upload",
             );
-            // Diagnostic only; no UI treats this as an error. Says plainly that
-            // the files are not uploaded by this step.
-            let _ = app.emit(
-                EVENT_SYNC_PERSONAL_FIRST_PUSH_SKIPPED,
-                SyncPersonalFirstPushSkippedEvent {
-                    person_uid: person_uid.clone(),
-                    path: "personal".to_string(),
-                    reason: "handed-to-sync-daemon".to_string(),
-                },
-            );
             // Same COMPLETE the steady-state gate emits, so listeners latch.
-            // files_uploaded: 0 is accurate: this call uploaded nothing.
-            let _ = app.emit(
-                EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE,
-                SyncPersonalFirstPushCompleteEvent {
-                    person_uid: person_uid.clone(),
-                    files_uploaded: 0,
-                    files_skipped: 0,
-                },
-            );
+            // files_uploaded: 0 is accurate: this call uploaded nothing. The
+            // log line above and the HandedToSyncDaemon outcome record why; no
+            // extra broadcast is sent for it (see the broadcast-emit ceiling in
+            // scripts/perf-budget-contract.test.ts).
+            emit_first_push_complete_without_uploading(app, &person_uid);
             return Ok(PersonalFirstPushOutcome::HandedToSyncDaemon);
         }
         log(
