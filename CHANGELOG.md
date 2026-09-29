@@ -8,6 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- A local bot's model picker lists specific model versions: Claude Opus 5.5,
+  Opus 5, Sonnet 5 and Haiku 4.5; GPT-6 Astra and GPT-5.5 for Codex; and
+  Grok 4.7, 4.6 and 4.5. Bots that already use the older Opus, Sonnet or Haiku
+  setting show it as "(latest in Claude Code)". When a specific model is
+  picked, a note says to update the coding tool if the bot cannot start with
+  it, and a bot whose tool does not know its model now says so in plain words.
 - Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 
 ## [0.10.356] — 2026-09-29
