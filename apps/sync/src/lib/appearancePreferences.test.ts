@@ -143,6 +143,53 @@ describe('appearance preferences', () => {
     target.removeEventListener(APPEARANCE_CHANGE_EVENT, listener);
   });
 
+  it('persists raw request events from packages/ui so the slider survives a restart', () => {
+    const storage = memoryStorage();
+    const target = fakeTarget();
+    const { root } = fakeRoot();
+    const cleanup = installAppearancePreferences({ target, storage, root });
+
+    // packages/ui's applyWindowOpacity dispatches the event directly; it
+    // cannot call requestAppearancePreferenceChange (which writes storage).
+    target.dispatchEvent(
+      new CustomEvent(APPEARANCE_REQUEST_EVENT, {
+        detail: { colorTheme: 'system', windowTransparency: 12 },
+      }),
+    );
+    cleanup();
+
+    expect(JSON.parse(storage.getItem(APPEARANCE_STORAGE_KEY) ?? '{}')).toEqual({
+      colorTheme: 'system',
+      windowTransparency: 12,
+    });
+    // A fresh install (next launch) reads the persisted value.
+    const { root: nextRoot } = fakeRoot();
+    const cleanupNext = installAppearancePreferences({ target: fakeTarget(), storage, root: nextRoot });
+    expect(nextRoot.dataset.windowTransparency).toBe('12');
+    cleanupNext();
+  });
+
+  it('drives the native backdrop with each distinct transparency value', async () => {
+    const storage = memoryStorage();
+    const target = fakeTarget();
+    const { root } = fakeRoot();
+    const applyNativeTransparency = vi.fn();
+    const cleanup = installAppearancePreferences({
+      target,
+      storage,
+      root,
+      applyNativeTransparency,
+    });
+    requestAppearancePreferenceChange({ windowTransparency: 0 }, { target, storage });
+    requestAppearancePreferenceChange({ windowTransparency: 0 }, { target, storage });
+    requestAppearancePreferenceChange({ windowTransparency: 40 }, { target, storage });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(applyNativeTransparency.mock.calls.map(([value]) => value)).toEqual([65, 0, 40]);
+    cleanup();
+  });
+
   it('serializes native theme updates so the newest request wins', async () => {
     const storage = memoryStorage();
     const target = fakeTarget();

@@ -143,19 +143,20 @@ afterEach(() => {
 });
 
 describe('US-001 wizard step model', () => {
-  it('inserts consent and connector import after setup before ready', () => {
-    expect(WIZARD_STEPS.slice(0, 7).map((s) => s.id)).toEqual([
+  it('inserts invite, consent, and connector import after setup before ready', () => {
+    expect(WIZARD_STEPS.slice(0, 8).map((s) => s.id)).toEqual([
       'welcome-signin',
       'directory',
       'setup',
       'first-folder-sync',
+      'invite-teammate',
       'consent',
       'connector-import',
       'ready',
     ]);
     expect(WIZARD_STEPS.find((s) => s.id === 'consent')?.index).toBe(CONSENT_STEP_INDEX);
-    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(5);
-    expect(WIZARD_STEPS.find((s) => s.id === 'ready')?.index).toBe(6);
+    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(6);
+    expect(WIZARD_STEPS.find((s) => s.id === 'ready')?.index).toBe(7);
   });
 
   it('gates the consent step until the question is answered', () => {

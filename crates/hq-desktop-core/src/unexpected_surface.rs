@@ -112,6 +112,42 @@ pub fn prior_surface_tag(surface: &str) -> &'static str {
     }
 }
 
+/// Limit auth-session and refresh-failure diagnostics to stable buckets.
+pub fn auth_session_status_tag(status: &str) -> &'static str {
+    match status {
+        "active" => "active",
+        "credentials_absent" => "credentials_absent",
+        "credentials_invalid" => "credentials_invalid",
+        "refresh_temporarily_unavailable" => "refresh_temporarily_unavailable",
+        "non_human_principal" => "non_human_principal",
+        _ => "unknown",
+    }
+}
+
+pub fn refresh_failure_class_tag(class: &str) -> &'static str {
+    match class {
+        "none" => "none",
+        "network" => "network",
+        "timeout" => "timeout",
+        "http_4xx" => "http_4xx",
+        "http_5xx" => "http_5xx",
+        "http_other" => "http_other",
+        "response_decode" => "response_decode",
+        "unknown" => "unknown",
+        _ => "unknown",
+    }
+}
+
+pub fn refresh_failure_class_for_session_tag(status: &str, class: &str) -> &'static str {
+    let status = auth_session_status_tag(status);
+    let class = refresh_failure_class_tag(class);
+    if status == "refresh_temporarily_unavailable" && class == "none" {
+        "unknown"
+    } else {
+        class
+    }
+}
+
 /// Cognito startup restores from ~/.hq/cognito-tokens.json, not macOS Keychain.
 pub const KEYCHAIN_STATUS_TAG: &str = "not_used_token_file";
 
@@ -185,11 +221,13 @@ pub struct StartupDiagnosticTags {
     pub node_resolved: &'static str,
     pub node_resolved_program_kind: &'static str,
     pub require_local_toolchain_demoted: &'static str,
+    pub auth_session_status: &'static str,
+    pub refresh_failure_class: &'static str,
 }
 
 impl StartupDiagnosticTags {
     /// Keep the Sentry keys and values together so tests cover the reporter contract.
-    pub fn as_pairs(self) -> [(&'static str, &'static str); 20] {
+    pub fn as_pairs(self) -> [(&'static str, &'static str); 22] {
         [
             ("session_restore_state", self.session_restore_state),
             ("token_present", self.token_present),
@@ -217,6 +255,8 @@ impl StartupDiagnosticTags {
                 "require_local_toolchain_demoted",
                 self.require_local_toolchain_demoted,
             ),
+            ("auth_session_status", self.auth_session_status),
+            ("refresh_failure_class", self.refresh_failure_class),
         ]
     }
 }
@@ -228,6 +268,27 @@ pub fn startup_diagnostic_tags(
     elapsed_ms: Option<u128>,
     prior_surface: &str,
     lifecycle: StartupLifecycleInputs,
+) -> StartupDiagnosticTags {
+    startup_diagnostic_tags_with_auth_session(
+        authenticated,
+        token_presence,
+        elapsed_ms,
+        prior_surface,
+        lifecycle,
+        "unknown",
+        "none",
+    )
+}
+
+/// Build startup tags with the native auth status and bounded refresh class.
+pub fn startup_diagnostic_tags_with_auth_session(
+    authenticated: bool,
+    token_presence: &str,
+    elapsed_ms: Option<u128>,
+    prior_surface: &str,
+    lifecycle: StartupLifecycleInputs,
+    auth_session_status: &str,
+    refresh_failure_class: &str,
 ) -> StartupDiagnosticTags {
     let inputs = lifecycle.inputs;
     StartupDiagnosticTags {
@@ -251,6 +312,11 @@ pub fn startup_diagnostic_tags(
         node_resolved: program_resolved_tag(lifecycle.node_program_kind),
         node_resolved_program_kind: program_kind_tag(lifecycle.node_program_kind),
         require_local_toolchain_demoted: bool_tag(lifecycle.require_local_toolchain_demoted),
+        auth_session_status: auth_session_status_tag(auth_session_status),
+        refresh_failure_class: refresh_failure_class_for_session_tag(
+            auth_session_status,
+            refresh_failure_class,
+        ),
     }
 }
 
@@ -516,7 +582,7 @@ mod tests {
 
     #[test]
     fn startup_diagnostic_tags_are_bounded_and_explain_restore_state() {
-        let tags = startup_diagnostic_tags(
+        let tags = startup_diagnostic_tags_with_auth_session(
             false,
             "present",
             Some(5_000),
@@ -538,12 +604,26 @@ mod tests {
                 node_program_kind: Some(ResolvedProgramKind::Exe),
                 require_local_toolchain_demoted: false,
             },
+            "credentials_invalid",
+            "http_4xx",
         );
         assert!(
             tags.as_pairs()
                 .iter()
                 .any(|(key, _)| *key == "hq_root_valid"),
             "the existing unexpected-surface event must tag the lifecycle classifier inputs"
+        );
+        assert!(
+            tags.as_pairs()
+                .iter()
+                .any(|(key, _)| *key == "auth_session_status"),
+            "unexpected startup events must identify the authoritative auth-session status"
+        );
+        assert!(
+            tags.as_pairs()
+                .iter()
+                .any(|(key, _)| *key == "refresh_failure_class"),
+            "unexpected startup events must identify the bounded refresh failure class"
         );
         assert_eq!(
             tags.as_pairs(),
@@ -568,7 +648,39 @@ mod tests {
                 ("node_resolved", "true"),
                 ("node_resolved_program_kind", "exe"),
                 ("require_local_toolchain_demoted", "false"),
+                ("auth_session_status", "credentials_invalid"),
+                ("refresh_failure_class", "http_4xx"),
             ]
+        );
+        assert_eq!(
+            auth_session_status_tag("person@example.com"),
+            "unknown",
+            "free-form identity values must never become tags"
+        );
+        for (status, tag) in [
+            ("active", "active"),
+            ("credentials_absent", "credentials_absent"),
+            ("credentials_invalid", "credentials_invalid"),
+            (
+                "refresh_temporarily_unavailable",
+                "refresh_temporarily_unavailable",
+            ),
+            ("non_human_principal", "non_human_principal"),
+        ] {
+            assert_eq!(auth_session_status_tag(status), tag);
+        }
+        assert_eq!(
+            refresh_failure_class_tag("eyJhbGciOiJ..."),
+            "unknown",
+            "free-form or credential values must never become tags"
+        );
+        assert_eq!(
+            refresh_failure_class_for_session_tag("refresh_temporarily_unavailable", "none"),
+            "unknown"
+        );
+        assert_eq!(
+            refresh_failure_class_for_session_tag("credentials_invalid", "none"),
+            "none"
         );
         assert_eq!(token_presence_tag("permission-denied"), "unknown");
         assert_eq!(session_restore_state_tag(false, "absent"), "signed_out");

@@ -1,7 +1,11 @@
-use super::cognito::{self, AuthState, CognitoTokens};
+pub use super::cognito::AuthSessionStatus;
+use super::cognito::{self, AuthState, CognitoRefreshFailureClass, CognitoTokens};
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
+
+pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
+const MAX_AUTH_SESSION_REASON_CHARS: usize = 200;
 
 /// Canonical identity the embedded shell hydrates from. Person UID comes from
 /// the vault (same `list_entities_by_type("person")` path as
@@ -16,26 +20,8 @@ pub struct WhoAmIIdentity {
     pub display_name: Option<String>,
 }
 
-pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
-const MAX_AUTH_SESSION_REASON_CHARS: usize = 200;
-
-/// Native-to-renderer tenant boundary. This is deliberately independent of a
-/// `/whoami` request: the renderer must withdraw old tenant state before it
-/// begins any cloud hydration, and it must never see bearer material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthSessionStatus {
-    Active,
-    CredentialsAbsent,
-    CredentialsInvalid,
-    RefreshTemporarilyUnavailable,
-    /// Valid credentials that belong to a fleet agent or outpost rather than a
-    /// person. Distinct from `CredentialsInvalid` because nothing is wrong with
-    /// the token — it is simply not a human's, and the remedy is to sign in
-    /// rather than to retry.
-    NonHumanPrincipal,
-}
-
+/// Native-to-renderer tenant boundary. The renderer withdraws old tenant
+/// state before cloud hydration and never receives bearer material.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthSessionEnvelope {
@@ -46,9 +32,52 @@ pub struct AuthSessionEnvelope {
 }
 
 static AUTH_SESSION_ENVELOPE: OnceLock<Mutex<Option<AuthSessionEnvelope>>> = OnceLock::new();
+static AUTH_SESSION_DIAGNOSTIC: OnceLock<
+    Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>>,
+> = OnceLock::new();
 
 fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
     AUTH_SESSION_ENVELOPE.get_or_init(|| Mutex::new(None))
+}
+
+fn auth_session_diagnostic_cell(
+) -> &'static Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>> {
+    AUTH_SESSION_DIAGNOSTIC.get_or_init(|| Mutex::new(None))
+}
+
+fn auth_session_status_tag(status: &AuthSessionStatus) -> &'static str {
+    match status {
+        AuthSessionStatus::Active => "active",
+        AuthSessionStatus::CredentialsAbsent => "credentials_absent",
+        AuthSessionStatus::CredentialsInvalid => "credentials_invalid",
+        AuthSessionStatus::RefreshTemporarilyUnavailable => "refresh_temporarily_unavailable",
+        AuthSessionStatus::NonHumanPrincipal => "non_human_principal",
+    }
+}
+
+fn set_auth_session_diagnostic(
+    status: AuthSessionStatus,
+    refresh_failure_class: Option<CognitoRefreshFailureClass>,
+) {
+    let mut guard = auth_session_diagnostic_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = Some((status, refresh_failure_class));
+}
+
+/// Bounded startup diagnostic labels; this snapshot contains no account
+/// identity, token material, email, or free-form error detail.
+pub(crate) fn startup_auth_diagnostic_tags() -> (&'static str, &'static str) {
+    let guard = auth_session_diagnostic_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.as_ref() {
+        Some((status, Some(failure_class))) => {
+            (auth_session_status_tag(status), failure_class.as_tag())
+        }
+        Some((status, None)) => (auth_session_status_tag(status), "none"),
+        None => ("unknown", "none"),
+    }
 }
 
 /// Returns the non-secret identity snapshot for an operation that must retain
@@ -119,6 +148,7 @@ pub(crate) fn publish_auth_session(
         *guard = Some(current.clone());
         (current, changed)
     };
+    set_auth_session_diagnostic(current.0.status.clone(), None);
     if current.1 {
         // The desktop label is intentional: auth events for the compact main
         // window must not be mistaken for an embedded Work tenant transition.
@@ -361,6 +391,13 @@ fn signed_out_state() -> AuthState {
     }
 }
 
+fn startup_auth_state_result(
+    state: AuthState,
+    status: &AuthSessionStatus,
+) -> Result<AuthState, String> {
+    cognito::startup_auth_state_result(state, status)
+}
+
 /// Resolve the credential state once, then publish the same non-secret result
 /// to the embedded renderer. A refresh transport failure deliberately leaves
 /// the stored credential intact and becomes a recoverable state; an invalid
@@ -368,8 +405,9 @@ fn signed_out_state() -> AuthState {
 /// fail-closed signed-out state.
 async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, AuthSessionEnvelope) {
     let before = cognito::get_tokens().await.ok().flatten();
-    let outcome = crate::commands::dm_notify::resolve_notification_credentials(app).await;
-    let (state, status, account_id, reason) = match outcome {
+    let outcome =
+        crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
+    let (state, status, account_id, reason, refresh_failure_class) = match outcome {
         // Refuse to adopt a machine identity as the signed-in person. The
         // credential file is shared with the `hq` CLI and with fleet-agent
         // machine credentials, so usable tokens are not evidence of a human
@@ -393,6 +431,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                         "The HQ credentials saved on this device belong to a fleet agent, not to a person."
                     }
                 }),
+                None,
             ),
             None => {
                 set_sentry_user_from_tokens(&tokens);
@@ -402,27 +441,31 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                     AuthSessionStatus::Active,
                     Some(notification_identity_from_tokens(&tokens)),
                     None,
+                    None,
                 )
             }
         },
-        Err(_) if before.is_none() => (
+        Err(error) if before.is_none() => (
             signed_out_state(),
             AuthSessionStatus::CredentialsAbsent,
             None,
             Some("No HQ Work credentials are saved on this device."),
+            error.refresh_failure_class,
         ),
-        Err(_) => {
+        Err(error) => {
             let after = cognito::get_tokens().await.ok().flatten();
+            let refresh_failure_class = error.refresh_failure_class;
             let preserved_account = before
                 .as_ref()
                 .or(after.as_ref())
                 .map(notification_identity_from_tokens);
-            if after.is_none() {
+            if error.requires_reauth || after.is_none() {
                 (
                     signed_out_state(),
                     AuthSessionStatus::CredentialsInvalid,
                     preserved_account,
                     Some("Your saved HQ Work credentials are no longer valid."),
+                    refresh_failure_class,
                 )
             } else {
                 (
@@ -430,6 +473,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                     AuthSessionStatus::RefreshTemporarilyUnavailable,
                     preserved_account,
                     Some("HQ Work could not refresh credentials while offline or unavailable."),
+                    refresh_failure_class,
                 )
             }
         }
@@ -446,19 +490,20 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
             reason: reason.map(str::to_string),
         },
     );
+    set_auth_session_diagnostic(envelope.status.clone(), refresh_failure_class);
     (state, envelope)
 }
 
 #[tauri::command]
 pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
-    let (state, _) = resolve_authoritative_auth_session(&app).await;
+    let (state, envelope) = resolve_authoritative_auth_session(&app).await;
     if state.authenticated {
         // A prior process may have stopped between queueing an onboarding
         // receipt and sending it. Retries are native and non-blocking, so the
         // renderer never receives a bearer token or waits on analytics.
         crate::commands::desktop_auth::flush_pending_authenticated_desktop_receipts();
     }
-    Ok(state)
+    startup_auth_state_result(state, &envelope.status)
 }
 
 /// Renderer bootstrap/recovery command. The event is the live transition
@@ -501,6 +546,7 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
         hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
     );
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
+    crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     clear_sentry_user();
     publish_auth_session(
         &app,
@@ -543,6 +589,29 @@ pub async fn begin_reauth(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_command_does_not_conclude_signed_out_for_temporary_refresh_failure() {
+        let result = startup_auth_state_result(
+            signed_out_state(),
+            &AuthSessionStatus::RefreshTemporarilyUnavailable,
+        );
+
+        assert!(
+            result.is_err(),
+            "a saved session with a transient refresh failure must reach the renderer retry path"
+        );
+    }
+
+    #[test]
+    fn startup_command_still_concludes_signed_out_for_invalid_credentials() {
+        let result =
+            startup_auth_state_result(signed_out_state(), &AuthSessionStatus::CredentialsInvalid)
+                .expect("definitively invalid credentials should allow sign-in");
+
+        assert!(!result.authenticated);
+    }
+
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
     fn jwt_with_sub(subject: &str) -> String {

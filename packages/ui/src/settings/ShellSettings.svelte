@@ -724,7 +724,10 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: var(--v4-ground, #161618);
+    /* Transparent: Settings renders inside .desktop-shell, which already
+       paints --v4-ground. Repainting it here doubled the window backing and
+       kept the opacity slider from showing any change. */
+    background: transparent;
     color: var(--t1);
     font: 400 13px/1.45 var(--font-ui);
   }

@@ -7,6 +7,8 @@ export * from "./library-shelf.js";
 export {
   CLAUDE_PROVIDER_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  INVITE_TEAMMATE_STEP_FLAG,
+  SETUP_STAGE_TIMEOUT_FIX_FLAG,
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
 } from "./flags.js";
 
