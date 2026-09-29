@@ -3187,6 +3187,20 @@ fn apply_report_to_fault_tags(
     report: &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport,
 ) {
     set_payload_tag(tags, "runner_report_read", report.read.as_str().to_string());
+    set_payload_tag(tags, "node_error_code", report.node_error_code.clone());
+    set_payload_tag(tags, "node_error_name", report.node_error_name.clone());
+    set_payload_tag(tags, "node_top_frame", report.node_top_frame.clone());
+    let current_producer = tags
+        .iter()
+        .find(|(key, _)| key == "exit_producer")
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("unknown");
+    if report.exit_producer != "unknown"
+        && (current_producer == "unknown"
+            || (current_producer == "launcher" && report.exit_producer == "runner"))
+    {
+        set_payload_tag(tags, "exit_producer", report.exit_producer.clone());
+    }
     let current_class = tags
         .iter()
         .find(|(key, _)| key == "runner_fatal_class")
@@ -4307,6 +4321,27 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         ),
     };
     let runner_fatal_class_seen = runner_fatal_class != "none";
+    let (stderr_cause, owner_result, stderr_producer) =
+        watcher_exit_stderr_diagnostics(last_stderr);
+    let stderr_cause = if stderr_cause == "other" && context.runner_fatal_class != "none" {
+        context.runner_fatal_class.as_str()
+    } else {
+        stderr_cause
+    };
+    let exit_producer = if stderr_producer == "runner" || context.runner_stdout_line_count > 0 {
+        "runner"
+    } else if stderr_producer == "launcher" {
+        "launcher"
+    } else {
+        "unknown"
+    };
+    let watch_owner_result = if owner_result != "unknown" {
+        owner_result
+    } else if context.runner_stdout_line_count > 0 {
+        "acquired"
+    } else {
+        "unknown"
+    };
 
     // Assertion identity (HQ-DESKTOP-50), derived from the SAME source as the
     // fatal class above so all four describe one line: prefer the last actual
@@ -4335,6 +4370,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         ("exit_class", exit_class.to_string()),
         ("runner_fatal_class", runner_fatal_class),
         ("sync_route", "watcher".to_string()),
+        ("exit_producer", exit_producer.to_string()),
+        ("watch_owner_result", watch_owner_result.to_string()),
+        ("stderr_cause", stderr_cause.to_string()),
+        ("node_error_code", "unknown".to_string()),
+        ("node_error_name", "unknown".to_string()),
+        ("node_top_frame", "unknown".to_string()),
         ("app_quitting", context.app_quitting.to_string()),
         ("updater_installing", context.updater_installing.to_string()),
         ("session_ending", context.session_ending.clone()),
@@ -4688,6 +4729,23 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // No report was requested for this exit, so no deferred reader owns a directory;
     // the exit callback removes any (user-disabled) directory it finds.
     RunnerReportDirDisposition::DeleteOnExitPath
+}
+
+/// Reduce the last observed stderr line to fixed diagnostic tokens. The runner's
+/// lease messages are checked before the generic fatal classifier so expected
+/// owner outcomes remain distinguishable without changing crash handling.
+fn watcher_exit_stderr_diagnostics(
+    stderr: Option<&str>,
+) -> (&'static str, &'static str, &'static str) {
+    let Some(line) = stderr else {
+        return ("other", "unknown", "unknown");
+    };
+    let signature = classify_runner_fatal_signature(line);
+    (
+        signature.stderr_cause,
+        signature.watch_owner_result,
+        signature.exit_producer,
+    )
 }
 
 /// Context is constructed from the core's closed-vocabulary rollup. Keep this
@@ -9016,6 +9074,97 @@ mod tests {
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "none");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "none");
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_absent");
+    }
+
+    #[test]
+    fn watcher_busy_exit_identifies_runner_and_owner_lease_result() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(20),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("[sync] hq-sync-runner already owned for this HQ root (owner=fixture, pid=123); exiting."),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("watcher exit capture");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "already_owned");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "busy");
+        assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
+        assert!(capture.tags.iter().all(|(_, value)| !value.contains("fixture")));
+        assert!(capture.tags.iter().all(|(_, value)| !value.contains("123")));
+    }
+
+    #[test]
+    fn watcher_lease_lost_exit_identifies_runner_and_lost_result() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(21),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("[sync] watch-owner lease lost; stopping watch runner: fixture detail"),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("watcher exit capture");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "owner_lease_lost");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "lost");
+        assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
+        assert!(capture.tags.iter().all(|(_, value)| !value.contains("fixture detail")));
+    }
+
+    #[test]
+    fn watcher_node_report_exposes_only_safe_error_identity_and_frame() {
+        let report = hq_desktop_core::runner_diagnostic_report::parse_runner_diagnostic_report(
+            serde_json::json!({
+                "header": {
+                    "trigger": "Exception",
+                    "event": "Uncaught Error [ERR_MODULE_NOT_FOUND]: PRIVATE_MESSAGE_MARKER",
+                    "commandLine": [
+                        "/opt/node/bin/node",
+                        "/Users/alice/.npm/_npx/private/node_modules/@indigoai-us/hq-cloud/dist/bin/sync-runner.js",
+                        "--watch"
+                    ]
+                },
+                "javascriptStack": {
+                    "message": "Uncaught Error [ERR_MODULE_NOT_FOUND]: PRIVATE_MESSAGE_MARKER",
+                    "stack": [{
+                        "functionName": "privateFunction",
+                        "scriptName": "/Users/alice/hq/secrets/private-file.js",
+                        "lineNumber": 23,
+                        "column": 17
+                    }]
+                },
+                "nativeStack": []
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        let mut tags = report_tags_with_class("none");
+        set_payload_tag(&mut tags, "exit_producer", "unknown".to_string());
+        apply_report_to_fault_tags(&mut tags, &report);
+
+        assert_eq!(report_tag_of(&tags, "node_error_code"), "ERR_MODULE_NOT_FOUND");
+        assert_eq!(report_tag_of(&tags, "node_error_name"), "Error");
+        assert_eq!(report_tag_of(&tags, "node_top_frame"), "private-file.js:23:17");
+        assert_eq!(report_tag_of(&tags, "exit_producer"), "runner");
+        let rendered = tags
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("PRIVATE_MESSAGE_MARKER"));
+        assert!(!report_tag_of(&tags, "node_top_frame").contains('/'));
+        assert!(!report_tag_of(&tags, "node_top_frame").contains('\\'));
+        assert!(!rendered.contains("/Users/alice"));
     }
 
     #[test]

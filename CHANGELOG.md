@@ -19,6 +19,9 @@ The release moves it under the version it ships in.
 - Auto-sync memory-ceiling reports now include the active sync phase and its
   elapsed-time bucket, so recurring memory failures can be compared across scan,
   pull, and push work.
+- Auto-sync watcher reports now identify launcher/runner exits and owner-lease
+  outcomes. When a Node report is available, it adds a safe error identifier and
+  basename-only top frame.
 
 ## [0.10.357] — 2026-09-29
 
