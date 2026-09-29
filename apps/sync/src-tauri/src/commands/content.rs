@@ -2473,7 +2473,6 @@ mod windows_symlink_fallback_selection_tests {
             choose_windows_symlink_fallback(
                 Some(WINDOWS_ERROR_INVALID_FUNCTION),
                 SymlinkTargetKind::Missing,
-                false,
             ),
             None
         );
