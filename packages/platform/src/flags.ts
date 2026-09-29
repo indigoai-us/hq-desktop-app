@@ -83,6 +83,13 @@ export const SETUP_STAGE_TIMEOUT_FIX_FLAG =
   "desktop.setup-stage-timeout-fix-v1";
 export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
+/**
+ * Desktop value for `desktop.human-only-conversations`. The desktop (Tauri)
+ * adapters answer this flag with this constant and do not consult the
+ * registry, so a missing, stale, or `false` registry value cannot turn the
+ * filter off. Set to `false` in a later release to turn it back off.
+ */
+export const HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT = true;
 
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {

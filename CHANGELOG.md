@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Channels and conversations now show only messages from people. Work-mesh activity (noted, started, and done lines), session cards, system events, and bot-only messages are hidden. A bot's reply in a conversation a person started still shows. A channel with only hidden activity shows "No messages yet".
+
 ## [0.10.360] — 2026-09-29
 
 - Leaving a channel and removing a bot from a channel work again, and bots in the member list have a remove button.

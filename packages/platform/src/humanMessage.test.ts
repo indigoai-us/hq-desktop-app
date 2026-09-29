@@ -63,6 +63,24 @@ describe("isHumanMessage", () => {
   });
 });
 
+describe("isHumanMessage inferFromUid option", () => {
+  it("default infers non-human from an agent uid with no audience", () => {
+    expect(isHumanMessage({ fromPersonUid: "agt_izzy" })).toBe(false);
+  });
+  it("inferFromUid false keeps an untagged agent message", () => {
+    expect(
+      isHumanMessage({ fromPersonUid: "agt_izzy" }, { inferFromUid: false }),
+    ).toBe(true);
+  });
+  it("inferFromUid false still hides explicit non-human signals", () => {
+    const opts = { inferFromUid: false };
+    expect(isHumanMessage({ fromPersonUid: "agt_izzy", audience: "bot" }, opts)).toBe(false);
+    expect(isHumanMessage({ audience: "mesh" }, opts)).toBe(false);
+    expect(isHumanMessage({ isSystemEvent: true }, opts)).toBe(false);
+    expect(isHumanMessage({ isMeshEvent: true }, opts)).toBe(false);
+  });
+});
+
 describe("humanRecencyKey", () => {
   it("prefers lastHumanMessageAt in humanOnly mode", () => {
     const key = humanRecencyKey(

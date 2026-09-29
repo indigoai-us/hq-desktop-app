@@ -34,6 +34,7 @@ import {
   CLAUDE_PROVIDER_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   INVITE_TEAMMATE_STEP_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -202,9 +203,10 @@ export function createSyncPlatformAdapter(
       return Promise.resolve(ok(false));
     }
     if (flag === HUMAN_ONLY_CONVERSATIONS_FLAG) {
-      // Human-only conversations is a dark canary — stays off until a
-      // manager explicitly enables the registry value.
-      return Promise.resolve(ok(false));
+      // Human-only conversations is on by default in the desktop app.
+      // `identity.hasFeature` short-circuits before the registry; this
+      // branch keeps the legacy path consistent.
+      return Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT));
     }
     if (flag === CLAUDE_PROVIDER_FLAG) {
       return Promise.resolve(ok(false));
@@ -545,9 +547,15 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
-      hasFeature: (flag) => flags.resolve(flag, () => hasFeatureLegacy(flag)),
+      hasFeature: (flag) =>
+        flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+          ? // Pinned per release; the registry cannot turn it off.
+            Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
+          : flags.resolve(flag, () => hasFeatureLegacy(flag)),
       subscribeFeature: (flag, onChange) =>
-        flags.subscribe(flag, () => hasFeatureLegacy(flag), onChange),
+        flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+          ? () => {}
+          : flags.subscribe(flag, () => hasFeatureLegacy(flag), onChange),
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;
