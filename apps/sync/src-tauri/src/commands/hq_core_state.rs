@@ -6081,10 +6081,32 @@ error: clone failed";
     }
 
     #[test]
-    fn rescue_generic_clone_failure_remains_unknown() {
+    fn sentry_unknown_cohort_20260929_active_hq_change_deferral_gets_own_kind() {
+        // Redacted shape from 34 eligible post-0.10.304 events.
         assert_eq!(
-            classify_rescue_stderr_failure("error: clone failed"),
-            RescueFailureCategory::Unknown
+            classify_rescue_stderr_failure("Update deferred while an HQ change is active").label(),
+            "update-deferred-hq-change"
+        );
+    }
+
+    #[test]
+    fn sentry_unknown_cohort_20260929_redacted_rsync_partial_gets_known_kind() {
+        // Redacted shape from 30 eligible events; file names and rsync metadata are omitted.
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "rsync error: some [redacted] were not transferred (see previous errors) (code 23)"
+            )
+            .label(),
+            "rsync-partial-transfer"
+        );
+    }
+
+    #[test]
+    fn sentry_unknown_cohort_20260929_generic_clone_failure_gets_own_kind() {
+        // Redacted shape from 20 eligible events.
+        assert_eq!(
+            classify_rescue_stderr_failure("error: clone failed").label(),
+            "clone-failed"
         );
     }
 
