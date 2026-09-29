@@ -4174,7 +4174,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
     // the report there too so its render stays live across re-checks.
     let _ = app.emit("core-state:changed", &state);
     if let Some(slot) = app.try_state::<crate::commands::drift_detail::PendingDrift>() {
-        *slot.0.lock().unwrap() = Some(state.drift_report.clone());
+        slot.stash(state.drift_report.clone());
     }
     let _ = app.emit_to(
         crate::commands::drift_detail::WINDOW_LABEL,
