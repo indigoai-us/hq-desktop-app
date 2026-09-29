@@ -424,13 +424,7 @@ fn startup_auth_state_result(
 /// refresh is observed after Cognito has invalidated its file and becomes a
 /// fail-closed signed-out state.
 async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, AuthSessionEnvelope) {
-    let first_token_read = cognito::get_tokens().await;
-    let first_token_read_result = match &first_token_read {
-        Ok(Some(_)) => "ok_some",
-        Ok(None) => "ok_none",
-        Err(error) if error.to_ascii_lowercase().contains("parse") => "err_parse",
-        Err(_) => "err_io",
-    };
+    let (first_token_read, first_token_read_result) = cognito::get_tokens_with_read_result().await;
     let before = first_token_read.ok().flatten();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;

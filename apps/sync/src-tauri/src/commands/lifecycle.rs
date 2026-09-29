@@ -616,41 +616,27 @@ pub fn report_unexpected_startup_surface(
         .unwrap_or(0);
     let (auth_session_status, refresh_failure_class) =
         crate::commands::auth::startup_auth_diagnostic_tags();
-    let mut diagnostic_tags =
-        hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
-            authenticated,
+    let diagnostic_tags =
+        hq_desktop_core::unexpected_surface::apply_startup_token_store_diagnostics(
+            hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
+                authenticated,
+                &token_presence,
+                elapsed_since_start.map(|elapsed| elapsed.as_millis()),
+                &prior_surface,
+                hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
+                    inputs: *inputs,
+                    hq_root_probe: state.hq_root_probe,
+                    hq_program_kind: state.hq_program_kind,
+                    node_program_kind: state.node_program_kind,
+                    require_local_toolchain_demoted: state.require_local_toolchain_demoted,
+                },
+                auth_session_status,
+                refresh_failure_class,
+            ),
+            &surface,
             &token_presence,
-            elapsed_since_start.map(|elapsed| elapsed.as_millis()),
-            &prior_surface,
-            hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
-                inputs: *inputs,
-                hq_root_probe: state.hq_root_probe,
-                hq_program_kind: state.hq_program_kind,
-                node_program_kind: state.node_program_kind,
-                require_local_toolchain_demoted: state.require_local_toolchain_demoted,
-            },
-            auth_session_status,
-            refresh_failure_class,
+            first_read_result.as_deref(),
         );
-    if surface == "sign-in" && token_presence == "present" {
-        let first_read_result = match first_read_result.as_deref() {
-            Some("ok_some") => "ok_some",
-            Some("ok_none") => "ok_none",
-            Some("err_io") => "err_io",
-            Some("err_parse") => "err_parse",
-            _ => "unknown",
-        };
-        let token_diagnostics = hq_desktop_core::cognito::startup_token_store_diagnostics_after_first(
-            first_read_result,
-        );
-        diagnostic_tags.invalidation_marker_present = token_diagnostics.invalidation_marker_present;
-        diagnostic_tags.first_read_result = token_diagnostics.first_read_result;
-        diagnostic_tags.recheck_read_result = token_diagnostics.recheck_read_result;
-    } else {
-        diagnostic_tags.invalidation_marker_present = false;
-        diagnostic_tags.first_read_result = "not_checked";
-        diagnostic_tags.recheck_read_result = "not_checked";
-    }
     let (last_auth_transition, last_auth_transition_age_seconds) =
         if surface == "sign-in" && token_presence == "present" {
             crate::commands::auth::last_auth_transition_diagnostic()
@@ -756,10 +742,6 @@ pub fn report_unexpected_startup_surface(
                 scope.set_tag(key, value);
             }
             scope.set_tag("last_auth_transition", last_auth_transition);
-            scope.set_extra(
-                "invalidation_marker_present",
-                serde_json::json!(diagnostic_tags.invalidation_marker_present).into(),
-            );
             scope.set_extra(
                 "last_auth_transition_age_seconds",
                 serde_json::json!(last_auth_transition_age_seconds).into(),

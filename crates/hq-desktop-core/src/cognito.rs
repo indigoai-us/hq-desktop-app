@@ -624,9 +624,14 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     write_tokens_to_path(&path, tokens)
 }
 
-/// Get tokens, using in-memory cache with mtime invalidation.
-pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
-    let path = tokens_file_path()?;
+/// Get tokens and the bounded class of the initial file read, using the same
+/// in-memory cache and invalidation behavior as `get_tokens`.
+pub async fn get_tokens_with_read_result() -> (Result<Option<CognitoTokens>, String>, &'static str)
+{
+    let path = match tokens_file_path() {
+        Ok(path) => path,
+        Err(error) => return (Err(error), "err_io"),
+    };
 
     // Get mtime — treat NotFound as "no file" (avoids TOCTOU with path.exists())
     let current_mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
@@ -634,9 +639,9 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut guard = cache().lock().await;
             *guard = None;
-            return Ok(None);
+            return (Ok(None), "ok_none");
         }
-        Err(e) => return Err(format!("Failed to read file mtime: {}", e)),
+        Err(e) => return (Err(format!("Failed to read file mtime: {}", e)), "err_io"),
     };
     let mut guard = cache().lock().await;
 
@@ -644,15 +649,26 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         if cached.path == path && cached.file_mtime == current_mtime {
             if token_is_invalidated_at(&path, &cached.tokens.access_token) {
                 *guard = None;
-                return Ok(None);
+                return (Ok(None), "ok_none");
             }
-            return Ok(Some(cached.tokens.clone()));
+            return (Ok(Some(cached.tokens.clone())), "ok_some");
         }
     }
 
     // Cache miss or mtime changed — re-read
     drop(guard);
-    let tokens = read_tokens_from_file()?;
+    let tokens = match read_tokens_from_path(&path) {
+        Ok(tokens) => tokens,
+        Err(TokenReadError::Io(error)) => {
+            return (Err(format!("Failed to read token file: {error}")), "err_io");
+        }
+        Err(TokenReadError::Parse(error)) => {
+            return (
+                Err(format!("Failed to parse token file: {error}")),
+                "err_parse",
+            );
+        }
+    };
     if let Some(ref tokens) = tokens {
         let mut guard = cache().lock().await;
         *guard = Some(CachedTokens {
@@ -664,7 +680,17 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         let mut guard = cache().lock().await;
         *guard = None;
     }
-    Ok(tokens)
+    let result = if tokens.is_some() {
+        "ok_some"
+    } else {
+        "ok_none"
+    };
+    (Ok(tokens), result)
+}
+
+/// Get tokens, using in-memory cache with mtime invalidation.
+pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
+    get_tokens_with_read_result().await.0
 }
 
 /// Update both the file and the in-memory cache.
@@ -1402,6 +1428,30 @@ mod tests {
                 std::env::remove_var("HQ_TEST_HOME");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn get_tokens_read_result_uses_typed_path_free_classes() {
+        let home = tempfile::tempdir().expect("temp home");
+        let _test_home = TestHome::set(home.path());
+        let token_dir = home.path().join(".hq");
+        std::fs::create_dir_all(&token_dir).expect("token directory");
+        let token_path = token_dir.join("cognito-tokens.json");
+
+        std::fs::write(&token_path, "{").expect("invalid token json");
+        let (parse_result, parse_class) = get_tokens_with_read_result().await;
+        let parse_error = parse_result.expect_err("malformed token json is rejected");
+        assert_eq!(parse_class, "err_parse");
+        assert!(parse_error.starts_with("Failed to parse token file:"));
+        assert!(!parse_error.contains(home.path().to_string_lossy().as_ref()));
+
+        std::fs::remove_file(&token_path).expect("remove malformed token file");
+        std::fs::create_dir(&token_path).expect("directory at token-file path");
+        let (io_result, io_class) = get_tokens_with_read_result().await;
+        let io_error = io_result.expect_err("directory cannot be read as a token file");
+        assert_eq!(io_class, "err_io");
+        assert!(io_error.starts_with("Failed to read token file:"));
+        assert!(!io_error.contains(home.path().to_string_lossy().as_ref()));
     }
 
     fn claims_jwt(payload: serde_json::Value) -> String {
