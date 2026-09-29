@@ -20,11 +20,13 @@ pub const WINDOW_LABEL: &str = "drift-detail";
 /// can fetch it on ready (race-free handshake instead of a timed delay).
 pub struct PendingDrift(pub Mutex<Option<DriftReport>>);
 
-fn stash_pending_report(state: &PendingDrift, report: DriftReport) {
-    *state
-        .0
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report);
+impl PendingDrift {
+    pub(crate) fn stash(&self, report: DriftReport) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report);
+    }
 }
 
 fn pending_report(state: &PendingDrift) -> Option<DriftReport> {
@@ -51,7 +53,7 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
     );
     let mut stashed = false;
     if let Some(state) = app.try_state::<PendingDrift>() {
-        stash_pending_report(&state, report.clone());
+        state.stash(report.clone());
         stashed = true;
     }
     log(
@@ -227,7 +229,7 @@ mod tests {
         .join();
         assert!(panic.is_err());
 
-        stash_pending_report(&state, report());
+        state.stash(report());
         let recovered = pending_report(&state).expect("stashed report should be readable");
         assert_eq!(recovered.hq_version, "15.0.0");
         assert_eq!(recovered.target_ref, "v15.0.0");
