@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
 - Sync status shows RUNNING for the desktop watcher and names another active
   owner when it handles the HQ folder. HQ waits for that lease to clear before
   restarting its own watcher; lease contention no longer appears as a crash.

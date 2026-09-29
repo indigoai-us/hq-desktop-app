@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
+#[cfg(test)]
+pub(crate) static HQ_TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 mod expires_at_flexible {
     use serde::{self, Deserialize, Deserializer, Serializer};
 
@@ -228,6 +231,10 @@ pub struct AuthState {
     pub email: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
+    /// The initial native token read for this auth probe, forwarded only to
+    /// the matching startup diagnostic command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_token_read_result: Option<String>,
 }
 
 /// Native auth classification shared by startup routing and diagnostics.
@@ -381,6 +388,75 @@ fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, Token
 fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     let tokens = read_tokens_from_path_raw(path)?;
     Ok(tokens.filter(|tokens| !token_is_invalidated_at(path, &tokens.access_token)))
+}
+
+/// Bounded, non-secret observations used by the unexpected startup surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupTokenStoreDiagnostics {
+    pub invalidation_marker_present: bool,
+    pub first_read_result: &'static str,
+    pub recheck_read_result: &'static str,
+}
+
+fn token_read_result_label(result: Result<Option<CognitoTokens>, TokenReadError>) -> &'static str {
+    match result {
+        Ok(Some(_)) => "ok_some",
+        Ok(None) => "ok_none",
+        Err(TokenReadError::Io(_)) => "err_io",
+        Err(TokenReadError::Parse(_)) => "err_parse",
+    }
+}
+
+fn startup_token_store_diagnostics_at(path: &Path) -> StartupTokenStoreDiagnostics {
+    let first_read_result = token_read_result_label(read_tokens_from_path(path));
+    startup_token_store_diagnostics_after_first_at(path, first_read_result)
+}
+
+fn startup_token_store_diagnostics_after_first_at(
+    path: &Path,
+    first_read_result: &'static str,
+) -> StartupTokenStoreDiagnostics {
+    let raw_tokens = read_tokens_from_path_raw(path);
+    let invalidation_marker_present = raw_tokens
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .filter(|tokens| !tokens.access_token.is_empty())
+        .is_some_and(|tokens| token_is_invalidated_at(path, &tokens.access_token));
+    let recheck_read_result = token_read_result_label(read_tokens_from_path(path));
+    StartupTokenStoreDiagnostics {
+        invalidation_marker_present,
+        first_read_result,
+        recheck_read_result,
+    }
+}
+
+/// Read the token store twice for startup diagnostics without returning token
+/// contents or free-form filesystem errors. This does not affect auth state.
+pub fn startup_token_store_diagnostics() -> StartupTokenStoreDiagnostics {
+    match tokens_file_path() {
+        Ok(path) => startup_token_store_diagnostics_at(&path),
+        Err(_) => StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            first_read_result: "err_io",
+            recheck_read_result: "err_io",
+        },
+    }
+}
+
+/// Pair the auth resolver's original token-read result with one immediate
+/// filtered reread and a raw-token invalidation-marker check.
+pub fn startup_token_store_diagnostics_after_first(
+    first_read_result: &'static str,
+) -> StartupTokenStoreDiagnostics {
+    match tokens_file_path() {
+        Ok(path) => startup_token_store_diagnostics_after_first_at(&path, first_read_result),
+        Err(_) => StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            first_read_result,
+            recheck_read_result: "err_io",
+        },
+    }
 }
 
 pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
@@ -548,9 +624,14 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     write_tokens_to_path(&path, tokens)
 }
 
-/// Get tokens, using in-memory cache with mtime invalidation.
-pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
-    let path = tokens_file_path()?;
+/// Get tokens and the bounded class of the initial file read, using the same
+/// in-memory cache and invalidation behavior as `get_tokens`.
+pub async fn get_tokens_with_read_result() -> (Result<Option<CognitoTokens>, String>, &'static str)
+{
+    let path = match tokens_file_path() {
+        Ok(path) => path,
+        Err(error) => return (Err(error), "err_io"),
+    };
 
     // Get mtime — treat NotFound as "no file" (avoids TOCTOU with path.exists())
     let current_mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
@@ -558,9 +639,9 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut guard = cache().lock().await;
             *guard = None;
-            return Ok(None);
+            return (Ok(None), "ok_none");
         }
-        Err(e) => return Err(format!("Failed to read file mtime: {}", e)),
+        Err(e) => return (Err(format!("Failed to read file mtime: {}", e)), "err_io"),
     };
     let mut guard = cache().lock().await;
 
@@ -568,15 +649,26 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         if cached.path == path && cached.file_mtime == current_mtime {
             if token_is_invalidated_at(&path, &cached.tokens.access_token) {
                 *guard = None;
-                return Ok(None);
+                return (Ok(None), "ok_none");
             }
-            return Ok(Some(cached.tokens.clone()));
+            return (Ok(Some(cached.tokens.clone())), "ok_some");
         }
     }
 
     // Cache miss or mtime changed — re-read
     drop(guard);
-    let tokens = read_tokens_from_file()?;
+    let tokens = match read_tokens_from_path(&path) {
+        Ok(tokens) => tokens,
+        Err(TokenReadError::Io(error)) => {
+            return (Err(format!("Failed to read token file: {error}")), "err_io");
+        }
+        Err(TokenReadError::Parse(error)) => {
+            return (
+                Err(format!("Failed to parse token file: {error}")),
+                "err_parse",
+            );
+        }
+    };
     if let Some(ref tokens) = tokens {
         let mut guard = cache().lock().await;
         *guard = Some(CachedTokens {
@@ -588,7 +680,17 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         let mut guard = cache().lock().await;
         *guard = None;
     }
-    Ok(tokens)
+    let result = if tokens.is_some() {
+        "ok_some"
+    } else {
+        "ok_none"
+    };
+    (Ok(tokens), result)
+}
+
+/// Get tokens, using in-memory cache with mtime invalidation.
+pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
+    get_tokens_with_read_result().await.0
 }
 
 /// Update both the file and the in-memory cache.
@@ -1212,6 +1314,7 @@ mod tests {
                 account_id: None,
                 email: None,
                 display_name: None,
+                startup_token_read_result: None,
             },
             &AuthSessionStatus::RefreshTemporarilyUnavailable,
         );
@@ -1231,6 +1334,7 @@ mod tests {
                 account_id: None,
                 email: None,
                 display_name: None,
+                startup_token_read_result: None,
             },
             &AuthSessionStatus::CredentialsInvalid,
         )
@@ -1297,24 +1401,57 @@ mod tests {
         );
     }
 
-    struct TestHome(Option<std::ffi::OsString>);
+    struct TestHome {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TestHome {
         fn set(path: &std::path::Path) -> Self {
+            let lock = HQ_TEST_HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous = std::env::var_os("HQ_TEST_HOME");
             std::env::set_var("HQ_TEST_HOME", path);
-            Self(previous)
+            Self {
+                previous,
+                _lock: lock,
+            }
         }
     }
 
     impl Drop for TestHome {
         fn drop(&mut self) {
-            if let Some(previous) = self.0.take() {
+            if let Some(previous) = self.previous.take() {
                 std::env::set_var("HQ_TEST_HOME", previous);
             } else {
                 std::env::remove_var("HQ_TEST_HOME");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn get_tokens_read_result_uses_typed_path_free_classes() {
+        let home = tempfile::tempdir().expect("temp home");
+        let _test_home = TestHome::set(home.path());
+        let token_dir = home.path().join(".hq");
+        std::fs::create_dir_all(&token_dir).expect("token directory");
+        let token_path = token_dir.join("cognito-tokens.json");
+
+        std::fs::write(&token_path, "{").expect("invalid token json");
+        let (parse_result, parse_class) = get_tokens_with_read_result().await;
+        let parse_error = parse_result.expect_err("malformed token json is rejected");
+        assert_eq!(parse_class, "err_parse");
+        assert!(parse_error.starts_with("Failed to parse token file:"));
+        assert!(!parse_error.contains(home.path().to_string_lossy().as_ref()));
+
+        std::fs::remove_file(&token_path).expect("remove malformed token file");
+        std::fs::create_dir(&token_path).expect("directory at token-file path");
+        let (io_result, io_class) = get_tokens_with_read_result().await;
+        let io_error = io_result.expect_err("directory cannot be read as a token file");
+        assert_eq!(io_class, "err_io");
+        assert!(io_error.starts_with("Failed to read token file:"));
+        assert!(!io_error.contains(home.path().to_string_lossy().as_ref()));
     }
 
     fn claims_jwt(payload: serde_json::Value) -> String {
@@ -1883,6 +2020,7 @@ mod tests {
             account_id: Some("sub-a".to_string()),
             email: Some("a@b.c".to_string()),
             display_name: Some("Ada".to_string()),
+            startup_token_read_result: Some("ok_none".to_string()),
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":true"));
@@ -1890,6 +2028,7 @@ mod tests {
         assert!(json.contains("\"accountId\":\"sub-a\""));
         assert!(json.contains("\"email\":\"a@b.c\""));
         assert!(json.contains("\"displayName\":\"Ada\""));
+        assert!(json.contains("\"startupTokenReadResult\":\"ok_none\""));
     }
 
     #[test]
@@ -1900,6 +2039,7 @@ mod tests {
             account_id: None,
             email: None,
             display_name: None,
+            startup_token_read_result: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":false"));
