@@ -2172,7 +2172,6 @@ pub(crate) fn emit_core_update_failed_event(
             );
             emit_telemetry(event_name, properties);
         }
-        return;
     }
 
     emit_telemetry(
