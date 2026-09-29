@@ -63,7 +63,7 @@ describe("desktop visual hierarchy regressions", () => {
       readFileSync(new URL("../chat/tokens.css", import.meta.url), "utf8"),
     );
     const darkGround =
-      "--v4-ground: rgb(17 17 17 / clamp(0.35, calc(0.86 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));";
+      "--v4-ground: rgb(17 17 17 / clamp(0.6, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.615385), 1));";
     for (const source of [tokens, chatTokens]) {
       // Both the system-dark and forced-dark blocks.
       expect(source.split(darkGround).length - 1).toBe(2);
