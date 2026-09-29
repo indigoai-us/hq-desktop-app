@@ -57,6 +57,27 @@ export function isRetryableStatus(status: number | null | undefined): boolean {
   return status != null && RETRYABLE_STATUSES.has(status);
 }
 
+/** The generic API Gateway body for a Lambda service-side invoke failure. */
+export function isLambdaInvokeServiceErrorBody(body: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
+      Object.keys(parsed).length === 1 &&
+      (parsed as { message?: unknown }).message === "Internal server error";
+  } catch {
+    return false;
+  }
+}
+
+/** Short jittered wait used by the one-time Lambda invoke retry. */
+export function lambdaInvokeRetryDelayMs(random: () => number = Math.random): number {
+  return 25 + Math.floor(random() * 51);
+}
+
+export function sleepForLambdaInvokeRetry(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * `Retry-After` in milliseconds, or null when absent/unparseable.
  *
@@ -184,6 +205,8 @@ export interface AttemptClassification {
   status: number | null;
   /** Raw `Retry-After` header value, when the transport exposes one. */
   retryAfter?: string | null;
+  /** Optional short delay for a recognized transient response. */
+  retryDelayMs?: number;
 }
 
 export interface RequestPolicyOptions {
@@ -232,6 +255,7 @@ export async function retryThrottled<T>(
     const headerMs = parseRetryAfterMs(verdict.retryAfter, now());
     const delayMs =
       headerMs ??
+      verdict.retryDelayMs ??
       fullJitterBackoffMs(index, {
         baseMs: opts.baseMs,
         capMs,

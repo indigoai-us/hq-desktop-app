@@ -296,6 +296,8 @@
     : new WebPlatformAdapter({
         baseUrl: resolveHqProApiUrl(),
         fetch: workFetch,
+        // hqProFetch owns the 504 retry; custom host fetches use the adapter.
+        retryLambdaInvoke504: workFetch !== hqProFetch,
         onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       });
   onDestroy(() => {

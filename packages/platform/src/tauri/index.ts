@@ -28,6 +28,11 @@ import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { createCallsApi } from "../calls/api.js";
 import {
+  isLambdaInvokeServiceErrorBody,
+  lambdaInvokeRetryDelayMs,
+  sleepForLambdaInvokeRetry,
+} from "../request-policy.js";
+import {
   CLAUDE_PROVIDER_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -153,11 +158,28 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
-    const raw = await this.call<unknown>("hq_pro_fetch", {
+    let raw = await this.call<unknown>("hq_pro_fetch", {
       url: path,
       method,
       body: body === undefined ? null : JSON.stringify(body),
     });
+    const firstResponse = raw.ok && raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
+      ? raw.value as Record<string, unknown>
+      : null;
+    if (
+      method === "GET" &&
+      typeof firstResponse?.status === "number" &&
+      firstResponse.status === 504 &&
+      typeof firstResponse.body === "string" &&
+      isLambdaInvokeServiceErrorBody(firstResponse.body)
+    ) {
+      await sleepForLambdaInvokeRetry(lambdaInvokeRetryDelayMs());
+      raw = await this.call<unknown>("hq_pro_fetch", {
+        url: path,
+        method,
+        body: body === undefined ? null : JSON.stringify(body),
+      });
+    }
     if (!raw.ok) return raw;
     const rec =
       raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)

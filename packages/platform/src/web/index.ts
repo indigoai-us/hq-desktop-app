@@ -51,6 +51,7 @@ interface WebAttempt<T> {
   result: AdapterResult<T>;
   status: number | null;
   retryAfter?: string | null;
+  lambdaInvoke504?: boolean;
 }
 
 /** `Retry-After` off a Response, tolerating a header-less test double. */
@@ -59,6 +60,18 @@ function readRetryAfter(res: Response): string | null {
     return res.headers?.get?.("retry-after") ?? null;
   } catch {
     return null;
+  }
+}
+
+function isLambdaInvoke504(response: Response, bodyText: string): boolean {
+  if (response.status !== 504) return false;
+  try {
+    const payload: unknown = JSON.parse(bodyText);
+    return typeof payload === "object" && payload !== null && !Array.isArray(payload) &&
+      Object.keys(payload).length === 1 &&
+      (payload as { message?: unknown }).message === "Internal server error";
+  } catch {
+    return false;
   }
 }
 
@@ -250,6 +263,8 @@ export interface WebPlatformAdapterConfig {
    * `sleep` and a deterministic `random`; production uses the defaults.
    */
   requestPolicy?: RequestPolicyOptions;
+  /** Disable this retry when the injected fetch already retries at its own layer. */
+  retryLambdaInvoke504?: boolean;
 }
 
 function defaultOnUnauthorized(): void {
@@ -457,6 +472,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly onUnauthorized: () => void;
   private readonly flags: FeatureFlagGate;
   private readonly requestPolicy: RequestPolicyOptions;
+  private readonly retryLambdaInvoke504: boolean;
   private activeCompany: string | null = null;
 
   constructor(config: WebPlatformAdapterConfig) {
@@ -469,6 +485,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
     this.requestPolicy = config.requestPolicy ?? {};
+    this.retryLambdaInvoke504 = config.retryLambdaInvoke504 ?? true;
     this.flags = createFeatureFlagGate({
       endpoint: this.baseUrl,
       getToken: () => bearerTokenFromHeaders(this.headers),
@@ -505,12 +522,25 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Shared policy (R2): 429/503 are honoured — `Retry-After` when the server
     // sends one, jittered exponential backoff otherwise — and the result the
     // caller finally sees is the same AdapterResult it saw before.
+    let lambdaInvokeRetried = false;
     const attempted = await retryThrottled<WebAttempt<T>>(
       () => this.attempt<T>(method, path, body),
-      (outcome) => ({
-        status: outcome.status,
-        retryAfter: outcome.retryAfter,
-      }),
+      (outcome) => {
+        if (
+          this.retryLambdaInvoke504 &&
+          method === "GET" &&
+          !lambdaInvokeRetried &&
+          outcome.lambdaInvoke504
+        ) {
+          lambdaInvokeRetried = true;
+          const random = this.requestPolicy.random ?? Math.random;
+          return {
+            status: 503,
+            retryDelayMs: 25 + Math.floor(random() * 51),
+          };
+        }
+        return { status: outcome.status, retryAfter: outcome.retryAfter };
+      },
       this.requestPolicy,
     );
     return attempted.result;
@@ -559,6 +589,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
           result: failure(code, message),
           status: res.status,
           retryAfter: readRetryAfter(res),
+          lambdaInvoke504: method === "GET" && isLambdaInvoke504(res, text),
         };
       }
       if (res.status === 204) {

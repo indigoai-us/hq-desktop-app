@@ -45,7 +45,10 @@ import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
 import { createCallsApi } from '../calls/api.js';
 import {
+  isLambdaInvokeServiceErrorBody,
+  lambdaInvokeRetryDelayMs,
   retryThrottled,
+  sleepForLambdaInvokeRetry,
   type RequestPolicyOptions,
 } from '../request-policy.js';
 
@@ -307,6 +310,7 @@ export function createSyncPlatformAdapter(
     result: AdapterResult<T>;
     status: number | null;
     retryAfter?: string | null;
+    body?: string;
   }> {
     const raw = await call<unknown>('hq_pro_fetch', {
       url: path,
@@ -336,7 +340,7 @@ export function createSyncPlatformAdapter(
         } catch {
           /* keep http-status defaults */
         }
-        return { result: failure(code, message), status: rec.status, retryAfter };
+        return { result: failure(code, message), status: rec.status, retryAfter, body: text };
       }
       if (rec.status === 204 || !text.trim()) {
         return { result: ok(undefined as T), status: rec.status };
@@ -367,11 +371,21 @@ export function createSyncPlatformAdapter(
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
-    const attempted = await retryThrottled(
+    const makeAttempt = () => retryThrottled(
       () => hqProAttempt<T>(method, path, body),
       (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
       requestPolicy,
     );
+    let attempted = await makeAttempt();
+    if (
+      method === 'GET' &&
+      attempted.status === 504 &&
+      isLambdaInvokeServiceErrorBody(attempted.body ?? '')
+    ) {
+      const delayMs = lambdaInvokeRetryDelayMs(requestPolicy.random);
+      await (requestPolicy.sleep ?? sleepForLambdaInvokeRetry)(delayMs);
+      attempted = await makeAttempt();
+    }
     return attempted.result;
   }
 
