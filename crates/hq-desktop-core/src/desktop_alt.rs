@@ -5,6 +5,7 @@
 //! owns the synchronous desktop-alt contract surface.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -14,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::ignore::MAX_FILE_BYTES;
 use crate::paths;
-use crate::workspaces::{Workspace, WorkspaceState};
+use crate::projects_local::LocalProject;
+use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
 
 const HQ_DEPLOY_APP_DOMAIN: &str = "indigo-hq.com";
 
@@ -217,6 +219,48 @@ pub struct CompanySummary {
     pub activity: CompanyActivitySummary,
     pub deployments: u32,
     pub secrets: u32,
+}
+
+/// A Personal workspace has no company UID. Build its summary from local
+/// projects and never invoke company APIs. Company callers retain the existing
+/// remote aggregation through `fetch_company`.
+pub async fn company_summary_for_workspace<F, Fut>(
+    slug: &str,
+    workspaces: &[Workspace],
+    local_projects: &[LocalProject],
+    fetch_company: F,
+) -> Result<CompanySummary, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<CompanySummary, String>>,
+{
+    let personal_selected = slug.trim() == "personal"
+        && workspaces.iter().any(|workspace| {
+            workspace.slug == "personal"
+                && workspace.kind == WorkspaceKind::Personal
+                && workspace.state == WorkspaceState::Personal
+        });
+    if !personal_selected {
+        return fetch_company().await;
+    }
+
+    let board = local_projects
+        .iter()
+        .filter(|project| {
+            matches!(
+                project.board_path.as_deref(),
+                Some("personal/board.json" | "board.json")
+            )
+        })
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX);
+    Ok(CompanySummary {
+        board,
+        activity: CompanyActivitySummary { last7d: 0 },
+        deployments: 0,
+        secrets: 0,
+    })
 }
 /// Collapse a per-surface command result into the count for the summary.
 /// Auth-required errors propagate (so the UI routes to sign-in); every
@@ -2766,6 +2810,7 @@ mod tests {
     use chrono::TimeZone;
 
     use crate::feature_gate::email_present;
+    use crate::projects_local::LocalProject;
     use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
 
     // Note: `desktop_alt_enabled` itself depends on the on-disk Cognito
@@ -3718,6 +3763,102 @@ mod tests {
             !serialized.contains("evil.example.com"),
             "the hostile host must never make it into a parsed entry"
         );
+    }
+
+    fn personal_workspace() -> Workspace {
+        Workspace {
+            slug: "personal".to_string(),
+            display_name: "Personal".to_string(),
+            kind: WorkspaceKind::Personal,
+            state: WorkspaceState::Personal,
+            cloud_uid: None,
+            bucket_name: None,
+            has_local_folder: true,
+            local_path: None,
+            membership_status: None,
+            role: None,
+            sync_enabled: true,
+            last_synced_at: None,
+            broken_reason: None,
+            invited_by: None,
+            invited_at: None,
+            branding_enabled: false,
+            brand: None,
+            home_channel_id: None,
+        }
+    }
+
+    fn summary_project(id: &str, board_path: &str) -> LocalProject {
+        LocalProject {
+            id: id.to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            company: "personal".to_string(),
+            board_path: Some(board_path.to_string()),
+            status: String::new(),
+            prd_path: None,
+            created_at: None,
+            updated_at: None,
+            story_count: 0,
+            stories_complete: 0,
+            provenance: Default::default(),
+            creator_fallback: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn personal_summary_uses_local_projects_without_company_fetch() {
+        let workspaces = [personal_workspace()];
+        let projects = [
+            summary_project("personal-project", "personal/board.json"),
+            summary_project("root-project", "board.json"),
+            summary_project("tenant-project", "companies/testco/board.json"),
+        ];
+        let company_fetch_called = std::cell::Cell::new(false);
+
+        let summary =
+            super::company_summary_for_workspace("personal", &workspaces, &projects, || async {
+                company_fetch_called.set(true);
+                Err("unexpected company-only summary request".to_string())
+            })
+            .await
+            .expect("Personal summary should use local projects");
+
+        assert!(!company_fetch_called.get());
+        assert_eq!(summary.board, 2);
+        assert_eq!(summary.activity.last7d, 0);
+        assert_eq!(summary.deployments, 0);
+        assert_eq!(summary.secrets, 0);
+    }
+
+    #[tokio::test]
+    async fn company_summary_still_uses_company_fetch_unchanged() {
+        let workspaces = [company_workspace(
+            "testco",
+            WorkspaceState::Synced,
+            Some("cmp_testco"),
+            None,
+        )];
+        let expected = super::CompanySummary {
+            board: 7,
+            activity: super::CompanyActivitySummary { last7d: 3 },
+            deployments: 2,
+            secrets: 1,
+        };
+        let company_fetch_called = std::cell::Cell::new(false);
+
+        let summary = super::company_summary_for_workspace("testco", &workspaces, &[], || async {
+            company_fetch_called.set(true);
+            Ok(expected)
+        })
+        .await
+        .expect("company summary should preserve its normal source");
+
+        assert!(company_fetch_called.get());
+        assert_eq!(summary.board, 7);
+        assert_eq!(summary.activity.last7d, 3);
+        assert_eq!(summary.deployments, 2);
+        assert_eq!(summary.secrets, 1);
     }
 
     fn company_workspace(

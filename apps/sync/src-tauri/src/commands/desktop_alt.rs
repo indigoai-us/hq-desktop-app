@@ -20,6 +20,7 @@
 //! command shape, but `desktop_features_enabled()` itself never errors — the
 //! Ok arm is always taken.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -33,34 +34,36 @@ use base64::Engine as _;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use hq_desktop_core::desktop_alt::company_slug_for_hq_path;
 #[allow(unused_imports)]
 pub use hq_desktop_core::desktop_alt::{
     activity_url, board_url, bool_field, build_file_tree, build_node,
     canonical_hq_directory_for_listing, canonical_hq_relative_path, crm_projection_url,
-    home_channel_url, parse_home_channel_response,
     deployment_entry_from_value, deployment_last_deploy, deployment_matches_selected_slug,
     deployment_org_slug, deployment_rows, deployment_size, deployment_version, deployments_url,
     derive_initials, dir_has_visible_children, first_row_key_names, format_board_date,
-    format_bytes, format_deployment_age, is_activity_not_provisioned, is_auth_required_error,
-    is_board_not_provisioned, is_deployments_not_provisioned, is_dev_noise,
+    format_bytes, format_deployment_age, home_channel_url, is_activity_not_provisioned,
+    is_auth_required_error, is_board_not_provisioned, is_deployments_not_provisioned, is_dev_noise,
     is_safe_deployment_host, is_safe_deployment_label, is_secrets_not_provisioned, is_url_safe_id,
     is_within, json_code, json_kind, lexically_normalize, list_dir_entries,
     live_cloud_uid_from_broken_reason, nested_number_field, nested_string_field,
     normalize_deployment_host, normalize_deployment_state, normalize_slug, number_field,
     parse_activity_response, parse_board_response, parse_company_activity, parse_company_board,
     parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
-    parse_project_creators, parse_project_creators_response, parse_secret_envs,
-    parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
-    read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
-    resolve_hq_folder, secret_env_and_key, secret_key, secret_rotation, secret_rows,
-    secret_structure_summary, secret_updated_at, secrets_url, string_field, subdomain_from_url,
-    summary_count_or_auth, validate_hq_relative_path, workspace_grants_company_file_access,
-    workspace_grants_company_file_read_access, ActivityContributor, ActivityEntry, ActivityStats,
-    BoardCard, BoardColumn, BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
-    CompanyActivitySummary, CompanyBoard, CompanySummary, DeploymentEntry, DirEntry, FileNode,
-    LiveBoardAssignee, LiveBoardModel, LiveBoardProject, ProjectCreator, SecretEnv, SecretItem,
-    DEV_NOISE_NAMES,
+    parse_home_channel_response, parse_project_creators, parse_project_creators_response,
+    parse_secret_envs, parse_secrets_response, prefix_company_resolution_error,
+    read_file_bytes_capped, read_file_content, read_file_content_capped,
+    resolve_company_uid_from_workspaces, resolve_hq_folder, secret_env_and_key, secret_key,
+    secret_rotation, secret_rows, secret_structure_summary, secret_updated_at, secrets_url,
+    string_field, subdomain_from_url, summary_count_or_auth, validate_hq_relative_path,
+    workspace_grants_company_file_access, workspace_grants_company_file_read_access,
+    ActivityContributor, ActivityEntry, ActivityStats, BoardCard, BoardColumn,
+    BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity, CompanyActivitySummary,
+    CompanyBoard, CompanySummary, DeploymentEntry, DirEntry, FileNode, LiveBoardAssignee,
+    LiveBoardModel, LiveBoardProject, ProjectCreator, SecretEnv, SecretItem, DEV_NOISE_NAMES,
+};
+use hq_desktop_core::desktop_alt::{company_slug_for_hq_path, company_summary_for_workspace};
+use hq_desktop_core::projects_local::{
+    personal_scope_authorized, scan_local_projects_for_authorized_scopes,
 };
 use hq_desktop_core::workspaces::Workspace;
 
@@ -150,6 +153,23 @@ pub async fn desktop_alt_is_admin() -> Result<bool, String> {
 pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String> {
     if slug.trim().is_empty() {
         return Err("company slug is required".to_string());
+    }
+
+    if slug.trim() == "personal" {
+        let (hq, workspaces) = hydrated_project_context().await?;
+        let projects = if personal_scope_authorized(&workspaces) {
+            tauri::async_runtime::spawn_blocking(move || {
+                scan_local_projects_for_authorized_scopes(&hq, &HashSet::new(), true)
+            })
+            .await
+            .map_err(|error| format!("Personal project summary scan task join: {error}"))?
+        } else {
+            Vec::new()
+        };
+        return company_summary_for_workspace(&slug, &workspaces, &projects, || async {
+            Err("Personal workspace summary requires an authorized Personal workspace".to_string())
+        })
+        .await;
     }
 
     // Aggregate the four real per-panel commands. Each surface is

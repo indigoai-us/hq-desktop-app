@@ -10,6 +10,27 @@ import { readRepoFile } from './harness';
  * write command, and the new command is registered + capability-allowed.
  */
 
+describe('desktop-alt Personal summary scope (US-151)', () => {
+  const desktopAlt = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
+  const core = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
+
+  it('uses the local Personal scanner before any company summary endpoint', () => {
+    const start = desktopAlt.indexOf('pub async fn get_company_summary');
+    const end = desktopAlt.indexOf('pub async fn get_company_board', start);
+    const summary = desktopAlt.slice(start, end);
+    const personalBranch = summary.indexOf('if slug.trim() == "personal"');
+    const firstCompanyCall = summary.indexOf('get_company_board(slug.clone())');
+
+    expect(personalBranch).toBeGreaterThan(-1);
+    expect(firstCompanyCall).toBeGreaterThan(personalBranch);
+    expect(summary).toContain('personal_scope_authorized(&workspaces)');
+    expect(summary).toContain('scan_local_projects_for_authorized_scopes');
+    expect(summary).toContain('company_summary_for_workspace');
+    expect(core).toContain('personal_summary_uses_local_projects_without_company_fetch');
+    expect(core).toContain('company_summary_still_uses_company_fetch_unchanged');
+  });
+});
+
 describe('desktop-alt project status write — store contract (US-010)', () => {
   const store = readRepoFile('../../packages/ui/src/projects/projects-store.svelte.ts');
   const adapter = readRepoFile('../../packages/platform/src/tauri/sync-adapter.ts');
