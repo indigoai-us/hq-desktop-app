@@ -296,7 +296,7 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
   for (const job of windowsJobs) {
     it(`${job} restores through Swatinem/rust-cache`, () => {
       expect(jobBody(windowsCheckWorkflow, job)).toContain(
-        "uses: Swatinem/rust-cache@v2",
+        "uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
       );
     });
 
@@ -390,13 +390,13 @@ describe("release tag builds never write a Rust cache", () => {
       const releaseCache = stepConfig(
         releaseWorkflow,
         job,
-        "Swatinem/rust-cache@v2",
+        "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
         "uses",
       );
       const warmerCache = stepConfig(
         cacheWarmWorkflow,
         warmer,
-        "Swatinem/rust-cache@v2",
+        "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
         "uses",
       );
 
@@ -555,7 +555,7 @@ describe("the installer gate splits its two release builds", () => {
     // two assertions have to be read together.
     for (const job of ["build-bridge-installers", "build-target-updater"]) {
       const body = jobConfig(windowsCheckWorkflow, job);
-      const cache = body.indexOf("uses: Swatinem/rust-cache@v2");
+      const cache = body.indexOf("uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6");
       const apply = body.indexOf("name: Apply the CI fixture cargo profile");
       const build = body.indexOf("pnpm tauri build");
 

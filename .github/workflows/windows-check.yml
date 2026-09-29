@@ -46,6 +46,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   # Cheap ubuntu gate that decides whether the two windows-latest jobs below
   # have anything to check. A manual dispatch always runs them.
@@ -151,7 +154,7 @@ jobs:
 
       # Version comes from the root package.json "packageManager" field;
       # passing an explicit version here too is rejected as a conflict.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - uses: actions/setup-node@v4
         with:
@@ -160,7 +163,7 @@ jobs:
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
@@ -169,7 +172,7 @@ jobs:
       # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
       # new PRs restore from main instead of starting cold, and so PRs with an
       # exact hit do not each save their own copy.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
@@ -294,7 +297,7 @@ jobs:
 
       # Version comes from the root package.json "packageManager" field;
       # passing an explicit version here too is rejected as a conflict.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - uses: actions/setup-node@v4
         with:
@@ -303,7 +306,7 @@ jobs:
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
@@ -312,7 +315,7 @@ jobs:
       # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
       # new PRs restore from main instead of starting cold, and so PRs with an
       # exact hit do not each save their own copy.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
@@ -513,7 +516,7 @@ jobs:
 
       # Version comes from the root package.json "packageManager" field;
       # passing an explicit version here too is rejected as a conflict.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - uses: actions/setup-node@v4
         with:
@@ -522,7 +525,7 @@ jobs:
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
@@ -531,7 +534,7 @@ jobs:
       # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
       # new PRs restore from main instead of starting cold, and so PRs with an
       # exact hit do not each save their own copy.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
@@ -763,7 +766,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - uses: actions/setup-node@v4
         with:
@@ -772,7 +775,7 @@ jobs:
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: x86_64-pc-windows-msvc
 
@@ -784,7 +787,7 @@ jobs:
       # This is the only writer of that key. The sibling build job and the E2E
       # job compute the identical key, so letting them save too would just race
       # for the same entry and add nothing.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
@@ -904,7 +907,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - uses: actions/setup-node@v4
         with:
@@ -913,14 +916,14 @@ jobs:
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: x86_64-pc-windows-msvc
 
       # Same key as the bridge build -- same profile, same lockfiles, same
       # RUST*/CARGO* env -- so this restores exactly what that job restores.
       # save-if:false because both jobs would otherwise race to write one entry.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
@@ -1025,7 +1028,7 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - uses: actions/setup-node@v4
         with:
