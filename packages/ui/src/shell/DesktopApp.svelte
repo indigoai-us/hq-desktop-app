@@ -4731,8 +4731,7 @@
     const activeRow = selectedRow;
     const channelId = activeRow?.channelId?.trim() ?? "";
     if (!channelId.startsWith("chn_") || removingMemberUid) return;
-    const isSelfLeave =
-      !!self?.uid && row.personUid === self.uid;
+    const isSelfLeave = isSelf(row.personUid, self);
     removingMemberUid = row.personUid;
     channelActionError = null;
     try {
