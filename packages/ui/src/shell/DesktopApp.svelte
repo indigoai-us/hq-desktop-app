@@ -4728,15 +4728,41 @@
   }
 
   async function removeMember(row: StatusPersonRow): Promise<void> {
-    const channelId = selectedRow?.channelId?.trim() ?? "";
+    const activeRow = selectedRow;
+    const channelId = activeRow?.channelId?.trim() ?? "";
     if (!channelId.startsWith("chn_") || removingMemberUid) return;
+    const isSelfLeave =
+      !!self?.uid && row.personUid === self.uid;
     removingMemberUid = row.personUid;
+    channelActionError = null;
     try {
       const res = await adapter.messaging.removeChannelMember(
         channelId,
         row.personUid,
       );
       if (res.ok) {
+        if (isSelfLeave) {
+          // The caller just left the channel: close the popover, drop the
+          // rail row optimistically (same wake delete_channel uses), and
+          // clear the selection so the empty state renders instead of a
+          // dead conversation.
+          membersOpen = false;
+          wakes?.emit?.("channel:removed", { channelId });
+          timelineCache.delete(activeRow?.id ?? "");
+          if (activeRow && selectedRow?.channelId === channelId) {
+            selectedRow = null;
+            liveTimeline = [];
+            liveTimelineId = null;
+            timelineHydrating = false;
+            openReplyRootId = null;
+            openProfileMember = null;
+            openAgentMember = null;
+            attachTray = null;
+            replyPreviewByRoot = {};
+            projectAboutOpen = false;
+          }
+          return;
+        }
         await loadChannelRoster(channelId);
         if (openProfileMember?.personUid === row.personUid) {
           openProfileMember = null;
@@ -4744,7 +4770,15 @@
         if (openAgentMember?.personUid === row.personUid) {
           openAgentMember = null;
         }
+      } else {
+        channelActionError =
+          res.message?.trim() ||
+          (isSelfLeave
+            ? `Couldn't leave #${activeRow?.title ?? "channel"}.`
+            : `Couldn't remove ${row.displayName || "member"}.`);
       }
+    } catch (err) {
+      channelActionError = err instanceof Error ? err.message : String(err);
     } finally {
       removingMemberUid = null;
     }
