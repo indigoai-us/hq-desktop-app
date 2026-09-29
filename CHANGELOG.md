@@ -8,9 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Sync status now shows which watcher is handling an HQ folder. When another
-  watcher owns it, HQ waits for that lease to clear before starting its own.
-  A watcher handoff no longer appears as a crash.
+- Sync status shows RUNNING for the desktop watcher and names another active
+  owner when it handles the HQ folder. HQ waits for that lease to clear before
+  restarting its own watcher; lease contention no longer appears as a crash.
+
+- The hq-cloud version floor is now 6.18.13, where the desktop's `--owner`
+  watch option first exists. Changing the requested floor refreshes cached
+  runners that would otherwise keep an older parser.
 
 - With `desktop.push-events` enabled, realtime events trigger share and direct-message refreshes. If the connection drops, the app checks every five minutes, including while all windows are hidden, so tray launches retain a notification long-stop. Scheduled checks pause while push is connected. When the flag is off, the existing 60-second cadence continues.
 - Core update diagnostics now group deferred baseline refreshes separately from local

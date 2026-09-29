@@ -7145,13 +7145,7 @@ mod tests {
             },
             |_| waits += 1,
         );
-        let mut replacement_started = false;
-        if stopped {
-            replacement_started = true;
-        }
-
         assert!(stopped, "start must wait for the old generation to release");
-        assert!(replacement_started);
         assert_eq!(observed, 3);
         assert_eq!(waits, 2);
     }

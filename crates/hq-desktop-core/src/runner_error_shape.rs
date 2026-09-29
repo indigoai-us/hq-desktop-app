@@ -259,7 +259,15 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `PushScopeForbiddenError` exclusion. `src/bin/sync-runner-events.ts` is
 /// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
 /// source-version marker moves with the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.5";
+///
+/// The `~6.18.5` -> `~6.18.13` bump was re-derived from the published runner
+/// trees (`git diff v6.18.5..v6.18.13 -- src`, excluding tests). It adds
+/// `ReceiverDispatchError` in `src/sync/push-receiver.ts` and
+/// `OutpostExecWaitError` in `src/outposts/errors.ts`. The receiver catches
+/// and logs its wrapper before the runner event boundary; the outpost command
+/// prints its message and exits. Neither name reaches the desktop runner error
+/// event surface, so the 57-identity cause set and `ERROR_TYPES` stay unchanged.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.13";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -3370,7 +3378,9 @@ mod tests {
         // SyncManifestContractError, the manifest-upload contract class), and
         // from 52 to 57 at ~6.18.5 (added RealtimeAdmissionTimeout,
         // RealtimeDrainBurst, ObjectLockChecksumRequired,
-        // ObjectBodyIdleTimeoutError, and SyncDeviceLimitError).
+        // ObjectBodyIdleTimeoutError, and SyncDeviceLimitError). The
+        // 6.18.13 pin adds ReceiverDispatchError and OutpostExecWaitError, but
+        // neither name reaches the desktop runner error-event surface.
         assert_eq!(HQ_CLOUD_IDENTITIES.len(), 57);
         let mut tokens = std::collections::BTreeSet::new();
         for name in HQ_CLOUD_IDENTITIES {

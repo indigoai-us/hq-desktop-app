@@ -101,7 +101,19 @@ describe("PrototypeSettingsPanes live sync status refresh", () => {
     expect(daemonLabel()).toBe("RUNNING");
   });
 
-  it("shows which live lease owner is handling sync", async () => {
+  it("shows RUNNING when desktop-app owns the live watcher", async () => {
+    const adapter = syncAdapter(async () => daemonStatus(true, "desktop-app"));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "sync", adapter },
+    });
+
+    await vi.waitFor(() => expect(daemonLabel()).toBe("RUNNING"));
+  });
+
+  it("shows an external live lease owner as handling sync", async () => {
     const adapter = syncAdapter(async () => daemonStatus(true, "hq-daemon"));
     host = document.createElement("div");
     document.body.appendChild(host);

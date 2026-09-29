@@ -1318,7 +1318,7 @@
       </div>
       <span class="mono" class:ok={liveSync.daemonRunning}
         >{liveSync.daemonRunning
-          ? liveSync.watchOwner
+          ? liveSync.watchOwner && liveSync.watchOwner !== "desktop-app"
             ? `HANDLED BY ${liveSync.watchOwner}`
             : "RUNNING"
           : "STOPPED"}</span

@@ -678,12 +678,26 @@
 /// through presigned PUTs (hq-cloud#637); the pre-vended child credentials are
 /// denied direct writes there. hq-cli bundles its own hq-cloud, so the fix
 /// reaches the first push through hq-cli; this pin moves for rescue parity and
-/// to deliver the 6.16.54-6.18.5 runner fixes. 6.17 and 6.18 add outpost
-/// heartbeat and session-host bins and change no runner flag the desktop
-/// passes. `RESCUE_CONTRACT_FLOOR` moves to 6.18.0 in lockstep, mirrored in
-/// hq-cli's rescue parity test. The runner-error vocabulary was re-derived for
-/// this pin (see `runner_error_shape::CAUSE_VOCABULARY_SOURCE_VERSION`).
-pub const HQ_CLOUD_VERSION: &str = "~6.18.5";
+/// to deliver the 6.16.54-6.18.5 runner fixes.
+/// 6.17 and early 6.18 add outpost heartbeat and session-host bins without
+/// changing desktop runner flags. In 6.18.13 hq-cloud adds the `--owner` watch
+/// flag. The desktop watcher always passes `--owner desktop-app`; v6.18.12 and
+/// earlier reject it as unknown, so the old lower bound could leave a cached
+/// incompatible runner in use.
+///
+/// `~6.18.5` -> `~6.18.13`: the changed npx spec moves the cache key and
+/// delivers the first runner that accepts the desktop's `--owner` watch argument.
+/// `RESCUE_CONTRACT_FLOOR` stays at 6.18.0 because the rescue contract is still
+/// on the same 6.18 minor line, mirrored in hq-cli rescue parity tests. The
+/// runner-error vocabulary was re-derived for this pin (see
+/// `runner_error_shape::CAUSE_VOCABULARY_SOURCE_VERSION`).
+pub const HQ_CLOUD_VERSION: &str = "~6.18.13";
+
+/// First hq-cloud version whose `--watch` parser accepts the owner label that
+/// the desktop always passes. Keep this floor paired with `HQ_CLOUD_VERSION`
+/// and the floor test below so changing the requested spec evicts old cached
+/// runners instead of merely allowing a newer one.
+pub const WATCH_OWNER_LEASE_MIN_HQ_CLOUD: &str = "6.18.13";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -811,7 +825,23 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.5");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.13");
+    }
+
+    /// The desktop always passes `--owner desktop-app`; that option first
+    /// became valid in 6.18.13. The floor must move the npx cache key so a
+    /// desktop with an older cached 6.18 runner cannot keep an incompatible
+    /// parser indefinitely.
+    #[test]
+    fn version_floor_delivers_watch_owner_cli_argument() {
+        assert_eq!(WATCH_OWNER_LEASE_MIN_HQ_CLOUD, "6.18.13");
+        let floor = semver::Version::parse(WATCH_OWNER_LEASE_MIN_HQ_CLOUD)
+            .expect("WATCH_OWNER_LEASE_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            pin_lower_bound() >= floor,
+            "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` lower bound {} is below the first release that accepts the desktop --owner argument; update the requested spec so the cache key moves",
+            pin_lower_bound()
+        );
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
