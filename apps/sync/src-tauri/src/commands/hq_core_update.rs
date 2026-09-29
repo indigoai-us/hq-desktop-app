@@ -341,6 +341,7 @@ async fn install_hq_core_update_observed(
                 pre_rescue_materialization: false,
                 managed_git_retry: run.managed_git_retry,
             },
+            crate::commands::telemetry::emit_desktop_telemetry_best_effort,
         ),
         Err(error) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
@@ -353,6 +354,7 @@ async fn install_hq_core_update_observed(
             None,
             error.kind().label(),
             crate::commands::hq_core_state::core_update_failure_details(error),
+            crate::commands::telemetry::emit_desktop_telemetry_best_effort,
         ),
     }
     outcome
