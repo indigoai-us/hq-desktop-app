@@ -49,6 +49,13 @@ export interface ConversationRow {
   /** Epoch-ms of most recent activity (0 when unknown). */
   lastActivityAt: number;
   /**
+   * Epoch-ms of the most recent HUMAN message (audience = human / both;
+   * mesh + system rows excluded). 0 when the server has never sent one.
+   * Read only when the `desktop.human-only-conversations` flag is on; the
+   * sidebar falls back to `lastActivityAt` when 0.
+   */
+  lastHumanMessageAt?: number;
+  /**
    * Epoch-ms of the most recent DURABLE MESSAGE, with no creation-time
    * fallback (0 when the conversation has never carried one). The directory
    * sends `lastActivityAt: null` for a channel with no messages, so this
@@ -318,6 +325,12 @@ export interface DmContactInput {
   lastMessageAt?: string | null;
   lastActivityAt?: string | null;
   lastDmAt?: string | null;
+  /**
+   * Server-supplied timestamp of the last HUMAN message on this DM
+   * (audience = human / both). Absent on older servers; used only when
+   * the `desktop.human-only-conversations` flag is on.
+   */
+  lastHumanMessageAt?: string | null;
   /** Local-only activity dot — used when server pair unread is absent. */
   activityDot?: boolean;
   /**
@@ -647,6 +660,7 @@ export function normalizeChannel(
     parseActivityMs(channel.lastActivityAt),
     parseActivityMs(channel.lastMessageAt),
   );
+  const humanMessageActivity = parseActivityMs(channel.lastHumanMessageAt);
   const unread = Math.max(0, channel.unread ?? 0);
   const homeChannelId = channel.companyUid
     ? options.homeChannelIdByUid instanceof Map
@@ -676,6 +690,9 @@ export function normalizeChannel(
     unreadDot: isGroup ? unread > 0 : false,
     lastActivityAt: activity,
     messageActivityAt: messageActivity,
+    ...(humanMessageActivity > 0
+      ? { lastHumanMessageAt: humanMessageActivity }
+      : {}),
     pinned: pinnedIds.has(id),
     memberCount: channel.memberCount,
     members: channel.members,
@@ -715,6 +732,7 @@ export function normalizeDm(
     parseActivityMs(contact.lastActivityAt),
     parseActivityMs(contact.lastDmAt),
   );
+  const humanMessageActivity = parseActivityMs(contact.lastHumanMessageAt);
   const localDot =
     contact.activityDot === true || dmDots.has(contact.personUid);
   // A membership announcement must never read as an unread message. Suppress
@@ -749,6 +767,9 @@ export function normalizeDm(
     ...(unreadCount != null ? { unreadCount } : {}),
     unreadDot,
     lastActivityAt: activity,
+    ...(humanMessageActivity > 0
+      ? { lastHumanMessageAt: humanMessageActivity }
+      : {}),
     pinned: pinnedIds.has(id),
     personUid: contact.personUid,
     email: contact.email ?? null,
@@ -1198,9 +1219,27 @@ export function filterByPerson(
   );
 }
 
+/**
+ * Recency key the sidebar sorts by. In `humanOnly` mode, prefer the
+ * server-provided last-human-message stamp; when absent (older server /
+ * channel with no human message), fall back to `lastActivityAt` so the
+ * row is still orderable. Match `humanRecencyKey` in `@hq/platform`.
+ */
+export function rowRecencyKey(
+  row: ConversationRow,
+  humanOnly: boolean,
+): number {
+  if (humanOnly) {
+    const human = row.lastHumanMessageAt ?? 0;
+    if (human > 0) return human;
+  }
+  return row.lastActivityAt;
+}
+
 export function sortConversations(
   rows: ConversationRow[],
   mode: SortMode,
+  humanOnly = false,
 ): ConversationRow[] {
   const copy = rows.slice();
   if (mode === "type") {
@@ -1212,16 +1251,18 @@ export function sortConversations(
     copy.sort((a, b) => {
       const kindDiff = order[a.kind] - order[b.kind];
       if (kindDiff !== 0) return kindDiff;
-      if (b.lastActivityAt !== a.lastActivityAt)
-        return b.lastActivityAt - a.lastActivityAt;
+      const ak = rowRecencyKey(a, humanOnly);
+      const bk = rowRecencyKey(b, humanOnly);
+      if (bk !== ak) return bk - ak;
       return a.title.localeCompare(b.title) || a.id.localeCompare(b.id);
     });
     return copy;
   }
   // Recent
   copy.sort((a, b) => {
-    if (b.lastActivityAt !== a.lastActivityAt)
-      return b.lastActivityAt - a.lastActivityAt;
+    const ak = rowRecencyKey(a, humanOnly);
+    const bk = rowRecencyKey(b, humanOnly);
+    if (bk !== ak) return bk - ak;
     const aUnread = a.unreadCount ?? (a.unreadDot ? 1 : 0);
     const bUnread = b.unreadCount ?? (b.unreadDot ? 1 : 0);
     if (bUnread !== aUnread) return bUnread - aUnread;
@@ -1237,13 +1278,22 @@ export function applySidebarFilters(
     show?: ShowFilter;
     sort?: SortMode;
     personUid?: string | null;
+    /**
+     * When true, sort by `lastHumanMessageAt` (with a per-row fallback to
+     * `lastActivityAt`). See `rowRecencyKey`.
+     */
+    humanOnly?: boolean;
   } = {},
 ): ConversationRow[] {
   let next = rows;
   next = filterByCompanyScope(next, options.scope ?? "all");
   next = filterByShow(next, options.show ?? DEFAULT_SHOW_FILTER);
   next = filterByPerson(next, options.personUid ?? null);
-  return sortConversations(next, options.sort ?? "recent");
+  return sortConversations(
+    next,
+    options.sort ?? "recent",
+    options.humanOnly === true,
+  );
 }
 
 // ── Day grouping ─────────────────────────────────────────────────────────────

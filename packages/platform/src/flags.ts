@@ -81,6 +81,8 @@ export const INVITE_TEAMMATE_STEP_FLAG =
   "desktop.invite-teammate-step-v1";
 export const SETUP_STAGE_TIMEOUT_FIX_FLAG =
   "desktop.setup-stage-timeout-fix-v1";
+export const HUMAN_ONLY_CONVERSATIONS_FLAG =
+  "desktop.human-only-conversations";
 
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
@@ -90,6 +92,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [INVITE_TEAMMATE_STEP_FLAG]: INVITE_TEAMMATE_STEP_FLAG,
   [SETUP_STAGE_TIMEOUT_FIX_FLAG]: SETUP_STAGE_TIMEOUT_FIX_FLAG,
+  [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
 };

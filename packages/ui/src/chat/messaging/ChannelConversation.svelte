@@ -29,7 +29,7 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
-  import type { LocalBotRow } from "@hq/platform";
+  import { isHumanMessage, type LocalBotRow } from "@hq/platform";
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
   import type { ImagePreviewCache } from "./image-preview-cache";
@@ -274,6 +274,13 @@
     restoreScroll?: NavigationScrollState | null;
     /** The user's local bots — tells the Cloud / Local chip which is which. */
     localBots?: ReadonlyArray<LocalBotRow> | null;
+    /**
+     * When true (the `desktop.human-only-conversations` flag is on), work-mesh
+     * activity rows, server system-events, and non-human-audience messages are
+     * hidden from the timeline. See `@hq/platform` `isHumanMessage` for the
+     * exact rule. Default off preserves the legacy view.
+     */
+    humanOnly?: boolean;
   }
 
   let {
@@ -320,6 +327,7 @@
     headerOnly = false,
     restoreScroll = null,
     localBots = null,
+    humanOnly = false,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -504,6 +512,10 @@
       // entirely — rendering nothing for them would still paint an empty
       // bubble with an avatar and a timestamp.
       if (isHiddenTimelineMessage(msg)) continue;
+      // desktop.human-only-conversations: hide mesh/system rows and any
+      // non-human-audience message. A mesh row that parses as a work-session
+      // event is dropped downstream via `parseWorkSessionEvent` below.
+      if (humanOnly && !isHumanMessage(msg)) continue;
       seen.add(id);
       out.push(msg);
     }
@@ -1060,10 +1072,15 @@
       const startsNewDay = prev === undefined || day !== prevDay;
       const systemModel = systemModelForMessage(msg);
       const special = systemModel !== null;
+      const workActivity = parseWorkSessionEvent(msg.body ?? "");
+      // desktop.human-only-conversations: a message whose body parses as a
+      // work-mesh activity event is a mesh row and MUST NOT render, even if
+      // the classifier missed it on the wire fields.
+      if (humanOnly && (workActivity !== null || special)) continue;
       out.push({
         msg,
         systemModel,
-        workActivity: parseWorkSessionEvent(msg.body ?? ""),
+        workActivity,
         groupStart:
           prev === undefined ||
           !messagesShareGroup(prev, msg, prevSpecial, special),

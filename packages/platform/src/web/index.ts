@@ -607,6 +607,14 @@ export class WebPlatformAdapter implements PlatformAdapter {
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? this.legacyHasFeature(flag)
         : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+    subscribeFeature: (flag, onChange) =>
+      WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
+        ? () => {}
+        : this.flags.subscribe(
+            flag,
+            () => this.legacyHasFeature(flag),
+            onChange,
+          ),
     listWorkspaces: async () => {
       const result = await this.get<Json>(WEB_PATHS.workspaces);
       if (!result.ok) return result;

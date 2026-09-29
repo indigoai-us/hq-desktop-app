@@ -11,6 +11,13 @@ The release moves it under the version it ships in.
 - First-run setup now retries a just-published npm package when the registry
   briefly returns E404 or ETARGET, while keeping setup progress active.
 
+- Leaving a channel and removing a bot from a channel work again, and bots in the member list have a remove button.
+
+- Files saved while a folder like `node_modules` or `build` is being created,
+  or in the brief moment when HQ changes which folders it watches, now sync
+  right away. Before, they waited for the next full rescan, up to six hours
+  later. The sync engine moves to hq-cloud 6.18.16.
+
 - The "Syncing initial cloud data" step of a new install now finishes in
   seconds instead of about two minutes. Once your personal vault is set up,
   the step hands the upload to HQ's background sync, which was already
@@ -22,6 +29,12 @@ The release moves it under the version it ships in.
   itself if it did not. The `desktop.install-initial-sync-handoff` flag
   controls this and is on by default; turning it off restores the previous
   one-file-at-a-time upload.
+
+- Behind a flag (`desktop.human-only-conversations`, off by default): conversations can hide work-mesh and automated messages, and the sidebar can order by the latest message from a person.
+
+- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
+
+## [0.10.359] — 2026-09-29
 
 - First-time setup is now one five-screen welcome flow that fills the screen
   (everything below the menu bar and beside the Dock) with no window
@@ -79,7 +92,6 @@ The release moves it under the version it ships in.
 
 - Setup uses HQ's managed Node.js and npm to install qmd and the HQ CLI.
 - Sign-in keeps working after an internal error during an earlier sign-in attempt, instead of failing until the app restarts.
-- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
 
 ## [0.10.358] — 2026-09-29
 

@@ -32,6 +32,8 @@
   import AgentTaskStrip from "./tasks/AgentTaskStrip.svelte";
   import { TaskFeedController, isAgentUid } from "./tasks/task-feed-controller.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
+  import { isHumanMessage } from "@hq/platform";
+  import { parseWorkSessionEvent } from "./messaging/workSessionEvent";
   import "./tokens.css";
   import "./chat-tokens.css";
 
@@ -44,9 +46,33 @@
     row: ConversationRow;
     /** Platform seam for opening an external URL from a reply-body link. */
     onopenurl?: (url: string) => void;
+    /**
+     * When true (the `desktop.human-only-conversations` flag is on), mesh /
+     * system rows and non-human-audience messages are dropped from the
+     * rendered timeline. Default off preserves the legacy view.
+     */
+    humanOnly?: boolean;
   }
 
-  let { api, wakes = null, row, onopenurl }: Props = $props();
+  let {
+    api,
+    wakes = null,
+    row,
+    onopenurl,
+    humanOnly = false,
+  }: Props = $props();
+
+  /**
+   * desktop.human-only-conversations: hide mesh/system rows and any message
+   * whose audience is not human. See `@hq/platform` `isHumanMessage`.
+   * A body that parses as a work-session event is a mesh row.
+   */
+  function keepForHumanOnly(wire: ConversationMessageWire): boolean {
+    if (!humanOnly) return true;
+    if (!isHumanMessage(wire)) return false;
+    if (parseWorkSessionEvent(wire.body ?? "") !== null) return false;
+    return true;
+  }
 
   // Background-task chips for every agent in this conversation — the room-
   // scoped route for channels, the agent-wide view for a DM with an agent.
@@ -172,7 +198,9 @@
       initialCursor: cursor,
     });
     return {
-      page: roots.filter((wire) => !isReplyMessage(wire)).map(mapWireMessage),
+      page: roots
+        .filter((wire) => !isReplyMessage(wire) && keepForHumanOnly(wire))
+        .map(mapWireMessage),
       nextCursor: newer,
     };
   }
