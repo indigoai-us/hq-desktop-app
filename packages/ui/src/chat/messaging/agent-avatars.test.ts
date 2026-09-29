@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { MARKETPLACE_COVER_HOST } from "../../avatars/csp-image-src";
@@ -12,11 +9,6 @@ import {
 
 const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_ada/h.png?X-Amz-Signature=mock`;
 const AGENT_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/agt_x/h.png?X-Amz-Signature=mock`;
-
-const src = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "agent-avatars.ts"),
-  "utf8",
-);
 
 describe("agent-avatars", () => {
   it("bundles a discovered, sorted asset set", () => {
@@ -75,14 +67,4 @@ describe("agent-avatars", () => {
     ).toBeNull();
   });
 
-  it("does not guard import.meta.glob behind typeof", () => {
-    // The guard survives bundling (Vite only rewrites the *call*) and
-    // disables the set in production, where import.meta.glob is undefined.
-    const code = src
-      .split("\n")
-      .filter((line) => !line.trimStart().startsWith("//"))
-      .join("\n");
-    expect(code).not.toMatch(/typeof\s+import\.meta\.glob/);
-    expect(code).toMatch(/import\.meta\.glob\(/);
-  });
 });

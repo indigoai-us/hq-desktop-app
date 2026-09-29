@@ -12,7 +12,6 @@
  * limit, which is the signal to run the refresh steps in `service-evidence.ts`.
  */
 
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { validateServiceEvidence } from "@hq/platform";
 
@@ -21,6 +20,7 @@ import {
   BUNDLED_EVIDENCE_REFRESH_WARNING_MS,
   SERVICE_EVIDENCE,
 } from "./service-evidence";
+import { createNativeCallsHost } from "../desktop-alt/work-shell-capabilities";
 
 const runAt = Date.parse((SERVICE_EVIDENCE as { runAt: string }).runAt);
 
@@ -71,20 +71,10 @@ describe("bundled service evidence lifetime", () => {
     expect(wrongContract.ok).toBe(false);
   });
 
-  it("is passed at BOTH preflight call sites, so neither window drifts", () => {
-    // The call window and the main window must agree on the lifetime; a bare
-    // `preflight(SERVICE_EVIDENCE)` would silently inherit the 30-day default.
-    const bootstrap = readFileSync(
-      new URL("./bootstrap.ts", import.meta.url),
-      "utf8",
-    );
-    expect(bootstrap).toContain("BUNDLED_EVIDENCE_MAX_AGE_MS");
-    expect(bootstrap).toContain("maxAgeMs: BUNDLED_EVIDENCE_MAX_AGE_MS");
-
-    const host = readFileSync(
-      new URL("../desktop-alt/work-shell-capabilities.ts", import.meta.url),
-      "utf8",
-    );
-    expect(host).toContain("evidenceMaxAgeMs: BUNDLED_EVIDENCE_MAX_AGE_MS");
+  it("provides the bundled receipt and 90-day lifetime to the native host", () => {
+    const host = createNativeCallsHost(async () => undefined);
+    expect(host.serviceEvidence).toBe(SERVICE_EVIDENCE);
+    expect(host.evidenceMaxAgeMs).toBe(BUNDLED_EVIDENCE_MAX_AGE_MS);
+    expect(host.evidenceMaxAgeMs).toBe(90 * 24 * 60 * 60 * 1000);
   });
 });

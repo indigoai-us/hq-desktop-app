@@ -6,7 +6,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { assertValidVersion, patchInfoPlist, renderVersionJson, stampBundle } from "./stamp-version.mjs";
+import {
+  assertValidVersion,
+  isCliEntrypoint,
+  patchInfoPlist,
+  renderVersionJson,
+  stampBundle,
+} from "./stamp-version.mjs";
 
 const SAMPLE_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
@@ -72,12 +78,20 @@ describe("stamp-version", () => {
     expect(await readFile(join(dir, "version.json"), "utf8")).toBe('{"version":"3.4.5"}\n');
   });
 
-  it("detects its CLI entry point with pathToFileURL so it also runs on Windows", async () => {
-    // A `file://${process.argv[1]}` comparison never matches a backslash
-    // Windows path, so the script exited 0 without writing anything on the
-    // Windows assemble runners.
-    const source = await readFile(fileURLToPath(new URL("./stamp-version.mjs", import.meta.url)), "utf8");
-    expect(source).not.toContain("`file://${process.argv[1]}`");
-    expect(source).toContain("pathToFileURL(process.argv[1]).href");
+  it("recognizes a Windows CLI path by its canonical file URL", () => {
+    const windowsPath = String.raw`C:\actions\_work\stamp-version.mjs`;
+    const windowsFileUrl = "file:///C:/actions/_work/stamp-version.mjs";
+    const toWindowsFileUrl = (path: string) => {
+      expect(path).toBe(windowsPath);
+      return new URL(windowsFileUrl);
+    };
+
+    expect(
+      isCliEntrypoint(windowsFileUrl, windowsPath, toWindowsFileUrl),
+    ).toBe(true);
+    expect(
+      isCliEntrypoint("file:///C:/other.mjs", windowsPath, toWindowsFileUrl),
+    ).toBe(false);
+    expect(isCliEntrypoint(windowsFileUrl, undefined, toWindowsFileUrl)).toBe(false);
   });
 });

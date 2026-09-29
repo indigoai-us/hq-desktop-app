@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
+
 - A local bot's model picker lists specific model versions: Claude Opus 5.5,
   Opus 5, Sonnet 5 and Haiku 4.5; GPT-6 Astra and GPT-5.5 for Codex; and
   Grok 4.7, 4.6 and 4.5. Bots that already use the older Opus, Sonnet or Haiku

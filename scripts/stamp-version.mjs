@@ -84,10 +84,19 @@ export async function main(argv) {
   return 0;
 }
 
+/** Whether Node launched this module as the CLI entry point. */
+export function isCliEntrypoint(
+  moduleUrl,
+  argvPath,
+  toFileUrl = pathToFileURL,
+) {
+  return Boolean(argvPath && moduleUrl === toFileUrl(argvPath).href);
+}
+
 // process.argv[1] is a raw OS path (backslashes on Windows); compare as a
 // file URL so the CLI actually runs on Windows runners (same fix as
 // shell-hash.mjs).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isCliEntrypoint(import.meta.url, process.argv[1])) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {
