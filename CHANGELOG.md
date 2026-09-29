@@ -14,6 +14,15 @@ The release moves it under the version it ships in.
   setting show it as "(latest in Claude Code)". When a specific model is
   picked, a note says to update the coding tool if the bot cannot start with
   it, and a bot whose tool does not know its model now says so in plain words.
+
+- Desktop sync commands now recover their valid state after a mutex is poisoned.
+
+- Auto-sync memory-ceiling reports now include the active sync phase and its
+  elapsed-time bucket, so recurring memory failures can be compared across scan,
+  pull, and push work.
+
+## [0.10.357] — 2026-09-29
+
 - Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 
 ## [0.10.356] — 2026-09-29
