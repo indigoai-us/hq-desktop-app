@@ -11292,18 +11292,17 @@ mod npm_setup_recovery_tests {
 
     #[tokio::test(start_paused = true)]
     async fn setup_npm_package_resolution_404_exhaustion_keeps_exit_category() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let started = tokio::time::Instant::now();
         let missing_tarball = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
         let run = run_fake_npm(
-            "/tmp/setup-prefix",
+            prefix,
             false,
-            "@indigoai-us/hq-cli",
-            vec![
-                Err(missing_tarball.into()),
-                Err(missing_tarball.into()),
-                Err(missing_tarball.into()),
-                Err(missing_tarball.into()),
-            ],
-            None,
+            spec,
+            vec![Err(missing_tarball.into()); 5],
+            Some(public_registry_args),
         )
         .await;
 
@@ -11313,8 +11312,18 @@ mod npm_setup_recovery_tests {
         assert!(error.contains("npm error 404 Not Found"));
         assert_eq!(
             run.attempts.len(),
-            4,
-            "the initial attempt and three retries are bounded"
+            5,
+            "three retries are followed by the existing public-registry fallback"
+        );
+        assert_eq!(
+            run.attempts[4],
+            npm_public_registry_args(prefix, spec, &[]),
+            "the final attempt preserves the existing public-registry fallback"
+        );
+        assert_eq!(
+            tokio::time::Instant::now() - started,
+            std::time::Duration::from_secs(150),
+            "only the three bounded retries add backoff"
         );
         let dependency = dependency_defs()
             .into_iter()
