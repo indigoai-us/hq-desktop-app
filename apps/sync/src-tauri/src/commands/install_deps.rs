@@ -2910,10 +2910,19 @@ pub fn managed_node_reported_version(node_bin: &std::path::Path) -> Option<Strin
 fn managed_node_toolchain_is_usable(home: &std::path::Path) -> bool {
     let node = managed_node_bin_in(home).join("node");
     let npm = managed_node_bin_in(home).join("npm");
-    node.is_file()
-        && managed_node_reported_version(&node)
+    if !node.is_file()
+        || !managed_node_reported_version(&node)
             .is_some_and(|version| version.trim() == MANAGED_NODE_VERSION)
-        && npm.is_file()
+        || !npm.is_file()
+    {
+        return false;
+    }
+
+    Command::new(npm)
+        .arg("--version")
+        .env("PATH", extended_search_path_in(Some(home)))
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 /// Install Node.js into HQ's user-local managed toolchain.
@@ -3804,6 +3813,13 @@ pub const MANAGED_QMD_VERSION: &str = "2.5.3";
 /// Errors if npm is not available.
 #[cfg(not(windows))]
 async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
+    let npm = match npm_bin_or_install_node(&app, "qmd").await {
+        Ok(path) => path,
+        Err(msg) => {
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
+        }
+    };
     let prefix = npm_global_prefix_arg(&app, "qmd")?;
     if clear_unusable_npm_bin(std::path::Path::new(&prefix), "qmd") {
         emit_preflight_line(&app, "[qmd] removed an unusable leftover bin entry before reinstalling");
@@ -3812,13 +3828,6 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
     // binary compiled for a previous Node ABI in place. Wipe the package
     // first so the install actually rebuilds native addons.
     remove_managed_qmd_package(std::path::Path::new(&prefix));
-    let npm = match preferred_npm_binary() {
-        Ok(p) => p,
-        Err(msg) => {
-            emit_preflight_line(&app, &msg);
-            return Err(msg);
-        }
-    };
     npm_install_global_managed(
         &app,
         npm.to_str().unwrap_or("npm"),
@@ -4065,14 +4074,12 @@ async fn npm_bin_or_install_node(app: &AppHandle, tag: &str) -> Result<std::path
         emit_session_install_line(
             app,
             &format!(
-                "[{tag}] HQ's managed Node.js/npm toolchain is missing. Installing Node.js first so the agent CLI can be set up in-app."
+                "[{tag}] HQ's managed Node.js/npm toolchain is missing. Installing Node.js before installing npm packages."
             ),
         );
         install_node(app.clone()).await?;
         return preferred_npm_binary().map_err(|_| {
-            format!(
-                "[{tag}] managed npm was not found after installing Node.js. Open Settings → Agents and try again."
-            )
+            format!("[{tag}] managed npm was not found after installing Node.js.")
         });
     }
 
@@ -7929,17 +7936,57 @@ mod install_deps_planner_tests {
         let node_bin = managed_node_bin_in(home.path());
         std::fs::create_dir_all(&node_bin).expect("create managed node bin");
         let node = node_bin.join("node");
-        std::fs::write(&node, format!("#!/bin/sh\necho {MANAGED_NODE_VERSION}\n"))
-            .expect("write fake managed node");
+        let npm_invoked = home.path().join("npm-invoked-with-managed-node");
+        std::fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo {MANAGED_NODE_VERSION}; else echo \"$2\" > '{}'; echo 11.0.0; fi\n",
+                npm_invoked.display()
+            ),
+        )
+        .expect("write fake managed node");
         let mut permissions = std::fs::metadata(&node)
             .expect("stat fake node")
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&node, permissions).expect("make fake node executable");
         let npm = node_bin.join("npm");
-        std::fs::write(&npm, "#!/bin/sh\nexit 0\n").expect("write bundled npm placeholder");
+        std::fs::write(&npm, "#!/usr/bin/env node\n// fake npm entrypoint\n")
+            .expect("write bundled npm placeholder");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat fake npm")
+            .permissions();
+        npm_permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm, npm_permissions).expect("make fake npm executable");
 
         assert!(managed_node_toolchain_is_usable(home.path()));
+
+        assert_eq!(
+            std::fs::read_to_string(&npm_invoked).expect("managed Node ran npm"),
+            "--version\n"
+        );
+
+        std::fs::write(&npm, "#!/bin/sh\nexit 7\n").expect("write broken npm entrypoint");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat broken npm")
+            .permissions();
+        npm_permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm, npm_permissions).expect("make broken npm executable");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
+        std::fs::write(&npm, "#!/usr/bin/env node\n// fake npm entrypoint\n")
+            .expect("restore npm entrypoint");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat non-executable npm")
+            .permissions();
+        npm_permissions.set_mode(0o644);
+        std::fs::set_permissions(&npm, npm_permissions)
+            .expect("make npm non-executable");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
+        std::fs::write(&node, "#!/bin/sh\necho v20.8.0\n").expect("write wrong-version node");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
         std::fs::remove_file(&npm).expect("remove bundled npm");
         assert!(!managed_node_toolchain_is_usable(home.path()));
     }
