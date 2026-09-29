@@ -2903,6 +2903,19 @@ pub fn managed_node_reported_version(node_bin: &std::path::Path) -> Option<Strin
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// macOS setup npm installs must use the Node/npm pair from HQ's pinned
+/// toolchain. A system Node can meet the broad runtime floor while remaining
+/// too old for the system npm that happens to be on PATH.
+#[cfg(not(windows))]
+fn managed_node_toolchain_is_usable(home: &std::path::Path) -> bool {
+    let node = managed_node_bin_in(home).join("node");
+    let npm = managed_node_bin_in(home).join("npm");
+    node.is_file()
+        && managed_node_reported_version(&node)
+            .is_some_and(|version| version.trim() == MANAGED_NODE_VERSION)
+        && npm.is_file()
+}
+
 /// Install Node.js into HQ's user-local managed toolchain.
 ///
 /// The installer used to require Homebrew here, which stranded fresh Macs
@@ -2916,40 +2929,33 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
     let node_dir = managed_node_dir_in(&home);
     let node_bin = managed_node_bin_in(&home).join("node");
 
-    if node_bin.exists() {
-        // A leftover from a half-finished or corrupted earlier install must not
-        // be trusted just because the file exists: the install matrix's
-        // `stale-toolchain` profile showed the engine adopting a broken node,
-        // then failing qmd/hq-cli with "prerequisite not installed". Only a
-        // node that runs AND reports the pinned version is reused.
-        match managed_node_reported_version(&node_bin) {
-            Some(v) if v.trim() == MANAGED_NODE_VERSION => {
-                emit_preflight_line(
-                    &app,
-                    &format!(
-                        "[node] managed Node {} already present at {}",
-                        v.trim(),
-                        node_bin.display()
-                    ),
-                );
-                return Ok(format!("node already installed at {}", node_bin.display()));
-            }
-            other => {
-                emit_preflight_line(
-                    &app,
-                    &format!(
-                        "[node] managed Node at {} is unusable ({}) — re-provisioning {}",
-                        node_bin.display(),
-                        other.map(|v| format!("reports '{}'", v.trim())).unwrap_or_else(|| "does not run".into()),
-                        MANAGED_NODE_VERSION
-                    ),
-                );
-                if let Err(e) = std::fs::remove_dir_all(&node_dir) {
-                    let msg = format!("[node] failed to remove stale toolchain {}: {e}", node_dir.display());
-                    emit_preflight_line(&app, &msg);
-                    return Err(msg);
-                }
-            }
+    if managed_node_toolchain_is_usable(&home) {
+        emit_preflight_line(
+            &app,
+            &format!(
+                "[node] managed Node {} and bundled npm already present at {}",
+                MANAGED_NODE_VERSION,
+                node_bin.display()
+            ),
+        );
+        return Ok(format!("node already installed at {}", node_bin.display()));
+    }
+    if node_dir.exists() {
+        emit_preflight_line(
+            &app,
+            &format!(
+                "[node] managed Node/npm toolchain at {} is incomplete or unusable — re-provisioning {}",
+                node_dir.display(),
+                MANAGED_NODE_VERSION
+            ),
+        );
+        if let Err(e) = std::fs::remove_dir_all(&node_dir) {
+            let msg = format!(
+                "[node] failed to remove stale toolchain {}: {e}",
+                node_dir.display()
+            );
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
         }
     }
 
@@ -3041,6 +3047,15 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
         let msg = format!(
             "[node] install completed but node binary was not found at {}",
             staged_bin.display()
+        );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    if !staged_dir.join("bin").join("npm").is_file() {
+        let _ = std::fs::remove_dir_all(&staged_dir);
+        let msg = format!(
+            "[node] install completed but bundled npm was not found at {}",
+            staged_dir.join("bin").join("npm").display()
         );
         emit_preflight_line(&app, &msg);
         return Err(msg);
@@ -3815,22 +3830,19 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
     .await
 }
 
-/// Prefer HQ's managed npm so qmd's native addons compile against the same
-/// Node ABI the desktop app puts first on PATH — not a newer nvm Node.
+/// Use only HQ's paired npm so every setup package install runs under the
+/// managed Node whose ABI the desktop app puts first on PATH.
 #[cfg(not(windows))]
 fn preferred_npm_binary() -> Result<PathBuf, String> {
-    if let Some(home) = dirs::home_dir() {
-        let managed = managed_node_bin_in(&home).join("npm");
-        if managed.is_file() {
-            return Ok(managed);
-        }
+    let home = dirs::home_dir().ok_or_else(|| {
+        "[npm] managed Node.js/npm toolchain not found: home directory is unavailable.".to_string()
+    })?;
+    if managed_node_toolchain_is_usable(&home) {
+        return Ok(managed_node_bin_in(&home).join("npm"));
     }
-    which::which_in(
-        "npm",
-        Some(extended_search_path()),
-        std::env::current_dir().unwrap_or_default(),
-    )
-    .map_err(|_| "npm is not installed. Install Node.js first.".to_string())
+    Err(format!(
+        "[npm] managed Node.js {MANAGED_NODE_VERSION}/npm toolchain not found or incomplete; retry setup to provision Node.js before installing npm packages."
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3925,16 +3937,11 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
                 if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
                     emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
                 }
-                let npm = match which::which_in(
-                    "npm",
-                    Some(extended_search_path()),
-                    std::env::current_dir().unwrap_or_default(),
-                ) {
+                let npm = match preferred_npm_binary() {
                     Ok(p) => p,
-                    Err(_) => {
-                        let msg = "npm is not installed. Install Node.js first.";
+                    Err(ref msg) => {
                         emit_preflight_line(&app, msg);
-                        return Err(msg.to_string());
+                        return Err(msg.clone());
                     }
                 };
                 let resource_dir = app.path().resource_dir().ok();
@@ -4050,24 +4057,46 @@ fn emit_session_install_line(app: &AppHandle, msg: &str) {
 }
 
 async fn npm_bin_or_install_node(app: &AppHandle, tag: &str) -> Result<std::path::PathBuf, String> {
-    let lookup = || {
-        which::which_in(
-            "npm",
-            Some(extended_search_path()),
-            std::env::current_dir().unwrap_or_default(),
-        )
-    };
-    if let Ok(path) = lookup() {
-        return Ok(path);
+    #[cfg(not(windows))]
+    {
+        if let Ok(path) = preferred_npm_binary() {
+            return Ok(path);
+        }
+        emit_session_install_line(
+            app,
+            &format!(
+                "[{tag}] HQ's managed Node.js/npm toolchain is missing. Installing Node.js first so the agent CLI can be set up in-app."
+            ),
+        );
+        install_node(app.clone()).await?;
+        return preferred_npm_binary().map_err(|_| {
+            format!(
+                "[{tag}] managed npm was not found after installing Node.js. Open Settings → Agents and try again."
+            )
+        });
     }
-    emit_session_install_line(
-        app,
-        &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
-    );
-    install_node(app.clone()).await?;
-    lookup().map_err(|_| {
-        format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
-    })
+
+    #[cfg(windows)]
+    {
+        let lookup = || {
+            which::which_in(
+                "npm",
+                Some(extended_search_path()),
+                std::env::current_dir().unwrap_or_default(),
+            )
+        };
+        if let Ok(path) = lookup() {
+            return Ok(path);
+        }
+        emit_session_install_line(
+            app,
+            &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
+        );
+        install_node(app.clone()).await?;
+        lookup().map_err(|_| {
+            format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
+        })
+    }
 }
 
 #[cfg(not(windows))]
@@ -7493,6 +7522,15 @@ pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
 fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
     #[cfg(not(windows))]
     if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
+    // Setup npm installs need the npm bundled with HQ's pinned Node. A system
+    // Node that passes the broad runtime floor can still be too old for the
+    // system npm selected from /usr/local/bin, so it cannot satisfy this dep.
+    #[cfg(not(windows))]
+    if dep.id == "node" {
+        return dirs::home_dir()
+            .as_deref()
+            .is_some_and(managed_node_toolchain_is_usable);
+    }
     let status = check_dep_impl(dep.binary, None);
     if dep.id == "qmd" {
         return qmd_post_install_failure(&status).is_none();
@@ -7830,6 +7868,80 @@ mod install_deps_planner_tests {
         );
 
         assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn setup_fails_closed_when_only_system_npm_is_available() {
+        const CHILD_ENV: &str = "HQ_SC014_NPM_SELECTION_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let error = preferred_npm_binary()
+                .expect_err("system npm must not replace the managed Node/npm pair");
+            assert!(error.contains("managed Node.js"), "unexpected error: {error}");
+            return;
+        }
+
+        // Isolate HOME and PATH in a child test process. The baseline selector
+        // falls through to this fake system npm; the fixed selector reports
+        // that HQ's managed Node/npm toolchain must be provisioned first.
+        let home = tempfile::tempdir().expect("fixture home");
+        let system_bin = tempfile::tempdir().expect("fixture system bin");
+        let system_npm = system_bin.path().join("npm");
+        std::fs::write(&system_npm, "#!/bin/sh\nexit 0\n").expect("write fake system npm");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&system_npm)
+                .expect("stat fake system npm")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&system_npm, permissions).expect("make fake npm executable");
+        }
+
+        let test_binary = std::env::current_exe().expect("current test binary");
+        let output = std::process::Command::new(test_binary)
+            .arg("setup_fails_closed_when_only_system_npm_is_available")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .env("HOME", home.path())
+            .env("PATH", system_bin.path())
+            .env("SHELL", "/bin/sh")
+            .output()
+            .expect("run isolated selector test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("running 1 test"),
+            "child did not run the test:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            output.status.success(),
+            "child rejected the invariant:\n{stdout}\n{stderr}"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn managed_node_toolchain_requires_the_pinned_node_and_bundled_npm() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().expect("fixture home");
+        let node_bin = managed_node_bin_in(home.path());
+        std::fs::create_dir_all(&node_bin).expect("create managed node bin");
+        let node = node_bin.join("node");
+        std::fs::write(&node, format!("#!/bin/sh\necho {MANAGED_NODE_VERSION}\n"))
+            .expect("write fake managed node");
+        let mut permissions = std::fs::metadata(&node)
+            .expect("stat fake node")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&node, permissions).expect("make fake node executable");
+        let npm = node_bin.join("npm");
+        std::fs::write(&npm, "#!/bin/sh\nexit 0\n").expect("write bundled npm placeholder");
+
+        assert!(managed_node_toolchain_is_usable(home.path()));
+        std::fs::remove_file(&npm).expect("remove bundled npm");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
     }
 
     #[tokio::test]
