@@ -2914,60 +2914,6 @@ fn resolve_channel() -> (Channel, String) {
 
 // ─── Target resolution ───────────────────────────────────────────────────────
 
-/// Fetch the latest release tag from `indigoai-us/hq-core`. Returns the
-/// raw `tag_name` (e.g. `"v14.2.0"`) — caller strips the `v` for display.
-async fn fetch_latest_release_tag(client: &reqwest::Client) -> Result<String, String> {
-    let url = "https://api.github.com/repos/indigoai-us/hq-core/releases/latest";
-    let resp = client
-        .get(url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("releases/latest HTTP {}", resp.status()));
-    }
-    let parsed: GhRelease = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse release JSON: {e}"))?;
-    Ok(parsed.tag_name.trim().to_string())
-}
-
-/// Fetch the commit SHA a ref points to (branch name, tag, or short SHA).
-async fn fetch_commit_sha(
-    client: &reqwest::Client,
-    repo: &str,
-    git_ref: &str,
-) -> Result<String, String> {
-    let url = format!("https://api.github.com/repos/{repo}/commits/{git_ref}");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("commits/{git_ref} HTTP {}", resp.status()));
-    }
-    let parsed: GhCommit = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse commit JSON: {e}"))?;
-    let sha = parsed.sha.trim().to_string();
-    if sha.len() < 40 {
-        return Err(format!("unexpected SHA length: {sha:?}"));
-    }
-    Ok(sha)
-}
-
-/// Fetch staging `main`'s HEAD commit SHA (back-compat shim).
-async fn fetch_main_head_sha(client: &reqwest::Client, repo: &str) -> Result<String, String> {
-    fetch_commit_sha(client, repo, "main").await
-}
-
-/// Fetch a tree at any ref (tag, branch, commit SHA). Returns
-/// `path → (blob_sha, size)`. Drops symlinks (mode `120000`) — their blob
-/// is the target-path string, not the target's content.
 const GITHUB_FETCH_FAILURE_CLASS_MARKER: &str = "[github_fetch_failure_class=";
 
 fn github_fetch_failure_class_from_detail(detail: &str) -> &'static str {
@@ -3001,6 +2947,25 @@ fn github_fetch_failure(class: &'static str, detail: impl AsRef<str>) -> String 
     )
 }
 
+fn append_optional_marker(detail: &str, marker: &str) -> String {
+    let detail = detail.trim_end();
+    let marker = marker.trim();
+    if marker.is_empty() {
+        detail.to_string()
+    } else {
+        format!("{detail} {marker}")
+    }
+}
+
+fn github_api_fetch_failure(error: crate::commands::github_api::ApiError) -> String {
+    let class = error
+        .transport_error
+        .as_ref()
+        .map(github_transport_fetch_failure_class)
+        .unwrap_or(error.class);
+    github_fetch_failure(class, error)
+}
+
 fn github_http_fetch_failure_class(
     status: reqwest::StatusCode,
     rate_limit_remaining: Option<&str>,
@@ -3022,41 +2987,112 @@ fn github_http_fetch_failure_class(
     }
 }
 
-fn github_transport_fetch_failure_class(error: &reqwest::Error) -> &'static str {
-    if error.is_timeout() {
-        "timeout"
-    } else if error.is_connect() {
-        "connection"
-    } else {
-        "transport_other"
-    }
+fn github_http_fetch_failure(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    detail: impl AsRef<str>,
+) -> String {
+    let class = github_http_fetch_failure_class(
+        status,
+        headers
+            .get("x-ratelimit-remaining")
+            .and_then(|value| value.to_str().ok()),
+    );
+    github_fetch_failure(class, format!("{} HTTP {status}", detail.as_ref()))
 }
 
+fn github_transport_fetch_failure_class(error: &reqwest::Error) -> &'static str {
+    crate::commands::github_api::body_error_class(
+        error.is_timeout(),
+        error.is_connect(),
+        error.is_decode(),
+    )
+}
+
+/// Fetch the latest release tag from `indigoai-us/hq-core`. Returns the
+/// raw `tag_name` (e.g. `"v14.2.0"`) — caller strips the `v` for display.
+async fn fetch_latest_release_tag(
+    client: &reqwest::Client,
+    scope: crate::commands::github_api::ApiScope,
+) -> Result<String, String> {
+    let url = "https://api.github.com/repos/indigoai-us/hq-core/releases/latest";
+    let resp = crate::commands::github_api::get(client, url, scope)
+        .await
+        .map_err(github_api_fetch_failure)?;
+    if !resp.status().is_success() {
+        return Err(github_http_fetch_failure(
+            resp.status(),
+            &resp.headers,
+            "releases/latest",
+        ));
+    }
+    let parsed: GhRelease = serde_json::from_slice(&resp.body).map_err(|error| {
+        github_fetch_failure("invalid_response", format!("parse release JSON: {error}"))
+    })?;
+    Ok(parsed.tag_name.trim().to_string())
+}
+
+/// Fetch the commit SHA a ref points to (branch name, tag, or short SHA).
+async fn fetch_commit_sha(
+    client: &reqwest::Client,
+    repo: &str,
+    git_ref: &str,
+    scope: crate::commands::github_api::ApiScope,
+) -> Result<String, String> {
+    let url = format!("https://api.github.com/repos/{repo}/commits/{git_ref}");
+    let resp = crate::commands::github_api::get(client, &url, scope)
+        .await
+        .map_err(github_api_fetch_failure)?;
+    if !resp.status().is_success() {
+        return Err(github_http_fetch_failure(
+            resp.status(),
+            &resp.headers,
+            format!("commits/{git_ref}"),
+        ));
+    }
+    let parsed: GhCommit = serde_json::from_slice(&resp.body).map_err(|error| {
+        github_fetch_failure("invalid_response", format!("parse commit JSON: {error}"))
+    })?;
+    let sha = parsed.sha.trim().to_string();
+    if sha.len() < 40 {
+        return Err(github_fetch_failure(
+            "invalid_response",
+            format!("unexpected SHA length: {sha:?}"),
+        ));
+    }
+    Ok(sha)
+}
+
+/// Fetch staging `main`'s HEAD commit SHA (back-compat shim).
+async fn fetch_main_head_sha(
+    client: &reqwest::Client,
+    repo: &str,
+    scope: crate::commands::github_api::ApiScope,
+) -> Result<String, String> {
+    fetch_commit_sha(client, repo, "main", scope).await
+}
+
+/// Fetch a tree at any ref (tag, branch, commit SHA). Returns
+/// `path → (blob_sha, size)`. Drops symlinks (mode `120000`) — their blob
+/// is the target-path string, not the target's content.
 async fn fetch_tree(
     client: &reqwest::Client,
     repo: &str,
     git_ref: &str,
+    scope: crate::commands::github_api::ApiScope,
 ) -> Result<BTreeMap<String, (String, u64)>, String> {
     let url = format!("https://api.github.com/repos/{repo}/git/trees/{git_ref}?recursive=1");
-    let resp = client.get(&url).send().await.map_err(|error| {
-        github_fetch_failure(
-            github_transport_fetch_failure_class(&error),
-            format!("GET {url}: {error}"),
-        )
-    })?;
+    let resp = crate::commands::github_api::get(client, &url, scope)
+        .await
+        .map_err(github_api_fetch_failure)?;
     if !resp.status().is_success() {
-        let class = github_http_fetch_failure_class(
+        return Err(github_http_fetch_failure(
             resp.status(),
-            resp.headers()
-                .get("x-ratelimit-remaining")
-                .and_then(|value| value.to_str().ok()),
-        );
-        return Err(github_fetch_failure(
-            class,
-            format!("git/trees/{git_ref} HTTP {}", resp.status()),
+            &resp.headers,
+            format!("git/trees/{git_ref}"),
         ));
     }
-    let parsed: GhTreesResponse = resp.json().await.map_err(|error| {
+    let parsed: GhTreesResponse = serde_json::from_slice(&resp.body).map_err(|error| {
         github_fetch_failure("invalid_response", format!("parse trees JSON: {error}"))
     })?;
     if parsed.truncated {
@@ -3488,8 +3524,13 @@ pub(crate) async fn persist_applied_rescue_baseline(
         channel,
         token,
         |source, commit, token| async move {
+            let scope = if token.is_some() {
+                crate::commands::github_api::ApiScope::Authenticated
+            } else {
+                crate::commands::github_api::ApiScope::Anonymous
+            };
             match optional_core_tree_client(token.as_deref()) {
-                Ok(client) => fetch_tree(&client, &source, &commit).await,
+                Ok(client) => fetch_tree(&client, &source, &commit, scope).await,
                 Err(error) => Err(error),
             }
         },
@@ -3556,9 +3597,8 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         .and_then(|c| c.email);
     let is_eligible = hq_core_staging::is_eligible_email(signed_in_email.as_deref());
 
-    // Use staging's authed client when on staging — burns gh token for
-    // higher rate limits + works with private repos. On release we use
-    // an anonymous client (the public hq-core repo doesn't need auth).
+    // Use authenticated requests when a local gh token is available. Public
+    // release data remains readable anonymously when it is not.
     //
     // Staging-auth missing → fall back to Release. The popover previously
     // got the prod release Update pill from the separate
@@ -3569,10 +3609,14 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
     // #110). NOTE: this strictly affects users who have no `gh`
     // token — eligible @indigo users with a token still get the
     // staging channel as intended.
+    let mut request_scope = crate::commands::github_api::ApiScope::Anonymous;
     let client = match channel {
         Channel::Staging => match hq_core_staging::resolve_gh_token() {
-            Some(token) => staging_authed_client(&token)
-                .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?,
+            Some(token) => {
+                request_scope = crate::commands::github_api::ApiScope::Authenticated;
+                staging_authed_client(&token)
+                    .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?
+            }
             None => {
                 log(
                     "hq-core-state",
@@ -3592,28 +3636,26 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                     })?
             }
         },
-        Channel::Release => reqwest::Client::builder()
-            .default_headers(crate::util::client_info::client_headers())
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|error| {
-                CoreUpdateError::new(
-                    CoreUpdateErrorKind::Network,
-                    format!("build client: {error}"),
-                )
-            })?,
+        Channel::Release => {
+            let token = hq_core_staging::resolve_gh_token();
+            if token.is_some() {
+                request_scope = crate::commands::github_api::ApiScope::Authenticated;
+            }
+            optional_core_tree_client(token.as_deref())
+                .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?
+        }
     };
 
     let (target_ref, target_version) = match channel {
         Channel::Release => {
-            let tag = fetch_latest_release_tag(&client)
+            let tag = fetch_latest_release_tag(&client, request_scope)
                 .await
                 .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
             let version = tag.trim_start_matches('v').to_string();
             (tag, version)
         }
         Channel::Staging => {
-            let sha = fetch_main_head_sha(&client, &target_repo)
+            let sha = fetch_main_head_sha(&client, &target_repo, request_scope)
                 .await
                 .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
             let short = sha.chars().take(7).collect::<String>();
@@ -3639,7 +3681,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         None => match (channel, local_version.as_deref()) {
             (Channel::Release, Some(ver)) => {
                 let tag = format!("v{ver}");
-                match fetch_commit_sha(&client, &target_repo, &tag).await {
+                match fetch_commit_sha(&client, &target_repo, &tag, request_scope).await {
                     Ok(sha) => {
                         log(
                             "hq-core-state",
@@ -3668,7 +3710,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
     // Fetch trees. Target only if we're actually going to scan drift.
     // Floor only if available + matches source.
     let (target_tree, floor_blobs) = if drift_scan_possible {
-        let target_tree = fetch_tree(&client, &target_repo, &target_ref)
+        let target_tree = fetch_tree(&client, &target_repo, &target_ref, request_scope)
             .await
             .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
         let floor_blobs = match floor_identity.as_ref() {
@@ -3680,7 +3722,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 if local.is_some() {
                     local
                 } else if source == &target_repo {
-                    match fetch_tree(&client, source, commit).await {
+                    match fetch_tree(&client, source, commit, request_scope).await {
                         Ok(tree) => Some(
                             tree.into_iter()
                                 .map(|(path, (sha, _))| (path, sha))
@@ -3964,11 +4006,14 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 // tag points to, we're on the release regardless of what the
                 // string says.
                 let stamp_matches_tag = match floor_sha.as_deref() {
-                    Some(floor) => match fetch_commit_sha(&client, &target_repo, &target_ref).await
-                    {
-                        Ok(tag_sha) => floor == tag_sha,
-                        Err(_) => false,
-                    },
+                    Some(floor) => {
+                        match fetch_commit_sha(&client, &target_repo, &target_ref, request_scope)
+                            .await
+                        {
+                            Ok(tag_sha) => floor == tag_sha,
+                            Err(_) => false,
+                        }
+                    }
                     None => false,
                 };
                 if stamp_matches_tag {
@@ -4805,14 +4850,15 @@ where
             }
         },
         Err(error) => {
+            let detail = append_optional_marker(
+                &format!("Core baseline refresh pending for {source}@{stamped_commit}: {error}"),
+                &stamp.marker(),
+            );
             record_core_update_baseline_persistence_failure(
                 "automatic",
                 channel,
                 "hq-core-state",
-                &format!(
-                    "Core baseline refresh pending for {source}@{stamped_commit}: {error} {}",
-                    stamp.marker()
-                ),
+                &detail,
             );
             true
         }
@@ -4829,8 +4875,13 @@ async fn retry_pending_baseline_refresh(state: &CoreState) -> bool {
         &hq_folder,
         hq_core_staging::resolve_gh_token(),
         |source, commit, token| async move {
+            let scope = if token.is_some() {
+                crate::commands::github_api::ApiScope::Authenticated
+            } else {
+                crate::commands::github_api::ApiScope::Anonymous
+            };
             match optional_core_tree_client(token.as_deref()) {
-                Ok(client) => fetch_tree(&client, &source, &commit).await,
+                Ok(client) => fetch_tree(&client, &source, &commit, scope).await,
                 Err(error) => Err(error),
             }
         },
@@ -7843,6 +7894,19 @@ error: clone failed";
         assert!(event.extra["baselinePersistenceDetail"]
             .as_str()
             .is_some_and(|detail| detail.contains("baseline refresh pending")));
+    }
+
+    #[test]
+    fn pending_baseline_detail_omits_an_empty_trailing_marker() {
+        let detail = append_optional_marker(
+            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable",
+            "",
+        );
+        assert_eq!(
+            detail,
+            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable"
+        );
+        assert_eq!(detail.trim_end(), detail.as_str());
     }
 
     #[test]

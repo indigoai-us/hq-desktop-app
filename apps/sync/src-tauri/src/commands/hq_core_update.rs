@@ -85,6 +85,25 @@ struct GithubRelease {
     tag_name: String,
 }
 
+fn github_api_client(token: Option<&str>) -> Result<reqwest::Client, String> {
+    let mut headers = crate::util::client_info::client_headers();
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
+    );
+    if let Some(token) = token {
+        let bearer = format!("Bearer {token}");
+        let value = reqwest::header::HeaderValue::from_str(&bearer)
+            .map_err(|error| format!("build GitHub authorization header: {error}"))?;
+        headers.insert(reqwest::header::AUTHORIZATION, value);
+    }
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| format!("build client: {error}"))
+}
+
 /// Resolve a ref (typically `v{X.Y.Z}`) to its 40-char commit SHA in `repo`.
 ///
 /// Used by `install_hq_core_update` to derive the history floor passed
@@ -94,17 +113,15 @@ struct GithubRelease {
 /// `history_floor` mode (correct vs. installed baseline); when absent
 /// it falls back to `head_compare` (safe but loses USER-EDIT precision
 /// for files changed upstream since the install).
-async fn fetch_tag_sha(repo: &str, git_ref: &str) -> Option<String> {
+async fn fetch_tag_sha(repo: &str, git_ref: &str, token: Option<&str>) -> Option<String> {
     let url = format!("https://api.github.com/repos/{repo}/commits/{git_ref}");
-    let client = reqwest::Client::builder()
-        .default_headers(crate::util::client_info::client_headers())
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .ok()?;
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
+    let client = github_api_client(token).ok()?;
+    let scope = if token.is_some() {
+        crate::commands::github_api::ApiScope::Authenticated
+    } else {
+        crate::commands::github_api::ApiScope::Anonymous
+    };
+    let resp = crate::commands::github_api::get(&client, &url, scope)
         .await
         .ok()?;
     if !resp.status().is_success() {
@@ -114,7 +131,7 @@ async fn fetch_tag_sha(repo: &str, git_ref: &str) -> Option<String> {
     struct GhCommit {
         sha: String,
     }
-    let parsed: GhCommit = resp.json().await.ok()?;
+    let parsed: GhCommit = serde_json::from_slice(&resp.body).ok()?;
     let sha = parsed.sha.trim();
     // Defensive: GitHub returns a 40-char hex SHA. Validate to match the
     // script's `--floor-sha` regex so we don't pass through garbage.
@@ -129,28 +146,24 @@ async fn fetch_tag_sha(repo: &str, git_ref: &str) -> Option<String> {
     }
 }
 
-async fn fetch_latest() -> Result<String, String> {
+async fn fetch_latest(token: Option<&str>) -> Result<String, String> {
     // GitHub returns 403 with the message "Request forbidden by
     // administrative rules" when User-Agent is missing. The client_info
     // headers include a UA already; layer the timeout on top so a
     // hung connection doesn't stall the loop forever.
-    let client = reqwest::Client::builder()
-        .default_headers(crate::util::client_info::client_headers())
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|e| format!("build client: {e}"))?;
-    let resp = client
-        .get(RELEASES_URL)
-        .header("Accept", "application/vnd.github+json")
-        .send()
+    let client = github_api_client(token)?;
+    let scope = if token.is_some() {
+        crate::commands::github_api::ApiScope::Authenticated
+    } else {
+        crate::commands::github_api::ApiScope::Anonymous
+    };
+    let resp = crate::commands::github_api::get(&client, RELEASES_URL, scope)
         .await
         .map_err(|e| format!("GET {RELEASES_URL}: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("GitHub API returned HTTP {}", resp.status()));
     }
-    let parsed: GithubRelease = resp
-        .json()
-        .await
+    let parsed: GithubRelease = serde_json::from_slice(&resp.body)
         .map_err(|e| format!("parse GitHub release JSON: {e}"))?;
     Ok(strip_v_prefix(parsed.tag_name.trim()).to_string())
 }
@@ -358,13 +371,15 @@ async fn install_hq_core_update_inner(
             ),
         ));
     }
-    let previous_baseline_paths =
-        crate::commands::hq_core_state::core_drift_baseline_before_rescue(
-            &hq_folder,
-            PROD_HQ_CORE_REPO,
-        );
+    let previous_baseline_paths = crate::commands::hq_core_state::core_drift_baseline_before_rescue(
+        &hq_folder,
+        PROD_HQ_CORE_REPO,
+    );
 
-    let latest = fetch_latest().await.map_err(|error| {
+    // Reuse one optional token for API reads and the rescue process so public
+    // GitHub requests can use the authenticated rate-limit bucket when present.
+    let gh_token = crate::commands::hq_core_staging::resolve_gh_token();
+    let latest = fetch_latest(gh_token.as_deref()).await.map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
             crate::commands::hq_core_state::CoreUpdateErrorKind::Network,
             format!("fetch latest hq-core release: {error}"),
@@ -410,7 +425,7 @@ async fn install_hq_core_update_inner(
     let floor_sha = match get_local_version() {
         Some(ver) => {
             let user_tag = format!("v{ver}");
-            let resolved = fetch_tag_sha(PROD_HQ_CORE_REPO, &user_tag).await;
+            let resolved = fetch_tag_sha(PROD_HQ_CORE_REPO, &user_tag, gh_token.as_deref()).await;
             if resolved.is_none() {
                 log(
                     "hq-core-update",
@@ -532,10 +547,6 @@ async fn install_hq_core_update_inner(
         Some(&git_ref),
         floor_sha.as_deref(),
     );
-
-    // GH token is optional for the public repo. Forward when present so
-    // the history-index walk doesn't hit anonymous rate limits.
-    let gh_token = crate::commands::hq_core_staging::resolve_gh_token();
 
     let initial_exit_code = spawn_rescue_attempt(
         command,
@@ -895,9 +906,7 @@ fn rescue_result_after_managed_git_retry(
     )
 }
 
-fn rescue_attempt_number(
-    outcome: crate::commands::hq_core_state::ManagedGitRetryOutcome,
-) -> u32 {
+fn rescue_attempt_number(outcome: crate::commands::hq_core_state::ManagedGitRetryOutcome) -> u32 {
     match outcome {
         crate::commands::hq_core_state::ManagedGitRetryOutcome::Succeeded => 2,
         _ => 1,
@@ -953,9 +962,10 @@ pub(crate) async fn ensure_managed_rsync_for_core_update_rescue() -> Result<(), 
         crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningFailed(reason) => {
             Err(reason)
         }
-        crate::commands::install_deps::RsyncRescueProvisioning::ProvisionedButNotRescueReady => {
-            Err("managed rsync installer completed, but rsync.exe failed its rescue PATH version check".to_string())
-        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisionedButNotRescueReady => Err(
+            "managed rsync installer completed, but rsync.exe failed its rescue PATH version check"
+                .to_string(),
+        ),
     }
 }
 
