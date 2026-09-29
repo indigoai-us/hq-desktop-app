@@ -44,6 +44,18 @@ vi.mock('@hq/platform', () => ({
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG: 'desktop.setup-directory-parent-fallback',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   INVITE_TEAMMATE_STEP_FLAG: 'desktop.invite-teammate-step-v1',
+  retryThrottled: async <T>(
+    attempt: (attemptIndex: number) => Promise<T>,
+    classify: (result: T) => { status: number | null },
+  ) => {
+    let result = await attempt(0);
+    for (let attemptIndex = 1; attemptIndex < 4; attemptIndex += 1) {
+      const status = classify(result).status;
+      if (status !== 429 && status !== 503) return result;
+      result = await attempt(attemptIndex);
+    }
+    return result;
+  },
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
       hasFeature: (flag: string) => {
@@ -2362,12 +2374,17 @@ describe('invite teammate onboarding step', () => {
     flagEnabled?: boolean;
     firstFolderEnabled?: boolean;
     companyMembers?: Array<Record<string, unknown>>;
+    fetchResponses?: Record<
+      string,
+      Array<{ status: number; body: unknown; retryAfter?: string }>
+    >;
     inviteResponse?: { status: number; body: unknown };
     inviteResponses?: Array<{ status: number; body: unknown }>;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = options.firstFolderEnabled ?? false;
     onboardingFlags.inviteTeammateEnabled = options.flagEnabled ?? true;
     let inviteResponseIndex = 0;
+    const fetchResponseIndexes: Record<string, number> = {};
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
     tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       switch (command) {
@@ -2377,6 +2394,21 @@ describe('invite teammate onboarding step', () => {
           return NO_AI_TOOLS;
         case 'hq_pro_fetch': {
           const url = args?.url;
+          const configuredResponses =
+            typeof url === 'string' ? options.fetchResponses?.[url] : undefined;
+          const responseIndex =
+            typeof url === 'string' ? (fetchResponseIndexes[url] ?? 0) : 0;
+          const configuredResponse = configuredResponses?.[responseIndex];
+          if (configuredResponse && typeof url === 'string') {
+            fetchResponseIndexes[url] = responseIndex + 1;
+            return {
+              status: configuredResponse.status,
+              body: JSON.stringify(configuredResponse.body),
+              ...(configuredResponse.retryAfter
+                ? { retryAfter: configuredResponse.retryAfter }
+                : {}),
+            };
+          }
           if (url === '/membership/me') {
             return {
               status: 200,
@@ -2470,6 +2502,73 @@ describe('invite teammate onboarding step', () => {
           (args as { url?: string })?.url === '/membership/company/cmp_demo',
       ),
     ).toBe(true);
+  });
+
+  it('ignores non-active roster rows when checking the single active member', async () => {
+    await reachInviteScenario({
+      companyMembers: [
+        ownerMembership,
+        { companyUid: 'cmp_demo', personUid: 'prs_invited', status: 'pending' },
+      ],
+    });
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
+  });
+
+  it('retries throttled membership reads using Retry-After before showing the step', async () => {
+    await reachInviteScenario({
+      fetchResponses: {
+        '/membership/me': [
+          { status: 503, body: { error: 'busy' }, retryAfter: '0' },
+          { status: 200, body: { memberships: [ownerMembership] } },
+        ],
+        '/membership/company/cmp_demo': [
+          { status: 429, body: { error: 'busy' }, retryAfter: '0' },
+          { status: 200, body: { members: [ownerMembership] } },
+        ],
+      },
+    });
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
+    for (const url of ['/membership/me', '/membership/company/cmp_demo']) {
+      expect(
+        tauri.invoke.mock.calls.filter(
+          ([command, args]) =>
+            command === 'hq_pro_fetch' && (args as { url?: string })?.url === url,
+        ),
+      ).toHaveLength(2);
+    }
+  });
+
+  it('retries a throttled invite send using Retry-After', async () => {
+    await reachInviteScenario({
+      fetchResponses: {
+        '/membership/invite': [
+          { status: 503, body: { error: 'busy' }, retryAfter: '0' },
+          {
+            status: 201,
+            body: { membership: { status: 'pending' }, emailSent: true },
+          },
+        ],
+      },
+    });
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          (args as { url?: string })?.url === '/membership/invite',
+      ),
+    ).toHaveLength(2);
   });
 
   it('shows after the first-folder step for a single-member company', async () => {

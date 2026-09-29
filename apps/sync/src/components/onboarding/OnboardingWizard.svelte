@@ -120,6 +120,7 @@
     createSyncPlatformAdapter,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     INVITE_TEAMMATE_STEP_FLAG,
+    retryThrottled,
     SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
   } from '@hq/platform';
 
@@ -1039,11 +1040,24 @@
     url: string,
     body?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const response = await invokeCommand<unknown>('hq_pro_fetch', {
-      url,
-      method,
-      body: body === undefined ? null : JSON.stringify(body),
-    });
+    const response = await retryThrottled(
+      () =>
+        invokeCommand<unknown>('hq_pro_fetch', {
+          url,
+          method,
+          body: body === undefined ? null : JSON.stringify(body),
+        }),
+      (attempt) => {
+        if (!isRecord(attempt) || typeof attempt.status !== 'number') {
+          return { status: null };
+        }
+        return {
+          status: attempt.status,
+          retryAfter:
+            typeof attempt.retryAfter === 'string' ? attempt.retryAfter : null,
+        };
+      },
+    );
     if (!isRecord(response) || typeof response.status !== 'number') {
       throw new Error('hq-pro returned an invalid response');
     }
@@ -1108,12 +1122,12 @@
       );
       const rawMembers = rosterPayload.members;
       if (!Array.isArray(rawMembers) || !rawMembers.every(isRecord)) return null;
+      const activeMembers = rawMembers.filter((member) => member.status === 'active');
       if (
-        rawMembers.length !== 1 ||
-        rawMembers[0]?.status !== 'active' ||
-        rawMembers[0]?.personUid !== personUid ||
-        (typeof rawMembers[0]?.companyUid === 'string' &&
-          rawMembers[0].companyUid !== companyUid)
+        activeMembers.length !== 1 ||
+        activeMembers[0]?.personUid !== personUid ||
+        (typeof activeMembers[0]?.companyUid === 'string' &&
+          activeMembers[0].companyUid !== companyUid)
       ) {
         return null;
       }
