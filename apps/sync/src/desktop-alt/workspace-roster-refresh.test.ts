@@ -78,9 +78,10 @@ const ACME = {
   membershipStatus: 'active',
 };
 
-function mockInvoke(rosterResponses: Array<() => unknown>) {
+function mockInvoke(rosterResponses: Array<() => unknown>, limitPromptFlag = false) {
   const calls: string[] = [];
-  const invokeFn: SyncInvokeFn = async (cmd) => {
+  const telemetryEvents: Record<string, unknown>[] = [];
+  const invokeFn: SyncInvokeFn = async (cmd, args) => {
     calls.push(cmd);
     switch (cmd) {
       case 'get_auth_state':
@@ -99,11 +100,31 @@ function mockInvoke(rosterResponses: Array<() => unknown>) {
           rosterResponses.length > 1 ? rosterResponses.shift() : rosterResponses[0];
         return next ? next() : { workspaces: [] };
       }
+      case 'hq_pro_fetch': {
+        const request = args ?? {};
+        if (request.url === '/v1/flags/resolve') {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { 'billing.limit-at-action-prompt': limitPromptFlag },
+            }),
+          };
+        }
+        if (request.url === '/v1/telemetry/events') {
+          const body = JSON.parse(String(request.body ?? '{}')) as {
+            events?: Record<string, unknown>[];
+          };
+          telemetryEvents.push(...(body.events ?? []));
+          return { status: 202, body: '{}' };
+        }
+        return { status: 404, body: '{}' };
+      }
       default:
         return null;
     }
   };
-  return { invokeFn, calls };
+  return { invokeFn, calls, telemetryEvents };
 }
 
 function emit(event: string, payload: unknown): void {
@@ -133,7 +154,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
   it('shows a server-linked plan notice and opens the exact upgrade URL', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
-    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })]);
+    const { invokeFn, telemetryEvents } = mockInvoke([() => ({ workspaces: [ACME] })]);
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
@@ -152,6 +173,66 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     expect(openApprovedExternalUrl).toHaveBeenCalledWith(
       'https://hq.computer' + '/companies/' + 'acme' + '/billing?upgrade=team&entrySurface=desktop_limit',
     );
+    expect(telemetryEvents).toEqual([]);
+  });
+
+  it('tracks each visible prompt once and records engagement only for Upgrade clicks', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn, telemetryEvents } = mockInvoke(
+      [() => ({ workspaces: [ACME] })],
+      true,
+    );
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    const upgradeUrl = 'https://hq.computer/companies/acme/billing?upgrade=team';
+    const limitEvent = { company: 'Acme', upgradeUrl };
+    emit('sync:plan-limit', limitEvent);
+    await flush();
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(telemetryEvents.map((event) => event.eventName)).toEqual([
+      'plan_limit_prompt_exposed',
+    ]);
+
+    emit('sync:plan-limit', limitEvent);
+    await flush();
+    expect(telemetryEvents.map((event) => event.eventName)).toEqual([
+      'plan_limit_prompt_exposed',
+    ]);
+
+    const upgrade = host.querySelector<HTMLButtonElement>(
+      '[data-testid="sync-plan-limit-upgrade"]',
+    );
+    upgrade?.click();
+    await flush();
+    expect(telemetryEvents.map((event) => event.eventName)).toEqual([
+      'plan_limit_prompt_exposed',
+      'plan_limit_prompt_engaged',
+    ]);
+    expect((telemetryEvents[1]?.properties as Record<string, unknown>).action).toBe(
+      'upgrade_clicked',
+    );
+    expect((telemetryEvents[1]?.properties as Record<string, unknown>).exposureId).toBe(
+      (telemetryEvents[0]?.properties as Record<string, unknown>).exposureId,
+    );
+    expect(openApprovedExternalUrl).toHaveBeenCalledWith(
+      'https://hq.computer' + '/companies/' + 'acme' + '/billing?upgrade=team&entrySurface=desktop_limit',
+    );
+
+    host.querySelector<HTMLButtonElement>('.plan-limit-dismiss')?.click();
+    await flush();
+    emit('sync:plan-limit', limitEvent);
+    await flush();
+    const exposures = telemetryEvents.filter(
+      (event) => event.eventName === 'plan_limit_prompt_exposed',
+    );
+    expect(exposures).toHaveLength(2);
+    expect((exposures[1].properties as Record<string, unknown>).exposureId).not.toBe(
+      (exposures[0].properties as Record<string, unknown>).exposureId,
+    );
+    expect(telemetryEvents.filter((event) => event.eventName === 'plan_limit_prompt_engaged'))
+      .toHaveLength(1);
   });
 
   it('clears a company plan notice when the authenticated account changes', async () => {

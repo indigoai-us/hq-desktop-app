@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
+- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 ## [0.10.356] — 2026-09-29
 

@@ -38,6 +38,7 @@
   } from '@hq/ui';
   import { flushSync, onDestroy, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
+  import { emitPlanLimitPromptTelemetry } from '../lib/desktop-telemetry';
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
@@ -156,6 +157,8 @@
   let signingOut = $state(false);
   interface PlanLimitNotice {
     company: string;
+    companyUid: string | null;
+    exposureId: string;
     upgradeUrl: string;
   }
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
@@ -671,11 +674,19 @@
         // boundary before rendering an action that can open it.
         const attributedUrl = withDesktopLimitEntrySurface(upgradeUrl);
         const approvedUrl = approvedExternalUrl(attributedUrl);
+        const currentNotice = planLimitNotices.find(
+          (notice) => notice.company === company && notice.upgradeUrl === approvedUrl,
+        );
         planLimitNotices = [
           ...planLimitNotices.filter(
             (notice) => notice.company !== company || notice.upgradeUrl !== approvedUrl,
           ),
-          { company, upgradeUrl: approvedUrl },
+          currentNotice ?? {
+            company,
+            companyUid: resolvePlanLimitCompanyUid(company),
+            exposureId: `exposure:${crypto.randomUUID()}`,
+            upgradeUrl: approvedUrl,
+          },
         ];
         planLimitOpenError = null;
       } catch (error) {
@@ -839,6 +850,66 @@
     );
   }
 
+  function resolvePlanLimitCompanyUid(companyLabel: string): string | null {
+    const normalized = companyLabel.trim().toLowerCase();
+    const scoped = (companies ?? []).filter((workspace) => workspace.kind === 'company');
+    const slugMatches = scoped.filter((workspace) => workspace.slug.toLowerCase() === normalized);
+    const matches = slugMatches.length > 0
+      ? slugMatches
+      : scoped.filter((workspace) => workspace.displayName.trim().toLowerCase() === normalized);
+    if (matches.length !== 1) return null;
+    const companyUid = matches[0].cloudUid?.trim() ?? '';
+    return /^cmp_[A-Za-z0-9_-]+$/.test(companyUid) ? companyUid : null;
+  }
+
+  function trackPlanLimitNoticeExposure(
+    node: HTMLElement,
+    initialNotice: PlanLimitNotice,
+  ) {
+    let notice = initialNotice;
+    let attempted = false;
+    const emitExposure = () => {
+      void tick().then(() => {
+        if (
+          attempted ||
+          !node.isConnected ||
+          !notice.companyUid ||
+          !capabilities?.fetch
+        ) return;
+        attempted = true;
+        void emitPlanLimitPromptTelemetry({
+          fetch: capabilities.fetch,
+          eventName: 'plan_limit_prompt_exposed',
+          companyUid: notice.companyUid,
+          exposureId: notice.exposureId,
+        });
+      });
+    };
+    emitExposure();
+    return {
+      update(nextNotice: PlanLimitNotice) {
+        notice = nextNotice;
+        emitExposure();
+      },
+    };
+  }
+
+  function openPlanLimitUpgradeFromNotice(
+    notice: PlanLimitNotice,
+    url: string,
+  ): Promise<void> {
+    if (notice.companyUid && capabilities?.fetch) {
+      void emitPlanLimitPromptTelemetry({
+        fetch: capabilities.fetch,
+        eventName: 'plan_limit_prompt_engaged',
+        companyUid: notice.companyUid,
+        exposureId: notice.exposureId,
+        action: 'upgrade_clicked',
+      });
+    }
+    return openPlanLimitUpgrade(url);
+  }
+
   function withDesktopLimitEntrySurface(value: string): string {
     const url = new URL(value);
     const callbackUrl = url.searchParams.get('callbackUrl');
@@ -934,11 +1005,11 @@
     {#if planLimitNotices.length > 0}
       <div class="plan-limit-notices" data-testid="sync-plan-limit-notice" role="status">
         {#each planLimitNotices as notice (notice.company + notice.upgradeUrl)}
-          <div class="plan-limit-notice">
+          <div class="plan-limit-notice" use:trackPlanLimitNoticeExposure={notice}>
             <span>New files are paused for {notice.company}.</span>
             <PlanUpgradeAction
               upgradeUrl={notice.upgradeUrl}
-              onUpgrade={openPlanLimitUpgrade}
+              onUpgrade={(url) => openPlanLimitUpgradeFromNotice(notice, url)}
               testId="sync-plan-limit-upgrade"
             />
             <button
