@@ -8,8 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Startup keeps unfinished consent in its consent-only step after an updater
-  restart and treats confirmed missing-root recovery as expected.
+- Startup reporting now treats pending first-run consent and confirmed
+  missing-root recovery as expected.
 - In a DM with a bot, the "is thinking" / "working on it" line now
   disappears as soon as the bot's reply appears, instead of staying under
   the reply for a few more seconds. It shows again when you send another
