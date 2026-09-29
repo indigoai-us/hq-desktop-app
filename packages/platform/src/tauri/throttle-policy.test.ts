@@ -100,3 +100,37 @@ describe("Sync adapter throttle policy", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe("Sync adapter Lambda invoke 504 retry", () => {
+  it("retries one exact 504 without a function request id for GET only", async () => {
+    const slept: number[] = [];
+    const { adapter, hqProCalls } = makeAdapter(
+      [
+        { status: 504, body: '{"message":"Internal server error"}' },
+        { status: 200, body: '{"displayName":"A"}' },
+      ],
+      slept,
+    );
+
+    const result = await adapter.identity.getProfile();
+
+    expect(result).toMatchObject({ ok: true, value: { displayName: "A" } });
+    expect(hqProCalls()).toBe(2);
+    expect(slept).toHaveLength(1);
+    expect(slept[0]).toBeGreaterThanOrEqual(25);
+    expect(slept[0]).toBeLessThanOrEqual(75);
+  });
+
+  it("does not retry a second 504", async () => {
+    const slept: number[] = [];
+    const { adapter, hqProCalls } = makeAdapter(
+      [{ status: 504, body: '{"message":"Internal server error"}' }],
+      slept,
+    );
+
+    const result = await adapter.identity.getProfile();
+
+    expect(result.ok).toBe(false);
+    expect(hqProCalls()).toBe(2);
+  });
+});
