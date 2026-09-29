@@ -368,12 +368,12 @@ mod tests {
         let server = tokio::spawn(async move {
             let first = accept_request(
                 &listener,
-                b"HTTP/1.1 200 OK\r\nETag: \"tree-v1\"\r\nContent-Length: 8\r\n\r\n{\"ok\":1}",
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\nETag: \"tree-v1\"\r\nContent-Length: 8\r\n\r\n{\"ok\":1}",
             )
             .await;
             let second = accept_request(
                 &listener,
-                b"HTTP/1.1 304 Not Modified\r\nETag: \"tree-v1\"\r\nContent-Length: 0\r\n\r\n",
+                b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\nETag: \"tree-v1\"\r\nContent-Length: 0\r\n\r\n",
             )
             .await;
             (first, second)
