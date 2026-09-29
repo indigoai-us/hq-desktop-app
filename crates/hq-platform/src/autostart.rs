@@ -19,6 +19,19 @@ use crate::launchagent::{
 #[cfg(any(target_os = "macos", test))]
 const FALLBACK_APP_PATH: &str = CURRENT_BUNDLE_EXECUTABLE;
 
+/// Minimum interval between launchd restarts after repeated abnormal exits.
+#[cfg(any(target_os = "macos", test))]
+const LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS: u32 = 30;
+
+#[cfg(any(target_os = "macos", test))]
+const KEEP_ALIVE_FAILURE_POLICY: &str = concat!(
+    "    <key>KeepAlive</key>\n",
+    "    <dict>\n",
+    "        <key>SuccessfulExit</key>\n",
+    "        <false/>\n",
+    "    </dict>\n",
+);
+
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
 #[cfg(target_os = "windows")]
@@ -84,11 +97,31 @@ fn generate_plist(app_path: &str) -> String {
     </array>
     <key>RunAtLoad</key>
     <true/>
+{}
+    <key>ThrottleInterval</key>
+    <integer>{}</integer>
 </dict>
 </plist>
 "#,
-        LAUNCH_AGENT_LABEL, app_path, LAUNCH_AGENT_RELAUNCH_ARG
+        LAUNCH_AGENT_LABEL,
+        app_path,
+        LAUNCH_AGENT_RELAUNCH_ARG,
+        KEEP_ALIVE_FAILURE_POLICY,
+        LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS,
     )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn has_current_restart_policy(plist: &str) -> bool {
+    let throttle = format!(
+        "    <key>ThrottleInterval</key>\n    <integer>{LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS}</integer>"
+    );
+    plist.contains(KEEP_ALIVE_FAILURE_POLICY) && plist.contains(&throttle)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn registration_is_current(plist: &str, current_exe: &str) -> bool {
+    extract_program_path(plist).as_deref() == Some(current_exe) && has_current_restart_policy(plist)
 }
 
 /// Resolve the installed `HQ Sync.exe` path for the HKCU Run value.
@@ -116,12 +149,11 @@ fn format_run_value(app_path: &str) -> String {
 /// What launch-time autostart reconciliation should do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileAction {
-    /// Already in the desired state with a current path — do nothing.
+    /// Already in the desired state with a current registration — do nothing.
     None,
     /// Register autostart (was off, should be on).
     Enable,
-    /// Rewrite an existing registration that points at a stale executable path
-    /// (the renamed-binary upgrade case that left autosync exiting EX_CONFIG).
+    /// Rewrite an existing registration with a stale executable path or policy.
     Refresh,
     /// Remove autostart (was on, explicit opt-out).
     Disable,
@@ -129,37 +161,36 @@ pub enum ReconcileAction {
 
 /// Pure decision for `ensure_autostart_on_launch`: given the desired state,
 /// whether autostart is currently registered, and whether that registration
-/// points at the current executable path, decide what to do. Both `Enable` and
-/// `Refresh` are satisfied by writing a fresh registration (`set_enabled(true)`);
-/// `Disable` by removing it. `path_is_current` is only meaningful when
+/// matches the current executable and required policy, decide what to do. Both
+/// `Enable` and `Refresh` are satisfied by writing a fresh registration
+/// (`set_enabled(true)`);
+/// `Disable` by removing it. `registration_is_current` is only meaningful when
 /// `currently_enabled` is true (callers pass `true` otherwise).
 pub fn reconcile_action(
     want_enabled: bool,
     currently_enabled: bool,
-    path_is_current: bool,
+    registration_is_current: bool,
 ) -> ReconcileAction {
     match (want_enabled, currently_enabled) {
         (true, false) => ReconcileAction::Enable,
-        (true, true) if !path_is_current => ReconcileAction::Refresh,
+        (true, true) if !registration_is_current => ReconcileAction::Refresh,
         (true, true) => ReconcileAction::None,
         (false, true) => ReconcileAction::Disable,
         (false, false) => ReconcileAction::None,
     }
 }
 
-/// Whether an existing autostart registration points at the current executable.
+/// Whether an existing autostart registration matches the current executable
+/// and required abnormal-exit restart policy.
 ///
 /// Returns `Ok(false)` when autostart is not registered at all, or when it is
-/// registered but points at a stale/renamed binary path — the exact upgrade
-/// condition (`.../MacOS/HQ`) that this fix rewrites. `Ok(true)` only when the
-/// registered path already matches the freshly-resolved executable path.
+/// registered but points at a stale/renamed binary path, or lacks the current
+/// restart policy. `ensure_autostart_on_launch` rewrites either stale form.
 #[cfg(target_os = "macos")]
 pub fn is_current() -> Result<bool, String> {
     let path = plist_path()?;
     match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            Ok(extract_program_path(&content).as_deref() == Some(resolve_app_path().as_str()))
-        }
+        Ok(content) => Ok(registration_is_current(&content, &resolve_app_path())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(format!("read LaunchAgent plist: {e}")),
     }
@@ -393,6 +424,36 @@ mod pure_tests {
         assert_eq!(
             crate::launchagent::program_argument_strings(&plist),
             vec![REAL_EXE.to_string(), LAUNCH_AGENT_RELAUNCH_ARG.to_string()]
+        );
+    }
+
+    #[test]
+    fn generated_plist_restarts_after_abnormal_exit_with_throttle() {
+        let plist = generate_plist(REAL_EXE);
+        assert!(plist.contains(
+            "<key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key>\n        <false/>\n    </dict>"
+        ));
+        assert!(plist.contains("<key>ThrottleInterval</key>\n    <integer>30</integer>"));
+        assert!(plist.contains("<key>RunAtLoad</key>\n    <true/>"));
+    }
+
+    #[test]
+    fn old_registration_is_stale_until_restart_policy_is_present() {
+        let current = generate_plist(REAL_EXE);
+        assert!(registration_is_current(&current, REAL_EXE));
+
+        let old = current
+            .replace(KEEP_ALIVE_FAILURE_POLICY, "")
+            .replace(
+                &format!(
+                    "    <key>ThrottleInterval</key>\n    <integer>{LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS}</integer>\n"
+                ),
+                "",
+            );
+        assert!(!registration_is_current(&old, REAL_EXE));
+        assert_eq!(
+            reconcile_action(true, true, false),
+            ReconcileAction::Refresh
         );
     }
 

@@ -10,6 +10,10 @@ The release moves it under the version it ships in.
 
 - If HQ cannot refresh saved credentials at launch, it keeps the loading screen up and checks again every five seconds. It shows sign-in after Cognito confirms the credentials are invalid.
 
+- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
+  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
+  on app startup, and the updater handoff avoids a duplicate restart.
+
 ## [0.10.353] — 2026-09-29
 
 - The Window opacity slider in Settings > Appearance now works. Lowering it makes the window see-through, 100% keeps it fully solid, and the setting is remembered after the app restarts. On Macs the glass effect turns off at 100%.

@@ -600,6 +600,10 @@ pub fn launchctl_handoff_after_exit_command(
     let target = format!("{domain}/{label}");
     let script = concat!(
         "while /bin/kill -0 \"$HQ_HANDOFF_PID\" 2>/dev/null; do /bin/sleep 0.2; done; ",
+        // A clean updater exit is followed by the manual handoff below. If
+        // KeepAlive already restarted an abnormal exit, or launchd records a
+        // nonzero exit while its throttled restart is pending, leave it alone.
+        "if /bin/launchctl list \"$HQ_HANDOFF_LABEL\" 2>/dev/null | /usr/bin/awk -F= '/\"PID\"/ { pid=$2; gsub(/[;[:space:]]/, \"\", pid) } /\"LastExitStatus\"/ { status=$2; gsub(/[;[:space:]]/, \"\", status); have_status=1 } END { if (pid ~ /^[0-9]+$/ && pid != \"0\") exit 0; if (have_status && status != \"0\") exit 0; exit 1 }'; then exit 0; fi; ",
         "/bin/launchctl bootout \"$HQ_HANDOFF_TARGET\" >/dev/null 2>&1; ",
         "/bin/launchctl bootstrap \"$HQ_HANDOFF_DOMAIN\" \"$HQ_HANDOFF_PLIST\" && ",
         "/bin/launchctl kickstart \"$HQ_HANDOFF_TARGET\"",
@@ -613,6 +617,7 @@ pub fn launchctl_handoff_after_exit_command(
         ],
         vec![
             ("HQ_HANDOFF_PID".to_string(), pid.to_string()),
+            ("HQ_HANDOFF_LABEL".to_string(), label.to_string()),
             ("HQ_HANDOFF_TARGET".to_string(), target),
             ("HQ_HANDOFF_DOMAIN".to_string(), domain),
             (
@@ -1400,6 +1405,15 @@ mod tests {
         assert_eq!(argv[2], "-c");
         let script = &argv[3];
         assert!(script.contains("HQ_HANDOFF_PID"));
+        assert!(script.contains("launchctl list \"$HQ_HANDOFF_LABEL\""));
+        assert!(script.contains("/usr/bin/awk"));
+        assert!(script.contains("/\"PID\"/"));
+        assert!(script.contains("/\"LastExitStatus\"/"));
+        assert!(script.contains("have_status && status != \"0\""));
+        assert!(
+            script.find("launchctl list").unwrap() < script.find("launchctl bootout").unwrap(),
+            "a KeepAlive restart must be detected before the handoff unloads the job"
+        );
         assert!(script.contains("bootout"));
         assert!(script.contains("bootstrap"));
         assert!(script.contains("kickstart"));
@@ -1417,6 +1431,10 @@ mod tests {
         );
         let env: std::collections::HashMap<_, _> = env.into_iter().collect();
         assert_eq!(env.get("HQ_HANDOFF_PID").map(String::as_str), Some("4242"));
+        assert_eq!(
+            env.get("HQ_HANDOFF_LABEL").map(String::as_str),
+            Some(LAUNCH_AGENT_LABEL)
+        );
         assert_eq!(
             env.get("HQ_HANDOFF_TARGET").map(String::as_str),
             Some("gui/501/ai.indigo.hq-sync-menubar")
