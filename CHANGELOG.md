@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
 - Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
 - Desktop sync commands now recover their valid state after a mutex is poisoned.
 
