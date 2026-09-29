@@ -1312,6 +1312,22 @@ pub(crate) fn classify_rescue_exit_failure(
     classify_rescue_stderr_failure(stderr)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoreUpdateFailureReportDisposition {
+    Failed,
+    DeferredForHqChange,
+}
+
+fn core_update_failure_report_disposition(
+    category: RescueFailureCategory,
+) -> CoreUpdateFailureReportDisposition {
+    if category == RescueFailureCategory::UpdateDeferredHqChange {
+        CoreUpdateFailureReportDisposition::DeferredForHqChange
+    } else {
+        CoreUpdateFailureReportDisposition::Failed
+    }
+}
+
 fn rescue_failure_requires_no_automatic_retry(stderr: &str) -> bool {
     stderr.contains("HQ_RESCUE_FAILURE_KIND=preserve-restore-failed")
         || stderr.contains("HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker")
@@ -4190,6 +4206,7 @@ enum NativeCoreAutoUpdateOutcome {
     SkippedAutomaticUpdatesDisabled,
     DeferredForSync,
     DeferredForPrewarm,
+    DeferredForHqChange,
     SkippedAlreadyInProgress,
     SkippedTargetAlreadyInstalled,
     SkippedAlreadyAttempted,
@@ -5154,6 +5171,90 @@ mod tests {
         assert_eq!(
             RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON,
             "retry_interval_not_elapsed"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_hq_change_deferral_is_non_error_and_remains_retryable() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-hq-change-deferral-contract";
+        let candidate = || CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind: true,
+        };
+        let deferral = CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "Update deferred while an HQ change is active",
+        );
+        let disposition = core_update_failure_report_disposition(
+            core_update_failure_details(&deferral).rescue_failure_category,
+        );
+        assert_eq!(
+            disposition,
+            CoreUpdateFailureReportDisposition::DeferredForHqChange
+        );
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_attempt_at = Instant::now();
+        for attempt in 0..=MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+            let calls_for_install = Arc::clone(&calls);
+            let outcome = execute_native_core_auto_update_at(
+                candidate(),
+                true,
+                false,
+                first_attempt_at + CHECK_INTERVAL * u32::from(attempt),
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    calls_for_install.fetch_add(1, Ordering::AcqRel);
+                    Err(CoreUpdateError::new(
+                        CoreUpdateErrorKind::RescueSpawn,
+                        "Update deferred while an HQ change is active",
+                    ))
+                },
+            )
+            .await;
+
+            assert_eq!(
+                outcome,
+                NativeCoreAutoUpdateOutcome::DeferredForHqChange,
+                "an expected deferral must not consume the consecutive-failure budget"
+            );
+        }
+
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            usize::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES) + 1
+        );
+        let retry_at = first_attempt_at
+            + CHECK_INTERVAL * (u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES) + 1);
+        assert_eq!(
+            automatic_target_eligibility_at(Channel::Release, target, retry_at),
+            AutomaticTargetEligibility::Eligible,
+            "a deferred target stays eligible for a later scheduled check"
+        );
+
+        let calls_for_retry = Arc::clone(&calls);
+        let retry = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            retry_at,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                calls_for_retry.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(retry, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            usize::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES) + 2
         );
     }
 
