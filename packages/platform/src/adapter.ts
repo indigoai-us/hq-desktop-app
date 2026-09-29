@@ -1538,6 +1538,12 @@ export interface SettingsApi {
    * hosts without a native settings store have nothing to record.
    */
   markWelcomeSetupComplete?(): AdapterPromise<void>;
+  /**
+   * The desktop window's first-run guided tour started showing on this
+   * machine. Optional: hosts without a native settings store fall back to
+   * local storage.
+   */
+  markWelcomeTourShown?(): AdapterPromise<void>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }
 

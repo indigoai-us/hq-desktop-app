@@ -1,12 +1,20 @@
 // @vitest-environment happy-dom
 //
-// US-001 — Blocking consent step with no pre-ticked default.
+// US-001 — The usage-data consent question, answered and recorded honestly.
 //
-// The onboarding wizard now asks the telemetry question as its own step AFTER
-// setup (index 4), with no pre-selected option and continue disabled until the
-// person answers. Declining is first-class. The recorded write carries the
-// surface and consent version. These tests mount the real OnboardingWizard
-// component and drive it through the DOM.
+// Product decision (2026-09-27): in first-run onboarding the question is no
+// longer a screen of its own. It is one quiet checkbox line on the final
+// (ready) screen, "Share anonymous usage data", checked by default, with a
+// "What's collected" link. The answer is recorded when the person finishes
+// from that screen, whichever way they finish (Open HQ Desktop, or opening HQ
+// in Claude Code or Codex), with the same payload as before: surface
+// "onboarding" and the consent version. Nothing is posted before they finish,
+// and a decline is recorded as enabled:false with nothing withheld.
+//
+// The consent-only runs (the US-005 re-prompt, an installed machine missing
+// its answer) keep their own blocking consent screen; the full disclosure is
+// asserted there. These tests mount the real OnboardingWizard and drive it
+// through the DOM.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -37,7 +45,6 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from '../../src/components/onboarding/OnboardingWizard.svelte';
 import {
   __resetWizardRouterCompletionForTests,
-  CONSENT_STEP_INDEX,
   WIZARD_STEPS,
   getStepValidity,
 } from '../../src/lib/onboarding-wizard';
@@ -51,6 +58,10 @@ const syncAppSource = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'ut
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let onfinish: ReturnType<typeof vi.fn>;
+
+const READY_STEP = WIZARD_STEPS.find((s) => s.id === 'ready')!.index;
+const CONSENT_STEP = WIZARD_STEPS.find((s) => s.id === 'consent')!.index;
 
 async function flush() {
   flushSync();
@@ -59,12 +70,13 @@ async function flush() {
   flushSync();
 }
 
-async function flushUntil(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+async function flushUntil(predicate: () => boolean, label = 'condition'): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
     await flush();
     if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error('Timed out waiting for the onboarding sign-in fallback.');
+  throw new Error(`Timed out waiting for ${label}.`);
 }
 
 /** Default invoke stub: resolve the handful of onMount commands the wizard fires. */
@@ -74,7 +86,9 @@ function stubInvoke() {
       case 'resolve_hq_path':
         return '/Users/test/hq';
       case 'detect_ai_tools':
-        return { any: true, claude_cli: true };
+        return { any: true, claude_cli: false, claude_desktop: true, codex_desktop: true };
+      case 'ensure_person_entity':
+        return true;
       case 'write_menubar_telemetry_pref':
       case 'post_telemetry_opt_in':
       case 'bring_main_window_to_front':
@@ -86,30 +100,43 @@ function stubInvoke() {
   });
 }
 
-async function mountAt(initialStep: number) {
+async function mountAt(initialStep: number, mode?: 'consent') {
+  onfinish = vi.fn();
   component = mount(OnboardingWizard, {
     target: host,
-    props: { initialStep, onfinish: () => {} },
+    props: { initialStep, onfinish, ...(mode ? { mode } : {}) },
   });
   await flush();
 }
 
-function consentPanel(): HTMLElement {
-  const panel = host.querySelector<HTMLElement>('[data-testid="onboarding-consent"]');
-  if (!panel) throw new Error('consent panel not found');
-  return panel;
+const byId = <T extends HTMLElement = HTMLButtonElement>(id: string) =>
+  host.querySelector<T>(`[data-testid="${id}"]`);
+
+function readyScreen(): HTMLElement {
+  const ready = byId<HTMLElement>('onboarding-summary');
+  if (!ready) throw new Error('ready screen not found');
+  return ready;
 }
 
-function consentRadios(): HTMLInputElement[] {
-  return Array.from(
-    consentPanel().querySelectorAll<HTMLInputElement>('input[type="radio"]'),
-  );
+function shareBox(): HTMLInputElement {
+  const box = byId<HTMLInputElement>('ready-consent-share');
+  if (!box) throw new Error('usage data checkbox not found');
+  return box;
 }
 
-function consentContinue(): HTMLButtonElement {
-  const btn = consentPanel().querySelector<HTMLButtonElement>('button.btn-primary');
-  if (!btn) throw new Error('consent continue button not found');
-  return btn;
+function commands(): string[] {
+  return invoke.mock.calls.map((c) => String(c[0]));
+}
+
+function optInPosts() {
+  return invoke.mock.calls.filter((c) => c[0] === 'post_telemetry_opt_in');
+}
+
+async function decline() {
+  const box = shareBox();
+  box.checked = false;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
 }
 
 beforeAll(() => {
@@ -143,7 +170,9 @@ afterEach(() => {
 });
 
 describe('US-001 wizard step model', () => {
-  it('inserts invite, consent, and connector import after setup before ready', () => {
+  it('keeps first-folder, invite, consent and connector import between setup and ready in the step model', () => {
+    // The step model is unchanged underneath: the consent-only runs still use
+    // the consent step, and step telemetry keeps its ids.
     expect(WIZARD_STEPS.slice(0, 8).map((s) => s.id)).toEqual([
       'welcome-signin',
       'directory',
@@ -154,65 +183,66 @@ describe('US-001 wizard step model', () => {
       'connector-import',
       'ready',
     ]);
-    expect(WIZARD_STEPS.find((s) => s.id === 'consent')?.index).toBe(CONSENT_STEP_INDEX);
+    expect(CONSENT_STEP).toBe(5);
     expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(6);
-    expect(WIZARD_STEPS.find((s) => s.id === 'ready')?.index).toBe(7);
+    expect(READY_STEP).toBe(7);
   });
 
   it('gates the consent step until the question is answered', () => {
     const base = { installPath: '/tmp/hq' };
-    expect(getStepValidity(CONSENT_STEP_INDEX, { ...base, consentAnswered: false })).toBe(false);
-    expect(getStepValidity(CONSENT_STEP_INDEX, { ...base, consentAnswered: true })).toBe(true);
+    expect(getStepValidity(CONSENT_STEP, { ...base, consentAnswered: false })).toBe(false);
+    expect(getStepValidity(CONSENT_STEP, { ...base, consentAnswered: true })).toBe(true);
   });
 });
 
-describe('US-001 consent step UI', () => {
-  // Product decision (2026-09-27): the choice starts on Share; the person can
-  // still pick "Don't share" before continuing.
-  it('starts on Share and autofocuses nothing (AC 1)', async () => {
-    await mountAt(CONSENT_STEP_INDEX);
+describe('US-001 the question on the ready screen', () => {
+  it('has no consent screen in first-run onboarding: the consent step lands on ready', async () => {
+    await mountAt(CONSENT_STEP);
+    expect(byId('onboarding-consent')).toBeNull();
+    expect(readyScreen().classList.contains('on')).toBe(true);
+    expect(shareBox()).not.toBeNull();
+  });
 
-    const radios = consentRadios();
-    expect(radios).toHaveLength(2);
-    expect(radios.map((r) => r.checked)).toEqual([true, false]);
+  it('is one checkbox line, checked (Share) by default, and focuses nothing (AC 1)', async () => {
+    await mountAt(READY_STEP);
+    const line = byId<HTMLElement>('ready-consent')!;
+    expect(line.textContent).toContain('Share anonymous usage data');
+    expect(line.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+    expect(line.querySelectorAll('input[type="radio"]')).toHaveLength(0);
+    expect(shareBox().checked).toBe(true);
+    expect(shareBox().disabled).toBe(false);
 
-    // Nothing on the consent panel grabs focus on render.
     const active = document.activeElement;
     expect(active === null || active === document.body).toBe(true);
-    expect(consentPanel().contains(active)).toBe(false);
+    expect(line.contains(active)).toBe(false);
   });
 
-  it('keeps continue enabled for BOTH options, starting from the Share default (AC 2)', async () => {
-    await mountAt(CONSENT_STEP_INDEX);
-    expect(consentContinue().disabled).toBe(false);
-
-    // Share enables continue.
-    const [share, decline] = consentRadios();
-    share.checked = true;
-    share.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-    expect(consentContinue().disabled).toBe(false);
-
-    // Decline also enables continue (not just "share").
-    decline.checked = true;
-    decline.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-    expect(consentContinue().disabled).toBe(false);
+  it('keeps every finish action enabled whichever way the box is set (AC 2)', async () => {
+    await mountAt(READY_STEP);
+    await flushUntil(() => Boolean(byId('onboarding-launch-claude')), 'the tool options');
+    expect(byId('onboarding-open-desktop')!.disabled).toBe(false);
+    await decline();
+    expect(shareBox().checked).toBe(false);
+    expect(byId('onboarding-open-desktop')!.disabled).toBe(false);
+    expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
+    expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
   });
 
-  it('states plainly what IS and is NOT collected (AC 3)', async () => {
-    await mountAt(CONSENT_STEP_INDEX);
-    const text = consentPanel().textContent ?? '';
+  it('links to what is collected via the system browser (AC 4)', async () => {
+    await mountAt(READY_STEP);
+    const link = byId<HTMLElement>('ready-consent')!.querySelector<HTMLButtonElement>('.consent-link');
+    expect(link).not.toBeNull();
+    expect(link!.textContent).toContain('What’s collected');
+    link!.click();
+    await flush();
+    expect(openExternal).toHaveBeenCalledTimes(1);
+    expect(openExternal.mock.calls[0][0]).toBe('https://hq.computer/privacy');
+  });
 
-    for (const collected of [
-      'skills',
-      'model',
-      'token',
-      'session',
-      'repositor',
-      'branch',
-      'MCP',
-    ]) {
+  it('the consent-only screen still states plainly what IS and is NOT collected (AC 3)', async () => {
+    await mountAt(CONSENT_STEP, 'consent');
+    const text = byId<HTMLElement>('onboarding-consent')!.textContent ?? '';
+    for (const collected of ['skills', 'model', 'token', 'session', 'repositor', 'branch', 'MCP']) {
       expect(text).toContain(collected);
     }
     for (const notCollected of ['prompt', 'file', 'tool']) {
@@ -221,99 +251,92 @@ describe('US-001 consent step UI', () => {
     expect(text.toLowerCase()).toContain('never collect');
   });
 
-  it('links to a fuller description via the system browser (AC 4)', async () => {
-    await mountAt(CONSENT_STEP_INDEX);
-    const link = consentPanel().querySelector<HTMLButtonElement>('.consent-link');
-    expect(link).not.toBeNull();
-    link!.click();
-    await flush();
-    expect(openExternal).toHaveBeenCalledTimes(1);
-    expect(openExternal.mock.calls[0][0]).toMatch(/^https?:\/\//);
-  });
-
   it('does not render a telemetry checkbox on the sign-in panel (regression)', async () => {
     await mountAt(0);
     const signin = host.querySelector<HTMLElement>('[data-testid="onboarding-signin"]');
     expect(signin).not.toBeNull();
     const checkboxes = signin!.querySelectorAll('input[type="checkbox"]');
     expect(checkboxes).toHaveLength(0);
-    // Native continuation is unavailable in this fixture. Its silent
-    // first-run fallback still offers the pre-existing provider buttons.
-    await flushUntil(() => (signin!.textContent ?? '').includes('Log in with Google'));
-    expect(signin!.textContent).toContain('Log in with Google');
+    // The provider buttons render once the welcome animation reveals the
+    // sign-in block; Escape finishes the animation.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await flushUntil(
+      () => (signin!.textContent ?? '').includes('Continue with Google'),
+      'the provider buttons',
+    );
+    expect(signin!.textContent).toContain('Continue with Google');
   });
 });
 
-describe('US-001 recording the answer', () => {
-  it('records share with surface=onboarding and the consent version (AC 6)', async () => {
-    await mountAt(CONSENT_STEP_INDEX);
-    const [share] = consentRadios();
-    share.checked = true;
-    share.dispatchEvent(new Event('change', { bubbles: true }));
+describe('US-001 recording the answer when the person finishes', () => {
+  it('posts nothing before the person finishes, even after changing the box', async () => {
+    await mountAt(READY_STEP);
+    await decline();
+    const box = shareBox();
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
+    await new Promise((r) => setTimeout(r, 50));
+    await flush();
+    expect(commands()).not.toContain('post_telemetry_opt_in');
+    expect(commands()).not.toContain('write_menubar_telemetry_pref');
+    expect(onfinish).not.toHaveBeenCalled();
+  });
 
-    consentContinue().click();
-    await flush();
-    // submitConsent now awaits ensure_person_entity (US-002 AC1) before the
-    // POST, so the upload lands a couple of microtasks later than it used to.
-    await flush();
-    await flush();
+  it('records share with surface=onboarding and the consent version, then finishes (AC 6)', async () => {
+    await mountAt(READY_STEP);
+    byId('onboarding-open-desktop')!.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
 
-    const post = invoke.mock.calls.find((c) => c[0] === 'post_telemetry_opt_in');
-    expect(post).toBeDefined();
-    expect(post![1]).toMatchObject({
+    expect(optInPosts()).toHaveLength(1);
+    expect(optInPosts()[0][1]).toMatchObject({
       enabled: true,
       surface: 'onboarding',
       consentVersion: TELEMETRY_CONSENT_VERSION,
     });
+    const cache = invoke.mock.calls.find((c) => c[0] === 'write_menubar_telemetry_pref');
+    expect(cache?.[1]).toMatchObject({ enabled: true, surface: 'onboarding' });
+    // The answer is recorded before the window is handed off.
+    const order = commands();
+    expect(order.indexOf('ensure_person_entity')).toBeLessThan(order.indexOf('post_telemetry_opt_in'));
+    // The box locks on the recorded answer.
+    expect(shareBox().disabled).toBe(true);
   });
 
-  it('records decline and reaches the ready step with nothing gated (AC 5)', async () => {
-    await mountAt(CONSENT_STEP_INDEX);
-    const [, decline] = consentRadios();
-    decline.checked = true;
-    decline.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
+  it('records a decline as enabled:false and finishes with nothing withheld (AC 5)', async () => {
+    await mountAt(READY_STEP);
+    await decline();
+    byId('onboarding-open-desktop')!.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
 
-    consentContinue().click();
-    await flush();
-    // The panel cross-fade defers activating the next panel by FADE_OUT_MS.
-    await new Promise((r) => setTimeout(r, 400));
-    await flush();
-
-    // The decline is recorded as a real answer with its provenance.
-    const post = invoke.mock.calls.find((c) => c[0] === 'post_telemetry_opt_in');
-    expect(post![1]).toMatchObject({
+    expect(optInPosts()).toHaveLength(1);
+    expect(optInPosts()[0][1]).toMatchObject({
       enabled: false,
       surface: 'onboarding',
       consentVersion: TELEMETRY_CONSENT_VERSION,
     });
+    expect(readyScreen().textContent).toContain('HQ is ready');
+  });
 
-    // Setup completes normally: the ready screen becomes the active panel and
-    // still offers its launch action (nothing withheld for declining). There
-    // is no separate "Finish" button for anyone, so its absence here is not a
-    // capability withheld from someone who declined.
-    const ready = host.querySelector<HTMLElement>('[data-testid="onboarding-summary"]');
-    expect(ready).not.toBeNull();
-    expect(ready!.classList.contains('on')).toBe(true);
-    expect(ready!.textContent).toContain('HQ is ready');
-    expect(ready!.textContent).toContain('Open in Claude Code');
-    // The launcher is present AND enabled — a decline must not disable it.
-    const launch = ready!.querySelector<HTMLButtonElement>('.btns .btn-primary');
-    expect(launch).not.toBeNull();
-    expect(launch!.disabled).toBe(false);
+  it('records the answer when the person finishes by opening Codex instead', async () => {
+    await mountAt(READY_STEP);
+    await flushUntil(() => Boolean(byId('onboarding-launch-codex')), 'the Codex option');
+    await decline();
+    byId('onboarding-launch-codex')!.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+
+    expect(commands()).toContain('launch_codex_desktop');
+    expect(optInPosts()).toHaveLength(1);
+    expect(optInPosts()[0][1]).toMatchObject({ enabled: false, surface: 'onboarding' });
   });
 
   it('emits operational setup telemetry while declining and no skill telemetry (AC 5)', async () => {
     // A decline must not block the operational onboarding trace, but it must
     // not reach the consent-gated skill telemetry command.
-    await mountAt(CONSENT_STEP_INDEX);
-    const [, decline] = consentRadios();
-    decline.checked = true;
-    decline.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-    consentContinue().click();
-    await flush();
+    await mountAt(READY_STEP);
+    await decline();
+    byId('onboarding-open-desktop')!.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
 
     const operationalEmits = invoke.mock.calls.filter(
       (c) => c[0] === 'emit_desktop_operational_telemetry',
@@ -328,8 +351,8 @@ describe('US-001 recording the answer', () => {
 
 describe('US-001 source regressions', () => {
   it('no longer posts opt-in from the sign-in handler', () => {
-    // The fire-and-forget postOptIn moved out of handleSignIn into the consent
-    // step; the sign-in success path must not touch telemetry.
+    // The fire-and-forget postOptIn moved out of handleSignIn; the sign-in
+    // success path must not touch telemetry.
     const signInBlock = wizardSource.slice(
       wizardSource.indexOf('if (result.authenticated)'),
       wizardSource.indexOf('\n  function detectLooksLikeHq'),
