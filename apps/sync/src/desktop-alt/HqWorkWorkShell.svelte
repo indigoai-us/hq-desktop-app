@@ -894,21 +894,6 @@
     };
   }
 
-  function openPlanLimitUpgradeFromNotice(
-    notice: PlanLimitNotice,
-    url: string,
-  ): Promise<void> {
-    if (notice.companyUid && capabilities?.fetch) {
-      void emitPlanLimitPromptTelemetry({
-        fetch: capabilities.fetch,
-        eventName: 'plan_limit_prompt_engaged',
-        companyUid: notice.companyUid,
-        exposureId: notice.exposureId,
-        action: 'upgrade_clicked',
-      });
-    }
-    return openPlanLimitUpgrade(url);
-  }
 
   function withDesktopLimitEntrySurface(value: string): string {
     const url = new URL(value);
@@ -932,6 +917,16 @@
   }
 
   async function openPlanLimitUpgrade(url: string): Promise<void> {
+    const notice = planLimitNotices.find((candidate) => candidate.upgradeUrl === url);
+    if (notice?.companyUid && capabilities?.fetch) {
+      void emitPlanLimitPromptTelemetry({
+        fetch: capabilities.fetch,
+        eventName: 'plan_limit_prompt_engaged',
+        companyUid: notice.companyUid,
+        exposureId: notice.exposureId,
+        action: 'upgrade_clicked',
+      });
+    }
     try {
       await openApprovedExternalUrl(url);
       planLimitOpenError = null;
@@ -1009,7 +1004,7 @@
             <span>New files are paused for {notice.company}.</span>
             <PlanUpgradeAction
               upgradeUrl={notice.upgradeUrl}
-              onUpgrade={(url) => openPlanLimitUpgradeFromNotice(notice, url)}
+              onUpgrade={openPlanLimitUpgrade}
               testId="sync-plan-limit-upgrade"
             />
             <button
