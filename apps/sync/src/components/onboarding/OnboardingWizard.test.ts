@@ -22,6 +22,7 @@ const app = vi.hoisted(() => ({
 const onboardingFlags = vi.hoisted(() => ({
   firstFolderSyncEnabled: false,
   inviteTeammateEnabled: false,
+  setupStageTimeoutFixEnabled: false,
   hasFeature: vi.fn(),
   startSync: vi.fn(),
 }));
@@ -42,6 +43,7 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG: 'desktop.setup-directory-parent-fallback',
+  SETUP_STAGE_TIMEOUT_FIX_FLAG: 'desktop.setup-stage-timeout-fix-v1',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   INVITE_TEAMMATE_STEP_FLAG: 'desktop.invite-teammate-step-v1',
   retryThrottled: async <T>(
@@ -61,7 +63,8 @@ vi.mock('@hq/platform', () => ({
       hasFeature: (flag: string) => {
         if (
           flag === 'desktop.first-folder-sync-step-v1' ||
-          flag === 'desktop.invite-teammate-step-v1'
+          flag === 'desktop.invite-teammate-step-v1' ||
+          flag === 'desktop.setup-stage-timeout-fix-v1'
         ) {
           return onboardingFlags.hasFeature(flag);
         }
@@ -373,13 +376,16 @@ beforeEach(() => {
   });
   onboardingFlags.firstFolderSyncEnabled = false;
   onboardingFlags.inviteTeammateEnabled = false;
+  onboardingFlags.setupStageTimeoutFixEnabled = false;
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value:
       (flag === 'desktop.first-folder-sync-step-v1' &&
         onboardingFlags.firstFolderSyncEnabled) ||
       (flag === 'desktop.invite-teammate-step-v1' &&
-        onboardingFlags.inviteTeammateEnabled),
+        onboardingFlags.inviteTeammateEnabled) ||
+      (flag === 'desktop.setup-stage-timeout-fix-v1' &&
+        onboardingFlags.setupStageTimeoutFixEnabled),
   }));
   onboardingFlags.startSync.mockReset().mockResolvedValue({
     ok: true,
@@ -2966,6 +2972,440 @@ describe('setup progress direction', () => {
           'deps',
     )?.[1] as { properties: Record<string, unknown> };
     expect(failure.properties.errorKind).toBe('setup_stage_timeout');
+  });
+
+  it('renews the deps inactivity timeout for installer output when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveInstall: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>((resolve) => {
+            resolveInstall = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    emitTauriEvent('install:progress', {
+      handle: 'setup-installer-handle',
+      setupRunId: installArgs.failureScope.setupRunId,
+      line: 'Starting installer',
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('install:progress', {
+      handle: 'setup-installer-handle',
+      setupRunId: installArgs.failureScope.setupRunId,
+      line: 'Installing a package',
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveInstall?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('renews the deps inactivity timeout for matching preflight installer output when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveInstall: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>((resolve) => {
+            resolveInstall = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('install:progress', {
+      handle: 'preflight',
+      setupRunId: installArgs.failureScope.setupRunId,
+      line: '[node] downloading installer',
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveInstall?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('renews the content inactivity timeout for download progress when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveContent: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          return new Promise<void>((resolve) => {
+            resolveContent = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'fetch_and_extract_template') &&
+      eventHarness.handlers.has('content:progress'),
+    );
+    const contentArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'fetch_and_extract_template',
+    )?.[1] as { handle: string };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'content' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    emitTauriEvent('content:progress', {
+      handle: contentArgs.handle,
+      phase: 'download',
+      receivedBytes: 1,
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
+    emitTauriEvent('content:progress', {
+      handle: contentArgs.handle,
+      phase: 'extract',
+      receivedBytes: 2,
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveContent?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps'),
+    );
+  });
+
+  it('renews the indexing inactivity timeout for reindex output when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveReindex: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'read_install_manifest':
+          return {
+            installPath: '/Users/test/hq',
+            startedAt: '2026-07-28T12:00:00.000Z',
+            completedAt: null,
+            steps: {
+              content: { status: 'ok' },
+              deps: { status: 'ok' },
+              'initial-sync': { status: 'ok' },
+              'git-init': { status: 'ok' },
+              personalize: { status: 'ok' },
+              indexing: { status: 'pending' },
+            },
+          };
+        case 'register_search_index':
+          return new Promise<void>((resolve) => {
+            resolveReindex = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'register_search_index') &&
+      eventHarness.handlers.has('setup:reindex-progress'),
+    );
+    const reindexArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'register_search_index',
+    )?.[1] as {
+      failureScope: { setupRunId: string };
+      activityTimeoutEnabled: boolean;
+    };
+    expect(reindexArgs.activityTimeoutEnabled).toBe(true);
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'indexing' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
+    emitTauriEvent('setup:reindex-progress', reindexArgs.failureScope.setupRunId);
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveReindex?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('keeps the existing deps timeout when the new hq flag is off', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = false;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps'));
+
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string; failureStage?: string } }).properties
+          ?.action === 'failed' &&
+        (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+          'deps',
+    )?.[1] as { properties: Record<string, unknown> } | undefined;
+    expect(failure?.properties.errorKind).toBe('setup_stage_timeout');
+  });
+
+  it('continues timing out at the hard elapsed ceiling despite ongoing progress when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    const inactivityMs = stageTimeoutMs('deps');
+    for (let i = 0; i < 3; i += 1) {
+      await vi.advanceTimersByTimeAsync(inactivityMs - 1);
+      emitTauriEvent('install:progress', {
+        handle: 'setup-installer-handle',
+        setupRunId: installArgs.failureScope.setupRunId,
+        line: `Installing package ${i + 1}`,
+      });
+    }
+    await vi.advanceTimersByTimeAsync(2);
+    expect(timeoutFailures()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushUntil(() => timeoutFailures().length === 1);
+    expect(timeoutFailures()).toHaveLength(1);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('keeps the content wall-clock timeout when the new hq flag is off', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = false;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'fetch_and_extract_template') &&
+      eventHarness.handlers.has('content:progress'),
+    );
+    const contentArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'fetch_and_extract_template',
+    )?.[1] as { handle: string };
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
+    emitTauriEvent('content:progress', {
+      handle: contentArgs.handle,
+      phase: 'download',
+      receivedBytes: 1,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'content' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      ),
+    );
+  });
+
+  it('keeps indexing wall-clock timeout and omits activityTimeoutEnabled when the new hq flag is off', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = false;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'read_install_manifest':
+          return {
+            installPath: '/Users/test/hq',
+            startedAt: '2026-07-28T12:00:00.000Z',
+            completedAt: null,
+            steps: {
+              content: { status: 'ok' },
+              deps: { status: 'ok' },
+              'initial-sync': { status: 'ok' },
+              'git-init': { status: 'ok' },
+              personalize: { status: 'ok' },
+              indexing: { status: 'pending' },
+            },
+          };
+        case 'register_search_index':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'register_search_index') &&
+      eventHarness.handlers.has('setup:reindex-progress'),
+    );
+    const indexingArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'register_search_index',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    expect(indexingArgs).not.toHaveProperty('activityTimeoutEnabled');
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
+    emitTauriEvent('setup:reindex-progress', indexingArgs.failureScope.setupRunId);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'indexing' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      ),
+    );
   });
 
   function sampleProgress(): ProgressSample {

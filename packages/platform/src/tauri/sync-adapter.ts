@@ -38,6 +38,7 @@ import {
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+  SETUP_STAGE_TIMEOUT_FIX_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
@@ -520,6 +521,11 @@ export function createSyncPlatformAdapter(
           if (flag === INVITE_TEAMMATE_STEP_FLAG) {
             // This optional onboarding step stays off on missing or unreadable
             // registry values until a manager explicitly enables it.
+            return Promise.resolve(ok(false));
+          }
+          if (flag === SETUP_STAGE_TIMEOUT_FIX_FLAG) {
+            // Setup timeout mitigation is opt-in and stays off until a manager
+            // explicitly enables its hq-flags value.
             return Promise.resolve(ok(false));
           }
           if (flag === CLAUDE_PROVIDER_FLAG) {

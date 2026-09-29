@@ -122,6 +122,7 @@
     INVITE_TEAMMATE_STEP_FLAG,
     retryThrottled,
     SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+    SETUP_STAGE_TIMEOUT_FIX_FLAG,
   } from '@hq/platform';
 
   interface Props {
@@ -163,7 +164,9 @@
 
   type InstallProgressPayload = {
     handle?: string;
+    line?: string;
     finished?: boolean;
+    setupRunId?: string;
   };
 
   type ContentProgressPayload = {
@@ -335,8 +338,12 @@
   let unlistenPersonalFirstPushProgress: UnlistenFn | null = null;
   let activeInitialSyncTimeoutProgress: (() => void) | null = null;
   let activeDepsLockWaitTimeoutProgress: (() => void) | null = null;
+  let activeDepsOutputTimeoutProgress: (() => void) | null = null;
+  let activeContentTimeoutProgress: (() => void) | null = null;
+  let activeIndexingOutputTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
+  const SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER = 3;
 
   let aiTools = $state<AiTools | null>(null);
   let detectionFailed = $state(false);
@@ -1003,6 +1010,29 @@
     }
   }
 
+  async function resolveSetupStageTimeoutFixFlag(): Promise<boolean> {
+    try {
+      const result = await onboardingFeatureFlags.identity.hasFeature(
+        SETUP_STAGE_TIMEOUT_FIX_FLAG,
+      );
+      if (!result.ok) {
+        console.warn(
+          'onboarding: setup stage timeout flag unavailable; leaving it off',
+          result.reason,
+          result.code,
+        );
+        return false;
+      }
+      return result.value === true;
+    } catch (error) {
+      console.warn(
+        'onboarding: setup stage timeout flag failed; leaving it off',
+        error,
+      );
+      return false;
+    }
+  }
+
   function resolveFirstFolderSyncStepFlag(): Promise<boolean> {
     if (!firstFolderSyncFlagResolution) {
       firstFolderSyncFlagResolution = (async () => {
@@ -1418,6 +1448,9 @@
     // run owns the list now, so nothing may still be waiting on that retry.
     stages = resetRetryingStages(stages);
     activeDepsLockWaitTimeoutProgress = null;
+    activeDepsOutputTimeoutProgress = null;
+    activeContentTimeoutProgress = null;
+    activeIndexingOutputTimeoutProgress = null;
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
@@ -1457,13 +1490,20 @@
   function trackInstallProgress(runId: number, payload: InstallProgressPayload): void {
     if (!isCurrentRun(runId)) return;
     const handle = payload.handle;
-    if (!handle || handle === 'preflight') return;
+    if (!handle) return;
 
     if (payload.finished) {
-      activeInstallHandles.delete(handle);
+      if (handle !== 'preflight') activeInstallHandles.delete(handle);
       return;
     }
-    activeInstallHandles.add(handle);
+    if (handle !== 'preflight') activeInstallHandles.add(handle);
+    if (
+      currentStageId === 'deps' &&
+      payload.setupRunId === currentSetupRunId &&
+      payload.line?.trim()
+    ) {
+      activeDepsOutputTimeoutProgress?.();
+    }
   }
 
   function trackContentProgress(runId: number, payload: ContentProgressPayload): void {
@@ -1475,6 +1515,18 @@
       !activeContentHandles.has(handle)
     ) {
       return;
+    }
+
+    if (
+      currentStageId === 'content' &&
+      handle &&
+      activeContentHandles.has(handle) &&
+      !payload.stalled &&
+      (payload.phase === 'download' ||
+        payload.phase === 'extract' ||
+        payload.phase === 'complete')
+    ) {
+      activeContentTimeoutProgress?.();
     }
 
     if (handle && payload.phase === 'complete') {
@@ -1525,6 +1577,30 @@
       return;
     }
     unlistenContentProgress = unlistenContent;
+
+    const unlistenReindex = safeUnlisten(await listen<string>(
+      'setup:reindex-progress',
+      (event) => {
+        if (
+          isCurrentRun(runId) &&
+          currentStageId === 'indexing' &&
+          event.payload === currentSetupRunId
+        ) {
+          activeIndexingOutputTimeoutProgress?.();
+        }
+      },
+    ));
+    if (!isCurrentRun(runId)) {
+      unlistenReindex();
+      return;
+    }
+    unlistenInstallProgress = (() => {
+      const previousUnlisten = unlistenInstallProgress;
+      return () => {
+        previousUnlisten?.();
+        unlistenReindex();
+      };
+    })();
 
     const notifyInitialSyncActivity = () => {
       if (isCurrentRun(runId) && currentStageId === 'initial-sync') {
@@ -1609,10 +1685,18 @@
     }
 
     const ms = stageTimeoutMs(id);
+    const activityTimeoutEnabled =
+      id === 'deps' || id === 'content' || id === 'indexing'
+        ? await resolveSetupStageTimeoutFixFlag()
+        : false;
+    if (!isCurrentRun(runId)) return;
     for (const invocation of invocations) {
       let args = invocation.args;
       if (['content', 'deps', 'git-init', 'indexing'].includes(id)) {
         args = { ...(args ?? {}), failureScope };
+      }
+      if (id === 'indexing' && activityTimeoutEnabled) {
+        args = { ...(args ?? {}), activityTimeoutEnabled: true };
       }
       let handle: string | null = null;
       if (invocation.command === 'fetch_and_extract_template') {
@@ -1627,7 +1711,8 @@
                 Promise.resolve(invokeDesktopCommand(invocation.command, args)),
               )
             : Promise.resolve(invokeDesktopCommand(invocation.command, args));
-        const onTimeout = () => new StageTimeoutError(id, ms);
+        const onTimeout = (timeoutMs = ms) =>
+          new StageTimeoutError(id, timeoutMs);
         const cancel = () => {
           void cancelForegroundWork(runId);
         };
@@ -1653,13 +1738,54 @@
             onTimeout,
             (onProgress) => {
               activeDepsLockWaitTimeoutProgress = onProgress;
+              if (activityTimeoutEnabled) {
+                activeDepsOutputTimeoutProgress = onProgress;
+              }
               return () => {
                 if (activeDepsLockWaitTimeoutProgress === onProgress) {
                   activeDepsLockWaitTimeoutProgress = null;
                 }
+                if (activeDepsOutputTimeoutProgress === onProgress) {
+                  activeDepsOutputTimeoutProgress = null;
+                }
               };
             },
             cancel,
+            activityTimeoutEnabled
+              ? ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER
+              : undefined,
+          );
+        } else if (id === 'content' && activityTimeoutEnabled) {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeContentTimeoutProgress = onProgress;
+              return () => {
+                if (activeContentTimeoutProgress === onProgress) {
+                  activeContentTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+            ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER,
+          );
+        } else if (id === 'indexing' && activityTimeoutEnabled) {
+          await withProgressTimeout(
+            operation,
+            ms,
+            onTimeout,
+            (onProgress) => {
+              activeIndexingOutputTimeoutProgress = onProgress;
+              return () => {
+                if (activeIndexingOutputTimeoutProgress === onProgress) {
+                  activeIndexingOutputTimeoutProgress = null;
+                }
+              };
+            },
+            cancel,
+            ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER,
           );
         } else {
           await withTimeout(operation, ms, onTimeout, cancel);
@@ -2135,6 +2261,9 @@
     unlistenPersonalFirstPushProgress = null;
     activeInitialSyncTimeoutProgress = null;
     activeDepsLockWaitTimeoutProgress = null;
+    activeDepsOutputTimeoutProgress = null;
+    activeContentTimeoutProgress = null;
+    activeIndexingOutputTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once
     // its run stops being current, so `allSettled` would stay false forever
     // and the completion gate would never fire. Put it back to 'pending': the
