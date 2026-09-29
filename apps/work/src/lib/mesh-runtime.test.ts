@@ -1,20 +1,68 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  PresenceStore,
   parseReplyThreadWake,
   routeForReplyThreadWake,
   routeForTopic,
 } from "@hq/core";
-import { createChatWakeBus, type ReplyNewWake } from "@hq/ui";
-
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import {
+  createChatWakeBus,
+  presenceStatus,
+  requestLiveRefresh,
+  type ReplyNewWake,
+} from "@hq/ui";
 
 import {
   routeMeshReconcile,
   routeMeshWake,
+  startWebMesh,
   startWebMeshForAdapter,
 } from "./mesh-runtime.js";
+
+const meshClients = vi.hoisted(() => ({
+  instances: [] as Array<{
+    emit: (event: string, ...args: unknown[]) => void;
+    refreshCalls: string[];
+  }>,
+}));
+
+vi.mock("@hq/core", async () => {
+  const actual = await vi.importActual<typeof import("@hq/core")>("@hq/core");
+  class TestMeshClient {
+    private readonly handlers = new Map<
+      string,
+      Array<(...args: unknown[]) => void>
+    >();
+    readonly refreshCalls: string[] = [];
+
+    constructor() {
+      meshClients.instances.push(this);
+    }
+
+    on(event: string, handler: (...args: unknown[]) => void): void {
+      this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]);
+    }
+
+    start(): Promise<void> {
+      return Promise.resolve();
+    }
+
+    stop(): void {
+      this.handlers.clear();
+    }
+
+    refreshLive(companyUid: string): void {
+      this.refreshCalls.push(companyUid);
+    }
+
+    emit(event: string, ...args: unknown[]): void {
+      for (const handler of this.handlers.get(event) ?? []) handler(...args);
+    }
+  }
+
+  return { ...actual, MeshClient: TestMeshClient };
+});
 
 describe("routeMeshReconcile", () => {
   it("maps notification / dm / thread wakes to the sidebar bus", () => {
@@ -204,27 +252,104 @@ describe("parseReplyThreadWake / routeForReplyThreadWake", () => {
   });
 });
 
-describe("startWebMesh wake-bus contract", () => {
-  it("fans MQTT catchup and connection onto the chat bus like desktop", () => {
-    const src = readFileSync(
-      fileURLToPath(new URL("./mesh-runtime.ts", import.meta.url)),
-      "utf8",
-    );
-    expect(src).toContain('opts.wakes.emit("mesh:catchup"');
-    expect(src).toContain('opts.wakes.emit("mesh:connection"');
-    expect(src).toContain("routeMeshWake(payloadText, opts.wakes)");
-    expect(src).toContain("[hq-web-mesh]");
+describe("startWebMesh behavior", () => {
+  it("routes wake, catchup, and connection events onto the chat bus", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const wakes = createChatWakeBus();
+    const catchups: string[] = [];
+    const connections: string[] = [];
+    let dmMessages = 0;
+    const onNotifications = vi.fn();
+    wakes.on("mesh:catchup", ({ reason }) => catchups.push(reason));
+    wakes.on("mesh:connection", ({ state }) => connections.push(state));
+    wakes.on("dm:new-message", () => {
+      dmMessages += 1;
+    });
+
+    const mesh = startWebMesh({ wakes, onNotifications });
+    const client = meshClients.instances.at(-1)!;
+    try {
+      client.emit("catchup", "focus");
+      client.emit("connectionState", "connected");
+      client.emit(
+        "wake",
+        "hq/prs_reader/dm",
+        JSON.stringify({
+          type: "dm",
+          eventId: "evt_dm",
+          createdAt: "2026-08-22T12:00:00.000Z",
+          fromPersonUid: "agt_deacon",
+        }),
+      );
+
+      expect(catchups).toEqual(["focus"]);
+      expect(connections).toEqual(["connected"]);
+      expect(dmMessages).toBe(1);
+      expect(onNotifications).toHaveBeenCalledOnce();
+      expect(info).toHaveBeenCalledWith("[hq-web-mesh]", {
+        event: "catchup",
+        reason: "focus",
+      });
+      expect(info).toHaveBeenCalledWith("[hq-web-mesh]", {
+        event: "connection",
+        state: "connected",
+      });
+    } finally {
+      mesh.stop();
+      info.mockRestore();
+    }
   });
 
-  it("wires the presence store onto the chat bus and runes snapshot", () => {
-    const src = readFileSync(
-      fileURLToPath(new URL("./mesh-runtime.ts", import.meta.url)),
-      "utf8",
-    );
-    expect(src).toContain("wirePresenceStoreToChatBus");
-    expect(src).toContain("bindPresenceStore");
-    expect(src).toContain("presenceStore");
-    expect(src).toContain("PresenceStore");
+  it("publishes presence updates to the chat bus and reactive snapshot", async () => {
+    const wakes = createChatWakeBus();
+    const presenceStore = new PresenceStore();
+    const changes: Array<{
+      companyUid: string;
+      actorUid: string;
+      status: string;
+    }> = [];
+    wakes.on("presence:changed", (change) => changes.push(change));
+
+    const mesh = startWebMesh({ wakes, presenceStore });
+    const client = meshClients.instances.at(-1)!;
+    let stopped = false;
+    try {
+      requestLiveRefresh(" cmp_test ");
+      expect(client.refreshCalls).toEqual(["cmp_test"]);
+
+      presenceStore.replaceCompany("cmp_test", [
+        {
+          actorUid: "agt_test",
+          actorType: "agent",
+          presence: "online",
+          lastSeenAt: "2026-08-22T12:00:00.000Z",
+        },
+      ]);
+      await Promise.resolve();
+
+      expect(changes).toEqual([
+        { companyUid: "cmp_test", actorUid: "agt_test", status: "online" },
+      ]);
+      expect(presenceStatus("cmp_test", "agt_test")).toBe("online");
+
+      mesh.stop();
+      stopped = true;
+      requestLiveRefresh("cmp_test");
+      expect(client.refreshCalls).toEqual(["cmp_test"]);
+      expect(presenceStatus("cmp_test", "agt_test")).toBeNull();
+      presenceStore.replaceCompany("cmp_test", [
+        {
+          actorUid: "agt_test",
+          actorType: "agent",
+          presence: "offline",
+          lastSeenAt: "2026-08-22T12:01:00.000Z",
+        },
+      ]);
+      await Promise.resolve();
+      expect(changes).toHaveLength(1);
+    } finally {
+      if (!stopped) mesh.stop();
+    }
   });
 });
 
