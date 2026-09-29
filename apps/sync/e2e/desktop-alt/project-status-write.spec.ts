@@ -13,6 +13,7 @@ import { readRepoFile } from './harness';
 describe('desktop-alt project status write — store contract (US-010)', () => {
   const store = readRepoFile('../../packages/ui/src/projects/projects-store.svelte.ts');
   const adapter = readRepoFile('../../packages/platform/src/tauri/sync-adapter.ts');
+  const localProjects = readRepoFile('../../packages/ui/src/projects/local-projects.ts');
 
   it('the store invokes the registered Rust write commands', () => {
     // The adapter is the single place that calls the Tauri write commands, with
@@ -46,8 +47,12 @@ describe('desktop-alt project status write — store contract (US-010)', () => {
     expect(store).toContain('statusPending(project');
     expect(store).toContain('let statusStateVersion = $state(0)');
     expect(store).toContain('void statusStateVersion');
-    // Board path is derived from companies/<company>/board.json.
-    expect(store).toContain('companies/${company}/board.json');
+    // The Rust scanner's source board wins; legacy company rows retain their
+    // company-board fallback, and legacy Personal rows never target a company.
+    expect(store).toContain('const boardPath = boardPathFor(project)');
+    expect(localProjects).toContain('project.boardPath?.trim()');
+    expect(localProjects).toContain('company === "personal"');
+    expect(localProjects).toContain('return `companies/${company}/board.json`');
   });
 
   it('exposes the story-passes optimistic toggle too', () => {
@@ -127,13 +132,16 @@ describe('desktop-alt status write — registration + capability (US-010)', () =
     const rust = readRepoFile('src-tauri/src/commands/projects_local.rs');
     const core = readRepoFile('../../crates/hq-desktop-core/src/projects_local.rs');
     const scopedFs = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
-    // The command wrapper enforces the signed-in gate, hydrates live workspace
-    // membership, and authorizes the canonical company target before delegating.
+    // The command wrapper enforces the signed-in gate, hydrates workspace
+    // membership, and authorizes the source board before delegating.
     expect(rust).toContain('pub async fn set_local_project_status');
     expect(rust).toContain('desktop_features_enabled().await');
     expect(rust).toContain('hydrated_project_context().await');
-    expect(rust).toContain('authorize_project_target(');
+    expect(rust).toContain('authorize_project_board_target(');
     expect(rust).toContain('prd_path.as_deref()');
+    expect(core).toContain('pub fn authorize_project_board_target');
+    expect(core).toContain('companies/personal is not a valid project board target');
+    expect(core).toContain('personal_scope_authorized(workspaces)');
     expect(core).toContain('normalize_project_identity_path');
     // Strict HQ-relative + canonical company guards, no-symlink write targets,
     // sink-adjacent revalidation, and a linearizable atomic exchange all live
