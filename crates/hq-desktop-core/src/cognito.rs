@@ -376,6 +376,24 @@ fn remove_invalidation_marker_at(path: &Path, access_token: &str) -> Result<(), 
     }
 }
 
+fn record_rejected_refresh_at(path: &Path, access_token: &str) -> Result<(), String> {
+    let _lock = lock_token_file_at(path)?;
+    invalidate_token_at_unlocked(path, access_token)?;
+    std::fs::write(
+        invalidation_path_for_token(path, access_token),
+        b"refresh-rejected",
+    )
+    .map_err(|e| format!("Failed to record rejected token refresh: {e}"))
+}
+
+fn refresh_rejection_recorded_at(path: &Path, access_token: &str) -> Result<bool, String> {
+    match std::fs::read(invalidation_path_for_token(path, access_token)) {
+        Ok(contents) => Ok(contents == b"refresh-rejected"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("Failed to read rejected token marker: {e}")),
+    }
+}
+
 fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     if !path.exists() {
         return Ok(None);
@@ -573,8 +591,7 @@ fn write_tokens_to_path_unlocked(path: &Path, tokens: &CognitoTokens) -> Result<
         .map_err(|e| format!("Failed to serialize tokens: {}", e))?;
 
     // A successful login/refresh for this exact token generation is
-    // authoritative. Remove its old rejection marker before publishing the
-    // token file; a failure observed after this point will recreate it.
+    // authoritative. Remove its old rejection marker before publishing it.
     remove_invalidation_marker_at(path, &tokens.access_token)?;
 
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -953,6 +970,16 @@ async fn resolve_tokens_classified(
             .await
             .map_err(CognitoTokenResolutionError::plain)?
             .ok_or_else(|| CognitoTokenResolutionError::plain("Not signed in".to_string()))?;
+        let path = tokens_file_path().map_err(CognitoTokenResolutionError::plain)?;
+        if refresh_rejection_recorded_at(&path, &tokens.access_token)
+            .map_err(CognitoTokenResolutionError::plain)?
+        {
+            return Err(CognitoTokenResolutionError::refresh(
+                REAUTH_MESSAGE.to_string(),
+                CognitoRefreshFailureClass::Http4xx,
+                true,
+            ));
+        }
         if !force_refresh && !matching_invalidation && !is_expired(&tokens) {
             return Ok(tokens);
         }
@@ -972,6 +999,17 @@ async fn resolve_tokens_classified(
                                 requires_reauth,
                             )
                         })?;
+                        let path =
+                            tokens_file_path().map_err(CognitoTokenResolutionError::plain)?;
+                        record_rejected_refresh_at(&path, &tokens.access_token).map_err(
+                            |message| {
+                                CognitoTokenResolutionError::refresh(
+                                    message,
+                                    failure_class,
+                                    requires_reauth,
+                                )
+                            },
+                        )?;
                     }
                     match get_tokens().await.map_err(|message| {
                         CognitoTokenResolutionError::refresh(
@@ -1995,6 +2033,14 @@ mod tests {
 
         assert!(read_tokens_from_path(&path).unwrap().is_none());
         assert!(has_non_empty_token_at(&path).unwrap());
+
+        std::fs::write(
+            invalidation_path_for_token(&path, &tokens.access_token),
+            b"refresh-rejected",
+        )
+        .unwrap();
+        write_tokens_to_path(&path, &tokens).unwrap();
+        assert!(!invalidation_path_for_token(&path, &tokens.access_token).exists());
     }
 
     #[tokio::test]
@@ -2066,6 +2112,11 @@ mod tests {
             .await
             .expect_err("rejected refresh must remain a sign-in condition");
         assert!(failure.requires_reauth);
+
+        let repeated_failure = resolve_tokens_classified(false, &cognito.uri())
+            .await
+            .expect_err("the rejected token generation must stay signed out");
+        assert!(repeated_failure.requires_reauth);
         assert!(get_tokens().await.unwrap().is_none());
         cognito.verify().await;
     }
@@ -2229,6 +2280,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(&tokens).unwrap()).unwrap();
         invalidate_token_at(&path, &tokens.access_token).unwrap();
         let marker = invalidation_path_for_token(&path, &tokens.access_token);
+        std::fs::write(&marker, b"refresh-rejected").unwrap();
         assert!(marker.exists());
         assert!(has_non_empty_token_at(&path).unwrap());
 

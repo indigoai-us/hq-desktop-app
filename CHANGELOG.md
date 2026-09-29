@@ -9,7 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - When a saved access token is rejected, HQ Desktop tries its stored refresh
-  token before asking you to sign in. A rejected refresh still requires sign-in.
+  token before asking you to sign in. After Cognito rejects that refresh, HQ
+  Desktop stops retrying the same token and keeps sign-in available.
 - First-time setup is now one five-screen welcome flow that fills the screen
   (everything below the menu bar and beside the Dock) with no window
   shadow. On macOS the background is your own desktop wallpaper, blurred
