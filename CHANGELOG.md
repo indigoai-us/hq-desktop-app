@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Leaving a channel and removing a bot from a channel work again, and bots in the member list have a remove button.
+
 - Files saved while a folder like `node_modules` or `build` is being created,
   or in the brief moment when HQ changes which folders it watches, now sync
   right away. Before, they waited for the next full rescan, up to six hours
@@ -26,9 +28,6 @@ The release moves it under the version it ships in.
   one-file-at-a-time upload.
 
 - Behind a flag (`desktop.human-only-conversations`, off by default): conversations can hide work-mesh and automated messages, and the sidebar can order by the latest message from a person.
-
-
-
 
 - When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
 

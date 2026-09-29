@@ -82,8 +82,12 @@
 
   function canRemove(row: StatusPersonRow): boolean {
     if (!onremovemember) return false;
-    // Server contract: self-leave always allowed; owner may remove others.
-    return isSelf(row.personUid, self) || selfIsOwner;
+    // Server contract: owner may remove others; self-leave is allowed for
+    // non-owners only (owners get 409 CHANNEL_OWNER_CANNOT_LEAVE, and there is
+    // no in-app owner-transfer / delete-on-leave flow — owners use the trash
+    // control in the popover footer instead).
+    if (isSelf(row.personUid, self)) return !selfIsOwner;
+    return selfIsOwner;
   }
 
   let container: HTMLDivElement | null = $state(null);
@@ -549,6 +553,19 @@
             </span>
             <span class="m-name">{a.displayName}</span>
             {@render kindChip(a.personUid)}
+          {/if}
+          {#if selfIsOwner && !!onremovemember}
+            <button
+              type="button"
+              class="m-remove"
+              data-testid="status-agent-remove"
+              title={`Remove ${a.displayName} from channel`}
+              aria-label={`Remove ${a.displayName} from channel`}
+              disabled={removingUid === a.personUid}
+              onclick={() => onremovemember?.(a)}
+            >
+              {removingUid === a.personUid ? "…" : "×"}
+            </button>
           {/if}
         </div>
       {/each}
