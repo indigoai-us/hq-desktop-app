@@ -350,3 +350,58 @@ pub fn refresh_liquid_glass_window(window: &tauri::WebviewWindow) {
         );
     }
 }
+
+/// Show or hide the tagged Liquid Glass / vibrancy backing view.
+///
+/// Driven by the Appearance window-opacity setting: at 100% opacity the web
+/// surfaces are fully solid, so the native material is hidden rather than
+/// left compositing (and bleeding through any sub-pixel alpha) underneath.
+/// No-op when no backing view has been inserted yet.
+///
+/// Callers MUST invoke this on AppKit's main thread.
+#[cfg(target_os = "macos")]
+pub fn set_liquid_glass_backing_visible(window: &tauri::WebviewWindow, visible: bool) {
+    use crate::util::logfile::log;
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let Ok(ns_win) = window.ns_window() else {
+        return;
+    };
+    let ns_win = ns_win as *mut AnyObject;
+    // SAFETY: main thread (caller contract); every pointer is null-checked.
+    unsafe {
+        let content: *mut AnyObject = msg_send![ns_win, contentView];
+        if content.is_null() {
+            return;
+        }
+        let marker = glass_identifier_nsstring();
+        if marker.is_null() {
+            return;
+        }
+        let subviews: *mut AnyObject = msg_send![content, subviews];
+        if subviews.is_null() {
+            return;
+        }
+        let count: usize = msg_send![subviews, count];
+        for index in 0..count {
+            let view: *mut AnyObject = msg_send![subviews, objectAtIndex: index];
+            if view.is_null() {
+                continue;
+            }
+            let ident: *mut AnyObject = msg_send![view, identifier];
+            if ident.is_null() {
+                continue;
+            }
+            let same: bool = msg_send![ident, isEqualToString: marker];
+            if same {
+                let _: () = msg_send![view, setHidden: !visible];
+                log(
+                    "ui",
+                    &format!("liquid-glass: backing view visible={visible}"),
+                );
+                return;
+            }
+        }
+    }
+}
