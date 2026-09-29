@@ -10,6 +10,7 @@ use crate::runner_error_shape::{
     RunnerErrorPathRootRollup, RunnerErrorResidualSignatureRollup, RunnerErrorShapeRollup,
     RunnerErrorSite, RunnerErrorSiteRollup, RunnerErrorUnknownProfileRollup,
 };
+use crate::uploads_paused::UploadsPassObservation;
 use sha2::{Digest, Sha256};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +36,12 @@ pub struct RunTotals {
     /// channel. Auth-required is intentionally exit 0, but must never be
     /// overwritten by the manual exit handler's synthetic AllComplete.
     pub saw_auth_error: bool,
+    /// What this pass said about uploads per company: plan-limit notices,
+    /// per-company completions, and companies that uploaded a file. Settles
+    /// the "uploads paused" state at `AllComplete` (hard-stop-readiness
+    /// US-019). Before this, a pass whose uploads a plan limit refused counted
+    /// as a clean sync.
+    pub uploads_pass: UploadsPassObservation,
     /// Set true when the runner emitted at least one error event of ANY level
     /// (company-level `path == "(company)"` OR per-file). Both drive the
     /// runner's exit-2 path — `hq-cloud`'s `executeCompanyFanout` pushes EVERY
@@ -231,6 +238,20 @@ impl RunTotals {
         match event {
             SyncEvent::Complete(c) => {
                 self.conflicts = self.conflicts.saturating_add(c.conflicts);
+                self.uploads_pass.completed.insert(c.company.clone());
+            }
+            SyncEvent::PlanLimit(notice) => {
+                // Only a link on a host hq-pro returns is kept; the notice
+                // itself counts either way.
+                self.uploads_pass.plan_limited.insert(
+                    notice.company.clone(),
+                    crate::plan_limit::approved_plan_upgrade_url(&notice.upgrade_url),
+                );
+            }
+            SyncEvent::Progress(p)
+                if p.direction.as_deref() == Some("up") && p.deleted != Some(true) =>
+            {
+                self.uploads_pass.uploaded.insert(p.company.clone());
             }
             SyncEvent::AllComplete(_) => {
                 self.all_complete_seen = true;
@@ -9409,6 +9430,67 @@ mod tests {
         // A conventional small exit code is Ordinary, not a fault → suppressible.
         assert!(!is_windows_fault_exit(Some(2)));
         assert!(runner_exit_is_file_lock(Some(2), None, false, &ebusy));
+    }
+
+    #[test]
+    fn a_pass_with_plan_limit_skips_is_recorded_for_the_uploads_pause() {
+        use crate::events::{SyncPlanLimitEvent, SyncProgressEvent};
+        let mut totals = RunTotals::default();
+        totals.accumulate(&SyncEvent::PlanLimit(SyncPlanLimitEvent {
+            company: "Acme".to_string(),
+            upgrade_url: "https://hq.computer/companies/acme/billing?upgrade=1".to_string(),
+        }));
+        totals.accumulate(&SyncEvent::PlanLimit(SyncPlanLimitEvent {
+            company: "Beta".to_string(),
+            upgrade_url: "https://app.indigo-hq.com/billing/upgrade".to_string(),
+        }));
+        let progress = |company: &str, direction: &str, deleted: Option<bool>| {
+            SyncEvent::Progress(SyncProgressEvent {
+                company: company.to_string(),
+                path: "a.md".to_string(),
+                bytes: 1,
+                message: None,
+                direction: Some(direction.to_string()),
+                deleted,
+                author: None,
+            })
+        };
+        totals.accumulate(&progress("Gamma", "up", None));
+        totals.accumulate(&progress("Delta", "down", None));
+        totals.accumulate(&progress("Epsilon", "up", Some(true)));
+        for company in ["Acme", "Gamma"] {
+            totals.accumulate(&SyncEvent::Complete(SyncCompleteEvent {
+                company: company.to_string(),
+                files_downloaded: 0,
+                bytes_downloaded: 0,
+                files_skipped: 3,
+                conflicts: 0,
+                aborted: false,
+                files_tombstoned: None,
+                files_refused_stale: None,
+            }));
+        }
+
+        let pass = &totals.uploads_pass;
+        assert_eq!(
+            pass.plan_limited.get("Acme").cloned().flatten().as_deref(),
+            Some("https://hq.computer/companies/acme/billing?upgrade=1")
+        );
+        assert_eq!(pass.plan_limited.get("Beta"), Some(&None));
+        assert_eq!(
+            pass.uploaded.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["Gamma"]
+        );
+        assert_eq!(
+            pass.completed
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["Acme", "Gamma"]
+        );
+        // A plan-limit notice is not an error: the pass stays clean.
+        assert!(!totals.saw_error);
+        assert!(!totals.saw_alertable_error);
     }
 
     #[test]

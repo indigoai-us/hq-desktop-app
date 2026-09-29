@@ -93,6 +93,7 @@ pub mod windows_teardown_probe;
 pub mod watcher_exit_lifecycle;
 pub mod window_material;
 pub mod update_gate;
+pub mod uploads_paused;
 pub mod workspaces;
 #[cfg(any(windows, test))]
 mod windows_symlink_fallback;

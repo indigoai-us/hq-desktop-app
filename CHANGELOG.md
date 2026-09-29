@@ -15,6 +15,14 @@ The release moves it under the version it ships in.
   Storage: 10.2 GB of 10 GB used." Accepting an invite to a company that is
   at its member limit shows the same kind of sentence instead of raw server
   JSON. Plan-limit refusals are no longer reported as crashes.
+- When a sync pass skips new files because a company is over its storage
+  limit, HQ now says "Uploads paused" for that company instead of "All
+  synced". The desktop window shows the notice even if it was opened after
+  the sync ran, the Core status panel names the company with an "Upgrade
+  plan" button, and the menu bar (and the Windows tray) lists "Uploads paused
+  for Acme" with an "Upgrade plan for Acme…" item. The notice clears once
+  uploads go through again. Upgrade links open only for hq.computer, the
+  host HQ's billing uses.
 
 - With `desktop.push-events` enabled, realtime events trigger share and direct-message refreshes. If the connection drops, the app checks every five minutes, including while all windows are hidden, so tray launches retain a notification long-stop. Scheduled checks pause while push is connected. When the flag is off, the existing 60-second cadence continues.
 - Core update diagnostics now group deferred baseline refreshes separately from local

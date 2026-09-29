@@ -683,6 +683,15 @@
 /// passes. `RESCUE_CONTRACT_FLOOR` moves to 6.18.0 in lockstep, mirrored in
 /// hq-cli's rescue parity test. The runner-error vocabulary was re-derived for
 /// this pin (see `runner_error_shape::CAUSE_VOCABULARY_SOURCE_VERSION`).
+///
+/// TODO(hard-stop-readiness US-012 / US-019): bump this pin to the hq-cloud
+/// release that ships US-012 (the runner skips plan-limit refusals with a
+/// reason, retries them at most hourly, and exits 0 on a plan-limit-only
+/// pass), and raise the lower bound so installed copies refresh their cached
+/// runner. Deliberately NOT bumped yet: that hq-cloud release has not been
+/// published. The desktop side of US-019 already handles both the current
+/// runner (plan-limit errors are non-alertable) and the US-012 runner
+/// (`plan-limit` notices drive the uploads-paused state).
 pub const HQ_CLOUD_VERSION: &str = "~6.18.5";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync

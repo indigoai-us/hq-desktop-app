@@ -9,7 +9,8 @@
 //
 // IPC is deliberately trivial + robust: the helper writes commands to
 // ~/.hq/.tray-cmd; the main app atomically publishes the latest aggregate
-// message count to ~/.hq/.tray-badge. No sockets, signals, or entitlements.
+// message count to ~/.hq/.tray-badge and the companies whose uploads a plan
+// limit paused to ~/.hq/.tray-status. No sockets, signals, or entitlements.
 // The helper exits itself when the main app's PID (argv[1]) dies.
 //
 // Interaction matches a normal menu-bar app:
@@ -27,6 +28,7 @@ import Foundation
 let hqPid: Int32 = CommandLine.arguments.count > 1 ? (Int32(CommandLine.arguments[1]) ?? 0) : 0
 let cmdURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".hq/.tray-cmd")
 let badgeURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".hq/.tray-badge")
+let statusURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".hq/.tray-status")
 private let hqTemplateImageBase64 = """
 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
 """
@@ -90,6 +92,82 @@ struct TrayBadgePresentation {
     }
 }
 
+/// Menu-bar copy for companies whose new files are not uploading because the
+/// company is over a plan limit (hard-stop-readiness US-019). The app writes
+/// `{"uploadsPaused":[{"company":"Acme","canUpgrade":true}]}` to
+/// ~/.hq/.tray-status; the upgrade link itself never leaves the app — the
+/// helper only asks for it by company name.
+struct TrayUploadsPausedPresentation {
+    struct Row: Equatable {
+        let company: String
+        let canUpgrade: Bool
+    }
+
+    /// Parse the app's snapshot. Missing or malformed → nothing is paused.
+    static func rows(from data: Data?) -> [Row] {
+        guard
+            let data,
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let list = object["uploadsPaused"] as? [[String: Any]]
+        else { return [] }
+        var seen = Set<String>()
+        return list.compactMap { entry in
+            guard
+                let raw = entry["company"] as? String,
+                case let company = raw.trimmingCharacters(in: .whitespacesAndNewlines),
+                !company.isEmpty,
+                !company.contains("\n"),
+                seen.insert(company).inserted
+            else { return nil }
+            return Row(company: company, canUpgrade: entry["canUpgrade"] as? Bool ?? false)
+        }
+    }
+
+    static func statusTitle(for row: Row) -> String { "Uploads paused for \(row.company)" }
+    static func upgradeTitle(for row: Row) -> String { "Upgrade plan for \(row.company)…" }
+    static func upgradeCommand(for row: Row) -> String { "upgrade \(row.company)" }
+
+    /// Tooltip / VoiceOver label: the unread label plus the paused companies.
+    static func label(base: String, rows: [Row]) -> String {
+        switch rows.count {
+        case 0: return base
+        case 1: return "\(base) · Uploads paused for \(rows[0].company)"
+        default: return "\(base) · Uploads paused for \(rows.count) companies"
+        }
+    }
+
+    /// Replace the paused-uploads section at the top of `menu`. Every item this
+    /// adds carries `tag`, so the next call removes exactly what it added.
+    static func apply(rows: [Row], to menu: NSMenu, target: AnyObject, action: Selector) {
+        for item in menu.items where item.tag == menuTag {
+            menu.removeItem(item)
+        }
+        var index = 0
+        for row in rows {
+            let status = NSMenuItem(title: statusTitle(for: row), action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            status.tag = menuTag
+            menu.insertItem(status, at: index)
+            index += 1
+            if row.canUpgrade {
+                let upgrade = NSMenuItem(title: upgradeTitle(for: row), action: action, keyEquivalent: "")
+                upgrade.target = target
+                upgrade.representedObject = row.company
+                upgrade.tag = menuTag
+                menu.insertItem(upgrade, at: index)
+                index += 1
+            }
+        }
+        if !rows.isEmpty {
+            let separator = NSMenuItem.separator()
+            separator.tag = menuTag
+            menu.insertItem(separator, at: index)
+        }
+    }
+
+    static let menuTag = 1_902
+}
+
 final class TrayBadgeView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -150,6 +228,9 @@ final class TrayController: NSObject {
     private let hasMark: Bool
     private let badgeView = TrayBadgeView(frame: .zero)
     private var lastBadgeSnapshot: String?
+    private var lastStatusSnapshot: Data?
+    private var unreadCount = 0
+    private var pausedRows: [TrayUploadsPausedPresentation.Row] = []
 
     override init() {
         let mark = makeHQTemplateImage()
@@ -220,6 +301,7 @@ final class TrayController: NSObject {
 
     private func applyUnreadCount(_ count: Int) {
         guard let button = item.button else { return }
+        unreadCount = count
         button.attributedTitle = NSAttributedString(string: "")
         button.title = hasMark ? "" : "HQ"
         button.imagePosition = hasMark ? .imageOnly : .noImage
@@ -227,9 +309,28 @@ final class TrayController: NSObject {
         badgeView.frame = TrayBadgePresentation.frame(for: count, in: button.bounds)
         badgeView.count = count
 
-        let attention = TrayBadgePresentation.accessibilityLabel(for: count)
+        applyLabel()
+    }
+
+    private func applyLabel() {
+        guard let button = item.button else { return }
+        let attention = TrayUploadsPausedPresentation.label(
+            base: TrayBadgePresentation.accessibilityLabel(for: unreadCount),
+            rows: pausedRows
+        )
         button.toolTip = attention
         button.setAccessibilityLabel(attention)
+    }
+
+    /// Mirror the app's paused-uploads snapshot into the right-click menu.
+    func refreshStatus() {
+        let data = try? Data(contentsOf: statusURL)
+        guard data != lastStatusSnapshot else { return }
+        lastStatusSnapshot = data
+        pausedRows = TrayUploadsPausedPresentation.rows(from: data)
+        TrayUploadsPausedPresentation.apply(
+            rows: pausedRows, to: menu, target: self, action: #selector(upgradePlan(_:)))
+        applyLabel()
     }
 
     @objc func statusItemClicked() {
@@ -269,6 +370,12 @@ final class TrayController: NSObject {
         writeCommand("recovery")
         activateHQ()
     }
+    @objc func upgradePlan(_ sender: NSMenuItem) {
+        guard let company = sender.representedObject as? String else { return }
+        writeCommand(
+            TrayUploadsPausedPresentation.upgradeCommand(
+                for: .init(company: company, canUpgrade: true)))
+    }
     @objc func replayWelcomeIntro() { writeCommand("replay-intro") }
     @objc func signOutHQ() { writeCommand("signout") }
     @objc func quitHQ() {
@@ -285,12 +392,14 @@ final class TrayController: NSObject {
             app.setActivationPolicy(.accessory)
             let controller = TrayController()
             controller.refreshBadge()
+            controller.refreshStatus()
 
-            // Badge snapshots are tiny local state, not a second notification
-            // poller. This timer only observes the app's latest atomic snapshot
-            // and updates AppKit on the main run loop.
+            // Badge and status snapshots are tiny local state, not a second
+            // poller. This timer only observes the app's latest atomic
+            // snapshots and updates AppKit on the main run loop.
             Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
                 controller.refreshBadge()
+                controller.refreshStatus()
             }
 
             // Exit with the main HQ app so we never leave an orphan status item.
