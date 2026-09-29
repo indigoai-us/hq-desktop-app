@@ -181,22 +181,33 @@ pub fn reconcile_action(
 }
 
 /// Apply a launch-time autostart decision. Refresh writes the new registration
-/// before asking the platform to reload it, so launchd reads the updated plist.
-pub fn apply_reconcile_action<W, R>(
+/// first. A process launched by its LaunchAgent leaves the updated definition
+/// for the next login instead of booting out its own running job; other
+/// processes may reload the registration in place.
+pub fn apply_reconcile_action<W, P, R, D>(
     action: ReconcileAction,
     set_enabled: W,
+    is_current_launch_agent_process: P,
     reload: R,
+    defer_until_next_login: D,
 ) -> Result<(), String>
 where
     W: FnOnce(bool) -> Result<(), String>,
+    P: FnOnce() -> bool,
     R: FnOnce() -> Result<(), String>,
+    D: FnOnce(),
 {
     match action {
         ReconcileAction::None => Ok(()),
         ReconcileAction::Enable => set_enabled(true),
         ReconcileAction::Refresh => {
             set_enabled(true)?;
-            reload()
+            if is_current_launch_agent_process() {
+                defer_until_next_login();
+                Ok(())
+            } else {
+                reload()
+            }
         }
         ReconcileAction::Disable => set_enabled(false),
     }
@@ -467,14 +478,100 @@ mod pure_tests {
         let result = apply_reconcile_action(
             ReconcileAction::Refresh,
             |_| Err("write failed".to_string()),
+            || false,
             || {
                 reloaded.set(true);
                 Ok(())
             },
+            || {},
         );
 
         assert_eq!(result, Err("write failed".to_string()));
         assert!(!reloaded.get());
+    }
+
+    #[test]
+    fn refresh_defers_reload_when_this_process_is_the_launch_agent() {
+        use std::cell::RefCell;
+
+        let calls = RefCell::new(Vec::new());
+        apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |enabled| {
+                calls.borrow_mut().push(format!("write:{enabled}"));
+                Ok(())
+            },
+            || true,
+            || {
+                calls.borrow_mut().push("reload".to_string());
+                Ok(())
+            },
+            || {
+                calls
+                    .borrow_mut()
+                    .push("defer-until-next-login".to_string())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            *calls.borrow(),
+            vec!["write:true", "defer-until-next-login"]
+        );
+    }
+
+    #[test]
+    fn refresh_reloads_after_write_when_this_is_not_the_launch_agent() {
+        use std::cell::RefCell;
+
+        let calls = RefCell::new(Vec::new());
+        apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |enabled| {
+                calls.borrow_mut().push(format!("write:{enabled}"));
+                Ok(())
+            },
+            || false,
+            || {
+                calls.borrow_mut().push("reload".to_string());
+                Ok(())
+            },
+            || {
+                calls
+                    .borrow_mut()
+                    .push("defer-until-next-login".to_string())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(*calls.borrow(), vec!["write:true", "reload"]);
+    }
+
+    #[test]
+    fn refresh_write_failure_does_not_probe_or_reload() {
+        use std::cell::Cell;
+
+        let probed = Cell::new(false);
+        let reloaded = Cell::new(false);
+        let deferred = Cell::new(false);
+        let result = apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |_| Err("write failed".to_string()),
+            || {
+                probed.set(true);
+                false
+            },
+            || {
+                reloaded.set(true);
+                Ok(())
+            },
+            || deferred.set(true),
+        );
+
+        assert_eq!(result, Err("write failed".to_string()));
+        assert!(!probed.get());
+        assert!(!reloaded.get());
+        assert!(!deferred.get());
     }
 
     #[test]
@@ -560,10 +657,12 @@ mod pure_tests {
                 calls.borrow_mut().push(format!("write:{enabled}"));
                 Ok(())
             },
+            || false,
             || {
                 calls.borrow_mut().push("reload".to_string());
                 Ok(())
             },
+            || {},
         )
         .unwrap();
 

@@ -193,9 +193,21 @@ pub fn ensure_autostart_on_launch() {
         ) {
             ReconcileAction::None => {}
             action @ (ReconcileAction::Enable | ReconcileAction::Refresh) => {
+                let mut deferred_until_next_login = false;
                 let result = hq_platform::autostart::apply_reconcile_action(
                     action,
                     hq_platform::autostart::set_enabled,
+                    || {
+                        #[cfg(target_os = "macos")]
+                        {
+                            let argv: Vec<String> = std::env::args().collect();
+                            hq_platform::launchagent::argv_is_launch_agent_relaunch(&argv)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            false
+                        }
+                    },
                     || {
                         #[cfg(target_os = "macos")]
                         {
@@ -206,9 +218,16 @@ pub fn ensure_autostart_on_launch() {
                             Ok(())
                         }
                     },
+                    || {
+                        deferred_until_next_login = true;
+                        log(
+                            "autostart",
+                            "ensure: LaunchAgent plist refreshed; the current agent process will keep running and the new policy takes effect at the next login",
+                        );
+                    },
                 );
                 match result {
-                    Ok(()) => {
+                    Ok(()) if !deferred_until_next_login => {
                         let outcome = if action == ReconcileAction::Refresh {
                             "refreshed stale autostart registration"
                         } else {
@@ -216,6 +235,7 @@ pub fn ensure_autostart_on_launch() {
                         };
                         log("autostart", &format!("ensure: {outcome}"));
                     }
+                    Ok(()) => {}
                     Err(e) => log("autostart", &format!("ensure: reconciliation failed: {e}")),
                 }
             }
