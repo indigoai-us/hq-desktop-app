@@ -1450,7 +1450,14 @@ fn scan_non_company_project_tree(hq_root: &Path, tree_root: &str, out: &mut Vec<
     } else {
         hq_root.join(tree_root)
     };
-    let Ok(root_metadata) = std::fs::symlink_metadata(&root_path) else {
+    let root_metadata = if tree_root.is_empty() {
+        // A configured HQ root may itself be a symlink. The canonical check
+        // on `projects/` below still pins the scan to the resolved HQ tree.
+        std::fs::metadata(&root_path)
+    } else {
+        std::fs::symlink_metadata(&root_path)
+    };
+    let Ok(root_metadata) = root_metadata else {
         return;
     };
     if !root_metadata.file_type().is_dir() {

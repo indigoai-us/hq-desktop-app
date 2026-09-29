@@ -51,6 +51,29 @@ fn root_projects_are_listed_in_the_personal_home_group() {
     assert_eq!(project.expect("Root project listed").company, "personal");
 }
 
+#[cfg(unix)]
+#[test]
+fn root_projects_are_listed_when_the_hq_root_is_a_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().expect("temporary canonical HQ root");
+    write_prd(root.path(), "projects/root-demo/prd.json", "Root demo");
+    let alias_parent = tempfile::tempdir().expect("temporary alias parent");
+    let hq_alias = alias_parent.path().join("hq-link");
+    symlink(root.path(), &hq_alias).expect("create synthetic HQ root symlink");
+
+    let projects = scan_local_projects(&hq_alias);
+    let project = projects
+        .iter()
+        .find(|project| project.prd_path.as_deref() == Some("projects/root-demo/prd.json"));
+
+    assert!(
+        project.is_some(),
+        "Root project must survive an HQ root alias"
+    );
+    assert_eq!(project.expect("Root project listed").company, "personal");
+}
+
 #[test]
 fn personal_path_resolves_without_a_company_slug() {
     let root = tempfile::tempdir().expect("temporary HQ root");
