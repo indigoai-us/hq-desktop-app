@@ -44,6 +44,9 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::commands::hq_core_state::{
+    ReleaseFetchDiagnostics, ReleaseFetchTransportClass,
+};
 use crate::util::logfile::log;
 
 #[path = "core_update_retry.rs"]
@@ -74,6 +77,7 @@ struct CoreUpdateRescueCommand {
 struct CoreUpdateRescueRun {
     result: crate::commands::hq_core_staging::RescueRunResult,
     managed_git_retry: crate::commands::hq_core_state::ManagedGitRetryOutcome,
+    release_fetch: ReleaseFetchDiagnostics,
 }
 
 #[derive(Debug)]
@@ -88,7 +92,19 @@ struct GithubRelease {
     tag_name: String,
 }
 
+struct LatestReleaseError {
+    message: String,
+    diagnostics: ReleaseFetchDiagnostics,
+}
+
 fn github_api_client(token: Option<&str>) -> Result<reqwest::Client, String> {
+    github_api_client_with_timeout(token, REQUEST_TIMEOUT)
+}
+
+fn github_api_client_with_timeout(
+    token: Option<&str>,
+    timeout: Duration,
+) -> Result<reqwest::Client, String> {
     let mut headers = crate::util::client_info::client_headers();
     headers.insert(
         reqwest::header::ACCEPT,
@@ -102,7 +118,7 @@ fn github_api_client(token: Option<&str>) -> Result<reqwest::Client, String> {
     }
     reqwest::Client::builder()
         .default_headers(headers)
-        .timeout(REQUEST_TIMEOUT)
+        .timeout(timeout)
         .build()
         .map_err(|error| format!("build client: {error}"))
 }
@@ -149,26 +165,90 @@ async fn fetch_tag_sha(repo: &str, git_ref: &str, token: Option<&str>) -> Option
     }
 }
 
-async fn fetch_latest(token: Option<&str>) -> Result<String, String> {
+async fn fetch_latest(
+    token: Option<&str>,
+) -> Result<(String, ReleaseFetchDiagnostics), LatestReleaseError> {
+    fetch_latest_from_url(token, RELEASES_URL, REQUEST_TIMEOUT).await
+}
+
+async fn fetch_latest_from_url(
+    token: Option<&str>,
+    url: &str,
+    timeout: Duration,
+) -> Result<(String, ReleaseFetchDiagnostics), LatestReleaseError> {
     // GitHub returns 403 with the message "Request forbidden by
     // administrative rules" when User-Agent is missing. The client_info
     // headers include a UA already; layer the timeout on top so a
     // hung connection doesn't stall the loop forever.
-    let client = github_api_client(token)?;
+    let client =
+        github_api_client_with_timeout(token, timeout).map_err(|message| LatestReleaseError {
+            message,
+            diagnostics: ReleaseFetchDiagnostics::client_build(),
+        })?;
     let scope = if token.is_some() {
         crate::commands::github_api::ApiScope::Authenticated
     } else {
         crate::commands::github_api::ApiScope::Anonymous
     };
-    let resp = crate::commands::github_api::get(&client, RELEASES_URL, scope)
+    let resp = crate::commands::github_api::get(&client, url, scope)
         .await
-        .map_err(|e| format!("GET {RELEASES_URL}: {e}"))?;
+        .map_err(|error| {
+            let diagnostics = match error.transport_error.as_ref() {
+                Some(transport_error) => ReleaseFetchDiagnostics::transport(
+                    release_fetch_transport_class(transport_error),
+                ),
+                None => ReleaseFetchDiagnostics::default(),
+            };
+            LatestReleaseError {
+                // The detail remains internal; only the closed diagnostic values enter telemetry.
+                message: format!("GET {url}: {error}"),
+                diagnostics,
+            }
+        })?;
     if !resp.status().is_success() {
-        return Err(format!("GitHub API returned HTTP {}", resp.status()));
+        return Err(LatestReleaseError {
+            message: format!("GitHub API returned HTTP {}", resp.status()),
+            diagnostics: ReleaseFetchDiagnostics::http_status(
+                resp.status().as_u16(),
+                resp.headers().contains_key("x-ratelimit-limit")
+                    || resp.headers().contains_key("x-ratelimit-remaining")
+                    || resp.headers().contains_key("x-ratelimit-reset")
+                    || resp.headers().contains_key("x-ratelimit-resource")
+                    || resp.headers().contains_key("retry-after"),
+            ),
+        });
     }
-    let parsed: GithubRelease = serde_json::from_slice(&resp.body)
-        .map_err(|e| format!("parse GitHub release JSON: {e}"))?;
-    Ok(strip_v_prefix(parsed.tag_name.trim()).to_string())
+    let parsed: GithubRelease =
+        serde_json::from_slice(&resp.body).map_err(|error| LatestReleaseError {
+            message: format!("parse GitHub release JSON: {error}"),
+            diagnostics: ReleaseFetchDiagnostics::json_parse(),
+        })?;
+    let tag = strip_v_prefix(parsed.tag_name.trim()).to_string();
+    if tag.is_empty() {
+        return Err(LatestReleaseError {
+            message: "GitHub returned an empty tag for the latest hq-core release".to_string(),
+            diagnostics: ReleaseFetchDiagnostics::empty_tag(),
+        });
+    }
+    Ok((tag, ReleaseFetchDiagnostics::ok()))
+}
+
+fn release_fetch_transport_class(error: &reqwest::Error) -> ReleaseFetchTransportClass {
+    if error.is_timeout() {
+        ReleaseFetchTransportClass::Timeout
+    } else if error.is_connect() {
+        ReleaseFetchTransportClass::Connect
+    } else if error.is_request() {
+        ReleaseFetchTransportClass::Request
+    } else if error.is_body() {
+        ReleaseFetchTransportClass::Body
+    } else if error.is_decode() {
+        ReleaseFetchTransportClass::Decode
+    } else if error.is_redirect() {
+        ReleaseFetchTransportClass::Redirect
+    } else {
+        ReleaseFetchTransportClass::Other
+    }
 }
 
 /// Tauri command — bounded, off-thread read of the local hq-core `hqVersion`.
@@ -343,6 +423,7 @@ async fn install_hq_core_update_observed(
                 npx_resolution: Some(run.result.npx_resolution),
                 pre_rescue_materialization: false,
                 managed_git_retry: run.managed_git_retry,
+                release_fetch: run.release_fetch,
             },
             crate::commands::telemetry::emit_desktop_telemetry_best_effort,
         ),
@@ -384,18 +465,13 @@ async fn install_hq_core_update_inner(
     // Reuse one optional token for API reads and the rescue process so public
     // GitHub requests can use the authenticated rate-limit bucket when present.
     let gh_token = crate::commands::hq_core_staging::resolve_gh_token();
-    let latest = fetch_latest(gh_token.as_deref()).await.map_err(|error| {
+    let (latest, release_fetch) = fetch_latest(gh_token.as_deref()).await.map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
             crate::commands::hq_core_state::CoreUpdateErrorKind::Network,
-            format!("fetch latest hq-core release: {error}"),
+            format!("fetch latest hq-core release: {}", error.message),
         )
+        .with_release_fetch(error.diagnostics)
     })?;
-    if latest.is_empty() {
-        return Err(crate::commands::hq_core_state::CoreUpdateError::new(
-            crate::commands::hq_core_state::CoreUpdateErrorKind::Network,
-            "GitHub returned an empty tag for the latest hq-core release",
-        ));
-    }
     // hq-core release tags are `vX.Y.Z` (see strip_v_prefix doc above);
     // `fetch_latest` strips the leading `v` for the semver comparator, so
     // re-add it here for the git ref.
@@ -463,6 +539,7 @@ async fn install_hq_core_update_inner(
             crate::commands::core_update_failure_diagnostics::CoreUpdateLogFailureOperation::Create,
             error.kind(),
         )
+        .with_release_fetch(release_fetch)
     })?;
     let log_file_for_stderr = log_file_for_stdout.try_clone().map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
@@ -473,6 +550,7 @@ async fn install_hq_core_update_inner(
             crate::commands::core_update_failure_diagnostics::CoreUpdateLogFailureOperation::Duplicate,
             error.kind(),
         )
+        .with_release_fetch(release_fetch)
     })?;
 
     log(
@@ -520,6 +598,7 @@ async fn install_hq_core_update_inner(
                 rescue_error_kind: Some("rescue_spawn"),
             },
             managed_git_retry: crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
+            release_fetch,
         });
     }
 
@@ -535,6 +614,7 @@ async fn install_hq_core_update_inner(
             )
             .with_pre_rescue_materialization()
             .with_npx_resolution(npx_resolution)
+            .with_release_fetch(release_fetch)
         })?;
 
     let _update_guard =
@@ -544,6 +624,7 @@ async fn install_hq_core_update_inner(
                 error,
             )
             .with_npx_resolution(npx_resolution)
+            .with_release_fetch(release_fetch)
         })?;
 
     let rescue_args = crate::commands::hq_core_staging::build_rescue_args(
@@ -567,6 +648,7 @@ async fn install_hq_core_update_inner(
             error,
         )
         .with_npx_resolution(npx_resolution)
+        .with_release_fetch(release_fetch)
     })?;
 
     let initial_log_tail = crate::commands::hq_core_staging::tail_log(&log_path, 40)
@@ -770,6 +852,7 @@ async fn install_hq_core_update_inner(
             rescue_error_kind: None,
         },
         managed_git_retry: retry.outcome,
+        release_fetch,
     })
 }
 
@@ -1479,6 +1562,102 @@ mod tests {
             ),
             "second attempt"
         );
+    }
+
+    fn failed_event_properties(diagnostics: ReleaseFetchDiagnostics) -> serde_json::Value {
+        let error = crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::Network,
+            "release lookup failed",
+        )
+        .with_release_fetch(diagnostics);
+        let mut emitted = None;
+        crate::commands::hq_core_state::emit_core_update_failed_event(
+            "manual",
+            crate::commands::hq_core_state::Channel::Release,
+            None,
+            true,
+            None,
+            None,
+            Duration::ZERO,
+            None,
+            "network",
+            crate::commands::hq_core_state::core_update_failure_details(&error),
+            |name, properties| {
+                assert_eq!(name, "core_update_failed");
+                emitted = Some(properties);
+            },
+        );
+        emitted.expect("failure event properties")
+    }
+
+    #[tokio::test]
+    async fn latest_release_lookup_emits_closed_diagnostics_for_network_failures() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let timeout_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/timeout"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"tag_name":"v1.2.3"}"#)
+                    .set_delay(Duration::from_millis(150)),
+            )
+            .mount(&timeout_server)
+            .await;
+        let timeout_result = fetch_latest_from_url(
+            None,
+            &format!("{}/timeout", timeout_server.uri()),
+            Duration::from_millis(25),
+        )
+        .await;
+        let timeout_error = timeout_result.expect_err("delayed response times out");
+        let timeout_fields = failed_event_properties(timeout_error.diagnostics);
+        assert_eq!(timeout_fields["release_fetch_outcome"], "transport");
+        assert_eq!(timeout_fields["release_fetch_transport_class"], "timeout");
+
+        let forbidden_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/forbidden"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("x-ratelimit-limit", "60")
+                    .set_body_string("forbidden"),
+            )
+            .mount(&forbidden_server)
+            .await;
+        let forbidden_error = fetch_latest_from_url(
+            None,
+            &format!("{}/forbidden", forbidden_server.uri()),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("403 is a lookup failure");
+        let forbidden_fields = failed_event_properties(forbidden_error.diagnostics);
+        assert_eq!(forbidden_fields["release_fetch_outcome"], "http_status");
+        assert_eq!(forbidden_fields["release_fetch_http_status"], 403);
+        assert_eq!(
+            forbidden_fields["release_fetch_rate_limit_header_present"],
+            true
+        );
+
+        let json_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/bad-json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&json_server)
+            .await;
+        let json_error = fetch_latest_from_url(
+            None,
+            &format!("{}/bad-json", json_server.uri()),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("malformed JSON is a lookup failure");
+        let json_fields = failed_event_properties(json_error.diagnostics);
+        assert_eq!(json_fields["release_fetch_outcome"], "json_parse");
+        assert!(json_fields.get("release_fetch_http_status").is_none());
+        assert!(json_fields.get("release_fetch_transport_class").is_none());
     }
 
     #[test]
