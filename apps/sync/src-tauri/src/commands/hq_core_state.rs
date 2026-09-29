@@ -8565,6 +8565,41 @@ error: clone failed";
     }
 
     #[test]
+    fn hq_change_deferral_skips_sentry_and_emits_deferred_telemetry() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let events = captured_dispatched_core_update_events(
+            &["Desktop Core update failed"],
+            || {
+                emit_core_update_failed_event(
+                    "manual",
+                    Channel::Release,
+                    Some("15.0.4"),
+                    true,
+                    Some(true),
+                    Some(true),
+                    Duration::from_millis(12),
+                    None,
+                    "rescue_spawn",
+                    CoreUpdateFailureDetails {
+                        rescue_stderr_tail: Some("Update deferred while an HQ change is active"),
+                        rescue_telemetry: None,
+                        rescue_failure_category: RescueFailureCategory::UpdateDeferredHqChange,
+                        pre_rescue_materialization: false,
+                        npx_resolution: None,
+                        managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                    },
+                );
+            },
+        );
+
+        assert!(
+            events.is_empty(),
+            "a deliberate HQ-change deferral is not a Sentry failure"
+        );
+    }
+
+    #[test]
     fn dispatched_core_update_report_carries_user_bound_on_an_auth_thread() {
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_sentry_signatures_for_test();
