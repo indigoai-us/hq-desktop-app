@@ -338,6 +338,9 @@ The release moves it under the version it ships in.
 
 ## [0.10.359] — 2026-09-29
 
+- Keep a company's cloud binding in `companies/manifest.yaml` when it is absent
+  from the signed-in person's membership list. The app now waits for an
+  authoritative deletion signal before unlinking a workspace.
 - First-time setup is now one five-screen welcome flow that fills the screen
   (everything below the menu bar and beside the Dock) with no window
   shadow. On macOS the background is your own desktop wallpaper, blurred
