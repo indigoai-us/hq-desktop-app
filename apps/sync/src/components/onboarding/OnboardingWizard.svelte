@@ -1490,13 +1490,13 @@
   function trackInstallProgress(runId: number, payload: InstallProgressPayload): void {
     if (!isCurrentRun(runId)) return;
     const handle = payload.handle;
-    if (!handle || handle === 'preflight') return;
+    if (!handle) return;
 
     if (payload.finished) {
-      activeInstallHandles.delete(handle);
+      if (handle !== 'preflight') activeInstallHandles.delete(handle);
       return;
     }
-    activeInstallHandles.add(handle);
+    if (handle !== 'preflight') activeInstallHandles.add(handle);
     if (
       currentStageId === 'deps' &&
       payload.setupRunId === currentSetupRunId &&

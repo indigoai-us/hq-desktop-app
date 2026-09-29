@@ -3033,6 +3033,60 @@ describe('setup progress direction', () => {
     );
   });
 
+  it('renews the deps inactivity timeout for matching preflight installer output when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveInstall: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>((resolve) => {
+            resolveInstall = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('install:progress', {
+      handle: 'preflight',
+      setupRunId: installArgs.failureScope.setupRunId,
+      line: '[node] downloading installer',
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveInstall?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
   it('renews the content inactivity timeout for download progress when the hq flag is on', async () => {
     onboardingFlags.setupStageTimeoutFixEnabled = true;
     let resolveContent: (() => void) | undefined;
