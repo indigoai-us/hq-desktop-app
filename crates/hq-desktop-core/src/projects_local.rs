@@ -44,11 +44,12 @@ use serde::{Deserialize, Serialize};
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::desktop_alt::{
     canonical_hq_relative_path, company_slug_for_hq_path, open_hq_regular_file_no_follow,
-    validate_hq_relative_path,
+    validate_hq_relative_path, workspace_grants_company_file_access,
 };
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use crate::desktop_alt::{open_hq_scoped_directory, HqScopedDirectory};
 use crate::paths;
+use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
 
 /// Explicit attribution for a project or story. All fields remain optional so
 /// older board/prd files deserialize unchanged and the UI can render honest
@@ -82,6 +83,11 @@ pub struct LocalProject {
     /// Workspace grouping key: a company slug, or `personal` for Personal/root
     /// project files. Non-company paths still resolve with no company slug.
     pub company: String,
+    /// HQ-relative board used for writes. Personal/root projects both use the
+    /// Personal workspace grouping key, so their source board cannot be
+    /// inferred from `company` alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_path: Option<String>,
     #[serde(default)]
     pub status: String,
     /// HQ-folder-relative path to the linked `prd.json`, when one exists.
@@ -820,6 +826,52 @@ pub fn resolve_project_write_path(
     resolve_project_path(hq_root, rel_path, expected_filename)
 }
 
+/// Resolve and authorize a board target for a status write. Company board
+/// authorization follows the hydrated company workspaces; non-company boards
+/// are restricted to the Personal and root board files.
+pub fn authorize_project_board_target(
+    hq_root: &Path,
+    rel_path: &str,
+    workspaces: &[Workspace],
+) -> Result<ResolvedProjectPath, String> {
+    let target = resolve_project_write_path(hq_root, rel_path, "board.json")?;
+    match target.company_slug.as_deref() {
+        Some("personal") => {
+            return Err("companies/personal is not a valid project board target".to_string());
+        }
+        Some(slug) => {
+            let expected_path = format!("companies/{slug}/board.json");
+            if target.relative_path != expected_path {
+                return Err("company status writes must target the company board".to_string());
+            }
+            if !workspace_grants_company_file_access(workspaces, slug) {
+                return Err(format!("company projects are not authorized: {slug:?}"));
+            }
+        }
+        None => {
+            if target.relative_path != "personal/board.json" && target.relative_path != "board.json"
+            {
+                return Err("project board is outside an authorized scope".to_string());
+            }
+            if !personal_scope_authorized(workspaces) {
+                return Err("Personal projects are not authorized".to_string());
+            }
+        }
+    }
+    Ok(target)
+}
+
+/// Personal access requires the locally assembled Personal workspace row.
+/// Keep the same predicate for scanning Personal projects and authorizing
+/// their board writes.
+pub fn personal_scope_authorized(workspaces: &[Workspace]) -> bool {
+    workspaces.iter().any(|workspace| {
+        workspace.slug == "personal"
+            && workspace.kind == WorkspaceKind::Personal
+            && workspace.state == WorkspaceState::Personal
+    })
+}
+
 fn require_same_project_write_target(
     hq_root: &Path,
     original: &ResolvedProjectPath,
@@ -1367,6 +1419,7 @@ fn scan_local_projects_scoped(
                     },
                     description,
                     company: slug.clone(),
+                    board_path: Some(board_rel.clone()),
                     status,
                     prd_path: Some(prd_path),
                     created_at: created_at.or(prd_created),
@@ -1423,6 +1476,7 @@ fn scan_local_projects_scoped(
                 title,
                 description: prd.description,
                 company: slug.clone(),
+                board_path: Some(board_rel.clone()),
                 status: String::new(),
                 prd_path: Some(rel),
                 created_at,
@@ -1546,6 +1600,7 @@ fn scan_non_company_project_tree(hq_root: &Path, tree_root: &str, out: &mut Vec<
                 },
                 description,
                 company: "personal".to_string(),
+                board_path: Some(board_rel.clone()),
                 status,
                 prd_path: Some(prd_path),
                 created_at: created_at.or(prd_created),
@@ -1601,6 +1656,7 @@ fn scan_non_company_project_tree(hq_root: &Path, tree_root: &str, out: &mut Vec<
             },
             description: prd.description,
             company: "personal".to_string(),
+            board_path: Some(board_rel.clone()),
             status: String::new(),
             prd_path: Some(target.relative_path.clone()),
             created_at,
@@ -3086,6 +3142,7 @@ mod tests {
             title: id.to_string(),
             description: String::new(),
             company: "indigo".to_string(),
+            board_path: None,
             status: "active".to_string(),
             prd_path: Some(path.to_string()),
             created_at: None,

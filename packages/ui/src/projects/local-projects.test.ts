@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "./projects-model.js";
 import {
   applyProjectProvenance,
+  boardPathFor,
   dedupeProjects,
   indexProjectProvenance,
   loadCompanyProjectProvenance,
@@ -54,6 +55,29 @@ describe("local project identity", () => {
 
     expect(dedupeProjects([first, second])).toEqual([first, second]);
     expect(projectIdentity(first)).not.toBe(projectIdentity(second));
+  });
+
+  it("targets the source board for Personal, root, and company projects", () => {
+    const personal = {
+      ...project({ company: "personal", prdPath: "personal/projects/demo/prd.json" }),
+      boardPath: "personal/board.json",
+    } as Project & { boardPath: string };
+    const root = {
+      ...project({ company: "personal", prdPath: "projects/demo/prd.json" }),
+      boardPath: "board.json",
+    } as Project & { boardPath: string };
+    const company = {
+      ...project({ company: "indigo" }),
+      boardPath: "companies/indigo/board.json",
+    } as Project & { boardPath: string };
+
+    expect(boardPathFor(personal)).toBe("personal/board.json");
+    expect(boardPathFor(root)).toBe("board.json");
+    expect(boardPathFor(company)).toBe("companies/indigo/board.json");
+    expect(boardPathFor(project({ company: "indigo" }))).toBe(
+      "companies/indigo/board.json",
+    );
+    expect(boardPathFor(project({ company: "personal" }))).toBeNull();
   });
 
   it("keeps same-company projects with repeated ids when their PRD paths differ", () => {
@@ -457,6 +481,65 @@ describe("local/cloud provenance adapter", () => {
         index,
       ).provenance?.origin,
     ).toBe("Local plan");
+  });
+
+  it("preserves the Rust board path on the normalized project wire shape", () => {
+    const wire = {
+      id: "personal-demo",
+      title: "Personal demo",
+      company: "personal",
+      boardPath: "personal/board.json",
+      prdPath: "personal/projects/demo/prd.json",
+      storyCount: 0,
+      storiesComplete: 0,
+    } as Parameters<typeof toProject>[0] & { boardPath: string };
+
+    const normalized = toProject(wire) as Project & { boardPath?: string };
+    expect(normalized.boardPath).toBe("personal/board.json");
+  });
+
+  it.each([
+    {
+      company: "personal",
+      prdPath: "personal/projects/demo/prd.json",
+      boardPath: "personal/board.json",
+    },
+    {
+      company: "personal",
+      prdPath: "projects/demo/prd.json",
+      boardPath: "board.json",
+    },
+  ])("uses $boardPath as the derived provenance board source", (source) => {
+    const local = {
+      ...project({
+        id: "personal-demo",
+        company: source.company,
+        prdPath: source.prdPath,
+        provenance: {
+          owner: null,
+          assignee: null,
+          creator: null,
+          origin: source.boardPath,
+        },
+      }),
+      boardPath: source.boardPath,
+    } as Project & { boardPath: string };
+    const cloud = indexProjectProvenance([
+      {
+        id: local.id,
+        prdPath: local.prdPath,
+        provenance: {
+          owner: null,
+          assignee: null,
+          creator: null,
+          origin: "Cloud board source",
+        },
+      },
+    ]);
+
+    expect(applyProjectProvenance(local, cloud).provenance?.origin).toBe(
+      "Cloud board source",
+    );
   });
 
   it("ranks explicit cloud responsibility above the Git creator fallback", () => {

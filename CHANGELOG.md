@@ -9,7 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - The Home portfolio now lists local Personal projects from the Personal and
-  root project trees.
+  root project trees, and status changes save back to each project's source
+  board.
 
 ## [0.10.355] — 2026-09-29
 

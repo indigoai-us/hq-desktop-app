@@ -1,9 +1,12 @@
 import {
+  boardPathFor,
   projectIdentity,
   saveLocalProjectStatus,
   saveLocalStoryPasses,
 } from "./local-projects.js";
 import type { Project } from "./projects-model.js";
+
+export { boardPathFor } from "./local-projects.js";
 
 // ---------------------------------------------------------------------------
 // Projects mutation store (US-010) — optimistic local status/passes writes.
@@ -42,18 +45,6 @@ const passesOverride = new Map<string, boolean>();
 
 function storyKey(prdPath: string, storyId: string): string {
   return `${prdPath}:${storyId}`;
-}
-
-/**
- * Derive a project's company `board.json` HQ-relative path. The board lives at
- * `companies/<company>/board.json` — the same tree the readers scan. Returns
- * null when the project has no company (an unlinked prd-only project), in which
- * case there is nothing to persist a board status to.
- */
-export function boardPathFor(project: Pick<Project, "company">): string | null {
-  const company = (project.company ?? "").trim();
-  if (!company) return null;
-  return `companies/${company}/board.json`;
 }
 
 export interface StatusWriteResult {

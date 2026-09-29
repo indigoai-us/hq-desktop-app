@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::fs;
 
 use hq_desktop_core::projects_local::{
-    resolve_project_path, scan_local_projects, scan_local_projects_for_companies,
+    resolve_project_path, scan_local_projects, scan_local_projects_for_authorized_scopes,
+    scan_local_projects_for_companies,
 };
 
 fn write_prd(root: &std::path::Path, relative: &str, name: &str) {
@@ -35,6 +36,7 @@ fn personal_projects_are_listed() {
     let project = project.expect("Personal project listed");
     assert_eq!(project.title, "Personal demo from board");
     assert_eq!(project.company, "personal");
+    assert_eq!(project.board_path.as_deref(), Some("personal/board.json"));
 }
 
 #[test]
@@ -48,7 +50,9 @@ fn root_projects_are_listed_in_the_personal_home_group() {
         .find(|project| project.prd_path.as_deref() == Some("projects/root-demo/prd.json"));
 
     assert!(project.is_some(), "Root project must be listed");
-    assert_eq!(project.expect("Root project listed").company, "personal");
+    let project = project.expect("Root project listed");
+    assert_eq!(project.company, "personal");
+    assert_eq!(project.board_path.as_deref(), Some("board.json"));
 }
 
 #[cfg(unix)]
@@ -146,5 +150,42 @@ fn personal_slug_does_not_authorize_a_company_directory() {
     assert!(
         projects.is_empty(),
         "the reserved Personal workspace identifier must not authorize companies/personal"
+    );
+}
+
+#[test]
+fn unauthorized_personal_scope_excludes_personal_and_root_projects() {
+    let root = tempfile::tempdir().expect("temporary HQ root");
+    write_prd(
+        root.path(),
+        "personal/projects/personal-demo/prd.json",
+        "Personal demo",
+    );
+    write_prd(root.path(), "projects/root-demo/prd.json", "Root demo");
+    write_prd(
+        root.path(),
+        "companies/indigo/projects/company-demo/prd.json",
+        "Company demo",
+    );
+    let companies = HashSet::from(["indigo".to_string()]);
+
+    let projects = scan_local_projects_for_authorized_scopes(root.path(), &companies, false);
+    let paths = projects
+        .iter()
+        .filter_map(|project| project.prd_path.as_deref())
+        .collect::<Vec<_>>();
+
+    assert!(!paths.contains(&"personal/projects/personal-demo/prd.json"));
+    assert!(!paths.contains(&"projects/root-demo/prd.json"));
+    assert!(paths.contains(&"companies/indigo/projects/company-demo/prd.json"));
+    let company = projects
+        .iter()
+        .find(|project| {
+            project.prd_path.as_deref() == Some("companies/indigo/projects/company-demo/prd.json")
+        })
+        .expect("company project listed");
+    assert_eq!(
+        company.board_path.as_deref(),
+        Some("companies/indigo/board.json")
     );
 }

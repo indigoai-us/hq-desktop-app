@@ -89,6 +89,8 @@ export interface Project {
   description: string;
   /** Owning company slug or the `personal` workspace grouping key. */
   company: string;
+  /** HQ-relative board file that owns this project's status. */
+  boardPath?: string;
   /** Raw status from board.json (e.g. "active", "archived", "planned"). */
   status: string;
   /** Absolute or HQ-relative path to the prd.json file. */

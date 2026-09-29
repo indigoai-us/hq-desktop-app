@@ -4,7 +4,7 @@
  * US-004 model types (`Project` / `Story`).
  *
  * The Rust `LocalProject` is camelCase-serialised as
- * `{ id, title, description, company, status, prdPath?, createdAt?, updatedAt?,
+ * `{ id, title, description, company, boardPath?, status, prdPath?, createdAt?, updatedAt?,
  * storyCount, storiesComplete }`
  * and `LocalStory.priority` is an optional *string* — the US-004 `Story` type
  * wants `storiesTotal`/`storiesComplete` on the project and a numeric
@@ -71,6 +71,7 @@ export interface LocalProjectWire {
   title: string;
   description?: string;
   company: string;
+  boardPath?: string | null;
   status?: string;
   prdPath?: string;
   createdAt?: string | null;
@@ -91,6 +92,21 @@ export interface LocalProjectWire {
   created_by_name?: unknown;
   origin?: unknown;
   source?: unknown;
+}
+
+/**
+ * Derive the local board file for a project. This pure helper lives beside the
+ * Rust-wire adapter so its path rules can be tested without loading Svelte
+ * runes from the mutation store.
+ */
+export function boardPathFor(
+  project: Pick<Project, "company" | "boardPath">,
+): string | null {
+  const boardPath = project.boardPath?.trim();
+  if (boardPath) return boardPath;
+  const company = (project.company ?? "").trim();
+  if (!company || company === "personal") return null;
+  return `companies/${company}/board.json`;
 }
 
 /** Raw `LocalStory` wire shape (stories inside `get_local_project_prd`). */
@@ -182,12 +198,16 @@ function withOriginFallback(
 }
 
 function projectSourceFallback(
-  wire: Pick<LocalProjectWire, "company" | "prdPath">,
+  wire: Pick<LocalProjectWire, "company" | "prdPath" | "boardPath">,
 ): string | null {
   const prdPath = normalizeProjectPath(wire.prdPath);
   if (prdPath) return prdPath;
+  const boardPath = normalizeProjectPath(wire.boardPath);
+  if (boardPath) return boardPath;
   const company = wire.company.trim();
-  return company ? `companies/${company}/board.json` : null;
+  return company && company !== "personal"
+    ? `companies/${company}/board.json`
+    : null;
 }
 
 /**
@@ -234,6 +254,7 @@ export function toProject(wire: LocalProjectWire): Project {
     name: wire.title,
     description: wire.description ?? "",
     company: wire.company,
+    boardPath: wire.boardPath ?? undefined,
     status: wire.status ?? "",
     prdPath: wire.prdPath ?? "",
     createdAt: wire.createdAt ?? null,
@@ -437,9 +458,7 @@ export function applyProjectProvenance(
   const normalizedLocalOrigin = normalizeProjectPath(
     localWithoutHistory.origin,
   );
-  const boardFallback = project.company.trim()
-    ? `companies/${project.company.trim()}/board.json`
-    : "";
+  const boardFallback = boardPathFor(project) ?? "";
   const derivedOrigins = new Set(
     [normalizeProjectPath(project.prdPath), boardFallback].filter(Boolean),
   );

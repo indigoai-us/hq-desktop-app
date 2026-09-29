@@ -11,16 +11,17 @@ use hq_desktop_core::desktop_alt::{
     workspace_grants_company_file_access,
 };
 use hq_desktop_core::projects_local::{
-    read_company_goals, read_crm_projection, read_project_prd, read_project_readme,
-    resolve_project_path, resolve_project_write_path, scan_local_projects_for_authorized_scopes,
-    write_project_status, write_story_passes,
+    authorize_project_board_target, personal_scope_authorized, read_company_goals,
+    read_crm_projection, read_project_prd, read_project_readme, resolve_project_path,
+    resolve_project_write_path, scan_local_projects_for_authorized_scopes, write_project_status,
+    write_story_passes,
 };
 #[allow(unused_imports)]
 pub use hq_desktop_core::projects_local::{
     CompanyGoals, Initiative, KeyResult, LocalProject, LocalProjectPrd, LocalStory, Objective,
     ResolvedProjectPath, WorkProvenance,
 };
-use hq_desktop_core::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
+use hq_desktop_core::workspaces::{Workspace, WorkspaceKind};
 
 fn authorized_company_slugs(workspaces: &[Workspace]) -> HashSet<String> {
     workspaces
@@ -32,14 +33,6 @@ fn authorized_company_slugs(workspaces: &[Workspace]) -> HashSet<String> {
         })
         .map(|workspace| workspace.slug.clone())
         .collect()
-}
-
-fn personal_scope_authorized(workspaces: &[Workspace]) -> bool {
-    workspaces.iter().any(|workspace| {
-        workspace.slug == "personal"
-            && workspace.kind == WorkspaceKind::Personal
-            && workspace.state == WorkspaceState::Personal
-    })
 }
 
 fn authorize_project_target(
@@ -216,7 +209,7 @@ pub async fn set_local_project_status(
         return Err("projects writer requires a signed-in user".to_string());
     }
     let (hq, workspaces) = hydrated_project_context().await?;
-    let board = authorize_project_target(&hq, &board_path, "board.json", true, &workspaces)?;
+    let board = authorize_project_board_target(&hq, &board_path, &workspaces)?;
     let normalized_prd = authorize_project_identity_path(
         &hq,
         prd_path.as_deref(),
