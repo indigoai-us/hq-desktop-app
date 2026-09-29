@@ -2980,8 +2980,16 @@ fn github_fetch_failure_class_from_detail(detail: &str) -> &'static str {
         })
         .unwrap_or("unknown");
     match value {
-        "rate_limited" | "unauthorized" | "forbidden" | "not_found" | "server_error"
-        | "http_other" | "timeout" | "connection" | "transport_other" | "invalid_response" => value,
+        "rate_limited" => "rate_limited",
+        "unauthorized" => "unauthorized",
+        "forbidden" => "forbidden",
+        "not_found" => "not_found",
+        "server_error" => "server_error",
+        "http_other" => "http_other",
+        "timeout" => "timeout",
+        "connection" => "connection",
+        "transport_other" => "transport_other",
+        "invalid_response" => "invalid_response",
         _ => "unknown",
     }
 }
