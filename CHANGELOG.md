@@ -22,6 +22,13 @@ The release moves it under the version it ships in.
 
 - Behind a flag (`desktop.human-only-conversations`, off by default): conversations can hide work-mesh and automated messages, and the sidebar can order by the latest message from a person.
 
+
+
+
+- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
+
+## [0.10.359] — 2026-09-29
+
 - First-time setup is now one five-screen welcome flow that fills the screen
   (everything below the menu bar and beside the Dock) with no window
   shadow. On macOS the background is your own desktop wallpaper, blurred
@@ -78,7 +85,6 @@ The release moves it under the version it ships in.
 
 - Setup uses HQ's managed Node.js and npm to install qmd and the HQ CLI.
 - Sign-in keeps working after an internal error during an earlier sign-in attempt, instead of failing until the app restarts.
-- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
 
 ## [0.10.358] — 2026-09-29
 
