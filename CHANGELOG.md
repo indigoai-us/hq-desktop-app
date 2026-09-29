@@ -8,6 +8,14 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Opening the desktop window no longer freezes the whole app for seconds
+  while it checks which AI tools are installed. That check (shell probes plus
+  a scan of the Claude, Codex, and Grok config folders) ran on the app's main
+  thread, so under disk load it stalled every window, every other request, and
+  the boot watchdog, which then showed the Recovery dialog. It now runs in the
+  background. The "HQ Work installed" probe moves off the main thread for the
+  same reason.
+
 - The Recovery dialog no longer stays open when the desktop window was only
   slow to load. If the window finishes loading after the dialog appeared, the
   dialog closes by itself. When the app notices its own timers running late
