@@ -462,6 +462,34 @@ fn current_lifecycle_state() -> WatchDaemonState {
         .unwrap_or_else(|p| p.into_inner())
 }
 
+/// Watch-daemon state as the install stage's personal-vault handoff gate
+/// (`personal::DaemonHandoffProbe`) sees it. The gate lets the running sync
+/// daemon upload the personal vault instead of the install walking and
+/// uploading the same files, so it needs a live process, not just a label.
+///
+/// The recorded lifecycle only moves `Starting` → `Running` on the
+/// supervisor's next tick (up to `SUPERVISOR_INTERVAL`), so a runner spawned a
+/// few seconds ago still reads `Starting`. This combines the recorded state
+/// with the same liveness check the supervisor uses to promote it
+/// (`observe_daemon_liveness`). See `handoff_lifecycle` for the mapping.
+pub(crate) fn watch_daemon_handoff_lifecycle() -> WatchDaemonState {
+    let (_, _, alive, _) = observe_daemon_liveness();
+    handoff_lifecycle(current_lifecycle_state(), alive)
+}
+
+/// - `Starting`/`Running` with a live runner process → `Running`.
+/// - `Starting` with no live process yet (preflight still running) → `Starting`.
+/// - `Running` whose process is gone (crash not yet noticed) → `Backoff`.
+/// - `Backoff`/`Stopped` → unchanged.
+fn handoff_lifecycle(recorded: WatchDaemonState, process_alive: bool) -> WatchDaemonState {
+    match (recorded, process_alive) {
+        (WatchDaemonState::Running | WatchDaemonState::Starting, true) => WatchDaemonState::Running,
+        (WatchDaemonState::Starting, false) => WatchDaemonState::Starting,
+        (WatchDaemonState::Running, false) => WatchDaemonState::Backoff,
+        (other, _) => other,
+    }
+}
+
 /// The reason for the most recent lifecycle transition, RETAINED so a stopped
 /// watcher is not just "stopped" but "stopped, and why" — e.g. `RunnerMemory`
 /// after a footprint pre-empt. `set_lifecycle_state` stores only the coarse
@@ -7216,6 +7244,21 @@ mod tests {
 
         // Clear the process-global sample so adjacent tests cannot observe it.
         note_watcher_spawned();
+    }
+
+    #[test]
+    fn handoff_lifecycle_requires_a_live_runner_process() {
+        use WatchDaemonState::*;
+        // Spawned and alive, even before the supervisor promotes the label.
+        assert_eq!(handoff_lifecycle(Starting, true), Running);
+        assert_eq!(handoff_lifecycle(Running, true), Running);
+        // Preflight still running: nothing to hand off to yet.
+        assert_eq!(handoff_lifecycle(Starting, false), Starting);
+        // Recorded as running but the process is gone.
+        assert_eq!(handoff_lifecycle(Running, false), Backoff);
+        assert_eq!(handoff_lifecycle(Backoff, true), Backoff);
+        assert_eq!(handoff_lifecycle(Stopped, true), Stopped);
+        assert_eq!(handoff_lifecycle(Stopped, false), Stopped);
     }
 
     #[test]
