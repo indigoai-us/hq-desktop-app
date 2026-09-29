@@ -2918,11 +2918,30 @@ fn managed_node_toolchain_is_usable(home: &std::path::Path) -> bool {
         return false;
     }
 
-    Command::new(npm)
+    let mut child = match Command::new(npm)
         .arg("--version")
         .env("PATH", extended_search_path_in(Some(home)))
-        .output()
-        .is_ok_and(|output| output.status.success())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// Install Node.js into HQ's user-local managed toolchain.
