@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - The optional setup-stage timeout mitigation is off until enabled in hq-flags. When enabled, dependency install, template download and extraction, and search indexing timers restart when that stage reports progress and still stop at a maximum elapsed time.
 
+## [0.10.355] — 2026-09-29
+
 - After an updater restart, HQ checks local tools again before reopening setup for an existing installation. If the HQ folder is missing, the folder picker opens so it can be found or installed again. An unanswered consent question still appears at startup.
 - After setup, people in a single-member company can optionally invite a
   teammate. The step is off until its hq-flags rollout is enabled and can be
