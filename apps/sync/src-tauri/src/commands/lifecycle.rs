@@ -613,19 +613,24 @@ pub fn report_unexpected_startup_surface(
     let seconds_since_start = elapsed_since_start
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let diagnostic_tags = hq_desktop_core::unexpected_surface::startup_diagnostic_tags(
-        authenticated,
-        &token_presence,
-        elapsed_since_start.map(|elapsed| elapsed.as_millis()),
-        &prior_surface,
-        hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
-            inputs: *inputs,
-            hq_root_probe: state.hq_root_probe,
-            hq_program_kind: state.hq_program_kind,
-            node_program_kind: state.node_program_kind,
-            require_local_toolchain_demoted: state.require_local_toolchain_demoted,
-        },
-    );
+    let (auth_session_status, refresh_failure_class) =
+        crate::commands::auth::startup_auth_diagnostic_tags();
+    let diagnostic_tags =
+        hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
+            authenticated,
+            &token_presence,
+            elapsed_since_start.map(|elapsed| elapsed.as_millis()),
+            &prior_surface,
+            hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
+                inputs: *inputs,
+                hq_root_probe: state.hq_root_probe,
+                hq_program_kind: state.hq_program_kind,
+                node_program_kind: state.node_program_kind,
+                require_local_toolchain_demoted: state.require_local_toolchain_demoted,
+            },
+            auth_session_status,
+            refresh_failure_class,
+        );
 
     let prior_setup = inputs.evidence_unreadable
         || hq_desktop_core::unexpected_surface::prior_setup_detected(
