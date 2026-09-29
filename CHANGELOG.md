@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.360] — 2026-09-29
+
 - Leaving a channel and removing a bot from a channel work again, and bots in the member list have a remove button.
 
 - Files saved while a folder like `node_modules` or `build` is being created,
