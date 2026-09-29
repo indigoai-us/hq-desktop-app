@@ -908,6 +908,8 @@ pub(crate) const ERROR_CATEGORY_VALUES: &[&str] = &[
     "rsync-broken",
     "preserve-restore-failed",
     "restore-symlink-race",
+    "update-deferred-hq-change",
+    "clone-failed",
     "spawn-failed",
     "exit-nonzero",
     "unsupported-platform",

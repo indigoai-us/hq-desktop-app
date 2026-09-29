@@ -1189,6 +1189,13 @@ fn is_known_core_rescue_failure_kind_marker(line: &str) -> bool {
             | "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed"
             | "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable"
             | "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=network"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=auth"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=filter_unsupported"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=path"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=exists"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=unknown"
     )
 }
 
@@ -1694,6 +1701,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "dns"
                 | "tls"
                 | "timeout"
+                | "update_deferred_hq_change"
+                | "restore_symlink_race"
                 | "unknown"
         )),
         "rsync_stderr_class" => Some(matches!(
@@ -3025,6 +3034,18 @@ mod tests {
     }
 
     #[test]
+    fn core_update_diagnostic_tail_keeps_only_known_clone_failure_class_markers() {
+        let diagnostic = redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_CLONE_FAILURE_CLASS=network\nHQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable\nHQ_RESCUE_CLONE_FAILURE_CLASS=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
+        );
+
+        assert!(diagnostic.contains("HQ_RESCUE_CLONE_FAILURE_CLASS=network"));
+        assert!(diagnostic.contains("HQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable"));
+        assert!(!diagnostic.contains("HQ_RESCUE_CLONE_FAILURE_CLASS=untrusted-value"));
+        assert!(!diagnostic.contains("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
     fn core_update_diagnostic_tail_removes_git_machine_and_remote_identifiers() {
         let diagnostic = redact_core_update_diagnostic_tail(
             "GH_TOKEN=ghp_abcdefghijklmnop\nfatal: unable to access 'https://token@example.corp/private/repo?access_token=secret': Could not resolve host: example.corp\nfatal: cannot read /mnt/alice/private/repo\ncontact alice@example.com or git@internal.corp:private/repo\nC:\\Users\\Alice\\HQ\\core.yaml\n\\\\buildserver\\share\\alice\\hq\n\\\\files.example.corp\\engineering\\bob\\hq-core",
@@ -3082,6 +3103,35 @@ mod tests {
         assert_eq!(
             setup_failure_fingerprint("node", "exit-nonzero"),
             ["desktop-setup-dependency-install-failed"],
+        );
+    }
+
+    #[test]
+    fn core_update_rescue_error_class_allowed_values_survive_before_send() {
+        let mut arbitrary = Event::default();
+        arbitrary.tags.insert(
+            "rescue_error_class".to_string(),
+            "arbitrary_untrusted_error_class".to_string(),
+        );
+        let filtered = before_send(arbitrary).expect("event remains sendable");
+        assert_eq!(filtered.tags["rescue_error_class"], "[Filtered]");
+
+        let expected = ["update_deferred_hq_change", "restore_symlink_race"];
+        let observed: Vec<String> = expected
+            .iter()
+            .map(|value| {
+                let mut event = Event::default();
+                event
+                    .tags
+                    .insert("rescue_error_class".to_string(), (*value).to_string());
+                before_send(event).expect("event remains sendable").tags["rescue_error_class"]
+                    .clone()
+            })
+            .collect();
+        assert_eq!(
+            observed,
+            expected.map(str::to_string),
+            "known Core update classes should survive the before_send allowlist"
         );
     }
 

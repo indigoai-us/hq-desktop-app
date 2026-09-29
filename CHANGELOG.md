@@ -8,7 +8,27 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
+
+## [0.10.356] — 2026-09-29
+
+- If a Core update overlaps an active HQ change, HQ defers it and retries on a later check instead of reporting an update failure.
+- Pin the third-party actions used by the release monitor and UI-only publish workflow to their resolved commits.
+- The optional setup-stage timeout mitigation is off until enabled in hq-flags. When enabled, dependency install, template download and extraction, and search indexing timers restart when that stage reports progress and still stop at a maximum elapsed time.
+
+## [0.10.355] — 2026-09-29
+
+- After an updater restart, HQ checks local tools again before reopening setup for an existing installation. If the HQ folder is missing, the folder picker opens so it can be found or installed again. An unanswered consent question still appears at startup.
+- After setup, people in a single-member company can optionally invite a
+  teammate. The step is off until its hq-flags rollout is enabled and can be
+  skipped.
+
+## [0.10.354] — 2026-09-29
+
 - If HQ cannot refresh saved credentials at launch, it keeps the loading screen up and checks again every five seconds. It shows sign-in after Cognito confirms the credentials are invalid.
+- Core update failures now classify active HQ changes, generic clone failures, and rsync partial transfers separately in diagnostics.
+- Core update rescue error classes for deferred updates and restore symlink races now pass Sentry's diagnostic filter.
+- Build workflows now pin third-party actions to fixed commits. Manual Windows checks use read-only repository access.
 
 - On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
   seconds between crash restarts. Existing enabled LaunchAgents are refreshed

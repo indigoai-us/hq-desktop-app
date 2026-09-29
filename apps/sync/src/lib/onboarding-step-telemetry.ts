@@ -70,6 +70,9 @@ export interface OnboardingStepProperties {
   errorIoKind?: SymlinkErrorIoKind;
   errorCode?: number;
   setupRunId?: string;
+  /** Company scope for the gated invite step; never attach invitee data here. */
+  companyUid?: string;
+  inviteErrorKind?: 'request_failed' | 'email_delivery_failed';
 }
 
 export interface OnboardingStepEvent {
@@ -262,6 +265,20 @@ export function desktopPropertiesForOnboardingStep(
   }
   if (event.properties.setupRunId !== undefined) {
     properties.setupRunId = event.properties.setupRunId;
+  }
+  if (
+    event.properties.step === 'invite-teammate' &&
+    typeof event.properties.companyUid === 'string' &&
+    event.properties.companyUid.startsWith('cmp_')
+  ) {
+    properties.companyUid = event.properties.companyUid;
+  }
+  if (
+    event.properties.step === 'invite-teammate' &&
+    (event.properties.inviteErrorKind === 'request_failed' ||
+      event.properties.inviteErrorKind === 'email_delivery_failed')
+  ) {
+    properties.inviteErrorKind = event.properties.inviteErrorKind;
   }
   if (event.properties.step === 'connector-import') {
     if (event.properties.outcome !== undefined) {

@@ -344,6 +344,8 @@ pub(crate) enum RescueFailureCategory {
     RsyncBroken,
     PreserveRestoreFailed,
     RestoreSymlinkRace,
+    UpdateDeferredHqChange,
+    CloneFailed,
     Unknown,
 }
 
@@ -370,6 +372,8 @@ impl RescueFailureCategory {
         Self::RsyncBroken,
         Self::PreserveRestoreFailed,
         Self::RestoreSymlinkRace,
+        Self::UpdateDeferredHqChange,
+        Self::CloneFailed,
         Self::Unknown,
     ];
 
@@ -396,6 +400,8 @@ impl RescueFailureCategory {
             Self::RsyncBroken => "rsync-broken",
             Self::PreserveRestoreFailed => "preserve-restore-failed",
             Self::RestoreSymlinkRace => "restore-symlink-race",
+            Self::UpdateDeferredHqChange => "update-deferred-hq-change",
+            Self::CloneFailed => "clone-failed",
             Self::Unknown => "unknown",
         }
     }
@@ -806,6 +812,18 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
     let lower = line.to_ascii_lowercase();
     let trimmed = lower.trim_start();
+    if let Some(class) = trimmed.strip_prefix("hq_rescue_clone_failure_class=") {
+        return match class {
+            "network" => Some("clone_network"),
+            "auth" => Some("clone_auth"),
+            "filter_unsupported" => Some("clone_filter_unsupported"),
+            "git_unusable" => Some("clone_git_unusable"),
+            "path" => Some("clone_path"),
+            "exists" => Some("clone_exists"),
+            "unknown" => Some("clone_unknown"),
+            _ => None,
+        };
+    }
     let diagnostic_line = trimmed.starts_with("error")
         || trimmed.starts_with("fatal")
         || trimmed.starts_with("npm err")
@@ -1150,6 +1168,10 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         category: RescueFailureCategory::Network,
         needle: "from promisor remote",
     },
+    RescueStderrPattern {
+        category: RescueFailureCategory::CloneFailed,
+        needle: "error: clone failed",
+    },
 ];
 
 const CLONE_CHECKOUT_FAILURE_NEEDLE: &str = "clone succeeded, but checkout failed";
@@ -1181,6 +1203,10 @@ const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
     RescueStderrPattern {
         category: RescueFailureCategory::LockContention,
         needle: NPM_CACHE_OTHER_WINDOW_NEEDLE,
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::UpdateDeferredHqChange,
+        needle: "update deferred while an hq change is active",
     },
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
@@ -1269,6 +1295,10 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
         None => {}
     }
 
+    if stderr.contains("rsync error:") && stderr.contains("were not transferred") {
+        return RescueFailureCategory::RsyncPartialTransfer;
+    }
+
     RESCUE_STDERR_PATTERNS
         .iter()
         .find(|pattern| stderr.contains(pattern.needle))
@@ -1292,6 +1322,22 @@ pub(crate) fn classify_rescue_exit_failure(
         return RescueFailureCategory::NpxResolveFailed;
     }
     classify_rescue_stderr_failure(stderr)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoreUpdateFailureReportDisposition {
+    Failed,
+    DeferredForHqChange,
+}
+
+fn core_update_failure_report_disposition(
+    category: RescueFailureCategory,
+) -> CoreUpdateFailureReportDisposition {
+    if category == RescueFailureCategory::UpdateDeferredHqChange {
+        CoreUpdateFailureReportDisposition::DeferredForHqChange
+    } else {
+        CoreUpdateFailureReportDisposition::Failed
+    }
 }
 
 fn rescue_failure_requires_no_automatic_retry(stderr: &str) -> bool {
@@ -2025,6 +2071,36 @@ pub(crate) fn emit_core_update_event(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn core_update_hq_change_deferred_telemetry_event(
+    source: &'static str,
+    channel: Channel,
+    local_version: Option<&str>,
+    target_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+) -> (&'static str, Value) {
+    (
+        "core_update_skipped",
+        Value::Object(core_update_event_properties(
+            source,
+            "deferred",
+            Some(channel),
+            local_version,
+            target_version,
+            auto_update_enabled,
+            eligible,
+            version_behind,
+            duration,
+            None,
+            None,
+            Some("hq_change_active"),
+        )),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn core_update_failed_properties(
     source: &'static str,
     channel: Channel,
@@ -2084,8 +2160,34 @@ pub(crate) fn emit_core_update_failed_event(
     exit_code: Option<i32>,
     error_kind: &'static str,
     details: CoreUpdateFailureDetails<'_>,
+    mut emit_telemetry: impl FnMut(&'static str, Value),
 ) {
-    crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+    if core_update_failure_report_disposition(details.rescue_failure_category)
+        == CoreUpdateFailureReportDisposition::DeferredForHqChange
+    {
+        log(
+            "hq-core-update",
+            "native Core update deferred while an HQ change is active; it will be retried on a later check",
+        );
+        // Automatic deferrals are emitted by the automatic outcome arm so the
+        // event includes its target version. Manual installs report here.
+        if source != "automatic" {
+            let (event_name, properties) = core_update_hq_change_deferred_telemetry_event(
+                source,
+                channel,
+                local_version,
+                None,
+                auto_update_enabled,
+                eligible,
+                version_behind,
+                duration,
+            );
+            emit_telemetry(event_name, properties);
+        }
+        return;
+    }
+
+    emit_telemetry(
         "core_update_failed",
         Value::Object(core_update_failed_properties(
             source,
@@ -2390,7 +2492,8 @@ fn core_update_rescue_step_for_category(category: RescueFailureCategory) -> &'st
         | RescueFailureCategory::Dns
         | RescueFailureCategory::Tls
         | RescueFailureCategory::OutdatedDependency
-        | RescueFailureCategory::NotFound => "clone",
+        | RescueFailureCategory::NotFound
+        | RescueFailureCategory::CloneFailed => "clone",
         RescueFailureCategory::LockContention => "npm-cache",
         RescueFailureCategory::RsyncBroken | RescueFailureCategory::RsyncPartialTransfer => "rsync",
         RescueFailureCategory::NpxResolveFailed => "npm-install",
@@ -2404,6 +2507,8 @@ fn core_update_rescue_error_class_for_category(category: RescueFailureCategory) 
     match category {
         RescueFailureCategory::RsyncBroken => "rsync_failed",
         RescueFailureCategory::RsyncPartialTransfer => "rsync_partial",
+        RescueFailureCategory::UpdateDeferredHqChange => "update_deferred_hq_change",
+        RescueFailureCategory::CloneFailed => "clone_failed",
         RescueFailureCategory::NpxResolveFailed => "npx_resolve_failed",
         RescueFailureCategory::RestoreSymlinkRace => "restore_symlink_race",
         _ => "unknown",
@@ -4169,6 +4274,7 @@ enum NativeCoreAutoUpdateOutcome {
     SkippedAutomaticUpdatesDisabled,
     DeferredForSync,
     DeferredForPrewarm,
+    DeferredForHqChange,
     SkippedAlreadyInProgress,
     SkippedTargetAlreadyInstalled,
     SkippedAlreadyAttempted,
@@ -4238,6 +4344,27 @@ fn defer_automatic_core_update_for_sync(
         Some("sync_in_progress"),
     );
     NativeCoreAutoUpdateOutcome::DeferredForSync
+}
+
+fn emit_automatic_core_update_hq_change_deferral_telemetry(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    emit_telemetry: impl FnOnce(&'static str, Value),
+) {
+    log(
+        "hq-core-update",
+        "native auto-update deferred: an HQ change is active; retrying on a later check",
+    );
+    let (event_name, properties) = core_update_hq_change_deferred_telemetry_event(
+        "automatic",
+        candidate.channel,
+        candidate.local_version,
+        Some(candidate.target_version),
+        true,
+        Some(candidate.is_eligible),
+        Some(candidate.version_behind),
+        Duration::ZERO,
+    );
+    emit_telemetry(event_name, properties);
 }
 
 fn skip_automatic_core_update_for_ineligible_target(
@@ -4684,6 +4811,17 @@ where
                         ),
                     );
                     NativeCoreAutoUpdateOutcome::FailedExit(result.exit_code)
+                }
+                Err(error)
+                    if core_update_failure_report_disposition(
+                        core_update_failure_details(&error).rescue_failure_category,
+                    ) == CoreUpdateFailureReportDisposition::DeferredForHqChange =>
+                {
+                    emit_automatic_core_update_hq_change_deferral_telemetry(
+                        candidate,
+                        crate::commands::telemetry::emit_desktop_telemetry_best_effort,
+                    );
+                    NativeCoreAutoUpdateOutcome::DeferredForHqChange
                 }
                 Err(error) => {
                     record_automatic_target_failure_at_with_path(
@@ -5133,6 +5271,90 @@ mod tests {
         assert_eq!(
             RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON,
             "retry_interval_not_elapsed"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_hq_change_deferral_is_non_error_and_remains_retryable() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-hq-change-deferral-contract";
+        let candidate = || CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind: true,
+        };
+        let deferral = CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "Update deferred while an HQ change is active",
+        );
+        let disposition = core_update_failure_report_disposition(
+            core_update_failure_details(&deferral).rescue_failure_category,
+        );
+        assert_eq!(
+            disposition,
+            CoreUpdateFailureReportDisposition::DeferredForHqChange
+        );
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_attempt_at = Instant::now();
+        for attempt in 0..=MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+            let calls_for_install = Arc::clone(&calls);
+            let outcome = execute_native_core_auto_update_at(
+                candidate(),
+                true,
+                false,
+                first_attempt_at + CHECK_INTERVAL * u32::from(attempt),
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    calls_for_install.fetch_add(1, Ordering::AcqRel);
+                    Err(CoreUpdateError::new(
+                        CoreUpdateErrorKind::RescueSpawn,
+                        "Update deferred while an HQ change is active",
+                    ))
+                },
+            )
+            .await;
+
+            assert_eq!(
+                outcome,
+                NativeCoreAutoUpdateOutcome::DeferredForHqChange,
+                "an expected deferral must not consume the consecutive-failure budget"
+            );
+        }
+
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            usize::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES) + 1
+        );
+        let retry_at = first_attempt_at
+            + CHECK_INTERVAL * (u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES) + 1);
+        assert_eq!(
+            automatic_target_eligibility_at(Channel::Release, target, retry_at),
+            AutomaticTargetEligibility::Eligible,
+            "a deferred target stays eligible for a later scheduled check"
+        );
+
+        let calls_for_retry = Arc::clone(&calls);
+        let retry = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            retry_at,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                calls_for_retry.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(retry, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            usize::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES) + 2
         );
     }
 
@@ -6226,10 +6448,37 @@ error: clone failed";
     }
 
     #[test]
-    fn rescue_generic_clone_failure_remains_unknown() {
+    fn sentry_unknown_cohort_20260929_active_hq_change_deferral_gets_own_kind() {
+        // Redacted shape from 34 eligible post-0.10.304 events.
         assert_eq!(
-            classify_rescue_stderr_failure("error: clone failed"),
-            RescueFailureCategory::Unknown
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "Update deferred while an HQ change is active",
+                None,
+            )
+            .label(),
+            "update-deferred-hq-change"
+        );
+    }
+
+    #[test]
+    fn sentry_unknown_cohort_20260929_redacted_rsync_partial_gets_known_kind() {
+        // Redacted shape from 30 eligible events; file names and rsync metadata are omitted.
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "rsync error: some [redacted] were not transferred (see previous errors) (code 23)"
+            )
+            .label(),
+            "rsync-partial-transfer"
+        );
+    }
+
+    #[test]
+    fn sentry_unknown_cohort_20260929_generic_clone_failure_gets_own_kind() {
+        // Redacted shape from 20 eligible events.
+        assert_eq!(
+            classify_rescue_stderr_failure("error: clone failed").label(),
+            "clone-failed"
         );
     }
 
@@ -6635,7 +6884,7 @@ error: clone failed";
     }
 
     #[test]
-    fn rescue_skip_marker_survives_redaction_without_snapshot_classification() {
+    fn rescue_skip_marker_does_not_shadow_clone_failure_classification() {
         let raw_stderr = concat!(
             "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable\n",
             "HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\n",
@@ -6648,7 +6897,7 @@ error: clone failed";
         assert!(!stderr.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
         assert_eq!(
             classify_rescue_stderr_failure(&stderr),
-            RescueFailureCategory::Unknown
+            RescueFailureCategory::CloneFailed
         );
     }
 
@@ -7214,6 +7463,41 @@ error: clone failed";
     #[test]
     fn rescue_telemetry_classifies_each_supported_error_class() {
         for (raw, expected_step, expected_class) in [
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=network\nerror: clone failed",
+                "clone",
+                "clone_network",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=auth\nerror: clone failed",
+                "clone",
+                "clone_auth",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=filter_unsupported\nerror: clone failed",
+                "clone",
+                "clone_filter_unsupported",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable\nerror: clone failed",
+                "clone",
+                "clone_git_unusable",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=path\nerror: clone failed",
+                "clone",
+                "clone_path",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=exists\nerror: clone failed",
+                "clone",
+                "clone_exists",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=unknown\nerror: clone failed",
+                "clone",
+                "clone_unknown",
+            ),
             ("==> Cloning\nerror: clone failed", "clone", "clone_failed"),
             (
                 "==> Checkout\nerror: clone succeeded, but checkout failed",
@@ -7265,6 +7549,24 @@ error: clone failed";
             assert_eq!(telemetry.rescue_step, expected_step, "raw={raw:?}");
             assert_eq!(telemetry.rescue_error_class, expected_class, "raw={raw:?}");
         }
+    }
+
+    #[test]
+    fn clone_failure_class_survives_redaction_without_retaining_credentials() {
+        let token = "sc013-test-token-do-not-leak";
+        let raw = format!(
+            "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=network\nerror: clone failed\nfatal: unable to access 'https://x-access-token:{token}@github.com/indigoai-us/hq-core.git'"
+        );
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(&raw);
+
+        assert!(redacted.contains("HQ_RESCUE_CLONE_FAILURE_CLASS=network"));
+        assert!(!redacted.contains(token));
+        assert!(!redacted.contains("x-access-token:"));
+        assert!(redacted.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(&redacted, 1);
+        assert_eq!(telemetry.rescue_error_class, "clone_network");
+        assert_eq!(telemetry.rescue_step, "clone");
     }
 
     #[test]
@@ -8453,7 +8755,20 @@ error: clone failed";
         expected_messages: &[&'static str],
         report: impl FnOnce(),
     ) -> Vec<sentry::protocol::Event<'static>> {
-        let expected_count = expected_messages.len();
+        captured_dispatched_core_update_events_with_expectation(
+            expected_messages,
+            expected_messages.len(),
+            Duration::ZERO,
+            report,
+        )
+    }
+
+    fn captured_dispatched_core_update_events_with_expectation(
+        expected_messages: &[&'static str],
+        expected_count: usize,
+        quiet_window: Duration,
+        report: impl FnOnce(),
+    ) -> Vec<sentry::protocol::Event<'static>> {
         // Binding the client to the process hub below makes it visible to every
         // thread. The pending-baseline-refresh tests (serialized by
         // CORE_UPDATE_TEST_LOCK, not the Sentry lock) record a real
@@ -8489,9 +8804,14 @@ error: clone failed";
             // envelopes it is waiting for have actually been collected. Count
             // only the messages this test asked for: another Core report can be
             // in flight from a neighbouring test.
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while transport.matching(expected_messages) < expected_count
-                && Instant::now() < deadline
+            let deadline = Instant::now()
+                + if expected_count == 0 {
+                    quiet_window
+                } else {
+                    Duration::from_secs(5)
+                };
+            while Instant::now() < deadline
+                && (expected_count == 0 || transport.matching(expected_messages) < expected_count)
             {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -8514,6 +8834,120 @@ error: clone failed";
                     .any(|expected| *expected == event.message.as_deref().unwrap_or_default())
             })
             .collect()
+    }
+
+    #[test]
+    fn hq_change_deferral_skips_sentry_and_emits_deferred_telemetry() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let telemetry = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+        let telemetry_for_report = Arc::clone(&telemetry);
+
+        let events = captured_dispatched_core_update_events_with_expectation(
+            &["Desktop Core update failed"],
+            0,
+            Duration::from_millis(100),
+            move || {
+                emit_core_update_failed_event(
+                    "manual",
+                    Channel::Release,
+                    Some("15.0.4"),
+                    true,
+                    Some(true),
+                    Some(true),
+                    Duration::from_millis(12),
+                    None,
+                    "rescue_spawn",
+                    CoreUpdateFailureDetails {
+                        rescue_stderr_tail: Some("Update deferred while an HQ change is active"),
+                        rescue_telemetry: None,
+                        rescue_failure_category: RescueFailureCategory::UpdateDeferredHqChange,
+                        pre_rescue_materialization: false,
+                        npx_resolution: None,
+                        managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                    },
+                    move |event_name, properties| {
+                        telemetry_for_report
+                            .lock()
+                            .unwrap()
+                            .push((event_name.to_string(), properties));
+                    },
+                );
+            },
+        );
+
+        assert!(
+            events.is_empty(),
+            "a deliberate HQ-change deferral is not a Sentry failure"
+        );
+        let telemetry = telemetry.lock().unwrap();
+        assert_eq!(telemetry.len(), 1);
+        assert_eq!(telemetry[0].0, "core_update_skipped");
+        assert_eq!(telemetry[0].1["result"], "deferred");
+        assert_eq!(telemetry[0].1["skipReason"], "hq_change_active");
+    }
+
+    #[test]
+    fn non_deferral_core_update_failure_still_emits_one_sentry_event() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let telemetry = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+        let telemetry_for_report = Arc::clone(&telemetry);
+        let events =
+            captured_dispatched_core_update_events(&["Desktop Core update failed"], move || {
+                emit_core_update_failed_event(
+                    "manual",
+                    Channel::Release,
+                    Some("15.0.4"),
+                    true,
+                    Some(true),
+                    Some(true),
+                    Duration::from_millis(12),
+                    Some(1),
+                    "rescue_exit",
+                    core_update_sentry_test_details(),
+                    move |event_name, properties| {
+                        telemetry_for_report
+                            .lock()
+                            .unwrap()
+                            .push((event_name.to_string(), properties));
+                    },
+                );
+            });
+
+        assert_eq!(events.len(), 1);
+        let telemetry = telemetry.lock().unwrap();
+        assert_eq!(telemetry.len(), 1);
+        assert_eq!(telemetry[0].0, "core_update_failed");
+    }
+
+    #[test]
+    fn automatic_hq_change_deferral_emits_one_skip_event_with_target() {
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "c154-hq-change-deferred",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let mut telemetry = Vec::new();
+
+        emit_automatic_core_update_hq_change_deferral_telemetry(
+            candidate,
+            |event_name, properties| {
+                telemetry.push((event_name, properties));
+            },
+        );
+
+        assert_eq!(telemetry.len(), 1);
+        assert_eq!(telemetry[0].0, "core_update_skipped");
+        assert_eq!(telemetry[0].1["source"], "automatic");
+        assert_eq!(telemetry[0].1["result"], "deferred");
+        assert_eq!(telemetry[0].1["skipReason"], "hq_change_active");
+        assert_eq!(
+            telemetry[0].1["targetCoreVersion"],
+            "c154-hq-change-deferred"
+        );
     }
 
     #[test]

@@ -738,6 +738,7 @@ async fn run_replace_from_staging_observed(
                 managed_git_retry:
                     crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
             },
+            crate::commands::telemetry::emit_desktop_telemetry_best_effort,
         ),
         Err(error) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
@@ -750,6 +751,7 @@ async fn run_replace_from_staging_observed(
             None,
             error.kind().label(),
             crate::commands::hq_core_state::core_update_failure_details(error),
+            crate::commands::telemetry::emit_desktop_telemetry_best_effort,
         ),
     }
     outcome

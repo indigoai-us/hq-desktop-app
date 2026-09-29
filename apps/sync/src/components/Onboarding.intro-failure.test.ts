@@ -111,6 +111,32 @@ describe('Onboarding: the cinematic intro can never block setup', () => {
     expect(window.localStorage.getItem(INTRO_SEEN_KEY)).toBeNull();
   });
 
+  it('opens folder recovery directly when a completed install has lost its HQ root', async () => {
+    component = mount(Onboarding, {
+      target: host,
+      props: {
+        state: 'NeedsInstall',
+        mode: 'onboarding',
+        setupEvidence: {
+          installCompleted: true,
+          firstRunCompleted: true,
+          installInProgress: false,
+          manifestIncomplete: false,
+          hadMachineId: true,
+          hqRootValid: false,
+        },
+      },
+    });
+    flushSync();
+    await tick();
+
+    const wizard = host.querySelector('[data-testid="wizard-stub"]');
+    expect(wizard).not.toBeNull();
+    expect(wizard?.getAttribute('data-initial-step')).toBe('1');
+    expect(console.error).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(INTRO_SEEN_KEY)).toBeNull();
+  });
+
   it('never re-opens the film once it has been seen on this install', async () => {
     window.localStorage.setItem(INTRO_SEEN_KEY, '1');
     component = mount(Onboarding, {
