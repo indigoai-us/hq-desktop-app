@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.353] — 2026-09-29
+
 - The Window opacity slider in Settings > Appearance now works. Lowering it makes the window see-through, 100% keeps it fully solid, and the setting is remembered after the app restarts. On Macs the glass effect turns off at 100%.
 - With `desktop.push-events` enabled, realtime events trigger share and direct-message refreshes. If the connection drops, the app checks every five minutes, including while all windows are hidden, so tray launches retain a notification long-stop. Scheduled checks pause while push is connected. When the flag is off, the existing 60-second cadence continues.
 - Core update diagnostics now group deferred baseline refreshes separately from local
