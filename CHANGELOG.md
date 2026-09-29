@@ -15,6 +15,11 @@ The release moves it under the version it ships in.
   picked, a note says to update the coding tool if the bot cannot start with
   it, and a bot whose tool does not know its model now says so in plain words.
 
+- In a DM with a bot, the "is thinking" / "working on it" line now
+  disappears as soon as the bot's reply appears, instead of staying under
+  the reply for a few more seconds. It shows again when you send another
+  message or the bot reports new work.
+
 - Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
 - Desktop sync commands now recover their valid state after a mutex is poisoned.
 
