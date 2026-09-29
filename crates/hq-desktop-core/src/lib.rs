@@ -49,6 +49,7 @@ pub mod cli_update_lock;
 pub mod client_diagnostics;
 pub mod client_health;
 pub mod client_info;
+pub mod coalesced_poll;
 pub mod cognito;
 pub mod config;
 pub mod conflicts;
