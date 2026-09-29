@@ -8847,17 +8847,57 @@ mod install_deps_planner_tests {
         let node_bin = managed_node_bin_in(home.path());
         std::fs::create_dir_all(&node_bin).expect("create managed node bin");
         let node = node_bin.join("node");
-        std::fs::write(&node, format!("#!/bin/sh\necho {MANAGED_NODE_VERSION}\n"))
-            .expect("write fake managed node");
+        let npm_invoked = home.path().join("npm-invoked-with-managed-node");
+        std::fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo {MANAGED_NODE_VERSION}; else echo \"$2\" > '{}'; echo 11.0.0; fi\n",
+                npm_invoked.display()
+            ),
+        )
+        .expect("write fake managed node");
         let mut permissions = std::fs::metadata(&node)
             .expect("stat fake node")
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&node, permissions).expect("make fake node executable");
         let npm = node_bin.join("npm");
-        std::fs::write(&npm, "#!/bin/sh\nexit 0\n").expect("write bundled npm placeholder");
+        std::fs::write(&npm, "#!/usr/bin/env node\n// fake npm entrypoint\n")
+            .expect("write bundled npm placeholder");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat fake npm")
+            .permissions();
+        npm_permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm, npm_permissions).expect("make fake npm executable");
 
         assert!(managed_node_toolchain_is_usable(home.path()));
+
+        assert_eq!(
+            std::fs::read_to_string(&npm_invoked).expect("managed Node ran npm"),
+            "--version\n"
+        );
+
+        std::fs::write(&npm, "#!/bin/sh\nexit 7\n").expect("write broken npm entrypoint");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat broken npm")
+            .permissions();
+        npm_permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm, npm_permissions).expect("make broken npm executable");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
+        std::fs::write(&npm, "#!/usr/bin/env node\n// fake npm entrypoint\n")
+            .expect("restore npm entrypoint");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat non-executable npm")
+            .permissions();
+        npm_permissions.set_mode(0o644);
+        std::fs::set_permissions(&npm, npm_permissions)
+            .expect("make npm non-executable");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
+        std::fs::write(&node, "#!/bin/sh\necho v20.8.0\n").expect("write wrong-version node");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
         std::fs::remove_file(&npm).expect("remove bundled npm");
         assert!(!managed_node_toolchain_is_usable(home.path()));
     }
