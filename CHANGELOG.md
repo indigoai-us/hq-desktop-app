@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Files saved while a folder like `node_modules` or `build` is being created,
+  or in the brief moment when HQ changes which folders it watches, now sync
+  right away. Before, they waited for the next full rescan, up to six hours
+  later. The sync engine moves to hq-cloud 6.18.16.
+
 - The "Syncing initial cloud data" step of a new install now finishes in
   seconds instead of about two minutes. Once your personal vault is set up,
   the step hands the upload to HQ's background sync, which was already
