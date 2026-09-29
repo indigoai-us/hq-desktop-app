@@ -260,10 +260,8 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
 /// source-version marker moves with the verified runner pin.
 ///
-/// The `~6.18.5` -> `~6.18.16` bump was re-derived before 6.18.16 was tagged:
-/// v6.18.16 does not exist yet, so hq-cloud `main` at 6099616 (hq-cloud#715,
-/// the commit that publishes as 6.18.16) stands in for it
-/// (`git diff v6.18.5 6099616 -- src`, excluding tests). It adds two literal
+/// The `~6.18.5` -> `~6.18.16` bump was re-derived from both published runner
+/// trees (`git diff v6.18.5..v6.18.16 -- src`, excluding tests). It adds two literal
 /// `this.name` identities and removes none, and no `readonly name` identity
 /// changes. Neither reaches the desktop runner-error event surface.
 /// `OutpostExecWaitError` (src/outposts/errors.ts) is thrown by
@@ -278,8 +276,9 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// its own error events. Both are excluded like `PushScopeForbiddenError`, so
 /// `HQ_CLOUD_IDENTITIES` remains 57. `src/bin/sync-runner-events.ts` is
 /// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
-/// source-version marker moves with the runner pin; re-check this derivation
-/// against the published v6.18.16 tag once it exists.
+/// source-version marker moves with the runner pin. v6.18.16 also adds a
+/// `secret-excluded` runner event, which `parse_sync_line` skips as an unknown
+/// additive type.
 pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.16";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
@@ -3432,8 +3431,7 @@ mod tests {
     fn excluded_hq_cloud_identities_stay_out_of_the_vocabulary() {
         const EXCLUDED: &[&str] = &[
             "PushScopeForbiddenError",
-            // Added at ~6.18.16 (hq-cloud main 6099616 as the stand-in for the
-            // unpublished v6.18.16 tag).
+            // Added at ~6.18.16 (git diff v6.18.5..v6.18.16).
             "ReceiverDispatchError",
             "OutpostExecWaitError",
         ];
