@@ -173,7 +173,7 @@ export function setupHeroReturning(opts: { noun?: string } = {}): typeof SETUP_H
   const noun = opts.noun?.trim() || "computer";
   return {
     ...SETUP_HERO_RETURNING_STATIC,
-    body: `Run Setup connects this ${noun} to your company and finishes the last steps in HQ Sessions. It takes about a minute.`,
+    body: `Run Setup connects this ${noun} to your company and finishes the last steps in HQ Desktop. It takes about a minute.`,
   };
 }
 
@@ -187,7 +187,7 @@ export const SETUP_HERO_RETURNING = setupHeroReturning();
 export const SETUP_RUN_LABEL = "Run Setup";
 /** Disclosure that holds every other way in (separate coding tools, more companies, hosted agents). */
 export const SETUP_ADVANCED_LABEL = "Advanced";
-export const SETUP_ADVANCED_TOOLS_NOTE = "Open setup in a separate coding tool instead of HQ Sessions:";
+export const SETUP_ADVANCED_TOOLS_NOTE = "Open setup in a separate coding tool:";
 export const SETUP_HOSTED_AGENT_NOTE =
   "Cloud bots: open your company channel and choose Add bot, then send it a direct message. Cloud bots require a paid plan; local setup does not.";
 

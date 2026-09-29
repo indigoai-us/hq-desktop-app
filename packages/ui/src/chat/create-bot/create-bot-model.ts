@@ -379,13 +379,19 @@ export function companyTemplates(options: readonly LocalBotWorkerOption[]): Loca
  */
 export function groupTemplates(options: readonly LocalBotWorkerOption[], query = ""): TemplateGroup[] {
   const q = query.trim();
-  const byCompany = new Map<string | null, TemplateCard[]>();
+  const byCompany = new Map<string | null, Map<string, TemplateCard>>();
   for (const option of options) {
     const card = templateCard(option);
     if (!matchesTemplate(card, q)) continue;
-    const list = byCompany.get(card.company) ?? [];
-    list.push(card);
-    byCompany.set(card.company, list);
+    // Dedupe by id per group. `group.templates` is rendered as a keyed
+    // Svelte each block below (`(card.id)`), and a repeated key throws
+    // `svelte.dev/e/each_key_duplicate` and blanks the wizard to the error
+    // boundary. A backend that ships two workers with the same id (or two
+    // entries after a re-add) must not be able to crash the UI: keep the
+    // first-seen entry, drop the rest.
+    const bucket = byCompany.get(card.company) ?? new Map<string, TemplateCard>();
+    if (!bucket.has(card.id)) bucket.set(card.id, card);
+    byCompany.set(card.company, bucket);
   }
   const keys = [...byCompany.keys()].sort((a, b) => {
     if (a === null) return -1;
@@ -395,7 +401,9 @@ export function groupTemplates(options: readonly LocalBotWorkerOption[], query =
   return keys.map((company) => ({
     company,
     label: companyLabelFor(company),
-    templates: (byCompany.get(company) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+    templates: [...(byCompany.get(company)?.values() ?? [])].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    ),
   }));
 }
 

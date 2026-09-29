@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Runtime};
+use tokio::io::AsyncReadExt;
 
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
@@ -409,6 +411,88 @@ async fn run_hq_output(
     }
 }
 
+async fn read_reindex_stream<R: Runtime>(
+    mut stream: impl tokio::io::AsyncRead + Unpin,
+    app: AppHandle<R>,
+    setup_run_id: String,
+) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let length = stream.read(&mut buffer).await?;
+        if length == 0 {
+            return Ok(output);
+        }
+        output.extend_from_slice(&buffer[..length]);
+        if let Err(error) = app.emit_to("main", "setup:reindex-progress", &setup_run_id) {
+            crate::util::logfile::log(
+                "setup",
+                &format!("could not deliver reindex activity event: {error}"),
+            );
+        }
+    }
+}
+
+async fn run_hq_output_with_reindex_progress<R: Runtime>(
+    app: &AppHandle<R>,
+    args: &[&str],
+    hq_root: &Path,
+    setup_run_id: &str,
+) -> Result<Output, StageCommandFailure> {
+    let invocation = hq_resolver::resolve_hq();
+    let path_env = paths::child_path();
+    let _npx_guard = invocation.npx_serial_guard().await;
+    let mut cmd = invocation.command();
+    let mut child = cmd
+        .args(args)
+        .current_dir(hq_root)
+        .env("PATH", &path_env)
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            StageCommandFailure::from_spawn_error(
+                &format!("hq ({})", invocation.label()),
+                error,
+            )
+        })?;
+    let stdout = child.stdout.take().ok_or_else(|| StageCommandFailure {
+        message: "hq reindex stdout was not piped".to_string(),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| StageCommandFailure {
+        message: "hq reindex stderr was not piped".to_string(),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let (stdout, stderr) = tokio::join!(
+        read_reindex_stream(stdout, app.clone(), setup_run_id.to_string()),
+        read_reindex_stream(stderr, app.clone(), setup_run_id.to_string()),
+    );
+    let status = child.wait().await.map_err(|error| {
+        StageCommandFailure::from_spawn_error(&format!("hq ({})", invocation.label()), error)
+    })?;
+    let stdout = stdout.map_err(|error| StageCommandFailure {
+        message: format!("could not read hq reindex stdout: {error}"),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let stderr = stderr.map_err(|error| StageCommandFailure {
+        message: format!("could not read hq reindex stderr: {error}"),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(StageCommandFailure::from_output("hq", args, &output))
+    }
+}
+
 async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), StageCommandFailure> {
     run_hq_output(args, hq_root).await.map(|_| ())
 }
@@ -584,11 +668,21 @@ pub fn git_probe_user() -> Result<Option<GitUser>, String> {
 /// Build the local search index and refresh CLI-generated registries.
 #[tauri::command]
 pub async fn register_search_index(
+    app: AppHandle,
     failure_scope: Option<OnboardingFailureScope>,
+    activity_timeout_enabled: Option<bool>,
 ) -> Result<(), String> {
     clear_onboarding_failure_detail("indexing", failure_scope.as_ref());
     let hq_root = PathBuf::from(resolve_hq_path()?);
-    match run_hq(&["reindex"], &hq_root).await {
+    let result = match (activity_timeout_enabled.unwrap_or(false), failure_scope.as_ref()) {
+        (true, Some(scope)) => {
+            run_hq_output_with_reindex_progress(&app, &["reindex"], &hq_root, &scope.setup_run_id)
+                .await
+                .map(|_| ())
+        }
+        _ => run_hq(&["reindex"], &hq_root).await,
+    };
+    match result {
         Ok(()) => Ok(()),
         Err(error) => {
             record_onboarding_failure_detail(
@@ -686,6 +780,7 @@ pub async fn install_menubar_app() -> Result<(), String> {
 pub const MESH_DAEMON_INSTALL_ARGS: &[&str] = &["mesh", "daemon", "install"];
 
 const MESH_DAEMON_STATUS_ARGS: &[&str] = &["mesh", "daemon", "status", "--json"];
+const MESH_DAEMON_UNINSTALL_ARGS: &[&str] = &["mesh", "daemon", "uninstall", "--json"];
 const MESH_DAEMON_AUTO_INSTALL_MARKER: &str = "mesh-daemon-auto-install.json";
 
 /// Status payload from `hq mesh daemon status --json`.
@@ -729,6 +824,10 @@ pub async fn install_work_mesh() -> Result<(), String> {
     // `ensure_work_mesh_daemon` never install concurrently or overwrite each
     // other's marker.
     let _guard = MESH_INSTALL_LOCK.lock().await;
+    if crate::commands::hq_daemon_host::daemon_mode_active() {
+        // hq daemon runs mesh on this machine; a separate unit would keep it waiting.
+        return Ok(());
+    }
     let hq_root = PathBuf::from(resolve_hq_path()?);
     run_hq(MESH_DAEMON_INSTALL_ARGS, &hq_root)
         .await
@@ -822,6 +921,32 @@ fn write_auto_install_marker(path: &Path, marker: &AutoInstallMarker) -> Result<
     fs::write(path, json).map_err(|e| format!("write mesh auto-install marker: {e}"))
 }
 
+/// When hq daemon runs mesh, remove the separate Work Mesh unit this app
+/// installed; while it is installed the daemon leaves its own mesh waiting.
+/// The auto-install marker goes with it, so turning the flag off installs the
+/// unit again. A unit the user had already removed is left alone.
+pub(crate) async fn retire_work_mesh_unit() -> Result<(), String> {
+    let _guard = MESH_INSTALL_LOCK.lock().await;
+    let hq_root = PathBuf::from(resolve_hq_path()?);
+    let status_value = run_hq_json(MESH_DAEMON_STATUS_ARGS, &hq_root)
+        .await
+        .map_err(|error| error.message)?;
+    let status: DaemonStatus = serde_json::from_value(status_value)
+        .map_err(|e| format!("parse mesh daemon status: {e}"))?;
+    if unit_not_installed(&status) {
+        return Ok(());
+    }
+    run_hq(MESH_DAEMON_UNINSTALL_ARGS, &hq_root)
+        .await
+        .map_err(|error| error.message)?;
+    crate::util::logfile::log("work-mesh", "removed the separate mesh daemon unit; hq daemon runs mesh");
+    match fs::remove_file(mesh_daemon_auto_install_marker_path()?) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove mesh auto-install marker: {e}")),
+    }
+}
+
 /// Ensure the Work Mesh Live daemon is installed for already-onboarded machines.
 ///
 /// Runs once per launch from SteadyState. Never re-installs after a successful
@@ -829,6 +954,14 @@ fn write_auto_install_marker(path: &Path, marker: &AutoInstallMarker) -> Result<
 #[tauri::command]
 pub async fn ensure_work_mesh_daemon() -> Result<EnsureOutcome, String> {
     let _guard = MESH_INSTALL_LOCK.lock().await;
+    if crate::commands::hq_daemon_host::daemon_mode_active() {
+        return Ok(EnsureOutcome {
+            installed: false,
+            already_installed: false,
+            skipped: true,
+            reason: "skipped: hq daemon runs mesh".to_string(),
+        });
+    }
     let hq_root = PathBuf::from(resolve_hq_path()?);
     let status_value = run_hq_json(MESH_DAEMON_STATUS_ARGS, &hq_root)
         .await
@@ -1369,8 +1502,8 @@ mod tests {
         // include_str!) does not match itself.
         let lock_needle = format!("{}.lock().await", "MESH_INSTALL_LOCK");
         let marker_needle = format!("{}(&cli_version);", "record_mesh_install_ok");
-        // Both install paths take the same lock.
-        assert_eq!(src.matches(lock_needle.as_str()).count(), 2);
+        // Both install paths, and the removal when hq daemon runs mesh, take the same lock.
+        assert_eq!(src.matches(lock_needle.as_str()).count(), 3);
         // The wizard stage records the same marker the launch path reads.
         assert!(src.contains(marker_needle.as_str()));
     }

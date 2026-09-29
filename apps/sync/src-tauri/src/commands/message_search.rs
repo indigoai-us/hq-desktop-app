@@ -12,7 +12,7 @@ use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 
 pub use hq_desktop_core::message_search::{
-    build_search_url, map_search_response, SearchHit, SearchResponse,
+    build_search_url, map_search_response, normalize_search_query, SearchHit, SearchResponse,
 };
 
 const LOG_TAG: &str = "message_search";
@@ -49,16 +49,13 @@ pub async fn search_messages(
     company_uid: Option<String>,
     limit: Option<u32>,
 ) -> Result<SearchMessagesResult, String> {
-    let q = q.trim();
-    if q.is_empty() {
-        return Err("q must not be empty".to_string());
-    }
+    let q = normalize_search_query(&q)?;
     let (base, token) = auth_and_base("MSG_SEARCH").await?;
     let company = company_uid
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let url = build_search_url(&base, q, company, limit);
+    let url = build_search_url(&base, &q, company, limit)?;
 
     let resp = build_client()
         .get(&url)
@@ -103,7 +100,7 @@ pub async fn search_messages(
         LOG_TAG,
         &format!(
             "MSG_SEARCH_OK q_len={} company={:?} count={}",
-            q.len(),
+            q.encode_utf16().count(),
             company,
             mapped.results.len()
         ),
@@ -119,7 +116,8 @@ mod tests {
 
     #[test]
     fn reexports_build_search_url() {
-        let url = build_search_url("https://api.example.com", "notes", Some("cmp_1"), None);
+        let url = build_search_url("https://api.example.com", "notes", Some("cmp_1"), None)
+            .expect("valid query builds a URL");
         assert!(url.contains("/v1/notify/search?q=notes"));
         assert!(url.contains("companyUid=cmp_1"));
     }

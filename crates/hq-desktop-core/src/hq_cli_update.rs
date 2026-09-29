@@ -5317,6 +5317,24 @@ pub fn windows_busy_install_target_retry_delay(retry_number: usize) -> Option<st
     }
 }
 
+/// Select the retry delays for the bounded Windows EBUSY recovery. The extended
+/// schedule is reserved for the explicit hq-flags rollout; the missing/false
+/// value preserves the current ten-second retry budget.
+pub fn windows_busy_install_target_retry_delay_for_recovery(
+    retry_number: usize,
+    extended: bool,
+) -> Option<std::time::Duration> {
+    if !extended {
+        return windows_busy_install_target_retry_delay(retry_number);
+    }
+    match retry_number {
+        1 => Some(std::time::Duration::from_secs(5)),
+        2 => Some(std::time::Duration::from_secs(15)),
+        3 => Some(std::time::Duration::from_secs(30)),
+        _ => None,
+    }
+}
+
 pub fn windows_busy_install_target_retry_rung(retry_number: usize) -> Option<&'static str> {
     WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS
         .get(retry_number.checked_sub(1)?)
@@ -6898,6 +6916,43 @@ mod windows_busy_backoff_tests {
 
     const PREFIX: &str = r"C:\Users\me\AppData\Roaming\npm";
     const DETAIL: &str = "npm error code EBUSY\nnpm error errno -4082\nnpm error syscall rename\nnpm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
+
+    #[test]
+    fn extended_windows_busy_backoff_is_opt_in_and_bounded() {
+        let default_delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
+            .map(|retry| {
+                windows_busy_install_target_retry_delay_for_recovery(retry, false).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let extended_delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
+            .map(|retry| windows_busy_install_target_retry_delay_for_recovery(retry, true).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            default_delays,
+            [
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(3),
+                std::time::Duration::from_secs(6),
+            ]
+        );
+        assert_eq!(
+            extended_delays,
+            [
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(15),
+                std::time::Duration::from_secs(30),
+            ]
+        );
+        assert!(windows_busy_install_target_retry_delay_for_recovery(4, true).is_none());
+        assert_eq!(
+            extended_delays
+                .iter()
+                .map(|delay| delay.as_secs())
+                .sum::<u64>(),
+            50
+        );
+    }
 
     #[test]
     fn windows_busy_backoff_runs_three_bounded_retries_over_ten_seconds() {

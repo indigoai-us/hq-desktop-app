@@ -19,6 +19,13 @@ const eventHarness = vi.hoisted(() => ({
 const app = vi.hoisted(() => ({
   getVersion: vi.fn(),
 }));
+const onboardingFlags = vi.hoisted(() => ({
+  firstFolderSyncEnabled: false,
+  inviteTeammateEnabled: false,
+  setupStageTimeoutFixEnabled: false,
+  hasFeature: vi.fn(),
+  startSync: vi.fn(),
+}));
 
 const httpFetch = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -34,6 +41,68 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: eventHarness.listen }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
+vi.mock('@hq/platform', () => ({
+  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG: 'desktop.setup-directory-parent-fallback',
+  SETUP_STAGE_TIMEOUT_FIX_FLAG: 'desktop.setup-stage-timeout-fix-v1',
+  FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
+  INVITE_TEAMMATE_STEP_FLAG: 'desktop.invite-teammate-step-v1',
+  retryThrottled: async <T>(
+    attempt: (attemptIndex: number) => Promise<T>,
+    classify: (result: T) => { status: number | null },
+  ) => {
+    let result = await attempt(0);
+    for (let attemptIndex = 1; attemptIndex < 4; attemptIndex += 1) {
+      const status = classify(result).status;
+      if (status !== 429 && status !== 503) return result;
+      result = await attempt(attemptIndex);
+    }
+    return result;
+  },
+  createSyncPlatformAdapter: vi.fn(() => ({
+    identity: {
+      hasFeature: (flag: string) => {
+        if (
+          flag === 'desktop.first-folder-sync-step-v1' ||
+          flag === 'desktop.invite-teammate-step-v1' ||
+          flag === 'desktop.setup-stage-timeout-fix-v1'
+        ) {
+          return onboardingFlags.hasFeature(flag);
+        }
+        if (flag !== 'desktop.setup-directory-parent-fallback') {
+          return Promise.resolve({ ok: true, value: false });
+        }
+        return (async () => {
+          try {
+            const raw = await tauri.invoke('hq_pro_fetch', {
+              url: '/v1/flags/resolve',
+              method: 'GET',
+              body: null,
+            });
+            const response =
+              raw && typeof raw === 'object'
+                ? (raw as { body?: unknown })
+                : {};
+            const body =
+              typeof response.body === 'string' ? JSON.parse(response.body) : null;
+            return {
+              ok: true,
+              value: body?.flags?.[flag] === true,
+            };
+          } catch {
+            return {
+              ok: false,
+              reason: 'test flag transport unavailable',
+              code: 'test-transport-failed',
+            };
+          }
+        })();
+      },
+    },
+    sync: {
+      startSync: () => onboardingFlags.startSync(),
+    },
+  })),
+}));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 
@@ -42,12 +111,15 @@ import OnboardingWizard from './OnboardingWizard.svelte';
 import {
   BUILD_STEP_INDEX,
   CONNECTOR_IMPORT_STEP_INDEX,
+  CONSENT_STEP_INDEX,
+  SETUP_STEP_INDEX,
   TRUST_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
 } from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 import { stageTimeoutMs } from '../../lib/onboarding-setup';
+import { appendChildFolderPath } from '../../lib/onboarding-path';
 
 const NO_AI_TOOLS = {
   claude_cli: false,
@@ -104,7 +176,7 @@ async function flushUntil(predicate: () => boolean): Promise<void> {
 
 function mountWizard(
   onfinish = vi.fn(),
-  initialStep = 3,
+  initialStep = CONSENT_STEP_INDEX,
   aiTools = NO_AI_TOOLS,
 ): ReturnType<typeof vi.fn> {
   tauri.invoke.mockImplementation(async (command: string) => {
@@ -122,6 +194,17 @@ function mountWizard(
     props: { initialStep, onfinish },
   });
   return onfinish;
+}
+
+function firstFolderSyncActions(): string[] {
+  return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+    const args = rawArgs as { eventName?: string; properties?: { step?: string; action?: string } };
+    return command === 'emit_desktop_operational_telemetry' &&
+      args.eventName === 'desktop_onboarding_step' &&
+      args.properties?.step === 'first-folder-sync'
+      ? [args.properties.action ?? '']
+      : [];
+  });
 }
 
 const CONTINUATION_CONTEXT = {
@@ -210,6 +293,35 @@ function providerButtons(): HTMLButtonElement[] {
   );
 }
 
+function stubOAuthAttempts(listenError?: string) {
+  const fallbackInvoke = tauri.invoke.getMockImplementation();
+  if (!fallbackInvoke) throw new Error('Expected the onboarding invoke stub to be installed.');
+  let starts = 0;
+  let listens = 0;
+  tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === 'start_oauth_login') {
+      starts += 1;
+      return {
+        authorizeUrl: `https://placeholder.test/authorize/${starts}`,
+        state: `oauth-state-${starts}`,
+      };
+    }
+    if (command === 'oauth_listen_for_code') {
+      listens += 1;
+      if (listenError) throw new Error(listenError);
+      return { code: 'placeholder-code' };
+    }
+    return fallbackInvoke(command, args);
+  });
+  return { starts: () => starts, listens: () => listens };
+}
+
+async function clickGoogleSignIn(): Promise<void> {
+  component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+  await flushUntil(() => providerButtons().length === 2);
+  providerButtons()[0]?.click();
+}
+
 function expectPreBranchProviderScreen(): void {
   expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
     'Log in with Google',
@@ -262,6 +374,23 @@ beforeEach(() => {
     json: async () => ({}),
     text: async () => '',
   });
+  onboardingFlags.firstFolderSyncEnabled = false;
+  onboardingFlags.inviteTeammateEnabled = false;
+  onboardingFlags.setupStageTimeoutFixEnabled = false;
+  onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
+    ok: true,
+    value:
+      (flag === 'desktop.first-folder-sync-step-v1' &&
+        onboardingFlags.firstFolderSyncEnabled) ||
+      (flag === 'desktop.invite-teammate-step-v1' &&
+        onboardingFlags.inviteTeammateEnabled) ||
+      (flag === 'desktop.setup-stage-timeout-fix-v1' &&
+        onboardingFlags.setupStageTimeoutFixEnabled),
+  }));
+  onboardingFlags.startSync.mockReset().mockResolvedValue({
+    ok: true,
+    value: 'hq-sync',
+  });
   __resetInstallerStepTelemetryForTests();
   localStorage.clear();
 });
@@ -288,6 +417,285 @@ function expectedSetupDeepLink(folder: string): string {
   params.set('folder', folder);
   return `claude://code/new?${params.toString()}`;
 }
+
+describe('onboarding directory selection', () => {
+  it('moves a populated non-HQ default into a safe child before continuing', async () => {
+    const defaultPath = '/Users/test/hq';
+    const installPath = `${defaultPath}/hq`;
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return defaultPath;
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'check_writable':
+          return true;
+        case 'detect_hq':
+          return args?.path === defaultPath
+            ? { exists: true, isHq: false, nonEmpty: true }
+            : { exists: false, isHq: false, nonEmpty: false };
+        case 'hq_pro_fetch':
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { 'desktop.setup-directory-parent-fallback': true },
+            }),
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const install = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .btn-primary',
+      );
+      return directory?.classList.contains('on') === true && install !== null && !install.disabled;
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .btn-primary')
+      ?.click();
+    await flushUntil(
+      () =>
+        host
+          .querySelector('[data-testid="onboarding-directory"] .lb')
+          ?.getAttribute('title') === installPath,
+    );
+
+    expect(
+      host.querySelector('[data-testid="onboarding-directory"] .lb')?.getAttribute('title'),
+    ).toBe(installPath);
+    expect(host.textContent).toContain('This location already has files');
+    expect(host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'))
+      .toBe(true);
+  });
+
+  it('puts HQ in a new child folder when the selected Windows location already has files', async () => {
+    const selectedPath = 'C:\\Users\\test\\OneDrive - Personal';
+    const installPath = `${selectedPath}\\hq`;
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return 'C:\\Users\\test\\hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'pick_folder':
+          return selectedPath;
+        case 'check_writable':
+          return true;
+        case 'detect_hq':
+          return args?.path === selectedPath
+            ? { exists: true, isHq: false, nonEmpty: true }
+            : { exists: false, isHq: false, nonEmpty: false };
+        case 'hq_pro_fetch':
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { 'desktop.setup-directory-parent-fallback': true },
+            }),
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const choose = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .choose',
+      );
+      return directory?.classList.contains('on') === true && choose !== null && !choose.disabled;
+    });
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+      ?.click();
+    await flushUntil(
+      () =>
+        host
+          .querySelector('[data-testid="onboarding-directory"] .lb')
+          ?.getAttribute('title') === installPath,
+    );
+
+    const selectedFolder = host.querySelector('[data-testid="onboarding-directory"] .lb');
+    expect(selectedFolder?.getAttribute('title')).toBe(installPath);
+    expect(selectedFolder?.textContent).toContain('OneDrive - Personal\\hq');
+    expect(tauri.invoke).toHaveBeenCalledWith('check_writable', { path: installPath });
+    expect(tauri.invoke).toHaveBeenCalledWith('detect_hq', { path: installPath });
+    expect(host.textContent).toContain('This location already has files');
+  });
+
+  it('keeps the selected replacement folder during completed-install recovery', async () => {
+    const oldRoot = '/Users/test/previous-hq';
+    const replacementRoot = '/Users/test/replacement-hq';
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return oldRoot;
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'pick_folder':
+          return replacementRoot;
+        case 'check_writable':
+          return true;
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'hq_pro_fetch':
+          return {
+            status: 200,
+            body: JSON.stringify({ version: 1, flags: {} }),
+          };
+        case 'read_install_manifest':
+          return {
+            installPath: oldRoot,
+            completedAt: '2026-01-01T00:00:00Z',
+            steps: {},
+          };
+        case 'configure_claude_settings_path':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 1, recoveringMissingRoot: true },
+    });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const choose = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .choose',
+      );
+      return directory?.classList.contains('on') === true && choose !== null && !choose.disabled;
+    });
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+      ?.click();
+    await flushUntil(
+      () =>
+        host
+          .querySelector('[data-testid="onboarding-directory"] .lb')
+          ?.getAttribute('title') === replacementRoot,
+    );
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .btn-primary')
+      ?.click();
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, callArgs]) =>
+          command === 'configure_claude_settings_path' &&
+          (callArgs as Record<string, unknown> | undefined)?.hqPath === replacementRoot,
+      ),
+    );
+    expect(tauri.invoke).not.toHaveBeenCalledWith('read_install_manifest');
+    const configureCall = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'configure_claude_settings_path',
+    );
+    expect(configureCall?.[1]).toMatchObject({ hqPath: replacementRoot });
+  });
+
+  it('gives a next step when the selected folder cannot be written', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'pick_folder':
+          return '/Users/test/Documents';
+        case 'check_writable':
+          return false;
+        case 'detect_hq':
+          return { exists: true, isHq: false, nonEmpty: true };
+        case 'hq_pro_fetch':
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { 'desktop.setup-directory-parent-fallback': true },
+            }),
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const choose = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .choose',
+      );
+      return directory?.classList.contains('on') === true && choose !== null && !choose.disabled;
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+      ?.click();
+    await flushUntil(() => host.textContent?.includes('privacy settings') === true);
+
+    expect(host.textContent).toContain('Choose another location');
+    expect(host.textContent).toContain('privacy settings');
+    expect(host.textContent).not.toContain('Permission denied');
+    const directory = host.querySelector('[data-testid="onboarding-directory"]');
+    expect(directory?.querySelector('.inline-note')?.classList.contains('warning')).toBe(true);
+    expect(directory?.querySelector('.inline-note')?.classList.contains('error')).toBe(false);
+  });
+
+  it('keeps directory check details in the log and leaves a recovery choice', async () => {
+    const transportError = 'Permission denied: /private/Users/test/Documents';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'pick_folder':
+          return '/Users/test/Documents';
+        case 'detect_hq':
+          return { exists: true, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          throw new Error(transportError);
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const choose = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .choose',
+      );
+      return directory?.classList.contains('on') === true && choose !== null && !choose.disabled;
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+      ?.click();
+    await flushUntil(() => host.textContent?.includes('The folder could not be checked') === true);
+
+    expect(host.textContent).toContain('Choose another location');
+    expect(host.textContent).not.toContain(transportError);
+    expect(
+      host
+        .querySelector('[data-testid="onboarding-directory"] .inline-note')
+        ?.classList.contains('warning'),
+    ).toBe(true);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+        ?.disabled,
+    ).toBe(false);
+    expect(warn).toHaveBeenCalledWith('onboarding: selected directory could not be checked', expect.any(Error));
+  });
+});
 
 describe('first-run browser session continuation', () => {
   it('records one launch receipt and retries the same receipt after a resumed wizard', async () => {
@@ -340,6 +748,64 @@ describe('first-run browser session continuation', () => {
     expect(host.textContent).toContain('A browser window opened for Google sign-in.');
 
     resolveConfig({ ...CONTINUATION_CONFIG, variant: 'control' });
+  });
+
+  it('restarts sign-in once after an expired OAuth attempt', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts('Timed out waiting for sign-in (5 minutes).');
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('Sign-in took too long. Choose a provider to try again.') === true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+
+    expect(attempts.starts()).toBe(2);
+    expect(attempts.listens()).toBe(2);
+    expect(tauri.open).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain('Sign-in took too long. Choose a provider to try again.');
+    expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('restarts sign-in once after an OAuth state mismatch', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts('OAuth state mismatch — possible CSRF, aborting.');
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('That sign-in attempt no longer matches. Choose a provider to start again.') ===
+          true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+
+    expect(attempts.starts()).toBe(2);
+    expect(attempts.listens()).toBe(2);
+    expect(tauri.open).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain(
+      'That sign-in attempt no longer matches. Choose a provider to start again.',
+    );
+    expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('keeps the successful provider sign-in path to one browser attempt', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts();
+
+    await clickGoogleSignIn();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'),
+    );
+
+    expect(attempts.starts()).toBe(1);
+    expect(attempts.listens()).toBe(1);
+    expect(tauri.open).toHaveBeenCalledTimes(1);
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_listen_for_code', {
+      state: 'oauth-state-1',
+    });
   });
 
   it('automatically signs in an eligible browser session without rendering a prompt or click', async () => {
@@ -1264,7 +1730,7 @@ describe('onboarding launch handoff', () => {
     });
     component = mount(OnboardingWizard, {
       target: host,
-      props: { initialStep: 3, mode: 'consent', onfinish },
+      props: { initialStep: CONSENT_STEP_INDEX, mode: 'consent', onfinish },
     });
 
     await flushUntil(() =>
@@ -1798,6 +2264,551 @@ describe('setup restart', () => {
   });
 });
 
+describe('first-folder sync onboarding step', () => {
+  async function reachPostSetupStep(enabled: boolean): Promise<void> {
+    onboardingFlags.firstFolderSyncEnabled = enabled;
+    mountWizard(vi.fn(), SETUP_STEP_INDEX);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+  }
+
+  it('keeps the passed setup flow on consent when the flag is off', async () => {
+    await reachPostSetupStep(false);
+
+    expect(host.querySelector('[data-testid="onboarding-first-folder-sync"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(firstFolderSyncActions()).toEqual([]);
+    expect(onboardingFlags.startSync).not.toHaveBeenCalled();
+  });
+
+  it('shows the gated step once and lets the person skip to consent', async () => {
+    await reachPostSetupStep(true);
+
+    expect(
+      host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(firstFolderSyncActions()).toEqual(['entered']);
+
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-skip"]',
+    )?.click();
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(firstFolderSyncActions()).toEqual(['entered', 'skipped']);
+    expect(onboardingFlags.startSync).not.toHaveBeenCalled();
+  });
+
+  it('does not record completion after a company sync aborts with conflicts', async () => {
+    await reachPostSetupStep(true);
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-start"]',
+    )?.click();
+    await flush();
+
+    emitTauriEvent('sync:complete', {
+      company: 'personal',
+      filesDownloaded: 0,
+      bytesDownloaded: 0,
+      filesSkipped: 0,
+      conflicts: 1,
+      aborted: true,
+    });
+    emitTauriEvent('sync:all-complete', {
+      companiesAttempted: 1,
+      filesDownloaded: 0,
+      bytesDownloaded: 0,
+      errors: [],
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started']);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      'could not sync this folder',
+    );
+    expect(
+      host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('does not record completion when a sync error precedes an empty aggregate summary', async () => {
+    await reachPostSetupStep(true);
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-start"]',
+    )?.click();
+    await flush();
+
+    emitTauriEvent('sync:error', {
+      company: 'personal',
+      path: 'README.md',
+      message: 'write failed',
+    });
+    emitTauriEvent('sync:all-complete', {
+      companiesAttempted: 1,
+      filesDownloaded: 0,
+      bytesDownloaded: 0,
+      errors: [],
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started']);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      'could not sync this folder',
+    );
+    expect(
+      host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('shows a retryable error when sync authentication fails without all-complete', async () => {
+    await reachPostSetupStep(true);
+    const syncButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-start"]',
+    );
+    syncButton?.click();
+    await flush();
+
+    emitTauriEvent('sync:auth-error', { message: 'session expired' });
+    await flush();
+
+    expect(syncButton?.disabled).toBe(false);
+    expect(syncButton?.getAttribute('aria-busy')).toBe('false');
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      'could not sync this folder',
+    );
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started']);
+    expect(onboardingFlags.startSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts one sync on repeated clicks and records done only after the runner completes', async () => {
+    await reachPostSetupStep(true);
+    const syncButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-first-folder-sync-start"]',
+    );
+    expect(syncButton).not.toBeNull();
+
+    syncButton?.click();
+    syncButton?.click();
+    await flush();
+
+    expect(onboardingFlags.startSync).toHaveBeenCalledTimes(1);
+    expect(syncButton?.disabled).toBe(true);
+    expect(syncButton?.getAttribute('aria-busy')).toBe('true');
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started']);
+
+    emitTauriEvent('sync:all-complete', {
+      companiesAttempted: 1,
+      filesDownloaded: 1,
+      bytesDownloaded: 1,
+      errors: [],
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(firstFolderSyncActions()).toEqual(['entered', 'started', 'completed']);
+    const firstFolderRow = tauri.invoke.mock.calls.find(([command, rawArgs]) => {
+      const args = rawArgs as { eventName?: string; properties?: { step?: string } };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.step === 'first-folder-sync';
+    });
+    const properties = (firstFolderRow?.[1] as { properties?: Record<string, unknown> })
+      .properties;
+    expect(Object.keys(properties ?? {}).sort()).toEqual([
+      'action',
+      'appVersion',
+      'flow',
+      'platform',
+      'step',
+      'surface',
+    ]);
+  });
+});
+
+describe('invite teammate onboarding step', () => {
+  const inviteEmail = 'teammate@example.com';
+  const ownerMembership = {
+    companyUid: 'cmp_demo',
+    personUid: 'prs_owner',
+    status: 'active',
+    role: 'owner',
+  };
+
+  async function reachInviteScenario(options: {
+    flagEnabled?: boolean;
+    firstFolderEnabled?: boolean;
+    companyMembers?: Array<Record<string, unknown>>;
+    fetchResponses?: Record<
+      string,
+      Array<{ status: number; body: unknown; retryAfter?: string }>
+    >;
+    inviteResponse?: { status: number; body: unknown };
+    inviteResponses?: Array<{ status: number; body: unknown }>;
+  } = {}): Promise<void> {
+    onboardingFlags.firstFolderSyncEnabled = options.firstFolderEnabled ?? false;
+    onboardingFlags.inviteTeammateEnabled = options.flagEnabled ?? true;
+    let inviteResponseIndex = 0;
+    const fetchResponseIndexes: Record<string, number> = {};
+    mountWizard(vi.fn(), SETUP_STEP_INDEX);
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'hq_pro_fetch': {
+          const url = args?.url;
+          const configuredResponses =
+            typeof url === 'string' ? options.fetchResponses?.[url] : undefined;
+          const responseIndex =
+            typeof url === 'string' ? (fetchResponseIndexes[url] ?? 0) : 0;
+          const configuredResponse = configuredResponses?.[responseIndex];
+          if (configuredResponse && typeof url === 'string') {
+            fetchResponseIndexes[url] = responseIndex + 1;
+            return {
+              status: configuredResponse.status,
+              body: JSON.stringify(configuredResponse.body),
+              ...(configuredResponse.retryAfter
+                ? { retryAfter: configuredResponse.retryAfter }
+                : {}),
+            };
+          }
+          if (url === '/membership/me') {
+            return {
+              status: 200,
+              body: JSON.stringify({ memberships: [ownerMembership] }),
+            };
+          }
+          if (url === '/membership/company/cmp_demo') {
+            return {
+              status: 200,
+              body: JSON.stringify({ members: options.companyMembers ?? [ownerMembership] }),
+            };
+          }
+          if (url === '/membership/invite') {
+            const response =
+              options.inviteResponses?.[inviteResponseIndex] ??
+              options.inviteResponse ?? {
+                status: 201,
+                body: { membership: { status: 'pending' }, emailSent: true },
+              };
+            inviteResponseIndex += 1;
+            return {
+              status: response.status,
+              body: JSON.stringify(response.body),
+            };
+          }
+          return { status: 200, body: '{}' };
+        }
+        default:
+          return undefined;
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+  }
+
+  function inviteStepRows(): Array<Record<string, unknown>> {
+    return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+      const args = rawArgs as {
+        eventName?: string;
+        properties?: Record<string, unknown>;
+      };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.step === 'invite-teammate'
+        ? [args.properties]
+        : [];
+    });
+  }
+
+  function clickInviteControl(testId: string): void {
+    const button = host.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+    if (!button) throw new Error(`Expected ${testId} to render.`);
+    if (button.disabled) throw new Error(`${testId} is disabled.`);
+    button.click();
+  }
+
+  it('fails closed with the flag off and does not read memberships', async () => {
+    await reachInviteScenario({ flagEnabled: false });
+
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
+      'desktop.invite-teammate-step-v1',
+    );
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          (args as { url?: string })?.url?.startsWith('/membership/'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not show the step when the company has multiple active members', async () => {
+    await reachInviteScenario({
+      companyMembers: [
+        ownerMembership,
+        { companyUid: 'cmp_demo', personUid: 'prs_teammate', status: 'active' },
+      ],
+    });
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          (args as { url?: string })?.url === '/membership/company/cmp_demo',
+      ),
+    ).toBe(true);
+  });
+
+  it('ignores non-active roster rows when checking the single active member', async () => {
+    await reachInviteScenario({
+      companyMembers: [
+        ownerMembership,
+        { companyUid: 'cmp_demo', personUid: 'prs_invited', status: 'pending' },
+      ],
+    });
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
+  });
+
+  it('retries throttled membership reads using Retry-After before showing the step', async () => {
+    await reachInviteScenario({
+      fetchResponses: {
+        '/membership/me': [
+          { status: 503, body: { error: 'busy' }, retryAfter: '0' },
+          { status: 200, body: { memberships: [ownerMembership] } },
+        ],
+        '/membership/company/cmp_demo': [
+          { status: 429, body: { error: 'busy' }, retryAfter: '0' },
+          { status: 200, body: { members: [ownerMembership] } },
+        ],
+      },
+    });
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
+    for (const url of ['/membership/me', '/membership/company/cmp_demo']) {
+      expect(
+        tauri.invoke.mock.calls.filter(
+          ([command, args]) =>
+            command === 'hq_pro_fetch' && (args as { url?: string })?.url === url,
+        ),
+      ).toHaveLength(2);
+    }
+  });
+
+  it('retries a throttled invite send using Retry-After', async () => {
+    await reachInviteScenario({
+      fetchResponses: {
+        '/membership/invite': [
+          { status: 503, body: { error: 'busy' }, retryAfter: '0' },
+          {
+            status: 201,
+            body: { membership: { status: 'pending' }, emailSent: true },
+          },
+        ],
+      },
+    });
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          (args as { url?: string })?.url === '/membership/invite',
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('shows after the first-folder step for a single-member company', async () => {
+    await reachInviteScenario({ firstFolderEnabled: true });
+
+    expect(
+      host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(
+      host.querySelector('[data-testid="onboarding-invite-teammate"]')?.classList.contains('on'),
+    ).toBe(false);
+
+    clickInviteControl('onboarding-first-folder-sync-skip');
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-invite-teammate"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(false);
+  });
+
+  it('lets Skip continue to consent immediately', async () => {
+    await reachInviteScenario();
+
+    clickInviteControl('onboarding-invite-skip');
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+    expect(inviteStepRows().map((row) => row.action)).toContain('skipped');
+  });
+
+  it('sends an invite and shows the success state', async () => {
+    await reachInviteScenario();
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+
+    const request = tauri.invoke.mock.calls.find(([command, args]) =>
+      command === 'hq_pro_fetch' &&
+      (args as { url?: string })?.url === '/membership/invite',
+    );
+    expect(request?.[1]).toMatchObject({ method: 'POST' });
+    expect(JSON.parse((request?.[1] as { body: string }).body)).toEqual({
+      companyUid: 'cmp_demo',
+      role: 'member',
+      invitedBy: 'prs_owner',
+      inviteeEmail: inviteEmail,
+      sendEmail: true,
+    });
+  });
+
+  it('labels the optional action Skip before send and Continue after success', async () => {
+    await reachInviteScenario();
+    const continueButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-invite-skip"]',
+    );
+    expect(continueButton?.textContent?.trim()).toBe('Skip');
+
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-skip"]')
+        ?.textContent?.trim(),
+    ).toBe('Continue');
+  });
+
+  it('shows a safe send error state and keeps Skip available', async () => {
+    await reachInviteScenario({
+      inviteResponses: [
+        {
+          status: 201,
+          body: {
+            membership: { status: 'pending' },
+            emailSent: false,
+            emailError: 'secret server detail',
+          },
+        },
+        { status: 200, body: { resent: true, emailSent: true } },
+      ],
+    });
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() =>
+      host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
+    );
+
+    expect(host.textContent).toContain(
+      'HQ could not confirm that the invitation email was sent. You can try again or skip for now.',
+    );
+    expect(host.textContent).not.toContain('secret server detail');
+    expect(
+      inviteStepRows().some(
+        (row) =>
+          row.action === 'failed' && row.inviteErrorKind === 'email_delivery_failed',
+      ),
+    ).toBe(true);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-skip"]')?.disabled,
+    ).toBe(false);
+
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+    const requests = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'hq_pro_fetch' &&
+        (args as { url?: string })?.url === '/membership/invite',
+    );
+    expect(JSON.parse((requests[1]?.[1] as { body: string }).body)).toMatchObject({
+      companyUid: 'cmp_demo',
+      inviteeEmail: inviteEmail,
+      resend: true,
+    });
+  });
+
+  it('records invite shown and sent with companyUid and no email', async () => {
+    await reachInviteScenario();
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+    clickInviteControl('onboarding-invite-skip');
+    await flush();
+
+    const rows = inviteStepRows();
+    expect(rows.map((row) => row.action)).toEqual(['entered', 'completed']);
+    expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
+    expect(rows.some((row) => 'email' in row || 'inviteeEmail' in row)).toBe(false);
+    expect(JSON.stringify(rows)).not.toContain(inviteEmail);
+  });
+});
+
 describe('setup progress direction', () => {
   interface ProgressSample {
     percent: number;
@@ -1859,6 +2870,541 @@ describe('setup progress direction', () => {
     resolveInitialSync?.();
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('renews the deps timeout only for lock-wait progress from its installer handle', async () => {
+    let resolveInstall: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>((resolve) => {
+            resolveInstall = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress') &&
+      eventHarness.handlers.has('setup:cli-install-lock-wait'),
+    );
+    emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
+
+    const failureEvents = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string } }).properties
+            ?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps',
+      );
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('setup:cli-install-lock-wait', 'unrelated-installer');
+    emitTauriEvent('setup:cli-install-lock-wait', 'setup-installer-handle');
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    await flush();
+    expect(failureEvents()).toHaveLength(0);
+
+    emitTauriEvent('install:progress', {
+      handle: 'setup-installer-handle',
+      line: '',
+      finished: true,
+      error: null,
+    });
+    resolveInstall?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('does not renew the deps timeout for another installer handle', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress') &&
+      eventHarness.handlers.has('setup:cli-install-lock-wait'),
+    );
+    emitTauriEvent('install:progress', { handle: 'active-installer' });
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('setup:cli-install-lock-wait', 'different-installer');
+    await vi.advanceTimersByTimeAsync(1);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string } }).properties
+            ?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps',
+      ),
+    );
+
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string; failureStage?: string } }).properties
+          ?.action === 'failed' &&
+        (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+          'deps',
+    )?.[1] as { properties: Record<string, unknown> };
+    expect(failure.properties.errorKind).toBe('setup_stage_timeout');
+  });
+
+  it('renews the deps inactivity timeout for installer output when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveInstall: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>((resolve) => {
+            resolveInstall = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    emitTauriEvent('install:progress', {
+      handle: 'setup-installer-handle',
+      setupRunId: installArgs.failureScope.setupRunId,
+      line: 'Starting installer',
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('install:progress', {
+      handle: 'setup-installer-handle',
+      setupRunId: installArgs.failureScope.setupRunId,
+      line: 'Installing a package',
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveInstall?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('renews the deps inactivity timeout for matching preflight installer output when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveInstall: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>((resolve) => {
+            resolveInstall = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    emitTauriEvent('install:progress', {
+      handle: 'preflight',
+      setupRunId: installArgs.failureScope.setupRunId,
+      line: '[node] downloading installer',
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveInstall?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('renews the content inactivity timeout for download progress when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveContent: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          return new Promise<void>((resolve) => {
+            resolveContent = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'fetch_and_extract_template') &&
+      eventHarness.handlers.has('content:progress'),
+    );
+    const contentArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'fetch_and_extract_template',
+    )?.[1] as { handle: string };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'content' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    emitTauriEvent('content:progress', {
+      handle: contentArgs.handle,
+      phase: 'download',
+      receivedBytes: 1,
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
+    emitTauriEvent('content:progress', {
+      handle: contentArgs.handle,
+      phase: 'extract',
+      receivedBytes: 2,
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveContent?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps'),
+    );
+  });
+
+  it('renews the indexing inactivity timeout for reindex output when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    let resolveReindex: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'read_install_manifest':
+          return {
+            installPath: '/Users/test/hq',
+            startedAt: '2026-07-28T12:00:00.000Z',
+            completedAt: null,
+            steps: {
+              content: { status: 'ok' },
+              deps: { status: 'ok' },
+              'initial-sync': { status: 'ok' },
+              'git-init': { status: 'ok' },
+              personalize: { status: 'ok' },
+              indexing: { status: 'pending' },
+            },
+          };
+        case 'register_search_index':
+          return new Promise<void>((resolve) => {
+            resolveReindex = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'register_search_index') &&
+      eventHarness.handlers.has('setup:reindex-progress'),
+    );
+    const reindexArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'register_search_index',
+    )?.[1] as {
+      failureScope: { setupRunId: string };
+      activityTimeoutEnabled: boolean;
+    };
+    expect(reindexArgs.activityTimeoutEnabled).toBe(true);
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'indexing' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
+    emitTauriEvent('setup:reindex-progress', reindexArgs.failureScope.setupRunId);
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
+    await flush();
+
+    expect(timeoutFailures()).toHaveLength(0);
+    resolveReindex?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+  });
+
+  it('keeps the existing deps timeout when the new hq flag is off', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = false;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps'));
+
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string; failureStage?: string } }).properties
+          ?.action === 'failed' &&
+        (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+          'deps',
+    )?.[1] as { properties: Record<string, unknown> } | undefined;
+    expect(failure?.properties.errorKind).toBe('setup_stage_timeout');
+  });
+
+  it('continues timing out at the hard elapsed ceiling despite ongoing progress when the hq flag is on', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = true;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+
+    const inactivityMs = stageTimeoutMs('deps');
+    for (let i = 0; i < 3; i += 1) {
+      await vi.advanceTimersByTimeAsync(inactivityMs - 1);
+      emitTauriEvent('install:progress', {
+        handle: 'setup-installer-handle',
+        setupRunId: installArgs.failureScope.setupRunId,
+        line: `Installing package ${i + 1}`,
+      });
+    }
+    await vi.advanceTimersByTimeAsync(2);
+    expect(timeoutFailures()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushUntil(() => timeoutFailures().length === 1);
+    expect(timeoutFailures()).toHaveLength(1);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(
+      host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on'),
+    ).toBe(true);
+  });
+
+  it('keeps the content wall-clock timeout when the new hq flag is off', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = false;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'fetch_and_extract_template') &&
+      eventHarness.handlers.has('content:progress'),
+    );
+    const contentArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'fetch_and_extract_template',
+    )?.[1] as { handle: string };
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
+    emitTauriEvent('content:progress', {
+      handle: contentArgs.handle,
+      phase: 'download',
+      receivedBytes: 1,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'content' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      ),
+    );
+  });
+
+  it('keeps indexing wall-clock timeout and omits activityTimeoutEnabled when the new hq flag is off', async () => {
+    onboardingFlags.setupStageTimeoutFixEnabled = false;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'read_install_manifest':
+          return {
+            installPath: '/Users/test/hq',
+            startedAt: '2026-07-28T12:00:00.000Z',
+            completedAt: null,
+            steps: {
+              content: { status: 'ok' },
+              deps: { status: 'ok' },
+              'initial-sync': { status: 'ok' },
+              'git-init': { status: 'ok' },
+              personalize: { status: 'ok' },
+              indexing: { status: 'pending' },
+            },
+          };
+        case 'register_search_index':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'register_search_index') &&
+      eventHarness.handlers.has('setup:reindex-progress'),
+    );
+    const indexingArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'register_search_index',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    expect(indexingArgs).not.toHaveProperty('activityTimeoutEnabled');
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
+    emitTauriEvent('setup:reindex-progress', indexingArgs.failureScope.setupRunId);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'indexing' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      ),
     );
   });
 

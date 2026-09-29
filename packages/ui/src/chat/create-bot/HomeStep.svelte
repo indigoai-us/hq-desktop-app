@@ -10,16 +10,25 @@
    */
   import { initialsFor } from "../sidebar-model.js";
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
-  import { hostComputerNoun } from "@hq/platform";
+  import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
+  import { onMount } from "svelte";
   import RuntimeSignIn, { type RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import { runtimeIsReady, type BotHome, type BotRuntime, type CreateBotDraft } from "./create-bot-model.js";
   import {
+    dedupeSearchedDirs,
     runtimeCanSignIn,
     runtimeChipSuffix,
     runtimeFooter,
     runtimeStatusOf,
     type RuntimeStatus,
   } from "./runtime-status.js";
+  import InstallChoice from "../../install-choice/InstallChoice.svelte";
+  import type {
+    AiTools,
+    AssistantId,
+    CodingTool,
+    InstallOutcome,
+  } from "../../install-choice/install-choice.js";
   import "./create-bot.css";
 
   interface Props {
@@ -46,6 +55,35 @@
     /** Re-run the runtime check (after installing, or a failed probe). */
     onrecheck?: () => void | Promise<void>;
     pollMs?: number;
+    /**
+     * Live AiTools payload (`detect_ai_tools` on the host). Needed by the
+     * install-choice panel to know whether Claude Desktop or the ChatGPT
+     * desktop app is available on this computer. `null` while the probe is
+     * in flight; the panel renders a neutral "Checking…" line then.
+     */
+    aiTools?: AiTools | null;
+    /**
+     * Fixed HQ folder path — passed to `claude://code/new?folder=` when the
+     * "Set up with Claude" button dispatches. Optional; the URL builder
+     * simply omits `folder` when not set.
+     */
+    hqFolderPath?: string;
+    /**
+     * Open one of the assistant desktop apps with the install prompt
+     * pre-filled. The URL is already a validated `claude://` or `codex://`
+     * deep link. The wizard host wires this to `open_claude_code_link` /
+     * `open_codex_deep_link` via the install-guide adapter.
+     */
+    onopenassistant?: (
+      assistant: AssistantId,
+      url: string,
+    ) => Promise<InstallOutcome>;
+    /**
+     * Run HQ's own one-click installer (fallback when neither assistant
+     * app is here). Wired to the same `install_claude_code` / `install_codex`
+     * commands the setup assistant uses.
+     */
+    onassistedinstall?: (tool: CodingTool) => Promise<InstallOutcome>;
   }
 
   let {
@@ -62,6 +100,10 @@
     onsignedin,
     onrecheck,
     pollMs = 1500,
+    aiTools = null,
+    hqFolderPath = "",
+    onopenassistant,
+    onassistedinstall,
   }: Props = $props();
 
   /** Runtime whose inline sign-in is open. */
@@ -71,10 +113,16 @@
 
   /**
    * The plain-language name for the host machine ("Mac", "PC", or
-   * "computer"). Read once at mount from the shared Tauri probe so a slow
-   * OS-plugin land does not flash "PC" then "Mac".
+   * "computer"). The Windows test persona read "on this computer" here
+   * because `apps/sync` does not inject `__HQ_HOST_OS__` synchronously (the
+   * way `apps/work` does), so the first render sees an unresolved probe.
+   * Subscribe to the shared helper: the initial read still lands
+   * synchronously (so a resolved probe never flashes a neutral noun), and
+   * once the OS plugin lands the subscription flips this value from
+   * "computer" to "Mac" / "PC" and the whole panel updates.
    */
-  const hostNoun = hostComputerNoun();
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
   const draftStatus = $derived(runtimeStatusOf(runtimeStatus, draft.runtime));
   const draftLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
   const footer = $derived(runtimeFooter(draftStatus, draftLabel, draft.runtime, Boolean(signInApi || onsignin), hostNoun));
@@ -214,6 +262,28 @@
       </div>
       {#if signingIn && signInApi}
         <RuntimeSignIn runtime={signingIn} api={signInApi} {pollMs} onconnected={connected} oncancel={() => (signingIn = null)} />
+      {:else if draftStatus && draftStatus.state === "notInstalled" && draft.runtime !== "grok" && onopenassistant && onassistedinstall && onrecheck}
+        <!--
+          Operator-directed replacement for the old "Install it from
+          claude.ai/download, or run npm i -g @anthropic-ai/claude-code"
+          footer. The person never sees a terminal command; instead, when a
+          coding assistant desktop app is on this computer, HQ offers a
+          button that opens it with an install prompt already pre-filled.
+          Falls back to HQ's own one-click installer when no assistant app
+          is here. Kept alongside "Check again" per repo policy
+          `hq-desktop-app-failed-state-assisted-recovery-preserve-retry`.
+        -->
+        <InstallChoice
+          tool={draft.runtime === "codex" ? "codex" : "claude"}
+          tools={aiTools}
+          noun={hostNoun}
+          hqFolder={hqFolderPath}
+          searched={draftStatus.searched}
+          disabled={disabled}
+          onopenassistant={onopenassistant}
+          oninstall={(tool) => onassistedinstall(tool)}
+          onrecheck={async () => void (await onrecheck())}
+        />
       {:else if draftStatus}
         <p
           class="cb-help"
@@ -230,10 +300,19 @@
           {/if}
         </p>
         {#if draftStatus.state === "notInstalled" && draftStatus.searched && draftStatus.searched.length > 0}
+          <!--
+            Defence in depth: dedupe again at render time. A repeated key in
+            this each block throws `svelte.dev/e/each_key_duplicate` and
+            replaces the wizard with the app's error boundary — the exact
+            crash a Windows persona hit on this screen. The Rust side
+            already dedupes and `parseRuntimeStatus` dedupes at the parse
+            boundary, but a UI list of plain strings must not be able to
+            crash the app no matter where a repeat comes from.
+          -->
           <details class="cb-help searched" data-testid="chat-bot-runtime-searched">
             <summary>Where HQ looked</summary>
             <ul>
-              {#each draftStatus.searched as dir (dir)}
+              {#each dedupeSearchedDirs(draftStatus.searched) as dir (dir)}
                 <li>{dir}</li>
               {/each}
             </ul>

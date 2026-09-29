@@ -51,6 +51,33 @@ export function runtimeStatusOf(
   return status;
 }
 
+/**
+ * Remove repeated directory strings while preserving first-seen order.
+ *
+ * The "Where HQ looked" list is rendered as a keyed Svelte `each` block: a
+ * repeated key throws `svelte.dev/e/each_key_duplicate` and blanks the wizard
+ * to the error boundary. The Rust source now dedupes too, but the UI must
+ * never rely on a caller — a stale host, an older build, or a future third
+ * source of the payload could still hand us repeats. Comparison is
+ * case-insensitive with one optional trailing separator trimmed, which is
+ * how Windows names the same folder in two shapes.
+ *
+ * Exported so tests can pin the crash-fix.
+ */
+export function dedupeSearchedDirs(dirs: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const dir of dirs) {
+    if (typeof dir !== "string") continue;
+    const trimmed = dir.replace(/[\\/]$/, "");
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(dir);
+  }
+  return out;
+}
+
 /** Parse whatever the host command returned into a status, or null. */
 export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
   if (!raw || typeof raw !== "object") return null;
@@ -60,11 +87,15 @@ export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
       return { state: "signedIn" };
     case "signedOut":
       return { state: "signedOut" };
-    case "notInstalled":
+    case "notInstalled": {
+      const listed = Array.isArray(rec.searched)
+        ? rec.searched.filter((d): d is string => typeof d === "string")
+        : [];
       return {
         state: "notInstalled",
-        searched: Array.isArray(rec.searched) ? rec.searched.filter((d): d is string => typeof d === "string") : [],
+        searched: dedupeSearchedDirs(listed),
       };
+    }
     case "probeFailed":
       return { state: "probeFailed", reason: typeof rec.reason === "string" ? rec.reason : "" };
     default:
@@ -104,11 +135,17 @@ export function runtimeBlocksNext(status: RuntimeStatus | null): boolean {
   return status.state !== "signedIn";
 }
 
-/** Where to get a runtime, named for the footer's not-installed line. */
+/**
+ * Fallback hint under the runtime pill for hosts that DO NOT wire the
+ * InstallChoice panel. The wizard always wires that panel now, so this only
+ * fires on a host that has not been updated yet — but even then the copy must
+ * not mention npm, a CLI, or a terminal (operator direction: never send a
+ * non-technical person to a shell). Kept per-tool for named continuity.
+ */
 const INSTALL_HINT: Readonly<Record<string, string>> = {
-  claude: "Install it from claude.ai/download, or run “npm i -g @anthropic-ai/claude-code”.",
-  codex: "Install it with the ChatGPT desktop app, or run “npm i -g @openai/codex”.",
-  grok: "Install it with “npm i -g @vibe-kit/grok-cli”.",
+  claude: "HQ can install it for you and walk you through signing in.",
+  codex: "HQ can install it for you and walk you through signing in.",
+  grok: "HQ can install it for you and walk you through signing in.",
 };
 
 /**
@@ -148,8 +185,8 @@ export function runtimeFooter(
     case "signedOut":
       return {
         text: canSignIn
-          ? `${label} is not signed in on this ${host}.`
-          : `${label} is not signed in on this ${host}. Sign in under Settings → AI tools, or pick another.`,
+          ? `${label} is installed. Sign in to finish.`
+          : `${label} is installed. Sign in under Settings → AI tools, or pick another.`,
         action: canSignIn ? "signin" : null,
         actionLabel: canSignIn ? "Sign in" : null,
         isError: false,
@@ -174,15 +211,26 @@ export function runtimeStepIssue(
   label: string,
   noun: string = "computer",
 ): string | null {
-  const host = noun.trim() || "computer";
+  // `noun` stays part of the signature so older call sites keep compiling and
+  // so the helper can localise the host name in a future variant; the
+  // above-directed wording deliberately does not name the machine.
+  void noun;
   switch (status?.state) {
+    // Do NOT repeat the panel above ("HQ runs on your Claude or ChatGPT
+    // account. Connect it on this ${host} to continue.") — the footer's job
+    // is to tell the person WHY Next is disabled and where to look. Two
+    // sentences ago the persona read one message; the footer's must not
+    // read like a contradiction.
     case "notInstalled":
-      return `${label} isn’t installed on this ${host}.`;
+      return `Finish setting up ${label} above.`;
     case "probeFailed":
       return `HQ couldn’t check whether ${label} is signed in.`;
     case "signedOut":
-      return `${label} is not signed in on this ${host}.`;
+      return `Sign in to ${label} above.`;
     default:
+      // The `host` parameter stays part of the API so existing callers keep
+      // compiling; the plain wording above ("above") does not name the
+      // machine at all, which is fine — the panel does.
       return null;
   }
 }

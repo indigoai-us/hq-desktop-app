@@ -46,7 +46,11 @@
   import type { Workspace } from "./workspaces";
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
-  import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
+  import {
+    messageSearchQueryProblem,
+    type ChatSidebarApi,
+    type ChatWakeBus,
+  } from "./chat-api";
   import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
   import type {
     AdapterPromise,
@@ -288,6 +292,19 @@
     botRuntimeStatus?: Record<string, RuntimeStatus> | null;
     /** Re-read runtime readiness from the host. */
     onrecheckruntimes?: (() => void | Promise<void>) | null;
+    /** Live AiTools payload passed into CreateModal for the install-choice panel. */
+    aiTools?: import("../install-choice/install-choice.js").AiTools | null;
+    /** HQ folder path — flows into the `claude://code/new?folder=` deep link. */
+    hqFolderPath?: string;
+    /** Open the assistant desktop app with a pre-filled install prompt. */
+    onopenassistant?: (
+      assistant: import("../install-choice/install-choice.js").AssistantId,
+      url: string,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** HQ's own one-click installer for a coding tool. */
+    onassistedinstall?: (
+      tool: import("../install-choice/install-choice.js").CodingTool,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
@@ -416,6 +433,10 @@
     botRuntimeReady = null,
     botRuntimeStatus = null,
     onrecheckruntimes = null,
+    aiTools = null,
+    hqFolderPath = "",
+    onopenassistant,
+    onassistedinstall,
     botWorkers = null,
     existingBotNames = null,
     botSignIn = null,
@@ -1493,6 +1514,7 @@
   );
   const historyCompanyUid = $derived(searchCompanyUidFromScope(scope));
   const historyHasQuery = $derived(historyQuery.trim().length > 0);
+  const historyQueryProblem = $derived(messageSearchQueryProblem(historyQuery));
   const scopeLabel = $derived(scopePillLabel(scope, scopeCompanies));
   const scopeOptions = $derived(buildScopeOptions(scopeCompanies));
   const displayName = $derived(accountLabel?.trim() || "Account");
@@ -1803,14 +1825,20 @@
   $effect(() => {
     if (!historyOpen) return;
     const q = historyQuery.trim();
+    const seq = ++messageSearchSeq;
     if (!q) {
       messageSearchHits = [];
       messageSearchError = null;
       messageSearchLoading = false;
       return;
     }
+    if (messageSearchQueryProblem(q)) {
+      messageSearchHits = [];
+      messageSearchError = null;
+      messageSearchLoading = false;
+      return;
+    }
     const companyUid = historyCompanyUid;
-    const seq = ++messageSearchSeq;
     messageSearchLoading = true;
     messageSearchError = null;
     const handle = setTimeout(() => {
@@ -3457,7 +3485,11 @@
           data-testid="chat-history-results"
         >
           {#if historyHasQuery}
-            {#if messageSearchLoading && messageSearchHits.length === 0}
+            {#if historyQueryProblem === "too-short"}
+              <div class="chat-empty" role="status">Type at least 2 characters</div>
+            {:else if historyQueryProblem === "too-long"}
+              <div class="chat-empty" role="status">Search is limited to 100 characters</div>
+            {:else if messageSearchLoading && messageSearchHits.length === 0}
               <div class="chat-empty" role="status">Searching…</div>
             {:else if messageSearchError}
               <div class="chat-empty" role="alert">{messageSearchError}</div>
@@ -3674,6 +3706,10 @@
       {botRuntimeReady}
       {botRuntimeStatus}
       {onrecheckruntimes}
+      {aiTools}
+      {hqFolderPath}
+      {onopenassistant}
+      {onassistedinstall}
       {botWorkers}
       {existingBotNames}
       {botCompanies}

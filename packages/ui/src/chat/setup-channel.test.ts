@@ -13,6 +13,7 @@ import {
   SETUP_CHANNEL_ID,
   SETUP_HERO,
   SETUP_HERO_RETURNING,
+  SETUP_ADVANCED_TOOLS_NOTE,
   hasRunWelcomeSetup,
   withoutCompaniesSummaryCards,
   markWelcomeSetupRun,
@@ -244,6 +245,9 @@ describe("setup roster helpers", () => {
     expect(setupHeroFor([PERSONAL])).toEqual(SETUP_HERO);
     expect(setupHeroFor([PERSONAL, workspace()])).toEqual(SETUP_HERO_RETURNING);
     expect(SETUP_HERO_RETURNING.body).not.toMatch(/cmp_|prs_/);
+    expect(SETUP_HERO_RETURNING.body).toContain("HQ Desktop");
+    expect(SETUP_HERO_RETURNING.body).not.toContain("HQ Sessions");
+    expect(SETUP_ADVANCED_TOOLS_NOTE).not.toContain("HQ Sessions");
   });
 
   it("labels a settled company Open and anything else Continue setup", () => {

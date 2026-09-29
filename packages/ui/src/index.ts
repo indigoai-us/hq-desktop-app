@@ -1,6 +1,11 @@
 export { default as Button } from "./Button.svelte";
 export { classNames } from "./class-names.js";
 
+// Shared install-choice panel: the "open Claude Desktop or ChatGPT with a
+// prefilled install prompt" buttons used by the New bot wizard AND the setup
+// assistant. One component, one adapter — the two cannot drift.
+export * from "./install-choice/index.js";
+
 // HQ first-run installer (ported from hq-desktop-app onboarding).
 export * from "./onboarding/index.js";
 

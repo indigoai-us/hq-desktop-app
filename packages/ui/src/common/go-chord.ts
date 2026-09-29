@@ -1,5 +1,5 @@
 /**
- * Slack-style "g then <key>" navigation chord (US-016: hotkey `g a` → Atlas).
+ * Slack-style "g then <key>" navigation chord controller.
  *
  * Leader `g` arms for GO_CHORD_MS; the next matching letter fires. Ignores
  * chords when focus is in an editable field or when modifiers are held.
@@ -25,7 +25,7 @@ export interface GoChordController {
 
 /**
  * Create a go-chord controller. `onChord(letter)` should navigate and return
- * true when the letter is handled (e.g. "a" → Atlas).
+ * true when the letter is handled.
  */
 export function createGoChord(onChord: GoChordHandler): GoChordController {
   let armedUntil = 0;

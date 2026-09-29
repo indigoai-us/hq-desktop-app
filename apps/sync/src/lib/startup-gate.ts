@@ -27,7 +27,7 @@ export type StartupProbeResult = {
   hadStoredToken: boolean;
   /** Bounded observation used to diagnose startup auth restoration. */
   tokenPresence: TokenPresence;
-  /** Setup evidence used only by the unexpected-surface reporter. */
+  /** Persisted setup evidence used by unexpected-surface reporting and recovery. */
   setupEvidence?: StartupSetupEvidence | null;
   auth: { authenticated: boolean; expiresAt: string | null };
 };

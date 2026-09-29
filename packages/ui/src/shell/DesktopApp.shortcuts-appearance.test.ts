@@ -137,6 +137,25 @@ describe("appearance host guard on mount", () => {
 });
 
 describe("shell shortcut reachability", () => {
+  it("does not consume the retired g-a Atlas chord", async () => {
+    mountApp();
+    await settle();
+    const leader = new KeyboardEvent("keydown", {
+      key: "g",
+      bubbles: true,
+      cancelable: true,
+    });
+    const second = new KeyboardEvent("keydown", {
+      key: "a",
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(leader);
+    window.dispatchEvent(second);
+    expect(leader.defaultPrevented).toBe(false);
+    expect(second.defaultPrevented).toBe(false);
+  });
+
   it("opens the cheat sheet from an editable field (⌘/ is allowInInput)", async () => {
     mountApp();
     await settle();

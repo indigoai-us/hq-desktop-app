@@ -1,3 +1,5 @@
+import type { StartupSetupEvidence } from './unexpected-startup-surface';
+
 export interface WizardStep {
   index: number;
   id: string;
@@ -18,20 +20,22 @@ export const WIZARD_STEPS = [
   { index: 0, id: 'welcome-signin', label: 'Welcome' },
   { index: 1, id: 'directory', label: 'Location' },
   { index: 2, id: 'setup', label: 'Setup' },
+  { index: 3, id: 'first-folder-sync', label: 'Sync your first folder' },
+  { index: 4, id: 'invite-teammate', label: 'Invite a teammate' },
   // Consent is its own step, placed AFTER setup: the person entity is
   // provisioned during setup, so by the time we ask, the opt-in write has an
   // entity to land on (the old sign-in-panel checkbox posted before the entity
   // existed, so the answer 404'd and was silently dropped).
-  { index: 3, id: 'consent', label: 'Consent' },
+  { index: 5, id: 'consent', label: 'Consent' },
   // This runs after setup has made `hq` available, but before final handoff.
   // It auto-skips when Claude Desktop has no configured connectors.
-  { index: 4, id: 'connector-import', label: 'Import connectors' },
-  { index: 5, id: 'ready', label: 'Ready' },
-  { index: 6, id: 'trust', label: 'Trust workspace' },
-  { index: 7, id: 'settings', label: 'Settings' },
-  { index: 8, id: 'run-setup', label: 'Run setup' },
-  { index: 9, id: 'handoff', label: 'Handoff' },
-  { index: 10, id: 'build', label: 'Build' },
+  { index: 6, id: 'connector-import', label: 'Import connectors' },
+  { index: 7, id: 'ready', label: 'Ready' },
+  { index: 8, id: 'trust', label: 'Trust workspace' },
+  { index: 9, id: 'settings', label: 'Settings' },
+  { index: 10, id: 'run-setup', label: 'Run setup' },
+  { index: 11, id: 'handoff', label: 'Handoff' },
+  { index: 12, id: 'build', label: 'Build' },
 ] as const satisfies readonly WizardStep[];
 
 export type WizardStepId = (typeof WIZARD_STEPS)[number]['id'];
@@ -48,6 +52,8 @@ const FIRST_STEP_INDEX = WIZARD_STEPS[0].index;
 const WELCOME_SIGNIN_STEP_INDEX = WIZARD_STEP_INDEX['welcome-signin'];
 const DIRECTORY_STEP_INDEX = WIZARD_STEP_INDEX.directory;
 const SETUP_STEP_INDEX = WIZARD_STEP_INDEX.setup;
+const FIRST_FOLDER_SYNC_STEP_INDEX = WIZARD_STEP_INDEX['first-folder-sync'];
+const INVITE_TEAMMATE_STEP_INDEX = WIZARD_STEP_INDEX['invite-teammate'];
 const CONSENT_STEP_INDEX = WIZARD_STEP_INDEX.consent;
 const CONNECTOR_IMPORT_STEP_INDEX = WIZARD_STEP_INDEX['connector-import'];
 const READY_STEP_INDEX = WIZARD_STEP_INDEX.ready;
@@ -63,6 +69,8 @@ export {
   BUILD_STEP_INDEX,
   CONNECTOR_IMPORT_STEP_INDEX,
   CONSENT_STEP_INDEX,
+  FIRST_FOLDER_SYNC_STEP_INDEX,
+  INVITE_TEAMMATE_STEP_INDEX,
   DIRECTORY_STEP_INDEX,
   HANDOFF_STEP_INDEX,
   READY_STEP_INDEX,
@@ -187,7 +195,27 @@ export function createWizardRouter(opts: { start?: number } = {}): WizardRouter 
   return router;
 }
 
-export function initialStepForLifecycle(state: string): number {
+export function isMissingRootRecovery(
+  state: string,
+  setupEvidence?: StartupSetupEvidence | null,
+): boolean {
+  return (
+    state === 'NeedsInstall' &&
+    setupEvidence != null &&
+    // Either marker independently proves prior setup. One missing-root B event had
+    // installCompleted=false and firstRunCompleted=true, so requiring both loses recovery.
+    (setupEvidence.installCompleted || setupEvidence.firstRunCompleted) &&
+    !setupEvidence.hqRootValid &&
+    !setupEvidence.installInProgress &&
+    !setupEvidence.manifestIncomplete
+  );
+}
+
+export function initialStepForLifecycle(
+  state: string,
+  setupEvidence?: StartupSetupEvidence | null,
+): number {
+  if (isMissingRootRecovery(state, setupEvidence)) return DIRECTORY_STEP_INDEX;
   switch (state) {
     case 'NeedsAuthForInstall':
       return WELCOME_SIGNIN_STEP_INDEX;

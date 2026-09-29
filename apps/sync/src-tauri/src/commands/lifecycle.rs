@@ -2,7 +2,9 @@ use chrono::Utc;
 use hq_desktop_core::cognito::StoredTokenPresence;
 use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 #[cfg(not(windows))]
-use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
+use hq_desktop_core::lifecycle::{
+    probe_local_toolchain_for_startup, tools_present_for_lifecycle_gate,
+};
 use hq_desktop_core::lifecycle::{
     hq_root_valid, menubar_flags, probe_hq_root_for_startup,
     should_backfill_welcome_setup_pending, HqRootProbe, LifecycleInputs, LifecycleState,
@@ -253,16 +255,37 @@ pub fn setup_lifecycle(app: &AppHandle) {
         node_program_kind,
         require_local_toolchain_demoted,
     ) = {
-        let hq_program = paths::resolve_bin_with_kind("hq");
-        let node_program = paths::resolve_bin_with_kind("node");
-        let hq_resolved = hq_program.kind != ResolvedProgramKind::NotResolved;
-        let node_resolved = node_program.kind != ResolvedProgramKind::NotResolved;
-        let tools_present = tools_present_for_lifecycle_gate(hq_resolved, node_resolved);
-        let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
         // When the install evidence itself could not be read, a "tools are
         // missing" reading of the same filesystem is not trustworthy either,
         // so it must not demote a set-up machine to NeedsInstall.
         let classified = hq_desktop_core::lifecycle::classify_lifecycle(inputs);
+        // A LaunchAgent updater restart can race the managed toolchain settling
+        // after the app bundle is replaced. Recheck only existing installs;
+        // fresh installs still reach onboarding immediately when tools are absent.
+        let mut resolved_programs = None;
+        let tools_present = probe_local_toolchain_for_startup(
+            launch_agent_relaunch,
+            matches!(
+                classified.state,
+                LifecycleState::SteadyState
+                    | LifecycleState::InstalledFirstRun
+                    | LifecycleState::InstalledLegacyUpdate
+            ),
+            || {
+                let hq_program = paths::resolve_bin_with_kind("hq");
+                let node_program = paths::resolve_bin_with_kind("node");
+                let tools_present = tools_present_for_lifecycle_gate(
+                    hq_program.kind != ResolvedProgramKind::NotResolved,
+                    node_program.kind != ResolvedProgramKind::NotResolved,
+                );
+                resolved_programs = Some((hq_program, node_program));
+                tools_present
+            },
+        );
+        // The startup probe always performs its initial resolution.
+        let (hq_program, node_program) = resolved_programs
+            .expect("startup toolchain probe records its initial resolution");
+        let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
         let verdict = if evidence_unreadable {
             classified
         } else {
@@ -590,19 +613,24 @@ pub fn report_unexpected_startup_surface(
     let seconds_since_start = elapsed_since_start
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let diagnostic_tags = hq_desktop_core::unexpected_surface::startup_diagnostic_tags(
-        authenticated,
-        &token_presence,
-        elapsed_since_start.map(|elapsed| elapsed.as_millis()),
-        &prior_surface,
-        hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
-            inputs: *inputs,
-            hq_root_probe: state.hq_root_probe,
-            hq_program_kind: state.hq_program_kind,
-            node_program_kind: state.node_program_kind,
-            require_local_toolchain_demoted: state.require_local_toolchain_demoted,
-        },
-    );
+    let (auth_session_status, refresh_failure_class) =
+        crate::commands::auth::startup_auth_diagnostic_tags();
+    let diagnostic_tags =
+        hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
+            authenticated,
+            &token_presence,
+            elapsed_since_start.map(|elapsed| elapsed.as_millis()),
+            &prior_surface,
+            hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
+                inputs: *inputs,
+                hq_root_probe: state.hq_root_probe,
+                hq_program_kind: state.hq_program_kind,
+                node_program_kind: state.node_program_kind,
+                require_local_toolchain_demoted: state.require_local_toolchain_demoted,
+            },
+            auth_session_status,
+            refresh_failure_class,
+        );
 
     let prior_setup = inputs.evidence_unreadable
         || hq_desktop_core::unexpected_surface::prior_setup_detected(
