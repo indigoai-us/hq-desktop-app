@@ -12,6 +12,8 @@ The release moves it under the version it ships in.
   teammate. The step is off until its hq-flags rollout is enabled and can be
   skipped.
 - If HQ cannot refresh saved credentials at launch, it keeps the loading screen up and checks again every five seconds. It shows sign-in after Cognito confirms the credentials are invalid.
+- Core update failures now classify active HQ changes, generic clone failures, and rsync partial transfers separately in diagnostics.
+- Core update rescue error classes for deferred updates and restore symlink races now pass Sentry's diagnostic filter.
 
 ## [0.10.353] — 2026-09-29
 

@@ -1694,6 +1694,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "dns"
                 | "tls"
                 | "timeout"
+                | "update_deferred_hq_change"
+                | "restore_symlink_race"
                 | "unknown"
         )),
         "rsync_stderr_class" => Some(matches!(
@@ -3082,6 +3084,37 @@ mod tests {
         assert_eq!(
             setup_failure_fingerprint("node", "exit-nonzero"),
             ["desktop-setup-dependency-install-failed"],
+        );
+    }
+
+    #[test]
+    fn core_update_rescue_error_class_allowed_values_survive_before_send() {
+        let mut arbitrary = Event::default();
+        arbitrary.tags.insert(
+            "rescue_error_class".to_string(),
+            "arbitrary_untrusted_error_class".to_string(),
+        );
+        let filtered = before_send(arbitrary).expect("event remains sendable");
+        assert_eq!(filtered.tags["rescue_error_class"], "[Filtered]");
+
+        let expected = ["update_deferred_hq_change", "restore_symlink_race"];
+        let observed: Vec<String> = expected
+            .iter()
+            .map(|value| {
+                let mut event = Event::default();
+                event
+                    .tags
+                    .insert("rescue_error_class".to_string(), (*value).to_string());
+                before_send(event)
+                    .expect("event remains sendable")
+                    .tags["rescue_error_class"]
+                    .clone()
+            })
+            .collect();
+        assert_eq!(
+            observed,
+            expected.map(str::to_string),
+            "known Core update classes should survive the before_send allowlist"
         );
     }
 
