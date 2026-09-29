@@ -235,6 +235,11 @@ describe("smoke boot diagnostics", () => {
       "^recovery auto-check found v" +
         safeVersionPlaceholder +
         " — offering as primary action$",
+      "^shell ready(?: after \\\\d+\\\\.\\\\d+s)? — watchdog cancelled$",
+      "^shell ready(?: after \\\\d+\\\\.\\\\d+s)? — after watchdog timeout; closing recovery window$",
+      "^watchdog timeout(?: after \\\\d+\\\\.\\\\d+s)? — desktop shell did not report ready$",
+      "^watchdog timer woke \\\\d+\\\\.\\\\d+s late — async runtime stalled; granting \\\\d+s grace before recovery$",
+      "^async runtime stalled: heartbeat woke \\\\d+\\\\.\\\\d+s late$",
     ]);
 
     const recoveryPatternMessages = [
@@ -242,6 +247,11 @@ describe("smoke boot diagnostics", () => {
       "auto-checking for updates before recovery window (trigger={})",
       "recovery window opened (trigger={}, version=v{})",
       "recovery auto-check found v{} — offering as primary action",
+      "shell ready{} — watchdog cancelled",
+      "shell ready{} — after watchdog timeout; closing recovery window",
+      "watchdog timeout{} — desktop shell did not report ready",
+      "watchdog timer woke {:.1}s late — async runtime stalled; granting {}s grace before recovery",
+      "async runtime stalled: heartbeat woke {:.1}s late",
     ];
     for (const message of recoveryPatternMessages) {
       expect(recoverySource).toContain(JSON.stringify(message));
