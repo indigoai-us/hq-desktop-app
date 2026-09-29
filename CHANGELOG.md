@@ -49,6 +49,21 @@ The release moves it under the version it ships in.
   console, the Launch menu and the Command-K palette. Next moves on; Skip,
   Done or Esc ends the tour and leaves you on the page you were on.
   "Take the tour" in the Command-K palette plays it again.
+
+- In a DM with a bot, the "is thinking" / "working on it" line now
+  disappears as soon as the bot's reply appears, instead of staying under
+  the reply for a few more seconds. It shows again when you send another
+  message or the bot reports new work.
+
+- Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
+- Desktop sync commands now recover their valid state after a mutex is poisoned.
+
+- Auto-sync memory-ceiling reports now include the active sync phase and its
+  elapsed-time bucket, so recurring memory failures can be compared across scan,
+  pull, and push work.
+
+## [0.10.357] — 2026-09-29
+
 - Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 
 ## [0.10.356] — 2026-09-29

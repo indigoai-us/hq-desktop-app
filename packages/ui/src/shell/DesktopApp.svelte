@@ -351,7 +351,11 @@
   } from "../chat/mentions.js";
   import {
     clearAgentEverywhere,
-    clearRowFromMessages,
+    clearRowOnReply,
+    forgetAnswered,
+    releaseAnswered,
+    visibleThinking,
+    type AnsweredWhileBusy,
     agentDisplayName,
     applyAgentStatus,
     dropRow,
@@ -3693,13 +3697,21 @@
     const { [uid]: _started, ...rest } = kickoffPendingByUid;
     kickoffPendingByUid = rest;
     if (decision.state === "start") {
+      answeredWhileBusy = forgetAnswered(answeredWhileBusy, uid);
       thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now(), {
         afterMs: decision.afterMs,
       });
     }
   });
+  // A row whose agent already has a newer message in the open timeline is
+  // hidden in the same render that shows the reply, whichever path appended it.
   const agentThinking = $derived<ThinkingEntry[]>(
-    selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
+    selectedRow
+      ? visibleThinking(
+          thinkingByRow[selectedRow.id] ?? [],
+          liveTimelineId === selectedRow.id ? liveTimeline : [],
+        )
+      : [],
   );
 
   // While a local bot's conversation is open, list its bots often enough that
@@ -3716,23 +3728,25 @@
     };
   });
 
-  // A local bot that is mid-turn keeps its indicator, even after it posts.
-  // The CLI reports `busy` from the bot's own in-flight marker, so a progress
-  // note in the middle of a long turn no longer reads as "finished" and the
-  // DM stops going silent while the bot is still working. When the turn ends,
-  // `busy` drops and the row is cleared here.
+  // A local bot that is busy (the CLI's in-flight marker) shows its row in its
+  // DM. Its reply ends the row at once (`clearThinkingFromIncoming`); the
+  // marker can outlive the post by a poll or two, so a bot answered while busy
+  // is not re-shown until `busy` drops (new turn) or the person writes again.
   let previouslyBusyBotUids: string[] = [];
+  let answeredWhileBusy: AnsweredWhileBusy = {};
   const busyBotUids = $derived(busyLocalBotUids(localBots));
   $effect(() => {
     const busy = busyBotUids;
     // The map is read and written here, so it must not be a dependency of
     // this effect — only the busy list is.
     untrack(() => {
+      answeredWhileBusy = releaseAnswered(answeredWhileBusy, busy);
       const next = syncBusyThinking(thinkingByRow, {
         busy,
         previouslyBusy: previouslyBusyBotUids,
         nameOf: (uid) => localBots.find((b) => b.agentUid === uid)?.name ?? "bot",
         now: Date.now(),
+        answered: answeredWhileBusy,
       });
       previouslyBusyBotUids = busy;
       if (next !== thinkingByRow) thinkingByRow = next;
@@ -3806,12 +3820,15 @@
     rowId: string,
   ): void {
     if (!thinkingByRow[rowId]?.length) return;
-    // A local bot that is still mid-turn keeps its row: its interim post is
-    // not the end of the turn, and the in-flight marker outranks the message.
-    if (busyBotUids.some((uid) => rowId === `dm:${uid}`)) return;
-    // Timestamp-aware so a full-history hydrate or overlapping catch-up page
-    // containing an OLD agent message cannot clear a newer row.
-    thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
+    // The reply ends the row now, even while a local bot's `busy` flag is
+    // still set: that flag is polled and outlives the post, and holding the
+    // row for it left "working on it" under the answer for seconds. A bot
+    // answered while busy is remembered so the same stale flag cannot bring
+    // the row back. Timestamp-aware so a full-history hydrate or overlapping
+    // catch-up page containing an OLD agent message cannot clear a newer row.
+    const next = clearRowOnReply(thinkingByRow, answeredWhileBusy, rowId, messages, busyBotUids);
+    answeredWhileBusy = next.answered;
+    if (next.map !== thinkingByRow) thinkingByRow = next.map;
   }
 
   /** Same messages (by reference) in the same order — nothing to repaint. */
@@ -6879,6 +6896,7 @@
     lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
     thinkingByRow = {};
+    answeredWhileBusy = {};
     openReplyRootId = null;
     openProfileMember = null;
     openAgentMember = null;
@@ -7495,6 +7513,8 @@
           autoRestoreForSend(row.personUid);
         }
         if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
+          // The person wrote again: a new turn, whatever `busy` still says.
+          answeredWhileBusy = forgetAnswered(answeredWhileBusy, row.personUid);
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
           // clear the fresh row on the next catch-up (skew fallback).
