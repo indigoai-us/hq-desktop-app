@@ -251,6 +251,7 @@ path = "examples/emit-sample-journal.rs"
 required-features = ["journal-cli"]
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 hq-desktop-core = { path = "../../../crates/hq-desktop-core", features = ["test-support"] }
 sentry = { version = "^0.35", features = ["test"] }
 tempfile = "3"
