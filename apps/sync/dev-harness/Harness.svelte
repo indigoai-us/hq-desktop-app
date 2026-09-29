@@ -20,6 +20,7 @@
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { bannerFixtures } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
+  import { TOUR_SEEN_STORAGE_KEY } from '@hq/ui';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
   // and the copy-prompt button (the last inbound message carries an agent
@@ -126,6 +127,9 @@
   //   ?view=shell|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
+  //   shell view also takes ?tour=1: a fresh install that has not seen the
+  //     first-run guided tour, so the tour starts by itself (clears the
+  //     local "seen" key on load)
   //   lifecycle view (channel-native company lifecycle, stateful mock) takes
   //     ?role=member (viewer.canAct=false everywhere) and ?state=blocked
   // For the signin view, size the browser viewport to ~320x440 (the real
@@ -133,6 +137,13 @@
   // view is the production HQ Work shell; size that one to ~1180x760.
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'shell';
+  if (params.get('tour') === '1') {
+    try {
+      localStorage.removeItem(TOUR_SEEN_STORAGE_KEY);
+    } catch {
+      // Storage unavailable: the mocked host flag still says "not shown".
+    }
+  }
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);

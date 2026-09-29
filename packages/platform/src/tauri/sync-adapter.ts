@@ -1352,6 +1352,7 @@ export function createSyncPlatformAdapter(
         }
       },
       getSetupStatus: () => call('get_setup_status'),
+      markWelcomeTourShown: () => call('mark_welcome_tour_shown'),
       getTelemetryConsent: () => call('get_telemetry_consent_status'),
     },
 
