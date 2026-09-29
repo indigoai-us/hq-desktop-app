@@ -10,6 +10,10 @@ The release moves it under the version it ships in.
 
 - Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 
+- Auto-sync memory-ceiling reports now include the active sync phase and its
+  elapsed-time bucket, so recurring memory failures can be compared across scan,
+  pull, and push work.
+
 ## [0.10.356] — 2026-09-29
 
 - If a Core update overlaps an active HQ change, HQ defers it and retries on a later check instead of reporting an update failure.
