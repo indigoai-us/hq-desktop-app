@@ -11254,6 +11254,15 @@ mod npm_setup_recovery_tests {
         assert_eq!(run.attempts[0], run.attempts[1]);
         assert_eq!(run.attempts[1], run.attempts[2]);
         assert_eq!(
+            run.preflight.len(),
+            2,
+            "each retry keeps dependency-stage progress visible"
+        );
+        assert!(run
+            .preflight
+            .iter()
+            .all(|line| line.contains("continuing dependency setup")));
+        assert_eq!(
             tokio::time::Instant::now() - started,
             std::time::Duration::from_secs(75),
             "the two retries must respect the first two backoff intervals"
