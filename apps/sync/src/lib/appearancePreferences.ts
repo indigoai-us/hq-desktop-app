@@ -47,6 +47,11 @@ interface AppearancePreferenceOptions {
   applyNativeTheme?: (theme: NativeTheme) => Promise<void> | void;
   /** Resolve the native window material; re-applies the preference once known. */
   readMaterial?: () => Promise<WindowMaterial | string | null | undefined>;
+  /**
+   * Drive the native backdrop (Liquid Glass / vibrancy) from the persisted
+   * transparency. Called once per distinct value; 0 means fully solid.
+   */
+  applyNativeTransparency?: (transparency: number) => Promise<void> | void;
   onError?: (error: unknown) => void;
 }
 
@@ -251,10 +256,24 @@ export function installAppearancePreferences(
   };
 
   let material: WindowMaterial | null = normalizeWindowMaterial(root.dataset.material);
+  let appliedNativeTransparency: number | null = null;
+  const applyNativeTransparency = (transparency: number): void => {
+    if (disposed || !options.applyNativeTransparency) return;
+    if (appliedNativeTransparency === transparency) return;
+    appliedNativeTransparency = transparency;
+    void Promise.resolve()
+      .then(() => options.applyNativeTransparency?.(transparency))
+      .catch((error: unknown) => {
+        // Allow a retry on the next request for the same value.
+        if (appliedNativeTransparency === transparency) appliedNativeTransparency = null;
+        onError(error);
+      });
+  };
   const apply = (preferences: AppearancePreferences): void => {
     current = normalizeAppearancePreferences(preferences);
     currentAppearanceByTarget.set(target, current);
     applyAppearancePreferences(root, current, material);
+    applyNativeTransparency(current.windowTransparency);
     desiredNativeTheme = current.colorTheme === 'system' ? null : current.colorTheme;
     nativeRequestRevision += 1;
     drainNativeTheme();
@@ -267,6 +286,10 @@ export function installAppearancePreferences(
 
   const onRequest = (event: Event): void => {
     apply((event as CustomEvent<AppearancePreferences>).detail);
+    // Requests may come straight from packages/ui (Settings slider), which
+    // cannot reach this module's storage helper — persist here so the value
+    // survives a restart.
+    writeAppearancePreferences(storage, current);
   };
   const onStorage = (event: StorageEvent): void => {
     if (event.key !== null && event.key !== APPEARANCE_STORAGE_KEY) return;

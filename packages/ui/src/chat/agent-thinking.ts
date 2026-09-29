@@ -576,6 +576,9 @@ export function syncBusyThinking(
     previouslyBusy: readonly string[];
     nameOf: (agentUid: string) => string;
     now: number;
+    /** Bots whose reply already ended the row this turn (see
+     *  {@link AnsweredWhileBusy}); their still-set `busy` is not re-shown. */
+    answered?: AnsweredWhileBusy;
   },
 ): ThinkingByRow {
   let next = map;
@@ -586,7 +589,99 @@ export function syncBusyThinking(
   for (const uid of opts.busy) {
     const rowId = `dm:${uid}`;
     if (next[rowId]?.some((e) => e.agentUid === uid)) continue;
+    if (opts.answered?.[uid]) continue;
     next = startThinkingIn(next, rowId, { agentUid: uid, agentName: opts.nameOf(uid) }, opts.now);
   }
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// The reply ends the row, at the moment it lands.
+//
+// A local bot's `busy` flag comes from the CLI listing, polled every few
+// seconds, and the CLI's in-flight marker outlives the bot's post by a moment.
+// Holding the row until `busy` dropped kept "X is working on it…" under the
+// answer for a few more seconds. The reply is the newer event, so it ends the
+// row immediately; a `busy` still reported for that same turn afterwards is
+// stale and must not bring the row back. It comes back only on a genuinely
+// newer signal: the person writes again (an explicit start), the agent reports
+// a status newer than its reply (`applyAgentStatus`), or `busy` drops and
+// rises again (a new turn).
+
+/** Local bots (by agent uid) whose reply ended their DM row while their CLI
+ *  `busy` flag was still set. Their `busy` is ignored until it drops or an
+ *  explicit start supersedes it. */
+export type AnsweredWhileBusy = Readonly<Record<string, true>>;
+
+/**
+ * `clearRowFromMessages`, plus: a bot that was `busy` when its reply ended its
+ * own DM row is remembered in `answered`, so the next `syncBusyThinking` does
+ * not restart the row from the same (stale) turn. Returns NEW objects when
+ * anything changed, the same ones otherwise.
+ */
+export function clearRowOnReply(
+  map: ThinkingByRow,
+  answered: AnsweredWhileBusy,
+  rowId: string,
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; createdAt?: string | null }>,
+  busy: readonly string[],
+): { map: ThinkingByRow; answered: AnsweredWhileBusy } {
+  const before = map[rowId];
+  if (!before || before.length === 0) return { map, answered };
+  const nextMap = clearRowFromMessages(map, rowId, messages);
+  const after = new Set((nextMap[rowId] ?? []).map((e) => e.agentUid));
+  let nextAnswered: Record<string, true> | null = null;
+  for (const entry of before) {
+    if (after.has(entry.agentUid)) continue;
+    if (rowId !== `dm:${entry.agentUid}` || !busy.includes(entry.agentUid)) continue;
+    nextAnswered ??= { ...answered };
+    nextAnswered[entry.agentUid] = true;
+  }
+  return { map: nextMap, answered: nextAnswered ?? answered };
+}
+
+/** Forget bots whose `busy` has dropped: that turn is over, and the next
+ *  `busy` is a new turn. Same object when nothing changed. */
+export function releaseAnswered(
+  answered: AnsweredWhileBusy,
+  busy: readonly string[],
+): AnsweredWhileBusy {
+  const keys = Object.keys(answered);
+  if (keys.length === 0) return answered;
+  const busyNow = new Set(busy);
+  const kept = keys.filter((uid) => busyNow.has(uid));
+  if (kept.length === keys.length) return answered;
+  return Object.fromEntries(kept.map((uid) => [uid, true as const]));
+}
+
+/** An explicit start for `agentUid` (the person wrote to it again) supersedes
+ *  the answered turn. Same object when nothing changed. */
+export function forgetAnswered(
+  answered: AnsweredWhileBusy,
+  agentUid: string,
+): AnsweredWhileBusy {
+  const uid = agentUid.trim();
+  if (!answered[uid]) return answered;
+  const { [uid]: _gone, ...rest } = answered;
+  return rest;
+}
+
+/**
+ * The rows to draw for a conversation whose timeline is `messages`. A pinned
+ * row (`afterMs`) whose agent already has a message newer than the pin is
+ * hidden, so the indicator disappears in the same render that shows the
+ * reply, whichever path appended it. Unpinned rows are left to the explicit
+ * clear (`clearFromMessages`). Same array when nothing is hidden.
+ */
+export function visibleThinking(
+  entries: ThinkingEntry[],
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; createdAt?: string | null }>,
+): ThinkingEntry[] {
+  if (entries.length === 0 || messages.length === 0) return entries;
+  const shown = entries.filter((entry) => {
+    if (entry.afterMs === undefined) return true;
+    const newest = newestMessageAtFrom(messages, entry.agentUid);
+    return newest === undefined || newest <= entry.afterMs;
+  });
+  return shown.length === entries.length ? entries : shown;
 }

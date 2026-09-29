@@ -628,6 +628,10 @@ pub(crate) struct BlurHideInputs {
     pub secondary_window_open: bool,
     /// `HQ_DISABLE_BLUR_HIDE=1` — dev/debug opt-out.
     pub env_disabled: bool,
+    /// The welcome flow owns `main` and fills the screen. It has its own close
+    /// and minimize controls, and minimizing it fires a blur: hiding on that
+    /// blur would turn Minimize into Close.
+    pub welcome_window: bool,
     /// Short-lived suppression window right after a deliberate show from the
     /// native menu-bar helper (see `SUPPRESS_BLUR_UNTIL_MS`).
     pub transient_suppression: bool,
@@ -652,6 +656,7 @@ pub(crate) fn should_hide_onboarding_card_on_blur(inputs: BlurHideInputs) -> boo
     if inputs.modal_open
         || inputs.secondary_window_open
         || inputs.env_disabled
+        || inputs.welcome_window
         || inputs.transient_suppression
     {
         return false;
@@ -731,6 +736,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     modal_open: is_modal_open(),
                     secondary_window_open: secondary_open,
                     env_disabled: disable_blur_hide,
+                    welcome_window: crate::welcome_window::welcome_window_active(),
                     transient_suppression: blur_hide_suppressed(),
                     onboarding_pin: onboarding_window_requires_blur_suppression(
                         win_clone.app_handle(),
@@ -935,7 +941,12 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }
 
-/// Show + focus the main window centered on screen for first-run onboarding.
+/// Show + focus the main window for first-run onboarding.
+///
+/// The welcome flow fills the work area of the current monitor
+/// (`welcome_window::fit_to_work_area`); `center()` would measure against the
+/// full display and push the bottom edge under the Dock, so it is only the
+/// fallback when no monitor can be read.
 ///
 /// Must not leave the window sticky-topmost — OAuth opens a normal browser
 /// afterward, and a permanently topmost installer would cover the provider UI.
@@ -944,7 +955,9 @@ pub fn show_window_centered(app: &AppHandle) {
         return;
     };
     hide_desktop_alt(app);
-    let _ = window.center();
+    if !crate::welcome_window::fit_to_work_area(&window) {
+        let _ = window.center();
+    }
     crate::util::window_focus::bring_webview_to_front(&window);
 }
 
@@ -1170,6 +1183,16 @@ pub fn show_onboarding_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    // The welcome flow owns `main` and fills the work area: re-fit it rather
+    // than anchoring it under the tray icon like the compact card.
+    if crate::welcome_window::welcome_window_active() {
+        crate::welcome_window::fit_to_work_area(&window);
+        #[cfg(target_os = "windows")]
+        crate::util::window_focus::raise_transiently_topmost(&window);
+        #[cfg(not(target_os = "windows"))]
+        crate::util::window_focus::bring_webview_to_front(&window);
+        return;
+    }
     #[cfg(target_os = "windows")]
     {
         position_above_tray_fallback(&window);
@@ -1605,6 +1628,7 @@ mod tests {
             modal_open: false,
             secondary_window_open: false,
             env_disabled: false,
+            welcome_window: false,
             transient_suppression: false,
             onboarding_pin: false,
             user_dismissed_once: false,
@@ -1647,6 +1671,13 @@ mod tests {
                     ..plain_blur()
                 },
             ),
+            (
+                "the welcome flow owns the window",
+                BlurHideInputs {
+                    welcome_window: true,
+                    ..plain_blur()
+                },
+            ),
         ] {
             assert!(
                 !should_hide_onboarding_card_on_blur(inputs),
@@ -1686,6 +1717,25 @@ mod tests {
         }));
         assert!(!should_hide_onboarding_card_on_blur(BlurHideInputs {
             secondary_window_open: true,
+            user_dismissed_once: true,
+            ..plain_blur()
+        }));
+    }
+
+    #[test]
+    fn minimizing_or_reopening_the_welcome_window_never_hides_it_on_blur() {
+        // Closing the welcome window once records a dismissal, which would
+        // otherwise re-enable click-away. The welcome window is closed and
+        // minimized with its own controls, so the dismissal must not turn the
+        // blur that Minimize fires into a hide.
+        assert!(!should_hide_onboarding_card_on_blur(BlurHideInputs {
+            welcome_window: true,
+            onboarding_pin: true,
+            user_dismissed_once: true,
+            ..plain_blur()
+        }));
+        assert!(!should_hide_onboarding_card_on_blur(BlurHideInputs {
+            welcome_window: true,
             user_dismissed_once: true,
             ..plain_blur()
         }));

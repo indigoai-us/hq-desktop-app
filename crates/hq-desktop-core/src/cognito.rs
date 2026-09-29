@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
+#[cfg(test)]
+pub(crate) static HQ_TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 mod expires_at_flexible {
     use serde::{self, Deserialize, Deserializer, Serializer};
 
@@ -45,11 +48,13 @@ fn cache() -> &'static Mutex<Option<CachedTokens>> {
 const COGNITO_ENDPOINT: &str = "https://cognito-idp.us-east-1.amazonaws.com/";
 /// 2-minute buffer before expiry (in milliseconds)
 const EXPIRY_BUFFER_MS: i64 = 120_000;
-const REFRESH_ATTEMPTS: usize = 2;
+const REFRESH_ATTEMPTS: usize = 3;
+const REFRESH_RETRY_DELAY_BASE_MS: u64 = 150;
+const REFRESH_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const VALID_TOKEN_RESOLUTION_ATTEMPTS: usize = 3;
 
 /// Positive, user-facing copy shared by startup and sync surfaces after the
-/// one automatic refresh retry has been exhausted.
+/// bounded automatic refresh attempts have been exhausted.
 pub const REAUTH_MESSAGE: &str =
     "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
 
@@ -60,6 +65,62 @@ pub struct CognitoRefreshError {
     pub message: String,
     pub requires_reauth: bool,
     pub status_code: Option<u16>,
+    pub failure_class: CognitoRefreshFailureClass,
+}
+
+/// Stable, low-cardinality classification for refresh diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CognitoRefreshFailureClass {
+    Network,
+    Timeout,
+    Http4xx,
+    Http5xx,
+    HttpOther,
+    ResponseDecode,
+    Unknown,
+}
+
+impl CognitoRefreshFailureClass {
+    pub const fn as_tag(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Timeout => "timeout",
+            Self::Http4xx => "http_4xx",
+            Self::Http5xx => "http_5xx",
+            Self::HttpOther => "http_other",
+            Self::ResponseDecode => "response_decode",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CognitoTokenResolutionError {
+    pub message: String,
+    pub refresh_failure_class: Option<CognitoRefreshFailureClass>,
+    pub requires_reauth: bool,
+}
+
+impl CognitoTokenResolutionError {
+    fn plain(message: String) -> Self {
+        Self {
+            message,
+            refresh_failure_class: None,
+            requires_reauth: false,
+        }
+    }
+
+    fn refresh(
+        message: String,
+        failure_class: CognitoRefreshFailureClass,
+        requires_reauth: bool,
+    ) -> Self {
+        Self {
+            message,
+            refresh_failure_class: Some(failure_class),
+            requires_reauth,
+        }
+    }
 }
 
 impl fmt::Display for CognitoRefreshError {
@@ -70,12 +131,25 @@ impl fmt::Display for CognitoRefreshError {
 
 impl std::error::Error for CognitoRefreshError {}
 
+async fn wait_before_refresh_retry(attempt: usize) {
+    let delay_ms = REFRESH_RETRY_DELAY_BASE_MS.saturating_mul(attempt as u64 + 1);
+    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+}
+
 fn refresh_status_is_retryable(status: u16) -> bool {
     status == 401 || status == 408 || status == 429 || status >= 500
 }
 
 fn refresh_status_requires_reauth(status: u16) -> bool {
     (400..500).contains(&status) && status != 408 && status != 429
+}
+
+fn refresh_failure_class_from_status(status: u16) -> CognitoRefreshFailureClass {
+    match status {
+        400..=499 => CognitoRefreshFailureClass::Http4xx,
+        500..=599 => CognitoRefreshFailureClass::Http5xx,
+        _ => CognitoRefreshFailureClass::HttpOther,
+    }
 }
 
 fn cognito_error_code(body: &str) -> Option<String> {
@@ -157,6 +231,35 @@ pub struct AuthState {
     pub email: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
+    /// The initial native token read for this auth probe, forwarded only to
+    /// the matching startup diagnostic command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_token_read_result: Option<String>,
+}
+
+/// Native auth classification shared by startup routing and diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthSessionStatus {
+    Active,
+    CredentialsAbsent,
+    CredentialsInvalid,
+    RefreshTemporarilyUnavailable,
+    /// Usable credentials that belong to a fleet agent or outpost, not a person.
+    NonHumanPrincipal,
+}
+
+/// Convert the authoritative native session classification into the startup
+/// command result. Only a transient refresh failure is unresolved; a
+/// definitively invalid credential remains a signed-out verdict.
+pub fn startup_auth_state_result(
+    state: AuthState,
+    status: &AuthSessionStatus,
+) -> Result<AuthState, String> {
+    if *status == AuthSessionStatus::RefreshTemporarilyUnavailable {
+        return Err("HQ Work could not refresh credentials while offline or unavailable.".into());
+    }
+    Ok(state)
 }
 
 #[derive(Debug)]
@@ -285,6 +388,75 @@ fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, Token
 fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     let tokens = read_tokens_from_path_raw(path)?;
     Ok(tokens.filter(|tokens| !token_is_invalidated_at(path, &tokens.access_token)))
+}
+
+/// Bounded, non-secret observations used by the unexpected startup surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupTokenStoreDiagnostics {
+    pub invalidation_marker_present: bool,
+    pub first_read_result: &'static str,
+    pub recheck_read_result: &'static str,
+}
+
+fn token_read_result_label(result: Result<Option<CognitoTokens>, TokenReadError>) -> &'static str {
+    match result {
+        Ok(Some(_)) => "ok_some",
+        Ok(None) => "ok_none",
+        Err(TokenReadError::Io(_)) => "err_io",
+        Err(TokenReadError::Parse(_)) => "err_parse",
+    }
+}
+
+fn startup_token_store_diagnostics_at(path: &Path) -> StartupTokenStoreDiagnostics {
+    let first_read_result = token_read_result_label(read_tokens_from_path(path));
+    startup_token_store_diagnostics_after_first_at(path, first_read_result)
+}
+
+fn startup_token_store_diagnostics_after_first_at(
+    path: &Path,
+    first_read_result: &'static str,
+) -> StartupTokenStoreDiagnostics {
+    let raw_tokens = read_tokens_from_path_raw(path);
+    let invalidation_marker_present = raw_tokens
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .filter(|tokens| !tokens.access_token.is_empty())
+        .is_some_and(|tokens| token_is_invalidated_at(path, &tokens.access_token));
+    let recheck_read_result = token_read_result_label(read_tokens_from_path(path));
+    StartupTokenStoreDiagnostics {
+        invalidation_marker_present,
+        first_read_result,
+        recheck_read_result,
+    }
+}
+
+/// Read the token store twice for startup diagnostics without returning token
+/// contents or free-form filesystem errors. This does not affect auth state.
+pub fn startup_token_store_diagnostics() -> StartupTokenStoreDiagnostics {
+    match tokens_file_path() {
+        Ok(path) => startup_token_store_diagnostics_at(&path),
+        Err(_) => StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            first_read_result: "err_io",
+            recheck_read_result: "err_io",
+        },
+    }
+}
+
+/// Pair the auth resolver's original token-read result with one immediate
+/// filtered reread and a raw-token invalidation-marker check.
+pub fn startup_token_store_diagnostics_after_first(
+    first_read_result: &'static str,
+) -> StartupTokenStoreDiagnostics {
+    match tokens_file_path() {
+        Ok(path) => startup_token_store_diagnostics_after_first_at(&path, first_read_result),
+        Err(_) => StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            first_read_result,
+            recheck_read_result: "err_io",
+        },
+    }
 }
 
 pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
@@ -452,9 +624,14 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     write_tokens_to_path(&path, tokens)
 }
 
-/// Get tokens, using in-memory cache with mtime invalidation.
-pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
-    let path = tokens_file_path()?;
+/// Get tokens and the bounded class of the initial file read, using the same
+/// in-memory cache and invalidation behavior as `get_tokens`.
+pub async fn get_tokens_with_read_result() -> (Result<Option<CognitoTokens>, String>, &'static str)
+{
+    let path = match tokens_file_path() {
+        Ok(path) => path,
+        Err(error) => return (Err(error), "err_io"),
+    };
 
     // Get mtime — treat NotFound as "no file" (avoids TOCTOU with path.exists())
     let current_mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
@@ -462,9 +639,9 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut guard = cache().lock().await;
             *guard = None;
-            return Ok(None);
+            return (Ok(None), "ok_none");
         }
-        Err(e) => return Err(format!("Failed to read file mtime: {}", e)),
+        Err(e) => return (Err(format!("Failed to read file mtime: {}", e)), "err_io"),
     };
     let mut guard = cache().lock().await;
 
@@ -472,15 +649,26 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         if cached.path == path && cached.file_mtime == current_mtime {
             if token_is_invalidated_at(&path, &cached.tokens.access_token) {
                 *guard = None;
-                return Ok(None);
+                return (Ok(None), "ok_none");
             }
-            return Ok(Some(cached.tokens.clone()));
+            return (Ok(Some(cached.tokens.clone())), "ok_some");
         }
     }
 
     // Cache miss or mtime changed — re-read
     drop(guard);
-    let tokens = read_tokens_from_file()?;
+    let tokens = match read_tokens_from_path(&path) {
+        Ok(tokens) => tokens,
+        Err(TokenReadError::Io(error)) => {
+            return (Err(format!("Failed to read token file: {error}")), "err_io");
+        }
+        Err(TokenReadError::Parse(error)) => {
+            return (
+                Err(format!("Failed to parse token file: {error}")),
+                "err_parse",
+            );
+        }
+    };
     if let Some(ref tokens) = tokens {
         let mut guard = cache().lock().await;
         *guard = Some(CachedTokens {
@@ -492,7 +680,17 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         let mut guard = cache().lock().await;
         *guard = None;
     }
-    Ok(tokens)
+    let result = if tokens.is_some() {
+        "ok_some"
+    } else {
+        "ok_none"
+    };
+    (Ok(tokens), result)
+}
+
+/// Get tokens, using in-memory cache with mtime invalidation.
+pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
+    get_tokens_with_read_result().await.0
 }
 
 /// Update both the file and the in-memory cache.
@@ -675,6 +873,12 @@ pub async fn get_valid_tokens() -> Result<CognitoTokens, String> {
     resolve_tokens(false, COGNITO_ENDPOINT).await
 }
 
+/// Return the same validated tokens as `get_valid_tokens`, preserving only a
+/// bounded refresh-failure class for startup diagnostics.
+pub async fn get_valid_tokens_classified() -> Result<CognitoTokens, CognitoTokenResolutionError> {
+    resolve_tokens_classified(false, COGNITO_ENDPOINT).await
+}
+
 /// Refresh Cognito tokens even when the current access token has not expired.
 /// Use this when a token claim may have changed after a server-side account
 /// update, such as email verification.
@@ -686,10 +890,20 @@ async fn resolve_tokens(
     force_refresh: bool,
     cognito_endpoint: &str,
 ) -> Result<CognitoTokens, String> {
+    resolve_tokens_classified(force_refresh, cognito_endpoint)
+        .await
+        .map_err(|error| error.message)
+}
+
+async fn resolve_tokens_classified(
+    force_refresh: bool,
+    cognito_endpoint: &str,
+) -> Result<CognitoTokens, CognitoTokenResolutionError> {
     for _ in 0..VALID_TOKEN_RESOLUTION_ATTEMPTS {
         let tokens = get_tokens()
-            .await?
-            .ok_or_else(|| "Not signed in".to_string())?;
+            .await
+            .map_err(CognitoTokenResolutionError::plain)?
+            .ok_or_else(|| CognitoTokenResolutionError::plain("Not signed in".to_string()))?;
         if !force_refresh && !is_expired(&tokens) {
             return Ok(tokens);
         }
@@ -699,32 +913,59 @@ async fn resolve_tokens(
             {
                 Ok(tokens) => tokens,
                 Err(err) => {
+                    let failure_class = err.failure_class;
+                    let requires_reauth = err.requires_reauth;
                     if err.requires_reauth {
-                        invalidate_tokens(&tokens).await?;
+                        invalidate_tokens(&tokens).await.map_err(|message| {
+                            CognitoTokenResolutionError::refresh(
+                                message,
+                                failure_class,
+                                requires_reauth,
+                            )
+                        })?;
                     }
-                    match get_tokens().await? {
+                    match get_tokens().await.map_err(|message| {
+                        CognitoTokenResolutionError::refresh(
+                            message,
+                            failure_class,
+                            requires_reauth,
+                        )
+                    })? {
                         Some(current) if current != tokens => {
                             if !is_expired(&current) {
                                 return Ok(current);
                             }
                             continue;
                         }
-                        _ => return Err(REAUTH_MESSAGE.to_string()),
+                        _ => {
+                            return Err(CognitoTokenResolutionError::refresh(
+                                REAUTH_MESSAGE.to_string(),
+                                failure_class,
+                                requires_reauth,
+                            ))
+                        }
                     }
                 }
             };
 
         match persist_refreshed_tokens_if_current(&tokens, &refreshed)
-            .await?
+            .await
+            .map_err(CognitoTokenResolutionError::plain)?
             .into_current_tokens()
         {
             Some(current) if !is_expired(&current) => return Ok(current),
             Some(_) => continue,
-            None => return Err("Not signed in".to_string()),
+            None => {
+                return Err(CognitoTokenResolutionError::plain(
+                    "Not signed in".to_string(),
+                ))
+            }
         }
     }
 
-    Err(REAUTH_MESSAGE.to_string())
+    Err(CognitoTokenResolutionError::plain(
+        REAUTH_MESSAGE.to_string(),
+    ))
 }
 
 /// Get a non-expired access token, refreshing with CAS-safe persistence if
@@ -961,6 +1202,7 @@ async fn refresh_access_token_classified_at(
     for attempt in 0..REFRESH_ATTEMPTS {
         let response = match client
             .post(cognito_endpoint)
+            .timeout(REFRESH_REQUEST_TIMEOUT)
             .header("Content-Type", "application/x-amz-json-1.1")
             .header(
                 "X-Amz-Target",
@@ -976,8 +1218,14 @@ async fn refresh_access_token_classified_at(
                     message: format!("Cognito refresh request failed: {err}"),
                     requires_reauth: false,
                     status_code: None,
+                    failure_class: if err.is_timeout() {
+                        CognitoRefreshFailureClass::Timeout
+                    } else {
+                        CognitoRefreshFailureClass::Network
+                    },
                 };
                 if attempt + 1 < REFRESH_ATTEMPTS {
+                    wait_before_refresh_retry(attempt).await;
                     continue;
                 }
                 return Err(failure);
@@ -995,19 +1243,36 @@ async fn refresh_access_token_classified_at(
                 message: format!("Cognito refresh failed ({status}): {body_text}"),
                 requires_reauth,
                 status_code: Some(status),
+                failure_class: refresh_failure_class_from_status(status),
             };
             if retryable && attempt + 1 < REFRESH_ATTEMPTS {
+                wait_before_refresh_retry(attempt).await;
                 continue;
             }
             return Err(failure);
         }
 
-        let result: InitiateAuthResponse =
-            response.json().await.map_err(|err| CognitoRefreshError {
-                message: format!("Failed to parse Cognito response: {err}"),
-                requires_reauth: false,
-                status_code: None,
-            })?;
+        let result: InitiateAuthResponse = match response.json().await {
+            Ok(result) => result,
+            Err(err) => {
+                let timed_out = err.is_timeout();
+                let failure = CognitoRefreshError {
+                    message: format!("Failed to parse Cognito response: {err}"),
+                    requires_reauth: false,
+                    status_code: None,
+                    failure_class: if timed_out {
+                        CognitoRefreshFailureClass::Timeout
+                    } else {
+                        CognitoRefreshFailureClass::ResponseDecode
+                    },
+                };
+                if timed_out && attempt + 1 < REFRESH_ATTEMPTS {
+                    wait_before_refresh_retry(attempt).await;
+                    continue;
+                }
+                return Err(failure);
+            }
+        };
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1026,6 +1291,7 @@ async fn refresh_access_token_classified_at(
         message: REAUTH_MESSAGE.to_string(),
         requires_reauth: false,
         status_code: None,
+        failure_class: CognitoRefreshFailureClass::Unknown,
     })
 }
 
@@ -1038,28 +1304,154 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-    use std::time::Duration;
-    use tempfile;
 
-    struct TestHome(Option<std::ffi::OsString>);
+    #[test]
+    fn temporary_refresh_failure_is_not_a_signed_out_startup_verdict() {
+        let result = startup_auth_state_result(
+            AuthState {
+                authenticated: false,
+                expires_at: None,
+                account_id: None,
+                email: None,
+                display_name: None,
+                startup_token_read_result: None,
+            },
+            &AuthSessionStatus::RefreshTemporarilyUnavailable,
+        );
+
+        assert!(
+            result.is_err(),
+            "temporary refresh failure with saved credentials must stay unresolved"
+        );
+    }
+
+    #[test]
+    fn invalid_credentials_remain_a_signed_out_startup_verdict() {
+        let result = startup_auth_state_result(
+            AuthState {
+                authenticated: false,
+                expires_at: None,
+                account_id: None,
+                email: None,
+                display_name: None,
+                startup_token_read_result: None,
+            },
+            &AuthSessionStatus::CredentialsInvalid,
+        )
+        .expect("invalid credentials must route to sign-in");
+
+        assert!(!result.authenticated);
+    }
+
+    #[test]
+    fn refresh_failure_statuses_map_to_low_cardinality_buckets() {
+        assert_eq!(refresh_failure_class_from_status(401).as_tag(), "http_4xx");
+        assert_eq!(refresh_failure_class_from_status(503).as_tag(), "http_5xx");
+        assert_eq!(CognitoRefreshFailureClass::Timeout.as_tag(), "timeout");
+        assert_eq!(CognitoRefreshFailureClass::Network.as_tag(), "network");
+    }
+    use std::sync::mpsc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+    use std::time::{Duration, Instant};
+    use tempfile;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn read_test_request(stream: &mut tokio::net::TcpStream) {
+        let read_request = async {
+            let mut received = Vec::new();
+            for _ in 0..16 {
+                let mut chunk = [0_u8; 1024];
+                let count = stream.read(&mut chunk).await.expect("read test request");
+                if count == 0 {
+                    return false;
+                }
+                received.extend_from_slice(&chunk[..count]);
+
+                let Some(headers_end) = received
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|index| index + 4)
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&received[..headers_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if received.len() >= headers_end + content_length {
+                    return true;
+                }
+            }
+            false
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), read_request)
+                .await
+                .expect("test request stays within its deadline"),
+            "test server receives the full request"
+        );
+    }
+
+    struct TestHome {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TestHome {
         fn set(path: &std::path::Path) -> Self {
+            let lock = HQ_TEST_HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous = std::env::var_os("HQ_TEST_HOME");
             std::env::set_var("HQ_TEST_HOME", path);
-            Self(previous)
+            Self {
+                previous,
+                _lock: lock,
+            }
         }
     }
 
     impl Drop for TestHome {
         fn drop(&mut self) {
-            if let Some(previous) = self.0.take() {
+            if let Some(previous) = self.previous.take() {
                 std::env::set_var("HQ_TEST_HOME", previous);
             } else {
                 std::env::remove_var("HQ_TEST_HOME");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn get_tokens_read_result_uses_typed_path_free_classes() {
+        let home = tempfile::tempdir().expect("temp home");
+        let _test_home = TestHome::set(home.path());
+        let token_dir = home.path().join(".hq");
+        std::fs::create_dir_all(&token_dir).expect("token directory");
+        let token_path = token_dir.join("cognito-tokens.json");
+
+        std::fs::write(&token_path, "{").expect("invalid token json");
+        let (parse_result, parse_class) = get_tokens_with_read_result().await;
+        let parse_error = parse_result.expect_err("malformed token json is rejected");
+        assert_eq!(parse_class, "err_parse");
+        assert!(parse_error.starts_with("Failed to parse token file:"));
+        assert!(!parse_error.contains(home.path().to_string_lossy().as_ref()));
+
+        std::fs::remove_file(&token_path).expect("remove malformed token file");
+        std::fs::create_dir(&token_path).expect("directory at token-file path");
+        let (io_result, io_class) = get_tokens_with_read_result().await;
+        let io_error = io_result.expect_err("directory cannot be read as a token file");
+        assert_eq!(io_class, "err_io");
+        assert!(io_error.starts_with("Failed to read token file:"));
+        assert!(!io_error.contains(home.path().to_string_lossy().as_ref()));
     }
 
     fn claims_jwt(payload: serde_json::Value) -> String {
@@ -1089,7 +1481,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_tokens_force_refreshes_valid_cached_token_once() {
+    async fn resolve_tokens_force_refreshes_and_recovers_from_transient_unavailability() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1128,6 +1520,136 @@ mod tests {
             .expect("unexpired token is reused without refresh");
         assert_eq!(reused, refreshed);
         cognito.verify().await;
+
+        let expired_tokens = CognitoTokens {
+            access_token: "expired-access-token".into(),
+            id_token: None,
+            refresh_token: "refresh-token".into(),
+            expires_at: 1,
+        };
+        set_tokens(&expired_tokens)
+            .await
+            .expect("store expired tokens for launch refresh");
+
+        let warming = MockServer::start().await;
+        let retry_count = Arc::new(AtomicUsize::new(0));
+        let retry_times = Arc::new(Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with({
+                let retry_count = Arc::clone(&retry_count);
+                let retry_times = Arc::clone(&retry_times);
+                move |_request: &wiremock::Request| {
+                    retry_times
+                        .lock()
+                        .expect("retry timestamps lock")
+                        .push(Instant::now());
+                    if retry_count.fetch_add(1, Ordering::SeqCst) < 2 {
+                        ResponseTemplate::new(503)
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                            "AuthenticationResult": {
+                                "AccessToken": "startup-refreshed-access-token",
+                                "ExpiresIn": 3600
+                            }
+                        }))
+                    }
+                }
+            })
+            .expect(3)
+            .mount(&warming)
+            .await;
+
+        let restored = resolve_tokens(false, &warming.uri())
+            .await
+            .expect("expired access token is restored after Cognito becomes available");
+        assert_eq!(restored.access_token, "startup-refreshed-access-token");
+        let retry_times = retry_times.lock().expect("retry timestamps lock");
+        assert_eq!(retry_times.len(), 3);
+        assert!(retry_times[1].duration_since(retry_times[0]) >= Duration::from_millis(100));
+        assert!(retry_times[2].duration_since(retry_times[1]) >= Duration::from_millis(250));
+        drop(retry_times);
+        warming.verify().await;
+
+        set_tokens(&expired_tokens)
+            .await
+            .expect("restore the expired generation for the offline case");
+        let unavailable = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(3)
+            .mount(&unavailable)
+            .await;
+
+        let failure = resolve_tokens_classified(false, &unavailable.uri())
+            .await
+            .expect_err("offline refresh exhaustion stays classified");
+        assert_eq!(
+            failure.refresh_failure_class,
+            Some(CognitoRefreshFailureClass::Http5xx)
+        );
+        assert!(get_tokens()
+            .await
+            .expect("read preserved offline token")
+            .is_some());
+        unavailable.verify().await;
+
+        set_tokens(&expired_tokens)
+            .await
+            .expect("restore the expired generation for the response-body timeout case");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local Cognito response test server");
+        let endpoint = format!("http://{}", listener.local_addr().expect("local address"));
+        let body_timeout_server = tokio::spawn(async move {
+            let (mut stalled, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                .await
+                .expect("first refresh request arrives")
+                .expect("accept first refresh request");
+            read_test_request(&mut stalled).await;
+            stalled
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 128\r\nConnection: close\r\n\r\n{\"AuthenticationResult\":",
+                )
+                .await
+                .expect("send partial Cognito response");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            drop(stalled);
+
+            let (mut retry, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                .await
+                .expect("refresh retries after the response-body timeout")
+                .expect("accept retried refresh request");
+            read_test_request(&mut retry).await;
+            let body = serde_json::json!({
+                "AuthenticationResult": {
+                    "AccessToken": "body-timeout-refreshed-access-token",
+                    "ExpiresIn": 3600
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            retry
+                .write_all(response.as_bytes())
+                .await
+                .expect("send complete Cognito response");
+        });
+
+        let restored_after_body_timeout = resolve_tokens(false, &endpoint)
+            .await
+            .expect("response-body timeout retries the refresh request");
+        assert_eq!(
+            restored_after_body_timeout.access_token,
+            "body-timeout-refreshed-access-token"
+        );
+        body_timeout_server
+            .await
+            .expect("Cognito response test server completes");
     }
 
     #[test]
@@ -1498,6 +2020,7 @@ mod tests {
             account_id: Some("sub-a".to_string()),
             email: Some("a@b.c".to_string()),
             display_name: Some("Ada".to_string()),
+            startup_token_read_result: Some("ok_none".to_string()),
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":true"));
@@ -1505,6 +2028,7 @@ mod tests {
         assert!(json.contains("\"accountId\":\"sub-a\""));
         assert!(json.contains("\"email\":\"a@b.c\""));
         assert!(json.contains("\"displayName\":\"Ada\""));
+        assert!(json.contains("\"startupTokenReadResult\":\"ok_none\""));
     }
 
     #[test]
@@ -1515,6 +2039,7 @@ mod tests {
             account_id: None,
             email: None,
             display_name: None,
+            startup_token_read_result: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":false"));

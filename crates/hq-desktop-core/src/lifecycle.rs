@@ -114,6 +114,47 @@ pub fn tools_present_for_lifecycle_gate(hq_resolved: bool, node_resolved: bool) 
     hq_resolved && node_resolved
 }
 
+/// Check local tools before lifecycle routing. A LaunchAgent restart shortly
+/// after an app update can observe the managed toolchain while it is settling;
+/// only a previously set-up machine gets a brief bounded recheck.
+pub fn probe_local_toolchain_for_startup(
+    launch_agent_relaunch: bool,
+    previously_setup: bool,
+    probe: impl FnMut() -> bool,
+) -> bool {
+    probe_local_toolchain_for_startup_with(
+        launch_agent_relaunch,
+        previously_setup,
+        probe,
+        std::thread::sleep,
+    )
+}
+
+const STARTUP_TOOLCHAIN_RECHECKS: usize = 3;
+const STARTUP_TOOLCHAIN_RECHECK_DELAY: Duration = Duration::from_millis(200);
+
+fn probe_local_toolchain_for_startup_with(
+    launch_agent_relaunch: bool,
+    previously_setup: bool,
+    mut probe: impl FnMut() -> bool,
+    mut wait: impl FnMut(Duration),
+) -> bool {
+    let mut tools_present = probe();
+    if !launch_agent_relaunch || !previously_setup || tools_present {
+        return tools_present;
+    }
+
+    for _ in 0..STARTUP_TOOLCHAIN_RECHECKS {
+        wait(STARTUP_TOOLCHAIN_RECHECK_DELAY);
+        tools_present = probe();
+        if tools_present {
+            return true;
+        }
+    }
+
+    tools_present
+}
+
 /// Desktop activation may not bypass the install wizard. This is distinct
 /// from the retired notification popover: completed installs open desktop.
 pub fn installation_required(state: LifecycleState) -> bool {
@@ -166,6 +207,22 @@ pub fn welcome_setup_owed(menubar: &Map<String, Value>, hq_root_valid: bool) -> 
             !hq_root_valid || !first_run_completed
         }
     }
+}
+
+/// menubar.json key recording that the desktop window's first-run guided
+/// tour has been shown on this machine.
+pub const WELCOME_TOUR_SHOWN_KEY: &str = "welcomeTourShown";
+
+/// Has the first-run guided tour already been shown on this machine?
+///
+/// Written `true` (by `mark_welcome_tour_shown`) as soon as the tour starts
+/// showing, so a crash or quit mid-tour does not replay it on every launch.
+/// Absent or any non-boolean value reads as not shown.
+pub fn welcome_tour_shown(menubar: &Map<String, Value>) -> bool {
+    menubar
+        .get(WELCOME_TOUR_SHOWN_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Should finishing the installer (re)arm `welcomeSetupPending`?
@@ -1014,6 +1071,36 @@ mod tests {
     }
 
     #[test]
+    fn welcome_tour_is_not_shown_until_the_flag_is_written() {
+        assert!(!welcome_tour_shown(&map(json!({}))));
+        assert!(!welcome_tour_shown(&map(json!({ "welcomeTourShown": false }))));
+        assert!(!welcome_tour_shown(&map(json!({ "welcomeTourShown": "yes" }))));
+        assert!(welcome_tour_shown(&map(json!({ "welcomeTourShown": true }))));
+    }
+
+    #[test]
+    fn marking_the_welcome_tour_shown_merges_into_menubar_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        std::fs::write(
+            &path,
+            r#"{"machineId":"abc","welcomeSetupPending":true}"#,
+        )
+        .unwrap();
+        crate::first_run::merge_menubar_flags(
+            &path,
+            &[(WELCOME_TOUR_SHOWN_KEY, Value::Bool(true))],
+        )
+        .unwrap();
+        let obj = crate::first_run::read_menubar_obj(&path);
+        assert!(welcome_tour_shown(&obj));
+        // Existing keys survive the merge, and the tour flag does not settle
+        // the guided setup.
+        assert_eq!(obj.get("machineId").and_then(Value::as_str), Some("abc"));
+        assert!(welcome_setup_owed(&obj, true));
+    }
+
+    #[test]
     fn welcome_setup_is_owed_to_a_new_install_and_a_machine_still_installing() {
         let pending = map(json!({ "firstRunCompleted": true, "welcomeSetupPending": true }));
         assert!(welcome_setup_owed(&pending, true));
@@ -1302,6 +1389,85 @@ mod toolchain_readiness_tests {
         assert!(!tools_present_for_lifecycle_gate(false, true));
         assert!(!tools_present_for_lifecycle_gate(true, false));
         assert!(!tools_present_for_lifecycle_gate(false, false));
+    }
+
+    #[test]
+    fn updater_relaunch_rechecks_missing_toolchain_until_it_appears() {
+        let mut observations = [false, true].into_iter();
+        let mut probes = 0;
+        let mut waits = Vec::new();
+
+        let tools_present = probe_local_toolchain_for_startup_with(
+            true,
+            true,
+            || {
+                probes += 1;
+                observations.next().expect("toolchain probe observation")
+            },
+            |duration| waits.push(duration),
+        );
+
+        assert!(tools_present);
+        assert_eq!(probes, 2);
+        assert_eq!(waits, [Duration::from_millis(200)]);
+    }
+
+    #[test]
+    fn fresh_install_without_local_toolchain_does_not_wait_or_retry() {
+        let mut probes = 0;
+        let mut waits = Vec::new();
+
+        let tools_present = probe_local_toolchain_for_startup_with(
+            true,
+            false,
+            || {
+                probes += 1;
+                false
+            },
+            |duration| waits.push(duration),
+        );
+
+        assert!(!tools_present);
+        assert_eq!(probes, 1);
+        assert!(waits.is_empty());
+
+        let fresh_install = classify_lifecycle(LifecycleInputs {
+            install_completed: false,
+            first_run_completed: false,
+            had_machine_id: false,
+            config_valid: false,
+            hq_root_valid: false,
+            has_auth: false,
+            install_in_progress: false,
+            consent_answered: false,
+            evidence_unreadable: false,
+        });
+        let verdict = require_local_toolchain(fresh_install, tools_present);
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
+        assert!(installation_required(verdict.state));
+    }
+
+    #[test]
+    fn updater_relaunch_keeps_missing_toolchain_absent_after_bounded_rechecks() {
+        let mut probes = 0;
+        let mut waits = Vec::new();
+
+        let tools_present = probe_local_toolchain_for_startup_with(
+            true,
+            true,
+            || {
+                probes += 1;
+                false
+            },
+            |duration| waits.push(duration),
+        );
+
+        assert!(!tools_present);
+        assert_eq!(probes, STARTUP_TOOLCHAIN_RECHECKS + 1);
+        assert_eq!(
+            waits,
+            [STARTUP_TOOLCHAIN_RECHECK_DELAY; STARTUP_TOOLCHAIN_RECHECKS]
+        );
     }
 
     #[test]

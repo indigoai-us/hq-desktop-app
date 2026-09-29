@@ -62,6 +62,17 @@ export type Json = Record<string, unknown>;
 
 export type AdapterPromise<T = Json> = Promise<AdapterResult<T>>;
 
+/**
+ * Live-subscription seam for `IdentityApi.subscribeFeature`. Emits fresh
+ * resolved values when the underlying flag snapshot changes; the returned
+ * function unsubscribes. Callers MUST still do an initial `hasFeature`
+ * read at mount — an adapter without a live channel returns a no-op.
+ */
+export type FeatureSubscribeFn = (
+  flag: string,
+  onChange: (result: AdapterResult<boolean>) => void,
+) => () => void;
+
 // ---------------------------------------------------------------------------
 // Named payload interfaces for the obvious shapes
 // ---------------------------------------------------------------------------
@@ -311,6 +322,14 @@ export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
   isAdmin(): AdapterPromise<boolean>;
   hasFeature(flag: string): AdapterPromise<boolean>;
+  /**
+   * Optional live subscription to a feature flag. When the underlying flag
+   * registry publishes a fresh snapshot, `onChange` fires with the resolved
+   * value. Returns an unsubscribe function. Adapters without a live channel
+   * may return a no-op unsubscribe and never call the callback — callers
+   * MUST also do an initial `hasFeature` read at mount.
+   */
+  subscribeFeature?: FeatureSubscribeFn;
   /** Workspace memberships (companies + roles) for the signed-in person. */
   listWorkspaces(): AdapterPromise<Json[]>;
   /** GET /v1/profile — the caller's editable global member profile. */
@@ -1544,6 +1563,12 @@ export interface SettingsApi {
    * hosts without a native settings store have nothing to record.
    */
   markWelcomeSetupComplete?(): AdapterPromise<void>;
+  /**
+   * The desktop window's first-run guided tour started showing on this
+   * machine. Optional: hosts without a native settings store fall back to
+   * local storage.
+   */
+  markWelcomeTourShown?(): AdapterPromise<void>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }
 

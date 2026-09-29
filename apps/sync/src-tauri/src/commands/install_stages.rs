@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Runtime};
+use tokio::io::AsyncReadExt;
 
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
@@ -409,6 +411,88 @@ async fn run_hq_output(
     }
 }
 
+async fn read_reindex_stream<R: Runtime>(
+    mut stream: impl tokio::io::AsyncRead + Unpin,
+    app: AppHandle<R>,
+    setup_run_id: String,
+) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let length = stream.read(&mut buffer).await?;
+        if length == 0 {
+            return Ok(output);
+        }
+        output.extend_from_slice(&buffer[..length]);
+        if let Err(error) = app.emit_to("main", "setup:reindex-progress", &setup_run_id) {
+            crate::util::logfile::log(
+                "setup",
+                &format!("could not deliver reindex activity event: {error}"),
+            );
+        }
+    }
+}
+
+async fn run_hq_output_with_reindex_progress<R: Runtime>(
+    app: &AppHandle<R>,
+    args: &[&str],
+    hq_root: &Path,
+    setup_run_id: &str,
+) -> Result<Output, StageCommandFailure> {
+    let invocation = hq_resolver::resolve_hq();
+    let path_env = paths::child_path();
+    let _npx_guard = invocation.npx_serial_guard().await;
+    let mut cmd = invocation.command();
+    let mut child = cmd
+        .args(args)
+        .current_dir(hq_root)
+        .env("PATH", &path_env)
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            StageCommandFailure::from_spawn_error(
+                &format!("hq ({})", invocation.label()),
+                error,
+            )
+        })?;
+    let stdout = child.stdout.take().ok_or_else(|| StageCommandFailure {
+        message: "hq reindex stdout was not piped".to_string(),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| StageCommandFailure {
+        message: "hq reindex stderr was not piped".to_string(),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let (stdout, stderr) = tokio::join!(
+        read_reindex_stream(stdout, app.clone(), setup_run_id.to_string()),
+        read_reindex_stream(stderr, app.clone(), setup_run_id.to_string()),
+    );
+    let status = child.wait().await.map_err(|error| {
+        StageCommandFailure::from_spawn_error(&format!("hq ({})", invocation.label()), error)
+    })?;
+    let stdout = stdout.map_err(|error| StageCommandFailure {
+        message: format!("could not read hq reindex stdout: {error}"),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let stderr = stderr.map_err(|error| StageCommandFailure {
+        message: format!("could not read hq reindex stderr: {error}"),
+        error_category: OnboardingErrorCategory::Unknown,
+    })?;
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(StageCommandFailure::from_output("hq", args, &output))
+    }
+}
+
 async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), StageCommandFailure> {
     run_hq_output(args, hq_root).await.map(|_| ())
 }
@@ -584,11 +668,21 @@ pub fn git_probe_user() -> Result<Option<GitUser>, String> {
 /// Build the local search index and refresh CLI-generated registries.
 #[tauri::command]
 pub async fn register_search_index(
+    app: AppHandle,
     failure_scope: Option<OnboardingFailureScope>,
+    activity_timeout_enabled: Option<bool>,
 ) -> Result<(), String> {
     clear_onboarding_failure_detail("indexing", failure_scope.as_ref());
     let hq_root = PathBuf::from(resolve_hq_path()?);
-    match run_hq(&["reindex"], &hq_root).await {
+    let result = match (activity_timeout_enabled.unwrap_or(false), failure_scope.as_ref()) {
+        (true, Some(scope)) => {
+            run_hq_output_with_reindex_progress(&app, &["reindex"], &hq_root, &scope.setup_run_id)
+                .await
+                .map(|_| ())
+        }
+        _ => run_hq(&["reindex"], &hq_root).await,
+    };
+    match result {
         Ok(()) => Ok(()),
         Err(error) => {
             record_onboarding_failure_detail(
@@ -977,11 +1071,27 @@ fn initial_cloud_sync_failure_message(error: Option<&str>) -> String {
     }
 }
 
+/// Whether the install stage uses the daemon handoff + concurrent first-push.
+///
+/// `configured` is the `desktop.install-initial-sync-handoff` registry value.
+/// Default ON: only an explicit `false` restores the previous sequential
+/// first-push. A missing row or an unreachable registry keeps the default.
+fn initial_sync_handoff_enabled(configured: Option<bool>) -> bool {
+    configured.unwrap_or(true)
+}
+
 /// Provision and verify the first personal-vault cloud sync.
 ///
 /// The frontend has the stage's bounded timeout. This command therefore waits
 /// for the provisioning and first-push result instead of reporting success for
 /// a detached task whose outcome is not known yet.
+///
+/// With the handoff flag on (default), the stage waits for provisioning and
+/// then either confirms the running sync daemon will upload the personal
+/// vault, or uploads it itself with bounded concurrency. Success means "the
+/// vault exists and its upload is done or owned by the running daemon", not
+/// "every file is already in the cloud". With the flag off, it runs the
+/// previous sequential first-push unchanged.
 #[tauri::command]
 pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), String> {
     let jwt = resolve_jwt()
@@ -993,9 +1103,30 @@ pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), Strin
     let hq_root =
         PathBuf::from(resolve_hq_path().map_err(|_| initial_cloud_sync_failure_message(None))?);
 
-    crate::commands::personal::ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)
+    use crate::commands::personal::{
+        ensure_personal_bucket_and_first_push, ensure_personal_vault_for_install,
+    };
+    let handoff = initial_sync_handoff_enabled(
+        crate::commands::hq_pro::feature_flag_value(
+            crate::commands::personal::INSTALL_INITIAL_SYNC_HANDOFF_FLAG,
+        )
+        .await,
+    );
+    if !handoff {
+        crate::util::logfile::log(
+            "personal",
+            "initial-sync: handoff flag off — running the sequential first-push",
+        );
+        return ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)
+            .await
+            .map_err(|error| initial_cloud_sync_failure_message(Some(&error)));
+    }
+
+    let outcome = ensure_personal_vault_for_install(&app, &vault, &hq_root)
         .await
-        .map_err(|error| initial_cloud_sync_failure_message(Some(&error)))
+        .map_err(|error| initial_cloud_sync_failure_message(Some(&error)))?;
+    crate::util::logfile::log("personal", &format!("initial-sync: {outcome:?}"));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1309,10 +1440,47 @@ mod tests {
             .expect("install stage tests must exist");
         let initial_sync = &src[initial_sync_start..tests_start];
 
+        // Both branches await their provisioning result; neither detaches it.
+        let squashed: String = initial_sync.split_whitespace().collect();
         assert!(
-            initial_sync.contains("ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)")
+            squashed.contains("ensure_personal_bucket_and_first_push(&app,&vault,&hq_root).await"),
+            "flag-off branch must await the sequential first-push"
+        );
+        assert!(
+            squashed.contains("ensure_personal_vault_for_install(&app,&vault,&hq_root).await"),
+            "flag-on branch must await the install handoff"
         );
         assert!(!initial_sync.contains("tauri::async_runtime::spawn"));
+    }
+
+    #[test]
+    fn initial_sync_handoff_flag_defaults_on_and_explicit_false_restores_legacy() {
+        // Registry unreachable or row missing: shipped default (on).
+        assert!(initial_sync_handoff_enabled(None));
+        assert!(initial_sync_handoff_enabled(Some(true)));
+        // Operator kill switch.
+        assert!(!initial_sync_handoff_enabled(Some(false)));
+    }
+
+    #[test]
+    fn initial_sync_flag_off_branch_runs_before_and_instead_of_the_handoff() {
+        let src = include_str!("install_stages.rs");
+        let start = src
+            .find("pub async fn start_initial_cloud_sync")
+            .expect("initial cloud sync command must exist");
+        let body = &src[start..];
+        let flag_check = body.find("if !handoff").expect("flag-off branch must exist");
+        let after = &body[flag_check..];
+        let legacy = after
+            .find("ensure_personal_bucket_and_first_push(")
+            .expect("legacy call must exist");
+        let handoff = after
+            .find("ensure_personal_vault_for_install(")
+            .expect("handoff call must exist");
+        // The flag-off branch returns the legacy result before the handoff.
+        assert!(legacy < handoff);
+        let legacy_branch = &after[..handoff];
+        assert!(legacy_branch.contains("return "), "flag-off branch must return early");
     }
 
     #[test]

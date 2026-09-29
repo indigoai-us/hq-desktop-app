@@ -33,10 +33,13 @@ import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_FLAG,
+  INVITE_TEAMMATE_STEP_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+  SETUP_STAGE_TIMEOUT_FIX_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
@@ -177,6 +180,44 @@ export function createSyncPlatformAdapter(
     fetch: createHqProFlagFetch(invokeFn),
     createClient: config.createFlagClient,
   });
+
+  function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
+    if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
+      // This rollout is opt-in. A missing registry value or unavailable
+      // registry stays off until the manager creates and enables it.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
+      // The first-folder onboarding step is a rollout; fail closed until
+      // a manager explicitly enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === INVITE_TEAMMATE_STEP_FLAG) {
+      // This optional onboarding step stays off on missing or unreadable
+      // registry values until a manager explicitly enables it.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === SETUP_STAGE_TIMEOUT_FIX_FLAG) {
+      // Setup timeout mitigation is opt-in and stays off until a manager
+      // explicitly enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === HUMAN_ONLY_CONVERSATIONS_FLAG) {
+      // Human-only conversations is a dark canary — stays off until a
+      // manager explicitly enables the registry value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === CLAUDE_PROVIDER_FLAG) {
+      return Promise.resolve(ok(false));
+    }
+    if (flag === 'meetings') {
+      return call<boolean>('meetings_feature_enabled');
+    }
+    if (flag === 'is_indigo_user') {
+      return call<boolean>('is_indigo_user');
+    }
+    return hqProJson<boolean>('GET', WEB_PATHS.hasFeature(flag));
+  }
 
   async function call<T>(
     cmd: string,
@@ -496,29 +537,9 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
-      hasFeature: (flag) =>
-        flags.resolve(flag, () => {
-          if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
-            // This rollout is opt-in. A missing registry value or unavailable
-            // registry stays off until the manager creates and enables it.
-            return Promise.resolve(ok(false));
-          }
-          if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
-            // The first-folder onboarding step is a rollout; fail closed until
-            // a manager explicitly enables its hq-flags value.
-            return Promise.resolve(ok(false));
-          }
-          if (flag === CLAUDE_PROVIDER_FLAG) {
-            return Promise.resolve(ok(false));
-          }
-          if (flag === 'meetings') {
-            return call<boolean>('meetings_feature_enabled');
-          }
-          if (flag === 'is_indigo_user') {
-            return call<boolean>('is_indigo_user');
-          }
-          return hqProJson<boolean>('GET', WEB_PATHS.hasFeature(flag));
-        }),
+      hasFeature: (flag) => flags.resolve(flag, () => hasFeatureLegacy(flag)),
+      subscribeFeature: (flag, onChange) =>
+        flags.subscribe(flag, () => hasFeatureLegacy(flag), onChange),
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;
@@ -1357,6 +1378,7 @@ export function createSyncPlatformAdapter(
         }
       },
       getSetupStatus: () => call('get_setup_status'),
+      markWelcomeTourShown: () => call('mark_welcome_tour_shown'),
       getTelemetryConsent: () => call('get_telemetry_consent_status'),
     },
 

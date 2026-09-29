@@ -23,11 +23,131 @@ The release moves it under the version it ships in.
   for Acme" with an "Upgrade plan for Acme…" item. The notice clears once
   uploads go through again. Upgrade links open only for hq.computer, the
   host HQ's billing uses.
+  The sync engine moves to hq-cloud 6.18.17, which skips files refused by a
+  plan limit instead of failing the sync.
 
+- Files saved while a folder like `node_modules` or `build` is being created,
+  or in the brief moment when HQ changes which folders it watches, now sync
+  right away. Before, they waited for the next full rescan, up to six hours
+  later. The sync engine moves to hq-cloud 6.18.16.
+
+- The "Syncing initial cloud data" step of a new install now finishes in
+  seconds instead of about two minutes. Once your personal vault is set up,
+  the step hands the upload to HQ's background sync, which was already
+  pushing the same files. The step only does this when background sync is
+  running, Auto-sync and Personal sync are on, sync is not paused, and you are
+  signed in. In every other case the step uploads the files itself, now eight
+  at a time instead of one at a time. When the step hands off, the app checks
+  that background sync actually saved your personal files and uploads them
+  itself if it did not. The `desktop.install-initial-sync-handoff` flag
+  controls this and is on by default; turning it off restores the previous
+  one-file-at-a-time upload.
+
+- Behind a flag (`desktop.human-only-conversations`, off by default): conversations can hide work-mesh and automated messages, and the sidebar can order by the latest message from a person.
+
+
+
+
+- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
+
+## [0.10.359] — 2026-09-29
+
+- First-time setup is now one five-screen welcome flow that fills the screen
+  (everything below the menu bar and beside the Dock) with no window
+  shadow. On macOS the background is your own desktop wallpaper, blurred
+  and dimmed; other app windows no longer show through. If the wallpaper
+  cannot be read, and on Windows, the window keeps a soft blur of whatever
+  is behind it. The same full-screen window is used for the sharing
+  re-prompt and "Replay welcome intro". The window has the standard close
+  and minimize buttons (top left on macOS). Minimize puts it in the Dock or
+  taskbar. Close hides it without quitting or cancelling setup: the install
+  keeps running, and clicking the menu-bar item or the Dock icon brings the
+  flow back on the same screen. You sign in with Google or Microsoft, pick
+  where HQ lives, and choose "Install here". If you are already signed in
+  to hq.computer in your browser, the sign-in screen shows one "Continue as
+  {your email}" button in place of the Google and Microsoft buttons and
+  waits for you to press it. The install then runs in the background while
+  two short screens explain cloud sync and the Option Shift O shortcut. A
+  small card in the corner shows the real install progress, and install
+  errors show there with a Retry. The last screen leads with a large white
+  HQ Desktop card ("Use HQ's own app"). Under it are smaller "Claude Code"
+  and "Codex" buttons that open HQ in that tool with setup ready. Each
+  shows only if the tool is installed, and appears if you install it
+  while the screen is open. If a tool fails to open, the screen says
+  what to do next in one line. HQ Desktop and the tool
+  buttons stay disabled until the install is done, and HQ Desktop says
+  "Getting ready..." meanwhile. The usage-sharing question is no
+  longer its own screen: the last screen has one "Share anonymous usage
+  data" checkbox, checked by default, with a "What's collected" link.
+  Nothing is sent until you finish from that screen, whichever option you
+  use. If sending your choice fails, the screen says so and offers Retry;
+  if you are offline, your choice is saved on this computer and you can
+  finish now and have it sent later. The separate full-screen intro film
+  is gone; "Replay welcome intro" now plays the first four screens with
+  Next and Done. The flow respects Reduce Motion, works from the keyboard
+  and with a screen reader, and pauses its animation when the window is
+  hidden.
+- After a fresh install, HQ Desktop shows an eight-step guided tour once,
+  starting on the setup page. It points out the setup bot, the Files button,
+  the "+" button for a new bot, the Companies section, Meetings, the web
+  console, the Launch menu and the Command-K palette. Next moves on; Skip,
+  Done or Esc ends the tour and leaves you on the page you were on.
+  "Take the tour" in the Command-K palette plays it again.
+
+- A local bot's model picker lists specific model versions: Claude Opus 5.5,
+  Opus 5, Sonnet 5 and Haiku 4.5; GPT-6 Astra and GPT-5.5 for Codex; and
+  Grok 4.7, 4.6 and 4.5. Bots that already use the older Opus, Sonnet or Haiku
+  setting show it as "(latest in Claude Code)". When a specific model is
+  picked, a note says to update the coding tool if the bot cannot start with
+  it, and a bot whose tool does not know its model now says so in plain words.
+
+- In a DM with a bot, the "is thinking" / "working on it" line now
+  disappears as soon as the bot's reply appears, instead of staying under
+  the reply for a few more seconds. It shows again when you send another
+  message or the bot reports new work.
+
+- Setup uses HQ's managed Node.js and npm to install qmd and the HQ CLI.
+- Sign-in keeps working after an internal error during an earlier sign-in attempt, instead of failing until the app restarts.
+
+## [0.10.358] — 2026-09-29
+
+- Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
+- Desktop sync commands now recover their valid state after a mutex is poisoned.
+
+- Auto-sync memory-ceiling reports now include the active sync phase and its
+  elapsed-time bucket, so recurring memory failures can be compared across scan,
+  pull, and push work.
+
+## [0.10.357] — 2026-09-29
+
+- Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
+
+## [0.10.356] — 2026-09-29
+
+- If a Core update overlaps an active HQ change, HQ defers it and retries on a later check instead of reporting an update failure.
+- Pin the third-party actions used by the release monitor and UI-only publish workflow to their resolved commits.
+- The optional setup-stage timeout mitigation is off until enabled in hq-flags. When enabled, dependency install, template download and extraction, and search indexing timers restart when that stage reports progress and still stop at a maximum elapsed time.
+
+## [0.10.355] — 2026-09-29
+
+- After an updater restart, HQ checks local tools again before reopening setup for an existing installation. If the HQ folder is missing, the folder picker opens so it can be found or installed again. An unanswered consent question still appears at startup.
+- After setup, people in a single-member company can optionally invite a
+  teammate. The step is off until its hq-flags rollout is enabled and can be
+  skipped.
+
+## [0.10.354] — 2026-09-29
+
+- If HQ cannot refresh saved credentials at launch, it keeps the loading screen up and checks again every five seconds. It shows sign-in after Cognito confirms the credentials are invalid.
+- Core update failures now classify active HQ changes, generic clone failures, and rsync partial transfers separately in diagnostics.
+- Core update rescue error classes for deferred updates and restore symlink races now pass Sentry's diagnostic filter.
+- Build workflows now pin third-party actions to fixed commits. Manual Windows checks use read-only repository access.
+
+## [0.10.353] — 2026-09-29
+
+- The Window opacity slider in Settings > Appearance now works. Lowering it makes the window see-through, 100% keeps it fully solid, and the setting is remembered after the app restarts. On Macs the glass effect turns off at 100%.
 - With `desktop.push-events` enabled, realtime events trigger share and direct-message refreshes. If the connection drops, the app checks every five minutes, including while all windows are hidden, so tray launches retain a notification long-stop. Scheduled checks pause while push is connected. When the flag is off, the existing 60-second cadence continues.
 - Core update diagnostics now group deferred baseline refreshes separately from local
   baseline read or write failures.
-
 - History search now requires 2 to 100 characters, matching the server limit.
 
 ## [0.10.352] — 2026-09-28

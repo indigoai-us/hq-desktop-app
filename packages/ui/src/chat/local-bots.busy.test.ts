@@ -1,9 +1,6 @@
 /**
- * A local bot that is mid-turn keeps its thinking indicator.
- *
- * The indicator used to end on the first message from the bot, so a progress
- * note in the middle of a long turn made the DM look finished while the bot
- * was still working. `busy` comes from the CLI's in-flight marker.
+ * Which local bots are mid-turn, from the CLI's in-flight marker (`busy`).
+ * `busy` starts a bot's thinking row in its DM; the bot's reply ends it.
  */
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";

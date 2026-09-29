@@ -121,6 +121,45 @@ describe('resolveStartupState', () => {
     ).toBe('loading');
   });
 
+  it('holds loading when the native auth command rejects a transient refresh failure', async () => {
+    const getAuthState = vi
+      .fn<() => Promise<StartupProbeResult>>()
+      .mockRejectedValue(new Error('temporary refresh unavailable'));
+    const outcome = await resolveStartupState(getAuthState, {
+      attempts: 3,
+      delayMs: 0,
+      sleep: async () => {},
+    });
+
+    expect(outcome).toMatchObject({ ok: false, attempts: 3 });
+    expect(
+      startupSurface({
+        phase: outcome.ok ? 'resolved' : 'loading',
+        lifecycleState: 'SteadyState',
+        authenticated: false,
+      }),
+    ).toBe('loading');
+  });
+
+  it('routes to sign-in when the native auth command confirms invalid credentials', async () => {
+    const getAuthState = vi.fn<() => Promise<StartupProbeResult>>().mockResolvedValue({
+      lifecycleState: 'SteadyState',
+      hadStoredToken: true,
+      tokenPresence: 'present',
+      auth: { authenticated: false, expiresAt: null },
+    });
+    const outcome = await resolveStartupState(getAuthState, { sleep: async () => {} });
+
+    expect(outcome).toMatchObject({ ok: true, attempts: 1 });
+    expect(
+      startupSurface({
+        phase: outcome.ok ? 'resolved' : 'loading',
+        lifecycleState: outcome.ok ? outcome.result.lifecycleState : null,
+        authenticated: outcome.ok ? outcome.result.auth.authenticated : false,
+      }),
+    ).toBe('sign-in');
+  });
+
   it('does not retry a probe that resolves first time', async () => {
     const probe = vi.fn<() => Promise<StartupProbeResult>>().mockResolvedValue(notSetUp);
 

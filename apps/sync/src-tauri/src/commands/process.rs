@@ -265,7 +265,8 @@ static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Blocks new HQ-owned child registrations while a Windows app or CLI update
 /// is quiescing command processes. The updater sets this before taking its
 /// process snapshot, so a child cannot slip into the install window after the
-/// snapshot but before the package replacement or app exit.
+/// snapshot but before the package replacement or app exit. This is process
+/// local state; it must not be persisted as a marker that can survive exit.
 static UPDATE_QUIESCE_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Blocks new `hq-sync` passes while an automatic/forced desktop update is
 /// waiting for in-flight transfers to drain, then installing. Distinct from
@@ -363,6 +364,9 @@ pub fn begin_update_sensitive_operation() -> Result<UpdateSensitiveOperationGuar
 mod update_sensitive_operation_tests {
     use super::*;
 
+    const RESTART_TEST_MODE: &str = "HQ_TEST_UPDATE_SENSITIVE_RESTART_MODE";
+    const RESTART_TEST_MARKER: &str = "HQ_TEST_UPDATE_SENSITIVE_RESTART_MARKER";
+
     #[test]
     fn operation_admission_and_update_quiescence_are_race_closed() {
         let quiesce_requested = AtomicBool::new(false);
@@ -377,6 +381,67 @@ mod update_sensitive_operation_tests {
 
         drop(guard);
         assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stale_marker_from_dead_process_does_not_defer_a_fresh_process() {
+        let test_name = concat!(
+            "commands::process::update_sensitive_operation_tests::",
+            "stale_marker_from_dead_process_does_not_defer_a_fresh_process"
+        );
+        if let Some(mode) = std::env::var_os(RESTART_TEST_MODE) {
+            let marker = std::env::var_os(RESTART_TEST_MARKER)
+                .expect("restart probe receives the stale marker path");
+            let marker = std::path::PathBuf::from(marker);
+
+            if mode == "old" {
+                let _operation = begin_update_sensitive_operation()
+                    .expect("the old process starts its sensitive operation");
+                UPDATE_QUIESCE_REQUESTED.store(true, Ordering::SeqCst);
+                assert!(
+                    begin_update_sensitive_operation().is_err(),
+                    "the old process closes admission while its updater quiesces"
+                );
+                std::fs::write(&marker, "operation active")
+                    .expect("the simulated process leaves a stale marker");
+                // Model a killed process: do not drop the operation guard.
+                std::process::exit(0);
+            }
+
+            assert_eq!(mode, "fresh");
+            assert!(marker.exists(), "the old process marker remains on disk");
+            let operation = begin_update_sensitive_operation()
+                .expect("fresh process memory starts with an open admission gate");
+            drop(operation);
+            return;
+        }
+
+        let directory = tempfile::tempdir().expect("restart marker temp directory");
+        let marker = directory.path().join("stale-update-sensitive-operation");
+        let current_exe = std::env::current_exe().expect("current test executable");
+
+        let old_process = Command::new(&current_exe)
+            .args(["--exact", test_name])
+            .env(RESTART_TEST_MODE, "old")
+            .env(RESTART_TEST_MARKER, &marker)
+            .status()
+            .expect("old process test starts");
+        assert!(
+            old_process.success(),
+            "old process exits after leaving its marker"
+        );
+        assert!(marker.exists(), "old process leaves the marker behind");
+
+        let fresh_process = Command::new(current_exe)
+            .args(["--exact", test_name])
+            .env(RESTART_TEST_MODE, "fresh")
+            .env(RESTART_TEST_MARKER, &marker)
+            .status()
+            .expect("fresh process test starts");
+        assert!(
+            fresh_process.success(),
+            "a stale marker left by the terminated process does not defer the fresh process"
+        );
     }
 }
 

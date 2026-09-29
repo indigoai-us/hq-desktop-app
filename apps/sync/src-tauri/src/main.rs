@@ -51,6 +51,7 @@ mod fd_limit;
 #[cfg(target_os = "macos")]
 mod glass;
 mod intro_window;
+mod welcome_window;
 mod recovery;
 mod titlebar_layout;
 mod tray;
@@ -723,15 +724,20 @@ fn main() {
             commands::first_run::should_show_auto_sync_notice,
             commands::first_run::mark_first_run_complete,
             commands::window_material::window_material_capability,
+            commands::window_material::set_window_backdrop_transparency,
             commands::setup_secret::setup_store_secret,
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_main_window_vibrancy,
             intro_window::set_intro_fullscreen,
+            welcome_window::set_welcome_backdrop,
+            welcome_window::set_welcome_window,
+            welcome_window::get_desktop_wallpaper,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_startup_setup_evidence,
             commands::lifecycle::get_setup_status,
             commands::lifecycle::mark_welcome_setup_complete,
+            commands::lifecycle::mark_welcome_tour_shown,
             commands::lifecycle::report_unexpected_startup_surface,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,
@@ -1260,33 +1266,26 @@ fn main() {
                 commands::lifecycle::current_lifecycle_state(app.handle()),
             );
 
-            // The very first launch opens the onboarding FLOATING CARD (transparent,
-            // centered, no frosted popover material, no native window shadow) rather
-            // than the compact popover. Apply that window state BEFORE the window is
-            // shown so it paints correctly framed from the first frame — no flash of
-            // the small frosted popover shell before onboarding resizes it.
+            // The very first launch opens the welcome flow, which fills the
+            // work area of the current monitor (no rounded card, no native
+            // window shadow, no frosted popover material) rather than the
+            // compact popover. Apply that window state BEFORE the window is
+            // shown so it paints correctly framed from the first frame — no
+            // flash of the small frosted popover shell before onboarding
+            // takes the window over (`welcome_window::set_welcome_window`).
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Some(window) = app.get_webview_window("main") {
                 if first_run {
-                    let onboarding_size = window
-                        .current_monitor()
-                        .ok()
-                        .flatten()
-                        .map(|monitor| {
-                            let work_area = monitor.work_area();
-                            let scale = monitor.scale_factor();
-                            tauri::LogicalSize::new(
-                                ((work_area.size.width as f64 / scale) - 32.0)
-                                    .clamp(360.0, 780.0),
-                                ((work_area.size.height as f64 / scale) - 32.0)
-                                    .clamp(420.0, 620.0),
-                            )
-                        })
-                        .unwrap_or_else(|| tauri::LogicalSize::new(780.0, 620.0));
-                    let _ = window.set_size(onboarding_size);
+                    welcome_window::set_welcome_window_active(true);
+                    // Close and minimize controls from the first frame: the
+                    // flow can run for minutes and must never trap the screen.
+                    welcome_window::apply_window_controls(&window, true);
                     let _ = window.set_shadow(false);
                     hq_platform::window_effects::clear_popover_vibrancy(&window);
-                    let _ = window.center();
+                    if !welcome_window::fit_to_work_area(&window) {
+                        let _ = window.set_size(tauri::LogicalSize::new(1024.0, 700.0));
+                        let _ = window.center();
+                    }
                 } else {
                     hq_platform::window_effects::apply_popover_vibrancy(&window);
                     #[cfg(target_os = "windows")]

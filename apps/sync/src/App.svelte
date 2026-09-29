@@ -124,6 +124,7 @@
   let startupPhase = $state<StartupPhase>('loading');
   let startupReprobeTimer: ReturnType<typeof setTimeout> | null = null;
   let lifecycleState = $state<string | null>(null);
+  let startupSetupEvidence = $state<StartupSetupEvidence | null>(null);
   // US-005: when the server reports this person's recorded consent as stale
   // (pre-versioned, administrative, or below the current version), the blocking
   // consent step is shown once. `null` means no re-prompt is due; otherwise it
@@ -1772,7 +1773,11 @@
   async function probeStartupState(): Promise<StartupProbeResult> {
     // `get_auth_state` validates freshness and performs the one silent
     // refresh retry.
-    const auth = await invoke<{ authenticated: boolean; expiresAt: string | null }>(
+    const auth = await invoke<{
+      authenticated: boolean;
+      expiresAt: string | null;
+      startupTokenReadResult?: string;
+    }>(
       'get_auth_state',
     );
     // Raw token-file presence must not override a failed verdict; it is
@@ -1835,7 +1840,11 @@
       return;
     }
 
-    const priorSurface = startupSurface({ phase: startupPhase, lifecycleState, authenticated });
+    const priorSurface = startupSurface({
+      phase: startupPhase,
+      lifecycleState,
+      authenticated,
+    });
     const {
       lifecycleState: probedLifecycle,
       hadStoredToken,
@@ -1844,6 +1853,7 @@
       auth: state,
     } = outcome.result;
     lifecycleState = probedLifecycle;
+    startupSetupEvidence = setupEvidence ?? null;
     authenticated = shouldSkipSignIn(state);
     expiresAt = state.expiresAt ?? '';
     if (hadStoredToken && !state.authenticated) {
@@ -1869,6 +1879,7 @@
           probeAttempts: outcome.attempts,
           authenticated,
           tokenPresence,
+          firstReadResult: state.startupTokenReadResult ?? null,
           priorSurface,
         }).catch((err) => {
           console.warn('failed to report unexpected startup surface:', err);
@@ -1980,6 +1991,7 @@
     <Onboarding
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
       mode={wizardModeForLifecycle(lifecycleState ?? 'NeedsInstall')}
+      setupEvidence={startupSetupEvidence}
       onfinish={handleOnboardingFinish}
     />
   {:else if authenticated && consentReprompt}

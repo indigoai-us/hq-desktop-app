@@ -494,6 +494,51 @@ export function friendlySetupBands(overallPercent: number): FriendlySetupBand[] 
   });
 }
 
+/**
+ * Shorter band names for compact surfaces, such as the welcome flow's corner
+ * install card, which has to hold one width through every step. Same order and
+ * meaning as {@link FRIENDLY_SETUP_BAND_LABELS}; only the third is trimmed.
+ */
+export const COMPACT_SETUP_BAND_LABELS = [
+  'Laying the groundwork',
+  'Building your workspace',
+  'Bringing in your AI workers',
+  'Making it yours',
+  'Syncing across your devices',
+] as const;
+
+export interface SetupStepSummary {
+  /** 1-based band the install is on; equals `total` once everything is done. */
+  step: number;
+  total: number;
+  /** The friendly band label for `step`. */
+  label: string;
+  /** The compact band label for `step`. */
+  compactLabel: string;
+  /** True once every band is done. */
+  done: boolean;
+}
+
+/**
+ * "Step N of 5" for the band the install is on, read from the same
+ * `overallPercent` the band checklist uses, so a one-line surface and the full
+ * checklist can never disagree about where setup is.
+ */
+export function setupStepSummary(overallPercent: number): SetupStepSummary {
+  const bands = friendlySetupBands(overallPercent);
+  const total = bands.length;
+  const index = bands.findIndex((band) => band.status !== 'done');
+  const done = index === -1;
+  const at = done ? total - 1 : index;
+  return {
+    step: at + 1,
+    total,
+    label: FRIENDLY_SETUP_BAND_LABELS[at],
+    compactLabel: COMPACT_SETUP_BAND_LABELS[at],
+    done,
+  };
+}
+
 // ─── Monotonic progress ──────────────────────────────────────────────
 //
 // `setupProgressPercent` is a pure function of the stage list, so anything
@@ -798,19 +843,25 @@ export function withTimeout<T>(
 }
 
 /**
- * Timeout a long-running setup operation only after it has stopped reporting
- * activity for `ms`. The subscriber is installed before the timer starts and
- * is always removed when the operation settles or times out.
+ * Timeout a long-running setup operation after it has stopped reporting
+ * activity for `ms`. `maxElapsedMs`, when set, bounds its total run time. The
+ * subscriber is installed before the timer starts and is always removed when
+ * the operation settles or times out.
  */
 export function withProgressTimeout<T>(
   promise: Promise<T>,
   ms: number,
-  onTimeout: () => Error,
+  onTimeout: (timeoutMs?: number) => Error,
   subscribeToProgress: (onProgress: () => void) => () => void,
   onTimeoutCancel?: () => void | Promise<void>,
+  maxElapsedMs?: number,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
+    const maxDeadline =
+      maxElapsedMs != null && maxElapsedMs > 0
+        ? Date.now() + maxElapsedMs
+        : null;
     let timer: ReturnType<typeof setTimeout>;
     let settled = false;
     let unlisten = () => {};
@@ -820,6 +871,10 @@ export function withProgressTimeout<T>(
     };
     const reset = () => {
       clearTimeout(timer);
+      const remainingMs =
+        maxDeadline == null ? ms : Math.max(0, maxDeadline - Date.now());
+      const timeoutMs = Math.min(ms, remainingMs);
+      const reachedMaxElapsed = maxDeadline != null && remainingMs <= ms;
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -827,9 +882,9 @@ export function withProgressTimeout<T>(
           void onTimeoutCancel?.();
         } finally {
           clear();
-          reject(onTimeout());
+          reject(onTimeout(reachedMaxElapsed ? maxElapsedMs : ms));
         }
-      }, ms);
+      }, timeoutMs);
     };
     unlisten = subscribeToProgress(reset);
     reset();

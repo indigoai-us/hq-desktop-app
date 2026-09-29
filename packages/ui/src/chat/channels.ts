@@ -59,6 +59,13 @@ export interface Channel {
    * unread-aware ordering. */
   lastActivityAt?: string | null;
   lastMessageAt?: string | null;
+  /**
+   * Server-supplied timestamp of the last HUMAN message on this channel
+   * (audience = human / both, excludes work-mesh + system events). Absent
+   * on older servers; used only when the `desktop.human-only-conversations`
+   * flag is on. When absent the sidebar falls back to `lastActivityAt`.
+   */
+  lastHumanMessageAt?: string | null;
   /** Client-only epoch-ms stamp of when this channel first entered the rail,
    * set once by `upsertChannel` on insert. NOT part of the server wire shape —
    * it lets a brand-new channel with no server timestamps surface as recent in
