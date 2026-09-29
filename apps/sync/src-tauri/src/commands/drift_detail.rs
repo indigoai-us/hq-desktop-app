@@ -20,6 +20,21 @@ pub const WINDOW_LABEL: &str = "drift-detail";
 /// can fetch it on ready (race-free handshake instead of a timed delay).
 pub struct PendingDrift(pub Mutex<Option<DriftReport>>);
 
+fn stash_pending_report(state: &PendingDrift, report: DriftReport) {
+    *state
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report);
+}
+
+fn pending_report(state: &PendingDrift) -> Option<DriftReport> {
+    state
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
 /// Tauri command — open (or focus + re-emit to) the drift detail window
 /// with the given report.
 #[tauri::command]
@@ -36,7 +51,7 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
     );
     let mut stashed = false;
     if let Some(state) = app.try_state::<PendingDrift>() {
-        *state.0.lock().unwrap() = Some(report.clone());
+        stash_pending_report(&state, report.clone());
         stashed = true;
     }
     log(
@@ -149,7 +164,7 @@ pub async fn drift_window_ready(app: AppHandle) -> Result<(), String> {
     log("drift-detail", "ready: invoked by webview");
     let report = app
         .try_state::<PendingDrift>()
-        .and_then(|s| s.0.lock().unwrap().clone());
+        .and_then(|state| pending_report(&state));
 
     log(
         "drift-detail",
@@ -178,4 +193,43 @@ pub async fn drift_window_ready(app: AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::hq_core_drift::BaselineStatus;
+    use std::sync::Arc;
+
+    fn report() -> DriftReport {
+        DriftReport {
+            baseline_status: BaselineStatus::Available,
+            update_required: false,
+            count: 0,
+            modified: Vec::new(),
+            missing: Vec::new(),
+            added: Vec::new(),
+            scanned_at: "2026-09-29T00:00:00Z".to_owned(),
+            hq_version: "15.0.0".to_owned(),
+            target_repo: "indigoai-us/hq-core".to_owned(),
+            target_ref: "v15.0.0".to_owned(),
+        }
+    }
+
+    #[test]
+    fn stashing_and_reading_recovers_a_poisoned_pending_report_mutex() {
+        let state = Arc::new(PendingDrift(Mutex::new(None)));
+        let poisoned_state = state.clone();
+        let panic = std::thread::spawn(move || {
+            let _guard = poisoned_state.0.lock().unwrap();
+            panic!("poison pending drift report");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        stash_pending_report(&state, report());
+        let recovered = pending_report(&state).expect("stashed report should be readable");
+        assert_eq!(recovered.hq_version, "15.0.0");
+        assert_eq!(recovered.target_ref, "v15.0.0");
+    }
 }
