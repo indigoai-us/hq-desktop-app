@@ -11,6 +11,8 @@ The release moves it under the version it ships in.
 - The Home portfolio now lists local Personal projects from the Personal and
   root project trees, and status changes save back to each project's source
   board.
+- Pin the third-party actions used by the release monitor and UI-only publish workflow to their resolved commits.
+- The optional setup-stage timeout mitigation is off until enabled in hq-flags. When enabled, dependency install, template download and extraction, and search indexing timers restart when that stage reports progress and still stop at a maximum elapsed time.
 
 ## [0.10.355] — 2026-09-29
 
