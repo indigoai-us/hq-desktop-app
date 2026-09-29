@@ -36,27 +36,6 @@ export type StartupPhase = 'loading' | 'resolved';
 
 export type StartupSurface = 'loading' | 'onboarding' | 'signed-in' | 'sign-in';
 
-/**
- * A completed first run is stronger evidence than a stale consent-only state.
- * Native startup also reconciles LifecycleStateHandle before routing windows;
- * keep the renderer fallback aligned if an older backend reports stale state.
- */
-export function lifecycleStateForStartup(
-  lifecycleState: string | null,
-  setupEvidence?: StartupSetupEvidence | null,
-): string | null {
-  if (
-    lifecycleState === 'InstalledFirstRun' &&
-    setupEvidence?.firstRunCompleted &&
-    setupEvidence.hqRootValid &&
-    !setupEvidence.installInProgress &&
-    !setupEvidence.manifestIncomplete
-  ) {
-    return 'SteadyState';
-  }
-  return lifecycleState;
-}
-
 export type StartupProbeOutcome =
   | { ok: true; result: StartupProbeResult; attempts: number }
   | { ok: false; error: unknown; attempts: number };
@@ -117,11 +96,9 @@ export function startupSurface(input: {
   phase: StartupPhase;
   lifecycleState: string | null;
   authenticated: boolean;
-  setupEvidence?: StartupSetupEvidence | null;
 }): StartupSurface {
   if (input.phase !== 'resolved') return 'loading';
-  const lifecycleState = lifecycleStateForStartup(input.lifecycleState, input.setupEvidence);
-  if (lifecycleState !== null && ONBOARDING_STATES.has(lifecycleState)) {
+  if (input.lifecycleState !== null && ONBOARDING_STATES.has(input.lifecycleState)) {
     return 'onboarding';
   }
   return input.authenticated ? 'signed-in' : 'sign-in';

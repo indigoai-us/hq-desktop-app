@@ -68,24 +68,6 @@ describe('startupSurface', () => {
     ).toBe('sign-in');
   });
 
-  it('keeps a completed first run out of onboarding when lifecycle evidence is stale', () => {
-    expect(
-      startupSurface({
-        phase: 'resolved',
-        lifecycleState: 'InstalledFirstRun',
-        authenticated: true,
-        setupEvidence: {
-          installCompleted: true,
-          firstRunCompleted: true,
-          installInProgress: false,
-          manifestIncomplete: false,
-          hadMachineId: true,
-          hqRootValid: true,
-        },
-      }),
-    ).toBe('signed-in');
-  });
-
   it('treats an unknown lifecycle state as no onboarding route', () => {
     expect(
       startupSurface({ phase: 'resolved', lifecycleState: null, authenticated: true }),

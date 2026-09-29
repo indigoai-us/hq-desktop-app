@@ -127,7 +127,7 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       expect(main).toMatch(/commands::lifecycle::launch_should_show_setup_card\(/);
       const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
       expect(lifecycle).toMatch(/pub fn launch_should_show_setup_card\(first_run: bool, state: Option<LifecycleState>\) -> bool/);
-      expect(lifecycle).toMatch(/state\s*\.map\(lifecycle_keeps_main_window_visible\)\s*\.unwrap_or\(first_run\)/);
+      expect(lifecycle).toMatch(/first_run \|\| state\.is_some_and\(lifecycle_keeps_main_window_visible\)/);
     });
 
     it('does not treat a bundled CLI version mismatch as missing tools at launch', () => {
@@ -137,7 +137,10 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
       const setup = lifecycle.slice(lifecycle.indexOf('pub fn setup_lifecycle'));
       const body = setup.slice(0, setup.indexOf('\n}\n'));
-      expect(body).toMatch(/tools_present_for_lifecycle_gate\(hq_resolved, node_resolved\)/);
+      expect(body).toMatch(/probe_local_toolchain_for_startup\([\s\S]*?launch_agent_relaunch/);
+      expect(body).toMatch(
+        /tools_present_for_lifecycle_gate\([\s\S]*?hq_program\.kind[\s\S]*?node_program\.kind[\s\S]*?\)/,
+      );
       expect(body).not.toMatch(
         /tools_present[^\n]*=[^\n]*bundled_hq_cli_ready|&& crate::commands::install_deps::bundled_hq_cli_ready/,
       );

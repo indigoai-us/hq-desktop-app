@@ -2,11 +2,12 @@ use chrono::Utc;
 use hq_desktop_core::cognito::StoredTokenPresence;
 use hq_desktop_core::first_run::{read_menubar, MenubarRead};
 #[cfg(not(windows))]
-use hq_desktop_core::lifecycle::tools_present_for_lifecycle_gate;
+use hq_desktop_core::lifecycle::{
+    probe_local_toolchain_for_startup, tools_present_for_lifecycle_gate,
+};
 use hq_desktop_core::lifecycle::{
     hq_root_valid, menubar_flags, probe_hq_root_for_startup,
-    reconcile_completed_first_run_state, should_backfill_welcome_setup_pending, HqRootProbe,
-    LifecycleInputs, LifecycleState,
+    should_backfill_welcome_setup_pending, HqRootProbe, LifecycleInputs, LifecycleState,
 };
 use hq_desktop_core::paths::ResolvedProgramKind;
 use serde_json::{Map, Value};
@@ -254,16 +255,37 @@ pub fn setup_lifecycle(app: &AppHandle) {
         node_program_kind,
         require_local_toolchain_demoted,
     ) = {
-        let hq_program = paths::resolve_bin_with_kind("hq");
-        let node_program = paths::resolve_bin_with_kind("node");
-        let hq_resolved = hq_program.kind != ResolvedProgramKind::NotResolved;
-        let node_resolved = node_program.kind != ResolvedProgramKind::NotResolved;
-        let tools_present = tools_present_for_lifecycle_gate(hq_resolved, node_resolved);
-        let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
         // When the install evidence itself could not be read, a "tools are
         // missing" reading of the same filesystem is not trustworthy either,
         // so it must not demote a set-up machine to NeedsInstall.
         let classified = hq_desktop_core::lifecycle::classify_lifecycle(inputs);
+        // A LaunchAgent updater restart can race the managed toolchain settling
+        // after the app bundle is replaced. Recheck only existing installs;
+        // fresh installs still reach onboarding immediately when tools are absent.
+        let mut resolved_programs = None;
+        let tools_present = probe_local_toolchain_for_startup(
+            launch_agent_relaunch,
+            matches!(
+                classified.state,
+                LifecycleState::SteadyState
+                    | LifecycleState::InstalledFirstRun
+                    | LifecycleState::InstalledLegacyUpdate
+            ),
+            || {
+                let hq_program = paths::resolve_bin_with_kind("hq");
+                let node_program = paths::resolve_bin_with_kind("node");
+                let tools_present = tools_present_for_lifecycle_gate(
+                    hq_program.kind != ResolvedProgramKind::NotResolved,
+                    node_program.kind != ResolvedProgramKind::NotResolved,
+                );
+                resolved_programs = Some((hq_program, node_program));
+                tools_present
+            },
+        );
+        // The startup probe always performs its initial resolution.
+        let (hq_program, node_program) = resolved_programs
+            .expect("startup toolchain probe records its initial resolution");
+        let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
         let verdict = if evidence_unreadable {
             classified
         } else {
@@ -303,12 +325,6 @@ pub fn setup_lifecycle(app: &AppHandle) {
             false,
         )
     };
-
-    // Keep the native routing state aligned with persisted setup evidence.
-    // The renderer also starts from this verdict, while Dock/tray/window
-    // routing reads LifecycleStateHandle directly.
-    let lifecycle_state =
-        reconcile_completed_first_run_state(verdict.state, inputs, manifest_incomplete);
 
     if verdict.needs_install_backfill {
         match menubar_path.as_ref() {
@@ -411,7 +427,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         "lifecycle",
         &format!(
             "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} evidence_unreadable={} tools_present={} bundled_cli_ready={} backfill={} first_run_backfill={} welcome_setup_backfill={}",
-            lifecycle_state_str(lifecycle_state),
+            lifecycle_state_str(verdict.state),
             install_completed,
             first_run_completed,
             had_machine_id,
@@ -429,7 +445,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         ),
     );
 
-    app.manage(LifecycleStateHandle(RwLock::new(lifecycle_state)));
+    app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
     app.manage(LifecycleInputsHandle {
         inputs,
         manifest_incomplete,
@@ -538,9 +554,7 @@ pub fn lifecycle_keeps_main_window_visible(state: LifecycleState) -> bool {
 /// tree underneath, and hits a dead end instead of the setup that would have
 /// fixed it.
 pub fn launch_should_show_setup_card(first_run: bool, state: Option<LifecycleState>) -> bool {
-    state
-        .map(lifecycle_keeps_main_window_visible)
-        .unwrap_or(first_run)
+    first_run || state.is_some_and(lifecycle_keeps_main_window_visible)
 }
 
 fn lifecycle_state_str(state: LifecycleState) -> &'static str {
@@ -738,15 +752,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lifecycle_state_overrides_a_stale_first_run_launch_hint() {
+    fn first_run_always_shows_the_setup_card() {
         assert!(launch_should_show_setup_card(true, None));
-        assert!(!launch_should_show_setup_card(
-            true,
-            Some(LifecycleState::SteadyState)
-        ));
         assert!(launch_should_show_setup_card(
             true,
-            Some(LifecycleState::NeedsInstall)
+            Some(LifecycleState::SteadyState)
         ));
     }
 

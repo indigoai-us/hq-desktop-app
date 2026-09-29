@@ -28,7 +28,6 @@
     type StartupSetupEvidence,
   } from './lib/unexpected-startup-surface';
   import {
-    lifecycleStateForStartup,
     normalizeTokenPresence,
     resolveStartupState,
     startupSurface,
@@ -1841,7 +1840,6 @@
       phase: startupPhase,
       lifecycleState,
       authenticated,
-      setupEvidence: startupSetupEvidence,
     });
     const {
       lifecycleState: probedLifecycle,
@@ -1850,7 +1848,7 @@
       setupEvidence,
       auth: state,
     } = outcome.result;
-    lifecycleState = lifecycleStateForStartup(probedLifecycle, setupEvidence);
+    lifecycleState = probedLifecycle;
     startupSetupEvidence = setupEvidence ?? null;
     authenticated = shouldSkipSignIn(state);
     expiresAt = state.expiresAt ?? '';

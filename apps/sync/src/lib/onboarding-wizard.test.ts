@@ -196,15 +196,27 @@ describe('initialStepForLifecycle', () => {
     expect(initialStepForLifecycle('SteadyState')).toBe(0);
   });
 
-  it('starts an installed machine with a missing HQ root at folder recovery', () => {
+  it('recovers a missing HQ root when either setup marker proves prior setup', () => {
+    const evidence = {
+      installInProgress: false,
+      manifestIncomplete: false,
+      hqRootValid: false,
+    };
+
     expect(
       initialStepForLifecycle('NeedsInstall', {
+        ...evidence,
         installCompleted: true,
+        firstRunCompleted: false,
+      }),
+    ).toBe(DIRECTORY_STEP_INDEX);
+
+    // One observed B event has installCompleted=false and firstRunCompleted=true.
+    expect(
+      initialStepForLifecycle('NeedsInstall', {
+        ...evidence,
+        installCompleted: false,
         firstRunCompleted: true,
-        installInProgress: false,
-        manifestIncomplete: false,
-        hadMachineId: true,
-        hqRootValid: false,
       }),
     ).toBe(DIRECTORY_STEP_INDEX);
   });

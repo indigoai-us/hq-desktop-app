@@ -199,6 +199,8 @@ export function isMissingRootRecovery(
   return (
     state === 'NeedsInstall' &&
     setupEvidence != null &&
+    // Either marker independently proves prior setup. One missing-root B event had
+    // installCompleted=false and firstRunCompleted=true, so requiring both loses recovery.
     (setupEvidence.installCompleted || setupEvidence.firstRunCompleted) &&
     !setupEvidence.hqRootValid &&
     !setupEvidence.installInProgress &&
