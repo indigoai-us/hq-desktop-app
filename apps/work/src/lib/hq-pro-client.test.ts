@@ -254,6 +254,20 @@ describe("direct hq-pro browser transport", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("does not retry a HEAD 504", async () => {
+    const fetchImpl = vi.fn(async () => lambdaInvokeError(504));
+    const direct = createHqProFetch({
+      baseUrl: "https://hq-pro.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/entities/me", { method: "HEAD" });
+
+    expect(response.status).toBe(504);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry a POST 504", async () => {
     const fetchImpl = vi.fn(async () => lambdaInvokeError(504));
     const direct = createHqProFetch({

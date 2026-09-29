@@ -195,7 +195,7 @@ export function createHqProFetch(options: {
     const retryLambdaInvoke = async (response: Response): Promise<Response> => {
       if (
         lambdaInvokeRetried ||
-        (method !== "GET" && method !== "HEAD") ||
+        method !== "GET" ||
         requestBody != null ||
         response.status !== 504
       ) return response;
