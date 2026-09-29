@@ -138,6 +138,8 @@
      */
     mode?: WizardMode;
     onboardingFlow?: OnboardingFlow;
+    /** A completed install with a missing root must not resume its old manifest. */
+    recoveringMissingRoot?: boolean;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
   }
@@ -195,6 +197,7 @@
     onfinish,
     mode = 'onboarding',
     onboardingFlow = 'first_install',
+    recoveringMissingRoot = false,
     repromptPersonUid = null,
   }: Props = $props();
 
@@ -2098,15 +2101,17 @@
       if (installPath) effectiveInstallPath = installPath;
       await listenForProgress(runId);
       let startStage: StageId = STAGE_ORDER[0];
-      try {
-        const manifest = await invoke<InstallManifest>('read_install_manifest');
-        if (!isCurrentRun(runId)) return;
-        effectiveInstallPath = manifest.installPath || effectiveInstallPath;
-        if (manifest.installPath) installPath = manifest.installPath;
-        startStage = resumeStartStageFromManifest(manifest);
-        stages = buildStagesFromManifest(manifest, startStage);
-      } catch {
-        // Missing/corrupt manifests fall back to a fresh run.
+      if (!recoveringMissingRoot) {
+        try {
+          const manifest = await invoke<InstallManifest>('read_install_manifest');
+          if (!isCurrentRun(runId)) return;
+          effectiveInstallPath = manifest.installPath || effectiveInstallPath;
+          if (manifest.installPath) installPath = manifest.installPath;
+          startStage = resumeStartStageFromManifest(manifest);
+          stages = buildStagesFromManifest(manifest, startStage);
+        } catch {
+          // Missing/corrupt manifests fall back to a fresh run.
+        }
       }
       if (!isCurrentRun(runId)) return;
       await runSetup(runId, startStage);

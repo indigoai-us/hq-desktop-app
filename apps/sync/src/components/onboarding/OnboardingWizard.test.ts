@@ -524,6 +524,78 @@ describe('onboarding directory selection', () => {
     expect(host.textContent).toContain('This location already has files');
   });
 
+  it('keeps the selected replacement folder during completed-install recovery', async () => {
+    const oldRoot = '/Users/test/previous-hq';
+    const replacementRoot = '/Users/test/replacement-hq';
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return oldRoot;
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'pick_folder':
+          return replacementRoot;
+        case 'check_writable':
+          return true;
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'hq_pro_fetch':
+          return {
+            status: 200,
+            body: JSON.stringify({ version: 1, flags: {} }),
+          };
+        case 'read_install_manifest':
+          return {
+            installPath: oldRoot,
+            completedAt: '2026-01-01T00:00:00Z',
+            steps: {},
+          };
+        case 'configure_claude_settings_path':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 1, recoveringMissingRoot: true },
+    });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const choose = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .choose',
+      );
+      return directory?.classList.contains('on') === true && choose !== null && !choose.disabled;
+    });
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
+      ?.click();
+    await flushUntil(
+      () =>
+        host
+          .querySelector('[data-testid="onboarding-directory"] .lb')
+          ?.getAttribute('title') === replacementRoot,
+    );
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .btn-primary')
+      ?.click();
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, callArgs]) =>
+          command === 'configure_claude_settings_path' &&
+          (callArgs as Record<string, unknown> | undefined)?.hqPath === replacementRoot,
+      ),
+    );
+    expect(tauri.invoke).not.toHaveBeenCalledWith('read_install_manifest');
+    const configureCall = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'configure_claude_settings_path',
+    );
+    expect(configureCall?.[1]).toMatchObject({ hqPath: replacementRoot });
+  });
+
   it('gives a next step when the selected folder cannot be written', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {

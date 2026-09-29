@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   BUILD_STEP_INDEX,
   CONSENT_STEP_INDEX,
+  DIRECTORY_STEP_INDEX,
   FIRST_FOLDER_SYNC_STEP_INDEX,
   INVITE_TEAMMATE_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
@@ -197,5 +198,31 @@ describe('initialStepForLifecycle', () => {
   it('starts NeedsInstall and unknown states at welcome', () => {
     expect(initialStepForLifecycle('NeedsInstall')).toBe(0);
     expect(initialStepForLifecycle('SteadyState')).toBe(0);
+  });
+
+  it('recovers a missing HQ root when either setup marker proves prior setup', () => {
+    const evidence = {
+      installInProgress: false,
+      manifestIncomplete: false,
+      hadMachineId: false,
+      hqRootValid: false,
+    };
+
+    expect(
+      initialStepForLifecycle('NeedsInstall', {
+        ...evidence,
+        installCompleted: true,
+        firstRunCompleted: false,
+      }),
+    ).toBe(DIRECTORY_STEP_INDEX);
+
+    // One observed B event has installCompleted=false and firstRunCompleted=true.
+    expect(
+      initialStepForLifecycle('NeedsInstall', {
+        ...evidence,
+        installCompleted: false,
+        firstRunCompleted: true,
+      }),
+    ).toBe(DIRECTORY_STEP_INDEX);
   });
 });
