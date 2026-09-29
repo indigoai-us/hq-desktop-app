@@ -822,10 +822,23 @@ pub(crate) async fn resolve_notification_auth_snapshot<R: Runtime>(
 pub(crate) async fn resolve_notification_credentials<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(cognito::CognitoTokens, NotificationAuthSnapshot), String> {
-    let started_generation = notification_session_generation(app)
+    resolve_notification_credentials_classified(app)
         .await
-        .ok_or_else(|| "Notification session state is unavailable".to_string())?;
-    let tokens = match cognito::get_valid_tokens().await {
+        .map_err(|error| error.message)
+}
+
+pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(cognito::CognitoTokens, NotificationAuthSnapshot), cognito::CognitoTokenResolutionError>
+{
+    let started_generation = notification_session_generation(app).await.ok_or_else(|| {
+        cognito::CognitoTokenResolutionError {
+            message: "Notification session state is unavailable".to_string(),
+            refresh_failure_class: None,
+            requires_reauth: false,
+        }
+    })?;
+    let tokens = match cognito::get_valid_tokens_classified().await {
         Ok(tokens) => tokens,
         Err(error) => {
             // A refresh transport failure is recoverable and must keep its
@@ -845,7 +858,11 @@ pub(crate) async fn resolve_notification_credentials<R: Runtime>(
         tokens.access_token.clone(),
     )
     .await
-    .ok_or_else(|| "Authentication changed while resolving credentials".to_string())?;
+    .ok_or_else(|| cognito::CognitoTokenResolutionError {
+        message: "Authentication changed while resolving credentials".to_string(),
+        refresh_failure_class: None,
+        requires_reauth: false,
+    })?;
     Ok((tokens, snapshot))
 }
 

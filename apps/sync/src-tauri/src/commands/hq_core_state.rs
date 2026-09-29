@@ -2505,6 +2505,7 @@ static CORE_UPDATE_BASELINE_WARNING_SIGNATURES: OnceLock<
 struct CoreUpdateBaselinePersistenceDiagnosticTags {
     write_path: &'static str,
     error_kind: &'static str,
+    fetch_failure_class: &'static str,
     directory_state: &'static str,
     target_state: &'static str,
     temp_state: &'static str,
@@ -2566,6 +2567,7 @@ impl CoreUpdateBaselinePersistenceDiagnosticTags {
                     "other",
                 ],
             ),
+            fetch_failure_class: github_fetch_failure_class_from_detail(detail),
             directory_state: bounded(
                 value("directory_state"),
                 &["file", "directory", "other", "missing", "unknown"],
@@ -2663,6 +2665,10 @@ fn send_core_update_baseline_persistence_warning(
                 sentry_scope.set_tag("source", report.source);
                 sentry_scope.set_tag("persistence_write_path", report.diagnostic_tags.write_path);
                 sentry_scope.set_tag("persistence_error_kind", report.diagnostic_tags.error_kind);
+                sentry_scope.set_tag(
+                    "persistence_fetch_failure_class",
+                    report.diagnostic_tags.fetch_failure_class,
+                );
                 sentry_scope.set_tag(
                     "persistence_directory_state",
                     report.diagnostic_tags.directory_state,
@@ -2908,23 +2914,121 @@ fn resolve_channel() -> (Channel, String) {
 
 // ─── Target resolution ───────────────────────────────────────────────────────
 
+const GITHUB_FETCH_FAILURE_CLASS_MARKER: &str = "[github_fetch_failure_class=";
+
+fn github_fetch_failure_class_from_detail(detail: &str) -> &'static str {
+    let value = detail
+        .rfind(GITHUB_FETCH_FAILURE_CLASS_MARKER)
+        .and_then(|start| {
+            detail[start + GITHUB_FETCH_FAILURE_CLASS_MARKER.len()..]
+                .split(']')
+                .next()
+        })
+        .unwrap_or("unknown");
+    match value {
+        "rate_limited" => "rate_limited",
+        "unauthorized" => "unauthorized",
+        "forbidden" => "forbidden",
+        "not_found" => "not_found",
+        "server_error" => "server_error",
+        "http_other" => "http_other",
+        "timeout" => "timeout",
+        "connection" => "connection",
+        "transport_other" => "transport_other",
+        "invalid_response" => "invalid_response",
+        _ => "unknown",
+    }
+}
+
+fn github_fetch_failure(class: &'static str, detail: impl AsRef<str>) -> String {
+    format!(
+        "{} {GITHUB_FETCH_FAILURE_CLASS_MARKER}{class}]",
+        detail.as_ref()
+    )
+}
+
+fn append_optional_marker(detail: &str, marker: &str) -> String {
+    let detail = detail.trim_end();
+    let marker = marker.trim();
+    if marker.is_empty() {
+        detail.to_string()
+    } else {
+        format!("{detail} {marker}")
+    }
+}
+
+fn github_api_fetch_failure(error: crate::commands::github_api::ApiError) -> String {
+    let class = error
+        .transport_error
+        .as_ref()
+        .map(github_transport_fetch_failure_class)
+        .unwrap_or(error.class);
+    github_fetch_failure(class, error.to_string())
+}
+
+fn github_http_fetch_failure_class(
+    status: reqwest::StatusCode,
+    rate_limit_remaining: Option<&str>,
+) -> &'static str {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status == reqwest::StatusCode::FORBIDDEN && rate_limit_remaining == Some("0"))
+    {
+        "rate_limited"
+    } else if status == reqwest::StatusCode::UNAUTHORIZED {
+        "unauthorized"
+    } else if status == reqwest::StatusCode::FORBIDDEN {
+        "forbidden"
+    } else if status == reqwest::StatusCode::NOT_FOUND {
+        "not_found"
+    } else if status.is_server_error() {
+        "server_error"
+    } else {
+        "http_other"
+    }
+}
+
+fn github_http_fetch_failure(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    detail: impl AsRef<str>,
+) -> String {
+    let class = github_http_fetch_failure_class(
+        status,
+        headers
+            .get("x-ratelimit-remaining")
+            .and_then(|value| value.to_str().ok()),
+    );
+    github_fetch_failure(class, format!("{} HTTP {status}", detail.as_ref()))
+}
+
+fn github_transport_fetch_failure_class(error: &reqwest::Error) -> &'static str {
+    crate::commands::github_api::body_error_class(
+        error.is_timeout(),
+        error.is_connect(),
+        error.is_decode(),
+    )
+}
+
 /// Fetch the latest release tag from `indigoai-us/hq-core`. Returns the
 /// raw `tag_name` (e.g. `"v14.2.0"`) — caller strips the `v` for display.
-async fn fetch_latest_release_tag(client: &reqwest::Client) -> Result<String, String> {
+async fn fetch_latest_release_tag(
+    client: &reqwest::Client,
+    scope: crate::commands::github_api::ApiScope,
+) -> Result<String, String> {
     let url = "https://api.github.com/repos/indigoai-us/hq-core/releases/latest";
-    let resp = client
-        .get(url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
+    let resp = crate::commands::github_api::get(client, url, scope)
         .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
+        .map_err(github_api_fetch_failure)?;
     if !resp.status().is_success() {
-        return Err(format!("releases/latest HTTP {}", resp.status()));
+        return Err(github_http_fetch_failure(
+            resp.status(),
+            &resp.headers,
+            "releases/latest",
+        ));
     }
-    let parsed: GhRelease = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse release JSON: {e}"))?;
+    let parsed: GhRelease = serde_json::from_slice(&resp.body).map_err(|error| {
+        github_fetch_failure("invalid_response", format!("parse release JSON: {error}"))
+    })?;
     Ok(parsed.tag_name.trim().to_string())
 }
 
@@ -2933,30 +3037,39 @@ async fn fetch_commit_sha(
     client: &reqwest::Client,
     repo: &str,
     git_ref: &str,
+    scope: crate::commands::github_api::ApiScope,
 ) -> Result<String, String> {
     let url = format!("https://api.github.com/repos/{repo}/commits/{git_ref}");
-    let resp = client
-        .get(&url)
-        .send()
+    let resp = crate::commands::github_api::get(client, &url, scope)
         .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
+        .map_err(github_api_fetch_failure)?;
     if !resp.status().is_success() {
-        return Err(format!("commits/{git_ref} HTTP {}", resp.status()));
+        return Err(github_http_fetch_failure(
+            resp.status(),
+            &resp.headers,
+            format!("commits/{git_ref}"),
+        ));
     }
-    let parsed: GhCommit = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse commit JSON: {e}"))?;
+    let parsed: GhCommit = serde_json::from_slice(&resp.body).map_err(|error| {
+        github_fetch_failure("invalid_response", format!("parse commit JSON: {error}"))
+    })?;
     let sha = parsed.sha.trim().to_string();
     if sha.len() < 40 {
-        return Err(format!("unexpected SHA length: {sha:?}"));
+        return Err(github_fetch_failure(
+            "invalid_response",
+            format!("unexpected SHA length: {sha:?}"),
+        ));
     }
     Ok(sha)
 }
 
 /// Fetch staging `main`'s HEAD commit SHA (back-compat shim).
-async fn fetch_main_head_sha(client: &reqwest::Client, repo: &str) -> Result<String, String> {
-    fetch_commit_sha(client, repo, "main").await
+async fn fetch_main_head_sha(
+    client: &reqwest::Client,
+    repo: &str,
+    scope: crate::commands::github_api::ApiScope,
+) -> Result<String, String> {
+    fetch_commit_sha(client, repo, "main", scope).await
 }
 
 /// Fetch a tree at any ref (tag, branch, commit SHA). Returns
@@ -2966,20 +3079,22 @@ async fn fetch_tree(
     client: &reqwest::Client,
     repo: &str,
     git_ref: &str,
+    scope: crate::commands::github_api::ApiScope,
 ) -> Result<BTreeMap<String, (String, u64)>, String> {
     let url = format!("https://api.github.com/repos/{repo}/git/trees/{git_ref}?recursive=1");
-    let resp = client
-        .get(&url)
-        .send()
+    let resp = crate::commands::github_api::get(client, &url, scope)
         .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
+        .map_err(github_api_fetch_failure)?;
     if !resp.status().is_success() {
-        return Err(format!("git/trees/{git_ref} HTTP {}", resp.status()));
+        return Err(github_http_fetch_failure(
+            resp.status(),
+            &resp.headers,
+            format!("git/trees/{git_ref}"),
+        ));
     }
-    let parsed: GhTreesResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse trees JSON: {e}"))?;
+    let parsed: GhTreesResponse = serde_json::from_slice(&resp.body).map_err(|error| {
+        github_fetch_failure("invalid_response", format!("parse trees JSON: {error}"))
+    })?;
     if parsed.truncated {
         log(
             "hq-core-state",
@@ -3104,6 +3219,7 @@ pub(crate) struct AppliedRescueBaseline {
     pub(crate) commit: String,
     pub(crate) baseline_persisted: bool,
     pub(crate) refresh_pending: bool,
+    pub(crate) fetch_failure_class: Option<&'static str>,
     pub(crate) persistence_diagnostic: Option<String>,
     pub(crate) stamp_key: &'static str,
 }
@@ -3111,6 +3227,12 @@ pub(crate) struct AppliedRescueBaseline {
 impl AppliedRescueBaseline {
     pub(crate) fn persistence_stamp_marker(&self) -> String {
         available_stamp_marker(self.stamp_key)
+    }
+
+    pub(crate) fn fetch_failure_class_marker(&self) -> String {
+        self.fetch_failure_class
+            .map(|class| format!("{GITHUB_FETCH_FAILURE_CLASS_MARKER}{class}]"))
+            .unwrap_or_default()
     }
 }
 
@@ -3199,6 +3321,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                     commit,
                     baseline_persisted: false,
                     refresh_pending: true,
+                    fetch_failure_class: None,
                     persistence_diagnostic: Some(error.to_string()),
                     stamp_key,
                 });
@@ -3228,6 +3351,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                 commit,
                 baseline_persisted: true,
                 refresh_pending,
+                fetch_failure_class: None,
                 persistence_diagnostic: None,
                 stamp_key,
             })
@@ -3289,6 +3413,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                 commit,
                 baseline_persisted,
                 refresh_pending: true,
+                fetch_failure_class: Some(github_fetch_failure_class_from_detail(&fetch_error)),
                 persistence_diagnostic,
                 stamp_key,
             })
@@ -3399,8 +3524,13 @@ pub(crate) async fn persist_applied_rescue_baseline(
         channel,
         token,
         |source, commit, token| async move {
+            let scope = if token.is_some() {
+                crate::commands::github_api::ApiScope::Authenticated
+            } else {
+                crate::commands::github_api::ApiScope::Anonymous
+            };
             match optional_core_tree_client(token.as_deref()) {
-                Ok(client) => fetch_tree(&client, &source, &commit).await,
+                Ok(client) => fetch_tree(&client, &source, &commit, scope).await,
                 Err(error) => Err(error),
             }
         },
@@ -3467,9 +3597,8 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         .and_then(|c| c.email);
     let is_eligible = hq_core_staging::is_eligible_email(signed_in_email.as_deref());
 
-    // Use staging's authed client when on staging — burns gh token for
-    // higher rate limits + works with private repos. On release we use
-    // an anonymous client (the public hq-core repo doesn't need auth).
+    // Use authenticated requests when a local gh token is available. Public
+    // release data remains readable anonymously when it is not.
     //
     // Staging-auth missing → fall back to Release. The popover previously
     // got the prod release Update pill from the separate
@@ -3480,10 +3609,14 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
     // #110). NOTE: this strictly affects users who have no `gh`
     // token — eligible @indigo users with a token still get the
     // staging channel as intended.
+    let mut request_scope = crate::commands::github_api::ApiScope::Anonymous;
     let client = match channel {
         Channel::Staging => match hq_core_staging::resolve_gh_token() {
-            Some(token) => staging_authed_client(&token)
-                .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?,
+            Some(token) => {
+                request_scope = crate::commands::github_api::ApiScope::Authenticated;
+                staging_authed_client(&token)
+                    .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?
+            }
             None => {
                 log(
                     "hq-core-state",
@@ -3503,28 +3636,26 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                     })?
             }
         },
-        Channel::Release => reqwest::Client::builder()
-            .default_headers(crate::util::client_info::client_headers())
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|error| {
-                CoreUpdateError::new(
-                    CoreUpdateErrorKind::Network,
-                    format!("build client: {error}"),
-                )
-            })?,
+        Channel::Release => {
+            let token = hq_core_staging::resolve_gh_token();
+            if token.is_some() {
+                request_scope = crate::commands::github_api::ApiScope::Authenticated;
+            }
+            optional_core_tree_client(token.as_deref())
+                .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?
+        }
     };
 
     let (target_ref, target_version) = match channel {
         Channel::Release => {
-            let tag = fetch_latest_release_tag(&client)
+            let tag = fetch_latest_release_tag(&client, request_scope)
                 .await
                 .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
             let version = tag.trim_start_matches('v').to_string();
             (tag, version)
         }
         Channel::Staging => {
-            let sha = fetch_main_head_sha(&client, &target_repo)
+            let sha = fetch_main_head_sha(&client, &target_repo, request_scope)
                 .await
                 .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
             let short = sha.chars().take(7).collect::<String>();
@@ -3550,7 +3681,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         None => match (channel, local_version.as_deref()) {
             (Channel::Release, Some(ver)) => {
                 let tag = format!("v{ver}");
-                match fetch_commit_sha(&client, &target_repo, &tag).await {
+                match fetch_commit_sha(&client, &target_repo, &tag, request_scope).await {
                     Ok(sha) => {
                         log(
                             "hq-core-state",
@@ -3579,7 +3710,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
     // Fetch trees. Target only if we're actually going to scan drift.
     // Floor only if available + matches source.
     let (target_tree, floor_blobs) = if drift_scan_possible {
-        let target_tree = fetch_tree(&client, &target_repo, &target_ref)
+        let target_tree = fetch_tree(&client, &target_repo, &target_ref, request_scope)
             .await
             .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
         let floor_blobs = match floor_identity.as_ref() {
@@ -3591,7 +3722,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 if local.is_some() {
                     local
                 } else if source == &target_repo {
-                    match fetch_tree(&client, source, commit).await {
+                    match fetch_tree(&client, source, commit, request_scope).await {
                         Ok(tree) => Some(
                             tree.into_iter()
                                 .map(|(path, (sha, _))| (path, sha))
@@ -3875,11 +4006,14 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 // tag points to, we're on the release regardless of what the
                 // string says.
                 let stamp_matches_tag = match floor_sha.as_deref() {
-                    Some(floor) => match fetch_commit_sha(&client, &target_repo, &target_ref).await
-                    {
-                        Ok(tag_sha) => floor == tag_sha,
-                        Err(_) => false,
-                    },
+                    Some(floor) => {
+                        match fetch_commit_sha(&client, &target_repo, &target_ref, request_scope)
+                            .await
+                        {
+                            Ok(tag_sha) => floor == tag_sha,
+                            Err(_) => false,
+                        }
+                    }
                     None => false,
                 };
                 if stamp_matches_tag {
@@ -4716,14 +4850,15 @@ where
             }
         },
         Err(error) => {
+            let detail = append_optional_marker(
+                &format!("Core baseline refresh pending for {source}@{stamped_commit}: {error}"),
+                &stamp.marker(),
+            );
             record_core_update_baseline_persistence_failure(
                 "automatic",
                 channel,
                 "hq-core-state",
-                &format!(
-                    "Core baseline refresh pending for {source}@{stamped_commit}: {error} {}",
-                    stamp.marker()
-                ),
+                &detail,
             );
             true
         }
@@ -4740,8 +4875,13 @@ async fn retry_pending_baseline_refresh(state: &CoreState) -> bool {
         &hq_folder,
         hq_core_staging::resolve_gh_token(),
         |source, commit, token| async move {
+            let scope = if token.is_some() {
+                crate::commands::github_api::ApiScope::Authenticated
+            } else {
+                crate::commands::github_api::ApiScope::Anonymous
+            };
             match optional_core_tree_client(token.as_deref()) {
-                Ok(client) => fetch_tree(&client, &source, &commit).await,
+                Ok(client) => fetch_tree(&client, &source, &commit, scope).await,
                 Err(error) => Err(error),
             }
         },
@@ -5533,11 +5673,16 @@ mod tests {
             "",
             Channel::Release,
             Some(&menubar_path),
-            Err("HTTP 403".to_string()),
+            Err(github_fetch_failure("rate_limited", "HTTP 403")),
         )
         .unwrap();
         assert!(first.baseline_persisted);
         assert!(first.refresh_pending);
+        assert_eq!(first.fetch_failure_class, Some("rate_limited"));
+        assert_eq!(
+            first.fetch_failure_class_marker(),
+            "[github_fetch_failure_class=rate_limited]"
+        );
         assert_eq!(
             persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)),
             Some(BaselineRefreshTarget {
@@ -5556,15 +5701,15 @@ mod tests {
         let failed_fetch_calls = Arc::clone(&fetch_calls);
         assert!(
             retry_pending_baseline_refresh_at_with_path(
-            Channel::Release,
-            root.path(),
-            None,
-            Some(&menubar_path),
-            move |_, _, _| async move {
-                failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
-                Err("HTTP 403".to_string())
-            },
-        )
+                Channel::Release,
+                root.path(),
+                None,
+                Some(&menubar_path),
+                move |_, _, _| async move {
+                    failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
+                    Err(github_fetch_failure("rate_limited", "HTTP 403"))
+                },
+            )
             .await
         );
 
@@ -5598,15 +5743,15 @@ mod tests {
         let successful_fetch_calls = Arc::clone(&fetch_calls);
         assert!(
             retry_pending_baseline_refresh_at_with_path(
-            Channel::Release,
-            root.path(),
-            None,
-            Some(&menubar_path),
-            move |_, _, _| async move {
-                successful_fetch_calls.fetch_add(1, Ordering::AcqRel);
-                Ok(remote)
-            },
-        )
+                Channel::Release,
+                root.path(),
+                None,
+                Some(&menubar_path),
+                move |_, _, _| async move {
+                    successful_fetch_calls.fetch_add(1, Ordering::AcqRel);
+                    Ok(remote)
+                },
+            )
             .await
         );
         assert_eq!(fetch_calls.load(Ordering::Acquire), 2);
@@ -7692,6 +7837,7 @@ error: clone failed";
         assert_eq!(event.tags["operation"], "baseline_persistence");
         assert_eq!(event.tags["persistence_write_path"], "unknown");
         assert_eq!(event.tags["persistence_error_kind"], "unknown");
+        assert_eq!(event.tags["persistence_fetch_failure_class"], "unknown");
         assert_eq!(event.tags["persistence_directory_state"], "unknown");
         assert_eq!(event.tags["persistence_target_state"], "unknown");
         assert_eq!(event.tags["persistence_temp_state"], "unknown");
@@ -7717,7 +7863,7 @@ error: clone failed";
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_baseline_warning_signatures_for_test();
         let detail = format!(
-            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable {}",
+            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable [github_fetch_failure_class=rate_limited] {}",
             available_stamp_marker("replaced_from_source")
         );
         let report =
@@ -7734,6 +7880,10 @@ error: clone failed";
         assert_eq!(event.level, sentry::Level::Warning);
         assert_eq!(event.tags["persistence_outcome"], "refresh_pending");
         assert_eq!(
+            event.tags["persistence_fetch_failure_class"],
+            "rate_limited"
+        );
+        assert_eq!(
             event.message.as_deref(),
             Some("Desktop Core baseline refresh pending")
         );
@@ -7744,6 +7894,50 @@ error: clone failed";
         assert!(event.extra["baselinePersistenceDetail"]
             .as_str()
             .is_some_and(|detail| detail.contains("baseline refresh pending")));
+    }
+
+    #[test]
+    fn pending_baseline_detail_omits_an_empty_trailing_marker() {
+        let detail = append_optional_marker(
+            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable",
+            "",
+        );
+        assert_eq!(
+            detail,
+            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable"
+        );
+        assert_eq!(detail.trim_end(), detail.as_str());
+    }
+
+    #[test]
+    fn github_tree_fetch_distinguishes_primary_rate_limit_from_other_forbidden() {
+        assert_eq!(
+            github_http_fetch_failure_class(reqwest::StatusCode::FORBIDDEN, Some("0")),
+            "rate_limited"
+        );
+        assert_eq!(
+            github_http_fetch_failure_class(reqwest::StatusCode::FORBIDDEN, Some("12")),
+            "forbidden"
+        );
+        assert_eq!(
+            github_http_fetch_failure_class(reqwest::StatusCode::TOO_MANY_REQUESTS, None),
+            "rate_limited"
+        );
+        assert_eq!(
+            github_http_fetch_failure_class(reqwest::StatusCode::INTERNAL_SERVER_ERROR, None),
+            "server_error"
+        );
+        assert_eq!(
+            github_fetch_failure_class_from_detail(&github_fetch_failure(
+                "rate_limited",
+                "HTTP 403"
+            )),
+            "rate_limited"
+        );
+        assert_eq!(
+            github_fetch_failure_class_from_detail("unclassified fetch failure"),
+            "unknown"
+        );
     }
 
     #[test]
