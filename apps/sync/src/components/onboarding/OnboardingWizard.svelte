@@ -99,6 +99,7 @@
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
     FIRST_FOLDER_SYNC_STEP_INDEX,
+    INVITE_TEAMMATE_STEP_INDEX,
     type WizardMode,
     createWizardRouter,
     DIRECTORY_STEP_INDEX,
@@ -118,6 +119,8 @@
   import {
     createSyncPlatformAdapter,
     FIRST_FOLDER_SYNC_STEP_FLAG,
+    INVITE_TEAMMATE_STEP_FLAG,
+    retryThrottled,
     SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
   } from '@hq/platform';
 
@@ -155,6 +158,8 @@
     tone: 'error' | 'warning';
     text: string;
   };
+
+  type InviteTeammateErrorKind = 'request_failed' | 'email_delivery_failed';
 
   type InstallProgressPayload = {
     handle?: string;
@@ -281,6 +286,13 @@
   let setupCompleted = $state(false);
   let setupStarted = $state(false);
   let showFirstFolderSyncStep = $state(false);
+  let showInviteTeammateStep = $state(false);
+  let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
+  let inviteCreatedForEmail: string | null = null;
+  let inviteEmail = $state('');
+  let inviteSending = $state(false);
+  let inviteSent = $state(false);
+  let inviteErrorKind = $state<InviteTeammateErrorKind | null>(null);
   let firstFolderSyncFlagResolution: Promise<boolean> | null = null;
   let firstFolderSyncBusy = $state(false);
   let firstFolderSyncError = $state(false);
@@ -384,11 +396,16 @@
     flow?: OnboardingFlow,
   ): void {
     if (consentOnly) return;
+    const companyUid =
+      stepIdFor(step) === 'invite-teammate'
+        ? inviteTeammateContext?.companyUid
+        : undefined;
     onboardingTelemetry.record({
       properties: {
         step: stepIdFor(step),
         action,
         ...details,
+        ...(companyUid ? { companyUid } : {}),
         appVersion: onboardingAppVersion,
         flow: flow ?? onboardingFlow,
       },
@@ -1015,6 +1032,159 @@
       });
     }
     return firstFolderSyncFlagResolution;
+  }
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  async function onboardingHqProJson(
+    method: 'GET' | 'POST',
+    url: string,
+    body?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await retryThrottled(
+      () =>
+        invokeCommand<unknown>('hq_pro_fetch', {
+          url,
+          method,
+          body: body === undefined ? null : JSON.stringify(body),
+        }),
+      (attempt) => {
+        if (!isRecord(attempt) || typeof attempt.status !== 'number') {
+          return { status: null };
+        }
+        return {
+          status: attempt.status,
+          retryAfter:
+            typeof attempt.retryAfter === 'string' ? attempt.retryAfter : null,
+        };
+      },
+    );
+    if (!isRecord(response) || typeof response.status !== 'number') {
+      throw new Error('hq-pro returned an invalid response');
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`hq-pro request failed with status ${response.status}`);
+    }
+    const payload =
+      typeof response.body === 'string' && response.body.trim()
+        ? JSON.parse(response.body)
+        : null;
+    if (!isRecord(payload)) throw new Error('hq-pro returned an invalid JSON body');
+    return payload;
+  }
+
+  async function resolveInviteTeammateContext(): Promise<{
+    companyUid: string;
+    personUid: string;
+  } | null> {
+    try {
+      // Gate before the membership reads so the default-off path stays dormant.
+      const flag = await onboardingFeatureFlags.identity.hasFeature(
+        INVITE_TEAMMATE_STEP_FLAG,
+      );
+      if (!flag.ok || flag.value !== true) return null;
+
+      const membershipPayload = await onboardingHqProJson('GET', '/membership/me');
+      const rawMemberships = membershipPayload.memberships;
+      if (!Array.isArray(rawMemberships) || !rawMemberships.every(isRecord)) {
+        return null;
+      }
+      const activeCompanyMemberships = rawMemberships.filter(
+        (membership) =>
+          membership.status === 'active' &&
+          typeof membership.companyUid === 'string' &&
+          membership.companyUid.startsWith('cmp_'),
+      );
+      const activeCompanyUids = [
+        ...new Set(
+          activeCompanyMemberships.map(
+            (membership) => membership.companyUid as string,
+          ),
+        ),
+      ];
+      if (activeCompanyUids.length !== 1) return null;
+
+      const companyUid = activeCompanyUids[0]!;
+      const ownMemberships = activeCompanyMemberships.filter(
+        (membership) => membership.companyUid === companyUid,
+      );
+      if (
+        ownMemberships.length !== 1 ||
+        typeof ownMemberships[0]?.personUid !== 'string' ||
+        !ownMemberships[0].personUid.startsWith('prs_')
+      ) {
+        return null;
+      }
+      const personUid = ownMemberships[0].personUid;
+
+      const rosterPayload = await onboardingHqProJson(
+        'GET',
+        `/membership/company/${encodeURIComponent(companyUid)}`,
+      );
+      const rawMembers = rosterPayload.members;
+      if (!Array.isArray(rawMembers) || !rawMembers.every(isRecord)) return null;
+      const activeMembers = rawMembers.filter((member) => member.status === 'active');
+      if (
+        activeMembers.length !== 1 ||
+        activeMembers[0]?.personUid !== personUid ||
+        (typeof activeMembers[0]?.companyUid === 'string' &&
+          activeMembers[0].companyUid !== companyUid)
+      ) {
+        return null;
+      }
+      return { companyUid, personUid };
+    } catch (error) {
+      console.warn('onboarding: invite teammate eligibility lookup failed', error);
+      return null;
+    }
+  }
+
+  async function sendTeammateInvite(): Promise<void> {
+    const context = inviteTeammateContext;
+    const inviteeEmail = inviteEmail.trim();
+    if (!context || !inviteeEmail || inviteSending || inviteSent) return;
+
+    inviteSending = true;
+    inviteErrorKind = null;
+    try {
+      const resend = inviteCreatedForEmail === inviteeEmail;
+      const response = await onboardingHqProJson('POST', '/membership/invite', {
+        companyUid: context.companyUid,
+        role: 'member',
+        invitedBy: context.personUid,
+        inviteeEmail,
+        ...(resend ? { resend: true } : { sendEmail: true }),
+      });
+      const inviteExists =
+        isRecord(response.membership) || (resend && response.resent === true);
+      if (!inviteExists) {
+        inviteErrorKind = 'request_failed';
+        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
+          inviteErrorKind,
+        });
+        return;
+      }
+      inviteCreatedForEmail = inviteeEmail;
+      if (response.emailSent !== true) {
+        inviteErrorKind = 'email_delivery_failed';
+        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
+          inviteErrorKind,
+        });
+        return;
+      }
+      inviteSent = true;
+      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', { outcome: 'ok' });
+    } catch (error) {
+      console.warn('onboarding: invite teammate request failed', error);
+      inviteErrorKind = 'request_failed';
+      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
+        inviteErrorKind,
+      });
+    } finally {
+      inviteSending = false;
+    }
   }
 
   async function resolveDefaultPath() {
@@ -1668,7 +1838,7 @@
     firstFolderSyncError = false;
     recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'completed');
     if (currentStep === FIRST_FOLDER_SYNC_STEP_INDEX) {
-      advanceTo(CONSENT_STEP_INDEX, null);
+      advanceTo(nextAfterFirstFolderSync(), null);
     }
   }
 
@@ -1749,12 +1919,18 @@
       });
       // Setup is what provisions the person entity; stitch the install session.
       void resolveInstallerPersonUid();
-      // The first-folder step is optional and manager-gated. A flag outage or
-      // missing registry value leaves the current consent flow unchanged.
-      const nextStep = (await resolveFirstFolderSyncStepFlag())
-        ? FIRST_FOLDER_SYNC_STEP_INDEX
-        : CONSENT_STEP_INDEX;
+      // Both follow-on steps are optional and manager-gated. The invite path
+      // checks its flag before reading memberships, and every lookup fails closed.
+      const [firstFolderEnabled, inviteContext] = await Promise.all([
+        resolveFirstFolderSyncStepFlag(),
+        resolveInviteTeammateContext(),
+      ]);
       if (!isCurrentRun(runId)) return;
+      inviteTeammateContext = inviteContext;
+      showInviteTeammateStep = inviteContext !== null;
+      const nextStep = firstFolderEnabled
+        ? FIRST_FOLDER_SYNC_STEP_INDEX
+        : nextAfterFirstFolderSync();
       // Consent still precedes connector import and the final handoff.
       advanceTo(nextStep, 'completed', {
         failedStageCount: result.failedStages.length,
@@ -2359,6 +2535,12 @@
     transitionTo(router.currentStep, exitAction, exitDetails);
   }
 
+  function nextAfterFirstFolderSync(): number {
+    return showInviteTeammateStep && inviteTeammateContext
+      ? INVITE_TEAMMATE_STEP_INDEX
+      : CONSENT_STEP_INDEX;
+  }
+
   function goBackTo(step: number) {
     router.goTo(step);
     transitionTo(router.currentStep, 'back');
@@ -2880,9 +3062,74 @@
                 class="btn btn-secondary"
                 type="button"
                 data-testid="onboarding-first-folder-sync-skip"
-                onclick={() => advanceTo(CONSENT_STEP_INDEX, 'skipped')}
+                onclick={() => advanceTo(nextAfterFirstFolderSync(), 'skipped')}
               >Skip for now</button>
             </div>
+          </section>
+        {/if}
+
+        {#if showInviteTeammateStep}
+          <section
+            class="panel"
+            class:on={panelStep === INVITE_TEAMMATE_STEP_INDEX && panelOn}
+            data-p={INVITE_TEAMMATE_STEP_INDEX}
+            data-testid="onboarding-invite-teammate"
+            aria-labelledby="onboarding-title-invite-teammate"
+          >
+            <h2 class="h" id="onboarding-title-invite-teammate">Invite a teammate</h2>
+            <p class="body">
+              Invite someone to work with you in HQ. This is optional, and you can
+              invite people later.
+            </p>
+            {#if inviteSent}
+              <p class="inline-note" role="status" aria-live="polite">Invitation sent.</p>
+            {:else if inviteErrorKind === 'email_delivery_failed'}
+              <p
+                class="inline-note"
+                data-testid="onboarding-invite-error"
+                role="alert"
+              >HQ could not confirm that the invitation email was sent. You can try again or skip for now.</p>
+            {:else if inviteErrorKind === 'request_failed'}
+              <p
+                class="inline-note"
+                data-testid="onboarding-invite-error"
+                role="alert"
+              >HQ could not send the invitation. You can try again or skip for now.</p>
+            {/if}
+            <form
+              class="invite-form"
+              onsubmit={(event) => {
+                event.preventDefault();
+                void sendTeammateInvite();
+              }}
+            >
+              <label for="onboarding-invite-email">Teammate’s email</label>
+              <input
+                id="onboarding-invite-email"
+                data-testid="onboarding-invite-email"
+                type="email"
+                bind:value={inviteEmail}
+                autocomplete="email"
+                maxlength="254"
+                required
+                disabled={inviteSending || inviteSent}
+              />
+              <div class="btns split">
+                <button
+                  class="btn btn-primary"
+                  type="submit"
+                  data-testid="onboarding-invite-send"
+                  disabled={inviteSending || inviteSent || !inviteEmail.trim()}
+                  aria-busy={inviteSending}
+                >{inviteSending ? 'Sending…' : 'Send'}</button>
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="onboarding-invite-skip"
+                  onclick={() => advanceTo(CONSENT_STEP_INDEX, inviteSent ? null : 'skipped')}
+                >{inviteSent ? 'Continue' : 'Skip'}</button>
+              </div>
+            </form>
           </section>
         {/if}
 
@@ -3521,6 +3768,11 @@
   .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:auto; }
   .btns.split { justify-content:space-between; }
   .btn { font-family:inherit; font-size:14px; font-weight:400; line-height:20px; padding:10px 16px; border-radius:8px; border:none; cursor:pointer; transition:opacity .15s, transform .1s; }
+  .invite-form { display:flex; flex-direction:column; gap:8px; margin-top:18px; }
+  .invite-form label { color:var(--c-text); font-size:13px; line-height:18px; }
+  .invite-form input { width:100%; min-height:40px; padding:9px 11px; border:1px solid var(--c-field-border); border-radius:0; background:var(--c-field-bg); color:var(--c-text); font:inherit; }
+  .invite-form input:focus-visible { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; }
+  .invite-form .btns { margin-top:8px; }
   .btn:active:not(:disabled) { transform:scale(.97); }
   .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
   .btn-secondary { background:var(--c-btn2-bg); color:var(--c-btn2-fg); }
