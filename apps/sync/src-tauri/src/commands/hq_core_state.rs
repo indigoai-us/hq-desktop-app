@@ -2642,7 +2642,17 @@ fn send_core_update_baseline_persistence_warning(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let category = report.error_category.label();
-        let fingerprint = ["desktop-core-update-baseline-persistence-failed"];
+        let (message, fingerprint) = if report.diagnostic_tags.outcome == "refresh_pending" {
+            (
+                "Desktop Core baseline refresh pending",
+                ["desktop-core-baseline-refresh-pending"],
+            )
+        } else {
+            (
+                "Desktop Core update applied but baseline persistence failed",
+                ["desktop-core-update-baseline-persistence-failed"],
+            )
+        };
         sentry::with_scope(
             |sentry_scope| {
                 sentry_scope.set_fingerprint(Some(&fingerprint));
@@ -2686,12 +2696,7 @@ fn send_core_update_baseline_persistence_warning(
                     sentry::protocol::Value::String(report.detail),
                 );
             },
-            || {
-                sentry::capture_message(
-                    "Desktop Core update applied but baseline persistence failed",
-                    sentry::Level::Warning,
-                )
-            },
+            || sentry::capture_message(message, sentry::Level::Warning),
         );
     }));
 }
@@ -7705,6 +7710,40 @@ error: clone failed";
         assert!(redacted.contains("HTTP 403 Forbidden"));
         assert!(!redacted.contains("/home/alice"));
         assert!(!redacted.contains("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn pending_baseline_refresh_keeps_warning_visibility_in_its_own_group() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_baseline_warning_signatures_for_test();
+        let detail = format!(
+            "Core baseline refresh pending for indigoai-us/hq-core@0123456789abcdef: network unavailable {}",
+            available_stamp_marker("replaced_from_source")
+        );
+        let report =
+            core_update_baseline_persistence_warning_report("automatic", Channel::Release, &detail);
+        let events = sentry::test::with_captured_events_options(
+            || send_core_update_baseline_persistence_warning(report),
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+        let event = hq_telemetry::before_send(events.into_iter().next().unwrap()).unwrap();
+
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(event.tags["persistence_outcome"], "refresh_pending");
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Desktop Core baseline refresh pending")
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec!["desktop-core-baseline-refresh-pending"]
+        );
+        assert!(event.extra["baselinePersistenceDetail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("baseline refresh pending")));
     }
 
     #[test]
