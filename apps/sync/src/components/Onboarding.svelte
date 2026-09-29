@@ -2,7 +2,13 @@
   import { invoke } from '@tauri-apps/api/core';
   import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { onDestroy, onMount } from 'svelte';
-  import { initialStepForLifecycle, CONSENT_STEP_INDEX, type WizardMode } from '../lib/onboarding-wizard';
+  import {
+    CONSENT_STEP_INDEX,
+    initialStepForLifecycle,
+    isMissingRootRecovery,
+    type WizardMode,
+  } from '../lib/onboarding-wizard';
+  import type { StartupSetupEvidence } from '../lib/unexpected-startup-surface';
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
   import CinematicIntro from './onboarding/CinematicIntro.svelte';
@@ -22,6 +28,8 @@
      * intro") and calls `onfinish` when it ends — no wizard, no flag writes.
      */
     mode?: WizardMode | 'replay';
+    /** Persisted setup markers used to route a missing-root install to recovery. */
+    setupEvidence?: StartupSetupEvidence | null;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
   }
@@ -30,6 +38,7 @@
     state: lifecycleStateProp,
     onfinish,
     mode = 'onboarding',
+    setupEvidence = null,
     repromptPersonUid = null,
   }: Props = $props();
 
@@ -159,6 +168,7 @@
       mode === 'replay' ||
       (mode === 'onboarding' &&
         lifecycleStateProp === 'NeedsInstall' &&
+        !isMissingRootRecovery(lifecycleStateProp, setupEvidence) &&
         !introAlreadySeen());
     void (showIntro ? enterIntroWindow() : sizeForOnboarding(ONBOARDING_SIZE));
   });
@@ -213,9 +223,13 @@
     // Consent-only runs open straight on the consent step — there is no
     // sign-in, directory or setup to run.
     initialStep =
-      mode === 'onboarding' ? initialStepForLifecycle(lifecycleStateProp) : CONSENT_STEP_INDEX;
+      mode === 'onboarding'
+        ? initialStepForLifecycle(lifecycleStateProp, setupEvidence)
+        : CONSENT_STEP_INDEX;
     onboardingFlow =
-      lifecycleStateProp === 'InstallResume' || lifecycleStateProp === 'NeedsAuthForInstall'
+      lifecycleStateProp === 'InstallResume' ||
+      lifecycleStateProp === 'NeedsAuthForInstall' ||
+      isMissingRootRecovery(lifecycleStateProp, setupEvidence)
         ? 'resume'
         : 'first_install';
   });
@@ -253,6 +267,7 @@
   <OnboardingWizard
     {initialStep}
     {onboardingFlow}
+    recoveringMissingRoot={isMissingRootRecovery(lifecycleStateProp, setupEvidence)}
     mode={mode === 'replay' ? 'onboarding' : mode}
     {repromptPersonUid}
     onfinish={handleFinish}

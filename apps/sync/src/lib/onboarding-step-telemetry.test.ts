@@ -13,6 +13,7 @@ import {
   type InstallerStepPingPayload,
   type OnboardingStepEvent,
 } from './onboarding-step-telemetry';
+import { INSTALLER_STEP_BY_WIZARD_STEP } from './installer-step-telemetry';
 import { normalizeSetupErrorKind } from './onboarding-setup';
 
 function memoryStorage(): Storage {
@@ -85,6 +86,35 @@ describe('onboarding step telemetry', () => {
         properties: { step: 'directory', action: 'completed' },
       },
     ]);
+  });
+
+  it('records first-folder-step transitions only on the desktop onboarding event path', async () => {
+    const telemetry = createTelemetry();
+    expect(INSTALLER_STEP_BY_WIZARD_STEP['first-folder-sync' as never]).toBeNull();
+
+    for (const action of ['entered', 'started', 'skipped', 'completed'] as const) {
+      telemetry.record({
+        properties: {
+          step: 'first-folder-sync' as never,
+          action,
+          flow: 'first_install',
+        },
+      });
+    }
+    await telemetry.flush();
+
+    expect(emitted.map(({ properties }) => [properties.step, properties.action])).toEqual([
+      ['first-folder-sync', 'entered'],
+      ['first-folder-sync', 'started'],
+      ['first-folder-sync', 'skipped'],
+      ['first-folder-sync', 'completed'],
+    ]);
+    expect(pings).toEqual([]);
+    expect(
+      Object.keys(
+        desktopPropertiesForOnboardingStep(emitted[0]!),
+      ).sort(),
+    ).toEqual(['action', 'appVersion', 'flow', 'platform', 'step', 'surface']);
   });
 
   it('keeps directory rejection reasons bounded and drops path-shaped values', () => {

@@ -4,13 +4,16 @@ import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
+  INVITE_TEAMMATE_STEP_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
+  SETUP_STAGE_TIMEOUT_FIX_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   createHqProFlagFetch,
   registryKeyFor,
 } from "./flags.js";
+import { createSyncPlatformAdapter } from "./tauri/sync-adapter.js";
 
 function fakeClient(
   overrides: Pick<FlagClient, "ready" | "snapshot" | "isEnabled"> &
@@ -52,9 +55,153 @@ describe("registry key mapping", () => {
       "desktop.setup-directory-parent-fallback",
     );
   });
+
+  it("maps the first-folder onboarding flag using the registry key format", () => {
+    const key = "desktop.first-folder-sync-step-v1";
+    expect(key).toMatch(/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/);
+    expect(registryKeyFor(key)).toBe(key);
+  });
+
+  it("maps the invite-teammate onboarding flag through the registry", () => {
+    expect(INVITE_TEAMMATE_STEP_FLAG).toBe("desktop.invite-teammate-step-v1");
+    expect(registryKeyFor(INVITE_TEAMMATE_STEP_FLAG)).toBe(INVITE_TEAMMATE_STEP_FLAG);
+  });
+
+  it("maps setup stage timeout mitigation through the registry", () => {
+    expect(SETUP_STAGE_TIMEOUT_FIX_FLAG).toBe(
+      "desktop.setup-stage-timeout-fix-v1",
+    );
+    expect(registryKeyFor(SETUP_STAGE_TIMEOUT_FIX_FLAG)).toBe(
+      SETUP_STAGE_TIMEOUT_FIX_FLAG,
+    );
+  });
 });
 
 describe("createFeatureFlagGate", () => {
+  it("uses the setup timeout registry override when it is explicitly enabled", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: { [SETUP_STAGE_TIMEOUT_FIX_FLAG]: true } }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(SETUP_STAGE_TIMEOUT_FIX_FLAG)).resolves.toEqual(
+      ok(true),
+    );
+    expect(isEnabled).toHaveBeenCalledExactlyOnceWith(SETUP_STAGE_TIMEOUT_FIX_FLAG);
+  });
+
+  it("uses the first-folder registry override when it is explicitly enabled", async () => {
+    const key = "desktop.first-folder-sync-step-v1";
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: { [key]: true } }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(key)).resolves.toEqual(ok(true));
+    expect(isEnabled).toHaveBeenCalledExactlyOnceWith(key);
+  });
+
+  it("keeps the first-folder gate off when the flag registry is unavailable", async () => {
+    const key = "desktop.first-folder-sync-step-v1";
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(key)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps invite-teammate off when the flag registry is unavailable", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(INVITE_TEAMMATE_STEP_FLAG)).resolves.toEqual(
+      ok(false),
+    );
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps setup stage timeout mitigation off when the registry is unavailable", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(SETUP_STAGE_TIMEOUT_FIX_FLAG)).resolves.toEqual(
+      ok(false),
+    );
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps setup stage timeout mitigation off when the registry has no configured value", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(SETUP_STAGE_TIMEOUT_FIX_FLAG)).resolves.toEqual(
+      ok(false),
+    );
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps invite-teammate off when the registry has no configured value", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(INVITE_TEAMMATE_STEP_FLAG)).resolves.toEqual(
+      ok(false),
+    );
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
   it("snapshot missing → legacy path used", async () => {
     const isEnabled = vi.fn(() => false);
     const fallback = vi.fn(async () => ok(true));

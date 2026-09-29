@@ -52,6 +52,44 @@ pub struct SearchResponse {
 }
 
 /// URL-escape query values without pulling in the `urlencoding` crate.
+pub const MESSAGE_SEARCH_MIN_QUERY_LENGTH: usize = 2;
+pub const MESSAGE_SEARCH_MAX_QUERY_LENGTH: usize = 100;
+const MESSAGE_SEARCH_QUERY_LENGTH_ERROR: &str =
+    "Query parameter 'q' must be between 2 and 100 characters";
+
+fn is_javascript_trim_whitespace(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0009}'
+            | '\u{000A}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
+    )
+}
+
+/// Trim and validate exactly as the server does: JavaScript trim followed by
+/// `String.length`, which counts UTF-16 code units rather than UTF-8 bytes.
+pub fn normalize_search_query(query: &str) -> Result<String, String> {
+    let query = query.trim_matches(is_javascript_trim_whitespace);
+    let length = query.encode_utf16().count();
+    if !(MESSAGE_SEARCH_MIN_QUERY_LENGTH..=MESSAGE_SEARCH_MAX_QUERY_LENGTH).contains(&length) {
+        return Err(MESSAGE_SEARCH_QUERY_LENGTH_ERROR.to_string());
+    }
+    Ok(query.to_string())
+}
+
 /// Escapes reserved / unsafe characters that break query strings.
 fn esc_query(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -69,25 +107,25 @@ fn esc_query(s: &str) -> String {
     out
 }
 
-/// Build `GET /v1/notify/search?q=…` with optional `companyUid` and `limit`.
-///
-/// Pure + side-effect-free so the query shape is unit-testable. Empty `q` still
-/// produces a valid URL (caller may reject empty queries before invoking).
+/// Build `GET /v1/notify/search?q=…` with optional `companyUid` and `limit`,
+/// only for a query accepted by the server.
+/// Pure + side-effect-free so invalid inputs cannot become request URLs.
 pub fn build_search_url(
     base_url: &str,
     q: &str,
     company_uid: Option<&str>,
     limit: Option<u32>,
-) -> String {
+) -> Result<String, String> {
+    let q = normalize_search_query(q)?;
     let base = base_url.trim_end_matches('/');
-    let mut url = format!("{base}/v1/notify/search?q={}", esc_query(q));
+    let mut url = format!("{base}/v1/notify/search?q={}", esc_query(&q));
     if let Some(uid) = company_uid.map(str::trim).filter(|s| !s.is_empty()) {
         url.push_str(&format!("&companyUid={}", esc_query(uid)));
     }
     if let Some(n) = limit {
         url.push_str(&format!("&limit={n}"));
     }
-    url
+    Ok(url)
 }
 
 /// Map a raw JSON value (or already-parsed response) into `SearchResponse`.
@@ -107,13 +145,15 @@ mod tests {
 
     #[test]
     fn build_search_url_basic_query() {
-        let url = build_search_url("https://api.example.com", "hello", None, None);
+        let url = build_search_url("https://api.example.com", "hello", None, None)
+            .expect("valid query builds a URL");
         assert_eq!(url, "https://api.example.com/v1/notify/search?q=hello");
     }
 
     #[test]
     fn build_search_url_encodes_spaces_and_reserved() {
-        let url = build_search_url("https://api.example.com/", "a b&c", None, Some(50));
+        let url = build_search_url("https://api.example.com/", "a b&c", None, Some(50))
+            .expect("valid query builds a URL");
         assert_eq!(
             url,
             "https://api.example.com/v1/notify/search?q=a%20b%26c&limit=50"
@@ -127,7 +167,8 @@ mod tests {
             "launch",
             Some("cmp_acme"),
             Some(100),
-        );
+        )
+        .expect("valid query builds a URL");
         assert_eq!(
             url,
             "https://api.example.com/v1/notify/search?q=launch&companyUid=cmp_acme&limit=100"
@@ -136,8 +177,32 @@ mod tests {
 
     #[test]
     fn build_search_url_skips_blank_company() {
-        let url = build_search_url("https://api.example.com", "x", Some("  "), None);
-        assert_eq!(url, "https://api.example.com/v1/notify/search?q=x");
+        let url = build_search_url("https://api.example.com", "xy", Some("  "), None)
+            .expect("valid query builds a URL");
+        assert_eq!(url, "https://api.example.com/v1/notify/search?q=xy");
+    }
+
+    #[test]
+    fn search_query_bounds_match_server_utf16_length_and_reject_before_url_build() {
+        let invalid = build_search_url("https://api.example.com", "x", None, None)
+            .expect_err("one UTF-16 code unit is below the server minimum");
+        assert_eq!(invalid, MESSAGE_SEARCH_QUERY_LENGTH_ERROR);
+        assert!(build_search_url("https://api.example.com", &"x".repeat(101), None, None).is_err());
+
+        let two = build_search_url("https://api.example.com", "xy", None, None)
+            .expect("two code units are accepted");
+        assert_eq!(two, "https://api.example.com/v1/notify/search?q=xy");
+        assert!(build_search_url("https://api.example.com", &"x".repeat(100), None, None).is_ok());
+
+        // An emoji is one Unicode scalar but two UTF-16 code units. Fifty fit
+        // the server's 100-unit cap, though their UTF-8 representation is 200 bytes.
+        assert!(build_search_url("https://api.example.com", "😀", None, None).is_ok());
+        assert!(build_search_url("https://api.example.com", &"😀".repeat(50), None, None,).is_ok());
+
+        // JavaScript String.trim also removes BOM; match its query normalization.
+        assert!(
+            build_search_url("https://api.example.com", "\u{FEFF}xy\u{FEFF}", None, None).is_ok()
+        );
     }
 
     #[test]

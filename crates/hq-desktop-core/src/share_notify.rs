@@ -278,14 +278,90 @@ pub fn share_notifications_enabled(share_notifications: Option<bool>) -> bool {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Interval between independent share-notify polls once the launch poll has
-/// run. Delivery MUST NOT depend on `sync:all-complete` firing — see the
-/// 2026-05-28 incident (`workspace/reports/hq-sync-notifications-debug.md`):
-/// the sync daemon was down ~34h, so the poller never ran and 7 incoming
-/// shares sat unacked, then drained in a single cursor jump (≤1 banner for 7
-/// events). The post-sync poll in `main.rs` is now a latency optimization on
-/// top of this timer, not the sole delivery mechanism.
+/// Interval between scheduler decisions. With the rollout flag off, it keeps
+/// the legacy 60-second fetch cadence. With the flag on, it checks visibility
+/// and push state and only runs fetches when the five-minute fallback is due.
+/// Delivery MUST NOT depend on `sync:all-complete` firing — see the 2026-05-28
+/// incident (`workspace/reports/hq-sync-notifications-debug.md`): the sync
+/// daemon was down ~34h, so the poller never ran and 7 incoming shares sat
+/// unacked, then drained in a single cursor jump (≤1 banner for 7 events). The
+/// post-sync poll in `main.rs` remains an extra latency optimization.
 pub const SHARE_POLL_INTERVAL_SECS: u64 = 60;
+
+/// Slow fallback while desktop push is enabled but its MQTT connection is down.
+/// A healthy push connection removes periodic share and DM fetches entirely.
+pub const SHARE_PUSH_FALLBACK_INTERVAL_SECS: u64 = 300;
+
+/// Fixed start-to-start scheduler cadence for the legacy fast poll. Tokio's
+/// skipped-tick policy keeps request duration from being added to every cycle.
+pub fn share_poll_interval() -> tokio::time::Interval {
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(SHARE_POLL_INTERVAL_SECS));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharePollAction {
+    FastPoll,
+    SlowFallback,
+    Pause,
+}
+
+/// Select a periodic poll action from the default-off rollout flag and
+/// transport state. A disconnected transport keeps the five-minute fallback
+/// active even when every window is hidden, since tray/background launches
+/// still need a notification long-stop. A healthy push connection pauses
+/// scheduled polling while hidden or visible.
+pub fn share_poll_action(
+    push_events_enabled: bool,
+    push_connected: bool,
+    _window_visible: bool,
+) -> SharePollAction {
+    if !push_events_enabled {
+        return SharePollAction::FastPoll;
+    }
+    if push_connected {
+        SharePollAction::Pause
+    } else {
+        SharePollAction::SlowFallback
+    }
+}
+
+/// Whether the selected periodic action is due, based on the last scheduler
+/// poll. Notification-triggered refreshes do not reset this timer.
+pub fn share_poll_due(action: SharePollAction, elapsed_since_last_poll_secs: Option<u64>) -> bool {
+    match action {
+        SharePollAction::FastPoll => true,
+        SharePollAction::SlowFallback => elapsed_since_last_poll_secs
+            .map(|elapsed| elapsed >= SHARE_PUSH_FALLBACK_INTERVAL_SECS)
+            .unwrap_or(true),
+        SharePollAction::Pause => false,
+    }
+}
+
+/// Decide whether an ID-only notification push should refresh shared-with-me.
+/// The source API remains responsible for returning file details.
+pub fn should_refresh_from_notification_push(topic: &str, enabled: bool) -> bool {
+    enabled && topic.ends_with("/notifications")
+}
+
+/// Reject partial or denied SUBACKs before treating realtime delivery as
+/// healthy. The single batched SUBSCRIBE returns one result per topic.
+pub fn all_realtime_subscriptions_granted(expected_count: usize, granted: &[bool]) -> bool {
+    expected_count > 0
+        && granted.len() == expected_count
+        && granted.iter().all(|accepted| *accepted)
+}
+
+/// A connected socket is usable only for the auth session that established it.
+/// Generation zero is reserved for the disconnected/uninitialized sentinel.
+pub fn push_connection_is_current_session(
+    connected_generation: u64,
+    active_generation: u64,
+) -> bool {
+    active_generation != 0 && connected_generation == active_generation
+}
 
 // ── Notification content helpers ──────────────────────────────────────────────
 
@@ -723,6 +799,106 @@ mod tests {
         // the regression guard for dropping the `@getindigo.ai` gate: a
         // non-getindigo recipient (None / Some(true) pref) must still poll.
         assert!(!share_notifications_enabled(Some(false)));
+    }
+
+    #[test]
+    fn test_push_poll_action_pauses_on_connected_push_and_hidden_window() {
+        use SharePollAction::{FastPoll, Pause, SlowFallback};
+
+        assert_eq!(share_poll_action(true, true, true), Pause);
+        assert_eq!(share_poll_action(true, true, false), Pause);
+        assert_eq!(share_poll_action(true, false, true), SlowFallback);
+        assert_eq!(share_poll_action(true, false, false), SlowFallback);
+        assert_eq!(share_poll_action(false, true, false), FastPoll);
+        assert_eq!(share_poll_due(Pause, Some(600)), false);
+        assert_eq!(share_poll_due(SlowFallback, Some(299)), false);
+        assert_eq!(share_poll_due(SlowFallback, Some(300)), true);
+        assert_eq!(share_poll_due(FastPoll, Some(0)), true);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_fast_poll_interval_stays_on_fixed_deadlines_during_work() {
+        let mut interval = share_poll_interval();
+        let start = tokio::time::Instant::now();
+        assert_eq!(interval.tick().await, start);
+
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        assert_eq!(
+            interval.tick().await,
+            start + std::time::Duration::from_secs(60)
+        );
+
+        // Model 90 seconds of sequential share + DM HTTP work. Skip missed
+        // ticks and resume at the next fixed boundary, t=180s, instead of
+        // adding another full minute after the work completes at t=150s.
+        tokio::time::advance(std::time::Duration::from_secs(90)).await;
+        assert_eq!(
+            interval.tick().await,
+            start + std::time::Duration::from_secs(120)
+        );
+        assert_eq!(
+            interval.tick().await,
+            start + std::time::Duration::from_secs(180)
+        );
+    }
+
+    #[test]
+    fn test_flag_off_keeps_legacy_fast_poll() {
+        assert_eq!(
+            share_poll_action(false, true, true),
+            SharePollAction::FastPoll
+        );
+        assert_eq!(
+            share_poll_action(false, false, true),
+            SharePollAction::FastPoll
+        );
+    }
+
+    #[test]
+    fn test_disconnected_push_fallback_waits_five_minutes() {
+        use SharePollAction::SlowFallback;
+
+        assert!(share_poll_due(SlowFallback, None));
+        assert!(!share_poll_due(SlowFallback, Some(299)));
+        assert!(share_poll_due(SlowFallback, Some(300)));
+    }
+
+    #[test]
+    fn test_notification_push_refreshes_shares_for_any_enabled_topic_wake() {
+        // The existing notification contract treats the topic as the wake and
+        // does not require a particular payload shape or an IDs field.
+        assert!(should_refresh_from_notification_push(
+            "hq/prs_abc/notifications",
+            true
+        ));
+        assert!(!should_refresh_from_notification_push(
+            "hq/prs_abc/notifications",
+            false
+        ));
+        assert!(!should_refresh_from_notification_push(
+            "hq/prs_abc/work",
+            true
+        ));
+        assert!(should_refresh_from_notification_push(
+            "hq/prs_abc/notifications",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_realtime_transport_requires_every_suback_to_be_granted() {
+        assert!(all_realtime_subscriptions_granted(3, &[true, true, true]));
+        assert!(!all_realtime_subscriptions_granted(3, &[true, false, true]));
+        assert!(!all_realtime_subscriptions_granted(3, &[true, true]));
+        assert!(!all_realtime_subscriptions_granted(0, &[]));
+    }
+
+    #[test]
+    fn test_push_connection_is_valid_only_for_its_auth_session() {
+        assert!(push_connection_is_current_session(7, 7));
+        assert!(!push_connection_is_current_session(0, 7));
+        assert!(!push_connection_is_current_session(7, 8));
+        assert!(!push_connection_is_current_session(0, 0));
     }
 
     // ── BlockingNotifyGuard cap-to-1 (CPU spin regression, 2026-05-28) ─────────
