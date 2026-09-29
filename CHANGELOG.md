@@ -64,6 +64,7 @@ The release moves it under the version it ships in.
 
 - Setup uses HQ's managed Node.js and npm to install qmd and the HQ CLI.
 - Sign-in keeps working after an internal error during an earlier sign-in attempt, instead of failing until the app restarts.
+- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
 
 ## [0.10.358] — 2026-09-29
 
