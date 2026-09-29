@@ -6084,7 +6084,12 @@ error: clone failed";
     fn sentry_unknown_cohort_20260929_active_hq_change_deferral_gets_own_kind() {
         // Redacted shape from 34 eligible post-0.10.304 events.
         assert_eq!(
-            classify_rescue_stderr_failure("Update deferred while an HQ change is active").label(),
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "Update deferred while an HQ change is active",
+                None,
+            )
+            .label(),
             "update-deferred-hq-change"
         );
     }
