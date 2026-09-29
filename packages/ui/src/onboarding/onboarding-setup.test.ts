@@ -635,3 +635,27 @@ describe("setup progress never moves backward", () => {
     );
   });
 });
+
+describe("setup step summary", () => {
+  it("names the band the install is on as Step N of 5", async () => {
+    const { setupStepSummary } = await import("./onboarding-setup");
+    expect(setupStepSummary(0)).toMatchObject({ step: 1, total: 5, done: false });
+    expect(setupStepSummary(41)).toMatchObject({
+      step: 3,
+      label: "Bringing in your AI workers and workflows",
+      compactLabel: "Bringing in your AI workers",
+      done: false,
+    });
+    expect(setupStepSummary(99)).toMatchObject({ step: 5, done: false });
+  });
+
+  it("reports done only once every band is done", async () => {
+    const { setupStepSummary } = await import("./onboarding-setup");
+    expect(setupStepSummary(100)).toMatchObject({
+      step: 5,
+      total: 5,
+      compactLabel: "Syncing across your devices",
+      done: true,
+    });
+  });
+});
