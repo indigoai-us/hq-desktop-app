@@ -2059,6 +2059,36 @@ pub(crate) fn emit_core_update_event(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn core_update_hq_change_deferred_telemetry_event(
+    source: &'static str,
+    channel: Channel,
+    local_version: Option<&str>,
+    target_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+) -> (&'static str, Value) {
+    (
+        "core_update_skipped",
+        Value::Object(core_update_event_properties(
+            source,
+            "deferred",
+            Some(channel),
+            local_version,
+            target_version,
+            auto_update_enabled,
+            eligible,
+            version_behind,
+            duration,
+            None,
+            None,
+            Some("hq_change_active"),
+        )),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn core_update_failed_properties(
     source: &'static str,
     channel: Channel,
@@ -2118,6 +2148,7 @@ pub(crate) fn emit_core_update_failed_event(
     exit_code: Option<i32>,
     error_kind: &'static str,
     details: CoreUpdateFailureDetails<'_>,
+    mut emit_telemetry: impl FnMut(&'static str, Value),
 ) {
     if core_update_failure_report_disposition(details.rescue_failure_category)
         == CoreUpdateFailureReportDisposition::DeferredForHqChange
@@ -2126,25 +2157,25 @@ pub(crate) fn emit_core_update_failed_event(
             "hq-core-update",
             "native Core update deferred while an HQ change is active; it will be retried on a later check",
         );
-        emit_core_update_event(
-            "core_update_skipped",
-            source,
-            "deferred",
-            Some(channel),
-            local_version,
-            None,
-            auto_update_enabled,
-            eligible,
-            version_behind,
-            duration,
-            None,
-            None,
-            Some("hq_change_active"),
-        );
+        // Automatic deferrals are emitted by the automatic outcome arm so the
+        // event includes its target version. Manual installs report here.
+        if source != "automatic" {
+            let (event_name, properties) = core_update_hq_change_deferred_telemetry_event(
+                source,
+                channel,
+                local_version,
+                None,
+                auto_update_enabled,
+                eligible,
+                version_behind,
+                duration,
+            );
+            emit_telemetry(event_name, properties);
+        }
         return;
     }
 
-    crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+    emit_telemetry(
         "core_update_failed",
         Value::Object(core_update_failed_properties(
             source,
@@ -4303,6 +4334,27 @@ fn defer_automatic_core_update_for_sync(
     NativeCoreAutoUpdateOutcome::DeferredForSync
 }
 
+fn emit_automatic_core_update_hq_change_deferral_telemetry(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    emit_telemetry: impl FnOnce(&'static str, Value),
+) {
+    log(
+        "hq-core-update",
+        "native auto-update deferred: an HQ change is active; retrying on a later check",
+    );
+    let (event_name, properties) = core_update_hq_change_deferred_telemetry_event(
+        "automatic",
+        candidate.channel,
+        candidate.local_version,
+        Some(candidate.target_version),
+        true,
+        Some(candidate.is_eligible),
+        Some(candidate.version_behind),
+        Duration::ZERO,
+    );
+    emit_telemetry(event_name, properties);
+}
+
 fn skip_automatic_core_update_for_ineligible_target(
     candidate: CoreAutoUpdateCandidate<'_>,
     eligibility: AutomaticTargetEligibility,
@@ -4753,9 +4805,9 @@ where
                         core_update_failure_details(&error).rescue_failure_category,
                     ) == CoreUpdateFailureReportDisposition::DeferredForHqChange =>
                 {
-                    log(
-                        "hq-core-update",
-                        "native auto-update deferred: an HQ change is active; retrying on a later check",
+                    emit_automatic_core_update_hq_change_deferral_telemetry(
+                        candidate,
+                        crate::commands::telemetry::emit_desktop_telemetry_best_effort,
                     );
                     NativeCoreAutoUpdateOutcome::DeferredForHqChange
                 }
@@ -8638,7 +8690,20 @@ error: clone failed";
         expected_messages: &[&'static str],
         report: impl FnOnce(),
     ) -> Vec<sentry::protocol::Event<'static>> {
-        let expected_count = expected_messages.len();
+        captured_dispatched_core_update_events_with_expectation(
+            expected_messages,
+            expected_messages.len(),
+            Duration::ZERO,
+            report,
+        )
+    }
+
+    fn captured_dispatched_core_update_events_with_expectation(
+        expected_messages: &[&'static str],
+        expected_count: usize,
+        quiet_window: Duration,
+        report: impl FnOnce(),
+    ) -> Vec<sentry::protocol::Event<'static>> {
         // Binding the client to the process hub below makes it visible to every
         // thread. The pending-baseline-refresh tests (serialized by
         // CORE_UPDATE_TEST_LOCK, not the Sentry lock) record a real
@@ -8674,9 +8739,14 @@ error: clone failed";
             // envelopes it is waiting for have actually been collected. Count
             // only the messages this test asked for: another Core report can be
             // in flight from a neighbouring test.
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while transport.matching(expected_messages) < expected_count
-                && Instant::now() < deadline
+            let deadline = Instant::now()
+                + if expected_count == 0 {
+                    quiet_window
+                } else {
+                    Duration::from_secs(5)
+                };
+            while Instant::now() < deadline
+                && (expected_count == 0 || transport.matching(expected_messages) < expected_count)
             {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -8699,6 +8769,120 @@ error: clone failed";
                     .any(|expected| *expected == event.message.as_deref().unwrap_or_default())
             })
             .collect()
+    }
+
+    #[test]
+    fn hq_change_deferral_skips_sentry_and_emits_deferred_telemetry() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let telemetry = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+        let telemetry_for_report = Arc::clone(&telemetry);
+
+        let events = captured_dispatched_core_update_events_with_expectation(
+            &["Desktop Core update failed"],
+            0,
+            Duration::from_millis(100),
+            move || {
+                emit_core_update_failed_event(
+                    "manual",
+                    Channel::Release,
+                    Some("15.0.4"),
+                    true,
+                    Some(true),
+                    Some(true),
+                    Duration::from_millis(12),
+                    None,
+                    "rescue_spawn",
+                    CoreUpdateFailureDetails {
+                        rescue_stderr_tail: Some("Update deferred while an HQ change is active"),
+                        rescue_telemetry: None,
+                        rescue_failure_category: RescueFailureCategory::UpdateDeferredHqChange,
+                        pre_rescue_materialization: false,
+                        npx_resolution: None,
+                        managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                    },
+                    move |event_name, properties| {
+                        telemetry_for_report
+                            .lock()
+                            .unwrap()
+                            .push((event_name.to_string(), properties));
+                    },
+                );
+            },
+        );
+
+        assert!(
+            events.is_empty(),
+            "a deliberate HQ-change deferral is not a Sentry failure"
+        );
+        let telemetry = telemetry.lock().unwrap();
+        assert_eq!(telemetry.len(), 1);
+        assert_eq!(telemetry[0].0, "core_update_skipped");
+        assert_eq!(telemetry[0].1["result"], "deferred");
+        assert_eq!(telemetry[0].1["skipReason"], "hq_change_active");
+    }
+
+    #[test]
+    fn non_deferral_core_update_failure_still_emits_one_sentry_event() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let telemetry = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+        let telemetry_for_report = Arc::clone(&telemetry);
+        let events =
+            captured_dispatched_core_update_events(&["Desktop Core update failed"], move || {
+                emit_core_update_failed_event(
+                    "manual",
+                    Channel::Release,
+                    Some("15.0.4"),
+                    true,
+                    Some(true),
+                    Some(true),
+                    Duration::from_millis(12),
+                    Some(1),
+                    "rescue_exit",
+                    core_update_sentry_test_details(),
+                    move |event_name, properties| {
+                        telemetry_for_report
+                            .lock()
+                            .unwrap()
+                            .push((event_name.to_string(), properties));
+                    },
+                );
+            });
+
+        assert_eq!(events.len(), 1);
+        let telemetry = telemetry.lock().unwrap();
+        assert_eq!(telemetry.len(), 1);
+        assert_eq!(telemetry[0].0, "core_update_failed");
+    }
+
+    #[test]
+    fn automatic_hq_change_deferral_emits_one_skip_event_with_target() {
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "c154-hq-change-deferred",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let mut telemetry = Vec::new();
+
+        emit_automatic_core_update_hq_change_deferral_telemetry(
+            candidate,
+            |event_name, properties| {
+                telemetry.push((event_name, properties));
+            },
+        );
+
+        assert_eq!(telemetry.len(), 1);
+        assert_eq!(telemetry[0].0, "core_update_skipped");
+        assert_eq!(telemetry[0].1["source"], "automatic");
+        assert_eq!(telemetry[0].1["result"], "deferred");
+        assert_eq!(telemetry[0].1["skipReason"], "hq_change_active");
+        assert_eq!(
+            telemetry[0].1["targetCoreVersion"],
+            "c154-hq-change-deferred"
+        );
     }
 
     #[test]
