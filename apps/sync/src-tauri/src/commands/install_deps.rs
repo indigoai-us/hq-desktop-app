@@ -3962,16 +3962,16 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
             || async {
                 cancellation.reject_if_cancelled()?;
                 let prefix = npm_global_prefix_arg(&app, "hq")?;
-                if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
-                    emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
-                }
-                let npm = match preferred_npm_binary() {
-                    Ok(p) => p,
+                let npm = match npm_bin_or_install_node(&app, "hq").await {
+                    Ok(path) => path,
                     Err(ref msg) => {
                         emit_preflight_line(&app, msg);
                         return Err(msg.clone());
                     }
                 };
+                if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
+                    emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+                }
                 let resource_dir = app.path().resource_dir().ok();
                 let install_spec = hq_cli_install_spec(resource_dir.as_deref());
                 if install_spec != HQ_CLI_REGISTRY_SPEC {
