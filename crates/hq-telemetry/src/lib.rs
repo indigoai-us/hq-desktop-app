@@ -1189,6 +1189,13 @@ fn is_known_core_rescue_failure_kind_marker(line: &str) -> bool {
             | "HQ_RESCUE_FAILURE_KIND=preserve-restore-failed"
             | "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable"
             | "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=network"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=auth"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=filter_unsupported"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=path"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=exists"
+            | "HQ_RESCUE_CLONE_FAILURE_CLASS=unknown"
     )
 }
 
@@ -3027,6 +3034,18 @@ mod tests {
     }
 
     #[test]
+    fn core_update_diagnostic_tail_keeps_only_known_clone_failure_class_markers() {
+        let diagnostic = redact_core_update_diagnostic_tail(
+            "HQ_RESCUE_CLONE_FAILURE_CLASS=network\nHQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable\nHQ_RESCUE_CLONE_FAILURE_CLASS=untrusted-value\nGH_TOKEN=ghp_abcdefghijklmnop",
+        );
+
+        assert!(diagnostic.contains("HQ_RESCUE_CLONE_FAILURE_CLASS=network"));
+        assert!(diagnostic.contains("HQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable"));
+        assert!(!diagnostic.contains("HQ_RESCUE_CLONE_FAILURE_CLASS=untrusted-value"));
+        assert!(!diagnostic.contains("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
     fn core_update_diagnostic_tail_removes_git_machine_and_remote_identifiers() {
         let diagnostic = redact_core_update_diagnostic_tail(
             "GH_TOKEN=ghp_abcdefghijklmnop\nfatal: unable to access 'https://token@example.corp/private/repo?access_token=secret': Could not resolve host: example.corp\nfatal: cannot read /mnt/alice/private/repo\ncontact alice@example.com or git@internal.corp:private/repo\nC:\\Users\\Alice\\HQ\\core.yaml\n\\\\buildserver\\share\\alice\\hq\n\\\\files.example.corp\\engineering\\bob\\hq-core",
@@ -3105,9 +3124,7 @@ mod tests {
                 event
                     .tags
                     .insert("rescue_error_class".to_string(), (*value).to_string());
-                before_send(event)
-                    .expect("event remains sendable")
-                    .tags["rescue_error_class"]
+                before_send(event).expect("event remains sendable").tags["rescue_error_class"]
                     .clone()
             })
             .collect();

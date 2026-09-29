@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 - If a Core update overlaps an active HQ change, HQ defers it and retries on a later check instead of reporting an update failure.
 - Pin the third-party actions used by the release monitor and UI-only publish workflow to their resolved commits.
 - The optional setup-stage timeout mitigation is off until enabled in hq-flags. When enabled, dependency install, template download and extraction, and search indexing timers restart when that stage reports progress and still stop at a maximum elapsed time.
