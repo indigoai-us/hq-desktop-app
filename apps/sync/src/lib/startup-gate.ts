@@ -29,7 +29,11 @@ export type StartupProbeResult = {
   tokenPresence: TokenPresence;
   /** Persisted setup evidence used by unexpected-surface reporting and recovery. */
   setupEvidence?: StartupSetupEvidence | null;
-  auth: { authenticated: boolean; expiresAt: string | null };
+  auth: {
+    authenticated: boolean;
+    expiresAt: string | null;
+    startupTokenReadResult?: string;
+  };
 };
 
 export type StartupPhase = 'loading' | 'resolved';
