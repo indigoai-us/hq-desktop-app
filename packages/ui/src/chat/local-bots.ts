@@ -181,10 +181,10 @@ export function localBotNeedsOfflineNotice(bot: LocalBotRow | null | undefined):
 /**
  * Agent uids of local bots that are mid-turn right now.
  *
- * The thinking indicator is otherwise ended by the first message from the
- * agent, which is wrong for a bot that posts an interim note and keeps
- * working. The CLI reports `busy` from its own in-flight marker, so this is
- * the truthful "still answering" signal for a local bot's DM.
+ * The CLI reports `busy` from its own in-flight marker. It starts a local
+ * bot's thinking row even when no send did (a scheduled or kickoff turn). It
+ * is polled and can outlive the bot's post, so it never holds the row past
+ * the reply (see `clearRowOnReply` in agent-thinking.ts).
  */
 export function busyLocalBotUids(bots: readonly LocalBotRow[] | null | undefined): string[] {
   if (!bots) return [];
