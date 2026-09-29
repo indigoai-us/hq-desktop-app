@@ -93,6 +93,10 @@ describe('native HQ menu-bar badge verification', () => {
       expect(run.stdout).toContain(
         'tray badge native verification passed (12 scenarios)',
       );
+      // hard-stop-readiness US-019: the paused-uploads menu section.
+      expect(run.stdout).toContain(
+        'tray uploads-paused native verification passed (6 scenarios)',
+      );
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
     }

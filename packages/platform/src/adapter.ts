@@ -37,6 +37,12 @@ export interface AdapterFailure {
   code?: string;
   /** Human-readable detail, safe to surface in dev tooling. */
   message?: string;
+  /**
+   * Server-selected upgrade link carried by a plan-limit refusal, already
+   * checked against the hosts hq-pro returns (see `plan-limit.ts`). Absent on
+   * every other failure.
+   */
+  upgradeUrl?: string;
 }
 
 export function ok<T>(value: T): AdapterResult<T> {

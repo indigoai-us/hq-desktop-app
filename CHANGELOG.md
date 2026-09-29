@@ -24,6 +24,26 @@ The release moves it under the version it ships in.
   each window took to load and when the app's background runtime stalls, so a
   slow open can be told apart from a broken one.
 
+- When a company is over a Starter plan limit, a refused action now says why
+  in plain words and offers an "Upgrade plan" link. A chat attachment that
+  goes over the storage limit reads, for example, "Could not upload
+  report.pdf: New files are paused while Acme is over its Starter limits.
+  Storage: 10.2 GB of 10 GB used." Accepting an invite to a company that is
+  at its member limit shows the same kind of sentence instead of raw server
+  JSON. Plan-limit refusals are no longer reported as crashes.
+- When a sync pass skips new files because a company is over its storage
+  limit, HQ now says "Uploads paused" for that company instead of "All
+  synced". The desktop window shows the notice even if it was opened after
+  the sync ran, the Core status panel names the company with an "Upgrade
+  plan" button, and the menu bar (and the Windows tray) lists "Uploads paused
+  for Acme" with an "Upgrade plan for Acme…" item. The notice clears once
+  uploads go through again. Upgrade links open only for hq.computer, the
+  host HQ's billing uses.
+  The sync engine moves to hq-cloud 6.18.17, which skips files refused by a
+  plan limit instead of failing the sync.
+
+## [0.10.360] — 2026-09-29
+
 - Leaving a channel and removing a bot from a channel work again, and bots in the member list have a remove button.
 
 - Files saved while a folder like `node_modules` or `build` is being created,

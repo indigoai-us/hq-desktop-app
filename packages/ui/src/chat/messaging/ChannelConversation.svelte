@@ -94,6 +94,7 @@
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
   import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
+  import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
   import {
     clearDraft,
     loadDraft,
@@ -547,6 +548,9 @@
   let attachInputEl = $state<HTMLInputElement | null>(null);
   let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
+  // Upgrade link for a plan-limit upload refusal; only shown beside the
+  // attach error it came with (hard-stop US-018).
+  let attachUpgradeUrl = $state<string | null>(null);
   let trayOpen = $state(false);
   let traySelectedId = $state<string | null>(null);
   let composerEmojiOpen = $state(false);
@@ -1141,11 +1145,13 @@
     }
     pendingFiles = next;
     attachError = errors[0] ?? null;
+    attachUpgradeUrl = null;
   }
 
   function removePendingFile(index: number): void {
     pendingFiles = pendingFiles.filter((_, i) => i !== index);
     attachError = null;
+    attachUpgradeUrl = null;
   }
 
   function namePastedFile(file: File): File {
@@ -1262,6 +1268,7 @@
     mentionHighlight = 0;
     pendingFiles = [];
     attachError = null;
+    attachUpgradeUrl = null;
     discardDraft();
     try {
       // Hosts that can name the persisted event return its id; that makes the
@@ -1282,6 +1289,7 @@
         files.length > 0,
         mentions.map((mention) => mention.displayName),
       );
+      attachUpgradeUrl = uploadErrorUpgradeUrl(err);
       restoreDraftAfterFailedSend(body);
     }
   }
@@ -1937,6 +1945,8 @@
         <ComposerPendingAttachments
           files={pendingFiles}
           error={attachError}
+          upgradeUrl={attachUpgradeUrl}
+          onupgrade={onopenurl}
           onremove={removePendingFile}
         />
       {/if}

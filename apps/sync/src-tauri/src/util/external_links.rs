@@ -32,6 +32,23 @@ fn open_browser<R: Runtime>(app: &AppHandle<R>, url: &Url) {
     let _ = app.shell().open(url.as_str(), None);
 }
 
+/// Open a plan-limit upgrade link (hard-stop-readiness US-019) — only when it
+/// is a credential-free HTTPS link on a host hq-pro returns
+/// (`hq_desktop_core::plan_limit::PLAN_UPGRADE_HOSTS`). Returns whether it
+/// was handed to the OS browser.
+pub fn open_plan_upgrade_url<R: Runtime>(app: &AppHandle<R>, raw: &str) -> bool {
+    let Some(approved) = hq_desktop_core::plan_limit::approved_plan_upgrade_url(raw) else {
+        return false;
+    };
+    match Url::parse(&approved) {
+        Ok(url) => {
+            open_browser(app, &url);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Open in the default browser when the URL is an allowed external scheme.
 pub fn open_if_browser_url<R: Runtime>(app: &AppHandle<R>, url: &Url) {
     if is_browser_url(url) {
