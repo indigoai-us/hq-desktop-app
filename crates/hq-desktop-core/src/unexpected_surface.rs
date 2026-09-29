@@ -354,6 +354,10 @@ pub fn apply_startup_token_store_diagnostics(
         tags.invalidation_marker_present = diagnostics.invalidation_marker_present;
         tags.first_read_result = diagnostics.first_read_result;
         tags.recheck_read_result = diagnostics.recheck_read_result;
+    } else {
+        tags.invalidation_marker_present = false;
+        tags.first_read_result = "not_checked";
+        tags.recheck_read_result = "not_checked";
     }
     tags
 }
