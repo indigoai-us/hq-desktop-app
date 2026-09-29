@@ -56,10 +56,12 @@ pub struct LifecycleInputsHandle {
 pub struct StartupSetupEvidence {
     install_completed: bool,
     first_run_completed: bool,
+    consent_answered: bool,
     install_in_progress: bool,
     manifest_incomplete: bool,
     had_machine_id: bool,
     hq_root_valid: bool,
+    hq_root_missing: bool,
 }
 
 /// Setup evidence used by the frontend's unexpected-surface reporting boundary.
@@ -76,10 +78,12 @@ pub fn get_startup_setup_evidence(
     Some(StartupSetupEvidence {
         install_completed: inputs.install_completed,
         first_run_completed: inputs.first_run_completed,
+        consent_answered: inputs.consent_answered,
         install_in_progress: inputs.install_in_progress,
         manifest_incomplete: state.manifest_incomplete,
         had_machine_id: inputs.had_machine_id,
         hq_root_valid: inputs.hq_root_valid,
+        hq_root_missing: state.hq_root_probe == Some(HqRootProbe::Missing),
     })
 }
 
@@ -828,15 +832,19 @@ mod tests {
         let evidence = StartupSetupEvidence {
             install_completed: false,
             first_run_completed: false,
+            consent_answered: false,
             install_in_progress: false,
             manifest_incomplete: true,
             had_machine_id: true,
             hq_root_valid: true,
+            hq_root_missing: false,
         };
         let value = serde_json::to_value(evidence).unwrap();
 
         assert_eq!(value["manifestIncomplete"], true);
         assert_eq!(value["installInProgress"], false);
+        assert_eq!(value["consentAnswered"], false);
+        assert_eq!(value["hqRootMissing"], false);
     }
 
 }

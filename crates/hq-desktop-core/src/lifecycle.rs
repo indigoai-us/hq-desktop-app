@@ -91,7 +91,11 @@ pub struct LifecycleVerdict {
 /// CLI *version* mismatch is not absence — see
 /// [`tools_present_for_lifecycle_gate`].
 pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -> LifecycleVerdict {
-    if tools_present {
+    // The consent-only first-run step does not need the local CLI or Node. Keep
+    // it ahead of toolchain repair so an updater restart cannot replace the
+    // required consent question with the full installer. Once consent finishes,
+    // lifecycle is re-evaluated and missing tools still route to installation.
+    if tools_present || verdict.state == LifecycleState::InstalledFirstRun {
         verdict
     } else {
         LifecycleVerdict {
@@ -831,6 +835,57 @@ mod tests {
             verdict.state,
             LifecycleState::InstalledFirstRun,
             "unanswered consent must route back to onboarding, not skip it"
+        );
+    }
+
+    #[test]
+    fn updater_restart_with_missing_tools_keeps_the_consent_only_route() {
+        let mut probes = 0;
+        let tools_present = probe_local_toolchain_for_startup_with(
+            true,
+            true,
+            || {
+                probes += 1;
+                false
+            },
+            |_| {},
+        );
+        assert!(!tools_present);
+        assert_eq!(probes, STARTUP_TOOLCHAIN_RECHECKS + 1);
+
+        let consent_pending = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: false,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: false,
+            install_in_progress: false,
+            consent_answered: false,
+            evidence_unreadable: false,
+        });
+        assert_eq!(consent_pending.state, LifecycleState::InstalledFirstRun);
+        assert_eq!(
+            require_local_toolchain(consent_pending, tools_present).state,
+            LifecycleState::InstalledFirstRun,
+            "missing tools must not replace the required consent-only step with the full installer"
+        );
+
+        let completed = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: false,
+            install_in_progress: false,
+            consent_answered: true,
+            evidence_unreadable: false,
+        });
+        assert_eq!(
+            require_local_toolchain(completed, tools_present).state,
+            LifecycleState::NeedsInstall,
+            "a completed install still needs repair when its local toolchain is absent"
         );
     }
 
