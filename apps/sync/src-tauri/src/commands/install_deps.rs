@@ -64,6 +64,12 @@ tokio::task_local! {
     static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
 }
 
+fn current_setup_run_id() -> Option<String> {
+    ACTIVE_ONBOARDING_FAILURE_SCOPE
+        .try_with(|scope| scope.setup_run_id.clone())
+        .ok()
+}
+
 tokio::task_local! {
     static ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR: SetupDiagnosticCollector;
 }
@@ -552,6 +558,7 @@ impl InstallCancellationRegistration {
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: self.handle.clone(),
                 line: String::new(),
                 finished: true,
@@ -901,6 +908,9 @@ pub struct DepStatus {
 pub struct InstallProgress {
     /// Unique install handle.
     pub handle: String,
+    /// Setup identity keeps unrelated installer output from refreshing setup's timer.
+    #[serde(rename = "setupRunId", skip_serializing_if = "Option::is_none")]
+    pub setup_run_id: Option<String>,
     /// A single line of stdout from the install process.
     pub line: String,
     /// True on the final event for this handle.
@@ -2499,6 +2509,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
     args: &[&str],
     npm_cache: Option<&Path>,
 ) -> Result<String, String> {
+    let setup_run_id = current_setup_run_id();
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
@@ -2585,6 +2596,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
     let stderr_thread = {
         let app = app.clone();
         let handle_id = handle_id.clone();
+        let setup_run_id = setup_run_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
         let stderr_tail = Arc::clone(&stderr_tail);
         let tx = tx.clone();
@@ -2598,6 +2610,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
+                                setup_run_id: setup_run_id.clone(),
                                 handle: handle_id.clone(),
                                 line: line.clone(),
                                 finished: false,
@@ -2634,6 +2647,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                 let _ = app.emit(
                     "install:progress",
                     InstallProgress {
+                        setup_run_id: current_setup_run_id(),
                         handle: handle_id.clone(),
                         line,
                         finished: false,
@@ -2710,6 +2724,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -2728,6 +2743,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -2741,6 +2757,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -2754,6 +2771,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -2771,6 +2789,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -2798,6 +2817,7 @@ fn emit_preflight_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
+            setup_run_id: current_setup_run_id(),
             handle: "preflight".to_string(),
             line: msg.to_string(),
             finished: false,
@@ -4902,6 +4922,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
     args: &[&str],
     npm_cache: Option<&Path>,
 ) -> Result<String, String> {
+    let setup_run_id = current_setup_run_id();
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
@@ -5038,6 +5059,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
     let stderr_thread = {
         let app = app.clone();
         let handle_id = handle_id.clone();
+        let setup_run_id = setup_run_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
         let stderr_tail = Arc::clone(&stderr_tail);
         let tx = tx.clone();
@@ -5051,6 +5073,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
+                                setup_run_id: setup_run_id.clone(),
                                 handle: handle_id.clone(),
                                 line: line.clone(),
                                 finished: false,
@@ -5086,6 +5109,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                 let _ = app.emit(
                     "install:progress",
                     InstallProgress {
+                        setup_run_id: current_setup_run_id(),
                         handle: handle_id.clone(),
                         line,
                         finished: false,
@@ -5153,6 +5177,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -5171,6 +5196,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -5184,6 +5210,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -5197,6 +5224,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -5214,6 +5242,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let _ = app.emit(
             "install:progress",
             InstallProgress {
+                setup_run_id: current_setup_run_id(),
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
@@ -5229,6 +5258,7 @@ fn emit_progress<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
+            setup_run_id: current_setup_run_id(),
             handle: "preflight".to_string(),
             line: msg.to_string(),
             finished: false,
@@ -7327,6 +7357,7 @@ fn emit_install_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
+            setup_run_id: current_setup_run_id(),
             handle: "preflight".to_string(),
             line: msg.to_string(),
             finished: false,
@@ -7339,6 +7370,7 @@ fn emit_install_handle_started<R: tauri::Runtime>(app: &AppHandle<R>, handle: &s
     let _ = app.emit(
         "install:progress",
         InstallProgress {
+            setup_run_id: current_setup_run_id(),
             handle: handle.to_string(),
             line: String::new(),
             finished: false,
