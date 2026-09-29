@@ -5,6 +5,7 @@ import {
   isRawBotFailureText,
   isValidLocalBotName,
   plainBotFailure,
+  unrecognizedModelMessage,
   locallyHostedBots,
   promotedBotCompany,
   lastHeartbeatLabel,
@@ -139,6 +140,20 @@ describe("plainBotFailure", () => {
     expect(plainBotFailure("Claude Code is not signed in.\nRun the sign-in again.", "x")).toBe(
       "Claude Code is not signed in.",
     );
+  });
+
+  it("turns a coding tool's unrecognized-model error into a plain sentence", () => {
+    expect(plainBotFailure("API Error: [claude-code:unrecognized_model] claude-opus-5-5", "x")).toBe(
+      "This bot's model isn't available in your Claude Code version. Update Claude Code or pick another model.",
+    );
+    expect(unrecognizedModelMessage("[codex:unrecognized_model] gpt-6-astra")).toBe(
+      "This bot's model isn't available in your Codex version. Update Codex or pick another model.",
+    );
+    expect(unrecognizedModelMessage("error: unrecognized_model")).toBe(
+      "This bot's model isn't available in your coding tool's version. Update it or pick another model.",
+    );
+    expect(unrecognizedModelMessage("Claude Code is not signed in.")).toBeNull();
+    expect(unrecognizedModelMessage(null)).toBeNull();
   });
 
   it("falls back on nothing at all", () => {
