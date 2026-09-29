@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
 - Desktop sync commands now recover their valid state after a mutex is poisoned.
 
 - Auto-sync memory-ceiling reports now include the active sync phase and its
