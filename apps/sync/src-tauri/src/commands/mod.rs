@@ -42,6 +42,7 @@ pub mod hq_core_drift;
 pub mod hq_core_staging;
 pub mod hq_core_state;
 pub mod hq_core_update;
+pub(crate) mod github_api;
 pub mod hq_pro;
 pub mod hq_work;
 pub mod headless_install;
