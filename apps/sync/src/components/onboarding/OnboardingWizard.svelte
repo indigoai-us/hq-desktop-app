@@ -343,6 +343,7 @@
   let activeIndexingOutputTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
+  const SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER = 3;
 
   let aiTools = $state<AiTools | null>(null);
   let detectionFailed = $state(false);
@@ -1710,7 +1711,8 @@
                 Promise.resolve(invokeDesktopCommand(invocation.command, args)),
               )
             : Promise.resolve(invokeDesktopCommand(invocation.command, args));
-        const onTimeout = () => new StageTimeoutError(id, ms);
+        const onTimeout = (timeoutMs = ms) =>
+          new StageTimeoutError(id, timeoutMs);
         const cancel = () => {
           void cancelForegroundWork(runId);
         };
@@ -1749,6 +1751,9 @@
               };
             },
             cancel,
+            activityTimeoutEnabled
+              ? ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER
+              : undefined,
           );
         } else if (id === 'content' && activityTimeoutEnabled) {
           await withProgressTimeout(
@@ -1764,6 +1769,7 @@
               };
             },
             cancel,
+            ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER,
           );
         } else if (id === 'indexing' && activityTimeoutEnabled) {
           await withProgressTimeout(
@@ -1779,6 +1785,7 @@
               };
             },
             cancel,
+            ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER,
           );
         } else {
           await withTimeout(operation, ms, onTimeout, cancel);
